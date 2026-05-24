@@ -1,11 +1,12 @@
 """
 End-to-end Playwright tests for static web applications.
 
-Tests the four web frontends by spinning up a local HTTP server for each:
-  - options-heatseeker   (port 8101)
+Tests the static web frontends by spinning up a local HTTP server for each:
   - success-report-site  (port 8102)
-  - chart-viewer         (port 8103)
   - website              (port 8104)
+
+The legacy options-heatseeker static app was retired in #255 (cutover
+to FastAPI under platform/) — its directory no longer exists.
 
 Run these separately from the unit suite:
   pytest tests/test_e2e.py --headed       # visible browser
@@ -26,15 +27,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 APPS = {
-    "heatseeker": REPO_ROOT / "options-heatseeker",
     "success_report": REPO_ROOT / "success-report-site",
-    "chart_viewer": REPO_ROOT / "chart-viewer",
     "website": REPO_ROOT / "website",
 }
 PORTS = {
-    "heatseeker": 8101,
     "success_report": 8102,
-    "chart_viewer": 8103,
     "website": 8104,
 }
 
@@ -71,54 +68,6 @@ def servers():
 
 def url(name: str, path: str = "") -> str:
     return f"http://localhost:{PORTS[name]}/{path}"
-
-
-# ---------------------------------------------------------------------------
-# Options Heatseeker tests
-# ---------------------------------------------------------------------------
-
-class TestOptionsHeatseeker:
-    """Smoke tests for options-heatseeker/index.html."""
-
-    def test_page_loads(self, page, servers):
-        page.goto(url("heatseeker"))
-        assert "heatseeker" in page.title().lower() or page.locator("body").is_visible()
-
-    def test_ticker_selector_present(self, page, servers):
-        page.goto(url("heatseeker"))
-        selector = page.locator("#ticker-selector")
-        assert selector.count() == 1
-
-    def test_ticker_options_available(self, page, servers):
-        page.goto(url("heatseeker"))
-        options = page.locator("#ticker-selector option")
-        # At least SPY, QQQ, IWM
-        assert options.count() >= 3
-
-    def test_heatmap_container_present(self, page, servers):
-        page.goto(url("heatseeker"))
-        assert page.locator("#heatmap-table").count() == 1
-
-    def test_metric_toggle_buttons_present(self, page, servers):
-        page.goto(url("heatseeker"))
-        assert page.locator(".metric-toggle").count() >= 1
-
-    def test_option_type_buttons_present(self, page, servers):
-        page.goto(url("heatseeker"))
-        assert page.locator(".option-type-btn").count() >= 1
-
-    def test_no_js_errors_on_load(self, page, servers):
-        errors = []
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(url("heatseeker"))
-        page.wait_for_load_state("domcontentloaded")
-        # Filter out network errors for missing data files (expected in test env)
-        fatal = [e for e in errors if "SyntaxError" in e or "ReferenceError" in e]
-        assert fatal == [], f"Fatal JS errors: {fatal}"
-
-    def test_date_selector_present(self, page, servers):
-        page.goto(url("heatseeker"))
-        assert page.locator("#end-date-selector").count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -169,65 +118,6 @@ class TestSuccessReportSite:
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(url("success_report"))
-        page.wait_for_load_state("domcontentloaded")
-        fatal = [e for e in errors if "SyntaxError" in e or "ReferenceError" in e]
-        assert fatal == [], f"Fatal JS errors: {fatal}"
-
-
-# ---------------------------------------------------------------------------
-# Chart Viewer tests
-# ---------------------------------------------------------------------------
-
-class TestChartViewer:
-    """Smoke tests for chart-viewer/index.html."""
-
-    def test_page_loads(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("body").is_visible()
-
-    def test_ticker_selector_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#tickerSelect").count() == 1
-
-    def test_date_selector_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#dateSelect").count() == 1
-
-    def test_timeframe_selector_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#timeframeSelect").count() == 1
-
-    def test_chart_container_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#chartContainer").count() == 1
-
-    def test_control_buttons_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        for btn_id in ["#refreshBtn", "#saveDataBtn", "#exportBtn", "#markEntryBtn"]:
-            assert page.locator(btn_id).count() == 1, f"Missing button: {btn_id}"
-
-    def test_volume_toggle_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#volumeToggle").count() == 1
-
-    def test_timeframe_options_available(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        options = page.locator("#timeframeSelect option")
-        # 1, 5, 15, 30, 60 minute options
-        assert options.count() >= 3
-
-    def test_no_fatal_js_errors(self, page, servers):
-        errors = []
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(url("chart_viewer"))
         page.wait_for_load_state("domcontentloaded")
         fatal = [e for e in errors if "SyntaxError" in e or "ReferenceError" in e]
         assert fatal == [], f"Fatal JS errors: {fatal}"

@@ -116,6 +116,143 @@ class TestComputePreviousLevels:
     def test_empty_df(self):
         assert compute_previous_levels(pd.DataFrame()) == {}
 
+    def test_returns_close_levels(self):
+        """Close levels (PDC/PWC/PMC/PQC/PYC) ship alongside H/L so
+        traders charting against PDC have a source of truth.
+
+        Uses 520 biz days (~2 years) so the legacy path's "need ≥2
+        groupings to compute previous period" requirement is satisfied
+        even for the year timeframe (PYC).
+        """
+        df = _daily_df(520)
+        levels = compute_previous_levels(df)
+        for k in ('PDC', 'PWC', 'PMC', 'PQC', 'PYC'):
+            assert k in levels, f"missing {k}"
+            assert levels[k].level_type == 'close'
+
+    def test_pdc_price_matches_prev_day_close(self):
+        df = _daily_df(30)
+        levels = compute_previous_levels(df)
+        # Legacy path: prev day = iloc[-2]
+        expected = float(df['Close'].iloc[-2])
+        assert levels['PDC'].price == expected
+
+
+class TestComputePreviousLevelsAnalysisDate:
+    """Tests for the analysis_date path that fixed 2026-05-06 QQQ.
+
+    Without analysis_date, the brief filters today's bar out and the
+    function's iloc[-2] picked day-before-yesterday — PDH wrote 5/4's
+    high when it should have been 5/5's. The chart's PDH=$682.77
+    (5/5 high) but strat_levels persisted PDH=$676.73 (5/4 high), and
+    the trade_planner derived a synthetic blue-sky entry of $695.52
+    that price never touched."""
+
+    def test_pdh_picks_period_before_analysis_date(self):
+        """When analysis_date is given, PDH is the high of the day
+        BEFORE analysis_date — not the second-to-last row of df."""
+        from datetime import date
+        df = _daily_df(30)
+        # Pretend analysis_date is the day AFTER df's last bar (the
+        # brief's typical state: today excluded by < analysis_date).
+        last_bar = pd.to_datetime(df['Date'].iloc[-1]).date()
+        # df contains business days; nudge analysis_date one biz day
+        # forward — the last bar IS the previous day from
+        # analysis_date's perspective.
+        analysis_date = (pd.Timestamp(last_bar) + pd.tseries.offsets.BDay(1)).date()
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        assert levels['PDH'].price == float(df['High'].iloc[-1])
+        assert levels['PDC'].price == float(df['Close'].iloc[-1])
+        assert levels['PDL'].price == float(df['Low'].iloc[-1])
+
+    def test_week_period_picks_week_before_analysis_week(self):
+        """Critical fidelity test: when df contains bars from the
+        SAME week as analysis_date (e.g. Mon+Tue, with analysis_date
+        on Wed), PWH must reflect the PREVIOUS week — not df's last
+        bar's week (which is the same as analysis_date's week)."""
+        from datetime import date
+        # Build a small df spanning two weeks: prev week 5/29-6/2,
+        # analysis week 6/5-6/9 with bars on 6/5 and 6/6.
+        dates = pd.to_datetime([
+            '2025-05-29', '2025-05-30',  # prev week (W22)
+            '2025-06-02', '2025-06-03',  # actually still W22
+            '2025-06-05', '2025-06-06',  # current week (W23)
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100., 101., 102., 103., 104., 105.],
+            'High':  [110., 111., 112., 113., 114., 115.],
+            'Low':   [ 90.,  91.,  92.,  93.,  94.,  95.],
+            'Close': [105., 106., 107., 108., 109., 110.],
+        })
+        # Analysis date: Wed 6/9 (W24). Last bar 6/6 is in W23.
+        analysis_date = date(2025, 6, 9)
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        # Previous week to W24 is W23 → high = max(114, 115) = 115.
+        assert levels['PWH'].price == 115.0
+
+    def test_week_period_skips_in_progress_week(self):
+        """When analysis_date is in same week as df's last bars (the
+        bug scenario), PWH must come from the PRIOR week — not from
+        the in-progress week containing analysis_date."""
+        from datetime import date
+        # Build df where last bars are in same week as analysis_date.
+        # 5/4 (Mon) and 5/5 (Tue) are W19 along with 5/6 (Wed).
+        dates = pd.to_datetime([
+            '2026-04-27', '2026-04-28', '2026-04-29',  # W18
+            '2026-04-30', '2026-05-01',  # W18
+            '2026-05-04', '2026-05-05',  # W19 — same week as analysis_date
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100.] * 7,
+            'High':  [200., 201., 202., 203., 204., 800., 801.],
+            'Low':   [ 90.] * 7,
+            'Close': [150.] * 7,
+        })
+        analysis_date = date(2026, 5, 6)  # Wed of W19
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        # PWH must NOT be 800/801 (those are in W19 with analysis_date).
+        # Must be max of W18 highs = 204.
+        assert levels['PWH'].price == 204.0
+
+    def test_month_period_skips_in_progress_month(self):
+        from datetime import date
+        dates = pd.to_datetime([
+            '2026-04-15', '2026-04-30',  # April
+            '2026-05-01', '2026-05-05',  # May (in-progress)
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100.] * 4,
+            'High':  [200., 250., 800., 900.],
+            'Low':   [ 90.] * 4,
+            'Close': [150., 160., 170., 180.],
+        })
+        analysis_date = date(2026, 5, 6)
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        assert levels['PMH'].price == 250.0
+        assert levels['PMC'].price == 160.0  # April's last close
+
+    def test_year_period_skips_in_progress_year(self):
+        from datetime import date
+        dates = pd.to_datetime([
+            '2025-12-30', '2025-12-31',  # 2025
+            '2026-01-02', '2026-05-05',  # 2026 (in-progress)
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100.] * 4,
+            'High':  [200., 250., 800., 900.],
+            'Low':   [ 90.] * 4,
+            'Close': [150., 160., 170., 180.],
+        })
+        analysis_date = date(2026, 5, 6)
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        assert levels['PYH'].price == 250.0
+        assert levels['PYL'].price == 90.0
+        assert levels['PYC'].price == 160.0
+
 
 # ─── compute_current_levels ───────────────────────────────────────────────
 
@@ -174,6 +311,146 @@ class TestComputeCurrentLevels:
         assert 'CDO' in levels
         # Sentinel: CDO falls back to current_price when open is NULL
         assert levels['CDO'].price == price
+
+
+# ─── compute_current_levels — premarket label disambiguation ─────────────
+#
+# The 8:30 AM ET brief filters its df to `date < analysis_date` so today's
+# NULL-OHLC row doesn't poison the level math. After that filter,
+# `df.iloc[-1]` is the previous trading day. Pre-fix this was still labelled
+# CDO (Current Day Open) which leaked the implication "today's open exists"
+# — but today hasn't opened yet. Fix: emit PDO/PWO/PMO when analysis_date
+# falls in a later period than the last row.
+
+
+class TestComputeCurrentLevelsPremarketLabels:
+    """Verify the CDO/PDO (etc.) label switch driven by analysis_date."""
+
+    def test_legacy_callers_get_cdo_label_when_no_analysis_date(self):
+        """No analysis_date passed → legacy CDO label preserved."""
+        df = _daily_df(10)
+        price = float(df['Close'].iloc[-1])
+        levels = compute_current_levels(df, price)   # no analysis_date
+        assert 'CDO' in levels
+        assert 'PDO' not in levels
+        assert levels['CDO'].is_current is True
+
+    def test_analysis_date_same_day_as_last_row_emits_cdo(self):
+        """When the last bar's date == analysis_date (EOD analytics
+        with today's bar already in the data) the label IS honest."""
+        df = _daily_df(10)
+        price = float(df['Close'].iloc[-1])
+        ad = pd.Timestamp(df['Date'].iloc[-1]).date()
+        levels = compute_current_levels(df, price, analysis_date=ad)
+        assert 'CDO' in levels
+        assert 'PDO' not in levels
+
+    def test_analysis_date_after_last_row_swaps_to_pdo(self):
+        """8:30 AM premarket brief on Monday: filtered df ends at Friday.
+        analysis_date = Monday → label MUST be PDO, not CDO.
+        Price value is unchanged (the bug is purely labelling).
+        """
+        df = _daily_df(20)
+        last_dt = pd.Timestamp(df['Date'].iloc[-1])
+        ad = (last_dt + pd.tseries.offsets.BDay(1)).date()
+        price = float(df['Close'].iloc[-1])
+
+        levels = compute_current_levels(df, price, analysis_date=ad)
+        assert 'PDO' in levels
+        assert 'CDO' not in levels
+        # Value is unchanged — pre-fix it would have been emitted as CDO
+        # with the SAME price; the fix is purely cosmetic on the label.
+        assert levels['PDO'].price == float(df['Open'].iloc[-1])
+        # is_current=False once relabelled — PDO is not "current"
+        assert levels['PDO'].is_current is False
+
+    def test_analysis_date_in_new_week_swaps_cwo_to_pwo(self):
+        """Monday brief: filtered df ends Friday. The week of iloc[-1]
+        is BEFORE analysis_date's week. Label must be PWO."""
+        df = _daily_df(30)
+        # Find the first Monday strictly after the last bar's date.
+        last_dt = pd.Timestamp(df['Date'].iloc[-1])
+        ad_ts = last_dt + pd.Timedelta(days=1)
+        while ad_ts.dayofweek != 0:
+            ad_ts = ad_ts + pd.Timedelta(days=1)
+        # Brief-style cutoff: drop any row on/after ad
+        df_filtered = df[pd.to_datetime(df['Date']) < ad_ts].copy()
+        price = float(df_filtered['Close'].iloc[-1])
+
+        levels = compute_current_levels(
+            df_filtered, price, analysis_date=ad_ts.date(),
+        )
+        assert 'PWO' in levels
+        assert 'CWO' not in levels
+
+    def test_pdo_strat_class_is_stable_across_premarket_price_gaps(self):
+        """Codex P2 review on PR #445: when emitting PDO, strat_class
+        must be computed from yesterday's CLOSE — not today's
+        ``current_price`` — so a premarket gap can't repaint a
+        completed session's classification.
+
+        Scenario: yesterday closed inside its own range. Today gaps
+        sharply above prev-day high. With the bug, today's
+        current_price gets folded into yesterday's high → reclassified
+        as 2U/Failed_2U. With the fix, PDO.strat_class is locked in
+        based on yesterday's actual close.
+        """
+        df = _daily_df(20)
+        # Override the last bar so we know its exact OHLC:
+        #   yesterday's range = [195, 205], close = 200 (inside both
+        #   prev-day H and L, so strat_class = '1' inside bar).
+        last_idx = len(df) - 1
+        df.iloc[last_idx, df.columns.get_loc('Open')]  = 197.0
+        df.iloc[last_idx, df.columns.get_loc('High')]  = 205.0
+        df.iloc[last_idx, df.columns.get_loc('Low')]   = 195.0
+        df.iloc[last_idx, df.columns.get_loc('Close')] = 200.0
+        # Set the prev-day above/below this range so '1' is the
+        # natural strat class
+        df.iloc[last_idx - 1, df.columns.get_loc('High')] = 210.0
+        df.iloc[last_idx - 1, df.columns.get_loc('Low')]  = 190.0
+
+        last_dt = pd.Timestamp(df['Date'].iloc[-1])
+        ad = (last_dt + pd.tseries.offsets.BDay(1)).date()
+
+        # Today gaps WAY above yesterday's high
+        gap_price = 230.0
+        levels = compute_current_levels(df, gap_price, analysis_date=ad)
+
+        assert 'PDO' in levels
+        # With the fix, PDO inherits yesterday's stable classification —
+        # current_price=230 does NOT leak into it. Pre-fix this would
+        # have been '2U' or 'Failed_2U' because today_high =
+        # max(205, 230) = 230 broke prev_day_high=210.
+        # We accept any class as long as it's NOT one that requires
+        # today's gap-up to compute (2U/Failed_2U/3).
+        assert levels['PDO'].strat_class not in ('2U', 'Failed_2U', '3'), \
+            f"PDO repainted to {levels['PDO'].strat_class} from premarket gap — expected stable class"
+
+    def test_analysis_date_in_new_month_swaps_cmo_to_pmo(self):
+        """First-trading-day-of-month brief: filtered df ends in the
+        prior month AND a prior month already exists in the history.
+        Label must be PMO."""
+        # 90 business days starting in late October — gives us Oct, Nov,
+        # Dec rows AND ends in late January, then we set analysis_date to
+        # the first business day of February.
+        dates = pd.bdate_range('2024-10-01', '2025-01-31')
+        n = len(dates)
+        np.random.seed(7)
+        close = 200 * np.exp(np.cumsum(np.random.normal(0.0003, 0.01, n)))
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open': close * (1 - 0.002),
+            'High': close * (1 + 0.005),
+            'Low':  close * (1 - 0.005),
+            'Close': close,
+            'Volume': 1_000_000,
+        })
+        ad = pd.Timestamp('2025-02-03').date()  # Mon, first business day Feb
+        price = float(df['Close'].iloc[-1])
+
+        levels = compute_current_levels(df, price, analysis_date=ad)
+        assert 'PMO' in levels
+        assert 'CMO' not in levels
 
 
 # ─── compute_gap_levels ──────────────────────────────────────────────────
@@ -392,6 +669,45 @@ class TestBuildLevelMap:
 
 
 # ─── format_levels_for_brief ──────────────────────────────────────────────
+
+
+class TestDisplayLevelName:
+    """The gap-level naming convention is GAP_H_YYYY-MM-DD internally;
+    display renders this as 'M/D Gap High' / 'M/D Gap Low'. Internal
+    StratLevel.name stays canonical so signal_monitor's level-break
+    detection still keys on it; only Discord/brief output uses the
+    friendlier form."""
+
+    def _display(self, name):
+        from lib.strat_levels import _display_level_name
+        return _display_level_name(name)
+
+    def test_gap_high_with_iso_date_renders_short_form(self):
+        assert self._display('GAP_H_2026-05-05') == '5/5 Gap High'
+
+    def test_gap_low_with_iso_date_renders_short_form(self):
+        assert self._display('GAP_L_2026-05-05') == '5/5 Gap Low'
+
+    def test_gap_drops_leading_zeros_in_month_and_day(self):
+        assert self._display('GAP_H_2026-04-28') == '4/28 Gap High'
+        assert self._display('GAP_L_2026-01-03') == '1/3 Gap Low'
+
+    def test_gap_keeps_double_digit_months_and_days(self):
+        assert self._display('GAP_H_2026-12-31') == '12/31 Gap High'
+        assert self._display('GAP_L_2026-11-15') == '11/15 Gap Low'
+
+    def test_non_gap_names_pass_through_unchanged(self):
+        for name in ('PDH', 'PDL', 'PWH', 'PMH', 'PQH', 'PYH',
+                     'PDC', 'PWC', 'PMC', 'CDO', 'CWO', 'CMO', 'PMK_H'):
+            assert self._display(name) == name
+
+    def test_malformed_gap_names_pass_through(self):
+        """If the gap regex doesn't match (legacy data, future format
+        change), pass through unchanged rather than crash."""
+        assert self._display('GAP_H_2026') == 'GAP_H_2026'  # no date
+        assert self._display('GAP_X_2026-05-05') == 'GAP_X_2026-05-05'  # wrong side
+        assert self._display('') == ''
+        assert self._display('SOMETHING_ELSE') == 'SOMETHING_ELSE'
 
 
 class TestFormatLevelsForBrief:

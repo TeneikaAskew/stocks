@@ -60,21 +60,122 @@ def _unavailable(reason: str) -> dict:
     return {"available": False, "reason": reason}
 
 
+# Maximum trading-day gap between an options chain's snapshot_date and the
+# brief's as-of date before we silence the options/gamma sections. The AV
+# options fetcher writes EOD chains at ~21:00 ET; a Tuesday-morning brief
+# reading Monday-EOD chain is 1 trading day behind and is the standard
+# institutional convention. A Wednesday brief reading Friday-EOD chain
+# (today's actual 5/13 state) is 3 trading days behind — strikes have
+# rolled, expirations have been added, dealers have re-hedged. Citing
+# Kings/Gates/Flip off that chain misleads the LLM and the reader.
+#
+# Used by `summarize_options_flow` (volume/OI/IV aggregates — still
+# hard-silences at >2 trading days) and as the soft-warn boundary in
+# `summarize_gamma_levels` (which now uses a tiered loader — see
+# MAX_OPTIONS_HARD_STALE_TRADING_DAYS below).
+MAX_OPTIONS_STALE_TRADING_DAYS = 2
+
+# Hard cutoff for summarize_gamma_levels — beyond this, even the
+# stale_fallback path returns `available: False`. Chosen at 5 trading days
+# (one full trading week) because dealer positioning a week old is no
+# longer a useful signal — strikes have rolled, expirations have been
+# added, and the King/Gate map bears little relation to current spot.
+# Added 2026-05-23 alongside the tiered realtime → EOD → stale loader
+# in summarize_gamma_levels per docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md
+# Track 1.
+MAX_OPTIONS_HARD_STALE_TRADING_DAYS = 5
+
+
+def _check_chain_freshness(
+    chain_date,
+    target_date=None,
+    max_trading_days: int = MAX_OPTIONS_STALE_TRADING_DAYS,
+) -> Optional[str]:
+    """Return None when fresh, or a string reason when stale.
+
+    Uses `numpy.busday_count` (Mon-Fri, no holiday awareness) which is
+    close enough for staleness — false-flag on the rare Tuesday-after-
+    Monday-holiday is acceptable defensive behavior.
+
+    Accepts either `date` or `datetime` for both inputs and coerces to
+    `.date()` before counting. `parse_as_of` returns timezone-aware
+    `datetime` when `INSIGHT_AS_OF` is a full ISO timestamp; passing
+    that straight to `np.busday_count` would raise.
+    """
+    if isinstance(chain_date, datetime):
+        chain_date = chain_date.date()
+    target = target_date if target_date else date_type.today()
+    if isinstance(target, datetime):
+        target = target.date()
+    trading_days = int(np.busday_count(chain_date, target))
+    if trading_days > max_trading_days:
+        return (
+            f"chain stale: {trading_days} trading days behind {target} "
+            f"(snapshot_date={chain_date})"
+        )
+    return None
+
+
+def classify_gamma_freshness(days_behind: int) -> str:
+    """Map a trading-day gap to a Track 1 data_source tier.
+
+    Returns one of:
+      'eod_fallback'    — 0-2 trading days behind (institutional norm)
+      'stale_fallback'  — 3-5 trading days behind (warn but still serve)
+      'unavailable'     — >5 trading days behind (hard silence)
+
+    Shared between `summarize_gamma_levels` (which runs the full GEX
+    math) and the premarket-brief freshness footer (which probes only
+    the snapshot metadata) so the two paths can never disagree on
+    which tier a given chain falls into.
+    """
+    if days_behind > MAX_OPTIONS_HARD_STALE_TRADING_DAYS:
+        return "unavailable"
+    if days_behind > MAX_OPTIONS_STALE_TRADING_DAYS:
+        return "stale_fallback"
+    return "eod_fallback"
+
+
 # ---------------------------------------------------------------------------
 # 1. Market context
 # ---------------------------------------------------------------------------
 
 
 def summarize_market_context(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = False,
 ) -> dict:
     """Daily OHLCV + indicators + regime classification.
 
     Reads market_data_daily for the row at or before `as_of` (default:
     latest). Computes a regime tag (trending up/down/ranging) and a
     20-day realized vol tag (low/normal/elevated).
+
+    Replay semantics (when ``as_of`` is set):
+      Daily / indicator columns come from the latest row STRICTLY
+      BEFORE ``as_of`` — i.e. yesterday's completed bar — because on a
+      live 8:45 AM ET run today's row exists with NULL close (the
+      11 PM ET fetcher hasn't run yet). Reading today's row in a
+      replay leaks the post-RTH close into the trade_planner's
+      ``cleared_above`` calculation and forces blue-sky synthesis on
+      otherwise-normal days. The 5/6 QQQ replay surfaced this:
+      AS-OF=5/6 was reading 5/6's RTH close (~$693), comparing PDH
+      ($682.77) below it, and synthesizing a $695 entry that the
+      live 8:45 AM run on 5/6 would never have produced.
+
+      Pre-market columns (pre_high, pre_low, pre_vwap, pre_volume,
+      gap_pct, pre_range_atr) DO come from today's row (= as_of),
+      because the 8:30 AM ET fetcher populates those fields before
+      the insight pipeline runs at 8:45 AM. Yesterday's pre_high
+      would be a day-old reading.
+
+    ``inclusive_today`` (added to make the contract explicit):
+      Default False — premarket contract used by the insight pipeline.
+      Set True for EOD / backtest contexts that want to read today's
+      completed daily row.
     """
-    sql = (
+    daily_op = "<=" if inclusive_today else "<"
+    daily_sql = (
         "SELECT date, open, high, low, close, volume, "
         "       sma_200, ema_20, ema_50, rsi_14, macd, macd_signal, "
         "       macd_histogram, bb_upper, bb_lower, bb_pct, atr_14, "
@@ -82,17 +183,38 @@ def summarize_market_context(
         "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
-        + ("AND date <= :as_of " if as_of else "")
+        + (f"AND date {daily_op} :as_of " if as_of else "")
         + "ORDER BY date DESC LIMIT 1"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
     if as_of:
         params["as_of"] = str(as_of)
-    df = _query(sql, params)
+    df = _query(daily_sql, params)
     if df.empty:
         return _unavailable(f"no market_data_daily row for {ticker}")
 
     row = df.iloc[0]
+
+    # On replay, overlay today's pre_* columns (today's row exists at
+    # 8:45 AM ET via the premarket fetcher, with daily OHLC still NULL).
+    if as_of:
+        pm_df = _query(
+            "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
+            "       pre_range_atr "
+            "FROM market_data_daily "
+            "WHERE ticker = :ticker AND date = :as_of LIMIT 1",
+            {"ticker": ticker.upper(), "as_of": str(as_of)},
+        )
+        if not pm_df.empty:
+            pm_row = pm_df.iloc[0]
+            row = row.copy()
+            for col in (
+                "pre_high", "pre_low", "pre_vwap", "pre_volume",
+                "gap_pct", "pre_range_atr",
+            ):
+                if col in pm_row.index:
+                    row[col] = pm_row[col]
+
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
     sma_200 = _scalar(row, "sma_200", digits=2)
@@ -199,7 +321,8 @@ def summarize_market_context(
 
 
 def summarize_strat_status(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Rob Smith strat state — delegates to lib.strat.compute_strat_status.
 
@@ -213,10 +336,15 @@ def summarize_strat_status(
     ``effective_pdl`` for inside-of-inside compressions. The deterministic
     trade planner uses these to walk the level hierarchy on gap days
     instead of always anchoring entry at PDH/PDL.
+
+    ``inclusive_today`` forwards to compute_strat_status — see its
+    docstring. Default True for backwards-compat; the insight pipeline
+    passes False (premarket context: today's daily row excluded).
     """
     from lib.strat import compute_strat_status
 
-    status = compute_strat_status(ticker, as_of=as_of)
+    status = compute_strat_status(ticker, as_of=as_of,
+                                  inclusive_today=inclusive_today)
     if not status.get("available"):
         return _unavailable(status.get("reason") or f"strat unavailable for {ticker}")
 
@@ -261,8 +389,33 @@ def summarize_strat_status(
                 if isinstance(df.index, _pd.DatetimeIndex) and df.index.tz is not None:
                     df = df.copy()
                     df.index = df.index.tz_localize(None)
-                df = df[df.index <= cutoff]
-            level_map = compute_previous_levels(df)
+                # Match the cutoff semantic used inside compute_strat_status:
+                #   inclusive_today=True  → df.index <= cutoff (backtest contract)
+                #   inclusive_today=False → df.index < midnight-of-cutoff-date
+                #                          (premarket contract — exclude entire as_of date)
+                if inclusive_today:
+                    df = df[df.index <= cutoff]
+                else:
+                    df = df[df.index < cutoff.normalize()]
+            # PR #400 fix applied to this code path: pass analysis_date so
+            # compute_previous_levels uses period-filter semantics ("the
+            # period BEFORE the period containing analysis_date") instead
+            # of the legacy iloc[-2] fallback that assumes df's last row
+            # is today's in-progress bar. Without this, the bundle showed
+            # 5/4's H/L as PDH/PDL on a 2026-05-06 replay because the df
+            # had already been pre-filtered to exclude 5/6 — iloc[-2]
+            # then picked 5/4 instead of 5/5. PR #400 fixed this for the
+            # brief + playbook_resolver; this code path was missed.
+            analysis_date_for_levels = None
+            if as_of is not None:
+                import pandas as _pd
+                _ts = _pd.Timestamp(as_of)
+                if _ts.tz is not None:
+                    _ts = _ts.tz_convert('UTC').tz_localize(None)
+                analysis_date_for_levels = _ts.date()
+            level_map = compute_previous_levels(
+                df, analysis_date=analysis_date_for_levels
+            )
             level_dict: dict[str, float] = {}
             for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
                          "PQH", "PQL", "PYH", "PYL"):
@@ -343,24 +496,37 @@ def _walk_back_to_mother_bar(df, labels) -> tuple[Optional[float], Optional[floa
 
 
 def summarize_options_flow(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Latest AlphaVantage EOD options chain snapshot aggregates.
 
     Returns total call/put volume, put/call ratio, max-pain strike,
     top open-interest strikes, and weighted average IV.
+
+    ``inclusive_today``:
+      All etf_options_snapshots rows are taken at 19:00 ET (post-close).
+      The DB has exactly one snapshot per (ticker, snapshot_date).
+      - True (default): WHERE snapshot_date <= as_of — admits as_of's
+        EOD snapshot. Use for EOD analytics or "what would the chain
+        look like at end of day X" semantics.
+      - False (premarket contract): WHERE snapshot_date < as_of —
+        excludes as_of's EOD snapshot entirely. The latest snapshot
+        the brief / insight pipeline can legitimately see at 8:30 AM
+        ET on as_of is the prior trading day's 19:00 ET snapshot.
     """
+    snap_op = "<=" if inclusive_today else "<"
     sql = (
         "SELECT option_type, strike, volume, open_interest, "
-        "       implied_volatility, delta "
+        "       implied_volatility, delta, snapshot_date "
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
-        + ("AND snapshot_date <= :as_of " if as_of else "")
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
         + "  AND snapshot_date = ("
         "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
         "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + ("      AND snapshot_date <= :as_of" if as_of else "")
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
         + "  )"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -369,6 +535,12 @@ def summarize_options_flow(
     df = _query(sql, params)
     if df.empty:
         return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+    chain_date_raw = df["snapshot_date"].iloc[0]
+    chain_date = chain_date_raw.date() if hasattr(chain_date_raw, "date") else pd.to_datetime(chain_date_raw).date()
+    stale_reason = _check_chain_freshness(chain_date, as_of)
+    if stale_reason:
+        return _unavailable(stale_reason)
 
     calls = df[df["option_type"] == "calls"]
     puts = df[df["option_type"] == "puts"]
@@ -416,38 +588,138 @@ def summarize_options_flow(
 
 
 def summarize_gamma_levels(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Stratalyst-style gamma analytics: King / Gate / Spot / Flip + regime.
 
-    Pulls the latest AlphaVantage chain for the ticker (or the most recent
-    snapshot on or before `as_of`) and runs lib.gamma.build_summary. The
-    output feeds the gamma analyst prompt; any consumer wanting a richer
-    response should call the /api/options/{ticker}/{date}/levels endpoint
-    directly instead of consuming this summary.
+    Tiered loader (added 2026-05-23 per Track 1 of
+    docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md, after the AV
+    subscription upgrade exposed REALTIME_OPTIONS):
+
+      1. REALTIME — most recent intraday snapshot from
+         etf_options_snapshots WHERE market_session='REALTIME' (writes
+         from fetch_av_realtime_options.py every 5 min during RTH).
+      2. EOD fallback (≤2 trading days old) — most recent snapshot
+         WHERE market_session='EOD' (writes from
+         fetch_av_historical_options.py nightly at ~21:00 ET). The
+         standard institutional convention; a Tuesday-morning brief
+         reading Monday-EOD chain is 1 trading day behind = fresh.
+      3. Stale fallback (3-5 trading days old) — same EOD path but
+         flagged so the consumer can warn the user. The 3-day cliff
+         used to silence the section entirely; now we surface it with
+         a `stale_fallback` marker so dealer walls are still visible
+         after long weekends or fetcher outages.
+      4. Hard stale (>5 trading days) — returns `{available: False}`.
+
+    The return dict adds two fields beyond the pre-Track-1 contract:
+
+      - `data_source`: 'realtime' | 'eod_fallback' | 'stale_fallback'
+      - `snapshot_ts`:  ISO-formatted timestamp of the underlying
+                        snapshot (REALTIME → intraday wall-clock;
+                        EOD → ~21:00 ET nightly)
+
+    Consumers (premarket brief, gamma analyst prompt, key_levels glue)
+    use these to render a freshness footer and to caveat any analyst
+    language that would otherwise read intraday repositioning into
+    yesterday's static EOD chain.
+
+    Any consumer wanting a richer response should call the
+    /api/options/{ticker}/{date}/levels endpoint directly instead of
+    consuming this summary.
+
+    ``inclusive_today`` mirrors summarize_options_flow — see its
+    docstring. False = premarket contract (no as_of-dated snapshots);
+    True = include today's snapshots (insight pipeline live runs).
     """
     from lib import gamma  # local import to avoid circular at module load
 
-    sql = (
-        "SELECT option_type, strike, expiration, "
-        "       open_interest, gamma, vega, delta, "
-        "       bid, ask, mark, last_price "
-        "FROM etf_options_snapshots "
-        "WHERE ticker = :ticker "
-        "  AND data_source = 'alphavantage' "
-        + ("AND snapshot_date <= :as_of " if as_of else "")
-        + "  AND snapshot_date = ("
-        "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
-        "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + ("      AND snapshot_date <= :as_of" if as_of else "")
-        + "  )"
-    )
+    snap_op = "<=" if inclusive_today else "<"
     params: dict[str, Any] = {"ticker": ticker.upper()}
     if as_of:
         params["as_of"] = str(as_of)
-    df = _query(sql, params)
-    if df.empty:
-        return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+    # Phase 1: try REALTIME — pull all rows of the latest intraday
+    # snapshot_ts. The unique key (ticker, snapshot_ts, option_type,
+    # expiration, strike) guarantees one snapshot_ts == one full chain.
+    realtime_sql = (
+        "SELECT option_type, strike, expiration, "
+        "       open_interest, gamma, vega, delta, "
+        "       bid, ask, mark, last_price, snapshot_date, snapshot_ts "
+        "FROM etf_options_snapshots "
+        "WHERE ticker = :ticker "
+        "  AND data_source = 'alphavantage' "
+        "  AND market_session = 'REALTIME' "
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
+        + "  AND snapshot_ts = ("
+        "      SELECT MAX(snapshot_ts) FROM etf_options_snapshots "
+        "      WHERE ticker = :ticker "
+        "        AND data_source = 'alphavantage' "
+        "        AND market_session = 'REALTIME'"
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
+        + "  )"
+    )
+    df = _query(realtime_sql, params)
+
+    data_source: Optional[str] = None
+    if not df.empty:
+        data_source = "realtime"
+    else:
+        # Phase 2: fall back to EOD. The OR-NULL clause handles the
+        # historical rows written before market_session was populated
+        # (pre-Track-0 EOD writes set it explicitly; older rows are
+        # NULL but still 'EOD' semantically).
+        eod_sql = (
+            "SELECT option_type, strike, expiration, "
+            "       open_interest, gamma, vega, delta, "
+            "       bid, ask, mark, last_price, snapshot_date, snapshot_ts "
+            "FROM etf_options_snapshots "
+            "WHERE ticker = :ticker "
+            "  AND data_source = 'alphavantage' "
+            "  AND (market_session = 'EOD' OR market_session IS NULL) "
+            + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
+            + "  AND snapshot_date = ("
+            "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
+            "      WHERE ticker = :ticker "
+            "        AND data_source = 'alphavantage' "
+            "        AND (market_session = 'EOD' OR market_session IS NULL)"
+            + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
+            + "  )"
+        )
+        df = _query(eod_sql, params)
+        if df.empty:
+            return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+        # Tier the EOD snapshot into eod_fallback / stale_fallback /
+        # hard-stale based on trading-day gap.
+        chain_date_raw = df["snapshot_date"].iloc[0]
+        chain_date = (
+            chain_date_raw.date() if hasattr(chain_date_raw, "date")
+            else pd.to_datetime(chain_date_raw).date()
+        )
+        target = as_of if as_of else date_type.today()
+        if isinstance(target, datetime):
+            target = target.date()
+        days_behind = int(np.busday_count(chain_date, target))
+        data_source = classify_gamma_freshness(days_behind)
+        if data_source == "unavailable":
+            return _unavailable(
+                f"chain hard-stale: {days_behind} trading days behind {target} "
+                f"(snapshot_date={chain_date})"
+            )
+
+    # Snapshot timestamp for the freshness footer / analyst prompt.
+    # Falls back to snapshot_date midnight if a row predates the
+    # snapshot_ts column (shouldn't happen — schema has NOT NULL — but
+    # defensive against rows backfilled with synthetic ts).
+    snapshot_ts_raw = (
+        df["snapshot_ts"].iloc[0] if "snapshot_ts" in df.columns
+        else df["snapshot_date"].iloc[0]
+    )
+    snapshot_ts_iso = (
+        snapshot_ts_raw.isoformat() if hasattr(snapshot_ts_raw, "isoformat")
+        else str(snapshot_ts_raw)
+    )
 
     # Map the chain rows to the dict shape lib.gamma accepts.
     type_map = {"calls": "call", "puts": "put"}
@@ -489,6 +761,8 @@ def summarize_gamma_levels(
 
     return {
         "available": True,
+        "data_source": data_source,
+        "snapshot_ts": snapshot_ts_iso,
         "spot": round(summary.spot.price, 2),
         "spot_method": summary.spot.method,
         "flip": round(summary.flip, 2) if summary.flip else None,
@@ -513,6 +787,17 @@ def summarize_signals_history(
     as_of: Optional[date_type] = None,
 ) -> dict:
     """signal_alerts aggregates anchored at `as_of`.
+
+    NOT called by `build_insight_bundle` as of 2026-05-11 — feeding
+    signal_alerts into the LLM bundle creates a self-reinforcing
+    feedback loop with signal-monitor (which gates on the insight
+    pipeline's `insight_direction`). See the comment on the `sections`
+    dict in `build_insight_bundle` for the full rationale.
+
+    Kept callable so external analytics scripts, ad-hoc debugging, and
+    the `signal-monitor-eod-resolver` pipeline can still aggregate the
+    history. Do NOT re-add this back to the bundle without addressing
+    the circular dependency.
 
     Returns the `lookback_days` window ending at `as_of` (defaults to
     now when None). Grouped by direction/strength, with the 5 most
@@ -679,10 +964,27 @@ def summarize_backtest_metrics(
         df[f"fwd_{n}d"] = (df["close"].shift(-n) - df["close"]) / df["close"] * 100
 
     # 4. Today's pattern.
-    today = df.iloc[-1]
-    if any(pd.isna(today[c]) for c in
-           ["gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct"]):
-        return _unavailable("today's row has missing indicator features")
+    #
+    # When the morning insight cron fires (8:45 AM ET = 12:45 UTC) the
+    # daily fetcher may have written a pre-RTH-close placeholder for
+    # the current trading day with NaN volume/RSI/etc. — see the
+    # premarket-placeholder pattern that PR #323 (G.P0.3) addressed
+    # for audit_data_freshness. If the literal-latest row has missing
+    # indicators, walk back to the most recent COMPLETE bar so we use
+    # yesterday's-close pattern as "today" rather than failing the
+    # whole section. Audit 2026-05-08 G.P2.13 — backtest was failing
+    # 9/24 reports (37.5 %) on Mon/Wed/Fri runs vs 0 on Tue/Thu, the
+    # exact pattern a placeholder-row hypothesis predicts.
+    needed_cols = ["gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct"]
+    completeness = df[needed_cols].notna().all(axis=1)
+    complete_rows = df.loc[completeness]
+    if complete_rows.empty:
+        return _unavailable(
+            f"no complete daily bars for {ticker} — every row has at "
+            f"least one missing indicator feature"
+        )
+    today = complete_rows.iloc[-1]
+    pattern_is_proxy = today["date"] != df.iloc[-1]["date"]
 
     pattern = {
         "date": str(today["date"]),
@@ -751,6 +1053,7 @@ def summarize_backtest_metrics(
         return {
             "available": True,
             "pattern_today": pattern,
+            "pattern_is_proxy": pattern_is_proxy,
             "analog_count": int(len(matched)),
             "tolerance_bands_used": band_used or bands[-1],
             "cross_ticker_used": cross_used,
@@ -810,6 +1113,7 @@ def summarize_backtest_metrics(
     return {
         "available": True,
         "pattern_today": pattern,
+        "pattern_is_proxy": pattern_is_proxy,
         "analog_count": int(len(matched)),
         "tolerance_bands_used": band_used,
         "cross_ticker_used": cross_used,
@@ -1141,7 +1445,26 @@ def summarize_news_sentiment(
         }
     df = _query(sql, params)
     if df.empty:
-        return _unavailable(f"no news_sentiment rows for {ticker} in last {lookback_hours}h")
+        # Audit 2026-05-08 G.P2.13: empty news is the COMMON case for
+        # less-traded tickers (IWM had only 3 articles across 30 days
+        # in May 2026). Don't fail the whole section — return an
+        # available-but-empty payload so the analyst can write
+        # "no recent news for $TICKER" rather than the orchestrator
+        # marking the section failed and degrading downstream debate.
+        return {
+            "available": True,
+            "lookback_hours": lookback_hours,
+            "article_count": 0,
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "neutral_count": 0,
+            "avg_sentiment_score": 0.0,
+            "headlines": [],
+            "note": (
+                f"no news_sentiment rows for {ticker} in last "
+                f"{lookback_hours}h — sparse-coverage ticker"
+            ),
+        }
 
     scores = df["sentiment_score"].dropna().astype(float)
     relevances = df["relevance_score"].dropna().astype(float)
@@ -1227,38 +1550,68 @@ def retrieve_similar_journal(
 
 
 def build_context_bundle(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = False,
 ) -> dict:
     """Collect all summarizer outputs into one dict for analyst prompts.
 
     Each section is either a populated dict with `available: True` or
     `{available: False, reason: ...}`. A top-level `failed_sections`
     list tells the orchestrator which sections to mark degraded.
+
+    ``inclusive_today`` (default False): premarket contract. Today's
+    daily bar is excluded from market_context + strat_status because
+    on a live 8:30 AM ET / replay-of-8:30 AM run, today's RTH bar
+    either doesn't exist yet (live) or would be look-ahead (replay).
+    Set True only for explicit EOD analytics that *want* today's
+    closed bar.
     """
     bundle = {
         "ticker": ticker.upper(),
         "as_of": str(as_of) if as_of else None,
     }
     sections = {
-        "market": lambda: summarize_market_context(ticker, as_of),
-        "strat": lambda: summarize_strat_status(ticker, as_of),
-        "options": lambda: summarize_options_flow(ticker, as_of),
-        "gamma": lambda: summarize_gamma_levels(ticker, as_of),
-        "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
+        "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
+        "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
+        "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
+        "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
+        # NOTE: `signals` (signal_alerts history) is deliberately NOT in
+        # the LLM bundle. signal-monitor uses the insight pipeline's
+        # `insight_direction` as a firing gate (PR #419, "Phase 1
+        # insight direction gate"), so feeding signal_alerts back into
+        # the LLM creates a self-reinforcing feedback loop: insight
+        # decides direction → signal-monitor fires alerts in that
+        # direction → next insight run reads those alerts → confirms
+        # the same direction → repeat.
+        # Observed 2026-05-11: gemini-3.1-flash-lite committed to
+        # SHORT/medium on SPY based on 5 fresh weak PUT alerts (all
+        # exited time_stop with avg return -0.05%), even though
+        # ftfc_direction was bullish. summarize_signals_history()
+        # remains callable for external analytics / debugging, but
+        # the insight prompt no longer sees it.
         "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
         "sentiment": lambda: summarize_news_sentiment(ticker, as_of),
     }
     failed: list[str] = []
+    failed_reasons: dict[str, str] = {}
     for name, fn in sections.items():
         try:
             result = fn()
             bundle[name] = result
             if not result.get("available"):
                 failed.append(name)
+                # Audit 2026-05-08 G.P2.13: surface the section's own
+                # `reason` so the orchestrator can persist it on the
+                # report rather than burying it in Cloud Logs only.
+                reason = result.get("reason")
+                if isinstance(reason, str) and reason:
+                    failed_reasons[name] = reason
         except Exception as e:
             logger.exception("summarizer %s failed", name)
             bundle[name] = {"available": False, "reason": f"exception: {e}"}
             failed.append(name)
+            failed_reasons[name] = f"exception: {type(e).__name__}: {e}"
     bundle["failed_sections"] = failed
+    bundle["failed_section_reasons"] = failed_reasons
     return bundle

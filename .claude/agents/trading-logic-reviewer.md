@@ -1,7 +1,7 @@
 ---
 name: trading-logic-reviewer
 description: Financial-correctness reviewer for trading logic code. Reviews signal generation, backtests, indicators, strat classification, and options Greeks for the classic financial-engineering failure modes — look-ahead bias, survivorship bias, data snooping, incorrect P&L accounting, missing risk management, wrong indicator formulas, Black-Scholes unit errors, time-alignment bugs, and Sharpe-annualization mistakes. Trigger on changes to lib/signals.py, lib/backtest.py, lib/indicators.py, lib/strat.py, lib/walk_forward.py, scripts/run_backtest.py, scripts/analysis/**, platform/src/lib/greeksCalculator.ts, gcp/signal_monitor.py, gcp/premarket_brief.py. Blocks /gcp-deploy on CRITICAL findings.
-model: sonnet
+model: opus
 color: gold
 tools: Read, Grep, Glob, Bash
 ---

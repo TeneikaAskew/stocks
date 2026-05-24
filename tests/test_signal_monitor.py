@@ -91,3 +91,136 @@ class TestOrbSnapshotMode:
             import pandas as pd
             f.return_value = pd.DataFrame()
             assert run_orb_snapshot('15m') == 0
+
+
+class TestReplayMode:
+    """`gcp.signal_monitor:main` exposes --mode=replay (and accepts
+    REPLAY_DATE / REPLAY_TICKER env-var triggers) so the existing
+    Cloud Run Job can run the hermetic 1-min-bar replay harness in
+    `scripts/replay_signal_monitor.py` without needing a separate
+    job spec. These tests lock the dispatch contract so future
+    refactors don't silently break the env-var → replay flow.
+    """
+
+    def test_replay_mode_dispatches_to_replay_main(self, monkeypatch):
+        """When --mode=replay is passed, signal_monitor.main calls
+        scripts.replay_signal_monitor.main with translated argv."""
+        from gcp import signal_monitor
+
+        captured = {}
+
+        def fake_replay_main(argv):
+            captured['argv'] = argv
+            return 0
+
+        # Replace the imported callable inside signal_monitor's
+        # main() before invocation. The function does a local import
+        # (`from scripts.replay_signal_monitor import main as
+        # _replay_main`) so we patch at the source module.
+        import scripts.replay_signal_monitor as rsm
+        monkeypatch.setattr(rsm, 'main', fake_replay_main)
+        monkeypatch.setenv('CLOUD_SQL_CONNECTION_NAME', 'x:y:z')
+        monkeypatch.setenv('DB_USER', 'u')
+        monkeypatch.setenv('DB_PASS', 'p')
+        monkeypatch.setenv('DB_NAME', 'n')
+
+        # Invoke main with replay flags
+        with patch('sys.argv', [
+            'signal_monitor', '--mode=replay',
+            '--ticker=SPY', '--date=2026-05-07', '--json',
+        ]):
+            with pytest.raises(SystemExit) as exc:
+                signal_monitor.main()
+            assert exc.value.code == 0
+
+        # Replay main was called with translated argv
+        argv = captured['argv']
+        assert '--ticker' in argv
+        assert 'SPY' in argv
+        assert '--date' in argv
+        assert '2026-05-07' in argv
+        assert '--json' in argv
+
+    def test_replay_date_env_var_triggers_replay_mode(self, monkeypatch):
+        """Setting REPLAY_DATE env-var alone (no --mode flag) flips
+        the default loop mode to replay. This is the primary
+        production-deploy entry point: `gcloud run jobs execute
+        signal-monitor --update-env-vars=REPLAY_DATE=...` should
+        Just Work without rebuilding the job spec."""
+        from gcp import signal_monitor
+
+        captured = {}
+
+        def fake_replay_main(argv):
+            captured['argv'] = argv
+            return 0
+
+        import scripts.replay_signal_monitor as rsm
+        monkeypatch.setattr(rsm, 'main', fake_replay_main)
+        monkeypatch.setenv('REPLAY_DATE', '2026-05-08')
+        monkeypatch.setenv('REPLAY_TICKER', 'IWM')
+        monkeypatch.setenv('CLOUD_SQL_CONNECTION_NAME', 'x:y:z')
+        monkeypatch.setenv('DB_USER', 'u')
+        monkeypatch.setenv('DB_PASS', 'p')
+        monkeypatch.setenv('DB_NAME', 'n')
+
+        # No --mode flag — env var alone should be sufficient
+        with patch('sys.argv', ['signal_monitor']):
+            with pytest.raises(SystemExit) as exc:
+                signal_monitor.main()
+            assert exc.value.code == 0
+
+        argv = captured['argv']
+        assert '--date' in argv and '2026-05-08' in argv
+        assert '--ticker' in argv and 'IWM' in argv
+
+    def test_replay_mode_skips_av_key_check(self, monkeypatch):
+        """Replay reads from market_data_intraday only — it doesn't
+        fetch fresh bars, so missing ALPHA_VANTAGE_API_KEY must NOT
+        abort the run with exit code 2 (which is the live-mode
+        fail-fast). Cloud SQL env vars are still required."""
+        from gcp import signal_monitor
+
+        def fake_replay_main(argv):
+            return 0
+
+        import scripts.replay_signal_monitor as rsm
+        monkeypatch.setattr(rsm, 'main', fake_replay_main)
+        monkeypatch.delenv('ALPHA_VANTAGE_API_KEY', raising=False)
+        monkeypatch.setenv('REPLAY_DATE', '2026-05-08')
+        monkeypatch.setenv('REPLAY_TICKER', 'SPY')
+        monkeypatch.setenv('CLOUD_SQL_CONNECTION_NAME', 'x:y:z')
+        monkeypatch.setenv('DB_USER', 'u')
+        monkeypatch.setenv('DB_PASS', 'p')
+        monkeypatch.setenv('DB_NAME', 'n')
+
+        with patch('sys.argv', ['signal_monitor']):
+            with pytest.raises(SystemExit) as exc:
+                signal_monitor.main()
+            # Replay path completed successfully — must NOT be exit 2
+            # (the AV-key fail-fast) or 3 (Cloud SQL fail-fast)
+            assert exc.value.code == 0
+
+
+class TestSignalsWebhookRouting:
+    """SignalMonitor routes entries / exits / ORB snapshots to the
+    dedicated signals channel (DISCORD_WEBHOOK_SIGNALS_URL) when set,
+    falling back to DISCORD_WEBHOOK_URL otherwise."""
+
+    def test_prefers_signals_webhook(self, monkeypatch):
+        monkeypatch.setenv('DISCORD_WEBHOOK_SIGNALS_URL', 'https://discord.com/api/webhooks/SIG')
+        monkeypatch.setenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/MAIN')
+        m = _build_monitor()
+        assert m.webhook_url == 'https://discord.com/api/webhooks/SIG'
+
+    def test_falls_back_to_main_webhook(self, monkeypatch):
+        monkeypatch.delenv('DISCORD_WEBHOOK_SIGNALS_URL', raising=False)
+        monkeypatch.setenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/MAIN')
+        m = _build_monitor()
+        assert m.webhook_url == 'https://discord.com/api/webhooks/MAIN'
+
+    def test_none_when_neither_set(self, monkeypatch):
+        monkeypatch.delenv('DISCORD_WEBHOOK_SIGNALS_URL', raising=False)
+        monkeypatch.delenv('DISCORD_WEBHOOK_URL', raising=False)
+        m = _build_monitor()
+        assert m.webhook_url is None

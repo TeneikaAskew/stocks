@@ -185,7 +185,7 @@ gcloud sql connect trading-db --user=trading_user --quiet <<<"SELECT MAX(date) F
 **Immediate response (5 min)**
 - Test the webhook directly:
   ```bash
-  WEBHOOK=$(gcloud secrets versions access latest --secret=discord-webhook)
+  WEBHOOK=$(gcloud secrets versions access latest --secret=discord-webhook-insights)
   curl -sS -X POST -H "Content-Type: application/json" \
     -d '{"content":"runbook test"}' "$WEBHOOK"
   ```
@@ -196,7 +196,7 @@ gcloud sql connect trading-db --user=trading_user --quiet <<<"SELECT MAX(date) F
 1. Discord → Server Settings → Integrations → Webhooks → recreate the webhook
 2. Update Secret Manager:
    ```bash
-   echo -n "<new-webhook-url>" | gcloud secrets versions add discord-webhook --data-file=-
+   echo -n "<new-webhook-url>" | gcloud secrets versions add discord-webhook-insights --data-file=-
    ```
 3. Redeploy any job that bakes the webhook URL into env vars at deploy time. Per `gcp/deploy.sh`, the brief / monitor / insight-discord-push jobs all use `_env_string()` which captures the **current** secret value at deploy time:
    ```bash
@@ -432,7 +432,8 @@ gcloud storage buckets create gs://adept-mountain-474619-d4-trading-data \
 #   - benzinga-api-key (benzinga.com)
 #   - sec-user-agent (your email — required by SEC)
 #   - github-pat / gh-stocks-repo-pat (github.com/settings/tokens)
-#   - discord-webhook (Discord → Server Settings → Integrations)
+#   - discord-webhook-insights (Discord → Server Settings → Integrations; main briefs/alerts channel)
+#   - discord-webhook-gcp (Discord webhook for the dedicated GCP-errors channel used by failure-notifier)
 #   - discord-bot-token / discord-public-key / discord-app-id (Discord Developer Portal)
 #   - admin-token (generate fresh: openssl rand -base64 32)
 # For each, store via:
@@ -480,7 +481,7 @@ gcloud run jobs execute premarket-brief --region=us-east1 --wait
 
 Things that could fail silently today because nothing watches them. Ranked by silent-failure cost.
 
-1. **🔴 Insight pipeline showing $0.00 Vertex AI / Gemini cost over 90 days.** Per [COST_ANALYSIS.md §4B](COST_ANALYSIS.md), Gemini 2.0 Flash has paid pricing per token (no zero-cost tier). $0 means either (a) no rounding above sub-cent, or (b) the pipeline isn't actually invoking Gemini. **No alarm watches "is insight-pipeline producing output."** A failure here is invisible from billing and from Discord (the brief still posts; only the insight digest goes silent).
+1. **🔴 Insight pipeline showing $0.00 Vertex AI / Gemini cost over 90 days.** Per [COST_ANALYSIS.md §4B](COST_ANALYSIS.md), the active Gemini model (`gemini-3.1-flash-lite` as of 2026-05-11) has paid pricing per token (no zero-cost tier). $0 means either (a) no rounding above sub-cent, or (b) the pipeline isn't actually invoking Gemini. **No alarm watches "is insight-pipeline producing output."** A failure here is invisible from billing and from Discord (the brief still posts; only the insight digest goes silent).
    - **Fix:** add a `signal-quality-alarm`-style daily check that queries `SELECT COUNT(*) FROM insight_reports WHERE as_of >= CURRENT_DATE - INTERVAL '1 day'` and posts to Discord if 0.
 
 2. **🔴 `ticker_calibration` written but never read.** Per [DATA_DEPENDENCIES.md §5](DATA_DEPENDENCIES.md), `scripts/calibrate_thresholds.py` writes the table; `lib/strategies/config.py` documents reading it but still hardcodes thresholds. **Calibration could be silently broken for months** and nobody would notice because nothing reads the output.

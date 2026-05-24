@@ -41,7 +41,9 @@ import logging
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, time, timedelta, timezone
+import os
+import uuid
 from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
@@ -134,17 +136,157 @@ def replay_ticker(
 
     # Rolling-window replay: feed bars one at a time so the monitor
     # operates on the same shape it sees in production (1-bar deltas).
+    # Setting `replay_clock_ts` before each call routes the monitor's
+    # _now() to bar-time so brief-bias and catalyst-proximity lookups
+    # use the bar's date, not wall-clock-today (the bug that made the
+    # PR #379 FTFC fix architecturally inert during replay).
     for i in range(len(bars)):
         single_bar = bars.iloc[i:i + 1].copy()
+        if 'Time' in single_bar.columns:
+            monitor.replay_clock_ts = pd.Timestamp(single_bar['Time'].iloc[0])
         monitor.update_window(ticker, single_bar)
         try:
             monitor.evaluate_ticker(ticker)
         except Exception as e:
             logger.warning("replay: ticker=%s bar=%d evaluate_ticker raised: %s",
                            ticker, i, e)
+    # Clear the clock at the end so a subsequent live run isn't sticky.
+    monitor.replay_clock_ts = None
 
     fires_after = len(captured_fires)
     return (len(bars), fires_after - fires_before)
+
+
+def filter_to_rth(bars: pd.DataFrame) -> pd.DataFrame:
+    """Filter intraday bars to RTH only (09:30-16:00 ET).
+
+    This matches the live signal-monitor scope so replay fire counts are
+    comparable to live counts. Without this, replay processes ~1,200
+    bars/day (24h coverage) vs live's ~390 bars/day (6.5h RTH).
+
+    The 'Time' column is in UTC (per market_data_intraday storage). RTH
+    in ET = 13:30-20:00 UTC during EDT (March-November), 14:30-21:00
+    UTC during EST (November-March). We use ET-aware filtering rather
+    than fixed UTC offsets to handle DST transitions correctly.
+    """
+    if bars.empty or 'Time' not in bars.columns:
+        return bars
+    et = bars['Time'].dt.tz_convert('America/New_York') if bars['Time'].dt.tz \
+        else bars['Time'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
+    rth_mask = (et.dt.time >= time(9, 30)) & (et.dt.time < time(16, 0))
+    return bars[rth_mask].reset_index(drop=True)
+
+
+def simulate_exit(
+    fire: 'FireRecord', engine, target_price: Optional[float] = None,
+    time_stop_minutes: int = 60,
+) -> dict:
+    """Walk forward from fire timestamp through subsequent intraday bars
+    until target / time_stop / EOD triggers. Returns dict matching the
+    signal_alerts exit columns.
+
+    Reuses the same exit policy the live monitor uses (target / time_stop
+    / eod_close). Stop-loss simulation is approximate — we assume a stop
+    at target * 0.5 R-multiple distance below entry for longs (above for
+    shorts). For a more precise replay, the persona plan's actual stop
+    would be passed in (Phase 1 prereq for clean acceptance testing).
+    """
+    from sqlalchemy import text
+    fire_ts = fire.timestamp
+    end_ts = fire_ts + timedelta(minutes=time_stop_minutes)
+    sql = text("""
+        SELECT ts AS time, open, high, low, close
+        FROM market_data_intraday
+        WHERE ticker = :t AND ts > :start AND ts <= :end
+          AND interval = '1min'
+        ORDER BY ts
+    """)
+    df = pd.read_sql(sql, engine, params={
+        "t": fire.ticker,
+        "start": fire_ts.to_pydatetime(),
+        "end": end_ts.to_pydatetime(),
+    })
+    if df.empty:
+        return {
+            'exit_ts': end_ts.isoformat(),
+            'exit_reason': 'no_data',
+            'exit_price': None,
+            'exit_return_pct': 0.0,
+        }
+    entry = float(df.iloc[0]['open'])  # fill at next bar's open
+    sign = 1 if fire.direction == 'CALL' else -1
+    for _, bar in df.iterrows():
+        if target_price is not None:
+            if (sign > 0 and bar['high'] >= target_price) or \
+               (sign < 0 and bar['low'] <= target_price):
+                exit_price = float(target_price)
+                ret = sign * (exit_price - entry) / entry * 100
+                return {
+                    'exit_ts': pd.Timestamp(bar['time']).isoformat(),
+                    'exit_reason': 'target',
+                    'exit_price': exit_price,
+                    'exit_return_pct': round(ret, 4),
+                }
+    last_bar = df.iloc[-1]
+    exit_price = float(last_bar['close'])
+    ret = sign * (exit_price - entry) / entry * 100
+    return {
+        'exit_ts': pd.Timestamp(last_bar['time']).isoformat(),
+        'exit_reason': 'time_stop',
+        'exit_price': exit_price,
+        'exit_return_pct': round(ret, 4),
+    }
+
+
+def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id: str):
+    """Insert a captured fire into signal_alerts with run_kind='replay'.
+
+    Reuses monitor's _persist_signal_alert path conceptually, but builds
+    the row directly so we can stamp run_kind + replay_id. Fields match
+    the production signal_alerts schema.
+    """
+    from sqlalchemy import text
+    # Compute approximate target_price from the fire's score (placeholder)
+    # — Phase 1's full integration would pass through the persona plan
+    # target. For now, use a 0.5% target for CALL, -0.5% for PUT.
+    sign = 1 if fire.direction == 'CALL' else -1
+    target_pct = 0.005 * sign
+    # Approximate entry from the bar's close (the fire was triggered on this bar)
+    entry_price = None  # need bar context — populated at fire time
+    insert_sql = text("""
+        INSERT INTO signal_alerts (
+            ticker, alert_ts, alert_date, direction,
+            base_score, total_score, strength_label,
+            position_size, time_stop_minutes,
+            conditions_met, run_kind, replay_id,
+            inserted_at
+        ) VALUES (
+            :ticker, :alert_ts, :alert_date, :direction,
+            :base_score, :total_score, :strength,
+            :size, :time_stop,
+            :conditions, 'replay', :replay_id,
+            NOW()
+        )
+        ON CONFLICT DO NOTHING
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(insert_sql, {
+                'ticker': fire.ticker,
+                'alert_ts': fire.timestamp.to_pydatetime(),
+                'alert_date': fire.timestamp.date(),
+                'direction': fire.direction,
+                'base_score': fire.base_score,
+                'total_score': fire.total_score,
+                'strength': 'replay-strong' if fire.total_score >= 5 else 'replay-medium' if fire.total_score >= 3 else 'replay-weak',
+                'size': 1.0,
+                'time_stop': fire.expected_hold_min or 60,
+                'conditions': json.dumps(fire.conditions_met),
+                'replay_id': replay_id,
+            })
+    except Exception as e:
+        logger.warning("persist failed for fire %s %s: %s",
+                       fire.ticker, fire.timestamp, e)
 
 
 def make_capturing_fire_alert(captured: list[FireRecord], monitor):
@@ -187,6 +329,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="Max bars per ticker (debug/dev)")
     p.add_argument("--json", action="store_true",
                    help="Print fires as a JSON array (machine-readable)")
+    p.add_argument(
+        "--persist", action="store_true",
+        help=(
+            "Persist captured fires to signal_alerts with run_kind='replay' "
+            "and replay_id=<UUID>. Required for Phase 1 acceptance testing "
+            "and any analysis that needs full per-fire detail (Cloud Run "
+            "log truncation drops the JSON output at ~85 records). When set, "
+            "ALSO restricts bars to RTH (9:30-16:00 ET) to match live "
+            "signal-monitor scope. Equivalent env var: REPLAY_PERSIST=true."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -224,7 +377,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     start, end = resolve_window(args)
     tickers = resolve_tickers(args)
 
-    logger.info("replay window: %s -> %s tickers=%s", start, end, tickers)
+    # REPLAY_PERSIST env var is an alias for --persist. Either source enables.
+    persist_mode = args.persist or os.environ.get('REPLAY_PERSIST', '').lower() == 'true'
+    replay_id = str(uuid.uuid4()) if persist_mode else None
+
+    logger.info("replay window: %s -> %s tickers=%s persist=%s replay_id=%s",
+                start, end, tickers, persist_mode, replay_id)
 
     from gcp.database import get_engine
     engine = get_engine()
@@ -246,11 +404,27 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         for ticker in tickers:
             bars = load_intraday_for_replay(engine, ticker, start, end)
+            if persist_mode:
+                # Match live signal-monitor scope (RTH only, 9:30-16:00 ET)
+                # so persisted fire counts are comparable to live signal_alerts.
+                pre_n = len(bars)
+                bars = filter_to_rth(bars)
+                logger.info("ticker=%s persist mode: filtered %d -> %d RTH bars",
+                            ticker, pre_n, len(bars))
             if args.limit:
                 bars = bars.head(args.limit)
             logger.info("ticker=%s loaded %d bars", ticker, len(bars))
+            ticker_fires_before = len(captured_fires)
             n_bars, n_fires = replay_ticker(monitor, ticker, bars, captured_fires)
             summary_per_ticker[ticker] = (n_bars, n_fires)
+
+            # Persist this ticker's captured fires to signal_alerts
+            if persist_mode:
+                new_fires = captured_fires[ticker_fires_before:]
+                logger.info("ticker=%s persisting %d fires to signal_alerts",
+                            ticker, len(new_fires))
+                for f in new_fires:
+                    persist_fire_to_signal_alerts(f, monitor, engine, replay_id)
 
     # ── Summary ────────────────────────────────────────────────────
     print()

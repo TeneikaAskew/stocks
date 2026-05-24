@@ -346,7 +346,7 @@ from google.cloud import aiplatform
 from vertexai.generative_models import GenerativeModel
 from fastapi.responses import StreamingResponse
 
-model = GenerativeModel("gemini-2.0-flash")
+model = GenerativeModel("gemini-3.1-flash-lite")
 
 @router.post("/api/insights/chat")
 async def chat(request: ChatRequest):

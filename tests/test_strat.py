@@ -175,6 +175,102 @@ class Test322Continuation:
         assert result.iloc[3]['strat_combo'] == '322_bear_continuation'
 
 
+class TestSetupVsComboOrthogonality:
+    """Lock in the documented orthogonality between `strat_setup` and
+    `strat_combo` (Track B audit B.5 / G.P1.6).
+
+    `strat_setup` flips True ONLY when the latest bar is '1' (inside)
+    AND the prior bar is directional ('2U'/'2D'/'3') — read as
+    "inside-bar pending, watch the next bar's break". `strat_combo`
+    is the multi-bar pattern label and is independent: continuation
+    combos like 322 / 22 / clean_2u FIRE on a directional bar, so the
+    latest bar is '2U' or '2D' (not '1') and `strat_setup` MUST be
+    False on those rows.
+
+    The audit originally flagged a row with strat_combo='322_bull_continuation'
+    AND strat_setup=False as "internally inconsistent." Walking the
+    truth table revealed it's the documented behaviour. These tests
+    pin it so the next time someone notices, they get a concrete
+    failure pointing at this docstring rather than rediscovering the
+    contract from scratch.
+    """
+
+    def test_322_continuation_has_setup_false(self, classifier):
+        """The audit's specific reproduction: a 322_bull_continuation
+        row publishes strat_combo populated AND strat_setup=False,
+        because the row's own bar is '2U' (directional), not '1'.
+        That's correct, not a bug."""
+        df = _frame([
+            (100, 95, 97, 98),
+            (102, 93, 97, 100),   # 3
+            (104, 94, 100, 103),  # 2U
+            (106, 95, 103, 105),  # 2U → 322_bull_continuation
+        ])
+        result = classifier.detect_combos(df)
+        # Combo populated
+        assert result.iloc[3]['strat_combo'] == '322_bull_continuation'
+        # Setup flag MUST be False — last bar is 2U, not 1
+        assert result.iloc[3]['strat_setup'] is False or \
+            result.iloc[3]['strat_setup'] == False, (
+                "322_bull_continuation row must have strat_setup=False "
+                "(last bar is 2U, not the inside bar required for setup)"
+            )
+        # Sanity: the same row's strat_candle is '2U'
+        assert result.iloc[3]['strat_candle'] == '2U'
+
+    def test_22_continuation_also_has_setup_false(self, classifier):
+        """Same orthogonality for any continuation combo whose latest
+        bar is directional. 22_bull_continuation: 2U → 2U, last bar
+        is 2U, setup=False."""
+        df = _frame([
+            (100, 95, 97, 98),
+            (102, 96, 97, 100),   # 2U
+            (104, 97, 100, 103),  # 2U → 22_bull_continuation
+        ])
+        result = classifier.detect_combos(df)
+        assert result.iloc[2]['strat_combo'] == '22_bull_continuation'
+        assert not result.iloc[2]['strat_setup']
+
+    def test_setup_true_only_when_last_bar_is_inside_after_directional(
+        self, classifier,
+    ):
+        """The dual: setup=True ONLY when the latest bar IS an inside
+        bar following a directional bar — regardless of whether a
+        named combo also fires. 2U → 1: setup=True, combo='none'
+        (bare inside-bar setup, not yet a 2-1-2)."""
+        df = _frame([
+            (100, 95, 97, 98),
+            (102, 96, 97, 100),   # 2U
+            (101, 97, 99, 99),    # 1 (inside; H<=102, L>=96)
+        ])
+        result = classifier.detect_combos(df)
+        # Last bar IS the inside bar — setup must fire
+        assert result.iloc[2]['strat_setup'] is True or \
+            result.iloc[2]['strat_setup'] == True, (
+                "2U → 1 row should have strat_setup=True"
+            )
+        # No multi-bar combo on that row yet (the 212 needs the next
+        # break)
+        assert result.iloc[2]['strat_combo'] == 'none'
+
+    def test_setup_false_when_last_bar_is_inside_after_inside(
+        self, classifier,
+    ):
+        """Setup also requires the PRIOR bar to be directional. Two
+        inside bars in a row → setup=False (no preceding directional
+        bar to anchor the watch-the-break logic)."""
+        df = _frame([
+            (100, 95, 97, 98),
+            (102, 96, 97, 100),   # 2U
+            (101, 97, 99, 99),    # 1 (inside)
+            (100, 98, 98, 99),    # 1 (inside again; H<=101, L>=97)
+        ])
+        result = classifier.detect_combos(df)
+        # Latest bar is 1 but prior bar is also 1 — setup=False
+        assert result.iloc[3]['strat_candle'] == '1'
+        assert not result.iloc[3]['strat_setup']
+
+
 class Test212Continuation:
     def test_212_bull_continuation(self, classifier):
         # 2U → 1 → 2U (same direction continuation through compression)
@@ -637,3 +733,55 @@ class TestComputeStratStatusAsOf:
         assert out['date'] == '2026-04-22'
         # trigger_high = 4/21 high ($179.40), the bar before 4/22
         assert out['trigger_high'] == pytest.approx(179.40)
+
+    # ── inclusive_today contract (added 2026-05-11) ────────────────────
+    #
+    # `as_of` semantic by default is inclusive (`<=`) for legacy backtest
+    # callers that want "the strat as of close of day X". The premarket
+    # contract — used by the insight pipeline AND the brief — is strict
+    # (`<`): today's bar isn't visible because at 8:30 AM ET on day X,
+    # today's daily row either hasn't been written yet OR has NULL OHLC.
+
+    def test_inclusive_today_default_true_legacy_contract(self):
+        """Default inclusive_today=True → as_of=4/20 includes the 4/20 bar."""
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status('TEST', df=df, as_of=date(2026, 4, 20))
+        assert out['available'] is True
+        assert out['date'] == '2026-04-20'                 # ← 4/20 included
+        # iloc[-2] = 4/17 = the trigger source
+        assert out['trigger_high'] == pytest.approx(168.35)
+
+    def test_inclusive_today_false_premarket_contract(self):
+        """inclusive_today=False → as_of=4/20 excludes the 4/20 bar.
+
+        Mirrors the brief's `idx < cutoff` semantic. iloc[-1] becomes
+        the most recent completed bar BEFORE 4/20, which is 4/17.
+        trigger_high then comes from iloc[-2] = 4/16 ($165.0).
+        """
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status(
+            'TEST', df=df, as_of=date(2026, 4, 20),
+            inclusive_today=False,
+        )
+        assert out['available'] is True
+        assert out['date'] == '2026-04-17'                 # ← 4/20 excluded
+        # iloc[-2] is now 4/16, high = 165.0
+        assert out['trigger_high'] == pytest.approx(165.0)
+
+    def test_inclusive_today_false_with_tz_aware_datetime(self):
+        """Strict-less semantic also handles tz-aware as_of correctly."""
+        from datetime import datetime, timezone
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status(
+            'TEST', df=df,
+            as_of=datetime(2026, 4, 20, 13, 15, 0, tzinfo=timezone.utc),
+            inclusive_today=False,
+        )
+        assert out['available'] is True
+        assert out['date'] == '2026-04-17'                 # 4/20 excluded
+        assert out['trigger_high'] == pytest.approx(165.0)

@@ -24,10 +24,16 @@ import pandas as pd
 
 from .base import Signal, Strategy
 from .config import (
+    ATR_EXPANSION_THRESHOLD,
     CALL_RSI_RANGE,
     CONSECUTIVE_PERIODS,
-    MIN_CONDITIONS,
+    CORE_CALL_CONDITIONS,
+    CORE_PUT_CONDITIONS,
+    MIN_CONDITIONS_MOMENTUM as MIN_CONDITIONS,
+    MIN_CORE_CONDITIONS,
     PUT_RSI_RANGE,
+    RSI_THRUST_THRESHOLD,
+    RVOL_RECENT_THRESHOLD,
     STOCH_RSI_OVERBOUGHT,
     STOCH_RSI_OVERSOLD,
 )
@@ -48,13 +54,19 @@ def _check_call_conditions(
     call_rsi_range: tuple[float, float] = CALL_RSI_RANGE,
 ) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
+    Phase 0.7.2: relaxed `consecutive_up` from 3-of-3 to 3-of-5.
+    Phase 0.7.x: added `rvol_above_recent` (volume confirmation),
+    `atr_expansion` (volatility regime gate), and `rsi_thrust`
+    (directional RSI velocity).
 
     Per the §3.10 strategy audit (273 morning bars, 5/1):
     `stoch_rsi_not_overbought` (StochRSI_K < 80) fired on 72.2% of bars
     — pure free score that didn't discriminate setup quality. Removing
-    it tightens the score distribution: previously a bar with NO real
-    momentum could score 3/5 just from above_vwap + above_ema9 + the
-    free StochRSI condition. Now those bars score 2/4 and don't fire.
+    it tightens the score distribution.
+
+    Seven conditions total; min_conditions=3 still gates fires. Bars
+    with full alignment reach score=7 (max conviction, room for tiered
+    scoring to differentiate).
 
     `call_rsi_range` defaults to the Tier-B universal constant; callers
     that have a ticker in scope should pass the Tier-A resolved range
@@ -83,6 +95,21 @@ def _check_call_conditions(
         score += 1
         conditions.append("above_ema9")
 
+    rvol_recent = row.get("RVol_Recent_20")
+    if rvol_recent is not None and not pd.isna(rvol_recent) and rvol_recent > RVOL_RECENT_THRESHOLD:
+        score += 1
+        conditions.append("rvol_above_recent")
+
+    atr_exp = row.get("ATR_Expansion")
+    if atr_exp is not None and not pd.isna(atr_exp) and atr_exp > ATR_EXPANSION_THRESHOLD:
+        score += 1
+        conditions.append("atr_expansion")
+
+    rsi_thrust = row.get("RSI_Thrust_3")
+    if rsi_thrust is not None and not pd.isna(rsi_thrust) and rsi_thrust > RSI_THRUST_THRESHOLD:
+        score += 1
+        conditions.append("rsi_thrust")
+
     return score, conditions
 
 
@@ -91,6 +118,10 @@ def _check_put_conditions(
     put_rsi_range: tuple[float, float] = PUT_RSI_RANGE,
 ) -> tuple[int, list[str]]:
     """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
+    Phase 0.7.2 mirror: relaxed `consecutive_down` from 3-of-3 to 3-of-5.
+    Phase 0.7.x mirror: added `rvol_above_recent` and `atr_expansion`
+    (direction-agnostic confirmers) and `rsi_thrust` (directional —
+    fires on negative RSI delta, opposite of CALL's positive-delta gate).
 
     `put_rsi_range` defaults to the Tier-B universal constant; callers
     that have a ticker in scope should pass the Tier-A resolved range
@@ -118,6 +149,23 @@ def _check_put_conditions(
     if last < ema9:
         score += 1
         conditions.append("below_ema9")
+
+    rvol_recent = row.get("RVol_Recent_20")
+    if rvol_recent is not None and not pd.isna(rvol_recent) and rvol_recent > RVOL_RECENT_THRESHOLD:
+        score += 1
+        conditions.append("rvol_above_recent")
+
+    atr_exp = row.get("ATR_Expansion")
+    if atr_exp is not None and not pd.isna(atr_exp) and atr_exp > ATR_EXPANSION_THRESHOLD:
+        score += 1
+        conditions.append("atr_expansion")
+
+    rsi_thrust = row.get("RSI_Thrust_3")
+    # PUT mirrors CALL: looking for negative RSI delta (RSI accelerating
+    # down). Threshold is symmetric — same magnitude, opposite sign.
+    if rsi_thrust is not None and not pd.isna(rsi_thrust) and rsi_thrust < -RSI_THRUST_THRESHOLD:
+        score += 1
+        conditions.append("rsi_thrust")
 
     return score, conditions
 
@@ -149,16 +197,34 @@ class MomentumStrategy(Strategy):
         call_score, call_conds = _check_call_conditions(row, call_rsi_range)
         put_score,  put_conds  = _check_put_conditions(row, put_rsi_range)
 
-        # Per the original MarketAnalyzer logic: strict greater-than to
-        # break ties (one direction must dominate). MIN_CONDITIONS = 3.
-        if call_score >= MIN_CONDITIONS and call_score > put_score:
-            direction = "CALL"
-            score = call_score
-            conds = call_conds
-        elif put_score >= MIN_CONDITIONS and put_score > call_score:
-            direction = "PUT"
-            score = put_score
-            conds = put_conds
+        # Phase 0.7.x — tier gate. Total-score floor (MIN_CONDITIONS=3)
+        # alone allows 3 confirmers + 0 core to fire ("noise + activity").
+        # Require at least MIN_CORE_CONDITIONS core conditions so every
+        # fire has a credible setup before confirmers can pile on. A
+        # gate-blocked direction can't block the other from firing —
+        # leaky CALL noise must not suppress a legitimate PUT setup.
+        call_core = sum(1 for c in call_conds if c in CORE_CALL_CONDITIONS)
+        put_core  = sum(1 for c in put_conds  if c in CORE_PUT_CONDITIONS)
+
+        call_eligible = (call_score >= MIN_CONDITIONS
+                         and call_core >= MIN_CORE_CONDITIONS)
+        put_eligible  = (put_score  >= MIN_CONDITIONS
+                         and put_core  >= MIN_CORE_CONDITIONS)
+
+        # Strict greater-than tie-break only matters when both directions
+        # are eligible. A non-eligible direction is silenced — its score
+        # cannot suppress the eligible direction's fire.
+        if call_eligible and put_eligible:
+            if call_score > put_score:
+                direction, score, conds, core_count = "CALL", call_score, call_conds, call_core
+            elif put_score > call_score:
+                direction, score, conds, core_count = "PUT", put_score, put_conds, put_core
+            else:
+                return None
+        elif call_eligible:
+            direction, score, conds, core_count = "CALL", call_score, call_conds, call_core
+        elif put_eligible:
+            direction, score, conds, core_count = "PUT", put_score, put_conds, put_core
         else:
             return None
 
@@ -170,6 +236,7 @@ class MomentumStrategy(Strategy):
             base_score=float(score),
             weighted_score=float(score),
             conditions_met=conds,
+            core_count=core_count,
             rsi=_safe_float(rsi_val),
             rvol=_safe_float(row.get("RVOL")),
             ema9=_safe_float(row.get("EMA9")),

@@ -34,9 +34,13 @@ Tunable knobs (env vars, defaults match the values locked in Phase 0.5):
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
+from functools import lru_cache
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────
@@ -72,6 +76,83 @@ DEFAULT_LOOKBACK_QUARTERS = _env_int('BRIEF_REACTION_LOOKBACK_QUARTERS', 12)
 DEFAULT_GAP_BAND_PCT      = _env_float('BRIEF_CONDITIONAL_GAP_BAND_PCT', 2.0)
 DEFAULT_CONDITIONAL_THRESHOLD = _env_float('BRIEF_CONDITIONAL_THRESHOLD', 0.75)
 DEFAULT_CONDITIONAL_MIN_SAMPLE = _env_int('BRIEF_CONDITIONAL_MIN_SAMPLE', 3)
+# Min past quarters before a playability read is trusted/shown — the
+# earnings calibration sweep tunes this; Tier-B default here.
+DEFAULT_MIN_NQ = _env_int('BRIEF_REACTION_MIN_NQ', 12)
+
+
+@lru_cache(maxsize=1)
+def get_earnings_calibration() -> dict:
+    """Resolve the playability lookback knobs.
+
+    Tier A: the latest ``earnings_calibration`` row, written by the
+    earnings calibration sweep (``scripts/calibrate_earnings.py``).
+    Tier B: the env-var defaults above. Returns
+    ``{'min_nq': int, 'lookback_quarters': int}``.
+
+    Resilient — missing table / missing creds / empty table all resolve
+    to Tier B so the brief keeps running. Cached per process; the brief
+    runs as a fresh process each time, so it always sees the latest row.
+    """
+    tier_b = {'min_nq': DEFAULT_MIN_NQ,
+              'lookback_quarters': DEFAULT_LOOKBACK_QUARTERS}
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return tier_b
+    if not is_cloud_sql_configured():
+        return tier_b
+    try:
+        df = query_to_dataframe(
+            "SELECT min_nq, lookback_quarters FROM earnings_calibration "
+            "ORDER BY calibration_date DESC LIMIT 1"
+        )
+    except Exception as e:
+        # Config resolver (not a financial-data path): any query failure
+        # — missing table, creds, transient error — resolves to Tier-B.
+        # Mirrors lib/strategies/exit_config_overrides._latest_overrides.
+        log.warning("earnings_calibration query failed (%s) — Tier-B",
+                    type(e).__name__)
+        return tier_b
+    if df is None or df.empty:
+        return tier_b
+    row = df.iloc[0]
+    min_nq = _to_float(row.get('min_nq'))
+    lookback = _to_float(row.get('lookback_quarters'))
+    return {
+        'min_nq': int(min_nq) if min_nq is not None else DEFAULT_MIN_NQ,
+        'lookback_quarters': (int(lookback) if lookback is not None
+                              else DEFAULT_LOOKBACK_QUARTERS),
+    }
+
+
+def select_earnings_winner(
+    results: list,
+    min_predictions: int = 5000,
+    min_quintile_spread: float = 0.0,
+) -> Optional[dict]:
+    """Pick the strategic winner from the earnings sweep's combo results.
+
+    Each result is a dict with min_nq, lookback_quarters, n_predictions,
+    overall_hit_rate, quintile_spread. The winner maximises
+    quintile_spread (the score actually separates strong plays from
+    weak) subject to hard gates:
+      * n_predictions >= min_predictions   — enough out-of-sample sample
+      * quintile_spread > min_quintile_spread
+
+    Returns None when nothing clears the gates — the caller then leaves
+    the current earnings_calibration untouched rather than applying a
+    weak combo. The guardrails are the review, since the sweep
+    auto-applies with no manual step.
+    """
+    eligible = [
+        r for r in results
+        if (r.get('n_predictions') or 0) >= min_predictions
+        and (r.get('quintile_spread') or 0.0) > min_quintile_spread
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda r: r['quintile_spread'])
 
 
 # ────────────────────────────────────────────────────────────
@@ -134,10 +215,173 @@ ARCHETYPE_ACTION_HINT = {
 }
 
 
+# Quintile boundaries calibrated against the 21,592-prediction backtest
+# (scripts/backtest_playability.py, 2026-05-14). Hit rates per quintile:
+#   Q1 (<15.7):     34.8%
+#   Q2 (15.7-21.2): 42.9%
+#   Q3 (21.2-28.2): 46.5%
+#   Q4 (28.2-41.9): 51.7%
+#   Q5 (>=41.9):    58.9%
+# Boundaries are midpoints between adjacent quintile-avg scores so a
+# score landing exactly at the average maps to that quintile.
+_QUINTILE_BOUNDARIES = (15.7, 21.2, 28.2, 41.9)
+
+
+def score_quintile(score: Optional[float]) -> Optional[str]:
+    """Return Q1-Q5 label for a playability_score, or None.
+
+    Q5 = top quintile (highest historical hit rate). Q1 = bottom.
+    See _QUINTILE_BOUNDARIES for thresholds and calibration source.
+    """
+    if score is None:
+        return None
+    for i, bound in enumerate(_QUINTILE_BOUNDARIES, start=1):
+        if score < bound:
+            return f'Q{i}'
+    return 'Q5'
+
+
+# Quintile → English confidence label used by the brief renderer.
+# Hit rates from backtest (2026-05-14):
+#   Q5 = 🔥 HIGH   (58.9%)  — size up
+#   Q4 = ✅ SOLID  (51.7%)  — standard sizing
+#   Q3 = 🟡 OK     (46.5%)  — small position only
+#   Q2 = ❓ WEAK   (42.9%)  — paper / watch
+#   Q1 = 🚫 SKIP   (34.8%)  — below baseline; brief drops these rows
+CONFIDENCE_LABELS = {
+    'Q5': '\U0001f525 HIGH',   # 🔥
+    'Q4': '✅ SOLID',      # ✅
+    'Q3': '\U0001f7e1 OK',     # 🟡
+    'Q2': '❓ WEAK',       # ❓
+    'Q1': '\U0001f6ab SKIP',   # 🚫
+}
+
+
+def confidence_label(score: Optional[float]) -> Optional[str]:
+    """Return the brief's English confidence tag (e.g. '🔥 HIGH') for a
+    playability_score, or None if the score isn't computable.
+    """
+    q = score_quintile(score)
+    return CONFIDENCE_LABELS.get(q) if q else None
+    return 'Q5'
+
+
 def action_hint_for_archetype(archetype: Optional[str]) -> str:
     """Return the plain-English action hint for an archetype tag.
     Defaults to 'skip' for None / unknown values."""
     return ARCHETYPE_ACTION_HINT.get(archetype or 'quiet', 'skip')
+
+
+# Calibration-aware vehicle override (PR-B, 2026-05-22)
+# ----------------------------------------------------
+# When the 2026-05-21 backfill sweep computed options-side $ attribution
+# across 2,533 Q5 events, the result was unambiguous: top-quintile picks
+# have realized_vs_implied_ratio=0.636 (options OVERPRICED) and
+# avg_short_strangle_pnl_pct=+20.3% (vs avg_long_straddle_pnl_pct=-9.5%
+# and directional stock -$3.55/$1k). So the "right vehicle" for Q5 picks
+# is NOT directional or long-volatility — it's SHORT premium.
+#
+# This helper overrides the archetype → action map for top-quintile picks
+# when the live calibration row confirms the over-pricing pattern.
+# Below Q5 (lower conviction), the archetype map still wins because the
+# options edge is concentrated in the top quintile.
+
+# Thresholds tuned to match the 2026-05-22 calibration row but
+# loose enough that natural drift won't flip the recommendation.
+_IC_RATIO_THRESHOLD     = 0.85   # realized must be < 85% of implied
+_IC_STRANGLE_THRESHOLD  = 5.0    # short-strangle PnL must be > +5%
+
+
+def recommended_structure(
+    archetype: Optional[str],
+    score_quintile: Optional[str],
+    calibration: Optional[dict] = None,
+) -> Optional[str]:
+    """Return the brief's action tag for one earnings row.
+
+    For Q5 (top-conviction) picks AND a calibration row showing the
+    options market is over-pricing the realized move, returns 'IC'
+    (Iron Condor — defined-risk short strangle). Otherwise falls back
+    to the archetype-driven map (CALL / PUT / STRDL).
+
+    ``calibration`` is a dict with optional keys:
+      - realized_vs_implied_ratio (float, e.g. 0.636)
+      - avg_short_strangle_pnl_pct (float, e.g. 20.3)
+    Both must be present and above thresholds for the override to
+    fire. None / missing values cleanly fall through to the archetype
+    map per CLAUDE.md §3.7 — no silent fallback to a hardcoded vehicle.
+    """
+    _archetype_map = {
+        'bullish_trend': 'CALL',
+        'bearish_trend': 'PUT',
+        'reversal_play': 'STRDL',
+        'mixed':         'STRDL',
+    }
+    archetype_action = _archetype_map.get(archetype) if archetype else None
+
+    # Override only kicks in for Q5 (top quintile) — that's where the
+    # backtest showed the options edge concentrates.
+    if score_quintile != 'Q5':
+        return archetype_action
+    if not calibration:
+        return archetype_action
+
+    ratio = calibration.get('realized_vs_implied_ratio')
+    ss_pnl = calibration.get('avg_short_strangle_pnl_pct')
+    # Both signals must agree: stock under-moves vs implied AND
+    # short-strangle PnL is meaningfully positive.
+    if (ratio is not None and ss_pnl is not None
+            and ratio < _IC_RATIO_THRESHOLD
+            and ss_pnl > _IC_STRANGLE_THRESHOLD):
+        return 'IC'
+
+    return archetype_action
+
+
+def get_calibration_options_metrics() -> dict:
+    """Pull the options-side calibration metrics from the latest row.
+
+    Returns a dict of metrics the brief needs to drive
+    ``recommended_structure()``. Falls back to an empty dict on any
+    query failure — caller (`recommended_structure`) treats empty
+    calibration as "no Q5 override available" and falls back to the
+    archetype map. Resilient like ``get_earnings_calibration``.
+    """
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return {}
+    if not is_cloud_sql_configured():
+        return {}
+    try:
+        df = query_to_dataframe(
+            "SELECT realized_vs_implied_ratio, avg_short_strangle_pnl_pct, "
+            "avg_long_straddle_pnl_pct, avg_implied_move_pct, "
+            "avg_realized_move_pct, n_with_options "
+            "FROM earnings_calibration "
+            "ORDER BY calibration_date DESC LIMIT 1"
+        )
+    except Exception as e:
+        log.warning("earnings_calibration options-metrics query failed "
+                    "(%s) — empty", type(e).__name__)
+        return {}
+    if df is None or df.empty:
+        return {}
+    row = df.iloc[0]
+    out: dict = {}
+    for k in ('realized_vs_implied_ratio', 'avg_short_strangle_pnl_pct',
+              'avg_long_straddle_pnl_pct', 'avg_implied_move_pct',
+              'avg_realized_move_pct'):
+        v = _to_float(row.get(k))
+        if v is not None:
+            out[k] = v
+    n_opts = row.get('n_with_options')
+    if n_opts is not None:
+        try:
+            out['n_with_options'] = int(n_opts)
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 def classify_archetype(
@@ -359,7 +603,7 @@ def query_conditional_reactions(
     if gap_band_pct is None:
         gap_band_pct = DEFAULT_GAP_BAND_PCT
     if lookback_quarters is None:
-        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
+        lookback_quarters = get_earnings_calibration()['lookback_quarters']
     try:
         from gcp.database import query_to_dataframe, is_cloud_sql_configured
     except ImportError:
@@ -576,8 +820,10 @@ def enrich_with_playability(
     """
     if not rows:
         return rows
+    cal = get_earnings_calibration()
     if lookback_quarters is None:
-        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
+        lookback_quarters = cal['lookback_quarters']
+    min_nq = cal['min_nq']
     tickers = sorted({str(r['ticker']) for r in rows if r.get('ticker')})
     stats_map = query_reaction_stats(tickers, lookback_quarters)
     daily_map = query_typical_daily_return(tickers, daily_return_window)
@@ -608,6 +854,10 @@ def enrich_with_playability(
             reversal_rate        = stats.get('reversal_rate'),
         )
         r['playability_n_q'] = stats.get('n_q', 0)
+        # Calibrated min-history gate (earnings_calibration.min_nq):
+        # too few past quarters → the score isn't trustworthy, drop it.
+        if (stats.get('n_q') or 0) < min_nq:
+            r['playability_score'] = None
         # Also expose the underlying inputs so the brief can show them
         r['playability_move_mag_pct']    = stats.get('move_magnitude_pct')
         r['playability_dir_bias_pct']    = stats.get('directional_bias_pct')

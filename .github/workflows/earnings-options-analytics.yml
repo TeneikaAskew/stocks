@@ -310,8 +310,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Add all outputs (will overwrite existing files)
-          git add -f earnings_options_analytics/outputs/
+          # CSV reports are gitignored — uploaded as build artifacts (see the
+          # "Upload CSV reports" step) instead of being committed to the repo.
+          git add earnings_options_analytics/outputs/
 
           # Check if there are changes to commit
           if git diff --staged --quiet; then

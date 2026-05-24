@@ -459,7 +459,9 @@ Respond ONLY with valid JSON:
 def _get_gemini_client():
     from google import genai
     project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
-    location = os.environ.get("GCP_REGION", "us-east1")
+    # Match lib/agents/vertex_adapter.py: prefer VERTEX_GEMINI_LOCATION, default
+    # to `global` (Vertex hosts gemini-3.x ONLY on global; us-east1 returns 404).
+    location = os.environ.get("VERTEX_GEMINI_LOCATION", "global")
     key_file = os.environ.get(
         "GOOGLE_APPLICATION_CREDENTIALS",
         str(Path(__file__).resolve().parents[2] / ".gcp-key.json"),
@@ -489,7 +491,7 @@ def _score_gemini(client, title: str, desc: str, tickers: list[str], peer_map: d
     )
     try:
         resp = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.1-flash-lite",
             contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=256),
         )
@@ -549,7 +551,7 @@ def score_gemini_top(
         # Test call
         from google.genai import types
         client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.1-flash-lite",
             contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
             config=types.GenerateContentConfig(max_output_tokens=5),
         )

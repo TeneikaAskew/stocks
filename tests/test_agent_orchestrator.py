@@ -91,7 +91,10 @@ class _MockLLM(LLMClient):
             parsed = AnalystOutput(
                 section=(
                     section
-                    if section in ("market", "strat", "options", "catalyst")
+                    if section in (
+                        "market", "strat", "options", "gamma",
+                        "catalyst", "sentiment",
+                    )
                     else "market"
                 ),
                 summary=f"Mock {section} summary.",
@@ -292,6 +295,12 @@ def canned_bundle(monkeypatch):
             # Dispatch on the gamma-only column "gamma" so each consumer
             # gets the columns it needs and the gamma summarizer's
             # `min(expiration)` doesn't blow up.
+            # snapshot_date set to today() so the new 2-trading-day staleness
+            # guard in summarize_options_flow / summarize_gamma_levels (PR
+            # #482) doesn't false-flag this fixture as stale. The orchestrator
+            # tests call run_insight_pipeline without as_of, so the staleness
+            # check compares against date.today().
+            chain_snapshot_date = date.today()
             if "gamma, vega" in sql:
                 from datetime import timedelta
                 near_exp = (date(2026, 4, 15) + timedelta(days=14)).strftime("%Y-%m-%d")
@@ -310,13 +319,16 @@ def canned_bundle(monkeypatch):
                                 "delta": 0.5 if opt_type == "calls" else -0.45,
                                 "bid": 1.10, "ask": 1.20, "mark": 1.15,
                                 "last_price": 1.15,
+                                "snapshot_date": chain_snapshot_date,
                             })
                 return pd.DataFrame(rows)
             return pd.DataFrame([
                 {"option_type": "calls", "strike": 500, "volume": 10_000,
-                 "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5},
+                 "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5,
+                 "snapshot_date": chain_snapshot_date},
                 {"option_type": "puts", "strike": 495, "volume": 8_000,
-                 "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45},
+                 "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45,
+                 "snapshot_date": chain_snapshot_date},
             ])
         if "signal_alerts" in sql:
             return pd.DataFrame([
@@ -339,6 +351,40 @@ def canned_bundle(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+
+    # `summarize_strat_status` calls `lib.strat.compute_strat_status`, which
+    # loads bars via `DataLoader.load_daily` rather than the `_query` shim
+    # patched above. Without an override the real loader returns no bars,
+    # the strat section reports `available: False`, and the orchestrator
+    # marks 'strat' as a failed_section — making the green-path test red.
+    # Inject a canned snapshot that matches the OHLCV fixture above so the
+    # strat block looks like a normal bullish 2U trigger day.
+    def fake_compute_strat_status(ticker, *args, **kwargs):
+        return {
+            "available": True,
+            "ticker": ticker.upper(),
+            "date": "2026-04-15",
+            "last_candle": "2U",
+            "in_force_combo": "212_bull_reversal",
+            "strat_setup": True,
+            "ftfc_score": 0.6,
+            "ftfc_direction": "bullish",
+            "trigger_high": 502.5,
+            "trigger_low": 497.0,
+        }
+
+    import lib.strat as _lib_strat
+    monkeypatch.setattr(_lib_strat, "compute_strat_status", fake_compute_strat_status)
+
+    # Audit 2026-05-08 G.P2.12: orchestrator now auto-embeds the bundle
+    # for reflection-memory retrieval. Stub the Vertex call with a
+    # zero-vector so tests don't hit real Vertex (~0.4s per call ×
+    # 26 tests = 10s of unnecessary network I/O).
+    async def fake_embed(text):
+        return [0.0] * 768
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", fake_embed)
 
 
 @pytest.fixture
@@ -363,7 +409,10 @@ def test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot):
     assert isinstance(report, InsightReport)
     assert report.ticker == "SPY"
     assert report.direction == "long"
-    assert report.conviction == "medium"
+    # #349 deterministic conviction: canned bundle has 6 bullish analysts
+    # (≥4), FTFC 0.6 (≥0.5), confidence 0.72 (≥0.7), no warn/block →
+    # calibrates to 'high' regardless of what the LLM mock returned.
+    assert report.conviction == "high"
     assert report.run_cost_usd > 0
     assert report.run_latency_ms >= 0
     # Full topology = 6 analysts (market, strat, options, gamma,
@@ -451,6 +500,74 @@ def test_derive_key_levels_extracts_strat_market_options():
     }
 
 
+def test_derive_key_levels_surfaces_full_multi_timeframe_map():
+    """2026-05-11 fix: report.key_levels must include the full multi-
+    timeframe level map (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL +
+    effective_PDH/PDL) so users can audit the trade-planner's regime
+    classification — not just 'Prev High / Prev Low'.
+
+    The QQQ 5/6 replay surfaced this gap: blue-sky classification
+    depended on PWH/PMH/PQH/PYH all being below pre-market range,
+    but those levels were never visible in the report."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat": {
+            "available": True,
+            "trigger_high": 682.77,
+            "trigger_low": 677.51,
+            "levels": {
+                "PDH": 682.77, "PDL": 677.51,
+                "PWH": 682.77, "PWL": 668.80,
+                "PMH": 682.77, "PML": 571.92,
+                "PQH": 636.60, "PQL": 555.60,
+                "PYH": 637.01, "PYL": 402.39,
+                "effective_PDH": 682.77, "effective_PDL": 677.51,
+            },
+        },
+        "market":  {"available": True, "sma_200": 605.24, "ema_20": 648.61},
+        "options": {"available": True, "max_pain_strike_proxy": 600.0},
+    }
+    levels = _derive_key_levels(bundle)
+    # All 10 multi-timeframe levels surfaced with descriptive labels
+    assert levels["Prev Day High"] == 682.77
+    assert levels["Prev Day Low"] == 677.51
+    assert levels["Prev Week High"] == 682.77
+    assert levels["Prev Week Low"] == 668.80
+    assert levels["Prev Month High"] == 682.77
+    assert levels["Prev Month Low"] == 571.92
+    assert levels["Prev Quarter High"] == 636.60
+    assert levels["Prev Quarter Low"] == 555.60
+    assert levels["Prev Year High"] == 637.01
+    assert levels["Prev Year Low"] == 402.39
+    assert levels["Effective PDH"] == 682.77
+    assert levels["Effective PDL"] == 677.51
+    # Legacy fields suppressed when the new ones are present
+    assert "Prev High" not in levels
+    assert "Prev Low" not in levels
+    # Other sections still surface
+    assert levels["SMA 200"] == 605.24
+    assert levels["EMA 20"] == 648.61
+    assert levels["Max Pain"] == 600.0
+
+
+def test_derive_key_levels_legacy_fallback_when_no_levels_dict():
+    """When the strat section has trigger_high/low but no `levels` dict
+    (degraded bundle — level builder threw), keep emitting the legacy
+    'Prev High / Prev Low' labels for backwards-compat."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 510.0, "trigger_low": 495.0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": {"available": True, "max_pain_strike_proxy": 505.0},
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Prev High"] == 510.0
+    assert levels["Prev Low"] == 495.0
+    assert "Prev Day High" not in levels
+
+
 def test_derive_key_levels_skips_unavailable_sections():
     from lib.agents.orchestrator import _derive_key_levels
 
@@ -482,6 +599,229 @@ def test_derive_key_levels_empty_bundle_returns_empty_dict():
     from lib.agents.orchestrator import _derive_key_levels
 
     assert _derive_key_levels({}) == {}
+
+
+# ─── #359 — surface gamma flip / king / gate strikes in key_levels ────
+
+
+def test_derive_key_levels_includes_gamma_flip_and_kings():
+    """IWM 5/7 reproduction with kings on both sides of spot: validator
+    flagged 275.24 (gamma flip), 270.0 AND 285.0 (King strikes) as
+    orphans because key_levels only included the first king. After the
+    fix (Codex P2 review on PR #362) both above-spot and below-spot
+    kings are surfaced as separate keys."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 278.13, "trigger_low": 274.23},
+        "market":  {"available": True, "sma_200": 244.9,  "ema_20": 258.34},
+        "options": {"available": True, "max_pain_strike_proxy": 240.0},
+        "gamma":   {
+            "available": True,
+            # Track 5: data_source='realtime' → keys are NOT suffixed.
+            # Without this field the suffix defaults to ' (EOD)' to
+            # mirror pre-Track-0 reality (no realtime data ever).
+            "data_source": "realtime",
+            "spot": 277.0,
+            "flip": 275.24,
+            "kings": [{"strike": 270.0, "gex": 1234},
+                      {"strike": 285.0, "gex": 980}],
+            "gates": [{"strike": 273.0}, {"strike": 280.0}, {"strike": 290.0}],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Gamma Flip"] == 275.24
+    # Both kings surface — the validator no longer orphans either.
+    assert levels["Gamma King Below"] == 270.0
+    assert levels["Gamma King Above"] == 285.0
+    # Closest gate above spot (277) is 280; closest below is 273.
+    assert levels["Gamma Gate Above"] == 280.0
+    assert levels["Gamma Gate Below"] == 273.0
+
+
+def test_derive_key_levels_handles_partial_gamma():
+    """Gamma section available but sparse — only flip populated, no
+    kings/gates. Surface what we have, skip the rest cleanly."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "realtime",
+            "spot": 100.0,
+            "flip": 99.5,
+            "kings": [],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels == {"Gamma Flip": 99.5}
+
+
+def test_derive_key_levels_skips_gamma_when_unavailable():
+    """`gamma.available=False` (e.g. options chain query failed) → no
+    gamma levels in the dict; nothing else should change."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "market": {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "gamma":  {"available": False, "reason": "no etf_options_snapshots for SPY"},
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert "Gamma King Below" not in levels
+    assert "Gamma King Above" not in levels
+    assert levels == {"SMA 200": 480.0, "EMA 20": 500.0}
+
+
+def test_derive_key_levels_handles_only_gates_above_spot():
+    """All gates above spot → only Gate Above is populated, Gate Below
+    is omitted (rather than emitting a wrong/None value). Single king
+    above spot → only Gamma King Above is populated."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "realtime",
+            "spot": 100.0,
+            "flip": 100.5,
+            "kings": [{"strike": 105.0, "gex": 100}],
+            "gates": [{"strike": 102.0}, {"strike": 104.0}],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Gamma Gate Above"] == 102.0
+    assert "Gamma Gate Below" not in levels
+    assert levels["Gamma King Above"] == 105.0
+    assert "Gamma King Below" not in levels
+
+
+def test_derive_key_levels_kings_uses_nearest_when_multiple_per_side():
+    """When multiple kings exist above OR below spot, surface the
+    NEAREST one on each side (not the first or the farthest).
+    Codex P2 review on PR #362."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "realtime",
+            "spot": 277.0,
+            "kings": [
+                {"strike": 250.0, "gex": 100},   # below, far
+                {"strike": 290.0, "gex": 200},   # above, far
+                {"strike": 270.0, "gex": 1234},  # below, near
+                {"strike": 285.0, "gex": 980},   # above, near
+            ],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Gamma King Below"] == 270.0  # nearest below spot
+    assert levels["Gamma King Above"] == 285.0  # nearest above spot
+
+
+def test_derive_key_levels_kings_legacy_fallback_no_spot():
+    """Bundle missing `gamma.spot` falls back to legacy first-king
+    behaviour rather than emitting nothing — old callers that don't
+    populate `spot` still get a king."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "realtime",
+            # spot intentionally absent
+            "kings": [{"strike": 100.0, "gex": 500}, {"strike": 110.0, "gex": 300}],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels.get("Gamma King") == 100.0  # legacy first-king
+    assert "Gamma King Above" not in levels
+    assert "Gamma King Below" not in levels
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Track 5 — `data_source`-aware key_levels suffix
+# (see docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md)
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_derive_key_levels_suffixes_keys_on_eod_fallback():
+    """`data_source='eod_fallback'` → every gamma-derived level key
+    gets a ' (EOD)' suffix so downstream trader/judge prose can't
+    reference a stale Tuesday close as if it were current intraday
+    dealer positioning. Same fixture as the happy-path test but with
+    the data_source flipped."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "eod_fallback",
+            "spot": 277.0,
+            "flip": 275.24,
+            "kings": [{"strike": 270.0, "gex": 1234},
+                      {"strike": 285.0, "gex": 980}],
+            "gates": [{"strike": 273.0}, {"strike": 280.0}, {"strike": 290.0}],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert "Gamma King Below" not in levels
+    assert "Gamma King Above" not in levels
+    assert levels["Gamma Flip (EOD)"] == 275.24
+    assert levels["Gamma King Below (EOD)"] == 270.0
+    assert levels["Gamma King Above (EOD)"] == 285.0
+    assert levels["Gamma Gate Above (EOD)"] == 280.0
+    assert levels["Gamma Gate Below (EOD)"] == 273.0
+
+
+def test_derive_key_levels_suffixes_keys_on_stale_fallback():
+    """`data_source='stale_fallback'` (3-5 trading days old) → same
+    suffix as eod_fallback. The footer in the brief differentiates
+    the two for the user; key-naming just needs to flag 'not realtime'."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "stale_fallback",
+            "spot": 100.0,
+            "flip": 99.5,
+            "kings": [],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert levels["Gamma Flip (EOD)"] == 99.5
+
+
+def test_derive_key_levels_legacy_bundle_defaults_to_eod_suffix():
+    """Bundle that predates Track 1 (no data_source field at all)
+    defaults to the EOD-suffix path. This matches the pre-Track-0
+    reality where every gamma read was EOD, so historical replays
+    and any caller that hasn't been updated to populate data_source
+    still produce safe (suffixed) key names."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            # data_source intentionally absent
+            "spot": 100.0,
+            "flip": 99.5,
+            "kings": [{"strike": 105.0, "gex": 200}],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert levels["Gamma Flip (EOD)"] == 99.5
+    assert levels["Gamma King Above (EOD)"] == 105.0
 
 
 def test_build_strat_snapshot_default_when_unavailable():
@@ -578,6 +918,64 @@ def test_build_signal_refs_skips_malformed_rows():
     assert out[0].direction == "CALL"
 
 
+def test_build_signal_refs_filters_by_long_direction():
+    """Audit 2026-05-08 G.P2.14: a long report should only cite CALL alerts."""
+    from lib.agents.orchestrator import _build_signal_refs
+
+    section = {
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-05-07 14:00", "direction": "CALL",
+             "strength": "strong", "score": 4.0},
+            {"alert_ts": "2026-05-07 13:00", "direction": "PUT",
+             "strength": "moderate", "score": 3.0},
+            {"alert_ts": "2026-05-07 12:00", "direction": "PUT",
+             "strength": "strong", "score": 4.5},
+            {"alert_ts": "2026-05-07 11:00", "direction": "CALL",
+             "strength": "weak", "score": 2.0},
+        ],
+    }
+    out = _build_signal_refs(section, direction="long")
+    assert len(out) == 2
+    assert all(r.direction == "CALL" for r in out)
+
+
+def test_build_signal_refs_filters_by_short_direction():
+    from lib.agents.orchestrator import _build_signal_refs
+
+    section = {
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-05-07 14:00", "direction": "CALL",
+             "strength": "strong", "score": 4.0},
+            {"alert_ts": "2026-05-07 13:00", "direction": "PUT",
+             "strength": "moderate", "score": 3.0},
+        ],
+    }
+    out = _build_signal_refs(section, direction="short")
+    assert len(out) == 1
+    assert out[0].direction == "PUT"
+
+
+def test_build_signal_refs_flat_or_none_keeps_all_directions():
+    """Flat trades retain the unfiltered alert stream so the report still
+    shows what the market did. Same for direction=None (callers that
+    haven't migrated)."""
+    from lib.agents.orchestrator import _build_signal_refs
+
+    section = {
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-05-07 14:00", "direction": "CALL",
+             "strength": "strong", "score": 4.0},
+            {"alert_ts": "2026-05-07 13:00", "direction": "PUT",
+             "strength": "moderate", "score": 3.0},
+        ],
+    }
+    assert len(_build_signal_refs(section, direction="flat")) == 2
+    assert len(_build_signal_refs(section)) == 2
+
+
 def test_pipeline_isolates_multiple_partial_failures(
     canned_bundle, seven_role_snapshot
 ):
@@ -654,3 +1052,462 @@ def test_pipeline_model_versions_snapshot_is_frozen(canned_bundle):
     )
     for role in ALL_ROLES:
         assert report.model_versions[role] == "vertex:gemini-2.0-flash"
+
+
+def test_pipeline_records_per_role_cost(canned_bundle, seven_role_snapshot):
+    """Audit 2026-05-08 G.P3.2: per_role_cost should split spend by role,
+    with analyst and risk subdivided (e.g. 'analyst:market', 'risk:neutral').
+    Sum across the dict must equal run_cost_usd within rounding."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # All 6 analyst sections + 3 risk personas + 5 single-role nodes (bull,
+    # bear, judge, trader, portfolio_manager) = 14 distinct keys in the
+    # happy path.
+    expected_analyst_keys = {
+        "analyst:market", "analyst:strat", "analyst:options",
+        "analyst:gamma", "analyst:catalyst", "analyst:sentiment",
+    }
+    expected_risk_keys = {
+        "risk:aggressive", "risk:conservative", "risk:neutral",
+    }
+    expected_single = {"bull", "bear", "judge", "trader", "portfolio_manager"}
+    expected = expected_analyst_keys | expected_risk_keys | expected_single
+    assert set(report.per_role_cost.keys()) == expected
+    assert all(v > 0 for v in report.per_role_cost.values())
+    assert abs(sum(report.per_role_cost.values()) - report.run_cost_usd) < 1e-4
+
+
+def test_pipeline_emits_empty_supporting_signals(
+    canned_bundle, seven_role_snapshot
+):
+    """2026-05-11: `signal_alerts` has been removed from the insight LLM
+    bundle to break the feedback loop with signal-monitor (which gates
+    on `insight_direction`). The orchestrator no longer reads
+    `bundle["signals"]`, so `report.supporting_signals` is always empty.
+
+    This supersedes the former G.P2.14 direction-filter test
+    (`test_pipeline_filters_supporting_signals_by_direction`) — the
+    direction filter still works at the unit level via
+    `test_build_signal_refs_filters_by_long_direction`, but the
+    pipeline-level fixture no longer surfaces any signals at all."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert report.direction == "long"
+    assert report.supporting_signals == []
+
+
+# ─── Audit 2026-05-08 G.P1.9 — thesis-vs-targets consistency validator ───
+
+
+def test_validate_thesis_flags_orphan_target_levels():
+    """The QQQ 5/7 reproduction: thesis names targets 677.8/691.09/704.38
+    but `targets=[]`. Validator should return all three as orphans."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = (
+        "The bull case outweighs the bear case, supported by the "
+        "prevailing uptrend and positive gamma regime. A long position "
+        "is warranted, targeting 677.8, 691.09 and 704.38, while being "
+        "mindful of the 618.15 gamma flip level."
+    )
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="QQQ",
+        entry_zone=EntryZone(low=500.0, high=501.5),
+        stop=497.5,
+        targets=[],  # planner overrode to empty
+        key_levels={"gamma_flip": 618.15},  # only gamma flip is structured
+        invalidation="Close below 651.22",  # 651.22 NOT in thesis
+    )
+    # 677.8, 691.09, 704.38 should all be flagged. 618.15 should match
+    # the structured key_level. 651.22 from invalidation isn't in thesis
+    # so doesn't count as orphan.
+    assert 677.8 in orphans
+    assert 691.09 in orphans
+    assert 704.38 in orphans
+    assert 618.15 not in orphans  # structured match
+
+
+def test_validate_thesis_clean_when_levels_match_structured():
+    """Happy path — thesis numbers all map to structured fields."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = (
+        "Strong setup. Enter on a break above 100.50 with stop at "
+        "98.00 and first target at 102.00. Gamma flip at 99.50 "
+        "anchors the support."
+    )
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="X",
+        entry_zone=EntryZone(low=100.50, high=100.75),
+        stop=98.00,
+        targets=[102.00, 104.00],
+        key_levels={"gamma_flip": 99.50},
+        invalidation="Below 98.00",
+    )
+    assert orphans == []
+
+
+def test_validate_thesis_tolerates_minor_rounding():
+    """Audit-realistic: thesis says 'around 278.13' and the key_level
+    is 278.135 (LLM rounded). 0.5% tolerance should match."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = "Trigger above 278.13 unlocks PWH continuation."
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="IWM",
+        entry_zone=EntryZone(low=270.0, high=271.0),
+        stop=265.0,
+        targets=[280.0],
+        key_levels={"PWH": 278.135},
+        invalidation="Below 265",
+    )
+    assert orphans == []
+
+
+def test_validate_thesis_skips_non_price_numerics():
+    """Numbers like '200 SMA' or 'RSI 70' aren't prices — they have no
+    decimal so the regex doesn't match. Validator should not flag them."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = (
+        "Setup is bullish above the 200 SMA with RSI 70 holding strong "
+        "and ATR(14) at expanded levels."
+    )
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="X",
+        entry_zone=EntryZone(low=100.0, high=101.0),
+        stop=98.0,
+        targets=[102.0],
+        key_levels={},
+        invalidation="X",
+    )
+    # 200 (no decimal), 70 (no decimal), 14 (no decimal) — none match the regex
+    assert orphans == []
+
+
+def test_validate_thesis_handles_dollar_prefix():
+    """Thesis with '$278.13' format should be parsed the same way."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = "Enter above $278.13 targeting $300.00."
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="IWM",
+        entry_zone=EntryZone(low=278.13, high=278.50),
+        stop=275.0,
+        targets=[280.0],  # 300.00 NOT in targets
+        key_levels={},
+        invalidation="Below 275",
+    )
+    assert 300.00 in orphans
+    assert 278.13 not in orphans  # entry_zone match
+
+
+def test_validate_thesis_empty_returns_empty():
+    """No thesis → no orphans. Defensive."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    assert _validate_thesis_consistency(
+        "", ticker="X",
+        entry_zone=EntryZone(low=1.0, high=2.0),
+        stop=0.5, targets=[3.0], key_levels={}, invalidation="x",
+    ) == []
+# ─── Audit 2026-05-08 G.P2.12 — reflection memory wiring ─────────────
+
+
+def test_build_embedding_query_text_includes_key_setup_fields():
+    """The auto-embed query text should capture ticker + strat candle +
+    combo + FTFC + regime + gap + vol tag + 200-SMA position. Same
+    fields that semantically determine 'is this trade similar'."""
+    from lib.agents.orchestrator import _build_embedding_query_text
+
+    bundle = {
+        "ticker": "spy",  # lowercased input → uppercased output
+        "strat": {
+            "available": True,
+            "last_candle": "2U",
+            "in_force_combo": "212_bull_reversal",
+            "ftfc_direction": "bullish",
+        },
+        "market": {
+            "available": True,
+            "regime": "trending_up",
+            "vol_tag": "normal",
+            "above_sma_200": True,
+            "premarket": {"gap_pct": 0.31},
+        },
+    }
+    text = _build_embedding_query_text("spy", bundle)
+    assert "SPY" in text
+    assert "2U" in text
+    assert "212_bull_reversal" in text
+    assert "bullish" in text
+    assert "trending_up" in text
+    assert "+0.31%" in text
+    assert "normal" in text
+    assert "above 200-SMA" in text
+
+
+def test_build_embedding_query_text_handles_missing_fields():
+    """Defensive: if strat or market sections are unavailable, the text
+    is just the ticker — embedding still works, retrieval just has
+    less signal to work with."""
+    from lib.agents.orchestrator import _build_embedding_query_text
+
+    bundle = {"ticker": "X", "strat": {"available": False}, "market": {}}
+    assert _build_embedding_query_text("X", bundle) == "X"
+
+
+def test_pipeline_auto_embeds_when_query_embedding_omitted(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    """Audit G.P2.12: the orchestrator should call `embed_text` on the
+    bundle summary when the caller doesn't pre-supply an embedding.
+    Replaces the dormant query_embedding=None hardcoded path."""
+    embed_calls: list[str] = []
+
+    async def spy_embed(text):
+        embed_calls.append(text)
+        return [0.1] * 768
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", spy_embed)
+
+    mock = _MockLLM()
+    asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert len(embed_calls) == 1
+    assert "SPY" in embed_calls[0]
+
+
+def test_pipeline_uses_explicit_embedding_when_caller_supplies(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    """Caller-injected embedding (replay / tests) bypasses the auto-embed
+    Vertex call so deterministic offline replay stays deterministic."""
+    embed_calls: list[str] = []
+
+    async def boom_embed(text):
+        embed_calls.append(text)
+        raise RuntimeError("auto-embed should not have been called")
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", boom_embed)
+
+    mock = _MockLLM()
+    asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+            query_embedding=[0.2] * 768,
+        )
+    )
+    assert embed_calls == []  # auto-embed was skipped
+
+
+def test_pipeline_degrades_when_embedding_fails(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    """Vertex creds missing / network blip → embed raises → reflection
+    memory is skipped, but the rest of the report still ships. Audit
+    G.P2.12: graceful degradation of opt-in features."""
+    async def boom_embed(text):
+        raise RuntimeError("Vertex unreachable")
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", boom_embed)
+
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # Report still produced; similar_past_trades is just empty
+    assert isinstance(report, InsightReport)
+    assert report.similar_past_trades == []
+
+
+# ─── Audit follow-up #349 — deterministic conviction calibration ─────
+
+
+def test_calibrate_conviction_flat_is_low():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="flat", confidence_score=0.9,
+        analyst_agreement_count=6, ftfc_score=1.0,
+        risk_severities=["info"],
+    ) == "low"
+
+
+def test_calibrate_conviction_block_is_low():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.9,
+        analyst_agreement_count=6, ftfc_score=1.0,
+        risk_severities=["info", "block"],
+    ) == "low"
+
+
+def test_calibrate_conviction_high_path():
+    from lib.agents.orchestrator import _calibrate_conviction
+    # All four conditions cleared
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=0.5,
+        risk_severities=["info", "info", "info"],
+    ) == "high"
+
+
+def test_calibrate_conviction_high_blocked_by_warn():
+    from lib.agents.orchestrator import _calibrate_conviction
+    # One warn flag prevents high. confidence=0.65 lands in medium band.
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.65,
+        analyst_agreement_count=4, ftfc_score=0.5,
+        risk_severities=["info", "warn", "info"],
+    ) == "medium"
+
+
+def test_calibrate_conviction_high_confidence_with_warn_falls_to_low():
+    """Edge: confidence 0.75 is too high for medium band (0.4-0.7) but
+    a warn flag blocks the high path. Falls all the way to low — by
+    design conservative."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=0.5,
+        risk_severities=["info", "warn", "info"],
+    ) == "low"
+
+
+def test_calibrate_conviction_high_blocked_by_low_ftfc():
+    from lib.agents.orchestrator import _calibrate_conviction
+    # FTFC too weak → demoted; falls into medium since other conditions
+    # for medium hold (≥2 agreement, ≤1 warn, conf 0.4-0.7).
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.65,
+        analyst_agreement_count=4, ftfc_score=0.3,
+        risk_severities=["info"],
+    ) == "medium"
+
+
+def test_calibrate_conviction_medium_path():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.55,
+        analyst_agreement_count=2, ftfc_score=0.3,
+        risk_severities=["warn"],
+    ) == "medium"
+
+
+def test_calibrate_conviction_low_when_few_analysts_agree():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.55,
+        analyst_agreement_count=1, ftfc_score=0.3,
+        risk_severities=["info"],
+    ) == "low"
+
+
+def test_calibrate_conviction_low_when_confidence_too_high_for_medium():
+    """conf 0.8 doesn't fit medium's 0.4-0.7 band but doesn't clear
+    high either (only 2 analysts) → falls back to low."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.8,
+        analyst_agreement_count=2, ftfc_score=0.3,
+        risk_severities=["info"],
+    ) == "low"
+
+
+# ─── PR #351 codex review — FTFC sign must match direction ────────────
+
+
+def test_calibrate_conviction_long_with_negative_ftfc_does_not_hit_high():
+    """Codex review on PR #351: `abs(ftfc_score) >= 0.5` would let a
+    contradicting FTFC count as agreement. A long trade with FTFC=-0.8
+    means the multi-tf bias is screaming bearish — that must NOT be
+    high conviction."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    result = _calibrate_conviction(
+        direction="long", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=-0.8,
+        risk_severities=["info", "info", "info"],
+    )
+    # Without sign-aware fix: would return 'high' (the bug).
+    # Post-fix: ftfc_aligned=False → falls to medium / low.
+    assert result != "high", (
+        "Negative ftfc_score must not satisfy the long-direction "
+        "high-conviction gate; sign must match direction."
+    )
+
+
+def test_calibrate_conviction_short_with_positive_ftfc_does_not_hit_high():
+    from lib.agents.orchestrator import _calibrate_conviction
+    result = _calibrate_conviction(
+        direction="short", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=0.8,
+        risk_severities=["info", "info", "info"],
+    )
+    assert result != "high"
+
+
+def test_calibrate_conviction_short_with_aligned_negative_ftfc_hits_high():
+    """The legitimate short path: direction=short with ftfc=-0.5 IS
+    aligned (both bearish) and clears the high gate."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    result = _calibrate_conviction(
+        direction="short", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=-0.5,
+        risk_severities=["info", "info", "info"],
+    )
+    assert result == "high"
+
+
+def test_count_analyst_agreement_counts_matching_bias():
+    from lib.agents.orchestrator import _count_analyst_agreement
+    from types import SimpleNamespace
+
+    bullish = SimpleNamespace(bias="bullish")
+    bearish = SimpleNamespace(bias="bearish")
+    neutral = SimpleNamespace(bias="neutral")
+    reports = {
+        "market": bullish, "strat": bullish, "options": neutral,
+        "gamma": bullish, "catalyst": bearish, "sentiment": None,
+    }
+    assert _count_analyst_agreement(reports, "long") == 3
+    assert _count_analyst_agreement(reports, "short") == 1
+    assert _count_analyst_agreement(reports, "flat") == 1
+    # None analysts (failed) don't count
+    assert _count_analyst_agreement({"x": None, "y": None}, "long") == 0

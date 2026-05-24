@@ -143,16 +143,21 @@ def test_options_flow_ratios_and_top_oi(patch_query):
         "etf_options_snapshots",
         pd.DataFrame([
             {"option_type": "calls", "strike": 500, "volume": 10_000,
-             "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5},
+             "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "calls", "strike": 505, "volume": 5_000,
-             "open_interest": 30_000, "implied_volatility": 0.20, "delta": 0.4},
+             "open_interest": 30_000, "implied_volatility": 0.20, "delta": 0.4,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts", "strike": 495, "volume": 8_000,
-             "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45},
+             "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts", "strike": 490, "volume": 3_000,
-             "open_interest": 25_000, "implied_volatility": 0.24, "delta": -0.35},
+             "open_interest": 25_000, "implied_volatility": 0.24, "delta": -0.35,
+             "snapshot_date": date(2026, 5, 12)},
         ]),
     )
-    out = summarizers.summarize_options_flow("SPY")
+    # as_of=2026-05-13 (Wed) reading 2026-05-12 (Tue) chain = 1 trading day behind = fresh
+    out = summarizers.summarize_options_flow("SPY", as_of=date(2026, 5, 13))
     assert out["call_volume"] == 15_000
     assert out["put_volume"] == 11_000
     assert out["put_call_ratio"] == round(11_000 / 15_000, 3)
@@ -164,6 +169,42 @@ def test_options_flow_ratios_and_top_oi(patch_query):
 def test_options_flow_unavailable(patch_query):
     out = summarizers.summarize_options_flow("SPY")
     assert out["available"] is False
+
+
+def test_options_flow_stale_chain_returns_unavailable(patch_query):
+    """3+ trading days behind as_of → return _unavailable instead of serving."""
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            {"option_type": "calls", "strike": 500, "volume": 10_000,
+             "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5,
+             "snapshot_date": date(2026, 5, 8)},   # Friday
+        ]),
+    )
+    # Wed 5/13 brief reading Fri 5/8 chain = 3 trading days (Fri, Mon, Tue) behind = STALE
+    out = summarizers.summarize_options_flow("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is False
+    assert "chain stale" in out["reason"]
+    assert "3 trading days behind" in out["reason"]
+
+
+def test_options_flow_monday_morning_friday_chain_is_fresh(patch_query):
+    """Standard institutional convention: Mon brief reads Fri-EOD chain (1 trading day)."""
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            {"option_type": "calls", "strike": 100, "volume": 100,
+             "open_interest": 1000, "implied_volatility": 0.20, "delta": 0.5,
+             "snapshot_date": date(2026, 5, 8)},   # Friday
+            {"option_type": "puts", "strike": 100, "volume": 100,
+             "open_interest": 1000, "implied_volatility": 0.20, "delta": -0.5,
+             "snapshot_date": date(2026, 5, 8)},
+        ]),
+    )
+    # Mon 5/11 brief reading Fri 5/8 chain = 1 trading day = FRESH
+    out = summarizers.summarize_options_flow("SPY", as_of=date(2026, 5, 11))
+    assert out["available"] is not False  # served, not _unavailable
+    assert out["call_volume"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +304,35 @@ def test_backtest_metrics_unavailable_empty(patch_query):
     """No bars in market_data_daily → analog backtest unavailable."""
     out = summarizers.summarize_backtest_metrics("SPY")
     assert out["available"] is False
+
+
+def test_backtest_metrics_walks_back_past_placeholder_today(patch_query):
+    """Audit 2026-05-08 G.P2.13: when the morning insight cron fires,
+    the daily fetcher may have written a pre-RTH-close placeholder row
+    for today with NaN volume. Old behavior: backtest fails with
+    'today's row has missing indicator features'. New behavior: walk
+    back to the most recent COMPLETE bar so we use yesterday's pattern
+    rather than failing the section."""
+    df = _synth_daily_bars()
+    # Replace the last row with a placeholder (NaN close + NaN volume).
+    # This is what the morning fetcher sometimes writes before RTH closes.
+    df.iloc[-1, df.columns.get_loc("close")] = None
+    df.iloc[-1, df.columns.get_loc("volume")] = None
+    patch_query("market_data_daily", df)
+    out = summarizers.summarize_backtest_metrics("SPY", cross_ticker=False)
+    assert out["available"] is True, out.get("reason")
+    assert out["pattern_is_proxy"] is True  # walked back to yesterday
+    # The pattern date is now D-1 (the last complete bar)
+    assert out["pattern_today"]["date"] != str(df.iloc[-1]["date"])
+
+
+def test_backtest_metrics_no_proxy_when_today_complete(patch_query):
+    """Defensive: when the latest row is complete, pattern_today comes
+    from it and pattern_is_proxy is False."""
+    patch_query("market_data_daily", _synth_daily_bars())
+    out = summarizers.summarize_backtest_metrics("SPY", cross_ticker=False)
+    assert out["available"] is True
+    assert out["pattern_is_proxy"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -368,11 +438,22 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
 
     monkeypatch.setattr(summarizers, "_query", bad_query)
     bundle = summarizers.build_context_bundle("SPY")
-    # Every section should have failed gracefully
+    # Every section should have failed gracefully.
+    # `signals` was removed from the bundle on 2026-05-11 to break the
+    # signal-monitor feedback loop; it's no longer in the section set.
     assert set(bundle["failed_sections"]) >= {
-        "market", "strat", "options", "gamma", "signals", "backtest", "catalysts"
+        "market", "strat", "options", "gamma", "backtest", "catalysts"
     }
     assert bundle["market"]["available"] is False
+    # Audit 2026-05-08 G.P2.13: per-section failure reasons must
+    # be captured in the bundle so the orchestrator can persist them
+    # on the report (no scraping Cloud Logs).
+    assert "failed_section_reasons" in bundle
+    reasons = bundle["failed_section_reasons"]
+    assert "market" in reasons
+    assert "DB down" in reasons["market"]
+    # Exception-caught reasons get the `exception:` prefix
+    assert reasons["market"].startswith("exception: RuntimeError")
 
 
 # ---------------------------------------------------------------------------
@@ -380,30 +461,49 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _eod_chain_fixture(snapshot_date):
+    """Helper: balanced ATM chain that produces a usable gamma summary."""
+    return pd.DataFrame([
+        # Heavy puts at 95 → negative GEX below
+        {"option_type": "puts",  "strike": 95.0, "expiration": date(2025, 11, 21),
+         "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": -0.30,
+         "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
+         "snapshot_date": snapshot_date},
+        # ATM call/put balanced — spot via parity should land near 100
+        {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
+         "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": 0.50,
+         "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+         "snapshot_date": snapshot_date},
+        {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
+         "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": -0.50,
+         "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50,
+         "snapshot_date": snapshot_date},
+        # Heavy calls at 105 → positive GEX above
+        {"option_type": "calls", "strike": 105.0, "expiration": date(2025, 11, 21),
+         "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": 0.30,
+         "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
+         "snapshot_date": snapshot_date},
+    ])
+
+
 def test_gamma_levels_extracts_kings_and_regime(patch_query):
-    """Synthetic chain → King at the heaviest strike, regime classified."""
+    """Synthetic chain → King at the heaviest strike, regime classified.
+
+    Uses the EOD-fallback path (needle scopes to market_session = 'EOD'
+    so phase 1 REALTIME returns empty and phase 2 EOD picks up the
+    fixture). Asserts the new data_source field defaults to
+    'eod_fallback' when only EOD data is present and within the 2-day
+    freshness window.
+    """
     patch_query(
-        "etf_options_snapshots",
-        pd.DataFrame([
-            # Heavy puts at 95 → negative GEX below
-            {"option_type": "puts",  "strike": 95.0, "expiration": date(2025, 11, 21),
-             "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": -0.30,
-             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13},
-            # ATM call/put balanced
-            {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
-             "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": 0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
-            {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
-             "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": -0.50,
-             "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50},
-            # Heavy calls at 105 → positive GEX above
-            {"option_type": "calls", "strike": 105.0, "expiration": date(2025, 11, 21),
-             "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": 0.30,
-             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13},
-        ]),
+        "market_session = 'EOD'",
+        _eod_chain_fixture(date(2026, 5, 12)),
     )
-    out = summarizers.summarize_gamma_levels("XYZ")
+    # as_of=2026-05-13 (Wed) reading 2026-05-12 (Tue) chain = 1 trading day behind = fresh
+    out = summarizers.summarize_gamma_levels("XYZ", as_of=date(2026, 5, 13))
     assert out["available"] is True
+    assert out["data_source"] == "eod_fallback"
+    assert out["snapshot_ts"]  # populated (falls back to snapshot_date when ts col absent)
     assert out["spot"] == pytest.approx(100.0, abs=0.5)
     # Spot via parity (mark prices balanced at 100)
     assert out["spot_method"] == "parity"
@@ -418,10 +518,123 @@ def test_gamma_levels_extracts_kings_and_regime(patch_query):
 
 
 def test_gamma_levels_unavailable_when_no_chain(patch_query):
-    # No data set up → empty DataFrame returned
+    # No data set up → both phase 1 (REALTIME) and phase 2 (EOD)
+    # return empty → unavailable.
     out = summarizers.summarize_gamma_levels("ZZZ")
     assert out["available"] is False
     assert "no etf_options_snapshots" in out["reason"]
+
+
+def test_gamma_levels_realtime_preferred_over_eod(patch_query):
+    """REALTIME snapshot present → use it, ignore EOD even if newer date.
+
+    Models a midday brief where both an EOD chain from last night and a
+    fresh REALTIME chain from 5 min ago exist; the function must return
+    the realtime one with data_source='realtime' and the intraday
+    snapshot_ts.
+    """
+    intraday_ts = pd.Timestamp("2026-05-13 14:32:00", tz="UTC")
+    realtime_df = _eod_chain_fixture(date(2026, 5, 13))
+    realtime_df["snapshot_ts"] = intraday_ts
+    patch_query("market_session = 'REALTIME'", realtime_df)
+    # Also seed an EOD row — the function must NOT pick it up because
+    # REALTIME is found first.
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(date(2026, 5, 12)))
+
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["data_source"] == "realtime"
+    # snapshot_ts should reflect the realtime fixture's intraday timestamp,
+    # not the EOD fixture's date-only stamp.
+    assert "14:32" in out["snapshot_ts"]
+
+
+def test_gamma_levels_falls_back_to_eod_when_no_realtime(patch_query):
+    """No REALTIME rows → fall through to EOD, mark as eod_fallback."""
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(date(2026, 5, 12)))
+    # Do NOT register a market_session = 'REALTIME' needle — phase 1
+    # returns empty → phase 2 picks up the EOD chain.
+
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["data_source"] == "eod_fallback"
+    assert out["spot"] == pytest.approx(100.0, abs=0.5)
+
+
+def test_gamma_levels_stale_eod_returns_stale_fallback(patch_query):
+    """3-5 trading days behind as_of → populated summary with stale_fallback flag.
+
+    Pre-Track-1 behavior was to silence the section entirely at 3+ days
+    behind. New behavior surfaces the dealer walls so users still get
+    context, with `data_source='stale_fallback'` so the brief / analyst
+    prompt can render a warning footer.
+    """
+    patch_query(
+        "market_session = 'EOD'",
+        _eod_chain_fixture(date(2026, 5, 8)),   # Fri — 3 trading days behind Wed
+    )
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["data_source"] == "stale_fallback"
+    # Summary still populated despite the warning flag
+    assert out["spot"] is not None
+    assert len(out["kings"]) >= 1
+
+
+def test_gamma_levels_hard_stale_returns_unavailable(patch_query):
+    """>5 trading days behind as_of → return _unavailable (the hard cutoff).
+
+    Dealer positioning a week old is no longer signal — strikes have
+    rolled, expirations have been added.
+    """
+    patch_query(
+        "market_session = 'EOD'",
+        _eod_chain_fixture(date(2026, 5, 1)),   # ~8 trading days behind Wed 5/13
+    )
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is False
+    assert "hard-stale" in out["reason"]
+
+
+def test_chain_freshness_boundary_2_trading_days_is_fresh():
+    """Boundary: exactly 2 trading days behind = served (threshold is > 2)."""
+    # Mon → Wed = 2 trading days behind (Mon, Tue, Wed excluded as end)
+    reason = summarizers._check_chain_freshness(
+        chain_date=date(2026, 5, 11),   # Mon
+        target_date=date(2026, 5, 13),  # Wed
+    )
+    assert reason is None
+
+
+def test_chain_freshness_3_trading_days_is_stale():
+    """Boundary: 3 trading days behind = stale."""
+    reason = summarizers._check_chain_freshness(
+        chain_date=date(2026, 5, 11),   # Mon
+        target_date=date(2026, 5, 14),  # Thu (Mon, Tue, Wed = 3 trading days)
+    )
+    assert reason is not None
+    assert "3 trading days behind" in reason
+
+
+def test_chain_freshness_accepts_datetime_target():
+    """`INSIGHT_AS_OF` ISO timestamps land as tz-aware `datetime` via
+    `parse_as_of`. The helper must coerce to `.date()` before counting
+    so np.busday_count doesn't raise."""
+    from datetime import datetime, timezone
+    # Mon Tue Wed = 3 trading days but with datetime input — should still work
+    reason = summarizers._check_chain_freshness(
+        chain_date=datetime(2026, 5, 11, 16, 0, tzinfo=timezone.utc),
+        target_date=datetime(2026, 5, 14, 13, 30, tzinfo=timezone.utc),
+    )
+    assert reason is not None
+    assert "3 trading days behind" in reason
+
+    # Fresh case with datetime should also work
+    reason_fresh = summarizers._check_chain_freshness(
+        chain_date=datetime(2026, 5, 12, 21, 0, tzinfo=timezone.utc),
+        target_date=datetime(2026, 5, 13, 8, 45, tzinfo=timezone.utc),
+    )
+    assert reason_fresh is None
 
 
 def test_build_context_bundle_includes_gamma(patch_query):
@@ -430,13 +643,18 @@ def test_build_context_bundle_includes_gamma(patch_query):
         pd.DataFrame([
             {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
              "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": 0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
              "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": -0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 12)},
         ]),
     )
-    bundle = summarizers.build_context_bundle("XYZ")
+    # Pass explicit as_of so this test doesn't decay over time (the
+    # snapshot_date is fixed at 2026-05-12; without as_of it would be
+    # compared against date.today() and start failing on 2026-05-15+).
+    bundle = summarizers.build_context_bundle("XYZ", as_of=date(2026, 5, 13))
     assert "gamma" in bundle
     # Other sections are unavailable in this fixture, but gamma must be the
     # one populated when only chain data is fixtured
@@ -468,13 +686,20 @@ def test_news_sentiment_classifies_bullish_bearish_neutral(patch_query):
     assert res["article_count"] == 7
 
 
-def test_news_sentiment_unavailable_when_no_rows(patch_query):
-    """Empty DataFrame → unavailable + reason; downstream tier knows
-    to skip the sentiment analyst rather than feed it junk."""
+def test_news_sentiment_returns_empty_payload_when_no_rows(patch_query):
+    """Audit 2026-05-08 G.P2.13: empty news → available + zero-counts
+    payload (NOT unavailable). IWM had only 3 articles in 30 days during
+    May 2026 — failing the whole section every day for sparse-coverage
+    tickers degrades downstream debate. Better to surface 'no recent
+    news' to the analyst tier."""
     patch_query("FROM news_sentiment", pd.DataFrame())
     res = summarizers.summarize_news_sentiment("SPY")
-    assert res["available"] is False
-    assert "no news_sentiment" in res["reason"]
+    assert res["available"] is True
+    assert res["article_count"] == 0
+    assert res["bullish_count"] == 0
+    assert res["bearish_count"] == 0
+    assert res["headlines"] == []
+    assert "sparse-coverage" in res["note"]
 
 
 def test_news_sentiment_returns_top5_by_relevance(patch_query):

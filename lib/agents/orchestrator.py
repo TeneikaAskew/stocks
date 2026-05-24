@@ -48,9 +48,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import date as date_type, datetime, timezone
-from typing import Any, Callable, Optional, Type
+from typing import Any, Callable, Literal, Optional, Type
 
 from pydantic import BaseModel
 
@@ -96,17 +97,25 @@ class _Tracker:
     def __init__(self) -> None:
         self.total_cost: float = 0.0
         self.calls: int = 0
+        # Per-role accumulator. Keys are role identifiers — analyst and
+        # risk subdivide further (e.g. "analyst:market", "risk:neutral")
+        # so dashboards can attribute spend to specific personas. Audit
+        # 2026-05-08 G.P3.2.
+        self.per_role_cost: dict[str, float] = {}
 
-    def add(self, usage: Usage) -> None:
+    def add(self, usage: Usage, *, role_key: str) -> None:
         self.calls += 1
         try:
-            self.total_cost += usage.cost_usd()
+            cost = usage.cost_usd()
         except KeyError:
             logger.warning(
                 "no price table entry for %s:%s — cost not tracked",
                 usage.provider,
                 usage.model,
             )
+            return
+        self.total_cost += cost
+        self.per_role_cost[role_key] = self.per_role_cost.get(role_key, 0.0) + cost
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +146,8 @@ async def _run_node(
         temperature=temperature,
         max_output_tokens=max_output_tokens,
     )
-    tracker.add(result.usage)
+    role_key = f"{role}:{sub}" if sub else role
+    tracker.add(result.usage, role_key=role_key)
     return result.parsed
 
 
@@ -315,11 +325,17 @@ async def run_insight_pipeline(
 
     analyst_reports: dict[str, AnalystOutput] = {}
     failed_sections: list[str] = list(bundle.get("failed_sections", []))
+    failed_reasons: dict[str, str] = dict(
+        bundle.get("failed_section_reasons", {})
+    )
     for section, result in zip(analyst_sections, raw_analyst_results):
         if isinstance(result, Exception):
             logger.warning("analyst %s failed: %s", section, result)
             if section not in failed_sections:
                 failed_sections.append(section)
+            failed_reasons[section] = (
+                f"analyst-llm: {type(result).__name__}: {result}"
+            )
             analyst_reports[section] = None  # type: ignore[assignment]
         else:
             analyst_reports[section] = result  # type: ignore[assignment]
@@ -459,13 +475,17 @@ async def run_insight_pipeline(
     strat_section = bundle.get("strat", {})
     strat_status = _build_strat_snapshot(strat_section)
     catalysts = _build_catalysts(bundle.get("catalysts", {}))
-    signals_refs = _build_signal_refs(bundle.get("signals", {}))
 
-    # Deterministic fallback for key_levels — the PM agent often returns
-    # an empty dict, leaving the report section blank. Back-fill from the
-    # context bundle we already queried (no new SQL).
-    if not pm.key_levels:
-        pm.key_levels = _derive_key_levels(bundle)
+    # Deterministic key_levels — sourced directly from the context bundle
+    # so the report always shows the FULL multi-timeframe level map
+    # (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL + effective_PDH/PDL +
+    # gamma flip/kings/gates + EMA 20/SMA 200 + Max Pain), not just
+    # whichever subset the PM LLM happened to surface. Previously this
+    # was a fallback-only path that ran when pm.key_levels was empty,
+    # which is why QQQ 5/6 reports showed only "Prev High / Prev Low"
+    # and hid PWH/PMH/PQH/PYH from the user even though the trade
+    # planner's blue-sky classification depended on them.
+    pm.key_levels = _derive_key_levels(bundle)
 
     # Flatten all risk flags from all personas. The numeric `plan` field
     # the LLM personas may emit is intentionally IGNORED here — it's
@@ -474,6 +494,30 @@ async def run_insight_pipeline(
     all_flags: list[RiskFlag] = []
     for r in risk_outputs:
         all_flags.extend(r.flags)
+
+    # Reflection memory (audit G.P2.12): build a query embedding from
+    # the bundle and retrieve the 5 nearest historical journal entries.
+    # If the caller injected an embedding (tests / replay), use that
+    # directly. Otherwise generate one inline from a compact summary
+    # of today's setup. Any failure (Vertex creds missing, network
+    # blip, table missing) degrades to no similar-trade context — the
+    # rest of the report still ships.
+    if query_embedding is None:
+        try:
+            from .embeddings import embed_text
+            query_text = _build_embedding_query_text(ticker, bundle)
+            query_embedding = await embed_text(query_text)
+            logger.info(
+                "reflection_memory ticker=%s query_text=%r embedded=true",
+                ticker, query_text,
+            )
+        except Exception as e:
+            logger.warning(
+                "reflection_memory: embedding failed for %s (%s: %s) — "
+                "skipping similar-trade lookup",
+                ticker, type(e).__name__, e,
+            )
+            query_embedding = None
 
     similar: list[JournalRef] = []
     if query_embedding:
@@ -486,6 +530,45 @@ async def run_insight_pipeline(
     blocked = any(f.severity == "block" for f in all_flags)
     direction = "flat" if blocked else pm.direction
 
+    # Deterministic conviction calibration (#349). Replaces the LLM's
+    # `pm.conviction` with a math-from-inputs computation. Audit
+    # 2026-05-08 G.P3.1's prompt-only fix didn't take — 21/21 reports
+    # still showed 'medium' post-PR-A. The data needed to compute
+    # conviction is already deterministic at this point in the
+    # pipeline (analyst agreement count, FTFC, risk flags,
+    # confidence_score) so there's no analytical reason to keep
+    # asking the LLM to do this 4-input threshold check.
+    analyst_agreement = _count_analyst_agreement(
+        analyst_reports, direction
+    )
+    ftfc_score = float((bundle.get("strat") or {}).get("ftfc_score") or 0.0)
+    risk_severities = [f.severity for f in all_flags]
+    conviction = _calibrate_conviction(
+        direction=direction,
+        confidence_score=float(pm.confidence_score),
+        analyst_agreement_count=analyst_agreement,
+        ftfc_score=ftfc_score,
+        risk_severities=risk_severities,
+    )
+    if conviction != pm.conviction:
+        logger.info(
+            "conviction_calibrated ticker=%s direction=%s llm=%s "
+            "deterministic=%s analyst_agreement=%d ftfc=%.2f "
+            "warns=%d blocks=%d confidence=%.2f",
+            ticker, direction, pm.conviction, conviction,
+            analyst_agreement, ftfc_score,
+            sum(1 for s in risk_severities if s == "warn"),
+            sum(1 for s in risk_severities if s == "block"),
+            float(pm.confidence_score),
+        )
+
+    # Filter supporting_signals by trade direction so the report doesn't
+    # cite contradictory alerts (e.g. PUT signals under a long thesis).
+    # Audit 2026-05-08 G.P2.14: QQQ 5/7 long report cited 5 PUT signals.
+    signals_refs = _build_signal_refs(
+        bundle.get("signals", {}), direction=direction
+    )
+
     # ── Deterministic persona plans ────────────────────────────────
     # Compute entry/stop/targets/sizing from the same bundle the LLMs
     # saw, using the recipes documented in lib/agents/trade_planner.py.
@@ -494,7 +577,7 @@ async def run_insight_pipeline(
     # reproducible across runs.
     from .trade_planner import compute_persona_plans, context_from_bundle
     try:
-        plan_ctx = context_from_bundle(bundle, direction, pm.conviction)
+        plan_ctx = context_from_bundle(bundle, direction, conviction)
         persona_plans = compute_persona_plans(plan_ctx)
     except Exception as exc:
         logger.warning("deterministic plan compute failed: %s", exc)
@@ -540,7 +623,7 @@ async def run_insight_pipeline(
         ticker=ticker.upper(),
         as_of=datetime.now(timezone.utc) if as_of is None else _as_datetime(as_of),
         direction=direction,
-        conviction=pm.conviction,
+        conviction=conviction,  # deterministic calibration (#349)
         thesis=pm.thesis,
         regime=regime,
         entry_zone=headline_entry_zone,
@@ -559,9 +642,26 @@ async def run_insight_pipeline(
         similar_past_trades=similar,
         confidence_score=pm.confidence_score,
         failed_sections=failed_sections,
+        failed_section_reasons=failed_reasons,
         model_versions=snapshot.model_versions(),
         run_cost_usd=round(tracker.total_cost, 6),
         run_latency_ms=int((time.monotonic() - start) * 1000),
+        per_role_cost={k: round(v, 6) for k, v in tracker.per_role_cost.items()},
+    )
+
+    # Audit 2026-05-08 G.P1.9 safety-net: warn (don't block) if the LLM
+    # named price levels in `thesis` that don't appear in the structured
+    # fields. The prompt already forbids this, but LLM compliance varies;
+    # the warning surfaces non-compliance so we can measure how often it
+    # happens after deploy.
+    _validate_thesis_consistency(
+        report.thesis,
+        ticker=report.ticker,
+        entry_zone=report.entry_zone,
+        stop=report.stop,
+        targets=report.targets,
+        key_levels=report.key_levels,
+        invalidation=report.invalidation,
     )
     return report
 
@@ -569,6 +669,229 @@ async def run_insight_pipeline(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# Match standalone numerals with at least one decimal place (so we don't
+# false-positive on "200 SMA" or "RSI 70" which are reference numbers,
+# not prices), AND dollar-prefixed prices ("$278.13"). Captures the
+# numeric portion only so we can compare against structured fields.
+#
+# Examples that match:
+#   "above 278.13"       → 278.13
+#   "$691.09"            → 691.09
+#   "targeting 704.38"   → 704.38
+#
+# Examples that don't:
+#   "200 SMA"            (no decimal)
+#   "RSI 70"             (no decimal)
+#   "+0.20%"             (percentage)
+_PRICE_PATTERN = re.compile(r"\$?(\d{2,5}\.\d{1,2})\b")
+
+
+def _validate_thesis_consistency(
+    thesis: str,
+    *,
+    ticker: str,
+    entry_zone,
+    stop: float,
+    targets: list[float],
+    key_levels: dict,
+    invalidation: str,
+) -> list[float]:
+    """Scan `thesis` for price-like numerals and warn on any that don't
+    match a structured field value within tolerance.
+
+    Audit 2026-05-08 G.P1.9: LLM thesis text named target levels in
+    prose that didn't appear in JSON `targets[]` (e.g. QQQ 5/7 thesis
+    said 'targeting 677.8, 691.09 and 704.38' but `targets=[]`
+    because the deterministic planner overrode them). PR-C closes
+    that decoupling on the prompt side; this validator is the
+    safety-net that catches LLM non-compliance after the fact.
+
+    Returns the list of orphan numbers found (mainly for testing —
+    the function logs a warning for each but never raises, so the
+    pipeline keeps shipping reports).
+
+    Tolerance: 0.5 % absolute distance. Allows for LLM-introduced
+    rounding ("around 278.13" matching key_level 278.135) without
+    accepting genuinely different numbers (677.8 vs 738.13 is 8 %
+    apart — clearly orphan).
+    """
+    if not thesis:
+        return []
+
+    matched_numbers: list[float] = []
+    for m in _PRICE_PATTERN.finditer(thesis):
+        try:
+            matched_numbers.append(float(m.group(1)))
+        except (TypeError, ValueError):
+            continue
+    if not matched_numbers:
+        return []
+
+    structured: list[float] = []
+    if entry_zone is not None:
+        structured.extend([float(entry_zone.low), float(entry_zone.high)])
+    if stop is not None:
+        try:
+            structured.append(float(stop))
+        except (TypeError, ValueError):
+            pass
+    if targets:
+        structured.extend(float(t) for t in targets if t is not None)
+    if key_levels:
+        structured.extend(
+            float(v) for v in key_levels.values()
+            if isinstance(v, (int, float))
+        )
+    # Also pull any numerals from the invalidation prose — those are
+    # legitimately referenced in the thesis (e.g. "thesis kills below
+    # 712.29" matches invalidation "Price closes below 712.29").
+    if invalidation:
+        for m in _PRICE_PATTERN.finditer(invalidation):
+            try:
+                structured.append(float(m.group(1)))
+            except (TypeError, ValueError):
+                continue
+
+    orphans: list[float] = []
+    for num in matched_numbers:
+        # Within 0.5 % of any structured value → matched
+        matched = any(
+            abs(num - s) / max(abs(s), 1.0) <= 0.005
+            for s in structured
+        )
+        if not matched:
+            orphans.append(num)
+
+    if orphans:
+        logger.warning(
+            "thesis_validator ticker=%s orphan_count=%d orphans=%s "
+            "structured=%s thesis=%r",
+            ticker, len(orphans), orphans,
+            sorted(set(round(s, 4) for s in structured))[:10],
+            thesis[:240],
+        )
+    return orphans
+def _build_embedding_query_text(ticker: str, bundle: dict) -> str:
+    """Compose a short natural-language description of today's setup
+    for reflection-memory retrieval.
+
+    Captures the same fields that semantically determine "is this trade
+    similar to a past one": ticker, strat candle/combo, FTFC direction,
+    market regime, gap %, vol tag, position vs 200-SMA. Cosine
+    similarity over text-embedding-005 vectors clusters days with
+    similar setups together — so a today=2U+bullish-FTFC+gap+0.3% on
+    SPY retrieves prior journal entries with similar bar profiles.
+
+    Audit 2026-05-08 G.P2.12: this is the production input that turns
+    the dormant reflection-memory infrastructure on.
+    """
+    strat = bundle.get("strat") or {}
+    market = bundle.get("market") or {}
+    parts: list[str] = [ticker.upper()]
+    if strat.get("last_candle"):
+        parts.append(f"strat candle {strat['last_candle']}")
+    if strat.get("in_force_combo"):
+        parts.append(f"combo {strat['in_force_combo']}")
+    if strat.get("ftfc_direction"):
+        parts.append(f"FTFC {strat['ftfc_direction']}")
+    if market.get("regime"):
+        parts.append(f"regime {market['regime']}")
+    premarket = market.get("premarket") or {}
+    gap_pct = premarket.get("gap_pct")
+    if isinstance(gap_pct, (int, float)):
+        parts.append(f"gap {gap_pct:+.2f}%")
+    if market.get("vol_tag"):
+        parts.append(f"vol {market['vol_tag']}")
+    above = market.get("above_sma_200")
+    if above is True:
+        parts.append("above 200-SMA")
+    elif above is False:
+        parts.append("below 200-SMA")
+    return " ".join(parts)
+
+
+def _count_analyst_agreement(
+    analyst_reports: dict, direction: str,
+) -> int:
+    """Count how many of the 6 analyst sections produced a `bias` that
+    matches the report `direction`. Used by `_calibrate_conviction`.
+
+    Mapping: long → bullish, short → bearish, flat → neutral. None or
+    failed analysts (value is None in the dict) don't count.
+    """
+    target_bias = {
+        "long": "bullish",
+        "short": "bearish",
+        "flat": "neutral",
+    }.get(direction)
+    if target_bias is None:
+        return 0
+    n = 0
+    for analyst in analyst_reports.values():
+        if analyst is None:
+            continue
+        if getattr(analyst, "bias", None) == target_bias:
+            n += 1
+    return n
+
+
+def _calibrate_conviction(
+    *,
+    direction: str,
+    confidence_score: float,
+    analyst_agreement_count: int,
+    ftfc_score: float,
+    risk_severities: list[str],
+) -> Literal["low", "medium", "high"]:
+    """Deterministic conviction calibration. Replaces the LLM's
+    pm.conviction with a math-from-inputs threshold check.
+
+    Audit 2026-05-08 G.P3.1 + #349: prompt-only intervention failed
+    (21/21 reports stuck on 'medium' post-PR-A). Conviction is a
+    4-input threshold check; the LLM adds no judgment value here, so
+    derive it deterministically.
+
+    Decision tree:
+      * direction == 'flat'                          → 'low'
+      * any 'block' in risk_severities               → 'low'
+      * ≥4 of 6 analyst sections agree              ┐
+        AND |FTFC| ≥ 0.5                            │
+        AND zero 'warn' flags                       ├ → 'high'
+        AND confidence_score ≥ 0.7                  ┘
+      * 2-3 of 6 analyst sections agree             ┐
+        AND ≤1 'warn' flag                          ├ → 'medium'
+        AND 0.4 ≤ confidence_score ≤ 0.7            ┘
+      * everything else                              → 'low'
+    """
+    if direction == "flat":
+        return "low"
+    if any(s == "block" for s in risk_severities):
+        return "low"
+    warn_count = sum(1 for s in risk_severities if s == "warn")
+    # FTFC is signed (-1.0 bearish to +1.0 bullish). For high conviction,
+    # the sign must MATCH the trade direction — `abs(ftfc_score) >= 0.5`
+    # would let a contradicting FTFC count as agreement (e.g. long with
+    # ftfc_score=-0.8). Codex review on PR #351 caught this.
+    ftfc_aligned = (
+        (direction == "long" and ftfc_score >= 0.5)
+        or (direction == "short" and ftfc_score <= -0.5)
+    )
+    if (
+        analyst_agreement_count >= 4
+        and ftfc_aligned
+        and warn_count == 0
+        and confidence_score >= 0.7
+    ):
+        return "high"
+    if (
+        analyst_agreement_count >= 2
+        and warn_count <= 1
+        and 0.4 <= confidence_score <= 0.7
+    ):
+        return "medium"
+    return "low"
 
 
 def _analyst_section_key(section: str) -> str:
@@ -584,17 +907,51 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     The PM agent frequently leaves ``key_levels`` empty. Rather than adding
     a new SQL query, synthesize the levels from data the bundle already
     carries: prior day high/low (strat section), 200 SMA and 20 EMA
-    (market section), and max-pain proxy (options section).
+    (market section), max-pain proxy (options section), and gamma flip /
+    king / gate strikes (gamma section — issue #359).
     """
     levels: dict[str, float] = {}
 
     strat = bundle.get("strat", {}) or {}
     if strat.get("available"):
+        # Full multi-timeframe level map populated by
+        # summarize_strat_status → compute_previous_levels. Surface every
+        # timeframe (day/week/month/quarter/year + mother-bar walk-back)
+        # so users can audit which level the trade-planner classified
+        # against. "Prev High/Low" alone hid PWH/PMH/PQH/PYH/effective_*
+        # from the report even though the planner's blue-sky / extended /
+        # normal regime classification depended on them.
+        # Label map: short codes -> human-readable. Order matters only
+        # for readability — Python 3.7+ dicts preserve insertion.
+        _LEVEL_LABEL_MAP = (
+            ("PDH", "Prev Day High"),
+            ("PDL", "Prev Day Low"),
+            ("PWH", "Prev Week High"),
+            ("PWL", "Prev Week Low"),
+            ("PMH", "Prev Month High"),
+            ("PML", "Prev Month Low"),
+            ("PQH", "Prev Quarter High"),
+            ("PQL", "Prev Quarter Low"),
+            ("PYH", "Prev Year High"),
+            ("PYL", "Prev Year Low"),
+            ("effective_PDH", "Effective PDH"),
+            ("effective_PDL", "Effective PDL"),
+        )
+        strat_levels = strat.get("levels") or {}
+        for code, label in _LEVEL_LABEL_MAP:
+            v = strat_levels.get(code)
+            if isinstance(v, (int, float)):
+                levels[label] = float(v)
+
+        # Legacy "Prev High/Low" kept for any consumer that still keys
+        # off those exact labels (admin dashboard, divergence card).
+        # When the full level map is present these are duplicates of
+        # PDH/PDL but with the older naming.
         th = strat.get("trigger_high")
         tl = strat.get("trigger_low")
-        if isinstance(th, (int, float)):
+        if isinstance(th, (int, float)) and "Prev Day High" not in levels:
             levels["Prev High"] = float(th)
-        if isinstance(tl, (int, float)):
+        if isinstance(tl, (int, float)) and "Prev Day Low" not in levels:
             levels["Prev Low"] = float(tl)
 
     market = bundle.get("market", {}) or {}
@@ -611,6 +968,85 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
         mp = options.get("max_pain_strike_proxy")
         if isinstance(mp, (int, float)):
             levels["Max Pain"] = float(mp)
+
+    # Gamma section — issue #359. The LLM thesis frequently mentions
+    # "the gamma flip at $X" or "King strike at $Y"; without surfacing
+    # those numbers in `key_levels`, PR-C's thesis_validator flagged
+    # them as orphans (8/21 reports during 2026-05-09 validation).
+    # Pull the flip price + the closest King strike + the closest Gates
+    # above and below spot, when the gamma section ran successfully.
+    gamma = bundle.get("gamma", {}) or {}
+    if gamma.get("available"):
+        # Track 5: namespace the gamma-derived key_level keys with
+        # ' (EOD)' when the underlying chain is from a fallback path
+        # (data_source ∈ {'eod_fallback','stale_fallback'} or missing).
+        # The downstream trader / judge / risk-reviewer prompts read
+        # these keys and emit prose like "target the Gamma Flip at
+        # 502" — without the suffix they'd reference a stale Tuesday
+        # close as if it were live. Bundles that predate Track 1
+        # (no data_source field) default to suffixed, matching the
+        # pre-Track-0 reality where every gamma read was EOD.
+        # See docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 5.
+        _ds = gamma.get("data_source")
+        _gsfx = "" if _ds == "realtime" else " (EOD)"
+
+        flip = gamma.get("flip")
+        if isinstance(flip, (int, float)):
+            levels[f"Gamma Flip{_gsfx}"] = float(flip)
+        # Kings — `summary.kings` preserves classify_levels()/strike order,
+        # not nearest-to-spot order, so `kings[0]` could surface the
+        # lowest king while the gamma analyst is prompted to call out the
+        # king above OR below spot. To prevent the validator from
+        # orphaning a king reference, surface the closest king above spot
+        # AND the closest king below spot when both exist (per Codex P2
+        # review on PR #362). Keys are namespaced (above/below) so
+        # downstream consumers can render both.
+        spot_for_kings = gamma.get("spot")
+        kings = gamma.get("kings") or []
+        king_strikes: list[float] = []
+        for k in kings:
+            if not isinstance(k, dict):
+                continue
+            ks = k.get("strike")
+            if isinstance(ks, (int, float)):
+                king_strikes.append(float(ks))
+        if king_strikes and isinstance(spot_for_kings, (int, float)):
+            spot_f = float(spot_for_kings)
+            below = [s for s in king_strikes if s < spot_f]
+            above = [s for s in king_strikes if s > spot_f]
+            if below:
+                levels[f"Gamma King Below{_gsfx}"] = max(below)
+            if above:
+                levels[f"Gamma King Above{_gsfx}"] = min(above)
+        elif king_strikes:
+            # No spot to compare — keep legacy first-king behaviour so
+            # callers aren't broken on bundles missing `gamma.spot`.
+            levels[f"Gamma King{_gsfx}"] = king_strikes[0]
+        # For the gates, surface the closest one above and below spot.
+        # The dealer-positioning analyst typically calls these out in
+        # prose; populating the structured field closes the loop.
+        spot = gamma.get("spot")
+        gates = gamma.get("gates") or []
+        if isinstance(spot, (int, float)) and gates:
+            above_strikes = sorted(
+                float(g["strike"]) for g in gates
+                if isinstance(g, dict)
+                and isinstance(g.get("strike"), (int, float))
+                and g["strike"] > spot
+            )
+            below_strikes = sorted(
+                (
+                    float(g["strike"]) for g in gates
+                    if isinstance(g, dict)
+                    and isinstance(g.get("strike"), (int, float))
+                    and g["strike"] < spot
+                ),
+                reverse=True,
+            )
+            if above_strikes:
+                levels[f"Gamma Gate Above{_gsfx}"] = above_strikes[0]
+            if below_strikes:
+                levels[f"Gamma Gate Below{_gsfx}"] = below_strikes[0]
 
     return levels
 
@@ -656,16 +1092,34 @@ def _build_catalysts(section: dict) -> list[Catalyst]:
     return out
 
 
-def _build_signal_refs(section: dict) -> list[SignalRef]:
+_DIRECTION_TO_OPTION: dict[str, str] = {"long": "CALL", "short": "PUT"}
+
+
+def _build_signal_refs(
+    section: dict,
+    *,
+    direction: Optional[str] = None,
+) -> list[SignalRef]:
+    """Convert the signals summarizer section to SignalRef rows.
+
+    When ``direction`` is ``"long"`` or ``"short"``, only signals
+    matching the corresponding option side (CALL / PUT respectively)
+    are surfaced. ``"flat"`` and ``None`` keep the full set so flat
+    reports still contextualize against the prior alert stream.
+    """
     if not section or not section.get("available"):
         return []
+    keep = _DIRECTION_TO_OPTION.get(direction or "")
     out: list[SignalRef] = []
     for r in section.get("recent", []) or []:
         try:
+            row_direction = r["direction"]
+            if keep is not None and row_direction != keep:
+                continue
             out.append(
                 SignalRef(
                     alert_ts=str(r["alert_ts"]),
-                    direction=r["direction"],
+                    direction=row_direction,
                     strength=r.get("strength") or "unknown",
                     score=float(r.get("score") or 0.0),
                 )

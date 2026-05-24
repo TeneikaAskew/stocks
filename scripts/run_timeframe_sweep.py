@@ -18,6 +18,7 @@ Usage:
 import argparse
 import sys
 import os
+import uuid
 from pathlib import Path
 from datetime import datetime, time as dtime
 from copy import deepcopy
@@ -31,6 +32,39 @@ from lib.data_loader import DataLoader
 from lib.indicators import add_all_indicators
 from lib.config import load_config, ExitConfig, SignalConfig
 from lib.backtest import BacktestEngine, BacktestResult
+
+
+def persist_sweeps(
+    sweep_rows: list,
+    run_id: str,
+    ticker: str,
+) -> int:
+    """Write timeframe-sweep rows to the backtest_sweeps Cloud SQL table.
+
+    Replaces the CSV hand-off to generate_backtest_report.py. Each row
+    is one (timeframe / combo) tested, tagged with the shared pipeline
+    ``run_id``. Raises on Cloud SQL failure — the table is the canonical
+    path (per CLAUDE.md §3.7: no silent fallbacks in data-access code).
+
+    Returns the number of rows written.
+    """
+    from gcp.database import upsert_dataframe
+
+    df = pd.DataFrame(sweep_rows)
+    if df.empty:
+        return 0
+
+    # Map the in-memory result_to_row() dict keys → table columns.
+    # 'label' and 'type' already match; the rest are 1:1.
+    df = df.rename(columns={'type': 'sweep_type'})
+    df.insert(0, 'run_id', run_id)
+    df.insert(1, 'ticker', ticker)
+
+    return upsert_dataframe(
+        df,
+        table='backtest_sweeps',
+        conflict_cols=['run_id', 'ticker', 'label'],
+    )
 
 
 # -- Timeframe definitions ----------------------------------------------------
@@ -132,31 +166,46 @@ def run_combination(
     base_exit: ExitConfig,
     base_signal: SignalConfig,
     use_strat: bool,
+    filter_ema_period: int = 20,
 ) -> BacktestResult:
     """Run 1-minute signals filtered by a higher-TF trend direction.
 
     Logic:
-    - Resample 1m -> higher TF, compute EMA20 on higher TF
+    - Resample 1m -> higher TF, compute EMA(``filter_ema_period``) on higher TF
     - For each 1m bar, look up the *most recent completed* higher-TF bar
-    - Only allow CALL signals when higher-TF price > higher-TF EMA20
-    - Only allow PUT signals when higher-TF price < higher-TF EMA20
+    - Only allow CALL signals when higher-TF price > higher-TF EMA
+    - Only allow PUT signals when higher-TF price < higher-TF EMA
     - If neutral (within 0.05%), allow both directions
 
     We implement this by adding a 'Higher_TF_Trend' column to the 1m
     DataFrame and patching the evaluate_signal call indirectly through
     indicator manipulation.
+
+    ``filter_ema_period`` (default 20) parameterises the trend-filter
+    EMA — previously hardcoded to 20. Different periods materially
+    change which 1m bars are gated: a faster EMA (e.g. 10) flips trend
+    more often and lets through more counter-trend signals; a slower
+    EMA (e.g. 50) is more committal but misses regime shifts. Which
+    period performs best is an empirical question worth a separate
+    sweep; the parameterisation contract is covered by
+    ``tests/test_filter_ema_period.py``.
     """
+    if filter_ema_period <= 0:
+        raise ValueError(
+            f"filter_ema_period must be a positive integer "
+            f"(got {filter_ema_period!r})"
+        )
     close_col = 'Close' if 'Close' in df_1m.columns else 'Last'
     tf_info = TIMEFRAMES[higher_tf_key]
     rule = tf_info['resample']
 
-    # 1) Build higher-TF data with EMA20
+    # 1) Build higher-TF data with the configured EMA period
     df_higher = resample_ohlcv(df_1m, rule)
     higher_close = df_higher['Close']
-    higher_ema20 = higher_close.ewm(span=20, adjust=False).mean()
+    higher_ema = higher_close.ewm(span=filter_ema_period, adjust=False).mean()
     df_higher['htf_trend'] = 0
-    df_higher.loc[higher_close > higher_ema20 * 1.0005, 'htf_trend'] = 1
-    df_higher.loc[higher_close < higher_ema20 * 0.9995, 'htf_trend'] = -1
+    df_higher.loc[higher_close > higher_ema * 1.0005, 'htf_trend'] = 1
+    df_higher.loc[higher_close < higher_ema * 0.9995, 'htf_trend'] = -1
 
     # 2) Forward-fill higher-TF trend into 1m index
     htf_trend = df_higher['htf_trend'].reindex(df_1m.index, method='ffill').fillna(0).astype(int)
@@ -209,6 +258,7 @@ def run_combination_general(
     base_exit: ExitConfig,
     base_signal: SignalConfig,
     use_strat: bool,
+    filter_ema_period: int = 20,
 ) -> BacktestResult:
     """Run entry signals on any timeframe, filtered by a higher-TF trend.
 
@@ -217,10 +267,18 @@ def run_combination_general(
 
     Logic is the same as run_combination:
     - Resample 1m data to *both* timeframes
-    - Compute EMA20 on the filter TF to determine trend
+    - Compute EMA(``filter_ema_period``) on the filter TF to determine trend
     - Forward-fill trend into the entry-TF index
-    - Only allow CALL when higher-TF price > EMA20, PUT when < EMA20
+    - Only allow CALL when higher-TF price > EMA, PUT when < EMA
+
+    ``filter_ema_period`` mirrors the run_combination() parameter — same
+    rationale, default 20. Tests pin the parameterisation contract.
     """
+    if filter_ema_period <= 0:
+        raise ValueError(
+            f"filter_ema_period must be a positive integer "
+            f"(got {filter_ema_period!r})"
+        )
     close_col = 'Close' if 'Close' in df_1m.columns else 'Last'
     entry_info = TIMEFRAMES[entry_tf_key]
     filter_info = TIMEFRAMES[filter_tf_key]
@@ -234,12 +292,12 @@ def run_combination_general(
     # Resample to filter TF
     df_filter = resample_ohlcv(df_1m, filter_info['resample'])
 
-    # Build higher-TF trend from filter TF
+    # Build higher-TF trend from filter TF (parameterised EMA period)
     filter_close = df_filter['Close']
-    filter_ema20 = filter_close.ewm(span=20, adjust=False).mean()
+    filter_ema = filter_close.ewm(span=filter_ema_period, adjust=False).mean()
     df_filter['htf_trend'] = 0
-    df_filter.loc[filter_close > filter_ema20 * 1.0005, 'htf_trend'] = 1
-    df_filter.loc[filter_close < filter_ema20 * 0.9995, 'htf_trend'] = -1
+    df_filter.loc[filter_close > filter_ema * 1.0005, 'htf_trend'] = 1
+    df_filter.loc[filter_close < filter_ema * 0.9995, 'htf_trend'] = -1
 
     # Forward-fill trend into entry-TF index
     htf_trend = df_filter['htf_trend'].reindex(df_entry.index, method='ffill').fillna(0).astype(int)
@@ -353,7 +411,28 @@ def main():
                         help='Higher-TF filters for combination tests (default: 15m 30m 1h)')
     parser.add_argument('--all-combos', action='store_true',
                         help='Test ALL entry+filter combinations (5m+15m, 5m+30m, 15m+30m, etc.)')
+    parser.add_argument(
+        '--filter-ema-period', type=int, default=20,
+        help=('EMA period for the higher-TF trend filter (default 20). Was '
+              'previously hardcoded. Used as the SINGLE period when '
+              '--filter-ema-periods is not given; ignored otherwise.'),
+    )
+    parser.add_argument(
+        '--filter-ema-periods', nargs='+', type=int, default=None,
+        help=('Sweep over multiple trend-filter EMA periods (e.g. '
+              '"--filter-ema-periods 10 20 50"). When set, every Phase-2 '
+              'and Phase-3 combo is re-run for EACH period; the combo '
+              'label becomes "<entry>+<filter>@ema<N>" so all variants '
+              'are independently rankable in backtest_sweeps. When '
+              'omitted, --filter-ema-period (singular) is used.'),
+    )
+    parser.add_argument('--run-id', type=str, default=None,
+                        help=('Shared pipeline run UUID. run_pipeline.py '
+                              'passes one id to every sub-step so the report '
+                              'stage can group all rows from one run. If '
+                              'omitted, a fresh uuid4 is generated.'))
     args = parser.parse_args()
+    run_id = args.run_id or str(uuid.uuid4())
 
     # Load config (with per-ticker overrides)
     cfg = load_config(ticker=args.ticker)
@@ -445,24 +524,53 @@ def main():
     if '1m' in tf_results:
         combo_rows.append(result_to_row('1m (baseline)', tf_results['1m']))
 
+    # Resolve the EMA period(s) to test. The legacy hardcoded value was
+    # 20, so any run that uses EMA=20 keeps the plain label '1m+15m'
+    # (backward compatible — old reports / queries still join). Any
+    # NON-default period (single or part of a sweep) gets the
+    # '@ema<N>' suffix so it's distinguishable in backtest_sweeps —
+    # otherwise a `--filter-ema-period 50` run would land with
+    # label='1m+15m' and be silently lumped with legacy EMA20 results
+    # (Codex P2 caught this on PR #547). Inside a multi-period sweep
+    # EVERY variant is suffixed (including 20) so the sweep is
+    # self-consistent.
+    LEGACY_DEFAULT_EMA = 20
+    ema_periods = (
+        args.filter_ema_periods
+        if args.filter_ema_periods
+        else [args.filter_ema_period]
+    )
+    sweep_emas = len(ema_periods) > 1
+
+    def _ema_label_suffix(period: int) -> str:
+        if sweep_emas:
+            return f"@ema{period}"
+        if period != LEGACY_DEFAULT_EMA:
+            return f"@ema{period}"
+        return ""
+
     for htf in args.combos:
         if htf not in TIMEFRAMES or TIMEFRAMES[htf]['resample'] is None:
             continue
 
-        print(f"  [1m + {htf} filter] Running combination backtest...")
+        for ema_period in ema_periods:
+            suffix = _ema_label_suffix(ema_period)
+            label = f"1m+{htf}{suffix}"
+            print(f"  [{label} filter] Running combination backtest...")
 
-        try:
-            combo_result = run_combination(
-                df, htf, cfg, cfg.exit, cfg.signal, args.use_strat,
-            )
-            row = result_to_row(f'1m+{htf}', combo_result)
-            combo_rows.append(row)
-            print(f"         -> {row['trades']} trades, "
-                  f"WR={row['win_rate']:.1%}, "
-                  f"E={row['expectancy']:+.3%}/trade, "
-                  f"Sharpe={row['sharpe']:.2f}")
-        except Exception as e:
-            print(f"         -> Error: {e}")
+            try:
+                combo_result = run_combination(
+                    df, htf, cfg, cfg.exit, cfg.signal, args.use_strat,
+                    filter_ema_period=ema_period,
+                )
+                row = result_to_row(label, combo_result)
+                combo_rows.append(row)
+                print(f"         -> {row['trades']} trades, "
+                      f"WR={row['win_rate']:.1%}, "
+                      f"E={row['expectancy']:+.3%}/trade, "
+                      f"Sharpe={row['sharpe']:.2f}")
+            except Exception as e:
+                print(f"         -> Error: {e}")
 
     if combo_rows:
         print("\n\n" + "=" * 70)
@@ -499,22 +607,25 @@ def main():
             print("  Testing coarser entry TFs with higher-TF trend filters\n")
 
             for entry_tf, filter_tf in pairs:
-                label = f'{entry_tf}+{filter_tf}'
-                print(f"  [{label}] Running {entry_tf} entries filtered by {filter_tf} trend...")
+                for ema_period in ema_periods:
+                    suffix = _ema_label_suffix(ema_period)
+                    label = f'{entry_tf}+{filter_tf}{suffix}'
+                    print(f"  [{label}] Running {entry_tf} entries filtered by {filter_tf} trend...")
 
-                try:
-                    combo_result = run_combination_general(
-                        df, entry_tf, filter_tf, cfg,
-                        cfg.exit, cfg.signal, args.use_strat,
-                    )
-                    row = result_to_row(label, combo_result)
-                    general_combo_rows.append(row)
-                    print(f"         -> {row['trades']} trades, "
-                          f"WR={row['win_rate']:.1%}, "
-                          f"E={row['expectancy']:+.3%}/trade, "
-                          f"Sharpe={row['sharpe']:.2f}")
-                except Exception as e:
-                    print(f"         -> Error: {e}")
+                    try:
+                        combo_result = run_combination_general(
+                            df, entry_tf, filter_tf, cfg,
+                            cfg.exit, cfg.signal, args.use_strat,
+                            filter_ema_period=ema_period,
+                        )
+                        row = result_to_row(label, combo_result)
+                        general_combo_rows.append(row)
+                        print(f"         -> {row['trades']} trades, "
+                              f"WR={row['win_rate']:.1%}, "
+                              f"E={row['expectancy']:+.3%}/trade, "
+                              f"Sharpe={row['sharpe']:.2f}")
+                    except Exception as e:
+                        print(f"         -> Error: {e}")
 
             if general_combo_rows:
                 print("\n\n" + "=" * 70)
@@ -544,6 +655,11 @@ def main():
     output_file = output_dir / f'timeframe_sweep_{args.ticker}_{timestamp}.csv'
     results_df.to_csv(output_file, index=False)
     print(f"\n\nResults saved to {output_file}")
+
+    # The backtest_sweeps Cloud SQL table is the canonical hand-off to
+    # the report stage; the local CSV above is kept for offline dev.
+    n_written = persist_sweeps(all_rows, run_id, args.ticker)
+    print(f"Wrote {n_written} sweep row(s) to backtest_sweeps (run_id={run_id})")
 
     # -- Summary ---------------------------------------------------------------
     print("\n" + "=" * 70)

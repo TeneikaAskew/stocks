@@ -14,6 +14,13 @@ import time as time_module
 import requests
 from pathlib import Path
 from datetime import datetime, time, timedelta
+from typing import Optional
+from zoneinfo import ZoneInfo
+
+# Cloud Run runs in UTC. All market-hours comparisons must be in ET so the
+# monitor doesn't think the market closes at noon ET (= 16:00 UTC, which
+# matches the configured market_close='16:00' under naive comparison).
+_ET = ZoneInfo("America/New_York")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -23,13 +30,22 @@ import numpy as np
 from lib.indicators import (
     calculate_rsi, calculate_ema, calculate_atr, calculate_vwap,
     calculate_rvol, calculate_obv, calculate_stoch_rsi, calculate_consecutive_moves,
+    calculate_rvol_recent, calculate_atr_expansion, calculate_rsi_thrust,
 )
 from lib.signals import evaluate_signal
+from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
 from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
+from lib.strategies.brief_bias import alignment as _brief_alignment
+from lib.strategies.brief_bias import get_premarket_bias
+from lib.strategies.insight_cache import (
+    InsightCache,
+    evaluate_direction_gate,
+    fetch_insight_for_ticker,
+)
 from lib.strategies.calibration import (
     get_call_rsi_range,
     get_put_rsi_range,
@@ -39,6 +55,31 @@ from lib.strategies.base import Signal
 from lib.strategies.timeframe import assign_timeframe
 from lib.strategies.catalyst_proximity import get_catalyst_context
 
+
+# 2026-05-10 (issue #386 logging gap): basicConfig was previously inside
+# main() — but module-level `logger.info` calls fire BEFORE main() runs
+# (e.g. during `from gcp.signal_monitor import ...` in unit tests), and
+# more importantly the previous structure meant Python's default WARNING
+# level dropped every INFO log including session_summary, mr fire, and
+# the new cap-diagnostics. Cloud Logging from production runs showed
+# zero `INFO` lines pre-fix. Move logger configuration to module-level so
+# handlers + INFO level are set BEFORE any logger.info call in this file.
+#
+# Codex P2 review on PR #391: a naive `if not handlers: basicConfig()`
+# guard preserves the same failure mode when ANY transitively-imported
+# module (requests, pandas, lib/* code) has already attached a root
+# handler — basicConfig is then skipped AND the existing handler keeps
+# the default WARNING level, so our INFO logs stay suppressed. Fix is
+# two-step: (1) always set root level to INFO so any existing handler
+# inherits it; (2) only basicConfig when no handler exists, to avoid
+# duplicating handler output if some other module already configured one.
+import logging as _logging
+_logging.getLogger().setLevel(_logging.INFO)
+if not _logging.getLogger().handlers:
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +101,13 @@ class SignalMonitor:
         self.proximity_cfg = self.cfg.proximity
 
         self.strat = StratClassifier(strat_config=self.strat_cfg)
-        self.webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+        # Signal entries, in-session exits and ORB snapshots route to the
+        # dedicated signals channel when configured; fall back to the main
+        # webhook so deploys without the secret behave identically.
+        self.webhook_url = (
+            os.environ.get('DISCORD_WEBHOOK_SIGNALS_URL')
+            or os.environ.get('DISCORD_WEBHOOK_URL')
+        )
         self.av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
         # Resolve live signal-monitor watchlist:
@@ -76,7 +123,40 @@ class SignalMonitor:
         self.windows: dict = {t: pd.DataFrame() for t in self.tickers}
         self.daily_trades: dict = {t: 0 for t in self.tickers}
         self.daily_pnl: dict = {t: 0.0 for t in self.tickers}
-        self.active_positions: dict = {t: None for t in self.tickers}
+        # Track D / G.P0.11 instrumentation: two counters per ticker so we
+        # can answer the cross-track question (Tracks C/D/E all surfaced
+        # zero momentum fires in 50 days): is momentum gated unreachably,
+        # or is the path simply not being entered? Logged in the per-loop
+        # summary at end of run_loop. No policy change — instrumentation
+        # only. Cross-track sync issue: #304.
+        self.momentum_evaluated_count: dict = {t: 0 for t in self.tickers}
+        self.momentum_fired_count: dict = {t: 0 for t in self.tickers}
+        # Track D / G.P1.1 instrumentation: three counters per ticker so we
+        # can answer "why is signal_alerts.level_broken 100% NULL?". The
+        # 2026-05-09 verification (issue #301) confirmed the bug is
+        # independent of the data freeze — fresh strat_levels were
+        # available on 2026-05-08 but level_broken stayed 0% populated
+        # across 396 alerts. The counters split refresh_level_map's
+        # outcomes into the three observable failure modes:
+        #   * success → level_map built (the only path where
+        #     check_level_breaks can return non-empty results)
+        #   * empty_df → loader.load_daily(ticker) returned empty
+        #     (likely _query_cloud_sql swallowed an exception)
+        #   * exception → calculate_historical_levels or
+        #     build_level_map raised; previously caught silently.
+        # Logged in session_summary so Cloud Logging shows the
+        # distribution per ticker per session, no separate persistence
+        # layer needed.
+        self.level_refresh_success_count: dict = {t: 0 for t in self.tickers}
+        self.level_refresh_empty_df_count: dict = {t: 0 for t in self.tickers}
+        self.level_refresh_exception_count: dict = {t: 0 for t in self.tickers}
+        # Open positions awaiting exit. Each tick the exit-watcher walks
+        # this list and fires TARGET HIT / TIME STOP / RSI EXIT alerts +
+        # writes the exit details back to signal_alerts. Lifetime is the
+        # signal_monitor process itself (≤ one trading session), which is
+        # always longer than max(call_time_stop, put_time_stop) = 35 min,
+        # so in-memory tracking is sufficient for now.
+        self.active_positions: dict = {t: [] for t in self.tickers}
         self.orb_levels: dict = {t: {} for t in self.tickers}
 
         # Strat level map per ticker, refreshed each loop iteration. Used to
@@ -87,6 +167,47 @@ class SignalMonitor:
         self.last_prices: dict = {t: None for t in self.tickers}
         # Set of (ticker, level_name) that have already fired today.
         self.fired_breaks: set = set()
+
+        # Premarket-brief bias cache (filled lazily, once per ticker per
+        # session). Bias is purely informational in Phase 1 — it's
+        # displayed in the Discord embed and persisted to signal_alerts
+        # so we can later analyse whether brief-aligned signals win more
+        # often than brief-opposed ones, without changing fire behavior.
+        self._brief_bias_cache: dict = {}
+
+        # Replay clock override. When the replay harness feeds bars from
+        # a historical date, downstream calls that key off "now" — the
+        # premarket-brief lookup (_resolve_brief_bias) and the catalyst
+        # proximity lookup (get_catalyst_context) — must use the BAR's
+        # timestamp, not wall-clock-now. Without this, replay reads
+        # today's brief (which doesn't exist for a 2026-05-06 replay run
+        # on 2026-05-10) so ftfc_score defaults to 0.0 and the PR #379
+        # FTFC fix is architecturally inert during replay.
+        #
+        # `replay_clock_ts` is a pandas Timestamp (the bar's Time). When
+        # None, `_now()` falls back to wall-clock-now (live behaviour).
+        # The harness in scripts/replay_signal_monitor.py sets this
+        # per-bar.
+        self.replay_clock_ts: Optional[pd.Timestamp] = None
+
+        # Phase 1 — InsightCache (per docs/replays/2026-05-10-corrected-baseline-v2.md
+        # §6 + docs/audits/2026-05-10-risk-reviewer-validation.md):
+        #
+        # Empirical baseline (951 directional fires across 36 days
+        # SPY/IWM/QQQ): aligned-with-plan fires win 55.7%, opposite
+        # fires win 35.4% (-20.3pp). Filtering opposing weak removes
+        # most of the loss-rich opposite bucket without dropping
+        # legitimate reversal signals (medium+ kept with tag).
+        #
+        # Pull-based cache with 60s staleness check — picks up a fresh
+        # insight publish within one poll cycle. Default fetcher is
+        # disabled when INSIGHT_GATE_MODE='disabled' so the gate can be
+        # killed via env var without a redeploy. Default mode 'active'
+        # applies the matrix; 'shadow' logs decisions but does NOT
+        # apply (for counterfactual measurement before flipping live).
+        self.insight_cache = InsightCache(refresh_after_seconds=60.0)
+        self.insight_invalidated: dict[str, bool] = {}
+        self.insight_gate_mode = os.environ.get('INSIGHT_GATE_MODE', 'active').lower()
 
     def _resolve_watchlist(self) -> list[str]:
         """Return the active live-signal-monitor watchlist.
@@ -123,7 +244,17 @@ class SignalMonitor:
         return tickers
 
     def is_market_hours(self) -> bool:
-        now = datetime.now()
+        """True if wall-clock is inside RTH on a weekday, evaluated in ET.
+
+        Cloud Run runs in UTC, so naïve ``datetime.now()`` would put the
+        close at 21:00 and break weekend / holiday gating. Always go
+        through the explicit ET zone (``_ET``) and the configured
+        ``market_open_time`` / ``market_close_time`` so a future
+        early-close / half-day can be parameterized without code change.
+        Holidays are NOT checked here — the loop's per-bar staleness
+        guard catches them via "no new bar" naturally.
+        """
+        now = datetime.now(_ET)
         if now.weekday() >= 5:
             return False
         return self.market_cfg.market_open_time <= now.time() <= self.market_cfg.market_close_time
@@ -222,9 +353,23 @@ class SignalMonitor:
 
         price_change = close.pct_change() * 100
         df['Price_Change'] = price_change
+        # Per-ticker consecutive-bar window — Tier-A from the walk-forward
+        # calibration sweep, Tier-B = SignalConfig default. The column
+        # window MUST match the threshold evaluate_signal checks, so both
+        # read get_consecutive_periods(ticker).
         df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(
-            price_change, ind.consecutive_periods,
+            price_change, get_consecutive_periods(ticker),
         )
+        # Phase 0.7.x — relaxed 3-of-5 gate columns + 3 new momentum
+        # confirmer indicators read by `lib.strategies.MOMENTUM.evaluate`.
+        # Without these, every Phase 0.7.x condition silently fails to
+        # fire in production because the row.get(...) calls return None.
+        df['Consecutive_Up_5'], df['Consecutive_Down_5'] = calculate_consecutive_moves(
+            price_change, ind.consecutive_relaxed_window,
+        )
+        df['RVol_Recent_20'] = calculate_rvol_recent(volume, ind.rvol_period)
+        df['ATR_Expansion'] = calculate_atr_expansion(high, low, close, short=5, long=20)
+        df['RSI_Thrust_3'] = calculate_rsi_thrust(df[ind.rsi_col], lookback=3)
 
         df['Price_vs_VWAP'] = (close - df['VWAP']) / df['VWAP'] * 100
         df[ind.price_vs_ema_fast_col] = (close - df[f'EMA{ind.ema_fast_period}']) / df[f'EMA{ind.ema_fast_period}'] * 100
@@ -242,8 +387,26 @@ class SignalMonitor:
             from lib.data_loader import DataLoader
             from lib.indicators import calculate_historical_levels
             loader = DataLoader(data_dir=self.market_cfg.data_dir)
-            df = loader.load_daily(ticker)
+            df = loader.load_daily(ticker, on_stale='warn')
             if df.empty:
+                # Track D / G.P1.1: previously this path was silent —
+                # df.empty meant either a real zero-row condition or a
+                # swallowed _query_cloud_sql exception, and we couldn't
+                # tell which. Now log explicitly so Cloud Logging shows
+                # the empty-df failure mode and bumps a counter that
+                # session_summary surfaces. _query_cloud_sql itself logs
+                # the underlying exception via logger.exception (see
+                # lib/data_loader.py).
+                self.level_refresh_empty_df_count[ticker] = (
+                    self.level_refresh_empty_df_count.get(ticker, 0) + 1
+                )
+                logger.warning(
+                    "refresh_level_map(%s): loader.load_daily returned empty df; "
+                    "level_map will be None and check_level_breaks will return [] "
+                    "for this poll cycle. See lib/data_loader._query_cloud_sql "
+                    "logs for the underlying cause if this persists.",
+                    ticker,
+                )
                 self.level_maps[ticker] = None
                 return
             close_col = 'Close' if 'Close' in df.columns else 'Last'
@@ -257,11 +420,43 @@ class SignalMonitor:
             # Use the latest live close as current_price; the actual price
             # will be passed in check_level_breaks for crossing detection.
             current_price = float(df[close_col].iloc[-1])
+            # PR #400 fix applied to this code path: pass analysis_date
+            # so build_level_map → compute_previous_levels uses period-
+            # filter semantics. Replay-aware: use the replay clock when
+            # set, fall back to today's ET date in live mode. Without
+            # this, replay runs picked day-before-yesterday's PDH/PDL.
+            if self.replay_clock_ts is not None:
+                _analysis_date = pd.Timestamp(self.replay_clock_ts).date()
+            else:
+                _analysis_date = datetime.now(_ET).date()
             self.level_maps[ticker] = build_level_map(
                 ticker=ticker, daily_df=df, current_price=current_price,
+                analysis_date=_analysis_date,
             )
-        except Exception as e:
-            logger.warning("refresh_level_map(%s) failed: %s", ticker, e)
+            self.level_refresh_success_count[ticker] = (
+                self.level_refresh_success_count.get(ticker, 0) + 1
+            )
+        except Exception:
+            # Track D / G.P1.1: replace logger.warning("...%s", e) with
+            # logger.exception so the full traceback reaches Cloud
+            # Logging. The pre-fix one-liner only printed str(e), which
+            # made it impossible to tell calculate_historical_levels vs
+            # build_level_map vs an inner DataLoader path failure apart
+            # in production. Verification dispatch on 2026-05-09
+            # confirmed signal_alerts.level_broken was 0% populated
+            # across 1,178 alerts in the post-thaw window despite fresh
+            # strat_levels — so this exception path was firing silently
+            # for every refresh attempt. Counter splits success vs
+            # empty_df vs exception so session_summary shows which
+            # failure mode dominates.
+            self.level_refresh_exception_count[ticker] = (
+                self.level_refresh_exception_count.get(ticker, 0) + 1
+            )
+            logger.exception(
+                "refresh_level_map(%s) raised; level_map cleared to None "
+                "and check_level_breaks will return [] for this cycle",
+                ticker,
+            )
             self.level_maps[ticker] = None
 
     def check_level_breaks(
@@ -310,24 +505,61 @@ class SignalMonitor:
                     self.orb_levels[ticker][f'{label}_low']
                 ) / 2
 
+    @staticmethod
+    def _momentum_signal_to_dict(sig: 'Signal', strat_bonus: int = 0) -> dict:
+        """Convert a momentum `Signal` dataclass to the mr-style dict
+        every downstream consumer (`fire_alert`, `_persist_signal_alert`,
+        `TradeLogger.log_trade`) reads.
+
+        This is the cross-cutting compatibility surface that lets the
+        stand-alone-momentum path reuse all existing fire/persist
+        infrastructure without per-strategy mapping at every call site.
+        Per #369: post-hoc `_infer_strategy(conditions_met)` in
+        `scripts/analysis/per_factor_walkforward.py` distinguishes mr
+        vs momentum from the conditions_met namespace (disjoint per
+        `lib/strategies/momentum.py` vs `lib/signals.py`), so no extra
+        column on `signal_alerts` is needed to mark which strategy
+        fired.
+        """
+        return {
+            'direction':      sig.direction,
+            'base_score':     sig.base_score,
+            'strat_bonus':    strat_bonus,
+            'total_score':    sig.weighted_score,
+            'conditions_met': list(sig.conditions_met),
+        }
+
     def _evaluate_strategies_for_bar(self, latest, last_price: float, ticker: str):
         """Run mean-reversion + momentum on the same bar; detect agreement.
 
         Returns a (sig_dict, agreement_payload) tuple:
-          * `sig_dict` — the existing mean-reversion dict from
-            `evaluate_signal`, or `None` when mean-reversion didn't
-            fire. Existing fire/persist code paths consume this
-            unchanged, so the fire criteria are not expanded by this
-            change. (When mean-reversion doesn't fire, agreement can't
-            apply; we short-circuit to avoid running momentum.)
-          * `agreement_payload` — `None` when fewer than two strategies
-            fired or they disagree on direction; otherwise the dict
-            from `lib.strategies.agreement.detect_agreement` carrying
-            the composite score for embed sort + JSONB persistence.
+          * `sig_dict` — mr dict when mean-reversion fires; the
+            momentum-adapter dict when mr misses but momentum fires
+            AND `signal_cfg.enable_standalone_momentum=True` (#369);
+            otherwise `None`. The dict shape is identical in either
+            case so downstream consumers (fire_alert, persist,
+            TradeLogger) work uniformly.
+          * `agreement_payload` — `None` when only one strategy fired
+            OR they disagreed on direction; otherwise the dict from
+            `lib.strategies.agreement.detect_agreement`. Stand-alone
+            momentum fires never carry an agreement payload (no mr
+            to agree with).
+
+        Counter semantics (G.P0.11 / #369):
+          `momentum_evaluated_count` is bumped on EVERY bar reaching
+          this function — not just bars where mr fired. Pre-#369 the
+          counter sat inside the mr-fires branch, which made the
+          fired/evaluated ratio meaningless because the denominator
+          was tiny and biased. Now `evaluated` = "every bar
+          evaluate_ticker reached the strategy block"; `fired` =
+          "every bar momentum's internal gate passed regardless of
+          mr". This is a strict superset of pre-#369 semantics — no
+          information loss, much more useful denominator.
 
         See `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` Phase 1.6 for the
-        rationale: ~21% of overlapping fires AGREE on direction (high-
-        conviction stacked signals); ~79% DISAGREE (informative noise).
+        agreement rationale; Track D audit § 6 (2026-05-08) for the
+        17/782 stacked rate observed in the May 4-7 window; #369 for
+        the always-evaluate orchestration fix.
         """
         # Resolve per-ticker RSI ranges (Tier A → Tier B fallback).
         # Both strategies use the same resolved ranges so agreement
@@ -338,42 +570,94 @@ class SignalMonitor:
         call_tier = get_resolution_tier(ticker, "CALL")
         put_tier = get_resolution_tier(ticker, "PUT")
 
-        sig = evaluate_signal(
-            latest,
-            min_conditions=self.signal_cfg.min_conditions,
-            consecutive_periods=self.signal_cfg.consecutive_periods,
-            call_rsi_range=call_rng,
-            put_rsi_range=put_rng,
-        )
-        if sig is None:
-            return None, None
-
-        logger.info(
-            "%s fire: %s base_score=%.1f call_range=%s tier=%s put_range=%s tier=%s",
-            ticker, sig["direction"], sig["base_score"],
-            call_rng, call_tier, put_rng, put_tier,
-        )
-
-        # Build a Signal facade from the mr dict so detect_agreement
-        # can compare it against MomentumStrategy's Signal output. We
-        # don't replace the existing mr eval call because the dict
-        # shape is what every downstream consumer (fire_alert,
-        # _persist_signal_alert, TradeLogger) reads — replacing it
-        # would balloon this PR into a cross-cutting refactor.
-        mr_signal = Signal(
-            strategy="mean_reversion",
-            direction=sig["direction"],
-            timestamp=pd.Timestamp(latest.get("Time") or datetime.now()),
-            entry_price=float(last_price),
-            base_score=float(sig["base_score"]),
-            weighted_score=float(sig["base_score"]),
-            conditions_met=list(sig["conditions_met"]),
-        )
+        # 1) Always evaluate momentum first so the counters reflect
+        # every bar — not just bars where mr fired. This is the #369
+        # fix: pre-fix the momentum eval was inside the mr-fires
+        # branch, so `momentum_evaluated_count` was structurally
+        # biased to the mr-fires intersection AND momentum could
+        # never fire stand-alone (line 381 short-circuit).
         mom_signal = MOMENTUM.evaluate(
             latest, call_rsi_range=call_rng, put_rsi_range=put_rng,
         )
-        agreement = detect_agreement(mom_signal, mr_signal)
-        return sig, agreement
+        self.momentum_evaluated_count[ticker] = (
+            self.momentum_evaluated_count.get(ticker, 0) + 1
+        )
+        if mom_signal is not None:
+            self.momentum_fired_count[ticker] = (
+                self.momentum_fired_count.get(ticker, 0) + 1
+            )
+
+        # 2) Evaluate mean-reversion.
+        sig = evaluate_signal(
+            latest,
+            min_conditions=self.signal_cfg.min_conditions,
+            consecutive_periods=get_consecutive_periods(ticker),
+            call_rsi_range=call_rng,
+            put_rsi_range=put_rng,
+            ticker=ticker,
+        )
+
+        # 3) Three-way return:
+        if sig is not None:
+            logger.info(
+                "%s mr fire: %s base_score=%.1f call_range=%s tier=%s put_range=%s tier=%s",
+                ticker, sig["direction"], sig["base_score"],
+                call_rng, call_tier, put_rng, put_tier,
+            )
+            # Build a Signal facade from the mr dict so detect_agreement
+            # can compare it against MomentumStrategy's Signal output.
+            # mr_dict (not the Signal) flows downstream because every
+            # consumer reads dict-shaped sig.
+            mr_signal = Signal(
+                strategy="mean_reversion",
+                direction=sig["direction"],
+                timestamp=pd.Timestamp(latest.get("Time") or datetime.now()),
+                entry_price=float(last_price),
+                base_score=float(sig["base_score"]),
+                weighted_score=float(sig["base_score"]),
+                conditions_met=list(sig["conditions_met"]),
+            )
+            agreement = detect_agreement(mom_signal, mr_signal) if mom_signal else None
+            return sig, agreement
+
+        if mom_signal is not None and self.signal_cfg.enable_standalone_momentum:
+            # Honor `disabled_directions` for the stand-alone path
+            # too — pre-Codex-P2 (PR #371) the kill switch lived only
+            # inside `lib.signals.evaluate_signal`, so a momentum-only
+            # PUT on a `["PUT"]`-disabled ticker (e.g. QQQ) would have
+            # bypassed the same protection mr respects. Resolver
+            # exception is non-fatal: log and degrade to "no kill
+            # switch known" rather than blocking a fire on a transient
+            # DB error (mirrors the resolver-failure handling inside
+            # evaluate_signal at lib/signals.py:207-210).
+            try:
+                from lib.strategies.exit_config_overrides import (
+                    get_disabled_directions,
+                )
+                if mom_signal.direction.upper() in get_disabled_directions(ticker):
+                    logger.info(
+                        "%s standalone momentum %s suppressed: direction in disabled_directions",
+                        ticker, mom_signal.direction,
+                    )
+                    return None, None
+            except Exception:
+                logger.exception(
+                    "get_disabled_directions(%s) raised; allowing momentum fire "
+                    "(degrade-open mirrors evaluate_signal's resolver-failure handling)",
+                    ticker,
+                )
+
+            logger.info(
+                "%s standalone momentum fire: %s base_score=%.1f core=%d call_range=%s tier=%s put_range=%s tier=%s",
+                ticker, mom_signal.direction, mom_signal.base_score,
+                mom_signal.core_count, call_rng, call_tier, put_rng, put_tier,
+            )
+            return self._momentum_signal_to_dict(mom_signal), None
+
+        # Neither fires (or momentum fired but flag is off → no fire,
+        # but the counter already recorded the eligibility so the
+        # cross-track sync questions are answerable from the log).
+        return None, None
 
     def evaluate_ticker(self, ticker: str):
         """Evaluate signals for a single ticker."""
@@ -386,6 +670,11 @@ class SignalMonitor:
         latest = df.iloc[-1]
         last_price = float(latest.get('Close', latest.get('Last', 0)))
 
+        # Exit-watcher — runs FIRST so target/stop alerts fire on the
+        # same bar that pushed price across the threshold, before any
+        # new entry signal is evaluated for this ticker.
+        self._check_exits(ticker, latest, last_price)
+
         # Level-break detection. Refreshes lazily once per day per ticker.
         if self.level_maps.get(ticker) is None:
             self.refresh_level_map(ticker)
@@ -397,9 +686,26 @@ class SignalMonitor:
         self._latest_broken_levels = broken_levels
 
         # Skip if at daily limits
-        if self.daily_trades[ticker] >= self.risk.max_daily_trades:
+        # 2026-05-10 #386 diagnostics: log every cap-check decision so we
+        # can prove from Cloud Logging whether the counter is actually
+        # being read (and what value it holds) at fire time. Pre-fix the
+        # production data showed 300+ alerts/day on a 5/ticker cap,
+        # indicating the check was either reading 0 every time or never
+        # short-circuiting. These logs let the next session prove or
+        # disprove that.
+        cap = self.risk.max_daily_trades
+        cur = self.daily_trades.get(ticker, 0)
+        if cur >= cap:
+            logger.info(
+                "cap_diag: SKIP ticker=%s daily_trades=%d cap=%d (cap reached)",
+                ticker, cur, cap,
+            )
             return
         if self.daily_pnl[ticker] <= self.risk.daily_loss_limit:
+            logger.info(
+                "cap_diag: SKIP ticker=%s daily_pnl=%.4f loss_limit=%.4f",
+                ticker, self.daily_pnl[ticker], self.risk.daily_loss_limit,
+            )
             return
 
         # Evaluate signal — Phase 1.6: also runs momentum on the same
@@ -438,10 +744,23 @@ class SignalMonitor:
             elif orb_5m_low and latest['Close'] < orb_5m_low:
                 orb_trend = -1
 
+            # FTFC alignment is computed in the morning brief and persisted to
+            # `premarket_analysis.ftfc_score`. The brief-bias resolver (cached
+            # per-ticker per-session) reads it; this call is free after the
+            # first hit. Pre-2026-05-10 this argument was hardcoded to 0.0,
+            # which silently disabled the FTFC alignment branch in
+            # `Strat.get_strat_bonus` — counter-FTFC fires (e.g. 5/6/2026 PUTs
+            # on a bullish-FTFC day) escaped the −ftfc_bonus penalty they
+            # were supposed to receive.
+            brief_bias = self._resolve_brief_bias(ticker)
+            ftfc_score = brief_bias.get('ftfc_score')
+            if ftfc_score is None:
+                ftfc_score = 0.0  # treat missing brief / NULL ftfc as neutral
+
             strat_bonus = self.strat.get_strat_bonus(
                 signal_direction=sig['direction'],
                 combo=combo,
-                ftfc_score=0.0,
+                ftfc_score=ftfc_score,
                 orb_trend=orb_trend,
             )
 
@@ -453,8 +772,11 @@ class SignalMonitor:
         # showed 8-10pp lower clean rate); 'next_day' gets 1.10x
         # amplification (3pp higher clean rate).
         try:
+            # Use the bar's clock during replay so proximity is keyed
+            # to bar-time, not wall-clock. Live runs are unaffected
+            # (`_now()` falls through to `datetime.now()`).
             self._latest_proximity = get_catalyst_context(
-                ticker, pd.Timestamp(datetime.now())
+                ticker, pd.Timestamp(self._now())
             )
         except Exception as e:
             from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
@@ -479,21 +801,93 @@ class SignalMonitor:
         size = get_position_size(total_score, self.risk)
         strength = get_signal_strength_label(total_score, self.risk)
 
+        # Phase 1 direction gate: read today's insight (cached, 60s
+        # refresh) and decide pass/suppress/downgrade/tag/annotate.
+        # Mode 'disabled' → bypass entirely. Mode 'shadow' → compute
+        # decision but always pass (for counterfactual logging).
+        gate_action = 'pass'
+        gate_reason = ''
+        if self.insight_gate_mode != 'disabled':
+            try:
+                today = self._now(_ET).date()
+                from gcp.database import get_engine
+                _engine = get_engine()
+                ctx = self.insight_cache.get(
+                    ticker,
+                    fetcher=lambda t: fetch_insight_for_ticker(t, today, _engine),
+                )
+                decision = evaluate_direction_gate(
+                    fire_direction=sig['direction'],
+                    fire_strength=strength,
+                    insight=ctx,
+                    insight_invalidated=self.insight_invalidated.get(ticker, False),
+                )
+                gate_action = decision.action
+                gate_reason = decision.reason
+                # Stash for fire_alert / persist (visibility into gate decision)
+                self._latest_insight_ctx = ctx
+                self._latest_gate_action = gate_action
+                self._latest_gate_reason = gate_reason
+                # Apply the gate (unless shadow mode)
+                if self.insight_gate_mode != 'shadow':
+                    if gate_action == 'suppress':
+                        logger.info(
+                            "%s %s fire SUPPRESSED by direction gate: %s",
+                            ticker, sig['direction'], gate_reason,
+                        )
+                        return  # short-circuit: do not fire
+                    elif gate_action == 'downgrade':
+                        old = strength
+                        strength = decision.new_strength or 'weak'
+                        size = get_position_size(total_score, self.risk)  # re-resolve
+                        logger.info(
+                            "%s %s fire DOWNGRADED %s → %s by direction gate: %s",
+                            ticker, sig['direction'], old, strength, gate_reason,
+                        )
+                    # 'pass', 'tag', 'annotate' all proceed to fire as-is
+            except Exception as exc:
+                # Gate must never crash the monitor — fall through to fire.
+                logger.warning(
+                    "direction gate raised for %s: %s — fire proceeds as-is",
+                    ticker, exc,
+                )
+
         self.fire_alert(ticker, sig, total_score, strength, size, strat_bonus, latest)
 
     def fire_alert(self, ticker, sig, total_score, strength, size, strat_bonus, latest):
         """Send signal alert to Discord."""
+        # 2026-05-10 #386 diagnostics: prove that fire_alert is reached
+        # (i.e. the cap check at line 593 didn't short-circuit) and what
+        # the counter looks like at entry. The increment at the bottom of
+        # this method is the only thing that bumps daily_trades — if we
+        # see "fire_alert ENTER ... daily_trades=N" with N never crossing
+        # the cap, the counter isn't accumulating (pre-increment failure
+        # or post-counter-reset). If we see counter values >= cap, the
+        # cap check is broken upstream.
+        logger.info(
+            "fire_alert ENTER: ticker=%s direction=%s daily_trades=%d cap=%d",
+            ticker, sig.get('direction', '?'),
+            self.daily_trades.get(ticker, 0),
+            self.risk.max_daily_trades,
+        )
         direction = sig['direction']
         price = latest.get('Close', latest.get('Last', 0))
         agreement = getattr(self, '_latest_agreement', None)
 
+        # Per-ticker exit overrides (Tier-A). Falls back to ExitConfig
+        # defaults when exit_config_overrides has no row / NULL / stale.
+        from lib.strategies.exit_config_overrides import (
+            get_call_target, get_put_target,
+            get_call_time_stop, get_put_time_stop,
+        )
+
         if direction == 'CALL':
-            target = price * (1 + self.exit.call_target)
-            time_stop = self.exit.call_time_stop
+            target = price * (1 + get_call_target(ticker))
+            time_stop = get_call_time_stop(ticker)
             color = 0x00ff00
         else:
-            target = price * (1 - self.exit.put_target)
-            time_stop = self.exit.put_time_stop
+            target = price * (1 - get_put_target(ticker))
+            time_stop = get_put_time_stop(ticker)
             color = 0xff0000
 
         max_score = self.risk.max_score
@@ -508,12 +902,12 @@ class SignalMonitor:
         # Phase 1.6: stacked-agreement signals get a visual prefix so
         # they jump out in the Discord channel scroll.
         title_prefix = '\U0001F3AF STACKED ' if agreement else ''
-        # Phase 1: timeframe tag in the title \u2014 '[15m]' or '[60m]' etc.
+        # Phase 1: timeframe tag in the title — '[15m]' or '[60m]' etc.
         tf_tag = getattr(self, '_latest_timeframe_tag', None)
         tf_label = f" [{tf_tag}]" if tf_tag else ''
         # Phase 1.5: catalyst proximity tag. Non-quiet buckets get a
         # bracket suffix so the trader sees "during FOMC in 0m" or
-        # "next_day \u00b7 earnings_post 4h ago" at fire time.
+        # "next_day · earnings_post 4h ago" at fire time.
         proximity = getattr(self, '_latest_proximity', None) or {}
         prox_bucket = proximity.get('proximity_bucket')
         prox_label = ''
@@ -527,14 +921,30 @@ class SignalMonitor:
             if mins is not None:
                 time_clause = f' in {mins}m' if prox_bucket in ('imminent', 'pre') else f' {mins}m ago'
             prox_label = f' [{prox_bucket}{":" + ev_type if ev_type else ""}{time_clause}]'
+
+        # Phase 2: brief-bias tag — surfaces alignment between this fired
+        # signal and the morning premarket brief. Visibility only — does
+        # not modify the fire decision, score, or position size.
+        brief = self._resolve_brief_bias(ticker)
+        align = _brief_alignment(direction, brief)
+        self._latest_brief_bias = brief
+        self._latest_brief_alignment = align
+        brief_label = ''
+        if brief['bias'] == 'CONFLICTED':
+            brief_label = ' [brief: CONFLICTED]'
+        elif align == 'aligned':
+            brief_label = f" [brief: {brief['bias']} ✓ ({brief['setup_count']}/5)]"
+        elif align == 'opposed':
+            brief_label = f" [AGAINST BRIEF: {brief['bias']} ({brief['setup_count']}/5)]"
+
         title = (
             f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL"
-            f"{tf_label}{prox_label} \u2014 {ticker} @ ${price:.2f}"
+            f"{tf_label}{prox_label}{brief_label} — {ticker} @ ${price:.2f}"
         )
         agreement_block = ''
         if agreement:
             agreement_block = (
-                f"\U0001F3AF STACKED \u2014 momentum + mean_reversion both fire {direction}\n"
+                f"\U0001F3AF STACKED — momentum + mean_reversion both fire {direction}\n"
                 f"Composite score: {agreement['composite_score']:.1f}\n"
             )
 
@@ -548,15 +958,15 @@ class SignalMonitor:
         if prox_bucket and prox_bucket != 'quiet' and abs(prox_mult - 1.0) > 0.001:
             verb = 'de-weighted' if prox_mult < 1.0 else 'amplified'
             proximity_block = (
-                f"\u26a0\ufe0f Catalyst window: **{prox_bucket}** \u2014 "
-                f"score {verb} {prox_mult:.2f}\u00d7 ({raw_score} \u2192 {total_score:.1f})\n"
+                f"⚠️ Catalyst window: **{prox_bucket}** — "
+                f"score {verb} {prox_mult:.2f}× ({raw_score} → {total_score:.1f})\n"
             )
 
         message = {
             'embeds': [{
                 'title': title,
                 'description': (
-                    f"**Strength: {total_score:.1f}/{max_score} ({strength}) \u2192 {size:.0%} size**\n"
+                    f"**Strength: {total_score:.1f}/{max_score} ({strength}) → {size:.0%} size**\n"
                     f"{agreement_block}"
                     f"{proximity_block}"
                     f"Base: {sig['base_score']}/5 | Strat bonus: +{strat_bonus}\n\n"
@@ -575,15 +985,48 @@ class SignalMonitor:
         print(json.dumps(message['embeds'][0], indent=2))
         print(f"{'='*50}\n")
 
-        if self.webhook_url:
+        # Track D / G.P2.5: gate Discord post on configured minimum
+        # strength so the channel doesn't drown in weak alerts. Persist
+        # always — analytics need every fire regardless of Discord gate.
+        # Strength rank: weak < medium < strong < perfect.
+        _STRENGTH_RANK = {'weak': 0, 'medium': 1, 'strong': 2, 'perfect': 3}
+        post_strength = _STRENGTH_RANK.get((strength or '').lower(), 0)
+        min_strength = _STRENGTH_RANK.get(
+            (self.monitor_cfg.discord_minimum_strength or 'weak').lower(), 0
+        )
+        if self.webhook_url and post_strength >= min_strength:
             try:
                 requests.post(self.webhook_url, json=message, timeout=self.monitor_cfg.discord_timeout)
             except Exception as e:
                 print(f"  Discord send failed: {e}")
+        elif self.webhook_url:
+            logger.info(
+                "Discord post suppressed for %s: strength=%s below minimum=%s",
+                ticker, strength, self.monitor_cfg.discord_minimum_strength,
+            )
 
         # Persist to Cloud SQL
         self._persist_signal_alert(ticker, sig, total_score, strength, size,
                                    strat_bonus, latest, target, time_stop)
+
+        # Track D / G.P0.8: increment the per-ticker fire counter so the
+        # `max_daily_trades` cap at evaluate_ticker line 437 is enforced.
+        # Initialised to 0 in __init__; resets implicitly per-process
+        # (the SignalMonitor instance lives one trading session). Pre-fix
+        # this counter was never bumped — IWM blew through the 5-fire/day
+        # cap by 22× on 5/7 because the cap check `daily_trades[ticker]
+        # >= max_daily_trades` was reading a frozen 0.
+        self.daily_trades[ticker] = self.daily_trades.get(ticker, 0) + 1
+        # 2026-05-10 #386 diagnostic: paired with the fire_alert ENTER log
+        # above, this lets us prove from Cloud Logging whether the
+        # increment runs (and what counter value it produced) for each
+        # fire. If we see N "fire_alert ENTER" logs but only K "incremented"
+        # logs with K < N, control is exiting fire_alert before the
+        # increment.
+        logger.info(
+            "cap_diag: incremented ticker=%s daily_trades=%d cap=%d",
+            ticker, self.daily_trades[ticker], self.risk.max_daily_trades,
+        )
 
     def _persist_signal_alert(self, ticker, sig, total_score, strength, size,
                               strat_bonus, latest, target, time_stop):
@@ -617,19 +1060,38 @@ class SignalMonitor:
             'orb_5m_low': self.orb_levels[ticker].get('5m_low'),
             'orb_15m_high': self.orb_levels[ticker].get('15m_high'),
             'orb_15m_low': self.orb_levels[ticker].get('15m_low'),
-            'conditions_met': json.dumps(sig['conditions_met']),
+            # Pass the Python list/dict directly — SQLAlchemy + pg8000 adapt
+            # to native JSONB array/object via the column type reflected by
+            # `meta.reflect()` in `gcp/database.upsert_dataframe`. Calling
+            # `json.dumps(...)` first causes the value to bind as a JSONB
+            # scalar string (a JSON-encoded JSON-array), which breaks
+            # `jsonb_array_length` / `@>` predicates and forces every
+            # downstream reader to do `(col #>> '{}')::jsonb`. See Track D
+            # audit § 6 / G.P0.6.
+            'conditions_met': sig['conditions_met'],
             'level_broken': ','.join(getattr(self, '_latest_broken_levels', []) or []) or None,
             # Phase 1.6: JSONB payload (or None) describing the stacked-
             # agreement state. NULL on the common solo-fire path so the
             # column doesn't bloat for the 99% of rows that aren't
-            # stacked.
-            'strategy_agreement': json.dumps(agreement) if agreement else None,
+            # stacked. Pass dict directly (same JSONB-bind reasoning as
+            # `conditions_met` above).
+            'strategy_agreement': agreement if agreement else None,
             # Phase 1: timeframe horizon (one of 5m,15m,30m,60m,90m,120m,240m)
             # and the planned hold window. Tagged at fire time by the
             # heuristic in lib/strategies/timeframe.py — never None
             # post-Phase-1 (always tagged with at least the default).
             'timeframe_tag': getattr(self, '_latest_timeframe_tag', None),
             'expected_hold_min': getattr(self, '_latest_expected_hold_min', None),
+            # Exit-watcher lifecycle — flipped to FALSE by _persist_exit
+            # when the exit-watcher fires a TARGET HIT / TIME STOP / RSI
+            # EXIT alert. Lets analytics filter for live positions in O(1)
+            # via the partial index idx_signal_alerts_open.
+            'is_open': True,
+            # Phase 2: brief-bias capture — persists the alignment for
+            # later analysis without changing fire behavior.
+            'brief_bias':        (getattr(self, '_latest_brief_bias', {}) or {}).get('bias'),
+            'brief_alignment':   getattr(self, '_latest_brief_alignment', None),
+            'brief_setup_count': (getattr(self, '_latest_brief_bias', {}) or {}).get('setup_count'),
         }
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
@@ -665,6 +1127,232 @@ class SignalMonitor:
         except Exception as e:
             logger.warning("Trade logging failed: %s", e)
 
+        # Track the open position for the exit-watcher. alert_ts here is
+        # the same naive UTC value written to the DB row, so the UPDATE
+        # in _persist_exit can match by (ticker, alert_ts) PK.
+        self.active_positions.setdefault(ticker, []).append({
+            'ticker': ticker,
+            'alert_ts': now,
+            'direction': sig['direction'],
+            'entry_price': float(latest.get('Close', latest.get('Last', 0))),
+            'target_price': float(target),
+            'time_stop_minutes': int(time_stop),
+            'score': float(total_score),
+            'strength': strength,
+            # Track D / G.P0.8: store the position size so `_check_exits`
+            # can accumulate sized P&L into `daily_pnl` (matches the
+            # backtest path at lib/backtest.py:522 — `return_pct *
+            # position_size`). Without this, `_check_exits` would fall
+            # back to `size=1.0` and over-count loss accumulation by
+            # 5-20× (typical sizes are 5-20% per trade).
+            'size': float(size),
+        })
+
+    def _now(self, tz: Optional[ZoneInfo] = None) -> datetime:
+        """Return current time, respecting the replay clock override.
+
+        When ``replay_clock_ts`` is set by the replay harness, returns
+        that timestamp converted to the requested timezone. Otherwise
+        falls back to wall-clock ``datetime.now(tz)`` (live behaviour).
+
+        Used by call sites whose semantics depend on "as-of bar time"
+        rather than wall-clock — e.g. ``_resolve_brief_bias`` (which
+        looks up the day's premarket_analysis row for FTFC + bias) and
+        ``get_catalyst_context`` (which buckets catalysts by proximity
+        to the bar's timestamp, not the current time).
+
+        Live signal-monitor runs always have ``replay_clock_ts=None``
+        so this method is a no-op overhead — one None-check.
+        """
+        if self.replay_clock_ts is not None:
+            ts = self.replay_clock_ts
+            # Normalize to datetime in the requested tz.
+            if hasattr(ts, 'to_pydatetime'):
+                ts = ts.to_pydatetime()
+            if tz is None:
+                return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts
+            # If ts has no tz, assume UTC (matches market_data_intraday's
+            # storage convention) before converting.
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+            return ts.astimezone(tz)
+        return datetime.now(tz)
+
+    def _resolve_brief_bias(self, ticker: str) -> dict:
+        """Lookup-and-cache the premarket-brief bias for this ticker today."""
+        if ticker in self._brief_bias_cache:
+            return self._brief_bias_cache[ticker]
+        try:
+            today_et = self._now(_ET).date()
+            bias = get_premarket_bias(ticker, today_et)
+        except Exception as e:
+            logger.debug("brief bias lookup failed for %s: %s", ticker, e)
+            bias = {'bias': 'UNAVAILABLE', 'alignment': None,
+                    'setup_count': 0, 'ftfc_direction': None,
+                    'ftfc_score': None, 'reason': 'lookup_failed'}
+        self._brief_bias_cache[ticker] = bias
+        return bias
+
+    # ── Exit-watcher ───────────────────────────────────
+    # Each tick (per ticker) walks open positions and fires a Discord
+    # alert + persists exit details when target/time/RSI conditions are
+    # met. Universal RSI thresholds (call_rsi_exit=80, put_rsi_exit=20)
+    # come from ExitConfig today; per-ticker calibration is a follow-up
+    # that will read from ticker_calibration.rsi_p10/rsi_p90.
+
+    def _check_exits(self, ticker, latest, current_price):
+        """Walk open positions for `ticker`, fire exit alerts + persist."""
+        positions = self.active_positions.get(ticker)
+        if not positions:
+            return
+
+        rsi_col = self.indicator_cfg.rsi_col
+        current_rsi = float(latest.get(rsi_col, 0) or 0)
+        # Naive UTC — matches alert_ts in signal_alerts so elapsed math
+        # and the UPDATE WHERE clause stay consistent.
+        now_utc = datetime.now()
+
+        for pos in positions[:]:
+            elapsed_min = (now_utc - pos['alert_ts']).total_seconds() / 60.0
+            exit_reason = None
+
+            if pos['direction'] == 'CALL':
+                if current_price >= pos['target_price']:
+                    exit_reason = 'target_hit'
+                elif elapsed_min >= pos['time_stop_minutes']:
+                    exit_reason = 'time_stop'
+                elif current_rsi >= self.exit.call_rsi_exit:
+                    exit_reason = 'rsi_extreme'
+            else:  # PUT
+                if current_price <= pos['target_price']:
+                    exit_reason = 'target_hit'
+                elif elapsed_min >= pos['time_stop_minutes']:
+                    exit_reason = 'time_stop'
+                elif 0 < current_rsi <= self.exit.put_rsi_exit:
+                    exit_reason = 'rsi_extreme'
+
+            if exit_reason:
+                self._fire_exit_alert(pos, current_price, exit_reason,
+                                      elapsed_min, current_rsi)
+                self._persist_exit(pos, current_price, exit_reason, now_utc)
+                # Track D / G.P0.8: bump the running P&L counter so the
+                # `daily_loss_limit` cap at evaluate_ticker line 439 is
+                # enforced. The cap is in *fractional* units (-0.02 =
+                # -2%, per lib/config.py:207 + the input-normalization
+                # at lib/config.py:541), and the backtest path
+                # accumulates `return_pct * position_size` fractional
+                # (lib/backtest.py:516-522). Match those units exactly:
+                # divide _exit_return_pct's percent by 100 and apply the
+                # position size. Legacy positions without a 'size' key
+                # default to 1.0 (no sizing). Decoupled from
+                # `_persist_exit`'s DB-write success path — the trade
+                # exits in-memory regardless of persist outcome.
+                pct = self._exit_return_pct(
+                    pos['direction'], pos['entry_price'], current_price)
+                size = float(pos.get('size', 1.0))
+                self.daily_pnl[pos['ticker']] = (
+                    self.daily_pnl.get(pos['ticker'], 0.0)
+                    + (pct / 100.0) * size
+                )
+                positions.remove(pos)
+
+    @staticmethod
+    def _exit_return_pct(direction, entry_price, exit_price):
+        if direction == 'CALL':
+            return (exit_price - entry_price) / entry_price * 100.0
+        return (entry_price - exit_price) / entry_price * 100.0
+
+    def _fire_exit_alert(self, pos, exit_price, exit_reason, elapsed_min,
+                         current_rsi):
+        """Post exit alert to Discord."""
+        if not self.webhook_url:
+            return
+
+        direction = pos['direction']
+        return_pct = self._exit_return_pct(direction, pos['entry_price'], exit_price)
+
+        reason_label = {
+            'target_hit':  '\U0001F3AF TARGET HIT',
+            'time_stop':   '⏰ TIME STOP',
+            'rsi_extreme': '\U0001F4CA RSI EXIT',
+        }.get(exit_reason, exit_reason.upper())
+
+        # Green for profitable target, amber for time, purple for RSI.
+        color = (0x00ff00 if exit_reason == 'target_hit'
+                 else 0xffaa00 if exit_reason == 'time_stop'
+                 else 0xaa00ff)
+
+        # Convert naive-UTC alert_ts to ET for human-readable display.
+        try:
+            entry_et = pos['alert_ts'].replace(tzinfo=ZoneInfo("UTC")).astimezone(_ET)
+            entry_str = entry_et.strftime('%H:%M:%S ET')
+        except Exception:
+            entry_str = pos['alert_ts'].strftime('%H:%M:%S')
+
+        title = (f"{reason_label} — {pos['ticker']} {direction} "
+                 f"{return_pct:+.2f}%")
+        description = (
+            f"Entry: ${pos['entry_price']:.2f} @ {entry_str} "
+            f"(score {pos['score']:.1f} {pos['strength']})\n"
+            f"Exit:  ${exit_price:.2f} after {elapsed_min:.0f} min\n"
+            f"Target was: ${pos['target_price']:.2f}"
+        )
+        if exit_reason == 'rsi_extreme':
+            threshold = (self.exit.call_rsi_exit if direction == 'CALL'
+                         else self.exit.put_rsi_exit)
+            description += f"\nRSI: {current_rsi:.1f} (threshold {threshold:.0f})"
+
+        embed = {
+            'title': title,
+            'description': description,
+            'color': color,
+            'timestamp': datetime.now(_ET).isoformat(),
+        }
+        try:
+            requests.post(self.webhook_url, json={'embeds': [embed]},
+                          timeout=self.monitor_cfg.discord_timeout)
+            logger.info("Exit alert posted: %s %s %s (%+.2f%%)",
+                        pos['ticker'], direction, exit_reason, return_pct)
+        except Exception as e:
+            logger.warning("Exit alert Discord post failed: %s", e)
+
+    def _persist_exit(self, pos, exit_price, exit_reason, exit_ts):
+        """Update the signal_alerts row with exit details."""
+        try:
+            from gcp.database import get_engine, is_cloud_sql_configured
+        except ImportError:
+            return
+        if not is_cloud_sql_configured():
+            return
+
+        return_pct = self._exit_return_pct(
+            pos['direction'], pos['entry_price'], exit_price)
+
+        from sqlalchemy import text
+        sql = text("""
+            UPDATE signal_alerts
+               SET exit_ts          = :exit_ts,
+                   exit_reason      = :reason,
+                   exit_price       = :price,
+                   exit_return_pct  = :ret,
+                   is_open          = FALSE
+             WHERE ticker   = :ticker
+               AND alert_ts = :alert_ts
+        """)
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(sql, {
+                    'exit_ts':  exit_ts,
+                    'reason':   exit_reason,
+                    'price':    float(exit_price),
+                    'ret':      float(return_pct),
+                    'ticker':   pos['ticker'],
+                    'alert_ts': pos['alert_ts'],
+                })
+        except Exception as e:
+            logger.warning("Exit persist failed for %s %s: %s",
+                           pos['ticker'], pos['alert_ts'], e)
+
     def run_loop(self):
         """Main market-hours loop."""
         tickers = self.tickers
@@ -677,15 +1365,34 @@ class SignalMonitor:
 
         while True:
             if not self.is_market_hours():
-                now = datetime.now()
+                now = datetime.now(_ET)
                 if now.time() > self.market_cfg.market_close_time:
                     print("Market closed. Shutting down.")
+                    # Track D / G.P0.11: log per-ticker momentum
+                    # instrumentation summary so the cross-track sync
+                    # (issue #304) can read the diagnostic counts from
+                    # Cloud Logging without a separate persistence layer.
+                    for t in tickers:
+                        logger.info(
+                            "session_summary ticker=%s momentum_evaluated=%d "
+                            "momentum_fired=%d daily_trades=%d daily_pnl=%.4f "
+                            "level_refresh_success=%d level_refresh_empty_df=%d "
+                            "level_refresh_exception=%d",
+                            t,
+                            self.momentum_evaluated_count.get(t, 0),
+                            self.momentum_fired_count.get(t, 0),
+                            self.daily_trades.get(t, 0),
+                            self.daily_pnl.get(t, 0.0),
+                            self.level_refresh_success_count.get(t, 0),
+                            self.level_refresh_empty_df_count.get(t, 0),
+                            self.level_refresh_exception_count.get(t, 0),
+                        )
                     break
-                print(f"Waiting for market open ({now.strftime('%H:%M:%S')})...")
+                print(f"Waiting for market open ({now.strftime('%H:%M:%S %Z')})...")
                 time_module.sleep(self.monitor_cfg.pre_market_sleep)
                 continue
 
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Polling...")
+            print(f"\n[{datetime.now(_ET).strftime('%H:%M:%S %Z')}] Polling...")
 
             for ticker in tickers:
                 new_data = self.fetch_latest_bar(ticker)
@@ -741,26 +1448,97 @@ def run_orb_snapshot(window: str) -> int:
 
 
 def main():
+    # Logging is configured at module-level (see top of file). Re-running
+    # basicConfig here would no-op because a handler is already attached;
+    # call removed to keep the configuration in one place.
     import argparse
     parser = argparse.ArgumentParser(description='Real-time signal monitor')
-    parser.add_argument('--mode', choices=['loop', 'orb-snapshot'], default='loop',
-                        help='loop = run during market hours; orb-snapshot = one-shot ORB capture')
+    parser.add_argument('--mode', choices=['loop', 'orb-snapshot', 'replay'],
+                        default='loop',
+                        help='loop = run during market hours; '
+                             'orb-snapshot = one-shot ORB capture; '
+                             'replay = hermetic 1-min-bar replay against '
+                             'historical data (mocks Discord + DB writes; '
+                             'dispatches to scripts.replay_signal_monitor)')
     parser.add_argument('--window', choices=['5m', '15m', '30m'], default='15m',
                         help='ORB window for orb-snapshot mode')
+    # Replay-mode flags. Mirror scripts/replay_signal_monitor.py so a
+    # user familiar with one knows the other. Env-var defaults
+    # (REPLAY_TICKER / REPLAY_TICKERS / REPLAY_DATE / REPLAY_START /
+    # REPLAY_END) let `gcloud run jobs execute signal-monitor
+    # --update-env-vars=...` override at execute time without rebuilding
+    # the job spec — the cleanest deploy pattern for one-off historical
+    # replays since gcloud run jobs execute supports --update-env-vars
+    # but not --args injection.
+    parser.add_argument('--ticker', default=os.environ.get('REPLAY_TICKER'),
+                        help='[replay] Single ticker (alias for --tickers TICKER)')
+    parser.add_argument('--tickers', default=os.environ.get('REPLAY_TICKERS'),
+                        help='[replay] Comma-separated tickers')
+    parser.add_argument('--date', default=os.environ.get('REPLAY_DATE'),
+                        help='[replay] Single date YYYY-MM-DD '
+                             '(alias for --start = --end)')
+    parser.add_argument('--start', default=os.environ.get('REPLAY_START'),
+                        help='[replay] UTC start date YYYY-MM-DD')
+    parser.add_argument('--end', default=os.environ.get('REPLAY_END'),
+                        help='[replay] UTC end date YYYY-MM-DD (exclusive)')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='[replay] Max bars per ticker (debug/dev)')
+    parser.add_argument('--json', action='store_true',
+                        help='[replay] Print fires as a JSON array')
     args = parser.parse_args()
+
+    # Implicit replay activation: setting REPLAY_DATE or REPLAY_TICKER
+    # at execute time is sufficient — no need to also pass
+    # --mode=replay. Keeps the override surface minimal.
+    if args.mode == 'loop' and (
+        os.environ.get('REPLAY_DATE')
+        or os.environ.get('REPLAY_TICKER')
+        or os.environ.get('REPLAY_TICKERS')
+    ):
+        logger.info(
+            "REPLAY_* env var detected — switching to --mode=replay")
+        args.mode = 'replay'
 
     # Fail-fast on missing config so Cloud Run surfaces the error instead of
     # looping silently (see docs/incidents/2026-04-14-market-data-daily-gap.md).
     from gcp.database import is_cloud_sql_configured
-    if not os.environ.get('ALPHA_VANTAGE_API_KEY'):
+    if not os.environ.get('ALPHA_VANTAGE_API_KEY') and args.mode != 'replay':
+        # Replay reads from market_data_intraday (Cloud SQL only); does
+        # not fetch fresh bars from AV.
         logger.error("ALPHA_VANTAGE_API_KEY is not set — aborting.")
         sys.exit(2)
-    if not is_cloud_sql_configured() and args.mode == 'loop':
+    if not is_cloud_sql_configured() and args.mode in ('loop', 'replay'):
         logger.error("Cloud SQL env vars missing — aborting.")
         sys.exit(3)
 
     if args.mode == 'orb-snapshot':
         sys.exit(run_orb_snapshot(args.window))
+
+    if args.mode == 'replay':
+        # Dispatch to the canonical hermetic replay harness in
+        # scripts/replay_signal_monitor.py. That script's main() takes
+        # an argv list (or None for sys.argv); we build it from our
+        # parsed args so the env-var override path produces the same
+        # behaviour as a direct CLI invocation.
+        from scripts.replay_signal_monitor import (
+            main as _replay_main,
+        )
+        replay_argv: list[str] = []
+        if args.ticker:
+            replay_argv += ['--ticker', args.ticker]
+        if args.tickers:
+            replay_argv += ['--tickers', args.tickers]
+        if args.date:
+            replay_argv += ['--date', args.date]
+        if args.start:
+            replay_argv += ['--start', args.start]
+        if args.end:
+            replay_argv += ['--end', args.end]
+        if args.limit is not None:
+            replay_argv += ['--limit', str(args.limit)]
+        if args.json:
+            replay_argv += ['--json']
+        sys.exit(_replay_main(replay_argv))
 
     monitor = SignalMonitor()
     monitor.run_loop()

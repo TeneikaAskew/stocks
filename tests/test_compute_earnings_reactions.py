@@ -11,7 +11,7 @@ Covers:
 - Reversal flag firing correctly
 - Direction consistency edge cases (zero reaction_gap)
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -196,6 +196,65 @@ class TestComputeReactionAMC:
         assert r['d_minus_10_close'] == 100.5
         assert r['d_minus_1_close'] == 110.0
         assert abs(r['pre_earnings_drift_10d_pct'] - 9.4527) < 0.01
+
+    def test_amc_pre_drift_5d_and_3d(self):
+        """Added 2026-05-14 with the pre-earnings drift pipeline. Pins
+        the new D-5/D-3 close columns + drift_5d_pct / drift_3d_pct."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # D = 2026-03-04 → D-5 = 2026-02-25 (close 105.0), D-3 = 2026-02-27 (close 107.0)
+        # D-1 close = 110.0
+        assert r['d_minus_5_close'] == 105.0
+        assert r['d_minus_3_close'] == 107.0
+        assert r['d_minus_2_close'] == 108.0
+        # drift_5d_pct = (110 - 105) / 105 ≈ 4.762
+        # drift_3d_pct = (110 - 107) / 107 ≈ 2.804
+        assert abs(r['drift_5d_pct'] - 4.7619) < 0.01
+        assert abs(r['drift_3d_pct'] - 2.8037) < 0.01
+
+    def test_amc_pre_drift_flags(self):
+        """The two derived booleans on the pre-drift row."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # Both drift_5d (+4.76) and drift_3d (+2.80) are positive and
+        # drift_5d magnitude > 1% → consistent_5d True.
+        assert r['pre_drift_consistent_5d'] is True
+        # drift_5d > 0 AND reaction_gap > 0 → no reversal
+        assert r['pre_drift_reverses_into_gap'] is False
+
+    def test_amc_pre_window_intraday_high_low(self):
+        """Added 2026-05-14. Intraday max_high / min_low over each pre-window,
+        anchored at the D-N close (symmetric with post-earnings max_high_*d_pct
+        and min_low_*d_pct). Captures 'ran and gave back' patterns that pure
+        close-to-close drift misses."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+
+        # 5d pre-window (D-5=2/25 .. D-1=3/3):
+        #   bars: 2/25 (high 106, low 103.5), 2/26 (107, 104.5),
+        #         2/27 (108, 105.5), 3/2 (109, 106.5), 3/3 (110.5, 107.5)
+        #   max(high) = 110.5, min(low) = 103.5
+        #   anchor = D-5 close = 105
+        #   max_high_pre_5d_pct = (110.5 - 105) / 105 * 100 ≈ 5.238
+        #   min_low_pre_5d_pct  = (103.5 - 105) / 105 * 100 ≈ -1.429
+        assert abs(r['max_high_pre_5d_pct'] - 5.2381) < 0.01
+        assert abs(r['min_low_pre_5d_pct']  - (-1.4286)) < 0.01
+
+        # 3d pre-window (D-3=2/27 .. D-1=3/3): highs [108,109,110.5], lows [105.5,106.5,107.5]
+        #   anchor = D-3 close = 107
+        #   max_high_pre_3d_pct = (110.5 - 107) / 107 * 100 ≈ 3.271
+        #   min_low_pre_3d_pct  = (105.5 - 107) / 107 * 100 ≈ -1.402
+        assert abs(r['max_high_pre_3d_pct'] - 3.2710) < 0.01
+        assert abs(r['min_low_pre_3d_pct']  - (-1.4019)) < 0.01
+
+        # 10d pre-window (D-10=2/18 .. D-1=3/3):
+        #   max(high) across 10 bars = 110.5 (3/3)
+        #   min(low) across 10 bars = 99.5 (2/18)
+        #   anchor = D-10 close = 100.5
+        #   max_high_pre_10d_pct = (110.5 - 100.5) / 100.5 * 100 ≈ 9.950
+        #   min_low_pre_10d_pct  = (99.5  - 100.5) / 100.5 * 100 ≈ -0.995
+        assert abs(r['max_high_pre_10d_pct'] - 9.9502) < 0.01
+        assert abs(r['min_low_pre_10d_pct']  - (-0.9950)) < 0.01
 
     def test_amc_max_run_and_drawdown(self):
         df = self._build_bars()
@@ -455,6 +514,135 @@ class TestComputeReactionEdgeCases:
 
 
 # ────────────────────────────────────────────────────────────
+# Best-exit / worst-drawdown over the swing window (PR #240)
+# Window starts at reaction-day bar (D for BMO, D+1 for AMC).
+# Anchor matches sustain math: D close (BMO) or D+1 open (AMC).
+# ────────────────────────────────────────────────────────────
+
+class TestComputeReactionSwingWindowExtremes:
+
+    def test_amc_max_high_3d_above_d_plus_3_close(self):
+        """The screenshot's PRIME case: stock spikes to a peak on day +1
+        but closes lower; sustain_3d_close shows 0% but max_high captures
+        the actual best exit."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),     # D-1
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),    # D close=100
+            (date(2026, 3, 5), 105.0, 115.0, 104.0, 106.0),   # D+1: anchor=105, high=115 (+9.52%)
+            (date(2026, 3, 6), 106.0, 108.0, 102.0, 105.0),
+            (date(2026, 3, 9), 105.0, 106.0, 101.0, 105.0),   # D+3 close = 105 (sustain ≈ 0)
+            (date(2026, 3, 10), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 11), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 12), 105.0, 106.0, 102.0, 105.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # sustain_3d at the close: D+3 close (105) vs anchor (105) ≈ 0%
+        assert abs(r['sustain_3d_pct']) < 0.01
+        # But max_high_3d captures the actual peak: high (115) on D+1 vs anchor (105)
+        # = (115 - 105) / 105 × 100 = 9.524%
+        assert abs(r['max_high_3d_pct'] - 9.524) < 0.01
+
+    def test_amc_min_low_3d_below_d_plus_3_close(self):
+        """Mirror case: stock dipped below anchor intraday but recovered."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 105.0, 106.0, 95.0, 105.0),    # D+1 open=105 (anchor), low=95
+            (date(2026, 3, 6), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 9), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 10), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 11), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 12), 105.0, 106.0, 102.0, 105.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # min_low_3d: 95 vs 105 anchor = -9.524%
+        assert abs(r['min_low_3d_pct'] - (-9.524)) < 0.01
+
+    def test_bmo_window_starts_at_d(self):
+        """For BMO reports, the reaction is on D itself; the window
+        should INCLUDE D's high/low, not start at D+1."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),    # D-1
+            (date(2026, 3, 4), 105.0, 115.0, 104.0, 110.0),  # D = reaction day, high=115 (+10.0%)
+            (date(2026, 3, 5), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 6), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 9), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 10), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 11), 110.0, 112.0, 108.0, 110.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'BMO')
+        assert r is not None
+        # BMO anchor = D close = 110. max_high_3d = max high in [D, D+1, D+2, D+3]
+        # = 115 on D itself = (115-110)/110 = +4.55%
+        assert abs(r['max_high_3d_pct'] - 4.5455) < 0.01
+
+    def test_5d_and_10d_windows_extend_past_3d(self):
+        """A spike on day +6 should appear in 10d but NOT in 3d or 5d windows."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 100.0, 101.0, 99.0, 100.0),    # D+1: anchor=100
+            (date(2026, 3, 6), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 9), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 10), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 11), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 12), 100.0, 120.0, 99.0, 100.0),   # D+7: spike to 120
+            (date(2026, 3, 13), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 16), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 17), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 18), 100.0, 101.0, 99.0, 100.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # 3d window: [D+1..D+4] = max high 101 → +1.0%
+        assert abs(r['max_high_3d_pct'] - 1.0) < 0.01
+        # 5d window: [D+1..D+6] = still 101 (spike on D+7 not yet) → +1.0%
+        assert abs(r['max_high_5d_pct'] - 1.0) < 0.01
+        # 10d window: [D+1..D+11] = includes D+7 spike → +20.0%
+        assert abs(r['max_high_10d_pct'] - 20.0) < 0.01
+
+    def test_truncated_window_returns_null(self):
+        """If the daily window doesn't reach D+10, max_high_10d_pct stays NULL
+        but the 3d / 5d versions still populate when their windows fit."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 100.0, 105.0, 99.0, 100.0),    # D+1
+            (date(2026, 3, 6), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 9), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 10), 100.0, 101.0, 99.0, 100.0),
+            # No data past D+5 — 10d window can't fit
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # 3d fits — should be populated (max high 105 vs anchor 100 = +5%)
+        assert abs(r['max_high_3d_pct'] - 5.0) < 0.01
+        # 10d doesn't fit — should be NULL
+        assert r['max_high_10d_pct'] is None
+        assert r['min_low_10d_pct'] is None
+
+    def test_split_anomaly_nulls_the_extreme(self):
+        """A 3-for-1 split between D+1 and D+5 produces a fictitious -66%
+        min_low. Should be nulled the same way sustain handles it."""
+        df = _bars([
+            (date(2026, 3, 3), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0),   # D+1 anchor=105
+            (date(2026, 3, 6), 106.0, 108.0, 105.0, 107.0),
+            (date(2026, 3, 9), 107.0, 109.0, 106.0, 108.0),
+            (date(2026, 3, 10), 108.0, 110.0, 107.0, 109.0),
+            (date(2026, 3, 11), 36.0, 37.0, 35.0, 36.5),       # 3-for-1 split → low 35
+            (date(2026, 3, 12), 36.5, 37.5, 36.0, 37.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # min_low_5d would be 35 vs 105 = -66.7%, exceeds 50% anomaly cap → null
+        assert r['min_low_5d_pct'] is None
+
+
+# ────────────────────────────────────────────────────────────
 # _resolve_tickers — broadened default scope (Phase 1.6 fix)
 # ────────────────────────────────────────────────────────────
 
@@ -671,9 +859,50 @@ class TestComputeReactionATR:
         # post_report_atr (D+1 for AMC) is independent and present
         assert r['post_report_atr'] == 2.4
 
+    def test_inline_atr14_fallback_when_upstream_column_missing(self):
+        """When ``atr_14`` is NaN/missing but the daily window has ≥15
+        bars, the populator computes ATR-14 inline from OHLC and produces
+        a non-NULL pre_report_atr. Guards against the regression where
+        the column was 1.7%-populated upstream and silently NULLed 99%
+        of earnings_reactions rows for the brief."""
+        import numpy as np
+        # 16 bars (15 pre + 1 reaction). Synthetic OHLC with constant
+        # 2.0-wide bars makes ATR-14 deterministic.
+        rows = []
+        for i in range(15):
+            d = date(2026, 3, 2) + timedelta(days=i)
+            # weekday-only — skip weekends
+            if d.weekday() >= 5:
+                continue
+            rows.append((d, 100.0, 102.0, 100.0, 101.0, np.nan))
+        # tack on extras until we have at least 17 trading days
+        cur = rows[-1][0] + timedelta(days=1)
+        while len(rows) < 18:
+            if cur.weekday() < 5:
+                rows.append((cur, 100.0, 102.0, 100.0, 101.0, np.nan))
+            cur += timedelta(days=1)
+        df = _bars_with_atr(rows)
+        # Pick a D that has 14+ prior bars in the frame
+        d_report = df.iloc[15]['date']
+        r = compute_reaction(_eps(d_report), df, 'AMC')
+        assert r is not None, "compute should succeed with 16 bars"
+        assert r['pre_report_atr'] is not None, \
+            "inline ATR-14 should fire when upstream is NaN"
+        # All bars have TR = high - low = 2.0; ATR-14 converges to 2.0
+        assert abs(r['pre_report_atr'] - 2.0) < 0.01
+
     def test_atr_ratio_null_when_pre_atr_is_zero(self):
         """A zero pre-report ATR (synthetic / market-closed edge case)
-        shouldn't produce a divide-by-zero — the ratio stays NULL."""
+        shouldn't produce a divide-by-zero — the ratio stays NULL.
+
+        Post-fix semantics: a zero atr_14 in the daily frame is treated
+        as 'missing' and triggers the inline ATR-14 fallback in _atr().
+        With only 3 bars in this fixture the inline fallback also can't
+        compute (needs 14 prior bars), so pre_report_atr surfaces as
+        None. The original assertion only cared that the ratio not
+        divide-by-zero — both old (=0.0) and new (=None) shapes satisfy
+        that, and None is a more honest value for a meaningless 0 ATR.
+        """
         df = _bars_with_atr([
             (date(2026, 3, 3), 100.0, 100.0, 100.0, 100.0, 1.0),
             (date(2026, 3, 4), 100.0, 100.0, 100.0, 100.0, 0.0),  # D atr = 0 (AMC pre)
@@ -681,6 +910,151 @@ class TestComputeReactionATR:
         ])
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
         assert r is not None
-        assert r['pre_report_atr'] == 0.0
-        # zero pre — ratio undefined, must be None not inf
+        assert r['pre_report_atr'] is None
+        # ratio undefined regardless of which path produced the None
         assert r['reaction_day_range_in_atr_units'] is None
+
+
+# ─────────────────────────────────────────────────────────────
+# fetch_daily_windows_for_ticker_dates — per-ticker batching
+# (issue #452 — N+1 → 1 SQL query per ticker)
+# ─────────────────────────────────────────────────────────────
+
+from unittest.mock import patch
+
+class TestFetchDailyWindowsForTickerDates:
+    """The bulk fetcher is the architectural fix for the 30-min Cloud Run
+    task-timeout — it MUST issue exactly one query per ticker (not one
+    per reported_date). Pin that contract with a query-counter test."""
+
+    def _sample_bars(self):
+        """30-year daily-bar coverage spanning two reported_dates."""
+        import pandas as pd
+        from datetime import date as _date, timedelta as _td
+        rows = []
+        start = _date(2025, 1, 1)
+        for i in range(500):
+            d = start + _td(days=i)
+            rows.append({
+                'date': d, 'open': 100.0, 'high': 101.0,
+                'low':  99.0, 'close': 100.5, 'volume': 1000,
+                'atr_14': 1.5,
+            })
+        return pd.DataFrame(rows)
+
+    def test_empty_reported_dates_returns_empty(self):
+        from gcp.fetchers.compute_earnings_reactions import (
+            fetch_daily_windows_for_ticker_dates,
+        )
+        out = fetch_daily_windows_for_ticker_dates('AAPL', [])
+        assert out == {}
+
+    def test_one_query_per_ticker_regardless_of_date_count(self):
+        """4 reported_dates → 1 SQL query (not 4). This is the contract
+        that makes the timeout fix work."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        bars = self._sample_bars()
+        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+            from datetime import date
+            out = cer.fetch_daily_windows_for_ticker_dates(
+                'AAPL',
+                [date(2025, 2, 1), date(2025, 4, 15),
+                 date(2025, 6, 1), date(2025, 12, 1)],
+            )
+        assert qm.call_count == 1, (
+            "bulk fetcher must issue exactly one DB round-trip per ticker "
+            "regardless of how many reported_dates are passed in"
+        )
+        assert set(out.keys()) == {
+            __import__('datetime').date(2025, 2, 1),
+            __import__('datetime').date(2025, 4, 15),
+            __import__('datetime').date(2025, 6, 1),
+            __import__('datetime').date(2025, 12, 1),
+        }
+
+    def test_window_slices_per_reported_date(self):
+        """Each returned df is bounded to [reported_date-90d, +25d].
+        The -90 floor gives the inline ATR-14 fallback ~60 prior bars."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        bars = self._sample_bars()
+        from datetime import date, timedelta
+        with patch.object(cer, 'query_to_dataframe', return_value=bars):
+            out = cer.fetch_daily_windows_for_ticker_dates(
+                'AAPL', [date(2025, 6, 1)],
+            )
+        win = out[date(2025, 6, 1)]
+        assert not win.empty
+        assert win['date'].min() >= date(2025, 6, 1) - timedelta(days=90)
+        assert win['date'].max() <= date(2025, 6, 1) + timedelta(days=25)
+
+    def test_empty_db_returns_empty_window_per_date(self):
+        """If market_data_daily has no rows for the ticker (sparse data),
+        every reported_date maps to an empty DataFrame so the caller's
+        compute_reaction returns None for each — never crashes."""
+        import pandas as pd
+        from gcp.fetchers import compute_earnings_reactions as cer
+        from datetime import date
+        with patch.object(cer, 'query_to_dataframe',
+                          return_value=pd.DataFrame()):
+            out = cer.fetch_daily_windows_for_ticker_dates(
+                'XYZ',
+                [date(2025, 1, 1), date(2025, 6, 1)],
+            )
+        assert all(df.empty for df in out.values())
+        assert set(out.keys()) == {date(2025, 1, 1), date(2025, 6, 1)}
+
+    def test_query_range_covers_union_of_dates(self):
+        """The single SQL query's date range must cover the union of all
+        reported_dates' windows — min-90d to max+25d. The -90 floor gives
+        the inline ATR-14 fallback ~60 prior trading bars (well above 14)."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        bars = self._sample_bars()
+        from datetime import date, timedelta
+        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+            cer.fetch_daily_windows_for_ticker_dates(
+                'AAPL', [date(2025, 2, 1), date(2025, 10, 1)],
+            )
+        args, kwargs = qm.call_args
+        # query_to_dataframe(sql, params) — params is the 2nd positional
+        params = args[1] if len(args) > 1 else kwargs.get('params') or kwargs
+        # Accept either dict-style or kwargs-style param passing
+        if hasattr(params, 'get'):
+            assert params['start'] == date(2025, 2, 1) - timedelta(days=90)
+            assert params['end']   == date(2025, 10, 1) + timedelta(days=25)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression guard for the 2026-05-14 timezone fix (Codex P2 review on #488).
+# Same shape as the guard in tests/test_fetch_earnings_history.py.
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestTickersReportingInWindowTimezone:
+    def test_query_uses_america_new_york_not_naked_current_date(self, monkeypatch):
+        """Window query must anchor in ET, not DB session timezone.
+        During EST (Nov–Mar) 7:30 PM ET = 00:30 UTC next day, so a bare
+        CURRENT_DATE returns tomorrow's reporters and skips just-released
+        reactions. Dormant during EDT but the ET anchor fixes both."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        import pandas as pd
+
+        captured = {}
+
+        def fake_qdf(sql, params=None):
+            captured['sql'] = sql
+            return pd.DataFrame({'ticker': ['NVDA']})
+
+        monkeypatch.setattr(cer, 'query_to_dataframe', fake_qdf)
+        out = cer._tickers_reporting_in_window(0)
+
+        assert out == {'NVDA'}
+        sql = captured['sql']
+        assert "AT TIME ZONE 'America/New_York'" in sql, (
+            "Window query must anchor in ET (Codex P2 #488). "
+            "During EST (Nov–Mar), 7:30 PM ET is 00:30 UTC next day, so a "
+            "bare CURRENT_DATE on UTC-set Cloud SQL Postgres returns "
+            "tomorrow's reporters and reactions for tonight's AMC names "
+            "get skipped."
+        )
+        assert 'BETWEEN CURRENT_DATE' not in sql, (
+            "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
+        )

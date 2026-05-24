@@ -107,10 +107,20 @@ def compute_reaction(
         return None
 
     def safe(idx):
+        """Bounds-checked ``daily.iloc[idx]`` — returns None on out-of-range.
+
+        Lets the surrounding window math (D-10..D+10) silently skip bars
+        that don't exist (fresh IPOs, current-quarter reports without a
+        forward window) without raising IndexError. Callers branch on
+        the None sentinel and emit explicit NULLs to the DB column.
+        """
         return daily.iloc[idx] if 0 <= idx < len(daily) else None
 
     d_minus_10 = safe(d_idx - 10)
-    d_minus_1 = safe(d_idx - 1)
+    d_minus_5  = safe(d_idx - 5)
+    d_minus_3  = safe(d_idx - 3)
+    d_minus_2  = safe(d_idx - 2)
+    d_minus_1  = safe(d_idx - 1)
     d = safe(d_idx)
     d_plus_1 = safe(d_idx + 1)
     if any(x is None for x in (d_minus_1, d, d_plus_1)):
@@ -125,6 +135,70 @@ def compute_reaction(
             (float(d_minus_1['close']) - d_minus_10_close)
             / d_minus_10_close * 100
         )
+
+    # Finer-grained pre-earnings drift (added 2026-05-14). Each horizon
+    # is computed independently — a freshly-IPO'd ticker may have D-3 but
+    # not D-5, etc. Nulls are explicit; downstream consumers handle them.
+    d_minus_5_close = float(d_minus_5['close']) if d_minus_5 is not None else None
+    d_minus_3_close = float(d_minus_3['close']) if d_minus_3 is not None else None
+    d_minus_2_close = float(d_minus_2['close']) if d_minus_2 is not None else None
+    drift_5d_pct = (
+        (float(d_minus_1['close']) - d_minus_5_close) / d_minus_5_close * 100
+        if d_minus_5_close else None
+    )
+    drift_3d_pct = (
+        (float(d_minus_1['close']) - d_minus_3_close) / d_minus_3_close * 100
+        if d_minus_3_close else None
+    )
+    # Behavioral flag: consistent run-up/down across both horizons + non-trivial magnitude.
+    pre_drift_consistent_5d = None
+    if drift_5d_pct is not None and drift_3d_pct is not None:
+        pre_drift_consistent_5d = bool(
+            ((drift_5d_pct > 0 and drift_3d_pct > 0)
+             or (drift_5d_pct < 0 and drift_3d_pct < 0))
+            and abs(drift_5d_pct) >= 1.0
+        )
+    # pre_drift_reverses_into_gap is post-event (sign of drift_5d vs
+    # reaction_gap). Computed below after reaction_gap is known.
+
+    # Intraday range over each pre-earnings window. Symmetric with post-
+    # earnings max_high_3d_pct / min_low_3d_pct etc. Anchor is the D-N close
+    # (start of window). Captures "ran and gave back" patterns that pure
+    # close-to-close drift misses — e.g. HIMS 2026-05-11 closed up only
+    # 3.67% over the prior week but its intraday high in that window was
+    # ~10% above D-5 close.
+    def pre_window_high_low(window_days: int, anchor_close):
+        """Return (max_high_pct, min_low_pct) over the pre-earnings window.
+
+        Walks bars D-N..D-1 inclusive (the same window the matching
+        ``drift_Nd_pct`` close-to-close metric uses) and returns the
+        intraday high and low expressed as % vs ``anchor_close`` (the
+        D-N close that anchors the drift calculation).
+
+        Returns (None, None) when the anchor is missing or invalid, or
+        when no bars in the window exist — the caller emits NULL.
+        Surfaces "ran and gave back" patterns that pure close-to-close
+        drift misses (see the in-line HIMS 2026-05-11 example).
+        """
+        if anchor_close is None or anchor_close <= 0:
+            return (None, None)
+        bars = []
+        for off in range(window_days, 0, -1):   # D-N .. D-1 inclusive
+            bar = safe(d_idx - off)
+            if bar is not None:
+                bars.append(bar)
+        if not bars:
+            return (None, None)
+        max_high = max(float(b['high']) for b in bars)
+        min_low  = min(float(b['low'])  for b in bars)
+        return (
+            (max_high - anchor_close) / anchor_close * 100,
+            (min_low  - anchor_close) / anchor_close * 100,
+        )
+
+    max_high_pre_3d_pct,  min_low_pre_3d_pct  = pre_window_high_low(3,  d_minus_3_close)
+    max_high_pre_5d_pct,  min_low_pre_5d_pct  = pre_window_high_low(5,  d_minus_5_close)
+    max_high_pre_10d_pct, min_low_pre_10d_pct = pre_window_high_low(10, d_minus_10_close)
 
     # Raw gap math (always computed; raw inputs to reaction_gap)
     pre_report_gap = (
@@ -169,6 +243,19 @@ def compute_reaction(
     SUSTAIN_ANOMALY_PCT = 50.0
 
     def sustain_at(n_days):
+        """Return (close_at_D+N, sustain_pct) for the reaction window.
+
+        ``sustain_pct`` = (close_at_D+N − anchor_price) / anchor_price × 100,
+        where ``anchor_price`` = D close (BMO) or D+1 open (AMC) — set
+        by the surrounding scope.
+
+        Returns (None, None) when D+N is past the loaded daily range.
+        Returns (close, None) when the magnitude exceeds
+        ``SUSTAIN_ANOMALY_PCT`` (almost certainly a stock-split artifact
+        in unadjusted prices — see the WMT 2024 example above); keeping
+        the close value preserves audit info while nulling the percent
+        so downstream aggregates skip this quarter for this horizon.
+        """
         # n trading days after D (so D+5 = d_idx + 5 in the bars index)
         idx = d_idx + n_days
         bar = safe(idx)
@@ -177,15 +264,63 @@ def compute_reaction(
         close = float(bar['close'])
         pct = (close - anchor_price) / anchor_price * 100
         if abs(pct) > SUSTAIN_ANOMALY_PCT:
-            # Almost certainly a split artifact in unadjusted prices.
-            # Null it so downstream aggregates skip this quarter for
-            # this horizon. Keep the close value in case audit needs it.
             return close, None
         return close, pct
 
     d_plus_3_close, sustain_3d = sustain_at(3)
     d_plus_5_close, sustain_5d = sustain_at(5)
     d_plus_10_close, sustain_10d = sustain_at(10)
+
+    # Best-exit / worst-drawdown over the swing window (added 2026-05-04).
+    # The "sustain" columns above use the close on day N — a swing trader
+    # holding the position can exit at any point in the window. These give
+    # the actual high/low touched, expressed as % vs reaction_anchor_price
+    # (the reaction-day close for BMO, D+1 open for AMC). This converts
+    # "did the position make money on day N close?" into "did the position
+    # have a profitable exit point during days 1..N?" Cheap — pure agg
+    # over the same daily window already loaded for sustain math.
+    #
+    # Window: [reaction_idx, d_idx + n_days] inclusive — matches the
+    # existing sustain_N_pct convention where sustain_5d uses bar at
+    # d_idx + 5. For AMC the reaction starts at D+1, so the window
+    # spans D+1..D+N (N bars). For BMO the reaction is on D itself,
+    # so the window spans D..D+N (N+1 bars). The reaction-day bar
+    # itself is included so an intraday gap-and-fade isn't missed.
+    reaction_idx = d_idx if reaction_basis == 'BMO' else d_idx + 1
+
+    def best_worst_in_window(n_days):
+        """Return (max_high_pct, min_low_pct) over the swing window.
+
+        Anchor = reaction_anchor_price (D close for BMO, D+1 open for
+        AMC). Anomaly cap matches the sustain logic so split artifacts
+        don't poison the columns.
+        """
+        end_idx = d_idx + n_days
+        # Slice valid bars within the loaded window
+        if end_idx >= len(daily) or reaction_idx >= len(daily):
+            return None, None
+        slice_ = daily.iloc[reaction_idx:end_idx + 1]
+        if slice_.empty:
+            return None, None
+        try:
+            hi = float(slice_['high'].max())
+            lo = float(slice_['low'].min())
+        except (TypeError, ValueError):
+            return None, None
+        max_pct = (hi - anchor_price) / anchor_price * 100
+        min_pct = (lo - anchor_price) / anchor_price * 100
+        # Same split-artifact cap used by sustain — null if either side
+        # exceeds the anomaly threshold so downstream aggregates skip
+        # this quarter for this horizon.
+        if abs(max_pct) > SUSTAIN_ANOMALY_PCT:
+            max_pct = None
+        if abs(min_pct) > SUSTAIN_ANOMALY_PCT:
+            min_pct = None
+        return max_pct, min_pct
+
+    max_high_3d, min_low_3d = best_worst_in_window(3)
+    max_high_5d, min_low_5d = best_worst_in_window(5)
+    max_high_10d, min_low_10d = best_worst_in_window(10)
 
     direction_consistent = None
     is_reversal = None
@@ -216,13 +351,80 @@ def compute_reaction(
     # D+1 for AMC). Dividing by pre-report ATR gives the "this print was
     # Nx normal volatility" number that matches third-party analytics.
     def _atr(bar) -> Optional[float]:
+        """ATR-14 at the requested bar.
+
+        Prefers the pre-computed ``atr_14`` column when present, otherwise
+        falls back to an inline Wilder ATR over the 14 trading bars
+        ending at ``bar``. The inline path makes this populator self-
+        sufficient — historical ``market_data_daily`` rows had ``atr_14``
+        populated for only ~1.7% of the corpus (the fetcher only computes
+        it on live daily pulls), so relying on the column meant
+        ``pre_report_atr`` was NULL for ~99% of earnings_reactions rows.
+        Computing inline from OHLC the populator already has is O(14)
+        per call and removes the upstream-coverage dependency entirely.
+        """
         if bar is None:
             return None
+        # Fast path: pre-computed column is present.
         v = bar.get('atr_14')
         try:
-            return float(v) if v is not None and pd.notna(v) else None
+            f = float(v) if v is not None and pd.notna(v) else None
         except (TypeError, ValueError):
+            f = None
+        if f is not None and f > 0:
+            return f
+        # Inline Wilder ATR-14. ``daily`` is the per-event window in
+        # scope of the enclosing compute_reaction(); the bar's ``date``
+        # locates its position. We need 14 prior bars to form TR_t.
+        try:
+            bar_date = bar['date']
+        except (KeyError, TypeError):
             return None
+        idx_arr = daily.index[daily['date'] == bar_date]
+        if len(idx_arr) == 0:
+            return None
+        end_idx = int(idx_arr[0])
+        start_idx = end_idx - 14
+        if start_idx < 0:
+            # Genuinely under-historied — market_data_daily doesn't have
+            # 14 prior bars for this ticker at this date. Log so the
+            # operator can decide whether to backfill the upstream
+            # daily-bars fetcher for the ticker.
+            log.warning(
+                "inline ATR-14 skipped for %s @ %s: only %d prior bars "
+                "in window (need 14). Consider backfilling "
+                "market_data_daily for this ticker.",
+                eps_row.get('ticker', '?'), bar_date, end_idx,
+            )
+            return None
+        window = daily.iloc[start_idx:end_idx + 1].copy()
+        if len(window) < 15:
+            log.warning(
+                "inline ATR-14 skipped for %s @ %s: window has %d bars "
+                "after slice (need 15).",
+                eps_row.get('ticker', '?'), bar_date, len(window),
+            )
+            return None
+        h = window['high'].astype(float).to_numpy()
+        l = window['low'].astype(float).to_numpy()
+        c = window['close'].astype(float).to_numpy()
+        # True range needs prev-close — first row has no prev so its TR
+        # is just (high - low); subsequent rows take the 3-way max.
+        prev_c = c[:-1]
+        cur_h = h[1:]
+        cur_l = l[1:]
+        tr = pd.Series(
+            [
+                max(cur_h[i] - cur_l[i],
+                    abs(cur_h[i] - prev_c[i]),
+                    abs(cur_l[i] - prev_c[i]))
+                for i in range(len(cur_h))
+            ],
+            dtype='float64',
+        )
+        # Wilder smoothing == EMA with alpha=1/14
+        atr = tr.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1]
+        return float(atr) if pd.notna(atr) and atr > 0 else None
 
     if reaction_basis == 'BMO':
         pre_report_bar = d_minus_1
@@ -255,6 +457,15 @@ def compute_reaction(
         else None
     )
 
+    # Post-event flag: did the pre-earnings drift reverse on the gap?
+    # Useful as a contrarian signal in the backtest.
+    pre_drift_reverses_into_gap = None
+    if drift_5d_pct is not None and reaction_gap is not None:
+        pre_drift_reverses_into_gap = bool(
+            (drift_5d_pct > 0 and reaction_gap < 0)
+            or (drift_5d_pct < 0 and reaction_gap > 0)
+        )
+
     return {
         'ticker': eps_row['ticker'],
         'fiscal_date_ending': eps_row['fiscal_date_ending'],
@@ -264,8 +475,22 @@ def compute_reaction(
         'estimated_eps': eps_row.get('estimated_eps'),
         'surprise_pct': eps_row.get('surprise_pct'),
         'd_minus_10_close': d_minus_10_close,
+        'd_minus_5_close':  d_minus_5_close,
+        'd_minus_3_close':  d_minus_3_close,
+        'd_minus_2_close':  d_minus_2_close,
         'd_minus_1_close': float(d_minus_1['close']),
         'pre_earnings_drift_10d_pct': pre_drift_10d,
+        'drift_5d_pct': drift_5d_pct,
+        'drift_3d_pct': drift_3d_pct,
+        'pre_drift_consistent_5d': pre_drift_consistent_5d,
+        'pre_drift_reverses_into_gap': pre_drift_reverses_into_gap,
+        # Intraday pre-window range (symmetric with post-earnings max_high_*d_pct / min_low_*d_pct)
+        'max_high_pre_3d_pct':  max_high_pre_3d_pct,
+        'min_low_pre_3d_pct':   min_low_pre_3d_pct,
+        'max_high_pre_5d_pct':  max_high_pre_5d_pct,
+        'min_low_pre_5d_pct':   min_low_pre_5d_pct,
+        'max_high_pre_10d_pct': max_high_pre_10d_pct,
+        'min_low_pre_10d_pct':  min_low_pre_10d_pct,
         'd_open': float(d['open']),
         'd_high': float(d['high']),
         'd_low': float(d['low']),
@@ -295,6 +520,13 @@ def compute_reaction(
         'post_report_atr': post_report_atr,
         'reaction_day_range': reaction_day_range,
         'reaction_day_range_in_atr_units': reaction_day_range_in_atr_units,
+        # Best-exit / worst-drawdown over the swing window
+        'max_high_3d_pct':  max_high_3d,
+        'min_low_3d_pct':   min_low_3d,
+        'max_high_5d_pct':  max_high_5d,
+        'min_low_5d_pct':   min_low_5d,
+        'max_high_10d_pct': max_high_10d,
+        'min_low_10d_pct':  min_low_10d,
     }
 
 
@@ -355,6 +587,13 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     populator can write ATR-context columns without a second pull
     (the column is populated by the daily fetcher's full-range
     indicator pass; rows without it stay NULL in the output).
+
+    NOTE: For the bulk populate path (`populate_for_tickers`), prefer
+    `fetch_daily_windows_for_ticker_dates` which issues ONE query per
+    ticker instead of one per (ticker, reported_date). This per-call
+    function is kept for ad-hoc callers (CLI smoke tests) and is the
+    legacy code path that caused the 30-min Cloud Run task-timeout —
+    see issue #452 and the post-fix benchmarks in the PR description.
     """
     sql = """
         SELECT date, open, high, low, close, volume, atr_14
@@ -362,9 +601,15 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
     """
+    # Window: −90 calendar / +25 calendar. The −90 floor (was −40) gives
+    # ~60 trading bars before D — comfortably above the 14 needed by the
+    # inline ATR-14 fallback even after stretches of weekends/holidays,
+    # so we essentially never NULL out pre_report_atr because of a thin
+    # slice. The lookback is local Cloud SQL (no API cost) so widening
+    # is free.
     params = {
         't': ticker,
-        'start': reported_date - timedelta(days=20),
+        'start': reported_date - timedelta(days=90),
         'end': reported_date + timedelta(days=25),
     }
     df = query_to_dataframe(sql, params)
@@ -372,6 +617,71 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
         df['date'] = pd.to_datetime(df['date']).dt.date
         df = df.sort_values('date').reset_index(drop=True)
     return df
+
+
+def fetch_daily_windows_for_ticker_dates(
+    ticker: str, reported_dates: list[date],
+) -> dict[date, pd.DataFrame]:
+    """Bulk-fetch ~30-day windows for one ticker across many earnings dates.
+
+    Issues a single SQL query covering [min(dates) - 20d, max(dates) + 25d]
+    and then slices the result in-memory per ``reported_date``. Returns a
+    ``{reported_date → 30-day-window DataFrame}`` map matching what
+    `fetch_daily_window(ticker, d)` would have returned for each date.
+
+    Why: the prior populate_for_tickers loop called fetch_daily_window
+    once per (ticker, reported_date) pair. With ~73,667 earnings_history
+    rows across ~1,174 tickers, that produced ~73,667 SQL round-trips
+    at ~1s each over the pg8000+Cloud SQL Connector path — wall-clock
+    of ~20 hours, well beyond the 30-min Cloud Run task-timeout the
+    job has configured. CLAUDE.md Rule 0.4 ("Batch SQL queries by
+    partition/grouping key — never per-row when N could exceed 100")
+    explicitly calls this anti-pattern out.
+
+    Post-fix: 1 query per ticker × ~1,174 tickers ≈ 1,174 queries ≈ 20
+    minutes — comfortably inside the timeout. Issue #452.
+
+    Memory bound: per-ticker window pulls cover that ticker's full
+    earnings date span (typically 5-30 years × 252 trading days × 7
+    columns ≈ 5,000-50,000 rows × ~80 bytes ≈ <4 MB per ticker). Only
+    one ticker's window is materialised at a time when callers iterate
+    ticker-by-ticker, so peak working set stays small.
+    """
+    if not reported_dates:
+        return {}
+    # −90 calendar floor (was −40) so the inline ATR-14 fallback in
+    # compute_reaction()._atr() always has ~60 trading bars even after
+    # weekend/holiday clusters. Local Cloud SQL pull, no API cost.
+    min_date = min(reported_dates) - timedelta(days=90)
+    max_date = max(reported_dates) + timedelta(days=25)
+    sql = """
+        SELECT date, open, high, low, close, volume, atr_14
+          FROM market_data_daily
+         WHERE ticker = :t AND date BETWEEN :start AND :end
+         ORDER BY date
+    """
+    df = query_to_dataframe(sql, {'t': ticker, 'start': min_date, 'end': max_date})
+    out: dict[date, pd.DataFrame] = {}
+    if df.empty:
+        # No daily bars at all for this ticker in the union window —
+        # every reported_date gets an empty frame so the caller's
+        # downstream compute_reaction() returns None for each.
+        for d in reported_dates:
+            out[d] = df
+        return out
+    df['date'] = pd.to_datetime(df['date']).dt.date
+    df = df.sort_values('date').reset_index(drop=True)
+    for d in reported_dates:
+        # Match the −90 floor used by the SQL pull above so the inline
+        # ATR-14 fallback in _atr() always has ~60 prior bars.
+        start = d - timedelta(days=90)
+        end = d + timedelta(days=25)
+        mask = (df['date'] >= start) & (df['date'] <= end)
+        # .copy() so downstream mutations (compute_reaction sets new
+        # columns on the slice) don't trigger SettingWithCopyWarning
+        # or clobber the parent frame.
+        out[d] = df.loc[mask].reset_index(drop=True).copy()
+    return out
 
 
 def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
@@ -388,21 +698,50 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
     log.info("earnings_history rows: %d  /  calendar timing fallback: %s",
              len(eps_df), calendar_timing)
 
+    # Group earnings by ticker so we issue ONE market_data_daily query
+    # per ticker (covering the union of its reported_dates) instead of
+    # one per (ticker, reported_date) pair. This is the fix for issue
+    # #452 — the prior per-row pattern queued ~73,667 round-trips and
+    # consistently hit the 30-min Cloud Run task-timeout.
+    # CLAUDE.md Rule 0.4: "Batch SQL queries by partition/grouping key
+    # — never per-row when N could exceed 100."
     rows: list[dict] = []
     skipped: int = 0
-    for _, eps in eps_df.iterrows():
-        ticker = eps['ticker']
-        report_time = eps.get('report_time')
-        yahoo_report_time = eps.get('yahoo_report_time')
-        cal_timing = calendar_timing.get(ticker)
-        basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
+    ticker_groups = list(eps_df.groupby('ticker', sort=False))
+    n_tickers = len(ticker_groups)
+    log.info("processing %d tickers × ~%d earnings rows each",
+             n_tickers, len(eps_df) // max(n_tickers, 1))
 
-        daily = fetch_daily_window(ticker, eps['reported_date'])
-        result = compute_reaction(eps.to_dict(), daily, basis)
-        if result is None:
-            skipped += 1
-            continue
-        rows.append(result)
+    for ti, (ticker, ticker_eps) in enumerate(ticker_groups, start=1):
+        # Collect every reported_date this ticker has, then bulk-fetch
+        # the daily bars in one query covering the full date span.
+        dates_for_ticker = ticker_eps['reported_date'].tolist()
+        windows = fetch_daily_windows_for_ticker_dates(ticker, dates_for_ticker)
+
+        ticker_kept = 0
+        ticker_skipped = 0
+        for _, eps in ticker_eps.iterrows():
+            report_time = eps.get('report_time')
+            yahoo_report_time = eps.get('yahoo_report_time')
+            cal_timing = calendar_timing.get(ticker)
+            basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
+
+            daily = windows.get(eps['reported_date'], pd.DataFrame())
+            result = compute_reaction(eps.to_dict(), daily, basis)
+            if result is None:
+                ticker_skipped += 1
+                continue
+            rows.append(result)
+            ticker_kept += 1
+
+        skipped += ticker_skipped
+        # Per-ticker progress log — every 25 tickers + the final one.
+        # CLAUDE.md Rule 0.4: "Observable progress — log per-group counts
+        # so a 30-minute job is debuggable, not a black box."
+        if ti % 25 == 0 or ti == n_tickers:
+            log.info("ticker=%s [%d/%d] kept=%d skipped=%d  (cum rows=%d)",
+                     ticker, ti, n_tickers,
+                     ticker_kept, ticker_skipped, len(rows))
 
     log.info("Computed %d reaction rows  (skipped %d for insufficient bars)",
              len(rows), skipped)
@@ -471,6 +810,74 @@ def _resolve_tickers(args) -> list[str]:
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
+def _tickers_reporting_in_window(window_days: int) -> set:
+    """Tickers in earnings_calendar with earnings_date in [today, today+window]."""
+    try:
+        # Anchor the window in America/New_York, NOT the DB session timezone.
+        # Cloud SQL Postgres is set to UTC (verified `SHOW timezone` returns
+        # 'UTC') and these jobs are scheduled at 7:30 PM ET. During EST
+        # (UTC-5, Nov–Mar) that's 00:30 UTC the NEXT day, so a bare
+        # CURRENT_DATE returns tomorrow's reporters and reactions for the
+        # tickers that just reported tonight get skipped. During EDT (UTC-4)
+        # 19:30 ET = 23:30 UTC, same calendar day, so the bug is dormant —
+        # but anchoring in ET removes the seasonal failure mode.
+        df = query_to_dataframe(
+            """
+            SELECT DISTINCT ticker
+            FROM earnings_calendar
+            WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
+                AND (NOW() AT TIME ZONE 'America/New_York')::date + (:days || ' days')::interval
+            """,
+            {"days": int(window_days)},
+        )
+    except Exception as e:
+        log.warning("report-window lookup failed (%s)", e)
+        return set()
+    if df is None or df.empty:
+        return set()
+    return {str(t).upper() for t in df['ticker'].tolist()}
+
+
+def _resolve_scope(cli_scope=None) -> str:
+    """'weekly' on Sundays or when overridden; else 'daily'."""
+    if cli_scope in ('daily', 'weekly'):
+        return cli_scope
+    import os as _os
+    env = _os.environ.get('PIPELINE_SCOPE', '').strip().lower()
+    if env in ('daily', 'weekly'):
+        return env
+    from datetime import datetime as _dt
+    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
+
+
+def _filter_already_have_reactions(
+    tickers, force_set=None,
+):
+    """Skip tickers with existing reactions UNLESS in force_set.
+
+    force_set: tickers reporting in the current run's window — always
+    re-compute these (their just-released quarter needs a new reaction
+    row).
+    """
+    if not tickers:
+        return tickers, 0
+    force_set = force_set or set()
+    try:
+        df = query_to_dataframe(
+            "SELECT DISTINCT ticker FROM earnings_reactions WHERE ticker = ANY(:t)",
+            {"t": tickers},
+        )
+    except Exception as e:
+        log.warning("earnings_reactions skip-check failed (%s) — computing all", e)
+        return tickers, 0
+    if df is None or df.empty:
+        return tickers, 0
+    already = {str(t).upper() for t in df['ticker'].tolist()}
+    remaining = [t for t in tickers if t not in already or t in force_set]
+    n_skipped = len(tickers) - len(remaining)
+    return remaining, n_skipped
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Populate earnings_reactions from earnings_history × market_data_daily"
@@ -479,6 +886,17 @@ def main():
                         help="Comma-separated tickers (overrides watchlist+calendar resolution).")
     parser.add_argument('--dry-run', action='store_true',
                         help="Print computed rows without writing.")
+    parser.add_argument('--force', action='store_true',
+                        help="Recompute even for tickers already in "
+                             "earnings_reactions. Default skips them "
+                             "(idempotent re-runs); use --force when a "
+                             "new quarter lands in earnings_history.")
+    parser.add_argument('--scope', choices=['daily', 'weekly'], default=None,
+                        help="Pipeline scope (overrides PIPELINE_SCOPE / "
+                             "day-of-week auto-detect). 'daily' force-"
+                             "recomputes tickers reporting today; "
+                             "'weekly' force-recomputes tickers reporting "
+                             "in the next 7 days.")
     args = parser.parse_args()
 
     tickers = _resolve_tickers(args)
@@ -486,7 +904,23 @@ def main():
         log.warning("No tickers to process — exiting")
         return
 
-    log.info("compute_earnings_reactions: %d tickers", len(tickers))
+    if not args.force:
+        scope = _resolve_scope(args.scope)
+        window_days = 7 if scope == 'weekly' else 0
+        force_set = _tickers_reporting_in_window(window_days)
+        tickers, n_skipped = _filter_already_have_reactions(tickers, force_set)
+        log.info(
+            "scope=%s report-window=[today, today+%dd] "
+            "force-recompute=%d tickers; skipped %d already-processed "
+            "outside window",
+            scope, window_days, len(force_set & set(tickers)), n_skipped,
+        )
+        if not tickers:
+            log.info("All resolved tickers already processed — exiting")
+            return
+
+    log.info("compute_earnings_reactions: %d tickers (after window-aware skip)",
+             len(tickers))
     n = populate_for_tickers(tickers, dry_run=args.dry_run)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
 

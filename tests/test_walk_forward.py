@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 from datetime import datetime
 
-from lib.walk_forward import WalkForwardValidator, WalkForwardResult
+from lib.walk_forward import (
+    WalkForwardValidator, WalkForwardResult, select_calibration_winner,
+)
 from lib.backtest import BacktestResult
 from lib.config import RiskConfig, ExitConfig, SignalConfig, StratConfig
 
@@ -148,3 +150,140 @@ class TestParameterSensitivity:
         assert len(results_df) == 2
         assert 'consecutive_periods' in results_df.columns
         assert 'expectancy_pct' in results_df.columns
+
+
+class TestWalkForwardSweep:
+    """lib/walk_forward.py:WalkForwardValidator.walk_forward_sweep — the
+    per-combo walk-forward used by the ETF calibration sweep."""
+
+    def test_sweep_shape(self, long_data):
+        """One row per combo, with the param values and the WF aggregate
+        metrics the calibration sweep ranks on."""
+        validator = WalkForwardValidator(
+            signal_config=SignalConfig(min_conditions=2),
+            train_months=2,
+            test_months=1,
+        )
+        param_grid = {
+            'consecutive_periods': [2, 3],
+            'call_target': [0.0030, 0.0035],
+        }
+        df = validator.walk_forward_sweep(long_data, param_grid, close_col='Close')
+        assert isinstance(df, pd.DataFrame)
+        # 2 x 2 grid -> 4 combos.
+        assert len(df) == 4
+        # Param values echoed back.
+        assert 'consecutive_periods' in df.columns
+        assert 'call_target' in df.columns
+        # Walk-forward aggregate metrics present for every row.
+        for col in ('stability_score', 'avg_expectancy_pct', 'avg_win_rate',
+                    'std_expectancy_pct', 'total_folds', 'total_trades'):
+            assert col in df.columns
+        # stability_score is a fraction-of-profitable-folds in [0, 1].
+        assert ((df['stability_score'] >= 0.0)
+                & (df['stability_score'] <= 1.0)).all()
+
+    def test_sweep_single_combo(self, long_data):
+        """A 1-combo grid still returns a well-formed 1-row frame."""
+        validator = WalkForwardValidator(
+            signal_config=SignalConfig(min_conditions=2),
+            train_months=2,
+            test_months=1,
+        )
+        df = validator.walk_forward_sweep(
+            long_data, {'consecutive_periods': [3]}, close_col='Close',
+        )
+        assert len(df) == 1
+        assert df.iloc[0]['consecutive_periods'] == 3
+
+
+class TestSelectCalibrationWinner:
+    """lib/walk_forward.py:select_calibration_winner — the strategic
+    auto-apply gate. Pure function; build frames directly."""
+
+    def _frame(self, rows):
+        return pd.DataFrame(rows)
+
+    def test_picks_highest_expectancy_among_gated(self):
+        df = self._frame([
+            # clears gates, lower expectancy
+            {'call_target': 0.0030, 'stability_score': 0.8,
+             'avg_expectancy_pct': 0.0010, 'total_trades': 100},
+            # clears gates, highest expectancy -> winner
+            {'call_target': 0.0035, 'stability_score': 0.7,
+             'avg_expectancy_pct': 0.0025, 'total_trades': 80},
+        ])
+        winner = select_calibration_winner(df)
+        assert winner is not None
+        assert winner['call_target'] == 0.0035
+
+    def test_none_when_stability_too_low(self):
+        df = self._frame([
+            {'call_target': 0.0030, 'stability_score': 0.4,
+             'avg_expectancy_pct': 0.0025, 'total_trades': 100},
+        ])
+        assert select_calibration_winner(df) is None
+
+    def test_none_when_expectancy_not_positive(self):
+        df = self._frame([
+            {'call_target': 0.0030, 'stability_score': 0.9,
+             'avg_expectancy_pct': -0.0001, 'total_trades': 100},
+        ])
+        assert select_calibration_winner(df) is None
+
+    def test_none_when_too_few_trades(self):
+        df = self._frame([
+            {'call_target': 0.0030, 'stability_score': 0.9,
+             'avg_expectancy_pct': 0.0025, 'total_trades': 12},
+        ])
+        assert select_calibration_winner(df) is None
+
+    def test_none_on_empty_frame(self):
+        assert select_calibration_winner(pd.DataFrame()) is None
+        assert select_calibration_winner(None) is None
+
+    def test_weak_combo_excluded_strong_combo_wins(self):
+        """A frame mixing failing and passing combos returns the best
+        *passing* one, not the global-max-expectancy row."""
+        df = self._frame([
+            # highest expectancy overall but fails the stability gate
+            {'call_target': 0.0040, 'stability_score': 0.2,
+             'avg_expectancy_pct': 0.0090, 'total_trades': 100},
+            # the best combo that actually clears every gate
+            {'call_target': 0.0032, 'stability_score': 0.75,
+             'avg_expectancy_pct': 0.0018, 'total_trades': 60},
+        ])
+        winner = select_calibration_winner(df)
+        assert winner is not None
+        assert winner['call_target'] == 0.0032
+
+
+class TestRebuildConsecutive:
+    """lib/walk_forward.py:_rebuild_consecutive — the per-combo rebuild
+    that keeps the Consecutive_Up/Down column window in lockstep with the
+    swept consecutive_periods threshold."""
+
+    def test_window_saturates_at_n(self):
+        from lib.walk_forward import _rebuild_consecutive
+        # A strictly rising series — every bar is an up-move, so the
+        # rolling-N up-count saturates at the window size N.
+        df = pd.DataFrame({'Close': list(range(1, 21))})
+        assert _rebuild_consecutive(df, 3)['Consecutive_Up'].max() == 3
+        assert _rebuild_consecutive(df, 5)['Consecutive_Up'].max() == 5
+
+    def test_does_not_mutate_input(self):
+        from lib.walk_forward import _rebuild_consecutive
+        df = pd.DataFrame({'Close': [100.0, 101.0, 102.0]})
+        _rebuild_consecutive(df, 3)
+        assert 'Consecutive_Up' not in df.columns
+
+    def test_uses_existing_price_change_column(self):
+        from lib.walk_forward import _rebuild_consecutive
+        # When Price_Change is already present it is used as-is rather
+        # than recomputed from Close.
+        df = pd.DataFrame({
+            'Close': [100.0, 100.0, 100.0],
+            'Price_Change': [1.0, 1.0, 1.0],  # all up despite flat Close
+        })
+        out = _rebuild_consecutive(df, 2)
+        assert out['Consecutive_Up'].iloc[-1] == 2

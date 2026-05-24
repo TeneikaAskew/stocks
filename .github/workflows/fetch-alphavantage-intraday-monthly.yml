@@ -1,9 +1,10 @@
 name: Fetch Monthly Alpha Vantage Intraday Data
 
 on:
-  schedule:
-    # Run at 9:00 PM EDT on the 1st of each month (1:00 AM UTC)
-    - cron: '0 1 1 * *'
+  # Primary execution: Cloud Scheduler (av-intraday-monthly) ->
+  # fetch-alphavantage-intraday Cloud Run Job. The GA cron was removed so
+  # this workflow no longer duplicates that schedule and burns Actions
+  # minutes; workflow_dispatch is kept as a manual backfill trigger.
   workflow_dispatch:  # Allow manual triggering
     inputs:
       start_date:

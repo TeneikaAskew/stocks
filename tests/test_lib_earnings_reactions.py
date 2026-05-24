@@ -13,8 +13,97 @@ from lib.earnings_reactions import (
     classify_archetype,
     enrich_with_playability,
     action_hint_for_archetype,
+    recommended_structure,
     ARCHETYPE_ACTION_HINT,
 )
+
+
+# ────────────────────────────────────────────────────────────
+# recommended_structure — Q5 calibration-aware vehicle override
+# Locked-in 2026-05-22 alongside PR-B (the +20.3% short-strangle finding).
+# ────────────────────────────────────────────────────────────
+
+# Live calibration as of 2026-05-22 — used by tests to mirror the
+# actual production thresholds.
+_LIVE_CAL = {
+    'realized_vs_implied_ratio': 0.636,
+    'avg_short_strangle_pnl_pct': 20.3,
+}
+# Calibration that should NOT trigger the IC override (above ratio
+# threshold OR below strangle PnL threshold).
+_FLAT_CAL = {
+    'realized_vs_implied_ratio': 0.95,   # close to 1 → no over-pricing
+    'avg_short_strangle_pnl_pct': 3.0,   # below threshold
+}
+
+
+class TestRecommendedStructure:
+    """Q5 + over-pricing → IC; otherwise archetype map wins."""
+
+    def test_q5_with_over_pricing_returns_ic(self):
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'IC'
+        assert recommended_structure(
+            'bearish_trend', 'Q5', _LIVE_CAL) == 'IC'
+        assert recommended_structure(
+            'reversal_play', 'Q5', _LIVE_CAL) == 'IC'
+        assert recommended_structure(
+            'mixed', 'Q5', _LIVE_CAL) == 'IC'
+
+    def test_q4_keeps_archetype_action(self):
+        # Below Q5 the options edge isn't strong enough — keep CALL/PUT/STRDL.
+        assert recommended_structure(
+            'bullish_trend', 'Q4', _LIVE_CAL) == 'CALL'
+        assert recommended_structure(
+            'bearish_trend', 'Q4', _LIVE_CAL) == 'PUT'
+        assert recommended_structure(
+            'reversal_play', 'Q4', _LIVE_CAL) == 'STRDL'
+        assert recommended_structure(
+            'mixed', 'Q4', _LIVE_CAL) == 'STRDL'
+
+    def test_q5_no_calibration_falls_back_to_archetype(self):
+        assert recommended_structure(
+            'bullish_trend', 'Q5', None) == 'CALL'
+        assert recommended_structure(
+            'bullish_trend', 'Q5', {}) == 'CALL'
+
+    def test_q5_flat_calibration_falls_back_to_archetype(self):
+        # ratio close to 1.0 means options aren't over-priced — no
+        # short-strangle edge, so don't recommend IC.
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _FLAT_CAL) == 'CALL'
+
+    def test_q5_ratio_borderline_just_above_threshold(self):
+        # 0.85 is the threshold; 0.851 should NOT trigger.
+        cal = {'realized_vs_implied_ratio': 0.851,
+               'avg_short_strangle_pnl_pct': 20.0}
+        assert recommended_structure(
+            'bullish_trend', 'Q5', cal) == 'CALL'
+
+    def test_q5_strangle_pnl_borderline_just_below_threshold(self):
+        # 5.0 is the threshold; 4.9 should NOT trigger.
+        cal = {'realized_vs_implied_ratio': 0.6,
+               'avg_short_strangle_pnl_pct': 4.9}
+        assert recommended_structure(
+            'bullish_trend', 'Q5', cal) == 'CALL'
+
+    def test_unknown_archetype_returns_none(self):
+        assert recommended_structure(
+            'unknown_thing', 'Q4', _LIVE_CAL) is None
+
+    def test_quiet_archetype_returns_none(self):
+        # 'quiet' rows are filtered upstream from the brief — no action.
+        assert recommended_structure(
+            'quiet', 'Q4', _LIVE_CAL) is None
+
+    def test_missing_one_calibration_field_falls_back(self):
+        # Both fields must be present for the override.
+        assert recommended_structure(
+            'bullish_trend', 'Q5',
+            {'realized_vs_implied_ratio': 0.5}) == 'CALL'
+        assert recommended_structure(
+            'bullish_trend', 'Q5',
+            {'avg_short_strangle_pnl_pct': 25.0}) == 'CALL'
 
 
 # ────────────────────────────────────────────────────────────

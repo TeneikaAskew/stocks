@@ -474,3 +474,122 @@ export function DegradationBanner({ failedSections }: { failedSections: string[]
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Brief↔Insights divergence — surface explicitly when the two house
+// views disagree. Audit 2026-05-08 G.P1.8 + Track B #306 made the
+// brief's signal_status/ftfc_direction internally consistent, so this
+// panel can now show a single coherent brief opinion next to the
+// insight pipeline's direction.
+// ---------------------------------------------------------------------------
+
+type BriefBias = 'bullish' | 'bearish' | 'neutral';
+
+interface BriefDirectionLite {
+  bias: BriefBias;
+  signal_status: string | null;
+  ftfc_direction: 'bullish' | 'bearish' | 'mixed' | null;
+}
+
+// Map brief bias to the equivalent insight direction so we can decide
+// agreement. neutral → flat treats "no opinion" as "stand aside".
+function biasToDirection(bias: BriefBias): Direction {
+  if (bias === 'bullish') return 'long';
+  if (bias === 'bearish') return 'short';
+  return 'flat';
+}
+
+export function BriefVsInsightsCard({
+  brief,
+  insightDirection,
+  ticker,
+}: {
+  brief: BriefDirectionLite | null;
+  insightDirection: Direction;
+  ticker: string;
+}) {
+  if (!brief) {
+    return (
+      <Card title="House Views" className="border-[var(--outline-variant)]">
+        <p className="text-xs text-[var(--on-surface-muted)]">
+          Brief unavailable for {ticker} — insight pipeline shipping
+          standalone.
+        </p>
+      </Card>
+    );
+  }
+
+  const briefAsDirection = biasToDirection(brief.bias);
+  const agree = briefAsDirection === insightDirection;
+  const accent = agree
+    ? 'border-[var(--bull)]/40 bg-[var(--bull)]/5'
+    : 'border-[var(--warn)]/50 bg-[var(--warn)]/5';
+  const headlineLabel = agree ? 'Houses Agree' : 'Houses DIVERGE';
+  const headlineColor = agree
+    ? 'text-[var(--bull)]'
+    : 'text-[var(--warn)]';
+
+  return (
+    <Card title={`House Views — ${headlineLabel}`} className={accent}>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className="rounded border border-[var(--outline-variant)] p-2.5">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--on-surface-muted)]">
+            Premarket Brief
+          </div>
+          <div className="flex items-center gap-2">
+            <DirectionBadge direction={briefAsDirection} conviction="brief" />
+          </div>
+          <dl className="mt-2 space-y-0.5 text-[11px] text-[var(--on-surface-muted)]">
+            <div>
+              <dt className="inline">bias: </dt>
+              <dd className="inline font-medium text-[var(--on-surface)]">
+                {brief.bias}
+              </dd>
+            </div>
+            {brief.signal_status && (
+              <div>
+                <dt className="inline">signal_status: </dt>
+                <dd className="inline font-medium text-[var(--on-surface)]">
+                  {brief.signal_status}
+                </dd>
+              </div>
+            )}
+            {brief.ftfc_direction && (
+              <div>
+                <dt className="inline">FTFC: </dt>
+                <dd className="inline font-medium text-[var(--on-surface)]">
+                  {brief.ftfc_direction}
+                </dd>
+              </div>
+            )}
+          </dl>
+        </div>
+        <div className="rounded border border-[var(--outline-variant)] p-2.5">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--on-surface-muted)]">
+            AI Insight Pipeline
+          </div>
+          <div className="flex items-center gap-2">
+            <DirectionBadge direction={insightDirection} conviction="insight" />
+          </div>
+          <dl className="mt-2 space-y-0.5 text-[11px] text-[var(--on-surface-muted)]">
+            <div>
+              <dt className="inline">direction: </dt>
+              <dd className="inline font-medium text-[var(--on-surface)]">
+                {insightDirection}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+      {!agree && (
+        <p className={`mt-2.5 text-[11px] ${headlineColor}`}>
+          <AlertTriangle size={11} className="mr-1 inline" />
+          Read both before sizing — divergence usually means one signal
+          is leading the other (gap-up that brief saw before insights
+          finalized) or there's an unresolved conflict (catalyst-block
+          forcing flat against bullish FTFC).
+        </p>
+      )}
+    </Card>
+  );
+}

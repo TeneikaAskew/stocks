@@ -88,6 +88,17 @@ def _resolve_window() -> tuple[str, str]:
 
 
 def run() -> int:
+    """Execute one backtest invocation and post the result to Discord.
+
+    Reads ``BACKTEST_TICKER`` / ``BACKTEST_USE_STRAT`` / window env vars,
+    rebuilds ``sys.argv`` for ``scripts.run_backtest.main()`` (re-using
+    the existing CLI surface in-process avoids spinning a subprocess and
+    losing the Cloud SQL connection pool), captures stdout, and POSTs
+    the formatted output to ``DISCORD_WEBHOOK_URL`` if set.
+
+    Returns 0 on success, 1 if the backtest raised. SystemExit from
+    inside ``run_backtest`` is caught so partial stdout still posts.
+    """
     ticker = (os.environ.get("BACKTEST_TICKER") or "").strip().upper()
     if not ticker:
         log.error("BACKTEST_TICKER is required")

@@ -1,3 +1,9 @@
+---
+description: Full GCP deployment pipeline — pre-deploy gate, tests, commit, Cloud Build, post-deploy verification
+argument-hint: "[--force]"
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent
+---
+
 # GCP Deploy Command
 
 This command runs the full GCP deployment pipeline:

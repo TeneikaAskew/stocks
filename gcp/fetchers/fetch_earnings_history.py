@@ -230,14 +230,16 @@ def _earnings_calendar_tickers(
 ) -> list[str]:
     """Resolve tickers reporting earnings in the next N days from Cloud SQL.
 
-    With ``require_options=True`` (default), only returns tickers where
-    at least one earnings_calendar row marks ``has_options=true`` (set
-    by EW or UW). This collapses a typical 7d window from ~3,500
-    reporters to ~500 actually-tradable names, eliminating the silent
-    truncation we used to hit at the 500-ticker cap. AV/Yahoo never set
-    has_options, so the filter effectively means "EW or UW confirmed
-    this is options-tradable around earnings" — the right cut for an
-    earnings-options pipeline.
+    With ``require_options=True`` (default), returns tickers whose
+    earnings dates are confirmed by BOTH AlphaVantage AND Unusual
+    Whales (the AV ∩ UW cut). UW's curated daily list (~25-37 names)
+    is the natural gate for "options-tradeable on earnings"; AV
+    cross-confirms the announcement date. EW is NOT used as a gate
+    because it cuts out major institutional names (SONY, TCOM, JBS,
+    EC, SKM, etc.) and dozens of high-OI small-caps that don't fit
+    EW's strategy templates but are still tradeable.
+
+    Typical 7d window: 3,400 reporters → ~115 AV ∩ UW tickers.
     """
     try:
         from gcp.database import query_to_dataframe
@@ -252,7 +254,10 @@ def _earnings_calendar_tickers(
         GROUP BY ticker
     """
     if require_options:
-        sql += '        HAVING BOOL_OR(COALESCE(has_options, false)) = true\n'
+        sql += (
+            '        HAVING BOOL_OR(data_source = \'alphavantage\') = true\n'
+            '            AND BOOL_OR(data_source = \'unusual_whales\') = true\n'
+        )
     sql += "        ORDER BY ticker\n"
     try:
         df = query_to_dataframe(sql, {"days": lookahead_days})
@@ -262,6 +267,89 @@ def _earnings_calendar_tickers(
     if df is None or df.empty:
         return []
     return [str(t).upper() for t in df["ticker"].tolist()]
+
+
+def _tickers_reporting_in_window(window_days: int) -> set:
+    """Tickers in earnings_calendar with earnings_date in [today, today+window_days].
+
+    Daily scope: window_days=0 → today only (capture post-close eps_actual).
+    Weekly scope: window_days=7 → today through next 7 days (full setup).
+    """
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return set()
+    try:
+        # Anchor the window in America/New_York, NOT the DB session timezone.
+        # Cloud SQL Postgres is set to UTC (verified `SHOW timezone` returns
+        # 'UTC') and these jobs are scheduled at 7:15/7:30 PM ET. During EST
+        # (UTC-5, Nov–Mar) that's 00:15/00:30 UTC the NEXT day, so a bare
+        # CURRENT_DATE returns tomorrow's reporters and the helper skips the
+        # tickers we just want to refresh post-close. During EDT (UTC-4) the
+        # bug is dormant — 19:30 ET = 23:30 UTC, same calendar day — but
+        # anchoring in ET is correct year-round and removes the seasonal
+        # failure mode.
+        df = query_to_dataframe(
+            """
+            SELECT DISTINCT ticker
+            FROM earnings_calendar
+            WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
+                AND (NOW() AT TIME ZONE 'America/New_York')::date + (:days || ' days')::interval
+            """,
+            {"days": int(window_days)},
+        )
+    except Exception as e:
+        log.warning("report-window lookup failed (%s)", e)
+        return set()
+    if df is None or df.empty:
+        return set()
+    return {str(t).upper() for t in df["ticker"].tolist()}
+
+
+def _filter_already_have_history(
+    tickers: list, force_set: set = None,
+) -> tuple:
+    """Skip tickers that have history rows — UNLESS they're in force_set.
+
+    force_set: tickers we always re-fetch even if rows exist. Used to
+    capture a newly-reported quarter (eps_actual) for tickers reporting
+    in the current run's window.
+
+    Past quarters never change, so a ticker with rows AND not reporting
+    in the window stays skipped. Returns (tickers_needing_fetch, n_skipped).
+    """
+    if not tickers:
+        return tickers, 0
+    force_set = force_set or set()
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return tickers, 0
+    try:
+        df = query_to_dataframe(
+            "SELECT DISTINCT ticker FROM earnings_history WHERE ticker = ANY(:t)",
+            {"t": tickers},
+        )
+    except Exception as e:
+        log.warning("earnings_history skip-check failed (%s) — fetching all", e)
+        return tickers, 0
+    if df is None or df.empty:
+        return tickers, 0
+    already = {str(t).upper() for t in df["ticker"].tolist()}
+    remaining = [t for t in tickers if t not in already or t in force_set]
+    n_skipped = len(tickers) - len(remaining)
+    return remaining, n_skipped
+
+
+def _resolve_scope(cli_scope: str = None) -> str:
+    """'weekly' on Sundays or when overridden; else 'daily'."""
+    if cli_scope in ('daily', 'weekly'):
+        return cli_scope
+    env = os.environ.get('PIPELINE_SCOPE', '').strip().lower()
+    if env in ('daily', 'weekly'):
+        return env
+    from datetime import datetime as _dt
+    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
 
 
 def _earnings_history_tickers() -> list[str]:
@@ -323,6 +411,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and print without writing to DB.")
     parser.add_argument(
+        "--force", action="store_true",
+        help="Fetch all resolved tickers even if they already have rows "
+             "in earnings_history. Default behavior is to skip tickers "
+             "with existing data (idempotent re-runs); use --force to "
+             "pull a new quarter that just landed.",
+    )
+    parser.add_argument(
         "--no-backfill", action="store_true",
         help="Skip the post-fetch market-data backfill chain. "
              "Default: after a successful earnings_history fetch we kick "
@@ -330,6 +425,13 @@ def main():
              "just landed in earnings_history gets OHLCV depth before the "
              "11pm compute-earnings-reactions run. Smart-switch makes this "
              "free (zero AV calls) when no new tickers appeared.",
+    )
+    parser.add_argument(
+        "--scope", choices=["daily", "weekly"], default=None,
+        help="Pipeline scope (overrides PIPELINE_SCOPE env / day-of-week "
+             "auto-detect). 'daily' force-refetches tickers reporting "
+             "today (capture eps_actual post-close); 'weekly' force-"
+             "refetches tickers reporting in the next 7 days.",
     )
     args = parser.parse_args()
 
@@ -364,13 +466,31 @@ def main():
         log.info("No tickers to process — exiting")
         return
 
+    # Skip tickers we already have history for, UNLESS they report in
+    # the current run's window (force-refetch so the just-released
+    # quarter / eps_actual is captured).
+    if not args.force:
+        scope = _resolve_scope(args.scope)
+        window_days = 7 if scope == 'weekly' else 0
+        force_set = _tickers_reporting_in_window(window_days)
+        tickers, n_skipped = _filter_already_have_history(tickers, force_set)
+        log.info(
+            "scope=%s report-window=[today, today+%dd] "
+            "force-refetch=%d tickers; skipped %d already-processed "
+            "outside window",
+            scope, window_days, len(force_set & set(tickers)), n_skipped,
+        )
+        if not tickers:
+            log.info("All resolved tickers already processed — exiting")
+            return
+
     if len(tickers) > args.max_tickers:
         log.warning("Ticker count %d exceeds max-tickers cap %d; truncating",
                     len(tickers), args.max_tickers)
         tickers = tickers[:args.max_tickers]
 
     log.info("Earnings History Fetch Job (AlphaVantage EARNINGS)")
-    log.info("  Tickers : %d", len(tickers))
+    log.info("  Tickers : %d (after skip-already-processed)", len(tickers))
     log.info("  SQL     : %s", "yes" if is_cloud_sql_configured() else "NO")
 
     frames = []

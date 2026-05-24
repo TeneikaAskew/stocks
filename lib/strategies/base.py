@@ -29,6 +29,12 @@ class Signal:
     weighted_score: float
     conditions_met: list[str]
 
+    # Phase 0.7.x — count of CORE-tier conditions met (subset of
+    # conditions_met). Stashed so downstream observers (replay,
+    # dashboards) can audit "fires with core_count==0" — the load-bearing
+    # regression target for the tiered-scoring gate.
+    core_count: int = 0
+
     # Optional indicator snapshots at signal time
     rsi: Optional[float] = None
     rvol: Optional[float] = None
@@ -51,6 +57,7 @@ class Signal:
             "base_score":     self.base_score,
             "weighted_score": self.weighted_score,
             "conditions_met": list(self.conditions_met),
+            "core_count":     self.core_count,
         }
         for k in ("rsi", "rvol", "atr_5m_pct", "ema9", "ema20", "vwap"):
             v = getattr(self, k)

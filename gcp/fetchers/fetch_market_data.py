@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cloud Run Job: Fetch daily market data and write to Cloud SQL + GCS.
+Cloud Run Job: Fetch daily market data and write to Cloud SQL.
 
 Replaces the GitHub Actions workflow fetch-market-data.yml.
 Scheduled by Cloud Scheduler at 5 PM ET (22:00 UTC) weekdays.
@@ -25,7 +25,6 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
-from gcp.gcs_utils import upload_dataframe_as_parquet
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -116,12 +115,21 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str) -> pd.DataFram
         return pd.DataFrame()
 
 
-def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str) -> dict:
+def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
+                        allow_fallback: bool = True) -> dict:
     """
     Fetch daily OHLCV + adjusted_close from AlphaVantage TIME_SERIES_DAILY_ADJUSTED.
 
     Uses outputsize=compact (last 100 trading days) for the nightly update.
     Returns a dict of price fields, or {} on any error.
+
+    ``allow_fallback`` (default True): when ``fetch_date`` itself has no AV
+    entry, fall back to the most recent prior trading day. This is correct
+    for the normal path where intraday bars confirm ``fetch_date`` was a
+    real trading session. Callers in the no-intraday path MUST pass
+    ``allow_fallback=False`` — without intraday we can't distinguish a
+    holiday from a trading day locally, and the prior-day fallback would
+    write a holiday-dated row carrying the previous session's prices.
     """
     av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
     if not av_symbol or not api_key:
@@ -152,9 +160,10 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str) -> dict:
             return {}
 
         # Find the entry for fetch_date; fall back to the most recent prior day
-        # (handles weekends / holidays where today has no trading data yet)
+        # (handles weekends / holidays where today has no trading data yet) —
+        # but ONLY when allow_fallback is set (see docstring).
         row_data = ts.get(fetch_date)
-        if not row_data:
+        if not row_data and allow_fallback:
             for d in sorted(ts.keys(), reverse=True):
                 if d <= fetch_date:
                     row_data = ts[d]
@@ -162,7 +171,9 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str) -> dict:
                     break
 
         if not row_data:
-            log.warning("    AV daily: no matching date for %s on %s", ticker, fetch_date)
+            log.warning("    AV daily: no matching date for %s on %s%s",
+                        ticker, fetch_date,
+                        "" if allow_fallback else " (exact-match required)")
             return {}
 
         return {
@@ -192,8 +203,16 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
     and stored as end-of-day snapshot values.  All multi-day indicators (RSI,
     EMA, SMA, MACD, Bollinger, etc.) are computed in a separate step using the
     full daily series from Cloud SQL — see compute_and_upsert_daily_indicators().
+
+    Returns ``{}`` only when BOTH sources are empty. When intraday is missing
+    but ``av_ohlcv`` is present, the row is still built from the AV daily
+    endpoint — just without the intraday-derived VWAP fields. This keeps the
+    daily OHLCV + downstream indicators populated for tickers AV has no
+    1-min coverage for (the long tail of earnings names), which the prior
+    `if minute_df.empty: return {}` short-circuit silently dropped.
     """
-    if minute_df.empty:
+    has_minute = not minute_df.empty
+    if not has_minute and not av_ohlcv:
         return {}
 
     row: dict = {
@@ -215,7 +234,12 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
             'data_source': 'alphavantage_1min',
         })
 
-    # VWAP and Price_vs_VWAP are intraday session values — compute from 1-min bars
+    # VWAP and Price_vs_VWAP are intraday session values — only computable
+    # when 1-min bars are present. Skipped (left NULL) for the AV-daily-only
+    # path; that's correct, VWAP genuinely can't be derived without intraday.
+    if not has_minute:
+        return row
+
     from lib.indicators import calculate_vwap
     minute_close = minute_df['Close'] if 'Close' in minute_df.columns else minute_df['close']
     minute_high  = minute_df['High']  if 'High'  in minute_df.columns else minute_df['high']
@@ -433,28 +457,45 @@ def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
     log.info("    ✓ intraday: %d rows for %s", len(out), ticker)
 
 
-def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
-    """Full pipeline for one ticker: fetch → enrich → write SQL + GCS."""
+def process_ticker(ticker: str, fetch_date: str, av_api_key: str):
+    """Full pipeline for one ticker: fetch → enrich → write to Cloud SQL.
+
+    Intraday-optional: AV has no 1-min coverage for the long tail of
+    earnings tickers, and a missing-intraday day used to short-circuit
+    the whole function — no daily OHLCV row, no indicators. Now, when
+    intraday is absent we still pull the AV *daily* endpoint (exact-date
+    match only) and persist the daily row + indicators from it.
+    """
     log.info("  Processing %s for %s...", ticker, fetch_date)
 
     # 1. Fetch 1-min bars from AlphaVantage TIME_SERIES_INTRADAY
     minute_df = fetch_minute_data(ticker, fetch_date, av_api_key)
-    if minute_df.empty:
-        log.warning("    No minute data for %s on %s", ticker, fetch_date)
-        return
+    has_intraday = not minute_df.empty
+    if has_intraday:
+        log.info("    Fetched %d minute bars", len(minute_df))
+        # 2. Write intraday bars to Cloud SQL
+        write_intraday_to_sql(ticker, minute_df, fetch_date)
+    else:
+        log.warning("    No minute data for %s on %s — trying AV daily endpoint",
+                    ticker, fetch_date)
 
-    log.info("    Fetched %d minute bars", len(minute_df))
-
-    # 2. Write intraday bars to Cloud SQL
-    write_intraday_to_sql(ticker, minute_df, fetch_date)
-
-    # 3. Fetch daily OHLCV from AlphaVantage (primary); fall back to minute aggregation
-    av_ohlcv = fetch_daily_from_av(ticker, fetch_date, av_api_key)
+    # 3. Fetch daily OHLCV from AlphaVantage. With intraday present, the
+    #    prior-day fallback is safe (intraday confirms it's a trading day).
+    #    Without intraday, require an exact fetch_date match so a holiday
+    #    doesn't get a row stamped with the prior session's prices.
+    av_ohlcv = fetch_daily_from_av(ticker, fetch_date, av_api_key,
+                                   allow_fallback=has_intraday)
     if av_ohlcv:
         log.info("    AV daily: open=%.2f close=%.2f adj=%.2f",
                  av_ohlcv['open'], av_ohlcv['close'], av_ohlcv['adjusted_close'])
-    else:
+    elif has_intraday:
         log.info("    AV daily unavailable; aggregating from AV intraday bars")
+    else:
+        # No intraday AND no exact-date AV daily — genuinely nothing for
+        # this ticker on this date (illiquid name, or a non-trading day).
+        log.warning("    No intraday and no AV daily for %s on %s — skipping",
+                    ticker, fetch_date)
+        return
 
     # 4. Build and upsert daily OHLCV row (no multi-day indicators yet)
     daily_row = build_daily_row(ticker, minute_df, fetch_date, av_ohlcv or None)
@@ -465,14 +506,6 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
 
         # 5. Compute multi-day indicators from the full daily series in Cloud SQL
         compute_and_upsert_daily_indicators(ticker, fetch_date)
-
-    # 6. Back up minute bars to GCS
-    if bucket:
-        upload_dataframe_as_parquet(
-            minute_df,
-            bucket,
-            f"raw/{ticker.lower()}/minute/{ticker.lower()}_minute_{fetch_date.replace('-', '')}.parquet",
-        )
 
 
 def _earnings_tickers_in_window(
@@ -584,9 +617,18 @@ BACKFILL_LOOKBACK_DAYS = 365 * 10
 BACKFILL_DEPTH_THRESHOLD_BARS = 1500   # ~6y; below this needs full pull
 
 
-def _backfill_targets() -> list[tuple[str, int, object]]:
+def _backfill_targets() -> list:
     """Tickers in earnings_history that the brief would render, with
-    their current OHLCV state. Returns (ticker, bar_count, max_date)."""
+    their current OHLCV state. Returns (ticker, bar_count, max_date).
+
+    Default filter requires the ticker to be currently active in
+    earnings_calendar (options_volume > 0, stock_volume >= 500k).
+
+    Set ``BACKFILL_ALL_HISTORY=true`` to bypass that filter and target
+    EVERY ticker in earnings_history — used when backfilling for a
+    multi-quarter reactions recompute, where past reporters need OHLCV
+    even if they're not in the current options/stock-volume window.
+    """
     if not is_cloud_sql_configured():
         return []
     try:
@@ -594,30 +636,47 @@ def _backfill_targets() -> list[tuple[str, int, object]]:
     except ImportError:
         return []
 
-    sql = """
-        WITH eligible AS (
-            SELECT DISTINCT ticker FROM earnings_calendar
-             WHERE COALESCE(options_volume, 0) > 0
-               AND COALESCE(stock_volume,   0) >= 500000
-          UNION
-            SELECT ticker FROM watchlists
-             WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
-        ),
-        eh_eligible AS (
-            SELECT DISTINCT eh.ticker FROM earnings_history eh
-             WHERE eh.ticker IN (SELECT ticker FROM eligible)
-        )
-        SELECT eh.ticker,
-               COALESCE(mdd.n, 0)        AS bar_count,
-               mdd.max_date              AS max_date
-          FROM eh_eligible eh
-          LEFT JOIN (
-              SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
-                FROM market_data_daily
-               GROUP BY ticker
-          ) mdd ON mdd.ticker = eh.ticker
-         ORDER BY eh.ticker
-    """
+    backfill_all = os.environ.get('BACKFILL_ALL_HISTORY', '').strip().lower() == 'true'
+
+    if backfill_all:
+        # Skip the eligible filter — every earnings_history ticker counts.
+        sql = """
+            SELECT eh.ticker,
+                   COALESCE(mdd.n, 0)        AS bar_count,
+                   mdd.max_date              AS max_date
+              FROM (SELECT DISTINCT ticker FROM earnings_history) eh
+              LEFT JOIN (
+                  SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
+                    FROM market_data_daily
+                   GROUP BY ticker
+              ) mdd ON mdd.ticker = eh.ticker
+             ORDER BY eh.ticker
+        """
+    else:
+        sql = """
+            WITH eligible AS (
+                SELECT DISTINCT ticker FROM earnings_calendar
+                 WHERE COALESCE(options_volume, 0) > 0
+                   AND COALESCE(stock_volume,   0) >= 500000
+              UNION
+                SELECT ticker FROM watchlists
+                 WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
+            ),
+            eh_eligible AS (
+                SELECT DISTINCT eh.ticker FROM earnings_history eh
+                 WHERE eh.ticker IN (SELECT ticker FROM eligible)
+            )
+            SELECT eh.ticker,
+                   COALESCE(mdd.n, 0)        AS bar_count,
+                   mdd.max_date              AS max_date
+              FROM eh_eligible eh
+              LEFT JOIN (
+                  SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
+                    FROM market_data_daily
+                   GROUP BY ticker
+              ) mdd ON mdd.ticker = eh.ticker
+             ORDER BY eh.ticker
+        """
     df = query_to_dataframe(sql)
     if df.empty:
         return []
@@ -757,8 +816,85 @@ def _run_backfill() -> None:
         log.warning("Failures (%d): %s", len(failures), failures[:20])
 
 
+def _assert_fetch_date_fresh(fetch_date: str, today_et: date | None = None,
+                             max_stale_days: int = 5) -> None:
+    """Abort if `fetch_date` is more than `max_stale_days` calendar days
+    behind today (ET). Defends against the sticky-args latch documented
+    in docs/RUNBOOK_BACKFILL.md: a backfill done via
+    `gcloud run jobs update --args="--date=..."` (instead of the correct
+    `execute --args=...`) leaves the date latched on every subsequent
+    scheduled execution, silently producing 8+ days of bad rows.
+
+    A 5-day threshold catches the bug without false-positives on the
+    Monday after a long weekend (3 calendar days back) or a holiday
+    Tuesday (4 calendar days back).
+    """
+    if today_et is None:
+        from zoneinfo import ZoneInfo
+        today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    fetch_d = datetime.strptime(fetch_date, '%Y-%m-%d').date()
+    stale_days = (today_et - fetch_d).days
+    if stale_days > max_stale_days:
+        log.error(
+            "Aborting: fetch_date=%s is %d calendar days behind today_ET=%s "
+            "(threshold: %d). This is almost always a sticky --args latch "
+            "from `gcloud run jobs update --args=...`. Run "
+            "`gcloud run jobs update fetch-market-data --args='' --region=us-east1` "
+            "to clear, then re-dispatch backfills via `execute --args=...`. "
+            "See docs/RUNBOOK_BACKFILL.md.",
+            fetch_date, stale_days, today_et.strftime('%Y-%m-%d'),
+            max_stale_days)
+        sys.exit(4)
+
+
+def _verify_post_fetch_rows(fetch_date: str, tickers: list[str],
+                            key_tickers: tuple[str, ...] = ('SPY', 'IWM', 'QQQ'),
+                            _query_fn=None) -> None:
+    """After the per-ticker loop, confirm that at least one of the key
+    tickers (SPY/IWM/QQQ) has a NOT NULL close in market_data_daily for
+    fetch_date. Skips on weekends (no market data exists). Holidays may
+    produce a single false-positive that the runbook acknowledges.
+
+    Catches the silent-failure mode where AV returns no data and the
+    per-ticker loop logs warnings but exits 0 — the bug behind the
+    2026-04-14 incident.
+    """
+    fetch_d = datetime.strptime(fetch_date, '%Y-%m-%d').date()
+    if fetch_d.weekday() >= 5:
+        return  # weekend; no data expected
+    if not set(key_tickers).intersection(t.upper() for t in tickers):
+        return  # key tickers weren't in this run's universe
+    if not is_cloud_sql_configured():
+        return  # local/dev run; nothing to verify
+    if _query_fn is None:
+        from gcp.database import query_to_dataframe as _query_fn  # type: ignore[no-redef]
+    # `ticker = ANY(:tickers)` not `ticker IN :tk`. SQLAlchemy `text()`
+    # doesn't auto-expand a tuple bind param to an `IN (...)` list when
+    # the underlying driver is pg8000 — Postgres rejects `IN $1` and
+    # query_to_dataframe swallows the error to an empty DataFrame, which
+    # would force exit 5 on every weekday. The repo's calibrate /
+    # reconciler scripts use the same `= ANY(:tickers)` pattern with a
+    # native Python list.
+    sql = """
+        SELECT COUNT(*) AS n FROM market_data_daily
+        WHERE ticker = ANY(:tickers)
+          AND date = :d
+          AND close IS NOT NULL
+    """
+    df = _query_fn(sql, {'tickers': list(key_tickers), 'd': fetch_date})
+    n = int(df.iloc[0]['n']) if not df.empty else 0
+    if n == 0:
+        log.error(
+            "Post-fetch verification failed: 0 rows for %s in "
+            "market_data_daily on %s with NOT NULL close. AV may have "
+            "returned no data, or the writer silently failed. "
+            "See docs/RUNBOOK_BACKFILL.md.",
+            list(key_tickers), fetch_date)
+        sys.exit(5)
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL + GCS')
+    parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
     parser.add_argument('--date', default=None,
@@ -812,7 +948,7 @@ def main():
     from zoneinfo import ZoneInfo
     _ET = ZoneInfo("America/New_York")
     fetch_date = args.date or datetime.now(_ET).date().strftime('%Y-%m-%d')
-    bucket = os.environ.get('GCS_BUCKET', '')
+    _assert_fetch_date_fresh(fetch_date, today_et=datetime.now(_ET).date())
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
@@ -855,13 +991,12 @@ def main():
     log.info("  Earnings win  : %s",
              f"±{args.earnings_window_days}d" if args.earnings_window_days else "off")
     log.info("  SQL           : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
-    log.info("  GCS           : %s", bucket or 'disabled')
     log.info("  AV key        : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
 
     errors = []
     for ticker in tickers:
         try:
-            process_ticker(ticker, fetch_date, bucket, av_api_key)
+            process_ticker(ticker, fetch_date, av_api_key)
         except Exception as e:
             log.error("  ✗ %s failed: %s", ticker, e)
             errors.append(ticker)
@@ -869,6 +1004,8 @@ def main():
     if errors:
         log.error("Failed tickers: %s", errors)
         sys.exit(1)
+
+    _verify_post_fetch_rows(fetch_date, tickers)
 
     log.info("Done.")
 

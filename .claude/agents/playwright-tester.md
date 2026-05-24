@@ -1,6 +1,6 @@
 ---
 name: playwright-tester
-description: Use this agent when you need to run, debug, or extend Playwright end-to-end tests for the web applications in this repository (options-heatseeker, success-report-site, chart-viewer, website). This includes running E2E tests headlessly or headed, diagnosing browser-side failures, adding new page interaction tests, and verifying UI after changes to HTML/JS files. Examples:
+description: Use this agent when you need to run, debug, or extend Playwright end-to-end tests for the web applications in this repository (options-heatseeker, success-report-site, website). This includes running E2E tests headlessly or headed, diagnosing browser-side failures, adding new page interaction tests, and verifying UI after changes to HTML/JS files. Examples:
 
 <example>
 Context: The user has modified options-heatseeker/js/main.js and wants to verify the UI still works.
@@ -27,17 +27,16 @@ You are an expert Playwright end-to-end testing specialist for the stocks tradin
 
 ## Repository Context
 
-The project contains four static web applications tested by Playwright:
+The project contains three static web applications tested by Playwright:
 
 | App | Directory | Local Port | Entry Point |
 |-----|-----------|-----------|-------------|
 | Options Heatseeker | `options-heatseeker/` | 8101 | `index.html` |
 | Success Report Site | `success-report-site/` | 8102 | `index.html` |
-| Chart Viewer | `chart-viewer/` | 8103 | `index.html` |
 | Trading Dashboard | `website/` | 8104 | `trading-dashboard.html` |
 | Platform (React) | `platform/` | 5173 + 8000 | Vite dev server + FastAPI |
 
-**Static apps** (ports 8101-8104) are tested in `tests/test_e2e.py`. Each test class maps to one app. The session-scoped `servers` fixture starts a Python `http.server` for each app.
+**Static apps** (ports 8101, 8102, 8104) are tested in `tests/test_e2e.py`. Each test class maps to one app. The session-scoped `servers` fixture starts a Python `http.server` for each app.
 
 **Platform app** (port 5173) uses a separate Playwright setup:
 - Tests: `platform/tests/phase1-charts.spec.ts`
@@ -88,7 +87,6 @@ pytest tests/test_e2e.py
 4. **Selector Verification**: Before writing selectors, read the actual HTML to confirm the element exists:
    - `options-heatseeker/index.html`
    - `success-report-site/index.html`
-   - `chart-viewer/index.html`
    - `website/trading-dashboard.html`
 
 5. **Network-Dependent Features**: External API calls (Polygon.io, Google Apps Script) will fail in tests. This is expected. Only test structural elements and non-network functionality.

@@ -126,6 +126,12 @@ def _article_to_rows(article: dict) -> list[dict]:
         tk = (ts.get("ticker") or "").upper().strip()
         if not tk:
             continue
+        # AV emits non-equity identifiers like CRYPTO:BTC / FOREX:USD in
+        # ticker_sentiment. Drop them — downstream consumers only join on
+        # equity tickers, and the colon-prefixed forms blow the
+        # VARCHAR(10) ticker column (e.g. CRYPTO:DOGE = 11 chars).
+        if ":" in tk or len(tk) > 10:
+            continue
         rows.append(
             {
                 "ticker": tk,
@@ -142,6 +148,32 @@ def _article_to_rows(article: dict) -> list[dict]:
             }
         )
     return rows
+
+
+def _earnings_calendar_tickers(window_days: int) -> list[str]:
+    """Tickers reporting earnings within ±``window_days`` of today.
+
+    Mirrors ``fetch_insider_transactions._earnings_calendar_tickers`` so
+    every catalyst-aware fetcher uses the same upcoming-reporter universe.
+    Returns ``[]`` on DB error so the caller can fall back to the
+    watchlist + DEFAULT_TICKERS chain rather than crashing.
+    """
+    sql = """
+        SELECT DISTINCT ticker
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN
+            CURRENT_DATE - (:w || ' days')::interval AND
+            CURRENT_DATE + (:w || ' days')::interval
+        ORDER BY ticker
+    """
+    try:
+        df = query_to_dataframe(sql, {"w": window_days})
+    except Exception as e:
+        logger.warning("earnings_calendar lookup failed: %s", e)
+        return []
+    if df is None or df.empty:
+        return []
+    return [str(t).upper() for t in df["ticker"].tolist()]
 
 
 def _last_published_ts(ticker: str) -> Optional[datetime]:
@@ -390,6 +422,25 @@ def main():
             "always honour the explicit caller window)."
         ),
     )
+    # Auto-resolve the ticker universe from earnings_calendar so upcoming
+    # reporters get news coverage without manual --tickers. Matches the
+    # pattern fetch_insider_transactions / fetch_sec_filings already use
+    # (gcp/fetchers/fetch_insider_transactions.py:_earnings_calendar_tickers).
+    parser.add_argument(
+        "--earnings-window-days", type=int,
+        default=int(os.environ.get("EARNINGS_WINDOW_DAYS", "0")),
+        help=(
+            "When >0 and no --tickers given, union earnings_calendar "
+            "(±N days from today) with the curated watchlist before "
+            "fetching. Used by the scheduled upcoming-reporter cron to "
+            "self-populate news for tomorrow's reporters."
+        ),
+    )
+    parser.add_argument(
+        "--max-tickers", type=int,
+        default=int(os.environ.get("MAX_TICKERS", "300")),
+        help="Cap on the resolved ticker universe (AV quota safety).",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
@@ -400,13 +451,40 @@ def main():
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     topics = [t.strip().lower() for t in args.topics.split(",") if t.strip()]
 
-    # If neither mode specified, fall back to the curated watchlist
-    # (alert_config.json → "watchlist"), then DEFAULT_TICKERS.
+    # If neither mode specified, fall back to:
+    #   1. earnings_calendar (±N days) ∪ watchlist  when --earnings-window-days > 0
+    #   2. watchlist                                 otherwise
+    #   3. DEFAULT_TICKERS                           as last resort
+    # The earnings-window branch keeps news coverage in lock-step with
+    # the catalyst set the rest of the pipeline (insider tx, sec filings,
+    # earnings history) already auto-resolves.
     if not tickers and not topics:
         from gcp.fetchers._watchlist import load_watchlist
         wl = load_watchlist()
-        tickers = wl or [t.strip().upper() for t in DEFAULT_TICKERS.split(",") if t.strip()]
-        logger.info("no --tickers or --topics provided; defaulting to %s", tickers)
+        ec: list[str] = []
+        if args.earnings_window_days > 0:
+            ec = _earnings_calendar_tickers(args.earnings_window_days)
+        if ec or wl:
+            seen: set[str] = set()
+            tickers = []
+            for t in ec + wl:
+                if t not in seen:
+                    seen.add(t)
+                    tickers.append(t)
+            logger.info(
+                "resolved %d tickers (%d earnings ±%dd ∪ %d watchlist)",
+                len(tickers), len(ec), args.earnings_window_days, len(wl),
+            )
+        else:
+            tickers = [t.strip().upper() for t in DEFAULT_TICKERS.split(",") if t.strip()]
+            logger.info("no --tickers/--topics; falling back to defaults %s", tickers)
+
+        if len(tickers) > args.max_tickers:
+            logger.warning(
+                "ticker count %d exceeds cap %d; truncating",
+                len(tickers), args.max_tickers,
+            )
+            tickers = tickers[: args.max_tickers]
 
     frames: list[pd.DataFrame] = []
     if tickers:

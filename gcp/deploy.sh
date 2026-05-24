@@ -128,13 +128,20 @@ deploy_insight_discord_push() {
 deploy_historical_signals_watchlist() {
     echo "Deploying historical-signals-watchlist job..."
 
+    # NOTE: `--args="--from-watchlist"` MUST use the `=` form (no space).
+    # When the arg value starts with `-`, gcloud's argparse interprets a
+    # space-separated form (`--args "--from-watchlist"`) as a new flag
+    # named `--from-watchlist` and errors with "argument --args: expected
+    # one argument". See CLAUDE.md rule 5.4 ("Cloud Run Job sizing
+    # checklist"). Pre-fix this aborted ./gcp/deploy.sh insights and
+    # ./gcp/deploy.sh all mid-way through the deploy bundle.
     gcloud run jobs create historical-signals-watchlist \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_historical_signals" \
-        --args "--from-watchlist" \
+        --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
@@ -142,7 +149,7 @@ deploy_historical_signals_watchlist() {
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,scripts.run_historical_signals" \
-        --args "--from-watchlist" \
+        --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -240,6 +247,34 @@ deploy_signal_quality_alarm() {
         --quiet
 }
 
+# ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
+# Re-posts stored signal_alerts to the signals Discord channel for a
+# historical date + ET time block. Triggered by the /replay-signals
+# slash command (dispatched with per-execution SIGNAL_REPLAY_* env
+# overrides) or manually via `gcloud run jobs execute`.
+#
+# task-timeout 900: the job paces posts ~2s apart, capped at 200 alerts
+# (200 * 2s = 400s) + Discord 429 back-off headroom.
+deploy_signal_replay() {
+    echo "Deploying signal-replay job..."
+    gcloud run jobs create signal-replay \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 900 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-replay \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 900 \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
 # Pre-warms the AI insight cache for the highest-scoring ranker tickers.
 # Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
@@ -281,34 +316,81 @@ setup_insight_tasks_queue() {
         --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
 }
 
-# DB password is intentionally NOT included here — it's passed via the
-# Cloud Run --set-secrets flag (see DB_SECRET_FLAG below) so the value
-# never traverses bash CLI args. Inlining a Unix-style password
-# (e.g. starting with `/`) into --set-env-vars triggered MSYS path
-# conversion on Windows Git Bash deploys, mangling it to a Windows
-# path and breaking Cloud SQL auth on every Job deployed 2026-04-30.
-# --set-secrets sidesteps the entire shell-quoting/conversion mess.
-DB_SECRET_FLAG="--set-secrets=DB_PASS=db-trading-pass:latest"
+# Sensitive values are passed via Cloud Run --set-secrets so they never
+# traverse bash CLI args and aren't visible to anyone with `roles/run.viewer`
+# via `gcloud run jobs describe`. Each mapping is `ENV_NAME=secret-id:version`.
+#
+# Originally only DB_PASS was secret-bound — the variable name reflects that
+# narrower history. Track D audit § 8.12 / G.P0.9 expanded the set to cover
+# the four additional API keys that were previously baked as literal env
+# values via _env_string. See:
+#   docs/audit/2026-05-08/track-D.md § 8.12
+#   docs/audit/2026-05-08/track-G.md G.P0.9
+#
+# Mechanism: --set-secrets resolves Secret Manager versions at container
+# start time, sidestepping the shell-quoting/MSYS-path-conversion mess that
+# bit DB_PASS on 2026-04-30. AV is mapped to two env names (AV_API_KEY +
+# ALPHA_VANTAGE_API_KEY) because callers are split across the legacy and
+# canonical names; both resolve to the same Secret Manager secret.
+#
+# Required vs optional secrets:
+#   * DB_PASS, av-api-key, discord-webhook-insights are created by
+#     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
+#   * fred-api-key, benzinga-api-key are optional add-ons — deploys
+#     gracefully skip them when not provisioned, preserving the
+#     pre-PR-318 behaviour from `_env_string`'s `[ -n "$key" ] && ...`
+#     conditional. Codex P1 review on PR #318 caught the regression
+#     where requiring all 5 broke fresh deploys missing the optionals.
+_build_secret_flag() {
+    local pairs="DB_PASS=db-trading-pass:latest"
+    pairs="${pairs},AV_API_KEY=av-api-key:latest"
+    pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+    # Earnings-specific channel — the Earnings embed routes here; analytics
+    # + calendar stay on DISCORD_WEBHOOK_URL. premarket_brief.py falls back
+    # to the main webhook when this is unset, so deploys without the secret
+    # remain functional. Gracefully skipped when not provisioned.
+    if gcloud secrets describe discord-webhook-earnings --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},DISCORD_WEBHOOK_EARNINGS_URL=discord-webhook-earnings:latest"
+    else
+        echo "  (skipping DISCORD_WEBHOOK_EARNINGS_URL — secret 'discord-webhook-earnings' not in project)" >&2
+    fi
+    # Signals-specific channel — signal_monitor (entries/exits/ORB), the EOD
+    # resolver, signal_quality_alarm and signal_quality_report route here.
+    # Each consumer falls back to DISCORD_WEBHOOK_URL when this is unset, so
+    # deploys without the secret remain functional. Skipped if not provisioned.
+    if gcloud secrets describe discord-webhook-signals --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},DISCORD_WEBHOOK_SIGNALS_URL=discord-webhook-signals:latest"
+    else
+        echo "  (skipping DISCORD_WEBHOOK_SIGNALS_URL — secret 'discord-webhook-signals' not in project)" >&2
+    fi
+    if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
+    else
+        echo "  (skipping FRED_API_KEY — secret 'fred-api-key' not in project)" >&2
+    fi
+    if gcloud secrets describe benzinga-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},BENZINGA_API_KEY=benzinga-api-key:latest"
+    else
+        echo "  (skipping BENZINGA_API_KEY — secret 'benzinga-api-key' not in project)" >&2
+    fi
+    echo "--set-secrets=${pairs}"
+}
+DB_SECRET_FLAG="$(_build_secret_flag)"
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
+# Only non-secret values land here. The 4 API keys + DB_PASS go through
+# DB_SECRET_FLAG above. CLOUD_SQL_CONNECTION_NAME and DB_USER are stored
+# in Secret Manager for centralized rotation but aren't sensitive (the
+# connection name is project-region-instance, the username is the role
+# label "trading-app"); leaving them in env-vars keeps deploy-script
+# simplicity without leaking real credentials.
 _env_string() {
     local env
     env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
     env="${env},DB_USER=$(_secret db-trading-user)"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
-    local av_key
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    [ -n "$av_key" ] && env="${env},AV_API_KEY=${av_key},ALPHA_VANTAGE_API_KEY=${av_key}"
-    local fred_key
-    fred_key="$(_secret fred-api-key 2>/dev/null || true)"
-    [ -n "$fred_key" ] && env="${env},FRED_API_KEY=${fred_key}"
-    local webhook
-    webhook="$(_secret discord-webhook 2>/dev/null || true)"
-    [ -n "$webhook" ] && env="${env},DISCORD_WEBHOOK_URL=${webhook}"
-    local benzinga_key
-    benzinga_key="$(_secret benzinga-api-key 2>/dev/null || true)"
-    [ -n "$benzinga_key" ] && env="${env},BENZINGA_API_KEY=${benzinga_key}"
     echo "$env"
 }
 
@@ -367,13 +449,19 @@ deploy_discord_interactions() {
     env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
 
-    # Cloud Run service deploy. min-instances=0 keeps cost ~$0 when idle;
-    # cold start fits in Discord's 3-sec ack window (1-2 sec on this
-    # image). max-instances=5 caps autocomplete-burst cost.
+    # Cloud Run service deploy. min-instances=1 keeps one warm container so
+    # Discord's 3-sec interaction-ack window never blows up on cold start
+    # (measured: 4-10 s cold start on this image, well past the 3-s limit).
+    # --no-cpu-throttling keeps CPU on between requests so FastAPI
+    # BackgroundTasks (replay_in_background, validate_in_background,
+    # backtest_in_background) finish their work and edit the deferred reply
+    # instead of stalling at ~0 CPU after the response is sent.
+    # max-instances=5 caps autocomplete-burst cost.
     gcloud run deploy discord-interactions \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 \
-        --min-instances 0 --max-instances 5 \
+        --min-instances 1 --max-instances 5 \
+        --no-cpu-throttling \
         --timeout 600 \
         --port 8080 \
         --allow-unauthenticated \
@@ -473,7 +561,6 @@ deploy_backtest() {
         --quiet
 }
 
-
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
 deploy_premarket() {
     echo "Deploying pre-market brief job..."
@@ -488,6 +575,36 @@ deploy_premarket() {
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.premarket_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Earnings-reactions brief (Cloud Run Job) ─────────────────────────────────
+# On-demand job — posts a Discord brief ranking the next session's earnings
+# reporters by their historical post-earnings reaction pattern. Scheduled at
+# 8:35 AM ET weekdays (5 min after premarket-brief) by deploy_schedulers.
+#
+# Capacity: ~30-40 reporters/session. The job issues a FIXED number of
+# queries regardless of N (2 calendar reads + 2 batched history reads + 2
+# batched insider reads = 6 round-trips total — see CLAUDE.md Rule 0.4).
+# At pg8000 ≈ 2 s/round-trip that's ~12 s wall-clock; 600 s task-timeout is
+# 50x headroom. 1Gi/1CPU mirrors premarket-brief.
+deploy_earnings_reactions_brief() {
+    echo "Deploying earnings-reactions-brief job..."
+    gcloud run jobs create earnings-reactions-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-reactions-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_reactions_brief" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -508,6 +625,73 @@ deploy_monitor() {
     gcloud run jobs update signal-monitor \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Signal-monitor EOD resolver (Cloud Run Job — runs after close) ──────────
+# Per Track D audit § 2 / G.P0.10: closes positions still open at 16:00 ET
+# (the in-process exit-watcher in signal-monitor only resolves while the
+# Job is alive; anything still-open at close lands here). Replays the same
+# exit logic against historical intraday bars and records target_hit /
+# time_stop / rsi_extreme / eod_close.
+#
+# Capacity calc (CLAUDE.md §0):
+#   Volume:    ~1,209 alerts × 250KB intraday window ≈ 300 MB peak
+#   Velocity:  1 SQL query per (ticker, day) — backfill ~10 (ticker, day)
+#              pairs ≈ 10 round-trips × 1.5s pg8000 = 15s + per-row math
+#   Wall:      ~5 min for one-shot backfill, ~30s daily steady-state
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom)
+#   memory:    1Gi (peak 300 MB × 2 safety factor + Python overhead)
+#   retries:   0 (idempotent via is_open=FALSE; transient retries don't help)
+deploy_signal_monitor_eod_resolver() {
+    echo "Deploying signal-monitor-eod-resolver job..."
+    gcloud run jobs create signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Premarket playbook resolver (Cloud Run Job) ──────────────────────────────
+# EOD resolver for premarket_analysis brief-playbook outcomes (2026-05-11).
+# Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+# trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+# EOD pnl. Self-heals when structured input columns are NULL via
+# derive_level_map_from_daily — see gcp/premarket_playbook_resolver.py.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume:    ~3 tier-1 ETFs/day × 1 row × ~3 KB intraday window = tiny
+#   Velocity:  3 SQL reads + 3 writes per run = 6 round-trips
+#   Wall:      ~30s daily steady-state, ~5 min for one-shot backfill
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom for backfill mode)
+#   memory:    1Gi (peak 50 MB × overhead margin)
+#   retries:   0 (idempotent via outcome_resolved_at; transient retries don't help)
+deploy_premarket_playbook_resolver() {
+    echo "Deploying premarket-playbook-resolver job..."
+    gcloud run jobs create premarket-playbook-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update premarket-playbook-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -559,12 +743,37 @@ deploy_fetch_market_data() {
         --quiet
 }
 
+deploy_backfill_daily_indicators() {
+    echo "Deploying backfill-daily-indicators job..."
+    # Self-healing job that fixes NULL derived-indicator columns in
+    # market_data_daily. Default mode=daily auto-discovers tickers
+    # with NULL atr_14 in the last 7 days — cheap when healthy.
+    # Weekly --mode=full sweep catches anything daily missed.
+    # 10800s (3h) timeout: full sweep on ~1,200 tickers × ~2s ≈ 40min
+    # wall-clock; daily sweep on ~50 tickers ≈ 2min. Headroom for spikes.
+    gcloud run jobs create backfill-daily-indicators \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-daily-indicators \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 10800 \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,ALPHA_VANTAGE_API_KEY=${av_key}}"
-
+    # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
+    # G.P0.9; no per-deploy resolution needed.
     gcloud run jobs create fetch-alphavantage-intraday \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
@@ -572,14 +781,122 @@ deploy_fetch_alphavantage() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-alphavantage-intraday \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
+}
+
+# AV HISTORICAL_OPTIONS audit-and-fill job (etf_options_snapshots writer).
+# Replaces the disabled .github/workflows/fetch-alphavantage-options-daily.yml.
+#
+# Spec design:
+# - --from-latest tells the fetcher to compute start-date = MAX(snapshot_date
+#   in etf_options_snapshots) + 1 day across the requested tickers. end-date
+#   defaults to today. This makes the job self-resuming: every Cloud Scheduler
+#   invocation catches up from wherever the last successful run left off, no
+#   spec edits or args overrides needed as time advances. Initial runs against
+#   an empty table fall through to start=today (caller can override with an
+#   explicit --start-date for a wide historical backfill).
+# - Range mode auto-enables --skip-existing in the fetcher, so re-runs only
+#   fetch (ticker, date) pairs missing from etf_options_snapshots — cheap
+#   incremental cost after the first full backfill.
+# - Secrets (DB_PASS, AV_API_KEY) are mounted via --set-secrets rather than
+#   inlined through _env_string. Inlined keys land as plaintext in the Job
+#   spec where anyone with run.viewer can read them via gcloud run jobs
+#   describe; secret refs require secretmanager.secretAccessor at runtime.
+#   This is the pattern the other deploy_fetch_* functions should migrate to.
+# - max-retries 0 because Cloud Run can't distinguish transient from
+#   permanent failures, and the job is idempotent (ON CONFLICT DO UPDATE)
+#   so a re-dispatch after failure converges without duplicate emails.
+# - 12h task-timeout sized for the worst case of an empty-SQL initial run
+#   (~10 years × 4 tickers ≈ 10K AV calls @ 150 RPM ≈ 70 min). Steady-state
+#   monthly runs finish in under a minute (~22 trading days × 4 tickers).
+#
+# Scheduler binding: av-options-monthly cron at 0 5 1 * * (5:00 UTC on the
+# 1st of every month) — see deploy_schedulers().
+deploy_av_options_backfill() {
+    echo "Deploying fetch-av-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Both branches pass the full set of runtime flags so an existing
+    # out-of-band job converges to the captured spec on every deploy.
+    # gcloud run jobs update leaves omitted flags untouched, so without
+    # mirroring memory/cpu/retries/timeout/SA on the update branch a
+    # hand-tweaked job would never reconverge from `deploy.sh fetchers`.
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 2Gi --cpu 1 --max-retries 0
+        --task-timeout 43200
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_historical_options"
+        --args "--tickers,SPY IWM QQQ SPX,--from-latest"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-backfill "${common_flags[@]}"
+}
+
+# Companion to deploy_av_options_backfill — same image, same secrets,
+# different entrypoint. Runs every 5 min during RTH and writes
+# market_session='REALTIME' rows to etf_options_snapshots. Wired into the
+# scheduler via `av-options-realtime` (see deploy_schedulers).
+#
+# Added 2026-05-22 after AV subscription upgrade to the realtime-options
+# tier ($199.99/mo, 600 req/min). See
+# docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md for the
+# multi-track plan this job unlocks (Tracks 1-5).
+deploy_av_options_realtime() {
+    echo "Deploying fetch-av-options-realtime job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Sizing per CLAUDE.md Rule 0 back-of-envelope:
+    #   3 tickers × ~14k contracts/snapshot × 3-5s wall-clock per snapshot
+    #   = ~10-15s total wall-clock; --task-timeout=600 gives ~50x headroom.
+    #   --memory=512Mi peak working set is ~120 MiB (one ticker chain at a
+    #   time), 4x headroom. --max-retries=0 is the Rule 0 default — a
+    #   transient AV blip at 14:05 is recovered automatically by the 14:10
+    #   fire 5 min later; no need for Cloud Run-side retry to double-write.
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_realtime_options"
+        --args "--tickers,SPY IWM QQQ"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-realtime "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
 }
 
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
@@ -588,23 +905,20 @@ deploy_fetch_alphavantage() {
 # at ~00:30 UTC after FRED's nightly publication.
 deploy_fetch_fred_rates() {
     echo "Deploying fetch-fred-rates job..."
-    local fred_key fred_env
-    fred_key="$(_secret fred-api-key 2>/dev/null || true)"
-    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
-
+    # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-fred-rates \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-fred-rates \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -616,24 +930,21 @@ deploy_fetch_economic_events() {
     # The previous `--source fred` form silently dropped FF — every
     # event ended up TBD because FRED's API doesn't expose times.
     echo "Deploying fetch-economic-events job..."
-    local fred_key fred_env
-    fred_key="$(gcloud secrets versions access latest --secret=fred-api-key 2>/dev/null || true)"
-    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
-
+    # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         --args="" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -644,10 +955,14 @@ deploy_fetch_earnings_calendar() {
     ew_pass="$(_secret ew-pass 2>/dev/null || true)"
     ew_env="$(_env_string)${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
 
+    # task-timeout 1800s (30 min): the AV HISTORICAL_OPTIONS enrichment
+    # adds 1 API call per unique earnings ticker in the today-1..today+7
+    # window. At ~800–2000 unique tickers × 150 RPM ≈ 5–14 min, plus
+    # source fetches (~3 min) = ~10–17 min total. 30 min gives 2× headroom.
     gcloud run jobs create fetch-earnings-calendar \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
-        --task-timeout 300 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
@@ -655,6 +970,7 @@ deploy_fetch_earnings_calendar() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-calendar \
         --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ew_env}" \
@@ -727,10 +1043,7 @@ deploy_evaluate_ew_strikes() {
 # comma delimiter would split SPY,IWM,QQQ into three separate vars.
 deploy_fetch_insider_transactions() {
     echo "Deploying fetch-insider-transactions job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-insider-transactions \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
@@ -738,36 +1051,33 @@ deploy_fetch_insider_transactions() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-insider-transactions \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
 deploy_fetch_top_movers() {
     echo "Deploying fetch-top-movers job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -800,27 +1110,40 @@ deploy_fetch_sec_filings() {
 
 deploy_fetch_earnings_history() {
     echo "Deploying fetch-earnings-history job..."
-    # 1800s timeout: pulls ~100-300 tickers (anyone reporting in next 90d).
-    # AV rate limit at 150 RPM means ~2-3 minutes of API time at peak.
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # 7200s timeout: 45 tickers × ~50s/ticker (AV API + DB upsert, full-mode
+    # tickers can pull 1k+ bars) ≈ 2250s wall-clock — 1800s was 0.8× the
+    # estimate (issue #269 — task hit the 1800s cap at ticker [37/45] on
+    # 2026-05-04). 7200 = 3.2× the wall-clock per CLAUDE.md §0 rule 5.
+    #
+    # BACKFILL_ALL_HISTORY=true: when the chained _run_backfill step
+    # fires at the end of fetch_earnings_history, target EVERY ticker
+    # in earnings_history (not just those currently active in
+    # earnings_calendar with options_volume>0 + stock_volume>=500k).
+    # Smart-switch in _pick_backfill_outputsize skips tickers that
+    # already have ≥1500 bars + ≤1 day stale, so no AV calls are
+    # wasted on already-backfilled tickers — only NEW tickers and
+    # tickers with stale/missing bars actually trigger fetches.
+    # This self-heals the OHLCV coverage gap that blocked the
+    # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
+    # missing reaction rows because their bars weren't ever fetched).
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    local env_string
+    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
-        --task-timeout 1800 \
+        --task-timeout 7200 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "${env_string}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 1800 \
+        --task-timeout 7200 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "${env_string}" \
         --quiet
 }
 
@@ -849,12 +1172,64 @@ deploy_compute_earnings_reactions() {
         --quiet
 }
 
+# Backtest pipeline (migrated off the .github/workflows/backtest-pipeline.yml
+# `report` job — that workload is data processing, not CI). Runs
+# scripts/run_pipeline.py: per ticker it simulates a base + strat backtest
+# and a timeframe sweep, then renders BACKTEST_RESULTS.md and records the
+# run in backtest_reports. The per-stage output (trades, sweeps) lands in
+# the backtest_trades / backtest_sweeps Cloud SQL tables, keyed by a
+# shared run_id the orchestrator generates.
+#
+# Capacity (3 tickers × {base, strat, sweep} ≈ 9 backtest-engine runs over
+# ~5y of 1-min bars) — MEASURED on the 2026-05-17 first production run:
+#   - Volume: ~9 × a few-thousand simulated trades → < 100k rows total.
+#   - Velocity: DB writes are batched per ticker/mode via upsert_dataframe
+#     (chunked, ON CONFLICT) — ~7 write round-trips total, not per-row. The
+#     cost is CPU-bound simulation, not SQL round-trips.
+#   - Wall-clock: MEASURED ~4h (14,360s) — base/strat backtests ~12min each,
+#     timeframe sweeps ~50min EACH (the dominant cost). The initial 14400s
+#     (4h) cap left only 40s of margin → bumped to 28800s (8h). Cloud Run
+#     charges runtime not the cap, so headroom is free.
+# memory 8Gi: MEASURED — 2Gi SIGKILL'd (OOM, exit -9) every step ~60s in.
+# run_backtest.py loads years of intraday 1-min history per ticker via
+# DataLoader.load_best_available; the sweep then resamples to 5 timeframes.
+# 8Gi/2CPU is the verified-sufficient floor (the GitHub runner was 16GB).
+# Cloud Run requires CPU >= 2 for memory > 4Gi.
+# max-retries 0: the job is idempotent (ON CONFLICT DO UPDATE keyed by
+# run_id) but a retry re-runs from scratch under a fresh run_id, doubling
+# spend without converging — re-dispatch manually if a run fails.
+#
+# On-demand only — NO Cloud Scheduler entry. Invoke with:
+#   gcloud run jobs execute backtest-pipeline --region us-east1 --wait
+deploy_backtest_pipeline() {
+    echo "Deploying backtest-pipeline job..."
+    # 8Gi / 2 CPU: run_backtest.py loads years of intraday 1-min history
+    # per ticker via DataLoader.load_best_available — at 2Gi every step
+    # was SIGKILL'd (exit -9 / OOM) ~60s in. The GitHub runner this
+    # migrated off of had 16GB; 8Gi is the verified-sufficient floor.
+    gcloud run jobs create backtest-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 --max-retries 0 \
+        --task-timeout 28800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_pipeline" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 \
+        --task-timeout 28800 \
+        --command "python,-m,scripts.run_pipeline" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     # Tickers come from alert_config.json `watchlist` at runtime via
     # gcp/fetchers/_watchlist.load_watchlist(). No hardcoded NEWS_TICKERS
     # env var — change the watchlist by editing alert_config.json + redeploy
@@ -866,24 +1241,56 @@ deploy_fetch_news_sentiment() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --remove-env-vars "NEWS_TICKERS" \
+        --quiet
+}
+
+deploy_fetch_news_sentiment_earnings() {
+    echo "Deploying fetch-news-sentiment-earnings (upcoming-reporter mode) job..."
+    # Same Docker image as the ticker-mode job; differs only in env:
+    # EARNINGS_WINDOW_DAYS=7 makes the fetcher resolve its ticker
+    # universe to (earnings_calendar ±7d) ∪ watchlist. Runs once a day
+    # before the brief so tomorrow's reporters always have a 48h news
+    # cold-start cushion landed in news_sentiment before the embed
+    # consumes it. AV cost: ~30 cold-start reporters × 1 call = 30
+    # calls/day — well under the 150 RPM plan ceiling.
+    gcloud run jobs create fetch-news-sentiment-earnings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment-earnings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+
+    # EARNINGS_WINDOW_DAYS=7 → fetcher's main() unions earnings_calendar
+    # (±7d) with the watchlist. NEWS_SINCE_LAST=1 → incremental per-ticker
+    # floor so cold-start reporters pull 48h and steady-state reporters
+    # only pull deltas. MAX_TICKERS=300 caps the resolved set.
+    gcloud run jobs update fetch-news-sentiment-earnings \
+        --region "${REGION}" \
+        --update-env-vars "^@^EARNINGS_WINDOW_DAYS=7@NEWS_SINCE_LAST=1@MAX_TICKERS=300" \
         --quiet
 }
 
 deploy_fetch_news_sentiment_topics() {
     echo "Deploying fetch-news-sentiment-topics (topic mode) job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     # NEWS_TOPICS env var (set below) is the source of truth; --args=""
     # defensively strips any leftover CLI args from prior manual edits.
     gcloud run jobs create fetch-news-sentiment-topics \
@@ -892,14 +1299,14 @@ deploy_fetch_news_sentiment_topics() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-topics \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 
     # 5 catalyst-rich topics — AV's hard cap per call.
@@ -911,7 +1318,10 @@ deploy_fetch_news_sentiment_topics() {
 
 deploy_fetchers() {
     deploy_fetch_market_data
+    deploy_backfill_daily_indicators
     deploy_fetch_alphavantage
+    deploy_av_options_backfill
+    deploy_av_options_realtime
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -924,6 +1334,127 @@ deploy_fetchers() {
     deploy_fetch_top_movers
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
+    deploy_fetch_news_sentiment_earnings
+    deploy_backtest_pipeline
+}
+
+# ── Backup / disaster-recovery jobs ───────────────────────────────────────────
+# Weekly Cloud SQL → GCS logical backup. Replaces the GCS parquet backup
+# pattern (which only covered 2 of ~30 tables) with a full pg_dump that
+# captures every table on every run.
+#
+# Runs as a Cloud Run Job invoked by Cloud Scheduler weekly (Sunday 04:00 UTC,
+# wired in deploy_schedulers). Calls the Cloud SQL Admin API to trigger an
+# offload-mode SQL export — Cloud SQL itself writes the gzipped dump to GCS,
+# the calling SA only triggers + polls the operation. Combined with PITR
+# (enabled via `gcloud sql instances patch trading-db --enable-point-in-time-recovery`)
+# this gives ~daily snapshots + 7-day point-in-time recovery + weekly
+# cross-machinery dump in a different storage tier.
+#
+# Output path: gs://${PROJECT_ID}-trading-data/sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz
+#
+# IAM prerequisites — one-time, run via:
+#   ./gcp/deploy.sh setup-pg-dump-iam
+# 1. trading-runner SA needs roles/cloudsql.editor on the project (to invoke
+#    the export API).
+# 2. The Cloud SQL service identity
+#    (service-${PROJECT_NUMBER}@gcp-sa-cloud-sql.iam.gserviceaccount.com)
+#    needs roles/storage.objectAdmin on the destination bucket — Cloud SQL
+#    itself writes the file, NOT the calling SA.
+deploy_weekly_pg_dump() {
+    echo "Deploying cloud-sql-weekly-export job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},CLOUD_SQL_INSTANCE=trading-db"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 3600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.sql_export_to_gcs"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create cloud-sql-weekly-export "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update cloud-sql-weekly-export "${common_flags[@]}"
+}
+
+# One-time IAM setup for the weekly pg_dump path. Idempotent — re-running
+# will report "already exists" but won't break.
+setup_pg_dump_iam() {
+    echo "=== Configuring IAM for cloud-sql-weekly-export ==="
+
+    # Resolve the project number to construct the Cloud SQL service identity.
+    local project_number
+    project_number="$(gcloud projects describe "${PROJECT_ID}" \
+        --format='value(projectNumber)')"
+    local cloud_sql_sa="service-${project_number}@gcp-sa-cloud-sql.iam.gserviceaccount.com"
+    local bucket="${PROJECT_ID}-trading-data"
+
+    echo
+    echo "1) Granting roles/cloudsql.editor to trading-runner SA on project..."
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role=roles/cloudsql.editor \
+        --condition=None \
+        --quiet 2>&1 | tail -3
+
+    echo
+    echo "2) Granting roles/storage.objectAdmin to Cloud SQL service identity"
+    echo "   (${cloud_sql_sa}) on bucket gs://${bucket}/..."
+    # The Cloud SQL service identity needs to be created first for IAM bindings
+    # to stick. gcloud beta services identity create handles that idempotently.
+    gcloud beta services identity create \
+        --service=sqladmin.googleapis.com \
+        --project="${PROJECT_ID}" 2>&1 | tail -3 || true
+
+    gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
+        --member="serviceAccount:${cloud_sql_sa}" \
+        --role=roles/storage.objectAdmin \
+        --quiet 2>&1 | tail -3
+
+    echo
+    echo "3) Updating GCS lifecycle rules (sql-dumps/ → 30d, raw/ → 730d)"
+    # gcloud storage buckets update --lifecycle-file REPLACES the whole
+    # bucket lifecycle config, so we must include every rule we want to
+    # keep. The raw/ → 730d rule was originally set in setup_cloud_sql.sh
+    # for parquet retention; mirroring it here preserves that policy
+    # alongside the new sql-dumps/ → 30d rule. If gcp/setup_cloud_sql.sh
+    # ever changes its rule definition, update this block to match.
+    cat >/tmp/sql_dumps_lifecycle.json <<EOF
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["sql-dumps/"]
+      }
+    },
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 730,
+        "matchesPrefix": ["raw/"]
+      }
+    }
+  ]
+}
+EOF
+    gcloud storage buckets update "gs://${bucket}" \
+        --lifecycle-file=/tmp/sql_dumps_lifecycle.json \
+        --quiet 2>&1 | tail -3
+    rm -f /tmp/sql_dumps_lifecycle.json
+
+    echo
+    echo "✓ IAM + lifecycle configured. Test with:"
+    echo "  gcloud run jobs execute cloud-sql-weekly-export --region ${REGION} --wait"
 }
 
 # ── One-shot maintenance jobs ─────────────────────────────────────────────────
@@ -973,6 +1504,31 @@ deploy_compute_spx_greeks_backfill() {
         --quiet
 }
 
+# NOTE: Replay mode for the signal monitor is now built into the
+# existing signal-monitor Cloud Run Job — no separate replay-signal-monitor
+# job is needed. The job's main() in gcp/signal_monitor.py supports a
+# --mode=replay flag that dispatches to scripts/replay_signal_monitor.py
+# (the canonical hermetic harness). Replay activates automatically when
+# REPLAY_DATE or REPLAY_TICKER env vars are set at execute time:
+#
+#   gcloud run jobs execute signal-monitor --region us-east1 \
+#     --update-env-vars=REPLAY_DATE=2026-05-07,REPLAY_TICKER=SPY --wait
+#
+# The replay path mocks Discord webhook + DB writes (hermetic), so it's
+# safe to run on the production job spec. Output is JSON-formatted alert
+# fires in Cloud Logging textPayload. No rows written to signal_alerts;
+# no Discord webhooks fired.
+#
+# Use cases:
+#   1. Validate a fresh signal-monitor deploy against held-out data
+#      BEFORE waiting for market open (Phase 0.5 spec item #8 —
+#      live-vs-offline parity test).
+#   2. Hermetic regression check after refactors that touch the
+#      signal-fire path (e.g. the 2026-05-09 Track B end-to-end
+#      validation).
+#   3. What-if: tune assign_timeframe thresholds and replay to see how
+#      the timeframe distribution shifts.
+
 
 # ── Phase 0.6 — quarterly per-ticker threshold calibration ───────────────────
 # Replaces the universal-across-tickers THRESHOLDS dict with per-ticker
@@ -997,6 +1553,186 @@ deploy_calibrate_thresholds() {
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
+}
+
+
+# ── Walk-forward parameter calibration sweep (on-demand Cloud Run Job) ────────
+# Sweeps the four exit params (call/put target, call/put time-stop) per
+# ticker with walk-forward validation, then auto-applies the winning
+# combo to exit_config_overrides. Sibling to calibrate-thresholds.
+#
+# On-demand only (no Cloud Scheduler entry — run when you want a fresh
+# calibration): `gcloud run jobs execute param-sweep --region us-east1`.
+# Loops SPY/IWM/QQQ sequentially; --max-retries 0 so a partial failure
+# does not silently re-run and double-write exit_config_overrides.
+deploy_param_sweep() {
+    echo "Deploying param-sweep job..."
+    # --tasks 3 / --parallelism 3 fan-out one ticker per task (SPY/IWM/QQQ
+    # via stride sharding on CLOUD_RUN_TASK_INDEX in run_param_sweep.py).
+    # Sequential was ~3.5h/ticker × 3 = 10.5h (blew the 8h timeout);
+    # parallel = ~3.5h wall-clock. --task-timeout is per-task, so 6h is
+    # ample for the one-ticker workload each task handles.
+    gcloud run jobs create param-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update param-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
+# ── Earnings playability calibration sweep (on-demand Cloud Run Job) ──────────
+# Sweeps (min_nq, lookback_quarters) over the playability backtest and
+# auto-applies the best combo to earnings_calibration, which the
+# premarket brief reads. Sibling to param-sweep.
+#
+# On-demand only: `gcloud run jobs execute earnings-sweep --region us-east1`.
+# The sweep is formula-eval over ~21k earnings_reactions rows — light.
+deploy_earnings_sweep() {
+    echo "Deploying earnings-sweep job..."
+    # Memory bumped from 1Gi → 4Gi on 2026-05-21 when the PR-B options-join
+    # was added: _load_options_snapshots() pulls ~1.8M rows × ~10 columns
+    # which materialises as a ~700 MB DataFrame, plus the per-combo Q5
+    # filtering and groupby work peaks 2-3× that during the sweep.
+    gcloud run jobs create earnings-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
+# ── earnings-options-backfill (Cloud Run Job, on-demand) ─────────────────────
+# One-shot historical-options backfill driven by earnings_reactions events.
+# For every (ticker, reported_date) pair, fetches the AV HISTORICAL_OPTIONS
+# chain at close of T-1 and writes the post-earnings-expiry slice
+# (≤14d after reported_date) into earnings_options_snapshots.
+#
+# Capacity (CLAUDE.md Rule 0):
+#   - 41,756 events × 1 AV call/event @ 150 RPM = ~4.5 h wall-clock.
+#   - task-timeout 32400s (9h) = 2× headroom over actual estimate.
+#   - max-retries 0: Cloud Run can't distinguish transient from permanent
+#     here; the script's own per-event retry covers the transient case.
+#     A re-dispatch resumes via per-event idempotency check.
+#   - Cost: ~$0.50 per full run; the AV calls themselves are free under
+#     the existing premium subscription.
+#
+# Not on a Cloud Scheduler — this is the catch-up run. Forward-looking
+# snapshots will be covered by a separate daily fetcher (PR-B follow-up)
+# that snapshots tomorrow's earnings tickers' chains each evening.
+# ── intraday-bulk-backfill (Cloud Run Job, on-demand, parallel) ──────────────
+# Historical 1-min underlying-bar backfill for the full earnings universe
+# (1,356 tickers as of 2026-05-21). Powers the PR-C intraday option
+# repricer and the platform's intraday-chart view for any earnings name.
+#
+# Capacity per Rule 0:
+#   - Volume: 1,356 tickers × 24 months ≈ 32,544 AV calls.
+#   - Per-call latency: ~5 s end-to-end (AV response ~2 s + DB upsert ~2 s
+#     + 0.4 s rate-limit floor). Single-task throughput observed
+#     2026-05-21: ~1 ticker/min on solo run, but ~7.5 min/ticker at
+#     8-way parallel — combined call rate exceeded 150 RPM and AV
+#     throttled, plus 8 simultaneous DB upsert streams thrashed the
+#     Cloud SQL connection pool.
+#   - Solution v2 (2026-05-22): --tasks=4 --parallelism=4. Combined
+#     call rate 4 × 0.33 = 1.3 calls/s = 80 RPM — well under the 150
+#     premium cap with no throttle storms. The fetcher also checks
+#     market_data_intraday at task startup and skips tickers with
+#     ≥100k existing rows (re-runs after timeout finish only the
+#     remaining tickers, not the ones the prior run completed).
+#   - Wall-clock at 4× parallel for the remaining ~1,000 tickers:
+#     ~250 tickers per task × ~2 min/ticker ≈ 8 h.
+#   - task-timeout 86400s (24h Cloud Run max) — 3× headroom over the
+#     estimate. Re-launch is safe via the ticker-skip check.
+#   - max-retries 0: per-symbol failures are non-fatal (logged + continued)
+#     so transient retries would double-charge quota without recovering.
+#   - Disk: Cloud SQL storageAutoResize=true, no ceiling.
+#
+# Sharding logic: fetch_alphavantage_intraday.main() reads
+# CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT (injected by Cloud Run)
+# and stripes the symbol list with `symbols[task_idx::task_cnt]`.
+# Striping rather than contiguous chunking distributes heavy
+# (high-volume) tickers across tasks instead of piling them on
+# task 0 alphabetically.
+deploy_intraday_bulk_backfill() {
+    echo "Deploying intraday-bulk-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 86400
+        --tasks 4 --parallelism 4
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
+        --args="--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create intraday-bulk-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update intraday-bulk-backfill "${common_flags[@]}"
+}
+
+
+deploy_earnings_options_backfill() {
+    echo "Deploying earnings-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 32400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_earnings_options_backfill"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create earnings-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update earnings-options-backfill "${common_flags[@]}"
 }
 
 
@@ -1100,6 +1836,16 @@ deploy_notifier() {
     env_string="$(_env_string)"
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
+    # The failure-notifier posts to a DEDICATED Discord channel for GCP job
+    # failures (secret `discord-webhook-gcp`), not `discord-webhook-insights`
+    # that the rest of the platform uses for briefs/alerts. We also fold in the
+    # GitHub PAT/repo secrets so a single --set-secrets flag carries every
+    # secret-mounted env var (a second --set-secrets on the same gcloud invoke
+    # replaces the first entirely, which previously masked the shared secrets).
+    local notifier_secrets="${DB_SECRET_FLAG#--set-secrets=}"
+    notifier_secrets="${notifier_secrets/discord-webhook-insights:latest/discord-webhook-gcp:latest}"
+    notifier_secrets="${notifier_secrets},GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
+
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
     # Secrets are mounted from Secret Manager at runtime via --set-secrets so
     # they never appear in revision metadata (visible to anyone with run.services.get).
@@ -1108,9 +1854,8 @@ deploy_notifier() {
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args "-m,gcp.failure_notifier" \
-        ${DB_SECRET_FLAG} \
         --set-env-vars "${env_string}" \
-        --set-secrets="GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest" \
+        --set-secrets="${notifier_secrets}" \
         --no-allow-unauthenticated \
         --quiet
 
@@ -1163,12 +1908,22 @@ deploy_notifier() {
         --role="roles/pubsub.subscriber" --quiet
 
     # 5) Create Cloud Logging sink → Pub/Sub
-    # Filter catches Cloud Run Job execution failures but excludes the notifier
-    # itself to prevent infinite loops.
+    # Filter catches Cloud Run Job execution failures but excludes:
+    #   1. the notifier itself (prevents infinite loops)
+    #   2. Cloud Audit Logs (`cloudaudit.googleapis.com`) — every
+    #      `gcloud run jobs update` triggers an ERROR-severity audit log
+    #      because gcloud tries Jobs.CreateJob first (ALREADY_EXISTS at
+    #      ERROR severity) and falls back to UpdateJob. Without the
+    #      `logName:"run.googleapis.com"` clause, every deploy fired one
+    #      false-positive notification per job. Real execution failures
+    #      land on `run.googleapis.com/varlog/system` (task-failed
+    #      records) and `run.googleapis.com/stderr` (container stack
+    #      traces), both of which still match.
     local sink_filter
     sink_filter='resource.type="cloud_run_job"
 AND severity>=ERROR
-AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"'
+AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"
+AND logName:"run.googleapis.com"'
 
     gcloud logging sinks create "${NOTIFIER_SINK}" \
         "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
@@ -1186,7 +1941,60 @@ AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"'
         --member="${sink_writer}" \
         --role="roles/pubsub.publisher" --quiet
 
+    # 7) Grant the notifier SA roles/run.viewer so reconcile_closures can
+    # list Cloud Run Job executions and detect "job has recovered → close
+    # the issue". Project-level binding is fine — read-only access to
+    # jobs/executions across the whole project.
+    #
+    # No `|| echo` swallow here: gcloud add-iam-policy-binding exits 0 on
+    # idempotent re-binding (existing binding is fine), so the only ways
+    # this command fails are REAL failures (deployer lacks setIamPolicy,
+    # API disabled, project missing). Those MUST abort deploy_notifier()
+    # so the operator notices and grants the role — otherwise the
+    # reconciler silently runs without view access, every Cloud Run
+    # execution lookup returns 403→unknown, and stale issues never close
+    # while the deploy looks "successful". Codex P2 caught the original
+    # `|| echo "already exists"` masking this critical failure mode.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.viewer" \
+        --condition=None --quiet >/dev/null
+
+    # 8) Grant the scheduler's OIDC identity (SA_EMAIL) roles/run.invoker
+    # on the failure-notifier service. The service is deployed with
+    # --no-allow-unauthenticated; without this binding the hourly
+    # reconcile-failure-notifier-hourly cron's POST /reconcile gets a
+    # 403 from Cloud Run and the reconciler never executes. The
+    # existing pubsub_sa binding (lines 1541-1544 above) only authorizes
+    # the Pub/Sub push delivery path — different identity.
+    # Codex P1 caught this missing grant.
+    gcloud run services add-iam-policy-binding "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.invoker" --quiet
+
+    # 9) Hourly reconciler — POST /reconcile so close_on_success drains
+    # any stale gcp-job-failure issues whose underlying job has since
+    # succeeded. Cron at the top of every hour. The endpoint is
+    # idempotent and cheap (~1 Cloud Run REST call per unique job_name
+    # in open-issues × 1 GitHub API call per closed issue).
+    gcloud scheduler jobs create http "reconcile-failure-notifier-hourly" \
+        --location "${REGION}" \
+        --schedule "0 * * * *" \
+        --time-zone "America/New_York" \
+        --uri "${service_url}/reconcile" \
+        --http-method POST \
+        --oidc-service-account-email "${SA_EMAIL}" \
+        --oidc-token-audience "${service_url}" \
+        --quiet 2>/dev/null \
+        || gcloud scheduler jobs update http "reconcile-failure-notifier-hourly" \
+            --location "${REGION}" \
+            --schedule "0 * * * *" \
+            --uri "${service_url}/reconcile" \
+            --quiet
+
     echo "failure-notifier deployed and wired to Cloud Logging."
+    echo "  Hourly reconciler scheduled: reconcile-failure-notifier-hourly"
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -1228,6 +2036,46 @@ _schedule_brief() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Variant of _schedule that injects INSIGHT_TRIGGERED_BY=cloud-scheduler:<name>
+# as a containerOverride env var on the insight-pipeline ":run" body. Mirrors
+# _schedule_brief — without it, _resolve_update_mode_and_kind in
+# gcp/insight_pipeline_job.py classifies every cron run as 'manual_replay' in
+# insight_reports_history (issue #313 — audit 2026-05-09 found run_kind never
+# saw 'scheduled' for 23 days).
+_schedule_insight() {
+    local NAME=$1 CRON=$2 JOB=$3
+    local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"INSIGHT_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
+    # Idempotent: update if exists, create otherwise. Codex review on PR
+    # #352 caught that create-only swallows ALREADY_EXISTS, so a re-deploy
+    # against an existing scheduler keeps the OLD body and the new
+    # INSIGHT_TRIGGERED_BY override never reaches production.
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet \
+        && echo "  ${NAME}: updated"
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet \
+        && echo "  ${NAME}: created"
+    fi
+}
+
 # Variant of _schedule that overrides the container command-line args via the
 # Cloud Run Jobs ":run" body. Used to point a single signal-monitor job image
 # at orb-snapshot or other one-shot modes.
@@ -1267,9 +2115,28 @@ deploy_schedulers() {
     # brief misclassifies scheduled runs as manual_replay in history.
     _schedule_brief "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
     # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
-    _schedule_brief "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
+    # Sunday brief moved to 9 PM ET (after weekly-earnings-refresh-* at
+    # 7-7:30 PM has populated fresh AV options + history + reactions
+    # for the upcoming Mon-Fri).
+    _schedule_brief "premarket-brief-sunday"   "0 21 * * 0"      "premarket-brief"
+    # Earnings-reactions brief — 8:35 AM ET weekdays (5 min after the
+    # pre-market brief). Ranks the next session's reporters by their
+    # historical post-earnings reaction pattern. Plain _schedule (no
+    # containerOverride) — the job carries no run-kind label of its own.
+    _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
+    # so any late-arriving intraday bars are queryable). Sweeps any alerts
+    # still is_open=TRUE or with exit_ts NULL and resolves them via the
+    # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
+    _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
+    # Premarket brief-playbook outcome resolver — 4:30 PM ET weekdays.
+    # Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+    # trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+    # EOD pnl. Same wall-clock slot as the alerts resolver above
+    # (different job, different table — no contention).
+    _schedule "premarket-playbook-resolver-daily" "30 16 * * 1-5"  "premarket-playbook-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.
     _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
@@ -1278,6 +2145,13 @@ deploy_schedulers() {
         "--mode=orb-snapshot" "--window=30m"
     # Weekend review — Saturday 9 AM ET
     _schedule "weekend-review-weekly"    "0 9 * * 6"      "weekend-review"
+    # Cloud SQL → GCS backup — Sunday 04:00 UTC (≈ 23:00 ET Saturday).
+    # Off-hours so the optional offload export doesn't compete with any
+    # weekend backfill jobs. Output: gs://${PROJECT_ID}-trading-data/
+    # sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz. Lifecycle rule (set in
+    # setup_pg_dump_iam) deletes dumps older than 30 days, leaving the
+    # last ~4 weekly snapshots.
+    _schedule "cloud-sql-weekly-export-sunday" "0 4 * * 0" "cloud-sql-weekly-export"
     # Market data — 11 PM ET weekdays. Was 5 PM ET originally but moved
     # 6 hours later because AV's TIME_SERIES_INTRADAY publishes the
     # closing-day's 1-min bars with a several-hour lag. The 5 PM cron
@@ -1287,13 +2161,84 @@ deploy_schedulers() {
     # 16:00 ET close, well beyond AV's typical ingestion window.
     _schedule "fetch-market-data-daily"  "0 23 * * 1-5"   "fetch-market-data"
 
-    # ETF options intraday (9x/day) was REMOVED — see commit message.
-    # Daily EOD snapshots come from fetch-av-options-backfill (with real Greeks)
-    # and the Options UI queries AV live for "current chain" via the existing
-    # OptionsFlowPage fallback. See docs/DATA_PIPELINE.md.
+    # AV HISTORICAL_OPTIONS — 1st of each month at 5:00 UTC (1 AM ET).
+    # The job spec uses --from-latest, so each invocation queries
+    # MAX(snapshot_date) from etf_options_snapshots and backfills from
+    # there to today.
+    #
+    # Daily cron — 21:00 ET Mon-Fri (= 01:00-02:00 UTC depending on DST),
+    # ~5 hours after the 16:00 ET market close so AV's EOD chain
+    # publish (typically within 1-2h of close) is comfortably ready.
+    # Healthy steady-state: 4 tickers (SPY/IWM/QQQ/SPX) × 1 trading
+    # day ≈ ~10 AV calls (~5s at 150 RPM). Self-healing: if the cron
+    # is paused or the job fails for N days, the next successful run
+    # picks up everything since MAX(snapshot_date) automatically.
+    #
+    # The legacy .github/workflows/fetch-alphavantage-options-daily.yml
+    # used `0 1 * * 1-5` interpreted as UTC, which translated to 20-21
+    # ET on the *previous* weekday. That schedule had two bugs:
+    # (1) Friday's EOD chain wasn't picked up until Sunday (UTC Fri 01:00
+    # = ET Thu 20:00, leaving Friday-after-close uncovered until UTC Mon
+    # 01:00 = ET Sun 20:00); (2) `_schedule` here hardcodes
+    # America/New_York, so naively reusing `0 1 * * 1-5` fires at 01:00
+    # ET (1 AM Monday morning) — before any market activity that day,
+    # writing nothing useful. Codex P2 review on PR #489 caught this.
+    #
+    # 21:00 ET Mon-Fri fixes both: it covers Friday's EOD chain and
+    # always runs after AV publishes that day's data. Beats the GH
+    # workflow's coverage by 2 days/week (Fri+Sun overlap into the
+    # weekly window).
+    #
+    # Replaces the legacy GH workflow. That workflow had two persistent
+    # issues: (1) requires GCS_BUCKET repo secret that was never set
+    # after the 2026-05-10 SA-key consolidation, so every scheduled run
+    # exited 1 at the secret-validation step; (2) GitHub auto-disables
+    # scheduled workflows after 60 days of inactivity, requiring manual
+    # re-enable in repo settings. The Cloud Run Job has GCS_BUCKET
+    # baked in via deploy_av_options_backfill() and never auto-disables.
+    #
+    # Monthly cron stays as a safety-net roll-up that catches up
+    # everything since the last write — useful if the daily cron is
+    # paused for maintenance or hits a multi-day outage. Healthy
+    # cadence makes the monthly run a near-no-op (~22 trading days
+    # × 4 tickers ≈ 88 AV calls). Both crons hit the same
+    # --from-latest job; ON CONFLICT DO UPDATE in the upsert path
+    # makes overlap idempotent.
+    _schedule "av-options-daily"    "0 21 * * 1-5"  "fetch-av-options-backfill"
+    _schedule "av-options-monthly"  "0 5 1 * *"  "fetch-av-options-backfill"
+
+    # Realtime options — every 5 min, 09:00-15:55 ET, Mon-Fri. Fires
+    # 84 times per session (covers premarket 09:00-09:25 + RTH 09:30-
+    # 15:55). The 16:00 close snapshot is captured by av-options-daily
+    # at 21:00 ET; missing 16:00 from the realtime cadence is fine —
+    # signal monitor's last useful intraday read is 15:55 anyway.
+    #
+    # Capacity: 84 fires × 3 tickers = 252 AV calls/day, well under
+    # the 600/min realtime-tier budget (600 × 60 × 6.5h = 234,000/day
+    # ceiling). Cloud Run cost ~$3-5/mo.
+    #
+    # Added 2026-05-22 — unblocks Tracks 1-5 in
+    # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
+    _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
+
+    # Live options queries beyond the last refresh continue to flow
+    # through the OptionsFlowPage AV-fallback path; the SQL table is
+    # the source of truth for historical analysis.
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
+
+    # AlphaVantage nightly intraday — 9 PM ET Tue–Sat (after each weekday's
+    # session settles). Tue 9 PM picks up Mon's bars, Sat 9 PM picks up Fri's.
+    # Passes --force so the GCS parquet-exists short-circuit doesn't skip
+    # the still-incomplete current month; the DB upsert is idempotent on
+    # (ticker,interval,ts) so re-fetching is safe. The default date range
+    # ("first of previous month → today") means each night re-fetches last
+    # month too — that's ~26s of redundant AV calls per night, well below
+    # the 150 RPM premium budget. Closes the month-end-to-1st-of-next-month
+    # gap that left the table stale for fresh signal-quality analysis.
+    _schedule_with_args "av-intraday-nightly"  "0 21 * * 2-6"  "fetch-alphavantage-intraday" \
+        "--symbol=ALL" "--force"
 
     # FRED rates — 6:30 AM ET daily (after FRED's nightly publication ~04:30 UTC)
     _schedule "fred-rates-daily"  "30 6 * * *"  "fetch-fred-rates"
@@ -1301,28 +2246,36 @@ deploy_schedulers() {
     # Economic events — 7 AM ET weekdays (before pre-market brief)
     _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
 
-    # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
-    _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
-
-    # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
-    # Weekly cadence is enough since past quarters never change.
-    _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
-
-    # Compute earnings reactions — daily at 11 PM ET (after market
-    # close + EW strike eval at 11 PM, so the latest market_data_daily
-    # bars are settled). Daily cadence (not weekly) so:
-    #   1. Tomorrow's BMO reporters always have fresh sustain stats
-    #      from today's close
-    #   2. Yesterday's AMC reporters get their D+1 reaction row populated
-    #      the same evening, so the next-morning brief's conditional
-    #      lean has fresh history including today's quarter
-    #   3. New tickers in earnings_history (added by Sunday weekly
-    #      fetch) get reaction rows within ≤1 day, not 7
+    # ─────────────────────────────────────────────────────────────────
+    # Earnings pipeline (evening) — single chain Mon-Fri @ 7 PM ET +
+    # weekly setup Sun @ 7 PM ET. See docs/RUNBOOK_BACKFILL.md for the
+    # full architecture rationale.
     #
-    # Cost: pure DB join, no external API. ~5 min for the full ~320
-    # ticker universe. Recomputes idempotently — same row content,
-    # only updated_at advances.
-    _schedule "compute-earnings-reactions-daily"  "0 23 * * 1-5"  "compute-earnings-reactions"
+    # Daily (Mon-Fri 7 PM) — `daily-earnings-refresh`:
+    #   - fetch-earnings-calendar (scope=daily): AV HISTORICAL_OPTIONS
+    #     for TOMORROW's AV ∩ UW reporters (snapshot = today's close)
+    #   - fetch-earnings-history (scope=daily): force-refetch today's
+    #     reporters to capture post-close eps_actual
+    #   - compute-earnings-reactions (scope=daily): re-compute today's
+    #     just-reported tickers
+    #
+    # Weekly (Sun 7 PM) — `weekly-earnings-refresh`:
+    #   - fetch-earnings-calendar (scope=weekly): AV options for ALL
+    #     upcoming Mon-Fri AV ∩ UW (snapshot = Friday close)
+    #   - fetch-earnings-history (scope=weekly): pre-fetch history for
+    #     next-week's universe, skip-already-processed handles rest
+    #   - compute-earnings-reactions (scope=weekly): same window
+    #
+    # Daily morning runs are deleted — data lands the prior evening
+    # so the 8:30 AM Discord brief reads pre-fetched, settled data.
+    # ─────────────────────────────────────────────────────────────────
+    _schedule "daily-earnings-refresh-calendar"   "0 19 * * 1-5"  "fetch-earnings-calendar"
+    _schedule "daily-earnings-refresh-history"   "15 19 * * 1-5"  "fetch-earnings-history"
+    _schedule "daily-earnings-refresh-reactions" "30 19 * * 1-5"  "compute-earnings-reactions"
+
+    _schedule "weekly-earnings-refresh-calendar"   "0 19 * * 0"  "fetch-earnings-calendar"
+    _schedule "weekly-earnings-refresh-history"   "15 19 * * 0"  "fetch-earnings-history"
+    _schedule "weekly-earnings-refresh-reactions" "30 19 * * 0"  "compute-earnings-reactions"
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
@@ -1434,9 +2387,43 @@ deploy_schedulers() {
         _schedule "news-topics-${h}05"  "5 ${h} * * 1-5"  "fetch-news-sentiment-topics"
     done
 
+    # Upcoming-reporter mode: 06:00 ET weekdays, before premarket-brief
+    # (08:45). EARNINGS_WINDOW_DAYS=7 on the job resolves the universe
+    # to (earnings_calendar ±7d) ∪ watchlist; NEWS_SINCE_LAST=1 means
+    # cold-start reporters pull 48h once and incremental from then on.
+    # Decouples the earnings-reactions brief from the watchlist-only
+    # ticker mode that misses tomorrow's reporters.
+    _schedule "news-sentiment-earnings-0600"  "0 6 * * 1-5"  "fetch-news-sentiment-earnings"
+
+    # Self-healing backfill of derived indicator columns in
+    # market_data_daily (atr_14, rsi_14, macd, ema_*, bb_*, etc.).
+    # daily mode (default env on the job) at 02:30 ET Mon-Sat —
+    # auto-discovers tickers with NULL atr_14 in last 7d, re-computes.
+    _schedule "backfill-indicators-daily"  "30 2 * * 1-6"  "backfill-daily-indicators"
+
+    # full mode at 03:00 ET Sunday via containerOverride — sweeps every
+    # ticker. Persisted job env stays "daily" for the weekday entries.
+    local _BFILL_FULL_BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BACKFILL_MODE","value":"full"}]}]}}'
+    gcloud scheduler jobs create http "backfill-indicators-weekly" \
+        --location "${REGION}" \
+        --schedule "0 3 * * 0" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "backfill-daily-indicators")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${_BFILL_FULL_BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  backfill-indicators-weekly: already exists"
+
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
-    _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
+    # Use _schedule_insight (not _schedule) so INSIGHT_TRIGGERED_BY=
+    # cloud-scheduler:insight-pipeline-daily is injected on every run.
+    # Without that env var the job's _resolve_update_mode_and_kind
+    # classifies the run as 'manual_replay' rather than 'scheduled' —
+    # validated against insight_reports_history 2026-04-15..05-08 where
+    # 0/470 rows had run_kind='scheduled' (issue #313).
+    _schedule_insight "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
 
     # AI Insights Discord push — 9:15 AM ET weekdays. Reads today's rows
     # from insight_reports and POSTs a multi-embed digest to Discord.
@@ -1485,24 +2472,37 @@ case "${1:-help}" in
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
+    earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
     monitor)     build_image && deploy_monitor ;;
+    eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
+    playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
+    pg-dump)      build_image && deploy_weekly_pg_dump ;;
+    setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
+    param-sweep)  build_image && deploy_param_sweep ;;
+    earnings-sweep) build_image && deploy_earnings_sweep ;;
+    earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
+    intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
+    signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
     all)
         build_image
         deploy_premarket
+        deploy_earnings_reactions_brief
         deploy_monitor
+        deploy_signal_monitor_eod_resolver
+        deploy_premarket_playbook_resolver
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue
@@ -1512,6 +2512,8 @@ case "${1:-help}" in
         deploy_auto_refresh_top_n
         deploy_signal_quality_report
         deploy_signal_quality_alarm
+        deploy_signal_replay
+        deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
         backfill_watchlist
@@ -1524,6 +2526,10 @@ case "${1:-help}" in
         echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
         echo "  build      Build and push Docker image"
         echo "  premarket  Deploy pre-market brief job"
+        echo "  earnings-reactions-brief"
+        echo "             Deploy earnings-reactions-brief job (Discord post"
+        echo "             ranking upcoming reporters by historical reaction"
+        echo "             pattern). Scheduled weekdays 8:35 AM ET."
         echo "  monitor    Deploy real-time signal monitor service"
         echo "  weekend    Deploy weekend review job"
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
@@ -1534,9 +2540,22 @@ case "${1:-help}" in
         echo "             after \`fetchers\` and \`all\`."
         echo "  apply-schema Deploy one-shot job that re-applies gcp/schema.sql"
         echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
+        echo "  pg-dump    Deploy cloud-sql-weekly-export Cloud Run Job (full Postgres"
+        echo "             dump → gs://\${PROJECT_ID}-trading-data/sql-dumps/). Wired"
+        echo "             to Sunday 04:00 UTC scheduler in deploy_schedulers."
+        echo "  setup-pg-dump-iam  One-time IAM grants for pg-dump: trading-runner gets"
+        echo "             cloudsql.editor, Cloud SQL service identity gets storage"
+        echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
+        echo "             retention on the sql-dumps/ prefix."
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
         echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
         echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
+        echo ""
+        echo "  Note: replay mode for the signal-monitor is built into the"
+        echo "  existing signal-monitor job (gcp/signal_monitor.py main"
+        echo "  --mode=replay). Override at execute time:"
+        echo "    gcloud run jobs execute signal-monitor --wait \\"
+        echo "      --update-env-vars=REPLAY_DATE=YYYY-MM-DD,REPLAY_TICKER=SPY"
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
         echo "  discord    Deploy discord-interactions Cloud Run service (slash commands)"
@@ -1547,6 +2566,18 @@ case "${1:-help}" in
         echo "  signal-quality"
         echo "             Deploy signal-quality-report (Phase 0.5 measurement)"
         echo "             + signal-quality-alarm (regression detector) jobs."
+        echo "  signal-replay"
+        echo "             Deploy signal-replay job (re-posts stored signal_alerts"
+        echo "             to the signals channel for a date + ET time block;"
+        echo "             backs the /replay-signals slash command)."
+        echo "  param-sweep"
+        echo "             Deploy param-sweep job — walk-forward calibration of the"
+        echo "             four exit params, auto-applied to exit_config_overrides."
+        echo "             On-demand: gcloud run jobs execute param-sweep."
+        echo "  earnings-sweep"
+        echo "             Deploy earnings-sweep job — calibration of the"
+        echo "             playability lookback knobs, auto-applied to"
+        echo "             earnings_calibration. On-demand."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac

@@ -196,6 +196,17 @@ def backfill_daily_indicators(data_dir: Path, dry_run: bool):
 # ── Market data intraday ──────────────────────────────────────────────────────
 
 def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
+    """Load combined 1-min Parquet files into ``market_data_intraday``.
+
+    Source: ``data/<ticker>/intraday/<ticker>_av_1min_combined.parquet``
+    Target: Cloud SQL ``market_data_intraday``
+    Strategy: full-table-per-ticker replace — DELETEs every prior row for
+    the (ticker, interval='1min') key before bulk_insert. Safe because the
+    combined Parquet is itself the source of truth for AV historical
+    intraday; idempotent re-runs converge to the same row set.
+    Timestamps in the Parquet may be tz-naive ET or already-UTC; both are
+    normalized to UTC tz-aware here.
+    """
     from gcp.database import bulk_insert_dataframe, execute_sql
 
     log.info("Migrating market_data_intraday (1-min combined files)...")
@@ -449,6 +460,15 @@ def migrate_av_options(data_dir: Path, dry_run: bool):
 # ── ETF options ───────────────────────────────────────────────────────────────
 
 def migrate_etf_options(data_dir: Path, dry_run: bool):
+    """Upsert per-ticker ETF option snapshots into ``etf_options_snapshots``.
+
+    Source: ``data/options/etfs/<ticker>.parquet`` (skips the combined
+    ``etf_options_*.parquet`` aggregates — those are derived from the
+    per-ticker files and would double-count).
+    Target: Cloud SQL ``etf_options_snapshots``
+    Conflict key: (ticker, snapshot_ts, option_type, expiration, strike).
+    Schema mapping done by ``_normalize_options_df(source='etf')``.
+    """
     from gcp.database import upsert_dataframe
 
     options_dir = data_dir / 'options' / 'etfs'
@@ -485,6 +505,15 @@ def migrate_etf_options(data_dir: Path, dry_run: bool):
 # ── Earnings options ──────────────────────────────────────────────────────────
 
 def migrate_earnings_options(data_dir: Path, dry_run: bool):
+    """Upsert per-date earnings option snapshots into ``earnings_options_snapshots``.
+
+    Source: ``data/options/earnings/earnings_options_YYYYMMDD.parquet``
+            (one file per snapshot date covering every earnings reporter
+            on that date).
+    Target: Cloud SQL ``earnings_options_snapshots``
+    Conflict key: (symbol, snapshot_ts, option_type, expiration, strike).
+    Schema mapping done by ``_normalize_options_df(source='earnings')``.
+    """
     from gcp.database import upsert_dataframe
 
     options_dir = data_dir / 'options' / 'earnings'
@@ -653,6 +682,15 @@ def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
 # ── Trades ────────────────────────────────────────────────────────────────────
 
 def migrate_trades(data_dir: Path, dry_run: bool):
+    """Upsert daily trade-log Parquet files into the ``trades`` table.
+
+    Source: ``data/trades/YYYY-MM-DD.parquet`` (one file per session,
+    written by ``gcp/trade_logger.py``).
+    Target: Cloud SQL ``trades``
+    Conflict key: (ticker, entry_time). The ``trade_date`` column is
+    inferred from the filename when missing — older Parquet files predate
+    the column being persisted inline.
+    """
     from gcp.database import upsert_dataframe
 
     trades_dir = data_dir / 'trades'
@@ -697,6 +735,10 @@ TABLE_FUNCS = {
 
 
 def main():
+    """CLI dispatcher: with ``--table`` runs one migrator, otherwise runs
+    the full sequence (GCS raw upload + every Cloud SQL migrator). The
+    ``TABLE_FUNCS`` registry above maps ``--table`` values to handlers.
+    Returns nothing; exits 0 on success."""
     parser = argparse.ArgumentParser(description='Migrate local Parquet data to GCS + Cloud SQL')
     parser.add_argument('--data-dir', default=str(DEFAULT_DATA_DIR),
                         help='Path to local data/ directory')

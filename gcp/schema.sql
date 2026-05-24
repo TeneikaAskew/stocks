@@ -175,6 +175,84 @@ CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_date
 CREATE INDEX IF NOT EXISTS idx_etf_options_expiry
     ON etf_options_snapshots (ticker, expiration, strike);
 
+-- Track 1 (2026-05-23): partial index on REALTIME rows only.
+-- The premarket-brief gamma freshness probe needs to find "is there
+-- a REALTIME row for this ticker within the last 15 days?" — without
+-- this partial index the planner walks every EOD row in date order
+-- looking for the rare REALTIME match (5s+ on SPY's 14k contracts/day).
+-- The partial index has one entry per REALTIME row only, so the probe
+-- becomes index-only and sub-100ms even at table scale.
+-- See gcp/premarket_brief.py:_load_gamma_freshness and
+-- docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 1.
+CREATE INDEX IF NOT EXISTS idx_etf_options_realtime
+    ON etf_options_snapshots (ticker, snapshot_ts DESC)
+    WHERE market_session = 'REALTIME';
+
+
+-- Phase A (Heatseeker-style grid): per-snapshot per-strike per-expiration
+-- aggregate. Mirrors the 1-D aggregate `lib.gamma.aggregate_by_strike` but
+-- keeps the expiration dimension intact so consumers can render the 2-D
+-- `strike × expiration` heatmap. CREATE OR REPLACE so re-applying the
+-- schema picks up math fixes without dropping dependents.
+--
+-- Read pattern: usually filtered by (ticker, snapshot_ts) — uses
+-- idx_etf_options_realtime for the live path and idx_etf_options_ticker_date
+-- for the historical path.
+--
+-- Sign convention (matches lib.gamma):
+--   net_gamma = call_gamma×OI − put_gamma×OI
+--   net_vega  = call_vega×OI  − put_vega×OI
+--   GEX/VEX dollar conversion stays in the Python layer so callers
+--   share one source of truth for the multipliers; this view exposes
+--   only the raw aggregates.
+--
+-- See docs/plans/HEATSEEKER_STYLE_GAMMA_PLAN.md §4.1 for the design.
+CREATE OR REPLACE VIEW v_etf_options_node AS
+SELECT
+    ticker,
+    snapshot_ts,
+    snapshot_date,
+    market_session,
+    expiration,
+    strike,
+    -- Net (calls add, puts subtract) — same sign convention as lib.gamma.
+    SUM(
+        CASE
+            WHEN option_type = 'calls'
+                THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0)
+            WHEN option_type = 'puts'
+                THEN -COALESCE(gamma, 0) * COALESCE(open_interest, 0)
+            ELSE 0
+        END
+    )                                                                AS net_gamma,
+    SUM(
+        CASE
+            WHEN option_type = 'calls'
+                THEN COALESCE(vega, 0) * COALESCE(open_interest, 0)
+            WHEN option_type = 'puts'
+                THEN -COALESCE(vega, 0) * COALESCE(open_interest, 0)
+            ELSE 0
+        END
+    )                                                                AS net_vega,
+    -- Per-side gamma×OI (unsigned, so the dollar-conversion layer can
+    -- decide whether to subtract puts).
+    SUM(CASE WHEN option_type = 'calls'
+             THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0) ELSE 0 END) AS call_gamma_oi,
+    SUM(CASE WHEN option_type = 'puts'
+             THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0) ELSE 0 END) AS put_gamma_oi,
+    SUM(CASE WHEN option_type = 'calls'
+             THEN COALESCE(vega, 0)  * COALESCE(open_interest, 0) ELSE 0 END) AS call_vega_oi,
+    SUM(CASE WHEN option_type = 'puts'
+             THEN COALESCE(vega, 0)  * COALESCE(open_interest, 0) ELSE 0 END) AS put_vega_oi,
+    -- OI / volume context.
+    SUM(CASE WHEN option_type = 'calls' THEN COALESCE(open_interest, 0) ELSE 0 END) AS call_oi,
+    SUM(CASE WHEN option_type = 'puts'  THEN COALESCE(open_interest, 0) ELSE 0 END) AS put_oi,
+    SUM(CASE WHEN option_type = 'calls' THEN COALESCE(volume, 0) ELSE 0 END)        AS call_volume,
+    SUM(CASE WHEN option_type = 'puts'  THEN COALESCE(volume, 0) ELSE 0 END)        AS put_volume
+FROM etf_options_snapshots
+WHERE data_source = 'alphavantage'
+GROUP BY ticker, snapshot_ts, snapshot_date, market_session, expiration, strike;
+
 
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
@@ -409,6 +487,21 @@ ALTER TABLE earnings_calendar
 CREATE INDEX IF NOT EXISTS idx_earnings_calendar_sp500_date
     ON earnings_calendar (earnings_date DESC, is_s_p_500 DESC NULLS LAST);
 
+-- ─────────────────────────────────────────────────────────
+-- HELPER: set_updated_at() — generic BEFORE UPDATE trigger fn.
+-- Defined here, ahead of its first use, so a single-pass apply
+-- of this file (psql -f schema.sql -v ON_ERROR_STOP=1) succeeds.
+-- Shared by trg_earnings_calendar_updated, trg_market_data_daily_updated,
+-- and the other trg_*_updated triggers further down this file.
+-- ─────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
 DROP TRIGGER IF EXISTS trg_earnings_calendar_updated ON earnings_calendar;
 CREATE TRIGGER trg_earnings_calendar_updated
     BEFORE UPDATE ON earnings_calendar
@@ -487,6 +580,31 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     d_minus_10_close            DOUBLE PRECISION,
     d_minus_1_close             DOUBLE PRECISION,
     pre_earnings_drift_10d_pct  DOUBLE PRECISION,    -- (D-1 close - D-10 close) / D-10 close × 100
+
+    -- Finer-grained pre-earnings horizons (added 2026-05-14 — symmetric
+    -- with sustain_3d/5d/10d post-earnings). Used by the pre-drift
+    -- pipeline to surface tickers that consistently run UP or fade DOWN
+    -- in the days leading into a print.
+    d_minus_5_close             DOUBLE PRECISION,
+    d_minus_3_close             DOUBLE PRECISION,
+    d_minus_2_close             DOUBLE PRECISION,
+    drift_3d_pct                DOUBLE PRECISION,    -- (D-1 close - D-3 close) / D-3 close × 100
+    drift_5d_pct                DOUBLE PRECISION,    -- (D-1 close - D-5 close) / D-5 close × 100
+    -- Behavioral flags (mirror direction_consistent_5d / is_reversal_5d).
+    pre_drift_consistent_5d     BOOLEAN,            -- sign(drift_5d_pct) == sign(drift_3d_pct) AND |drift_5d_pct| >= 1.0
+    pre_drift_reverses_into_gap BOOLEAN,            -- sign(drift_5d_pct) != sign(reaction_gap_pct) — known only post-event, useful for backtests
+    -- Intraday range over the pre-earnings window (symmetric with the post-
+    -- earnings max_high_*d_pct / min_low_*d_pct columns). Anchored at the
+    -- START of each window (D-N close), so a positive max_high_pre_5d_pct
+    -- means the stock printed at least one intraday high N% above where it
+    -- closed 5 trading days before the report. Catches the "ran and gave
+    -- back" pattern that pure close-to-close drift misses.
+    max_high_pre_3d_pct         DOUBLE PRECISION,   -- (MAX(high) in D-3..D-1  - D-3 close)  / D-3 close  × 100
+    min_low_pre_3d_pct          DOUBLE PRECISION,   -- (MIN(low)  in D-3..D-1  - D-3 close)  / D-3 close  × 100
+    max_high_pre_5d_pct         DOUBLE PRECISION,
+    min_low_pre_5d_pct          DOUBLE PRECISION,
+    max_high_pre_10d_pct        DOUBLE PRECISION,
+    min_low_pre_10d_pct         DOUBLE PRECISION,
 
     -- Report day (D)
     d_open                      DOUBLE PRECISION,
@@ -571,6 +689,42 @@ ALTER TABLE earnings_reactions
     DROP COLUMN IF EXISTS atr_pct_d_minus_1,
     DROP COLUMN IF EXISTS atr_14_d,
     DROP COLUMN IF EXISTS day_range_in_atr_units;
+
+-- Best-exit / worst-drawdown over the swing window (added 2026-05-04).
+-- The sustain_*_pct columns above use the CLOSE on day N — but a swing
+-- trader can exit at any point during the hold window. These give the
+-- actual high/low touched, expressed as % vs reaction_anchor_price
+-- (the same anchor the sustain columns use). Bounded by the same
+-- anomaly threshold so stock-split artifacts don't poison the values.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS max_high_3d_pct  DOUBLE PRECISION,    -- best UP exit within 3 trading days
+    ADD COLUMN IF NOT EXISTS min_low_3d_pct   DOUBLE PRECISION,    -- worst drawdown within 3 trading days
+    ADD COLUMN IF NOT EXISTS max_high_5d_pct  DOUBLE PRECISION,    -- best UP exit within 5 trading days
+    ADD COLUMN IF NOT EXISTS min_low_5d_pct   DOUBLE PRECISION,    -- worst drawdown within 5 trading days
+    ADD COLUMN IF NOT EXISTS max_high_10d_pct DOUBLE PRECISION,    -- best UP exit within 10 trading days
+    ADD COLUMN IF NOT EXISTS min_low_10d_pct  DOUBLE PRECISION;    -- worst drawdown within 10 trading days
+
+
+-- Pre-earnings drift (D-5/D-3/D-2) — added 2026-05-14 to feed the
+-- pre-drift analysis pipeline (symmetric with post-earnings sustain_3d/
+-- 5d/10d). Live migration is idempotent; next compute-earnings-reactions
+-- run with --force --scope=full populates every historical row.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS d_minus_5_close             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS d_minus_3_close             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS d_minus_2_close             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS drift_3d_pct                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS drift_5d_pct                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_drift_consistent_5d     BOOLEAN,
+    ADD COLUMN IF NOT EXISTS pre_drift_reverses_into_gap BOOLEAN,
+    -- Intraday high/low over pre-earnings window (symmetric with post-
+    -- earnings max_high_*d_pct / min_low_*d_pct). Anchored at D-N close.
+    ADD COLUMN IF NOT EXISTS max_high_pre_3d_pct         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS min_low_pre_3d_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_high_pre_5d_pct         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS min_low_pre_5d_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_high_pre_10d_pct        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS min_low_pre_10d_pct         DOUBLE PRECISION;
 
 
 -- ─────────────────────────────────────────────────────────
@@ -739,9 +893,24 @@ ALTER TABLE signal_alerts
 --     "strategies":      ["momentum", "mean_reversion"],
 --     "directions":      ["CALL", "CALL"],
 --     "base_scores":     [4.0, 3.0],
+--     "conditions_met":  [
+--       ["rsi_thrust_3", "rvol_recent_20", "atr_expansion"],
+--       ["consecutive_down", "rsi_oversold_zone", "below_vwap"]
+--     ],
 --     "composite_score": 5.0
 --   }
 -- NULL when only one strategy fired (the common case).
+-- Per-leg conditions_met added Track D / G.P3.4 so post-mortems can
+-- answer "which conditions did momentum hit when stacked with mean-
+-- reversion" without joining back to per-strategy tables. Order of
+-- inner arrays matches `strategies`.
+--
+-- Empirical rate (Track D audit 2026-05-08, § 6 / G.P2.9):
+-- 17 stacked alerts of 782 fires = 2.2% (per-ticker 1.4-3.2%; QQQ
+-- highest). The pre-Phase-0.7.x estimate of ~21% in
+-- docs/plans/SIGNAL_QUALITY_TEST_PLAN.md is stale — momentum's gate
+-- tightened over subsequent phases, lowering fires without a
+-- corresponding schema-doc update.
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS strategy_agreement JSONB;
 
@@ -869,18 +1038,8 @@ CREATE INDEX IF NOT EXISTS idx_economic_events_date
     ON economic_events (event_date DESC);
 
 
--- ─────────────────────────────────────────────────────────
--- HELPER: auto-update updated_at on market_data_daily
--- ─────────────────────────────────────────────────────────
-
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$;
-
+-- set_updated_at() is defined earlier in this file (just before
+-- trg_earnings_calendar_updated) so it exists ahead of its first use.
 DROP TRIGGER IF EXISTS trg_market_data_daily_updated ON market_data_daily;
 CREATE TRIGGER trg_market_data_daily_updated
     BEFORE UPDATE ON market_data_daily
@@ -914,6 +1073,19 @@ CREATE INDEX IF NOT EXISTS idx_journal_entries_embedding
 -- Per-role provider/model routing for the agent pipeline.
 -- Drives the /admin model-routing dashboard. Defaults to Vertex
 -- Gemini for every role on fresh install (no new secrets required).
+--
+-- DORMANCY NOTE (audit 2026-05-08 G.P2.4): all 7 roles seed at the
+-- same provider/model. The infrastructure (table + UI + per-role
+-- /admin/routes API) supports per-role swap (e.g. analyst on cheap
+-- Gemini Flash, judge on Claude Opus for harder reasoning) but no
+-- production diversification has been justified yet — there's no
+-- evidence the marginal cost-vs-quality trade-off is worth the
+-- per-role engineering. The dashboard intentionally stays present
+-- so an operator can A/B a single role (e.g. judge on Gemini 2.5
+-- Pro for one week) without code changes; results would inform a
+-- follow-up calibration if any role's per-call cost or output
+-- quality justifies it. Until that data exists, treat this as a
+-- single-model deployment by design.
 CREATE TABLE IF NOT EXISTS model_routing (
     role          VARCHAR(32)  PRIMARY KEY,
     provider      VARCHAR(32)  NOT NULL,   -- 'vertex' | 'anthropic' | 'openai'
@@ -922,14 +1094,19 @@ CREATE TABLE IF NOT EXISTS model_routing (
     updated_by    VARCHAR(64)
 );
 
+-- Seed routes consistent with the Vertex adapter's default location
+-- (`global`, see lib/agents/vertex_adapter.py). gemini-2.0-flash lives
+-- ONLY on regional us-east1 and would 404 against the default global
+-- endpoint, so a fresh deploy must seed a model that lives on global
+-- (gemini-2.5-flash, gemini-3.1-flash-lite, etc). Updated 2026-05-11.
 INSERT INTO model_routing (role, provider, model) VALUES
-    ('analyst',           'vertex', 'gemini-2.0-flash'),
-    ('bull',              'vertex', 'gemini-2.0-flash'),
-    ('bear',              'vertex', 'gemini-2.0-flash'),
-    ('judge',             'vertex', 'gemini-2.0-flash'),
-    ('trader',            'vertex', 'gemini-2.0-flash'),
-    ('risk',              'vertex', 'gemini-2.0-flash'),
-    ('portfolio_manager', 'vertex', 'gemini-2.0-flash')
+    ('analyst',           'vertex', 'gemini-3.1-flash-lite'),
+    ('bull',              'vertex', 'gemini-3.1-flash-lite'),
+    ('bear',              'vertex', 'gemini-3.1-flash-lite'),
+    ('judge',             'vertex', 'gemini-3.1-flash-lite'),
+    ('trader',            'vertex', 'gemini-3.1-flash-lite'),
+    ('risk',              'vertex', 'gemini-3.1-flash-lite'),
+    ('portfolio_manager', 'vertex', 'gemini-3.1-flash-lite')
 ON CONFLICT (role) DO NOTHING;
 
 DROP TRIGGER IF EXISTS trg_model_routing_updated ON model_routing;
@@ -948,11 +1125,21 @@ CREATE TABLE IF NOT EXISTS insight_reports (
     report          JSONB        NOT NULL,
     model_versions  JSONB        NOT NULL,
     cost_usd        NUMERIC(10,4),
+    -- Per-role USD cost breakdown (e.g. {"analyst:market": 0.0021,
+    -- "judge": 0.0008, ...}). Sum of values equals cost_usd within
+    -- rounding. Lets dashboards answer "which role is most expensive?"
+    -- without re-running the pipeline. Audit 2026-05-08 G.P3.2.
+    per_role_cost   JSONB,
     latency_ms      INTEGER,
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_insight_reports_ticker_asof UNIQUE (ticker, as_of)
 );
+
+-- Migration for existing instances. apply_schema.py is idempotent so
+-- this no-ops on fresh installs after the table CREATE above.
+ALTER TABLE insight_reports
+    ADD COLUMN IF NOT EXISTS per_role_cost JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_insight_reports_ticker_asof
     ON insight_reports (ticker, as_of DESC);
@@ -1063,9 +1250,28 @@ CREATE TABLE IF NOT EXISTS strat_levels (
     strat_class    VARCHAR(16),
     is_current     BOOLEAN     DEFAULT FALSE,
     period_label   VARCHAR(40),
+    -- 2026-05-10 source-data freshness tag. The latest
+    -- `market_data_daily.date` used to compute this level. Lets readers
+    -- (signal_monitor, brief, downstream analytics) verify the levels
+    -- aren't built off stale fetcher data BEFORE acting on them.
+    -- Pre-fix the 5/6 brief silently wrote levels computed from
+    -- 4/27-latched data into rows stamped as_of=5/6 — every
+    -- consumer trusted them. The persist_level_map writer also
+    -- now refuses to write when (today - source_data_as_of) >
+    -- max_age_days (default 2), so staleness fails fast at write
+    -- time instead of polluting downstream consumers.
+    source_data_as_of TIMESTAMPTZ,
     inserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ticker, as_of, level_name)
 );
+
+-- 2026-05-10 — additive migration for the source_data_as_of column on
+-- existing deploys (the CREATE TABLE clause above is a no-op when the
+-- table exists). Without this ALTER the schema-apply script would
+-- skip the column and the new persist_level_map writer would error
+-- with "column does not exist".
+ALTER TABLE strat_levels
+    ADD COLUMN IF NOT EXISTS source_data_as_of TIMESTAMPTZ;
 
 -- Migration: widen strat_class for existing instances. Idempotent.
 DO $$
@@ -1129,6 +1335,130 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS recommended_orb_window VARCHAR(8),
     ADD COLUMN IF NOT EXISTS recommended_orb_reason TEXT,
     ADD COLUMN IF NOT EXISTS playbook TEXT;
+
+
+-- ============================================================================
+-- Track B audit (2026-05-08): data freshness + LLM commentary persistence
+-- on `premarket_analysis`. W5 schema for the implementation plan in
+-- docs/audit/2026-05-08/track-B-implementation-plan.md. The companion
+-- columns on `premarket_analysis_history` are added inside that table's
+-- CREATE TABLE definition further down (so fresh-DB applies see them at
+-- CREATE time) AND in a deferred ALTER block immediately after the
+-- CREATE (so existing-DB applies pick them up).
+--
+-- Column meanings:
+--
+--   data_as_of (timestamptz)
+--     Per-ticker timestamp of the LAST OHLCV bar the brief used to
+--     compute that row's bias / levels / RSI. Read by the W6 writer
+--     from `df.iloc[-1].name` after the null-close filter at
+--     gcp/premarket_brief.py:724. Lets a single SELECT answer
+--     "which morning's brief was based on stale data?" — pre-W6 this
+--     required a 4-table join.
+--
+--   data_freshness_status (varchar(20))
+--     Stamp written by the W6 staleness detector. Values:
+--       'fresh'             — last bar was 1 trading day before
+--                             analysis_date (or Friday→Monday).
+--       'STALE_DAILY_DATA'  — gap > 1 trading day with no Monday
+--                             exemption. The W6 writer sets per-ticker
+--                             status='STALE_DAILY_DATA' on data['status']
+--                             so persist_to_cloud_sql skips the canonical
+--                             premarket_analysis row and only writes the
+--                             history row (audit trail). Track B audit
+--                             G.P0.4.
+--       NULL                — pre-W6 rows from before the writer landed.
+--
+--   llm_overview / llm_orb_explanation (text, brief-level)
+--   llm_analysis / llm_playbook (text, per-ticker)
+--     Gemini-generated commentary that the brief renders into Discord
+--     today and discards. W7 wires the writer to persist these for
+--     audit-trail replay (the four strings are non-deterministic across
+--     LLM calls, but the original morning's text is locked once
+--     persisted). Track G G.P2.11 / Track B audit B.11; user-confirmed
+--     decision was "persist for audit trail" rather than skip.
+--
+-- All columns are NULL-able; pre-migration rows stay NULL until the
+-- W6 / W7 writers land. Idempotent; re-runs are no-ops.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS data_as_of            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_freshness_status VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
+    ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+
+
+-- ─────────────────────────────────────────────────────────
+-- Brief-playbook outcome tracking (added 2026-05-11)
+-- ─────────────────────────────────────────────────────────
+--
+-- Two halves: STRUCTURED inputs (the trigger / stop / target prices the
+-- brief recommended) and RESOLVED outcomes (what actually happened during
+-- RTH). The brief writer fills the `*_price` / `*_name` columns at
+-- generation time; the EOD resolver job fills the `*_hit_ts` / `*_pnl_*` /
+-- `*_excursion_*` columns after market close by walking
+-- market_data_intraday for that (date, ticker).
+--
+-- Pre-this-block the playbook lived only as LLM prose in the `playbook`
+-- column — fine for human reading, useless for analytics. Now we can
+-- answer "did 5/6 QQQ's recommended CALL trigger actually print, when did
+-- it hit T1, was T3 reached, what was the EOD pnl per share / per $10k
+-- notional?" via SQL.
+--
+-- Resolver job: gcp/premarket_playbook_resolver.py
+-- Cron: 30 16 * * 1-5 America/New_York (16:30 ET, after RTH close)
+-- Idempotent: re-running on the same date overwrites with the same values
+ALTER TABLE premarket_analysis
+    -- ── STRUCTURED inputs ────────────────────────────────────────────
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+
+    -- ── RESOLVED outcomes — CALLS leg ────────────────────────────────
+    ADD COLUMN IF NOT EXISTS calls_trigger_hit_ts  TIMESTAMPTZ,   -- first bar where high >= trigger
+    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- after trigger, first bar where high >= t1
+    ADD COLUMN IF NOT EXISTS calls_t2_hit_ts       TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_t3_hit_ts       TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_stop_hit_ts     TIMESTAMPTZ,   -- after trigger, first bar where low <= stop
+    ADD COLUMN IF NOT EXISTS calls_reversal_after_trigger BOOLEAN, -- True iff stop_hit_ts > trigger_hit_ts
+    ADD COLUMN IF NOT EXISTS calls_time_to_t1_min  INTEGER,       -- minutes from trigger to T1
+    ADD COLUMN IF NOT EXISTS calls_mae_pct         DOUBLE PRECISION, -- (trigger - min_low_after_trigger)/trigger * 100
+    ADD COLUMN IF NOT EXISTS calls_mfe_pct         DOUBLE PRECISION, -- (max_high_after_trigger - trigger)/trigger * 100
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- final realized pct (at first stop/target/EOD close)
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_dollar  DOUBLE PRECISION, -- pct/100 * notional ($10,000 default)
+
+    -- ── RESOLVED outcomes — PUTS leg (mirror of CALLS) ───────────────
+    ADD COLUMN IF NOT EXISTS puts_trigger_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t1_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t2_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t3_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_stop_hit_ts      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_reversal_after_trigger BOOLEAN,
+    ADD COLUMN IF NOT EXISTS puts_time_to_t1_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS puts_mae_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_mfe_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_eod_pnl_pct      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_eod_pnl_dollar   DOUBLE PRECISION,
+
+    -- ── Resolver metadata ────────────────────────────────────────────
+    ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS outcome_resolver_version VARCHAR(20);
+
+CREATE INDEX IF NOT EXISTS idx_premarket_analysis_outcome_resolved
+    ON premarket_analysis(outcome_resolved_at) WHERE outcome_resolved_at IS NOT NULL;
 
 
 -- ============================================================================
@@ -1207,6 +1537,21 @@ CREATE TABLE IF NOT EXISTS premarket_analysis_history (
     recommended_orb_reason  TEXT,
     playbook                TEXT,
 
+    -- Track B audit (2026-05-08): data freshness + LLM commentary
+    -- persistence. See the comment block above the
+    -- `ALTER TABLE premarket_analysis ADD COLUMN data_as_of ...`
+    -- migration earlier in this file for the column-by-column
+    -- meaning. Adding them inline here ensures fresh-DB applies pick
+    -- them up at CREATE time; the deferred ALTER block immediately
+    -- after this CREATE catches existing DBs where the table already
+    -- exists.
+    data_as_of              TIMESTAMPTZ,
+    data_freshness_status   VARCHAR(20),
+    llm_overview            TEXT,
+    llm_orb_explanation     TEXT,
+    llm_analysis            TEXT,
+    llm_playbook            TEXT,
+
     -- Audit metadata
     written_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     run_kind          VARCHAR(20)  NOT NULL,
@@ -1231,6 +1576,45 @@ CREATE INDEX IF NOT EXISTS idx_pmah_run_kind
     ON premarket_analysis_history (run_kind, written_at DESC);
 
 
+-- Deferred companion of the `ALTER TABLE premarket_analysis` migration
+-- earlier in this file. This block has to live AFTER the CREATE TABLE
+-- above because Postgres rejects ALTER on a not-yet-existing table —
+-- on a fresh DB, the CREATE creates the table with the columns inline
+-- and this ALTER no-ops; on an existing DB where the CREATE TABLE IF
+-- NOT EXISTS sees the table and skips creation, the ALTER picks up
+-- the new columns. Idempotent in both cases. Codex review on PR #335
+-- caught the original placement (above the CREATE) and the move-here
+-- fix is the resolution.
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS data_as_of            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_freshness_status VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
+    ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT,
+    -- Mirror the brief-playbook outcome tracking columns added to
+    -- premarket_analysis (2026-05-11). Without them, bulk_insert into
+    -- the history table silently drops the structured fields populated
+    -- by persist_to_cloud_sql, leaving the audit trail unable to
+    -- reconstruct the exact triggers/stops/targets that were
+    -- recommended on a given morning. Codex review on PR #444 caught
+    -- this on the initial PR; mirror is additive + idempotent.
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
+
+
 CREATE TABLE IF NOT EXISTS insight_reports_history (
     id                BIGSERIAL    PRIMARY KEY,
     -- Optional FK to existing insight_runs row. SET NULL on delete so
@@ -1242,6 +1626,8 @@ CREATE TABLE IF NOT EXISTS insight_reports_history (
     report            JSONB        NOT NULL,
     model_versions    JSONB,
     cost_usd          NUMERIC(10,4),
+    -- Per-role USD cost breakdown (mirror of insight_reports.per_role_cost).
+    per_role_cost     JSONB,
     latency_ms        INTEGER,
 
     -- Audit metadata
@@ -1258,6 +1644,10 @@ CREATE INDEX IF NOT EXISTS idx_irh_ticker_as_of_written
     ON insight_reports_history (ticker, as_of, written_at DESC);
 CREATE INDEX IF NOT EXISTS idx_irh_run_kind
     ON insight_reports_history (run_kind, written_at DESC);
+
+-- Migration for existing instances. Idempotent.
+ALTER TABLE insight_reports_history
+    ADD COLUMN IF NOT EXISTS per_role_cost JSONB;
 
 
 -- Migration: extend insight_runs.trigger CHECK to allow 'cache_hit' so
@@ -1562,6 +1952,156 @@ CREATE TABLE IF NOT EXISTS ticker_calibration (
 CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
     ON ticker_calibration (ticker, calibration_date DESC);
 
+-- 2026-05-10 (#250) drift guard. When a quarterly calibration produces
+-- a value > 2σ from the rolling 4-row mean for any percentile column,
+-- the row is written but flagged. Live resolver in
+-- lib/strategies/calibration.py falls back to Tier-B (universal) when
+-- drift_flagged=TRUE so a single anomalous calibration window doesn't
+-- whipsaw production thresholds. Values > 3σ refuse the write entirely
+-- (must --force to override). See scripts/calibrate_thresholds.py
+-- _check_drift() for the implementation.
+ALTER TABLE ticker_calibration
+    ADD COLUMN IF NOT EXISTS drift_flagged BOOLEAN DEFAULT FALSE;
+
+
+-- ─────────────────────────────────────────────────────────
+-- EXIT_CONFIG_OVERRIDES: per-ticker target/stop/time overrides
+-- (Track A G.P0.14 — 2026-05-08 audit recommendation)
+--
+-- The audit's MFE/MAE-based per-ticker calibration found that the
+-- universal `lib/config.py:ExitConfig` defaults (target=0.003 / stop=
+-- 0.0015) are 1.5–2× too wide for SPY/IWM/QQQ. With the recommended
+-- per-ticker targets, QQQ's mean per-trade return flips from −0.0005%
+-- to +0.0127% (counterfactual replay over 50 days of cached intraday).
+--
+-- Read pattern: latest snapshot per ticker, like ticker_calibration.
+-- See lib/strategies/exit_config_overrides.py for the read-side helpers.
+-- Write pattern: PR-E1 seeds initial values; PR-E7 (quarterly job)
+-- writes refreshed values via INSERT ... ON CONFLICT DO UPDATE.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS exit_config_overrides (
+    ticker             VARCHAR(10)  NOT NULL,
+    calibration_date   DATE         NOT NULL,
+
+    -- Per-ticker exit thresholds. NULL means "use the lib/config.py
+    -- ExitConfig default for this knob" — the resolver in
+    -- exit_config_overrides.py treats NULL as Tier-A miss and falls
+    -- back to Tier-B.
+    call_target        DOUBLE PRECISION,   -- e.g. 0.00301 = +30 bps
+    put_target         DOUBLE PRECISION,
+    call_stop          DOUBLE PRECISION,
+    put_stop           DOUBLE PRECISION,
+    call_time_stop     INTEGER,            -- minutes
+    put_time_stop      INTEGER,
+
+    -- Walk-forward calibration sweep: per-ticker consecutive-bar
+    -- pressure window. NULL = use the SignalConfig default.
+    consecutive_periods INTEGER,
+
+    -- PR-E3: per-ticker dropped strategy conditions (e.g.
+    -- ['stoch_rsi_overbought', 'rsi_overbought_zone'] for IWM/QQQ MR PUT).
+    -- NULL = use the strategy's full condition list.
+    disabled_conditions JSONB,
+
+    -- Audit 2026-05-08 G.P1.4 follow-up: per-ticker blue-sky synth offset
+    -- in ATR units, used by lib/agents/trade_planner.select_trigger_and_regime
+    -- when every historical level is cleared by pre-market. Calibrated
+    -- from the per-ticker median/mean (RTH high − pre_high)/ATR
+    -- distribution on gap-up days. NULL → falls back to the global
+    -- default `_BLUE_SKY_ATR_OFFSET` in trade_planner.py.
+    blue_sky_atr_offset DOUBLE PRECISION,
+
+    notes              TEXT,
+    inserted_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (ticker, calibration_date)
+);
+
+-- Migration for existing instances. Idempotent.
+ALTER TABLE exit_config_overrides
+    ADD COLUMN IF NOT EXISTS blue_sky_atr_offset DOUBLE PRECISION;
+
+-- Audit 2026-05-08 G.P1.19: per-ticker direction kill switch.
+-- `disabled_directions` JSONB column carries a list like ["PUT"] or
+-- ["CALL"] for tickers where one side should not fire at all (until
+-- the condition set is rebuilt — temporary disable, not a permanent
+-- ban). Read at lib/signals.py:evaluate_signal; alerts return None
+-- for the disabled side regardless of score.
+ALTER TABLE exit_config_overrides
+    ADD COLUMN IF NOT EXISTS disabled_directions JSONB;
+
+-- Walk-forward calibration sweep: per-ticker consecutive-bar window.
+-- Written by scripts/run_param_sweep.py; read by
+-- lib/strategies/exit_config_overrides.py:get_consecutive_periods().
+ALTER TABLE exit_config_overrides
+    ADD COLUMN IF NOT EXISTS consecutive_periods INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_exit_config_overrides_recent
+    ON exit_config_overrides (ticker, calibration_date DESC);
+
+-- Initial seed from docs/audit/2026-05-08/recommended_per_ticker_config.json.
+-- Idempotent: re-applying schema.sql leaves later quarterly snapshots
+-- untouched (PRIMARY KEY conflict → DO NOTHING).
+INSERT INTO exit_config_overrides (
+    ticker, calibration_date,
+    call_target, put_target, call_stop, put_stop,
+    call_time_stop, put_time_stop, notes
+) VALUES
+    ('SPY', '2026-05-08', 0.00184, 0.00202, 0.00075, 0.00075, 25, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=555). MR-only universe; momentum did not fire.'),
+    ('IWM', '2026-05-08', 0.00281, 0.00249, 0.00077, 0.00100, 20, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=493). MR-only universe; momentum did not fire.'),
+    ('QQQ', '2026-05-08', 0.00301, 0.00238, 0.00075, 0.00075, 20, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=544). Counterfactual: mean per-trade return −0.0005% → +0.0127%.')
+ON CONFLICT (ticker, calibration_date) DO NOTHING;
+
+-- Audit 2026-05-08 G.P1.4 follow-up: blue-sky synth offset seed.
+-- Derived from db-query.yml run 25588221502 — 12-month window of
+-- gap-up days where pre_high IS NOT NULL, computing per-ticker median
+-- and mean of (RTH high − pre_high)/ATR. n_extension_events were
+-- 7-9 per ticker so values rounded to 0.05 grid for stability:
+--
+--   Ticker | mean ext | median ext | p75 ext | seeded
+--   SPY    | 0.137    | 0.098      | 0.197   | 0.15
+--   IWM    | 0.142    | 0.072      | 0.211   | 0.15
+--   QQQ    | 0.178    | 0.180      | 0.227   | 0.20
+--
+-- Conservative rule: use the mean for SPY/IWM (similar distributions)
+-- and bump QQQ slightly higher because its median > mean indicates a
+-- right-skewed extension distribution (more big follow-throughs).
+UPDATE exit_config_overrides
+   SET blue_sky_atr_offset = 0.15
+ WHERE ticker IN ('SPY', 'IWM') AND calibration_date = '2026-05-08'
+   AND blue_sky_atr_offset IS NULL;
+UPDATE exit_config_overrides
+   SET blue_sky_atr_offset = 0.20
+ WHERE ticker = 'QQQ' AND calibration_date = '2026-05-08'
+   AND blue_sky_atr_offset IS NULL;
+
+-- Audit 2026-05-08 G.P0.13: drop stoch_rsi_overbought + rsi_overbought_zone
+-- from MR PUT scoring on IWM and QQQ specifically. Track E measured these
+-- factors anti-correlated with PUT success on those tickers but not SPY,
+-- so the drop is per-ticker not global. Live read by lib/signals.py:
+-- evaluate_signal via lib/strategies/exit_config_overrides at fire time.
+-- PR #329 added the column + live-read code; the IWM/QQQ-specific seed
+-- values were never landed. Backfilling now (incident 2026-05-09 caught
+-- this drift while investigating disabled_directions).
+UPDATE exit_config_overrides
+   SET disabled_conditions = '["stoch_rsi_overbought", "rsi_overbought_zone"]'::jsonb
+ WHERE ticker IN ('IWM', 'QQQ') AND calibration_date = '2026-05-08'
+   AND disabled_conditions IS NULL;
+
+-- NOTE: The QQQ disabled_directions=["PUT"] seed that previously lived
+-- here was REMOVED in incident-2026-05-09. A static direction kill switch
+-- is too blunt — it suppresses every PUT regardless of daily bias. The
+-- 11.1% MR PUT win-rate that justified G.P1.19 was measured pre-PR-#329
+-- (before above_vwap was dropped from MR PUT scoring). Future
+-- suppression should go through condition-level surgery (the
+-- disabled_conditions block above) or a daily-bias-aware mechanism, NOT
+-- a static gate. The disabled_directions COLUMN remains in case that
+-- mechanism wants it later, but no rows seed it as of this commit.
+
 
 -- ─────────────────────────────────────────────────────────
 -- HISTORICAL_SIGNALS: parallel-strategy support (Phase 0.7)
@@ -1787,3 +2327,367 @@ ALTER TABLE historical_signals
     ADD COLUMN IF NOT EXISTS last_catalyst_type  VARCHAR(20),
     ADD COLUMN IF NOT EXISTS catalyst_session    VARCHAR(12),
     ADD COLUMN IF NOT EXISTS proximity_bucket    VARCHAR(12);
+
+
+-- ─── Exit-watcher columns — entry/exit lifecycle on signal_alerts ──
+-- Persists the resolution of each signal: when/why/at-what-price the
+-- position was closed. Filled in by gcp/signal_monitor.py:_persist_exit
+-- when the in-memory exit-watcher fires a TARGET HIT / TIME STOP /
+-- RSI EXTREME alert. is_open lets analytics filter for live-this-minute
+-- positions without scanning the whole table.
+--
+-- exit_reason values:
+--   target_hit   — price reached call_target / put_target before time stop
+--                  (set by gcp/signal_monitor.py:_persist_exit during the
+--                   live in-process exit-watcher loop)
+--   time_stop    — call_time_stop / put_time_stop minutes elapsed
+--                  (set by gcp/signal_monitor.py:_persist_exit)
+--   rsi_extreme  — RSI crossed call_rsi_exit (>=80) / put_rsi_exit (<=20)
+--                  (set by gcp/signal_monitor.py:_persist_exit)
+--   eod_close    — position still open at session close (16:00 ET); the
+--                  in-process watcher only resolves while the SignalMonitor
+--                  process is alive, so anything still open at close gets
+--                  swept by the daily Cloud Run Job
+--                  gcp/signal_monitor_eod_resolver.py at 16:30 ET / 20:30
+--                  UTC (cron: 30 16 * * 1-5 America/New_York). Per Track D
+--                  audit § 2 / G.P0.10 — implements the schema-anticipated
+--                  fallback that previously left ~1,209 alerts with
+--                  exit_ts NULL.
+
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS exit_ts          TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS exit_reason      VARCHAR(32),
+    ADD COLUMN IF NOT EXISTS exit_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS exit_return_pct  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS is_open          BOOLEAN;
+
+-- Track D / G.P3.5: default is_open to FALSE for any future ALTER-added
+-- row so schema migrations don't silently leave NULL is_open values that
+-- force every downstream filter to write `WHERE is_open IS TRUE OR
+-- is_open IS NULL`. The persist path in gcp/signal_monitor.py:_persist_signal_alert
+-- still writes `is_open=TRUE` explicitly on insert; this DEFAULT only
+-- fills in for rows whose persist path forgets the column or for old
+-- rows backfilled by ad-hoc UPDATEs.
+ALTER TABLE signal_alerts
+    ALTER COLUMN is_open SET DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_open
+    ON signal_alerts (ticker, alert_ts) WHERE is_open IS TRUE;
+
+
+-- ─── Phase 2 — Brief↔Live coordination (visibility-only) ─────────
+-- The premarket brief (premarket_analysis) and the live signal monitor
+-- run as parallel systems with no coordination layer. On 2026-05-05 they
+-- produced opposite directional opinions on QQQ — brief said PUT, live
+-- fired CALL at 9:25 and was correct. We need data to decide whether
+-- brief-aligned or brief-opposed live signals win more often, so this
+-- phase persists the alignment without changing fire behavior.
+--
+-- brief_bias values match lib/strategies/brief_bias.py:
+--   CALL | PUT | NEUTRAL | CONFLICTED | UNAVAILABLE
+-- brief_alignment values:
+--   aligned | opposed | NULL (when bias is NEUTRAL/CONFLICTED/UNAVAILABLE)
+-- brief_setup_count: 0..5 (the N from "CALL setup (N/5)" in signal_status)
+
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS brief_bias        VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS brief_alignment   VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS brief_setup_count INTEGER;
+
+-- Phase 1 prereq (issue #404, PR feat/replay-persist-mode):
+-- replay-mode signal-monitor writes here too with these tag columns so
+-- replay rows are identifiable + queryable but don't pollute live data
+-- analysis. Live rows: run_kind='live' (default) AND replay_id IS NULL.
+-- Replay rows: run_kind='replay' AND replay_id=<UUID-per-execution>.
+-- This unlocks Phase 1 acceptance testing (need full per-fire detail
+-- which Cloud Run logs truncate at ~85 records).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS run_kind   VARCHAR(16) NOT NULL DEFAULT 'live',
+    ADD COLUMN IF NOT EXISTS replay_id  UUID;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_run_kind
+    ON signal_alerts(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
+    ON signal_alerts(replay_id) WHERE replay_id IS NOT NULL;
+
+-- Phase 1 direction gate (per docs/audits/2026-05-10-risk-reviewer-validation.md):
+-- the live signal_monitor reads insight_reports and decides whether
+-- to suppress / downgrade / tag the fire. These columns record the
+-- gate's view of each fire so we can post-hoc audit decisions and
+-- measure missed-winner rate (shadow mode).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS insight_direction  VARCHAR(8),     -- 'long'/'short'/'flat'/null
+    ADD COLUMN IF NOT EXISTS insight_conviction VARCHAR(8),     -- 'low'/'medium'/'high'/null
+    ADD COLUMN IF NOT EXISTS insight_regime     VARCHAR(20),    -- 'normal'/'extended'/'orb_only'/null
+    ADD COLUMN IF NOT EXISTS gate_action        VARCHAR(16),    -- 'pass'/'suppress'/'downgrade'/'tag'/'annotate'
+    ADD COLUMN IF NOT EXISTS gate_reason        TEXT,           -- short label, e.g. 'opposing_weak_vs_plan_long'
+    ADD COLUMN IF NOT EXISTS thesis_invalidated BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
+    ON signal_alerts(gate_action) WHERE gate_action IS NOT NULL;
+
+
+-- ─────────────────────────────────────────────────────────
+-- BACKTEST PIPELINE (Cloud Run job: backtest-pipeline)
+-- ─────────────────────────────────────────────────────────
+-- These three tables replace the file-based CSV hand-off the
+-- backtest pipeline used when it ran as a GitHub Actions job.
+-- scripts/run_backtest.py and scripts/run_timeframe_sweep.py
+-- write the "simulate" stage output here; scripts/generate_
+-- backtest_report.py reads it back, renders the markdown, and
+-- records the run in backtest_reports.
+--
+-- A pipeline run is identified by a `run_id` UUID generated
+-- once in scripts/run_pipeline.py and threaded through every
+-- sub-step. Re-running with the same run_id is idempotent
+-- (ON CONFLICT DO UPDATE on the natural keys below).
+
+-- backtest_trades — one row per simulated trade. Columns mirror
+-- lib/backtest.py:BacktestResult.to_dataframe() plus the run/
+-- ticker/mode grouping columns.
+CREATE TABLE IF NOT EXISTS backtest_trades (
+    run_id         UUID             NOT NULL,
+    ticker         VARCHAR(10)      NOT NULL,
+    use_strat      BOOLEAN          NOT NULL,
+    mode           VARCHAR(8)       NOT NULL,   -- 'base' | 'strat'
+    trade_seq      INTEGER          NOT NULL,   -- 0-based trade index within (run_id, ticker, mode)
+
+    -- Columns from BacktestResult.to_dataframe()
+    entry_time     TIMESTAMPTZ,
+    exit_time      TIMESTAMPTZ,
+    direction      VARCHAR(4),                  -- 'CALL' | 'PUT'
+    entry_price    DOUBLE PRECISION,
+    exit_price     DOUBLE PRECISION,
+    exit_reason    VARCHAR(16),                 -- 'target' | 'stop_loss' | 'time_stop' | ...
+    base_score     INTEGER,
+    strat_bonus    INTEGER,
+    total_score    INTEGER,
+    position_size  DOUBLE PRECISION,
+    return_pct     DOUBLE PRECISION,
+    mae            DOUBLE PRECISION,            -- Max Adverse Excursion
+    mfe            DOUBLE PRECISION,            -- Max Favorable Excursion
+    ftfc_score     DOUBLE PRECISION,            -- FTFC alignment at entry (-1..+1)
+    orb_trend      INTEGER,                     -- ORB trend at entry (-1, 0, +1)
+    conditions     TEXT,                        -- comma-joined conditions_met
+
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    -- trade_seq makes each simulated trade uniquely addressable so a
+    -- re-run with the same run_id converges (ON CONFLICT DO UPDATE)
+    -- rather than appending duplicates.
+    CONSTRAINT uq_backtest_trades UNIQUE (run_id, ticker, mode, trade_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_run
+    ON backtest_trades (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_ticker_created
+    ON backtest_trades (ticker, created_at DESC);
+
+-- backtest_sweeps — one row per (timeframe / combo) tested by
+-- run_timeframe_sweep.py. Columns mirror the result_to_row()
+-- dict that script builds plus the run/ticker grouping columns.
+CREATE TABLE IF NOT EXISTS backtest_sweeps (
+    run_id         UUID             NOT NULL,
+    ticker         VARCHAR(10)      NOT NULL,
+    label          VARCHAR(32)      NOT NULL,   -- e.g. '1m', '1m+15m', '5m+30m'
+    sweep_type     VARCHAR(16)      NOT NULL,   -- 'single' | 'combo' | 'general_combo'
+
+    trades         INTEGER,
+    win_rate       DOUBLE PRECISION,
+    avg_win        DOUBLE PRECISION,
+    avg_loss       DOUBLE PRECISION,
+    pf             DOUBLE PRECISION,            -- profit factor
+    expectancy     DOUBLE PRECISION,
+    max_dd         DOUBLE PRECISION,            -- max drawdown
+    sharpe         DOUBLE PRECISION,
+
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_backtest_sweeps UNIQUE (run_id, ticker, label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_sweeps_run
+    ON backtest_sweeps (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_sweeps_ticker_created
+    ON backtest_sweeps (ticker, created_at DESC);
+
+-- backtest_reports — one row per pipeline run: the rendered
+-- markdown plus structured aggregate metrics for quick querying
+-- without re-parsing the markdown.
+CREATE TABLE IF NOT EXISTS backtest_reports (
+    run_id         UUID             PRIMARY KEY,
+    tickers        TEXT[]           NOT NULL,
+    report_md      TEXT             NOT NULL,
+
+    -- Aggregate metrics across all tickers in the run (computed in
+    -- generate_backtest_report.py from the primary trade set —
+    -- strat if available, else base).
+    total_trades   INTEGER,
+    win_rate       DOUBLE PRECISION,
+    expectancy_pct DOUBLE PRECISION,
+    sharpe         DOUBLE PRECISION,
+
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_reports_created
+    ON backtest_reports (created_at DESC);
+
+-- backtest_walk_forward_folds — one row per (run_id, ticker, mode, fold).
+-- Stores the per-fold aggregate metrics from WalkForwardValidator.run() so
+-- the report can compare mean OOS Sharpe against the in-sample sharpe
+-- from backtest_trades. stability_score is denormalised on every row
+-- (same value for all folds in a (run_id, ticker, mode)) for simple query
+-- patterns — there are only ~16 rows per (run_id, ticker, mode) so the
+-- redundancy is negligible.
+CREATE TABLE IF NOT EXISTS backtest_walk_forward_folds (
+    run_id           UUID             NOT NULL,
+    ticker           VARCHAR(10)      NOT NULL,
+    use_strat        BOOLEAN          NOT NULL,
+    mode             VARCHAR(8)       NOT NULL,    -- 'base' | 'strat'
+    fold_index       INTEGER          NOT NULL,    -- 0-based
+
+    train_start      DATE,
+    train_end        DATE,
+    test_start       DATE,
+    test_end         DATE,
+
+    total_trades     INTEGER,
+    win_rate         DOUBLE PRECISION,
+    profit_factor    DOUBLE PRECISION,
+    expectancy       DOUBLE PRECISION,
+    sharpe           DOUBLE PRECISION,
+    max_dd           DOUBLE PRECISION,
+    avg_win          DOUBLE PRECISION,
+    avg_loss         DOUBLE PRECISION,
+
+    stability_score  DOUBLE PRECISION,   -- denormalised — same for all folds in a (run_id, ticker, mode)
+
+    created_at       TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_walk_forward_folds UNIQUE (run_id, ticker, mode, fold_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_folds_run
+    ON backtest_walk_forward_folds (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_folds_ticker_created
+    ON backtest_walk_forward_folds (ticker, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────
+-- WALK_FORWARD_RESULTS: per-(parameter combo) walk-forward sweep output
+--
+-- Written by scripts/run_param_sweep.py — one row per parameter
+-- combination tested, carrying the out-of-sample aggregate metrics and
+-- the cross-fold stability_score the strategic selector ranks on. The
+-- selected winner per ticker is also written to exit_config_overrides
+-- so the live signal monitor picks it up on the next fire.
+--
+-- Sibling to backtest_sweeps (which sweeps timeframes); this table
+-- sweeps strategy parameters with walk-forward validation.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS walk_forward_results (
+    run_id              UUID             NOT NULL,
+    ticker              VARCHAR(10)      NOT NULL,
+    label               VARCHAR(48)      NOT NULL,   -- encodes the param combo
+
+    -- The swept parameter values for this combo.
+    consecutive_periods INTEGER,
+    call_target         DOUBLE PRECISION,
+    put_target          DOUBLE PRECISION,
+    call_time_stop      INTEGER,
+    put_time_stop       INTEGER,
+
+    -- Out-of-sample aggregate metrics across the walk-forward folds.
+    avg_expectancy_pct  DOUBLE PRECISION,
+    avg_win_rate        DOUBLE PRECISION,
+    std_expectancy_pct  DOUBLE PRECISION,
+    stability_score     DOUBLE PRECISION,   -- fraction of profitable folds, 0..1
+    total_folds         INTEGER,
+    total_trades        INTEGER,
+
+    -- TRUE for the combo the strategic selector promoted to
+    -- exit_config_overrides for this (run_id, ticker).
+    selected            BOOLEAN          NOT NULL DEFAULT FALSE,
+
+    created_at          TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_walk_forward_results UNIQUE (run_id, ticker, label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_results_run
+    ON walk_forward_results (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_results_ticker_created
+    ON walk_forward_results (ticker, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────
+-- EARNINGS_CALIBRATION: tuned inputs for the playability score
+--
+-- Written by scripts/calibrate_earnings.py — the earnings sweep walks
+-- the playability backtest over a grid of (min_nq, lookback_quarters)
+-- and writes the combo with the best out-of-sample quintile hit-rate
+-- spread here. The premarket brief reads the latest row (Tier A) via
+-- lib/earnings_reactions.py:get_earnings_calibration(), falling back to
+-- the env-var defaults (Tier B) when the table is empty.
+--
+-- Dated rows — latest wins, prior rows kept for audit.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS earnings_calibration (
+    calibration_date  DATE             PRIMARY KEY,
+
+    -- Tuned knobs (the sweep's winning combo).
+    min_nq            INTEGER,         -- min past quarters to score
+    lookback_quarters INTEGER,         -- recent-window cap; NULL = all history
+
+    -- Achieved out-of-sample metrics for the winning combo.
+    quintile_spread   DOUBLE PRECISION,  -- Q5 - Q1 hit-rate, 0..1
+    overall_hit_rate  DOUBLE PRECISION,
+    n_predictions     INTEGER,
+
+    notes             TEXT,
+    created_at        TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_calibration_recent
+    ON earnings_calibration (calibration_date DESC);
+
+-- Additive migration (2026-05-21): top-quintile dollar attribution.
+-- The sweep restricts to Q5 directional archetypes
+-- (bullish/bearish/reversal) and computes per-trade P&L over the 5d
+-- canonical hold. `best_hold_horizon_days` reports which of
+-- {1,3,5,10} maximised payoff_ratio.
+-- All columns nullable: a degenerate combo (empty Q5, insufficient
+-- sample) writes SQL NULL rather than fabricating $0
+-- (CLAUDE.md §3.7 — no silent fallback on financial fields).
+ALTER TABLE earnings_calibration
+    ADD COLUMN IF NOT EXISTS n_q5_directional          INTEGER,
+    ADD COLUMN IF NOT EXISTS avg_win_pct               DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_loss_pct              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS payoff_ratio              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS expectancy_pct            DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS expectancy_dollars_per_1k DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS profit_factor             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_drawdown_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS sharpe_per_trade          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS best_hold_horizon_days    INTEGER;
+
+-- PR-B (2026-05-21): options-side dollar attribution. Sourced from
+-- the T-1 close ATM call+put pair (and the delta-20 strangle wings)
+-- in earnings_options_snapshots, with exit at T+1 close modelled as
+-- intrinsic-only — a conservative bound. n_with_options is reported
+-- separately so the % means are computed only over the matched
+-- subset (not silently fabricated as 0 for unmatched events per
+-- CLAUDE.md §3.7).
+ALTER TABLE earnings_calibration
+    ADD COLUMN IF NOT EXISTS n_with_options              INTEGER,
+    ADD COLUMN IF NOT EXISTS avg_atm_straddle_iv_pct     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_implied_move_pct        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_realized_move_pct       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS realized_vs_implied_ratio   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_straddle_pnl_pct   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_short_strangle_pnl_pct  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;

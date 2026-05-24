@@ -1,5 +1,13 @@
 name: Backtest Pipeline
 
+# CI only. The `report` job that ran scripts/run_pipeline.py was migrated
+# to the `backtest-pipeline` Cloud Run job (see gcp/deploy.sh:
+# deploy_backtest_pipeline). That workload is data processing, not CI —
+# it belongs in GCP, not a GitHub Actions runner. Invoke it on demand:
+#   gcloud run jobs execute backtest-pipeline --region us-east1 --wait
+# Results land in the backtest_trades / backtest_sweeps / backtest_reports
+# Cloud SQL tables.
+
 on:
   push:
     branches: [main, "claude/**"]
@@ -12,20 +20,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      tickers:
-        description: "Space-separated tickers (default: IWM SPY QQQ)"
-        required: false
-        default: "IWM SPY QQQ"
-      mode:
-        description: "Pipeline mode"
-        required: false
-        default: "report-only"
-        type: choice
-        options:
-          - report-only
-          - full
-          - full-no-sweep
 
 jobs:
   test:
@@ -42,14 +36,40 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: python -m pytest tests/ -x -q
+      - name: Install Playwright browsers
+        # tests/test_e2e.py spins up Chromium via Playwright. The pip
+        # `playwright` package only installs the Python bindings; the
+        # browser binaries have to be downloaded separately.
+        run: python -m playwright install --with-deps chromium
 
-  report:
-    name: Generate Report
-    needs: test
+      - name: Run tests
+        # tests/integration/ needs a real Postgres — it runs in the
+        # dedicated `integration-tests` job below, not here.
+        run: python -m pytest tests/ -x -q --ignore=tests/integration
+
+  integration-tests:
+    name: Integration Tests (ephemeral Postgres)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+    # Real-SQL contract tests: apply gcp/schema.sql to a throwaway
+    # Postgres and run the production query paths against it. Catches
+    # query↔schema drift (renamed columns, SQL typos, broken JOINs)
+    # that the hermetic mocked tests in the `test` job are blind to.
+    # The image is pgvector/pgvector:pg15 — schema.sql does
+    # `CREATE EXTENSION vector`, which the stock postgres:15 image lacks.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: trading_user
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: trading
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -61,32 +81,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Determine tickers
-        id: tickers
-        run: echo "list=${{ github.event.inputs.tickers || 'IWM SPY QQQ' }}" >> "$GITHUB_OUTPUT"
-
-      - name: Run pipeline
+      - name: Apply schema to the ephemeral Postgres
+        env:
+          PGPASSWORD: testpass
+        # gcp/schema.sql defines set_updated_at() ahead of its first
+        # trigger use, so a single top-to-bottom apply succeeds under
+        # ON_ERROR_STOP=1 — which still fails the job on a genuine DDL
+        # break. (Earlier the file mis-ordered the function after two
+        # triggers and needed a twice-apply workaround; fixed in #506.)
         run: |
-          MODE="${{ github.event.inputs.mode || 'report-only' }}"
-          TICKERS="${{ steps.tickers.outputs.list }}"
+          psql -h localhost -U trading_user -d trading -v ON_ERROR_STOP=1 -f gcp/schema.sql
 
-          if [ "$MODE" = "report-only" ]; then
-            python scripts/run_pipeline.py --tickers $TICKERS --report-only
-          elif [ "$MODE" = "full-no-sweep" ]; then
-            python scripts/run_pipeline.py --tickers $TICKERS --skip-sweep
-          else
-            python scripts/run_pipeline.py --tickers $TICKERS
-          fi
-
-      - name: Upload report
-        uses: actions/upload-artifact@v4
-        with:
-          name: backtest-report
-          path: BACKTEST_RESULTS.md
-
-      - name: Upload backtest CSVs
-        uses: actions/upload-artifact@v4
-        if: github.event.inputs.mode != 'report-only'
-        with:
-          name: backtest-results
-          path: data/backtest_results/*.csv
+      - name: Run integration tests
+        env:
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_USER: trading_user
+          DB_PASS: testpass
+          DB_NAME: trading
+        run: python -m pytest tests/integration/ -q

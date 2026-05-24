@@ -35,10 +35,13 @@ it did. No magic constants without a comment.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal, Optional
 
 from .schema import EntryZone, PersonaPlan
+
+logger = logging.getLogger(__name__)
 
 
 Direction = Literal["long", "short", "flat"]
@@ -53,6 +56,29 @@ Regime = Literal["normal", "extended", "orb_only"]
 # the next level <2 ATR away; anything past 3 ATR is in "extended" /
 # "blue-sky" territory where R:R is already compressed.
 _EXTENDED_DISTANCE_ATR = 3.0
+
+# Default offset (in ATRs) applied past pre_high (long) or pre_low (short)
+# to synthesize a "blue-sky" trigger when every multi-timeframe structural
+# level has been cleared by pre-market. Per-ticker overrides live in
+# `exit_config_overrides.blue_sky_atr_offset` (Tier-A); this constant is
+# the Tier-B fallback.
+#
+# Calibrated from db-query.yml run 25588221502 (12-month gap-up window,
+# n_extension_events=6-9 per ticker). The mean (RTH high − pre_high)/ATR
+# across SPY/IWM/QQQ on gap-up extension days was 0.14-0.18; 0.20 is the
+# rounded-up p75 so a single global value still over-reaches a hair on
+# typical names (better to miss a marginal entry than fire on noise).
+# Audit 2026-05-08 G.P1.4 follow-up.
+_BLUE_SKY_ATR_OFFSET = 0.20
+
+# Maximum overnight gap magnitude (in ATRs of yesterday's close) for
+# which blue-sky trigger synthesis is appropriate. Beyond this, the
+# move was too large to project a reliable trigger from pre-market —
+# fall back to orb_only and recommend waiting for the 15-min opening
+# range. AMD 4/24 +12% gap (≈3.8 ATR) sits comfortably above this
+# threshold; SPY/IWM/QQQ uptrend days in the 2026-05-08 audit window
+# (≈0.4-0.5 ATR) sit comfortably below.
+_BLUE_SKY_MAX_GAP_ATR = 1.5
 
 
 @dataclass
@@ -106,6 +132,12 @@ class PlanContext:
     pre_vwap: Optional[float] = None
     gap_pct: Optional[float] = None
 
+    # Per-ticker blue-sky synth offset (audit G.P1.4 follow-up). When
+    # populated from `exit_config_overrides.blue_sky_atr_offset`, replaces
+    # the global `_BLUE_SKY_ATR_OFFSET` for this run. None → falls back
+    # to the global default.
+    blue_sky_atr_offset: Optional[float] = None
+
     # ---- Derived helpers ----
     def reference_price(self) -> float:
         """The "where price is sitting" anchor for the level walk.
@@ -152,7 +184,7 @@ class PlanContext:
 
 def select_trigger_and_regime(
     ctx: PlanContext, direction: Direction,
-) -> tuple[Regime, Optional[float], Optional[float], Optional[float]]:
+) -> tuple[Regime, Optional[float], Optional[float], Optional[float], bool]:
     """Pick the next unbroken structural level as the trigger; classify regime.
 
     Walks the multi-timeframe level hierarchy in the trade direction
@@ -161,26 +193,34 @@ def select_trigger_and_regime(
 
     * ``normal``    — the next level is within ``_EXTENDED_DISTANCE_ATR``
                       of the reference price. Standard trigger-based plan.
-    * ``extended``  — a structural level exists but it's far away
+                      Trigger may be a historical structural level OR
+                      a blue-sky synthetic level when every historical
+                      level has been cleared by pre-market (audit
+                      G.P1.4 — common state for symbols at all-time
+                      highs).
+    * ``extended``  — the trigger (historical or synthetic) is far away
                       (>= ``_EXTENDED_DISTANCE_ATR``). The plan still
                       uses that trigger but the rationale recommends
                       15-min ORB confirmation before entering.
-    * ``orb_only``  — no unbroken structural level exists in the trade
-                      direction (price has already cleared every PDH/
-                      PWH/PMH/PQH/PYH for longs). No trigger emitted;
-                      the brief tells the trader to wait for the ORB.
+    * ``orb_only``  — multi-timeframe levels were never populated for
+                      this ticker (sparse history, options-only ticker,
+                      legacy fixture). No trigger emitted; the brief
+                      tells the trader to wait for the ORB.
 
     The "level cleared" logic uses the larger of (reference_price,
     pre_high/pre_low) so a pre-market spike that touched a level still
     counts as cleared — gap-up wicks above PDH push trigger to PWH.
 
-    Returns ``(regime, trigger, stop_anchor, distance_atr)``.
+    Returns ``(regime, trigger, stop_anchor, distance_atr, is_blue_sky)``.
     ``trigger`` and ``distance_atr`` are ``None`` when ``regime ==
     'orb_only'``. ``stop_anchor`` is the closest level on the OPPOSITE
     side of price (used by the conservative persona to tighten stops).
+    ``is_blue_sky`` is ``True`` when the trigger was synthesized past
+    pre_high/pre_low because every historical level was cleared (uptrend
+    at ATHs); ``False`` for historical-level triggers and orb_only.
     """
     if direction not in ("long", "short"):
-        return ("normal", None, None, None)
+        return ("normal", None, None, None, False)
 
     ref = ctx.reference_price()
     atr = ctx.safe_atr()
@@ -201,10 +241,10 @@ def select_trigger_and_regime(
     if not has_multi_tf:
         legacy_trigger = ctx.trigger_high if direction == "long" else ctx.trigger_low
         if legacy_trigger is None:
-            return ("orb_only", None, None, None)
+            return ("orb_only", None, None, None, False)
         distance = abs(float(legacy_trigger) - ref) / atr
         regime = "normal" if distance < _EXTENDED_DISTANCE_ATR else "extended"
-        return (regime, float(legacy_trigger), None, distance)
+        return (regime, float(legacy_trigger), None, distance, False)
 
     # For longs, "cleared above" means pre_high reached the level, even
     # if pre-market subsequently faded below it. For shorts, "cleared
@@ -223,6 +263,13 @@ def select_trigger_and_regime(
     eff_pdl = ctx.effective_pdl if ctx.effective_pdl is not None else ctx.trigger_low
     long_levels = (eff_pdh, ctx.pwh, ctx.pmh, ctx.pqh, ctx.pyh, ctx.pre_high)
     short_levels = (eff_pdl, ctx.pwl, ctx.pml, ctx.pql, ctx.pyl, ctx.pre_low)
+    # `structural_*` excludes pre_high/pre_low so blue-sky synthesis
+    # requires a real multi-timeframe history level (PDH/PWH/PMH/PQH/PYH).
+    # A premarket-only bundle that populated only pre_high/pre_low must
+    # fall through to orb_only — the documented sparse-history case
+    # (Codex review on PR #334 caught the regression).
+    structural_long = (eff_pdh, ctx.pwh, ctx.pmh, ctx.pqh, ctx.pyh)
+    structural_short = (eff_pdl, ctx.pwl, ctx.pml, ctx.pql, ctx.pyl)
 
     if direction == "long":
         # Levels strictly ABOVE the cleared mark (price hasn't broken them yet)
@@ -250,16 +297,116 @@ def select_trigger_and_regime(
         stop_anchor = above_ref[0] if above_ref else None
 
     if not candidates:
-        # No structural level left — every PDH/PWH/PMH/PQH/PYH (or the
-        # short equivalents) has been cleared. This happens on extreme
-        # gap days (AMD 4/24 +12% gap is the canonical case). Tell the
-        # caller to wait for the ORB to establish a new range.
-        return ("orb_only", None, stop_anchor, None)
+        # No structural level survived the cleared-by-pre_high check.
+        # Three sub-cases distinguish a sustained uptrend (synthesize)
+        # from a true gap-and-go (wait for ORB) from degenerate input
+        # (no levels at all):
+        #
+        # * Sub-case A — gap is small (≤ _BLUE_SKY_MAX_GAP_ATR ATR
+        #   from yesterday's close) AND at least one same-side level
+        #   was populated. This is the natural state of a symbol
+        #   making new highs every day. Audit 2026-05-08 G.P1.4 found
+        #   10/12 SPY/IWM/QQQ reports collapsed to orb_only this way
+        #   (all three at ATHs, every PDH/PWH/PMH/PQH/PYH naturally
+        #   below pre_high, gap_atr ≈ 0.4-0.5). Project a blue-sky
+        #   synthetic trigger at `cleared_above + _BLUE_SKY_ATR_OFFSET
+        #   × ATR` so the trader gets an actionable entry rather than
+        #   a "wait for ORB" placeholder.
+        #
+        # * Sub-case B — gap is large (> _BLUE_SKY_MAX_GAP_ATR ATR)
+        #   OR the synthesized distance is itself > _EXTENDED_DISTANCE_ATR.
+        #   Genuine gap-and-go (AMD 4/24 +12% ≈ 3.8 ATR is the canonical
+        #   case). Stay orb_only — the move happened overnight; the RTH
+        #   tape needs its own range to establish a trigger.
+        #
+        # * Sub-case C — no same-side levels populated at all (sparse
+        #   history, options-only ticker, fixture path). Stay orb_only.
+        same_side_levels = long_levels if direction == "long" else short_levels
+        same_side_structural = (
+            structural_long if direction == "long" else structural_short
+        )
+        cleared = cleared_above if direction == "long" else cleared_below
+        gap_atr = abs(cleared - ctx.close) / atr if cleared is not None else None
+        if (
+            # At least one STRUCTURAL level present — pre_high/pre_low alone
+            # is not enough. A premarket-only bundle (sparse history) lands
+            # in sub-case C (orb_only), not sub-case A (synthesize).
+            any(lv is not None for lv in same_side_structural)
+            and gap_atr is not None
+            and gap_atr <= _BLUE_SKY_MAX_GAP_ATR
+        ):
+            offset = (
+                ctx.blue_sky_atr_offset
+                if ctx.blue_sky_atr_offset is not None
+                else _BLUE_SKY_ATR_OFFSET
+            )
+            # 2026-05-12 fix: anchor the synthetic trigger on the NEAREST
+            # cleared structural level (in the direction of bias), not on
+            # `cleared_above` which is max(ref, pre_high) — i.e., the raw
+            # overnight wick.
+            #
+            # Why: pre_high is transient (gap wicks can push it arbitrarily
+            # above structure without reflecting it). The user-intended
+            # blue-sky formula is "nearest structural level + 0.20 × ATR" —
+            # confirmation of continuation just above the most recent
+            # structural breakout, not chase-up above the overnight wick.
+            #
+            # QQQ 2026-05-06 example: pre_high $692.86 vs eff_pdh $682.77.
+            # Pre-fix trigger = $694.80 (pre_high + 1.94). Post-fix
+            # trigger = $684.71 (eff_pdh + 1.94) — hits intraday with
+            # meaningfully more room above the entry.
+            #
+            # In pure blue-sky (every structural level below cleared_above)
+            # the "nearest structural below current" reduces to "highest
+            # structural level". Falls back to `cleared_above` only when
+            # no structural level is populated (sparse-history degraded
+            # bundle — preserves prior behaviour for that edge case).
+            if direction == "long":
+                structural_below = sorted(
+                    [float(lv) for lv in same_side_structural
+                     if lv is not None and float(lv) < cleared_above],
+                    reverse=True,
+                )
+                anchor = structural_below[0] if structural_below else cleared_above
+                synthetic_trigger = anchor + offset * atr
+            else:
+                structural_above = sorted(
+                    [float(lv) for lv in same_side_structural
+                     if lv is not None and float(lv) > cleared_below],
+                )
+                anchor = structural_above[0] if structural_above else cleared_below
+                synthetic_trigger = anchor - offset * atr
+            distance_atr = abs(synthetic_trigger - ref) / atr
+            regime: Regime = (
+                "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
+            )
+            logger.info(
+                "trade_planner blue_sky direction=%s ref=%.4f atr=%.4f "
+                "cleared=%.4f gap_atr=%.3f offset=%.3f synthetic_trigger=%.4f "
+                "distance_atr=%.3f regime=%s structural_levels=%s",
+                direction, ref, atr, cleared, gap_atr, offset,
+                synthetic_trigger, distance_atr, regime,
+                [round(float(lv), 4) for lv in same_side_structural if lv is not None],
+            )
+            return (regime, synthetic_trigger, stop_anchor, distance_atr, True)
+        logger.info(
+            "trade_planner orb_only direction=%s ref=%.4f atr=%.4f "
+            "cleared=%s gap_atr=%s structural_populated=%s pre_only=%s",
+            direction, ref, atr,
+            f"{cleared:.4f}" if cleared is not None else None,
+            f"{gap_atr:.3f}" if gap_atr is not None else None,
+            any(lv is not None for lv in same_side_structural),
+            # True iff only pre_high/pre_low populated, no PDH/PWH/PMH/PQH/PYH
+            # (the sub-case C codex review caught).
+            any(lv is not None for lv in same_side_levels)
+            and not any(lv is not None for lv in same_side_structural),
+        )
+        return ("orb_only", None, stop_anchor, None, False)
 
     trigger = candidates[0]
     distance_atr = abs(trigger - ref) / atr
     regime: Regime = "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
-    return (regime, trigger, stop_anchor, distance_atr)
+    return (regime, trigger, stop_anchor, distance_atr, False)
 
 
 # ─── Recipe constants — central so they're easy to audit + tune ────────────
@@ -322,13 +469,13 @@ def compute_persona_plans(ctx: PlanContext) -> list[PersonaPlan]:
     """
     if ctx.direction == "flat":
         return []
-    regime, trigger, stop_anchor, distance_atr = select_trigger_and_regime(
+    regime, trigger, stop_anchor, distance_atr, is_blue_sky = select_trigger_and_regime(
         ctx, ctx.direction,
     )
     return [
-        _plan(ctx, "aggressive", regime, trigger, stop_anchor, distance_atr),
-        _plan(ctx, "neutral", regime, trigger, stop_anchor, distance_atr),
-        _plan(ctx, "conservative", regime, trigger, stop_anchor, distance_atr),
+        _plan(ctx, "aggressive", regime, trigger, stop_anchor, distance_atr, is_blue_sky),
+        _plan(ctx, "neutral", regime, trigger, stop_anchor, distance_atr, is_blue_sky),
+        _plan(ctx, "conservative", regime, trigger, stop_anchor, distance_atr, is_blue_sky),
     ]
 
 
@@ -338,6 +485,7 @@ def _plan(
     trigger: Optional[float] = None,
     stop_anchor: Optional[float] = None,
     distance_atr: Optional[float] = None,
+    is_blue_sky: bool = False,
 ) -> PersonaPlan:
     """Compute one persona's plan. Long and short are mirror images of
     each other — for short, we flip the sign on the offsets so the
@@ -438,7 +586,18 @@ def _plan(
     rationale = _build_rationale(persona, ctx, atr, midpoint, stop,
                                  risk_per_unit, size,
                                  regime=regime, distance_atr=distance_atr,
-                                 trigger=trigger)
+                                 trigger=trigger, is_blue_sky=is_blue_sky)
+
+    risk_metrics = compute_risk_metrics(
+        entry_lo=round(entry_lo, 2),
+        entry_hi=round(entry_hi, 2),
+        stop=round(stop, 2),
+        targets=[round(t, 2) for t in targets],
+        direction=ctx.direction,
+        atr=atr,
+        sma_200=ctx.sma_200,
+        ftfc_score=ctx.ftfc_score,
+    )
 
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
@@ -448,7 +607,69 @@ def _plan(
         position_size_pct=round(size, 2),
         rationale=rationale,
         regime=regime,
+        risk_metrics=risk_metrics,
     )
+
+
+def compute_risk_metrics(
+    entry_lo: float,
+    entry_hi: float,
+    stop: float,
+    targets: list[float],
+    direction: Direction,
+    atr: float,
+    sma_200: Optional[float] = None,
+    ftfc_score: Optional[float] = None,
+    invalidation_level: Optional[float] = None,
+) -> "RiskMetrics":
+    """Compute deterministic risk distances for a persona plan.
+
+    These values populate ``PersonaPlan.risk_metrics`` and are read by
+    the LLM risk reviewers in place of recomputing the math themselves
+    (the LLM hallucinates ~55% of the time per the 2026-05-10 audit).
+
+    All distances are unsigned magnitudes EXCEPT ``target_r_multiples``
+    which is signed by direction (positive = good R:R, negative = target
+    on the wrong side of entry).
+
+    Returns a fully-populated RiskMetrics; fields that depend on missing
+    inputs (atr=0, sma_200=None, etc.) are set to None individually.
+    """
+    from .schema import RiskMetrics  # local import to avoid circulars
+    entry_mid = (entry_lo + entry_hi) / 2
+    risk_per_unit = abs(entry_mid - stop)
+    sign = 1.0 if direction == "long" else -1.0 if direction == "short" else 0.0
+
+    metrics_kwargs: dict = {}
+    if atr > 0 and risk_per_unit > 0:
+        metrics_kwargs["stop_distance_atr"] = round(risk_per_unit / atr, 3)
+    if entry_mid > 0:
+        metrics_kwargs["stop_distance_pct"] = round(
+            risk_per_unit / entry_mid * 100, 3
+        )
+    if risk_per_unit > 0 and sign != 0 and targets:
+        metrics_kwargs["target_r_multiples"] = [
+            round((t - entry_mid) / risk_per_unit * sign, 3)
+            for t in targets
+        ]
+    if sma_200 is not None and sma_200 > 0:
+        metrics_kwargs["entry_vs_sma200_pct"] = round(
+            (entry_mid - sma_200) / sma_200 * 100, 3
+        )
+        if atr > 0:
+            metrics_kwargs["entry_vs_sma200_atr"] = round(
+                (entry_mid - sma_200) / atr, 3
+            )
+    if ftfc_score is not None:
+        metrics_kwargs["ftfc_aligned"] = (
+            (direction == "long" and ftfc_score >= 0.5)
+            or (direction == "short" and ftfc_score <= -0.5)
+        )
+    if invalidation_level is not None and atr > 0:
+        metrics_kwargs["invalidation_distance_atr"] = round(
+            abs(invalidation_level - stop) / atr, 3
+        )
+    return RiskMetrics(**metrics_kwargs)
 
 
 def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
@@ -476,6 +697,20 @@ def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
         "ORB-only: no unbroken structural trigger above pre-market range. "
         "Wait for the 15-min opening range to establish before entering."
     )
+    # ORB-only plans get computed risk_metrics too (the entry/stop are
+    # placeholders but the math is still well-defined). The reviewer
+    # rules will see the placeholder distances and fire flags as normal;
+    # the regime banner already tells the trader to wait for ORB.
+    risk_metrics = compute_risk_metrics(
+        entry_lo=placeholder_lo,
+        entry_hi=placeholder_hi,
+        stop=placeholder_stop,
+        targets=[],
+        direction=ctx.direction,
+        atr=atr,
+        sma_200=ctx.sma_200,
+        ftfc_score=ctx.ftfc_score,
+    )
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
         entry_zone=EntryZone(low=placeholder_lo, high=placeholder_hi),
@@ -484,6 +719,7 @@ def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
         position_size_pct=0.0,
         rationale=rationale,
         regime="orb_only",
+        risk_metrics=risk_metrics,
     )
 
 
@@ -493,6 +729,7 @@ def _build_rationale(
     regime: Regime = "normal",
     distance_atr: Optional[float] = None,
     trigger: Optional[float] = None,
+    is_blue_sky: bool = False,
 ) -> str:
     """One-sentence explanation of the recipe — references the actual
     inputs so it changes when the inputs change.
@@ -500,6 +737,12 @@ def _build_rationale(
     On ``regime == 'extended'`` setups (next structural level >= 3 ATR
     away), prepends an ORB-confirmation note so the trader knows the
     breakout is in extended/blue-sky territory.
+
+    On blue-sky synthesized triggers (every historical level cleared,
+    trigger projected past pre_high — audit G.P1.4), prepends a
+    similar note. The trade is structurally above all historical
+    resistance, so even a within-3-ATR entry benefits from waiting
+    for RTH to confirm the move via a 15-min opening-range break.
     """
     if size == 0.0:
         if persona == "conservative":
@@ -520,6 +763,12 @@ def _build_rationale(
         extended_prefix = (
             f"Extended gap: trigger ${trigger:.2f} is {distance_atr:.1f}× ATR away — "
             f"recommend 15-min ORB confirmation before entry. "
+        )
+    elif is_blue_sky and trigger is not None:
+        extended_prefix = (
+            f"Blue-sky: every historical level below pre-market range, "
+            f"synthetic trigger ${trigger:.2f} projected past pre_high — "
+            f"15-min ORB confirmation reduces risk on this kind of play. "
         )
 
     stop_atr = abs(midpoint - stop) / atr
@@ -560,6 +809,21 @@ def context_from_bundle(
     strat = bundle.get("strat") or {}
     catalysts = bundle.get("catalysts") or {}
     backtest = bundle.get("backtest") or {}
+    ticker = bundle.get("ticker")
+
+    # Per-ticker blue-sky synth offset (audit G.P1.4 follow-up). The
+    # resolver caches via lru_cache and degrades to None when Cloud SQL
+    # is unreachable / table missing — None just falls back to
+    # `_BLUE_SKY_ATR_OFFSET` inside select_trigger_and_regime.
+    blue_sky_offset: Optional[float] = None
+    if ticker:
+        try:
+            from lib.strategies.exit_config_overrides import (
+                get_blue_sky_atr_offset,
+            )
+            blue_sky_offset = get_blue_sky_atr_offset(ticker)
+        except Exception:
+            blue_sky_offset = None
 
     catalyst_events = catalysts.get("events") or []
     high_impact_in_window = any(
@@ -619,6 +883,8 @@ def context_from_bundle(
         pre_low=pre_low,
         pre_vwap=pre_vwap,
         gap_pct=gap_pct,
+        # Per-ticker blue-sky synth offset (Tier-A → Tier-B fallback)
+        blue_sky_atr_offset=blue_sky_offset,
     )
 
 

@@ -76,17 +76,45 @@ def _latest_calibration(ticker: str) -> Optional[dict]:
     import pandas as pd
     from sqlalchemy import text
 
+    # #250 drift_flagged: when the calibrate-thresholds writer detected
+    # >2σ drift from the rolling 4-row mean for any percentile column,
+    # it sets drift_flagged=TRUE on that row. Resolver falls back to
+    # Tier-B for flagged rows so a single anomalous calibration window
+    # doesn't whipsaw production thresholds. The COALESCE handles the
+    # pre-#250 deploy window where the column doesn't exist yet — those
+    # rows behave as drift_flagged=FALSE (the original behavior).
     sql = text(
         """
         SELECT calibration_date, rsi_p10, rsi_p25, rsi_p50, rsi_p75, rsi_p90,
-               lookback_days, n_bars_used
+               lookback_days, n_bars_used,
+               COALESCE(drift_flagged, FALSE) AS drift_flagged
           FROM ticker_calibration
          WHERE ticker = :ticker
          ORDER BY calibration_date DESC
          LIMIT 1
         """
     )
-    df = pd.read_sql(sql, get_engine(), params={"ticker": ticker.upper()})
+    try:
+        df = pd.read_sql(sql, get_engine(), params={"ticker": ticker.upper()})
+    except Exception as e:
+        # COALESCE on missing column → UndefinedColumn. Pre-#250 fallback:
+        # query without the column so this resolver works on instances
+        # that haven't run the schema migration yet. Behaviour is
+        # equivalent to drift_flagged=FALSE on every row.
+        log.debug("ticker_calibration drift_flagged column missing — "
+                  "falling back to pre-#250 query: %s", e)
+        sql_legacy = text(
+            """
+            SELECT calibration_date, rsi_p10, rsi_p25, rsi_p50, rsi_p75, rsi_p90,
+                   lookback_days, n_bars_used
+              FROM ticker_calibration
+             WHERE ticker = :ticker
+             ORDER BY calibration_date DESC
+             LIMIT 1
+            """
+        )
+        df = pd.read_sql(sql_legacy, get_engine(),
+                         params={"ticker": ticker.upper()})
     if df.empty:
         log.info("ticker_calibration: no row for %s — Tier-B fallback", ticker)
         return None
@@ -97,6 +125,14 @@ def _latest_calibration(ticker: str) -> Optional[dict]:
         log.warning(
             "ticker_calibration: stale for %s (%dd old) — Tier-B fallback",
             ticker, age_days,
+        )
+        return None
+    if bool(row.get("drift_flagged", False)):
+        log.warning(
+            "ticker_calibration: drift_flagged=TRUE for %s (calibration "
+            "%s) — Tier-B fallback. Re-run calibrate-thresholds with "
+            "--force after manual verification to clear the flag.",
+            ticker, row["calibration_date"],
         )
         return None
     return row

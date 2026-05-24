@@ -152,6 +152,293 @@ For major changes:
    - Security-related modifications
    - Performance optimizations affecting core functionality
 
+### 3.5. Never Wait for the Next Session — Always Backtest
+
+**This rule was added on 2026-05-09 after I repeatedly punted
+verification to "next session" or "wait one trading day" instead of
+replaying historical data immediately.**
+
+The premarket-brief / AI-insights / signal-monitor / EOD-resolver
+pipeline is **fully replayable** against any historical date. Every
+verification I postpone to "the next live run" can be done NOW
+against an arbitrary day with the existing job-override env vars and
+the historical 1-min bars in `market_data_intraday`.
+
+#### The replay recipe (apply to ANY "wait for next session" question)
+
+Pick a historical date `D`. Treat `D` as if it were today:
+
+```bash
+# 1. Premarket brief AS-OF D — uses only data through D-1
+gcloud run jobs execute premarket-brief \
+  --update-env-vars="BRIEF_AS_OF=2026-05-08" --async
+
+# 2. AI insights AS-OF D — uses only data through D-1
+gcloud run jobs execute insight-pipeline \
+  --update-env-vars="^|^INSIGHT_AS_OF=2026-05-08|INSIGHT_TICKERS=SPY,IWM,QQQ" \
+  --args="--update" --async
+
+# 3. Signal monitor — replay the day's intraday bars one-by-one
+#    (use the existing intraday CSVs OR pull market_data_intraday).
+#    Read the new structured logs to see counters / failures.
+gcloud logging read 'resource.type=cloud_run_job
+  AND labels."run.googleapis.com/execution_name"="<exec_id>"' \
+  --project=adept-mountain-474619-d4 --limit=100
+
+# 4. EOD reconciler — process the day's signal_alerts post-close
+gcloud run jobs execute signal-monitor-eod-resolver \
+  --args="--lookback-days=N" --wait
+
+# 5. Verify via SQL — db-query.yml workflow:
+gh workflow run db-query.yml \
+  -f sql="SELECT ... FROM signal_alerts WHERE alert_date='2026-05-08' ..."
+```
+
+#### Forbidden phrases (rewrite the answer)
+
+If you find yourself typing any of these about a verification step,
+**stop and replay instead**:
+
+- "waiting for the next session"
+- "needs next-session confirmation"
+- "1-week clock starts now"
+- "verification window opens YYYY-MM-DD"
+- "will be visible in next live run"
+- "pending live data"
+
+Every one of these is a request you should fulfill RIGHT NOW by
+replaying historical data. The only legitimate "wait" is when:
+
+- The historical data physically doesn't exist yet (e.g. waiting for
+  the 5/12 daily bar to land if today is 5/9). In that case, replay
+  against the most recent available date and explicitly note the
+  data window.
+- The replay would re-run a billable workload that already ran in
+  production and the user hasn't approved the spend.
+
+#### Open question on each issue you'd otherwise close-and-wait
+
+Before filing "verification pending", ask:
+
+1. Can I dispatch the same Cloud Run Job with `*_AS_OF=D-1` to
+   reproduce the failure mode on yesterday's data?
+2. Can I read `market_data_intraday` for date D and replay the
+   strategy against it without touching the live monitor?
+3. Can I dispatch a SQL via `db-query.yml` that would already show
+   me the answer from the existing schema?
+
+If any answer is yes, do that first. Only file "waiting" if all
+three are no.
+
+#### Operator escape hatches (when the replay can't be safely re-run)
+
+If the replay would side-effect on a shared system (e.g. write to
+the `insight_reports` canonical row), use the existing `--update`
+flag, dry-run flag, or output-to-stdout flag for that job. Never
+skip the replay because of a side-effect concern when there's a
+flag designed to sandbox the run.
+
+### 3.6. Use Production Replay Paths — No Throwaway Harnesses
+
+**Added 2026-05-10 after the 5/6 counterfactual replay incident.**
+I built `/tmp/may6_replay.py` and `_v2.py` to simulate signal_monitor
+against cached intraday CSVs. Both had bugs production never had —
+V1 mis-set the RTH window against a UTC index (selecting pre-market
+hours instead of RTH); V2 omitted the `Time` column, silently
+disabling VWAP and reporting "0 above_vwap fires" while production
+had been correctly firing 46+ above_vwap PUTs the whole time. I
+spent compute + user attention debugging harness bugs and almost
+shipped a code change ("drop above_vwap globally") based on the
+lying numbers. The lesson: throwaway harnesses introduce parity
+bugs that don't exist in production.
+
+#### Rule
+
+ALL replays — counterfactuals, what-ifs, audit verifications,
+calibration backtests, "what would 5/6 look like with the new seed"
+questions — MUST run through one of these production-grade paths.
+
+| Workload | Replay mechanism | Source |
+|---|---|---|
+| **Signal-monitor** (1-min RTH bar fires) | `gcloud run jobs execute signal-monitor --update-env-vars="REPLAY_DATE=YYYY-MM-DD,REPLAY_TICKERS=SPY,IWM,QQQ" --wait`, OR hermetic local: `python -m scripts.replay_signal_monitor --date YYYY-MM-DD --tickers SPY,IWM,QQQ`. Runs the EXACT production code path: `update_window` → `calculate_indicators` → `evaluate_ticker` → `_evaluate_strategies_for_bar` → `fire_alert`. DB upsert + Discord webhook are mocked, so it's hermetic. | `gcp/signal_monitor.py` (PR #350), `scripts/replay_signal_monitor.py` |
+| **Premarket brief** | `BRIEF_AS_OF=YYYY-MM-DD` env var | `gcp/premarket_brief.py:617` |
+| **Insight pipeline** | `INSIGHT_AS_OF=YYYY-MM-DD` env var + `parse_as_of()` helper | `gcp/insight_pipeline_job.py:108` |
+| **Backtest** | `lib/backtest.py:BacktestEngine` for offline strategy replay; `lib/walk_forward.py` for rolling-window validation | shared backend |
+| **Daily fetcher backfill** | `python -m gcp.fetchers.fetch_market_data --date YYYY-MM-DD` | `gcp/fetchers/fetch_market_data.py:12` |
+
+#### Forbidden
+
+- New throwaway scripts in `/tmp/` or `scripts/one_off/` that hand-roll
+  bar iteration, indicator calculation, or signal scoring against
+  cached CSVs.
+- Mocking `_latest_overrides` or any production resolver in a script
+  that won't ship — instead seed/unseed `exit_config_overrides` via
+  `db-query.yml commit=true`, run the production replay, then revert.
+- Using `add_all_indicators` directly in a replay script — let
+  `signal_monitor.calculate_indicators` (lib/strategies + production
+  glue) do it. The production indicator contract is more than just
+  `add_all_indicators` (e.g. signal_monitor sets `Time` from the
+  index before VWAP runs; cached CSVs don't carry `Time`).
+
+#### Coverage gaps (as of 2026-05-10)
+
+If your audit needs as-of replay against one of these and the flag
+isn't shipped yet, add the as-of flag to the production job in a
+small PR BEFORE running the audit. Don't write a throwaway harness
+"just for this one investigation."
+
+- `gcp/signal_monitor_eod_resolver.py` — only `--lookback-days N`
+  from "now"; no `--date` or `EOD_AS_OF`.
+- `gcp/fetchers/fetch_alphavantage_intraday.py` — only fetches "today
+  minus 1"; no `--date` flag.
+- Earnings / calendar / options fetchers — verify before relying on
+  them for historical replay.
+
+#### When throwaway is allowed
+
+Only for one-shot read-only inspection that doesn't touch the
+strategy / indicator / signal pipeline:
+- "How many rows in `signal_alerts` for ticker X on date Y" — use
+  `db-query.yml`.
+- "What's the schema of `exit_config_overrides`" — use `db-query.yml`.
+
+Anything that simulates a fire decision goes through the production
+replay paths.
+
+### 3.7. No Silent Fallbacks — Production-Grade Data Discipline
+
+**Added 2026-05-13 after the fallback audit that found ~121 silent-failure
+patterns across the codebase, six of which had documented production
+incidents already attached to them — most damningly, the
+`except Exception: return pd.DataFrame()` block in `gcp/database.py:88-102`
+and `lib/data_loader.py:80-86` is the *same* block whose own in-line comment
+diagnoses the 2026-05-04 → 05-08 `signal_alerts.level_broken = 0%` outage.
+The swallow survived its own remediation PR (#339). Periodic re-audit beats
+trusting "we already fixed that."**
+
+See `docs/audits/FALLBACK_AUDIT_2026-05-13.md` for the full inventory,
+incident postmortems, and remediation backlog.
+
+#### Rule
+
+A "silent fallback" is any code path that, on failure or missing input,
+returns a numeric / empty / sentinel value the caller cannot distinguish
+from a legitimate result. They lie to downstream code and conceal
+bugs, stale data, and vendor outages. They are forbidden in this repo
+except under the narrow conditions in **Allowed exceptions** below.
+
+The five forbidden patterns:
+
+1. **`except Exception: return <empty>`** in data-access code (DB, API
+   clients, fetchers). Re-raise; let the caller decide retry vs.
+   fail-loud. If observability is the motivation, increment a
+   structured counter at the call site instead of swallowing.
+
+2. **`fillna(0)` / `or 0` / `?? 0` / `.get(k, 0)` on financial fields.**
+   Price, volume, Greeks (delta/gamma/theta/vega/rho/iv), open interest,
+   sentiment scores, P&L, win rate, return %, RSI, stochK, RVOL, ATR,
+   FTFC score, consecutive streaks, durations. `0` must never be
+   ambiguous with "missing." Use `np.nan` / `None` / `null` end-to-end;
+   the display layer renders "—" with a "data unavailable" badge.
+
+3. **`continue-on-error: true` in fetcher workflows.** A failed fetch
+   must turn the workflow red and trigger the existing
+   `handle-workflow-failure.yml` reusable workflow (it opens an issue +
+   draft PR automatically). Silencing the failure ships stale or
+   missing rows to Cloud SQL and makes the next downstream consumer
+   look like the bug source.
+
+4. **Hardcoded financial-constant defaults** (`_DEFAULT_RISK_FREE`,
+   `_DEFAULT_DIV_YIELD`, neutral RSI = 50, neutral classification = 0,
+   etc.) used when a real value cannot be computed. Greeks shipped with
+   wrong `r` look plausible and are silently used to make trade
+   decisions — worse than no Greeks. Fail-fast `RuntimeError`;
+   downstream caller (Greeks pipeline) catches it and writes NULL with
+   a `last_rate_at` column for observability.
+
+5. **External API failure returning a fabricated value instead of an
+   explicit-unavailable envelope.** Vendor outages are a fact (we don't
+   control AlphaVantage / FRED / ForexFactory / Yahoo / Discord), but
+   the *response* must be `DataResult(status=UNAVAILABLE,
+   last_known_at=..., reason=...)`, never a synthetic 0 or empty
+   DataFrame. The frontend renders "data unavailable since X" badge;
+   signal generators skip the affected ticker with explicit reason.
+
+#### Rationale — `INTERNAL` vs `EXTERNAL` control
+
+The five rules collapse into one principle. Every failure mode is one of:
+
+- **`INTERNAL`** — code we own. A failure means there is a bug. Silencing
+  it conceals the bug. Always re-raise.
+- **`EXTERNAL`** — vendor API / network we don't control. We can't
+  prevent the failure; we *can* detect it, surface it explicitly, and
+  decide whether to skip the affected ticker / day / strategy. Always
+  return a typed `UNAVAILABLE` envelope, never fabricate a value.
+
+If you find yourself adding a `try`/`except` that returns an empty
+container "just in case," stop and ask: which bucket is this? Either
+answer leads away from the silent fallback.
+
+#### Allowed exceptions
+
+The only acceptable silent fallbacks:
+
+- **Cleanup paths in `finally:` blocks** (e.g.
+  `try: conn.close(); except Exception: pass`). The original error
+  has already propagated; the cleanup catch only prevents the cleanup
+  from masking the real error. Comment as `# cleanup — original
+  error already propagated`.
+- **Display-layer rendering of a `null` / `NaN` value as "—".** The
+  fallback is in the React component, not the data layer. Required
+  because the DOM cannot render `null`.
+- **Test fixtures and mocks.** Tests legitimately return canned data
+  on failure to exercise specific branches.
+
+#### Forbidden phrases (rewrite the code)
+
+If you find yourself writing any of these, the new code is wrong:
+
+- `except Exception: return pd.DataFrame()` / `return []` / `return {}` /
+  `return None` / `return 0`
+- `value or 0` / `value or []` / `value or {}` on a financial field
+- `df["price"].fillna(0)` / `df["delta"].fillna(0.5)` /
+  `df["rsi"].fillna(50)`
+- `.get("volume", 0)` / `.get("delta", 0.5)`
+- `?? 0` / `?? 0.5` / `?? ''` on a financial field in TS/JS
+- `continue-on-error: true` on a fetch / validation step
+- `if df.empty: return df` *as the only handling* — pair with an explicit
+  data-quality counter or raise
+- `_DEFAULT_RISK_FREE` / any module-level "if we can't fetch, use this"
+  constant on a value that has to track market reality
+
+#### Enforcement
+
+A new `fallback-guard` sub-agent (`.claude/agents/fallback-guard.md`)
+auto-triggers on edits to `lib/**`, `gcp/**`, `platform/api/**`,
+`platform/src/**`, `.github/workflows/fetch-*.yml`. It blocks PRs
+that introduce any of the five forbidden patterns. It is also wired
+into `/audit-review` as a gate and `/gcp-deploy` Step 0 via
+`pre-deploy-check` so production cannot ship new fallbacks.
+
+The agent is read-only — it flags and explains, it doesn't rewrite.
+Reviewer judgment is required because the rule has narrow legitimate
+exceptions (see above).
+
+#### When you find an *existing* fallback while doing other work
+
+You are not obligated to fix it in your current PR (the audit catalogues
+~121 of them; remediation is staged in `docs/audits/FALLBACK_AUDIT_2026-05-13.md`
+§10). But:
+
+- **Don't pattern-match off it** when writing new code. The fact that
+  `_query_cloud_sql` returns empty on error is a bug, not a contract.
+- **Don't extend it** ("I'll add one more `except` to be safe"). Every
+  new layer of swallowing makes the eventual fix harder.
+- **Do** add a comment `# AUDIT-2026-05-13: silent fallback — see
+  docs/audits/FALLBACK_AUDIT_2026-05-13.md §C-NN` if you touch a line
+  adjacent to one. This makes the remediation backlog trivially
+  greppable.
+
 ### 4. Testing Strategy Pattern
 Follow this rigorous testing approach:
 
@@ -229,6 +516,104 @@ Follow this rigorous testing approach:
 - **`lib/` is the shared backend spine.** All three consumer surfaces
   (FastAPI router, AI agents, CLI scripts) import from the same `lib/`
   modules so behaviour can't drift.
+
+### Sandbox network constraints (Claude Code on the web)
+
+The Claude Code on the web sandbox enforces a strict outbound egress policy:
+**only TCP port 443 is allowed.** Anything else — 5432 (Postgres), 3307
+(Cloud SQL Auth Proxy backend), 22 (SSH), arbitrary TCP — silently times out
+at the sandbox firewall. This is by design and **cannot be bypassed by
+changing the destination's inbound ACLs, authorized networks, or VPC
+peering** — the binding constraint is on the sandbox side, not the
+destination's. If a connection times out, the answer is almost never "fix the
+firewall" — it's "find the 443-based escape hatch for this operation."
+
+| Operation | Mechanism | Port | Works in sandbox? |
+|---|---|---|---|
+| `gcloud …` (Asset, IAM, Run, SQL admin, Build, Scheduler, Logging) | REST API | 443 | ✅ |
+| `gh …` (GitHub: PRs, issues, runs, workflows, secrets, releases) | REST + GraphQL API | 443 | ✅ |
+| `gcloud secrets versions access` | Secret Manager API | 443 | ✅ |
+| `gcloud run jobs execute` / `deploy` (job itself runs in GCP, not the sandbox) | Cloud Run control-plane API | 443 | ✅ |
+| `gcloud builds submit` (build runs in Cloud Build, not the sandbox) | Cloud Build API | 443 | ✅ |
+| `git push` / `git fetch` over HTTPS remotes | git-over-HTTPS | 443 | ✅ |
+| `curl` / `WebFetch` to any HTTPS endpoint (incl. signed GCS URLs) | HTTPS | 443 | ✅ |
+| **Direct** psycopg2 / pg8000 / SQLAlchemy → Cloud SQL | TCP | 5432 | ❌ |
+| **Direct** Cloud SQL Auth Proxy → Cloud SQL backend | TCP | 3307 | ❌ |
+| **Direct** `psql` → Cloud SQL | TCP | 5432 | ❌ |
+| SSH to Cloud Run / Compute / IAP tunnel | TCP | 22 (or 22-over-IAP) | ❌ |
+| Anything binding raw TCP outbound on a non-443 port | TCP | * | ❌ |
+
+The two patterns documented below — `db-query.yml` for DB access, and the
+PAT-via-Secret-Manager pattern for GitHub API — exist specifically to route
+work over 443 for operations that would otherwise need a blocked port. The
+GH Actions runner has unrestricted egress, so dispatching a workflow is the
+canonical way to "run something on a real network" from inside the sandbox.
+
+If a tool's job appears to *run in GCP* but you're calling it from the
+sandbox (e.g. `gcloud run jobs execute`, `gcloud builds submit`,
+`gcloud sql import`), the local CLI is just hitting the 443 control-plane
+API — the actual work happens in GCP and has full network access. That's
+why these work even though direct SQL on 5432 doesn't.
+
+#### Concrete command patterns (copy-paste reference)
+
+**Working — these all go over 443 from the sandbox:**
+
+```bash
+# ── Secrets ────────────────────────────────────────────────────────────
+gcloud secrets versions access latest \
+  --secret=<name> --project=adept-mountain-474619-d4
+
+# ── Inspect GCP state ──────────────────────────────────────────────────
+gcloud run jobs describe <job> --region=us-east1
+gcloud run jobs list --region=us-east1
+gcloud scheduler jobs list --location=us-east1
+gcloud projects get-iam-policy adept-mountain-474619-d4 \
+  --flatten=bindings --filter="bindings.members:serviceAccount:<email>" \
+  --format="value(bindings.role)"
+
+# ── Mutate GCP state (control-plane is 443; the work runs in GCP) ──────
+gcloud run jobs execute <job> --region=us-east1 --wait
+gcloud builds submit --tag us-east1-docker.pkg.dev/<project>/<repo>/<image>
+gcloud projects add-iam-policy-binding <project> \
+  --member="serviceAccount:<email>" --role="<role>" --condition=None
+
+# ── Read Cloud Run / GCP logs ──────────────────────────────────────────
+gcloud beta run jobs executions logs read <execution-id> --region=us-east1
+gcloud logging read 'resource.type="cloud_run_job"' --limit=50 --format=json
+
+# ── GitHub (all `gh` subcommands work) ─────────────────────────────────
+gh pr view <num> --repo TeneikaAskew/stocks --json state,mergedAt
+gh pr merge <num> --repo TeneikaAskew/stocks --admin --squash
+gh workflow run <workflow.yml> --repo TeneikaAskew/stocks -f key=value
+gh run list --repo TeneikaAskew/stocks --workflow=<wf.yml> --limit=5 \
+  --json databaseId,status,conclusion,createdAt
+gh run view <id> --repo TeneikaAskew/stocks --log-failed
+gh run download <id> --repo TeneikaAskew/stocks --name <artifact-name> -D /tmp/x
+gh secret set <NAME> --body "<value>" --repo TeneikaAskew/stocks
+
+# ── Git over HTTPS (push/fetch/pull all work) ──────────────────────────
+git fetch origin <branch>
+git push -u origin <branch>
+```
+
+**Blocked — these will hang for 30-60 s and then time out. Don't debug the
+firewall; use the documented escape hatch:**
+
+| If you tried | You'll get | Use instead |
+|---|---|---|
+| `psql -h <cloud-sql-ip>` | timeout on 5432 | `gh workflow run db-query.yml -f sql='...'` (see [Database access](#database-access) below) |
+| `psycopg2.connect(host=...)` / `pg8000.connect(...)` / `SQLAlchemy create_engine(...)` against Cloud SQL | timeout on 5432 | same — dispatch `db-query.yml`, then `gh run download` the artifact |
+| `cloud-sql-proxy` / `cloud_sql_proxy <conn>` | timeout on 3307 | same — dispatch `db-query.yml` |
+| `ssh user@<cloud-run-host>` | timeout on 22 | n/a — Cloud Run has no SSH. Use `gcloud beta run jobs executions logs read` (443) for inspection |
+| `gcloud compute ssh <vm>` | timeout on 22 (over IAP) | for shells, switch to a desktop session; for inspection, use `gcloud compute instances describe` (443) |
+| Direct `redis-cli`, `mongosh`, etc. against any GCP-hosted DB | timeout on whatever the DB port is | route the work into a Cloud Run Job (controlled via 443) or a workflow runner |
+
+The mental rule: **if the connection target is in GCP and the port isn't 443,
+you need a 443-based intermediary.** The two intermediaries this repo has
+already wired up are `db-query.yml` (for ad-hoc SQL) and Cloud Run Jobs (for
+anything else that needs production network access — they're triggered from
+443 but execute with full GCP networking).
 
 ### Database access
 
@@ -347,8 +732,37 @@ without needing `issue_number=` each time.
 - **Issue comment**: 60 KB hard truncation (GitHub's limit is 65 KB);
   truncated comments link to the artifact.
 - **Concurrency**: all dispatches serialize through one queue (group
-  `db-query`). A read dispatched while a write is in flight waits ~30–60 s
-  for the queue.
+  `db-query`) with `cancel-in-progress: false` — verified in
+  `.github/workflows/db-query.yml`. A read dispatched while a write
+  is in flight waits ~30–60 s for the queue.
+
+#### Known limitation: rapid-burst dispatches
+
+Audit 2026-05-08 G.P2.24 flagged that during multi-track audits,
+dispatches fired within the same ~5 s window can show as cancelled in
+the GitHub Actions UI even though `cancel-in-progress: false` is set.
+This is GitHub-side queue scheduling behaviour — the workflow YAML is
+correct; the cancellations are GitHub deciding multiple
+queue-position-zero dispatches with the same group key collide on
+intake.
+
+Mitigation:
+
+- For human-paced ad-hoc queries: just wait 30 s between dispatches
+  (the typical run takes 30–90 s anyway, so back-to-back dispatches
+  are rarely needed).
+- For programmatic batch use: combine N statements into ONE dispatch
+  via the `sql` input multi-statement syntax (`-f sql='SELECT 1;
+  SELECT 2; ...'`) or commit a `.sql` file and pass `sql_file=`. Each
+  dispatch is one workflow run; one run can execute many statements.
+- For the audit-style scenario where N tracks each need to query
+  Cloud SQL: stagger by track owner and rely on the queue rather
+  than firing all at once.
+
+The cancellation never causes data loss (every statement runs in its
+own transaction, default rollback) — it just means a dispatched run
+may not produce results when GitHub silently cancels it on intake.
+Re-dispatch when that happens.
 
 #### What not to do
 
@@ -370,10 +784,128 @@ port (sandbox blocks all egress except 443). A GH-Actions-mediated query
 workflow is the only path that works without a desktop fallback. The
 runner reuses `gcp/database.py:get_engine()` and the existing
 `CLOUD_SQL_CONNECTION_NAME` / `DB_USER` / `DB_PASS` / `DB_NAME` repo
-secrets. Auth uses a dedicated SA key
-(`CLAUDE_CODE_WEB_GCP_SA_KEY`, distinct from the data-pipeline workflows'
-`GCP_SA_KEY`) so a key compromise here doesn't put scheduled fetchers at
-risk simultaneously.
+secrets. Auth uses **`CLAUDE_CODE_WEB_GCP_SA_KEY`** — the same SA key
+used by every other data-pipeline workflow in this repo since the
+2026-05-10 consolidation. The original "web-sandbox vs data-pipeline"
+key split was paranoia-tier separation that didn't buy anything in
+this single-owner / single-project setup; both surfaces share blast
+radius. The `claude-web@` SA holds `roles/editor` at the project
+level which is sufficient for every workflow that touches GCP.
+
+A consequence of the consolidation: a `CLAUDE_CODE_WEB_GCP_SA_KEY`
+compromise now affects every workflow in this repo. Mitigations: rotate
+via `gcloud iam service-accounts keys` + GitHub repo secret update;
+keep the SA scoped to a single GCP project; rely on Cloud Audit Logs
+for forensics. The dual-key option remains available if a future
+threat model justifies the operational cost; today it doesn't.
+
+### Backup and disaster recovery
+
+Cloud SQL `trading-db` is moving to a 3-layer backup posture. **As of
+2026-05-10**, the first two layers are live and the third is in flight
+on a PR — see the status column. The doc reflects the target state so
+it's ready to use the moment the third layer lands; check the status
+before relying on a layer that isn't yet deployed.
+
+| Layer | What | Retention | Recovery granularity | Status |
+|---|---|---|---|---|
+| **Daily PD snapshots** | Cloud SQL automated snapshots | 7 most recent | One restore point per day at ~03:00 UTC | ✅ live (always was) |
+| **Point-in-time recovery (PITR)** | WAL archive | 7 days of transaction log | Any second within last 7 days | ✅ live (enabled 2026-05-10) |
+| **Weekly `pg_dump`** | Logical SQL dump (gzipped) | 30 days (lifecycle rule) | Whole-DB snapshot, target Sunday 04:00 UTC | 🚧 in flight on PR #389 — `cloud-sql-weekly-export` Job + scheduler not yet deployed; `gs://${PROJECT_ID}-trading-data/sql-dumps/` is empty until then |
+
+The first two are managed by Cloud SQL itself. The third (once PR #389
+merges + `./gcp/deploy.sh setup-pg-dump-iam && ./gcp/deploy.sh build &&
+./gcp/deploy.sh pg-dump && ./gcp/deploy.sh schedulers` runs) will be the
+`cloud-sql-weekly-export` Cloud Run Job in `gcp/deploy.sh`
+(`deploy_weekly_pg_dump` + `setup_pg_dump_iam`). The pg_dump survives
+instance deletion or a region-wide GCP issue — the snapshots and PITR
+don't. **Check `gs://${PROJECT_ID}-trading-data/sql-dumps/` before
+relying on a pg_dump-based recovery path.**
+
+#### When to reach for which
+
+| Scenario | Use |
+|---|---|
+| `DROP TABLE` or `DELETE FROM` mistake; need to restore to 5 minutes ago | **PITR** — fine-grained, no row loss within the recovery window |
+| Schema migration corrupted yesterday's data; need to restore to before the migration | **Daily snapshot** from 24h ago |
+| Cloud SQL instance accidentally deleted, or a hypothetical region outage in `us-east1` | **Weekly pg_dump** (once PR #389 lands and a dump exists). Until then this scenario has NO recovery path — daily snapshots and PITR don't survive instance deletion. Treat any instance-delete operation as sev-1 until the pg_dump layer is live. |
+| Audit a row's history (timestamps, who-wrote-what) | None of the above — no row-level audit log; rely on application-side write logs and `created_at` columns |
+
+#### Restore commands (read-only reference — run with care)
+
+```bash
+# 1. List available daily snapshots
+gcloud sql backups list --instance=trading-db --project=adept-mountain-474619-d4
+
+# 2. Restore a daily snapshot into a fresh instance (preferred over
+#    in-place — gives you a chance to validate before swapping)
+gcloud sql backups restore <BACKUP_ID> \
+    --restore-instance=trading-db-restore-test \
+    --backup-instance=trading-db \
+    --project=adept-mountain-474619-d4
+
+# 3. PITR restore to a specific timestamp (creates a new instance,
+#    point-in-time = anywhere in the last 7 days)
+gcloud sql instances clone trading-db trading-db-pitr-test \
+    --point-in-time=2026-05-09T14:30:00.000Z \
+    --project=adept-mountain-474619-d4
+
+# 4. Pull the latest weekly pg_dump and restore to a local Postgres
+#    or a throwaway Cloud SQL instance.
+#    NOTE: only valid once PR #389 lands and at least one dump has run.
+#    Run step (a) first; an empty listing means the layer isn't live yet.
+gcloud storage ls gs://adept-mountain-474619-d4-trading-data/sql-dumps/   # (a)
+gcloud storage cp gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz - \
+    | gunzip \
+    | psql "<connection-string-of-target-db>"
+```
+
+**Always restore to a fresh instance first**, validate, then promote.
+Never run `gcloud sql import sql` directly into the live `trading-db`.
+
+#### What is NOT backed up
+
+- **GCS objects** under `gs://${PROJECT_ID}-trading-data/raw/` (legacy
+  parquet snapshots) — these were the old shadow-copy. Slated for
+  cleanup, but **do not delete this prefix until** (1) PR #389 has
+  merged + deployed, (2) at least one weekly pg_dump has succeeded
+  and been verified to gunzip cleanly, and (3) you've confirmed the
+  parquets aren't read by anything via
+  `grep -rEn "raw/" lib/ gcp/ scripts/ platform/`. Don't add new
+  dependencies on this prefix in the meantime.
+- **`platform/` build artifacts**, **Docker images** in Artifact Registry
+  (rebuildable from source), **GitHub Actions logs / artifacts** (kept
+  by GitHub, not by us).
+- **Discord channel history** — Discord retains it; we don't.
+
+#### Verifying backups are healthy
+
+A weekly cron healthcheck would be ideal but isn't yet implemented.
+Until then, on-demand:
+
+```bash
+# 1. Verify PITR is still enabled (currently live as of 2026-05-10)
+gcloud sql instances describe trading-db --format='value(settings.backupConfiguration.pointInTimeRecoveryEnabled)'
+# Should print: True
+
+# 2. Verify the daily snapshot ran today (currently live)
+gcloud sql backups list --instance=trading-db --limit=1 \
+    --format='value(startTime,status)'
+# startTime should be within last 24h, status SUCCESSFUL
+
+# 3. Verify last pg_dump landed and is non-empty
+#    (only meaningful once PR #389 is deployed; before then, empty
+#    listing is expected and is NOT a healthcheck failure)
+gcloud storage ls -l gs://adept-mountain-474619-d4-trading-data/sql-dumps/ \
+    | sort -k2 | tail -2
+
+# 4. Verify the latest pg_dump gunzips cleanly (integrity smoke test).
+#    Same caveat — only after #389 is live.
+gcloud storage cp gs://.../trading-LATEST.sql.gz - | gzip -t && echo "OK"
+```
+
+If any of the live-today checks (1, 2) fails, treat as a sev-2
+incident: backups are the floor under every other safety mechanism.
 
 ### GitHub API access from the sandbox
 

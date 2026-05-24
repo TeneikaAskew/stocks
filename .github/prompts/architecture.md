@@ -1,3 +1,11 @@
+<!--
+This file is the prompt template for the monthly architecture doc refresh
+workflow (.github/workflows/refresh-architecture-docs.yml). Output lands at
+/ARCHITECTURE.md. Do not edit /ARCHITECTURE.md directly — the workflow will
+regenerate it on the 1st of every month or on manual dispatch. To change
+what gets generated, edit this file.
+-->
+
 # Prompt: regenerate ARCHITECTURE.md
 
 You are an automated documentation agent operating inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform deployed to GCP project `adept-mountain-474619-d4`). Your job is to regenerate `ARCHITECTURE.md` from scratch using the inputs available in the workspace.
@@ -13,7 +21,15 @@ You are an automated documentation agent operating inside the GitHub repo `Tenei
 
 ## What to produce
 
-A single `ARCHITECTURE.md` at the repo root with these sections, in this order:
+A single `ARCHITECTURE.md` at the repo root with these sections, in this order.
+
+**Before section 1, place a single-line blockquote cross-link** (above any `## ` heading, immediately after the H1 title if any). Verbatim text:
+
+```
+> For deeper schema, scheduler timing, cost model, glossary, and runbook commands, see [`docs/GCP_ARCHITECTURE.md`](docs/GCP_ARCHITECTURE.md). For the visual companion, see [`Architecture.drawio`](Architecture.drawio).
+```
+
+Then begin section 1.
 
 ### 1. System overview (one paragraph, ~80-120 words)
 

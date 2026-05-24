@@ -34,6 +34,7 @@ class IndicatorConfig:
     macd_slow: int = 26
     macd_signal: int = 9
     consecutive_periods: int = 3
+    consecutive_relaxed_window: int = 5
     orb_windows: List[Dict] = field(default_factory=lambda: [
         {'minutes': 5, 'label': '5m'},
         {'minutes': 15, 'label': '15m'},
@@ -169,6 +170,14 @@ class MonitorConfig:
     min_bars_for_signals: int = 30
     pre_market_sleep: int = 30       # seconds to sleep before market open
     discord_timeout: int = 10        # HTTP timeout for Discord webhooks
+    # Track D / G.P2.5: gate Discord post on signal strength so weak
+    # signals don't drown the channel. Allowed values mirror
+    # get_signal_strength_label output: 'weak', 'medium', 'strong',
+    # 'perfect'. Default 'medium' filters out weak; set to 'weak' to
+    # restore pre-G.P2.5 behaviour (post everything). Persistence is
+    # always done regardless of this gate so analytics still capture
+    # weak signals.
+    discord_minimum_strength: str = 'medium'
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +317,14 @@ class SignalConfig:
     ema_proximity_threshold: float = 0.1
     stoch_rsi_oversold: float = 30.0
     stoch_rsi_overbought: float = 70.0
+    # G.P0.11 follow-up (#369): allow MOMENTUM.evaluate() to fire
+    # stand-alone (i.e. on bars where mean-reversion did NOT fire).
+    # Default False ships the orchestration code with no behaviour
+    # change; flipping to True in alert_config.json after policy review
+    # opens the stand-alone path. The momentum_eligibility_report
+    # estimates ~150-200 additional fires/day across SPY/IWM/QQQ at
+    # MIN_CONDITIONS_MOMENTUM=5 + core gate.
+    enable_standalone_momentum: bool = False
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
 
@@ -600,6 +617,9 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
     if sig_data:
         app.signal.min_conditions = sig_data.get('min_conditions', app.signal.min_conditions)
         app.signal.consecutive_periods = sig_data.get('consecutive_periods', app.signal.consecutive_periods)
+        app.signal.enable_standalone_momentum = sig_data.get(
+            'enable_standalone_momentum', app.signal.enable_standalone_momentum,
+        )
         if 'call_rsi_range' in sig_data:
             app.signal.call_rsi_range = tuple(sig_data['call_rsi_range'])
         if 'put_rsi_range' in sig_data:
@@ -678,6 +698,13 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         for fld in [
             'poll_interval', 'rolling_window_bars', 'min_bars_for_indicators',
             'min_bars_for_signals', 'pre_market_sleep', 'discord_timeout',
+            # Track D / G.P2.5 (Codex P2 review on PR #328): expose
+            # discord_minimum_strength so operators can override the
+            # default 'medium' gate from alert_config.json without a
+            # code change. Pre-fix the field existed in the dataclass
+            # but the loader didn't copy it through, so production was
+            # stuck at 'medium' regardless of config.
+            'discord_minimum_strength',
         ]:
             if fld in mon_data:
                 setattr(app.monitor, fld, mon_data[fld])

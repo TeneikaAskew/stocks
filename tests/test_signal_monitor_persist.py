@@ -153,8 +153,15 @@ def test_persist_dataframe_has_all_required_columns():
     assert row["direction"] == "PUT"
     assert row["base_score"] == 3
     assert row["total_score"] == pytest.approx(3.5)
-    assert isinstance(row["conditions_met"], str), \
-        "conditions_met must be JSON-serialized string for Cloud SQL JSONB column"
+    # Track D audit § 6 / G.P0.6: `conditions_met` must reach upsert as a
+    # native Python list so SQLAlchemy + pg8000 bind it to a JSONB array.
+    # The pre-fix code did `json.dumps(...)` first, which bound a JSONB
+    # scalar string (`"[\"a\",\"b\"]"`), breaking `jsonb_array_length` /
+    # `@>` predicates downstream.
+    assert isinstance(row["conditions_met"], list), \
+        f"conditions_met must be a Python list (not str) so it binds as JSONB array; got {type(row['conditions_met']).__name__}"
+    assert all(isinstance(c, str) for c in row["conditions_met"]), \
+        "every condition entry must be a string"
 
 
 def test_persist_skipped_when_cloud_sql_not_configured():

@@ -1,9 +1,11 @@
 name: Analyze Market Data
 
 on:
-  schedule:
-    # Run daily at 5 PM EST (22:00 UTC) - after market close
-    - cron: '0 22 * * 1-5'  # Monday-Friday only
+  # No `schedule:` cron — this workflow runs in-runner analysis and
+  # git-pushes data/signals/*.csv into the repo, a pre-Cloud-SQL pattern.
+  # Nothing reads those committed CSVs anymore, so a daily run only burned
+  # metered Actions minutes and created churn commits. Retained as a
+  # manual trigger for ad-hoc analysis / historical backfills.
   workflow_dispatch:  # Allow manual trigger
     inputs:
       fetch_historical:

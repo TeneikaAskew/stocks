@@ -1,26 +1,24 @@
 name: Daily AI Insight Reports
 
-# Runs the multi-agent AI Insights pipeline for SPY/IWM/QQQ. Two modes:
+# Runs the multi-agent AI Insights pipeline for SPY/IWM/QQQ.
 #
-# 1. Scheduled — Weekdays at 8:45 AM ET (12:45 UTC during EST, 13:45 UTC
-#    during EDT). Intentionally lands AFTER the 8:30 AM premarket-brief
-#    Cloud Scheduler job so the pipeline reads fresh strat state. We
-#    register this as a GitHub Actions schedule in addition to the
-#    Cloud Scheduler trigger in gcp/deploy.sh so there's an observable
-#    failure surface (auto-issue + auto-PR on failure) that Cloud
-#    Scheduler doesn't give us. If both fire on the same day, Cloud
-#    SQL's UNIQUE (ticker, as_of) constraint with ON CONFLICT UPDATE
-#    makes the second one a no-op upsert.
+# The scheduled cadence is owned solely by the `insight-pipeline-daily`
+# Cloud Scheduler job (gcp/deploy.sh) — weekdays 8:45 AM ET, landing
+# after the 8:30 AM premarket-brief job so the pipeline reads fresh strat
+# state. This workflow no longer carries its own `schedule:` cron: on a
+# private repo that duplicated the Cloud Run run and burned metered
+# Actions minutes for nothing.
 #
-# 2. workflow_dispatch — Manual trigger with a ticker input, useful
-#    for debugging a single report without waiting for the next cron.
+# The failure-observability the old dual-trigger provided (Cloud
+# Scheduler has no auto-issue surface) is now covered by the data
+# freshness watchdog (scripts/audit_data_freshness.py), which audits the
+# `insight_reports` table — a failed pipeline leaves it stale and the
+# watchdog opens an issue.
+#
+# workflow_dispatch — Manual trigger with a ticker input, useful for
+# debugging a single report or backfilling without waiting for the cron.
 
 on:
-  schedule:
-    # 12:45 UTC = 8:45 AM ET during EST. GitHub Actions uses UTC, so
-    # during EDT (UTC-4) this effectively fires at 8:45 AM ET as well
-    # after DST shifts — close enough for a post-brief window.
-    - cron: '45 12 * * 1-5'
   workflow_dispatch:
     inputs:
       ticker:
@@ -51,7 +49,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          # 2026-05-10: consolidated on CLAUDE_CODE_WEB_GCP_SA_KEY.
+          credentials_json: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v2

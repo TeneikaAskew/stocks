@@ -11,7 +11,6 @@ Cloud SQL; falls back to local Parquet files when Cloud SQL is unavailable.
 
 import os
 import sys
-import json
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -47,10 +46,13 @@ class TradeLogger:
             exit_price, exit_reason, signal_strength, position_size,
             return_pct, conditions_met, strat_combo, ftfc_score
         """
-        # Serialize list fields so they store cleanly in both SQL and Parquet
+        # `conditions_met` lands as a Python list — SQLAlchemy + pg8000
+        # adapt it to native JSONB array (the column is JSONB). PyArrow
+        # also handles list columns in Parquet natively. Calling
+        # `json.dumps(...)` here was the bug that produced JSONB-string-of-
+        # array rows in the `trades` table; same root cause as
+        # `signal_alerts.conditions_met`. See Track D audit § 6 / G.P0.6.
         serialized = dict(trade_data)
-        if isinstance(serialized.get('conditions_met'), list):
-            serialized['conditions_met'] = json.dumps(serialized['conditions_met'])
 
         if 'trade_date' not in serialized:
             serialized['trade_date'] = str(datetime.now().date())

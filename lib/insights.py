@@ -369,6 +369,243 @@ def insight_combo_sweep(sweep_data: Dict[str, pd.DataFrame]) -> List[str]:
     return lines
 
 
+def insight_general_combo_sweep(sweep_data: Dict[str, pd.DataFrame]) -> List[str]:
+    """Insights from the Phase 3 sweep — coarser entry timeframes (5m,
+    15m, 30m) paired with a higher-TF trend filter.
+
+    insight_combo_sweep() only covers the 1m-anchored combos (rows tagged
+    ``type == 'combo'``). Phase 3 rows are tagged ``general_combo`` and
+    would otherwise be computed + stored but never rendered. Returns
+    ``[]`` when no Phase 3 rows are present (e.g. a sweep run without
+    ``--all-combos``) so the section simply doesn't appear.
+    """
+    # Collect general_combo rows across all tickers up front — if there
+    # are none, render nothing rather than an empty heading.
+    has_rows = any(
+        not df[df['type'] == 'general_combo'].empty
+        for df in sweep_data.values()
+    )
+    if not has_rows:
+        return []
+
+    lines = [
+        "### Combination Analysis — Coarser Entry TF + Higher-TF Filter",
+        "",
+        "*Phase 3: entries on 5m / 15m / 30m bars, gated by a coarser "
+        "timeframe's EMA20 trend. Lets you compare a coarser entry "
+        "timeframe against the 1m-anchored combos above.*",
+        "",
+        "| Ticker | Combo | Trades | Win Rate | PF | Sharpe | Max DD | Expectancy |",
+        "|--------|-------|--------|----------|----|--------|--------|------------|",
+    ]
+    best_per_ticker = {}
+    for ticker, df in sweep_data.items():
+        general = df[df['type'] == 'general_combo']
+        if general.empty:
+            continue
+        # Rank by Sharpe descending for readability.
+        general = general.sort_values('sharpe', ascending=False)
+        for _, row in general.iterrows():
+            lines.append(
+                f"| **{ticker}** "
+                f"| {row['label']} "
+                f"| {int(row['trades']):,} "
+                f"| {row['win_rate']:.1%} "
+                f"| {row['pf']:.2f} "
+                f"| {row['sharpe']:.2f} "
+                f"| {row['max_dd']:.2%} "
+                f"| {row['expectancy']:+.4%} |"
+            )
+        best_idx = general['sharpe'].idxmax()
+        best_per_ticker[ticker] = general.loc[best_idx]
+    lines.append("")
+
+    if best_per_ticker:
+        lines.append("**Best coarser-entry combo per ticker:**")
+        lines.append("")
+        for ticker, best in best_per_ticker.items():
+            lines.append(
+                f"- **{ticker}**: **{best['label']}** "
+                f"(Sharpe {best['sharpe']:.2f}, WR {best['win_rate']:.1%}, "
+                f"E={best['expectancy']:+.4%}/trade)"
+            )
+        lines.append("")
+    return lines
+
+
+def insight_walk_forward(
+    wf_dfs: Dict[str, pd.DataFrame],
+    in_sample_sharpes: Optional[Dict[str, Dict[str, float]]] = None,
+) -> List[str]:
+    """Render the walk-forward validation section.
+
+    ``wf_dfs`` is keyed by ticker; each value is a DataFrame with one
+    row per (mode, fold_index) carrying the columns persisted by
+    scripts/run_walk_forward.py:persist_walk_forward (fold_index,
+    train_start/end, test_start/end, total_trades, win_rate,
+    profit_factor, expectancy, sharpe, max_dd, stability_score, mode).
+
+    ``in_sample_sharpes`` is the canonical in-sample (full-sample)
+    Sharpe per (ticker, mode), used for the honest IS-vs-OOS
+    comparison. When given, the narrative explicitly calls out
+    whether the OOS mean Sharpe materially diverges from the full-
+    sample Sharpe — that's the whole point of WF, and the rule is to
+    say it plainly when the gap exposes overfitting.
+
+    Returns ``[]`` when no WF rows exist for any ticker (so a
+    non-WF pipeline run doesn't render an empty section).
+    """
+    # Bail out early when there's nothing to show.
+    has_rows = any(df is not None and not df.empty for df in wf_dfs.values())
+    if not has_rows:
+        return []
+
+    lines: List[str] = [
+        "## Walk-Forward Validation",
+        "",
+        "*Anchored expanding train, fixed test, sliding forward. "
+        "Each fold's metrics are computed only on its out-of-sample "
+        "test window — folds do not overlap. The mean of fold Sharpe "
+        "is the honest test of the strategy; the full-sample Sharpe "
+        "above is a best-of-N pick subject to data-snooping bias.*",
+        "",
+    ]
+
+    # ----- Per-fold tables, per (ticker, mode) ---------------------------
+    lines.append("### Per-Fold Out-of-Sample Metrics")
+    lines.append("")
+    for ticker, df in wf_dfs.items():
+        if df is None or df.empty:
+            continue
+        for mode in sorted(df['mode'].dropna().unique()):
+            sub = df[df['mode'] == mode].sort_values('fold_index')
+            if sub.empty:
+                continue
+            lines.append(f"#### {ticker} — {mode}")
+            lines.append("")
+            lines.append(
+                "| Fold | Train period | Test period | Trades | WR | "
+                "PF | Sharpe | Max DD |"
+            )
+            lines.append(
+                "|------|--------------|-------------|--------|----|"
+                "----|--------|--------|"
+            )
+            for _, r in sub.iterrows():
+                trades = (int(r['total_trades'])
+                          if pd.notna(r['total_trades']) else 0)
+                wr_s = (_pct(float(r['win_rate']))
+                        if pd.notna(r['win_rate']) else "—")
+                pf_s = (f"{float(r['profit_factor']):.2f}"
+                        if pd.notna(r['profit_factor']) else "—")
+                sh_s = (f"{float(r['sharpe']):.2f}"
+                        if pd.notna(r['sharpe']) else "—")
+                dd_s = (_pct(float(r['max_dd']))
+                        if pd.notna(r['max_dd']) else "—")
+                lines.append(
+                    f"| {int(r['fold_index'])} "
+                    f"| {r['train_start']} → {r['train_end']} "
+                    f"| {r['test_start']} → {r['test_end']} "
+                    f"| {trades:,} | {wr_s} | {pf_s} | {sh_s} | {dd_s} |"
+                )
+            lines.append("")
+
+    # ----- Stability metrics summary -------------------------------------
+    lines.append("### Stability Summary")
+    lines.append("")
+    lines.append(
+        "| Ticker | Mode | Folds | Mean Fold Sharpe | Std Fold Sharpe | "
+        "+ Sharpe Folds | Stability Score |"
+    )
+    lines.append(
+        "|--------|------|-------|------------------|-----------------|"
+        "----------------|-----------------|"
+    )
+    summary_rows: List[Tuple[str, str, dict]] = []
+    for ticker, df in wf_dfs.items():
+        if df is None or df.empty:
+            continue
+        for mode in sorted(df['mode'].dropna().unique()):
+            sub = df[df['mode'] == mode]
+            sharpes = sub['sharpe'].dropna()
+            n_folds = len(sub)
+            mean_sh = float(sharpes.mean()) if len(sharpes) else float('nan')
+            std_sh = float(sharpes.std(ddof=0)) if len(sharpes) > 1 else float('nan')
+            n_pos = int((sharpes > 0).sum())
+            stability = (float(sub['stability_score'].iloc[0])
+                         if pd.notna(sub['stability_score'].iloc[0]) else float('nan'))
+            mean_sh_s = (f"{mean_sh:.2f}" if not pd.isna(mean_sh) else "—")
+            std_sh_s = (f"{std_sh:.2f}" if not pd.isna(std_sh) else "—")
+            stab_s = (f"{stability:.2f}" if not pd.isna(stability) else "—")
+            lines.append(
+                f"| **{ticker}** | {mode} | {n_folds} | {mean_sh_s} | "
+                f"{std_sh_s} | {n_pos}/{n_folds} | {stab_s} |"
+            )
+            summary_rows.append(
+                (ticker, mode, {"mean_sharpe": mean_sh, "n_folds": n_folds,
+                                "n_pos": n_pos, "stability": stability}),
+            )
+    lines.append("")
+
+    # ----- In-sample vs out-of-sample honest comparison ------------------
+    if in_sample_sharpes:
+        lines.append("### In-Sample vs Out-of-Sample Sharpe")
+        lines.append("")
+        lines.append(
+            "*A material gap between the full-sample (in-sample) Sharpe "
+            "and the mean of fold (out-of-sample) Sharpe is evidence of "
+            "overfitting / data-snooping. Agreement between the two is "
+            "evidence the edge is robust.*",
+        )
+        lines.append("")
+        lines.append(
+            "| Ticker | Mode | In-Sample Sharpe | Mean Fold Sharpe | Gap |"
+            " Verdict |"
+        )
+        lines.append(
+            "|--------|------|------------------|------------------|-----|"
+            "---------|"
+        )
+        # Threshold for "materially below": full-sample Sharpe falls
+        # away by >0.5 Sharpe units (or by >50% of its own magnitude,
+        # whichever is larger). Picked to flag the cases that matter
+        # without crying wolf on minor noise.
+        for ticker, mode, s in summary_rows:
+            is_sh = (in_sample_sharpes.get(ticker, {}).get(mode)
+                     if in_sample_sharpes else None)
+            mean_sh = s["mean_sharpe"]
+            if is_sh is None or pd.isna(is_sh) or pd.isna(mean_sh):
+                verdict = "—"
+                gap_s = "—"
+                is_s = (f"{is_sh:.2f}" if is_sh is not None
+                        and not pd.isna(is_sh) else "—")
+                mean_s = f"{mean_sh:.2f}" if not pd.isna(mean_sh) else "—"
+            else:
+                gap = float(is_sh) - float(mean_sh)
+                gap_s = f"{gap:+.2f}"
+                is_s = f"{is_sh:.2f}"
+                mean_s = f"{mean_sh:.2f}"
+                threshold = max(0.5, abs(float(is_sh)) * 0.5)
+                if gap > threshold:
+                    verdict = (
+                        "**OOS materially below IS** — likely overfit; "
+                        "trust OOS, not IS"
+                    )
+                elif gap < -threshold:
+                    # OOS materially BETTER — unusual but possible (e.g.
+                    # regime shift made the test window more favourable).
+                    verdict = "OOS materially above IS — regime shift?"
+                else:
+                    verdict = "OOS agrees with IS — edge appears robust"
+            lines.append(
+                f"| **{ticker}** | {mode} | {is_s} | {mean_s} | {gap_s} | "
+                f"{verdict} |"
+            )
+        lines.append("")
+
+    return lines
+
+
 def insight_base_vs_strat(
     base_dfs: Dict[str, pd.DataFrame],
     strat_dfs: Dict[str, pd.DataFrame],

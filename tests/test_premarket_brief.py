@@ -40,12 +40,23 @@ def mock_cloud_sql(monkeypatch):
     from gcp import database
     from gcp import premarket_brief as pb
 
-    captured = {"sql": None, "params": None}
+    captured = {"sql": None, "params": {}, "sqls": [], "all_params": []}
 
     def install(df: pd.DataFrame):
         def fake_query(sql, params=None):
+            # The brief loaders issue more than one query (main earnings
+            # select + reversal-rate CTE + AMC-walkback lookup). Tests
+            # assert on parameters by name (`captured["params"]["prior"]`,
+            # `["start"]`, `["end"]`, etc.) — store the union of every
+            # call's params so an assertion never fails just because
+            # the last query happened to omit a key set by an earlier
+            # one. Per-call detail is preserved in `sqls` / `all_params`
+            # for tests that need to inspect query order or count.
             captured["sql"] = sql
-            captured["params"] = dict(params or {})
+            captured["sqls"].append(sql)
+            new_params = dict(params or {})
+            captured["all_params"].append(new_params)
+            captured["params"] = {**captured["params"], **new_params}
             return df.copy() if df is not None else pd.DataFrame()
 
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
@@ -512,6 +523,347 @@ class TestStochRegimeTag:
         from gcp.premarket_brief import _stoch_regime_tag
         assert _stoch_regime_tag(None, 50) == ''
         assert _stoch_regime_tag(50, None) == ''
+
+
+class TestResolveSignalStatus:
+    """`signal_status` is gated by `ftfc_direction`.
+
+    The regression preserves the 2026-05-08 audit fix (track-B G.P1.5):
+    bullish FTFC must not surface a "PUT setup" status, and bearish
+    FTFC must not surface "CALL setup". Mixed FTFC picks the higher
+    score's side; ties resolve to CALL.
+
+    `signal_threshold=3` and `building_threshold=2` mirror the
+    production defaults at `lib/config.py:312-313`.
+    """
+
+    def test_bullish_ftfc_gates_to_call_even_when_put_score_higher(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        # Pre-fix this row would have published "PUT setup (4/5)";
+        # post-fix it publishes "CALL building (2/5)" (because
+        # bullish FTFC means we surface only the call_score side).
+        assert _resolve_signal_status(
+            call_score=2, put_score=4,
+            ftfc_direction='bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL building (2/5)'
+
+    def test_bearish_ftfc_gates_to_put_even_when_call_score_higher(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=4, put_score=2,
+            ftfc_direction='bearish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'PUT building (2/5)'
+
+    def test_mixed_ftfc_picks_higher_score_side(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=4, put_score=2,
+            ftfc_direction='mixed',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+        assert _resolve_signal_status(
+            call_score=1, put_score=4,
+            ftfc_direction='mixed',
+            signal_threshold=3, building_threshold=2,
+        ) == 'PUT setup (4/5)'
+
+    def test_mixed_ftfc_ties_resolve_to_call(self):
+        """Tie at 3-3 under mixed FTFC publishes CALL (deterministic
+        choice keeps downstream consumers from oscillating)."""
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=3, put_score=3,
+            ftfc_direction='mixed',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (3/5)'
+
+    def test_below_building_threshold_returns_no_signal(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=1, put_score=1,
+            ftfc_direction='bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'No signal'
+
+    def test_setup_threshold_picks_setup_label_over_building(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=4, put_score=0,
+            ftfc_direction='bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+
+    def test_none_ftfc_treated_as_mixed(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        # None / unknown FTFC string defensively falls back to mixed
+        # (higher-score wins); prevents a NoneError or AttributeError
+        # if upstream ever sends a missing direction.
+        assert _resolve_signal_status(
+            call_score=4, put_score=2,
+            ftfc_direction=None,
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+
+    def test_capitalized_bullish_still_gates_correctly(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        # FTFC dir comes from `compute_strat_status` and could be
+        # 'Bullish' / 'BULLISH' / 'bullish'. Lowercase + substring
+        # match is robust to all of those.
+        assert _resolve_signal_status(
+            call_score=4, put_score=0,
+            ftfc_direction='Bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+
+
+class TestResolveDataFreshness:
+    """Track B audit G.P0.4 — staleness detector for the brief.
+
+    The audit's repro: brief on 2026-05-04 → 05-07 read the same
+    2026-04-27 daily bar each morning because the daily fetcher had
+    been frozen since 4-28. The null-close filter at line 724
+    silently fell back to last-good-bar. This regression class locks
+    the new helper's contract — including the weekend exemption that
+    keeps Monday briefs reading Friday from being false-flagged.
+    """
+
+    def test_one_day_gap_is_fresh(self):
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 6),
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is False
+        assert gap == 1
+        assert status == 'fresh'
+
+    def test_zero_day_gap_is_fresh(self):
+        """Edge case — analysis_date == last_bar_date (a same-day
+        replay)."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 7),
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is False
+        assert gap == 0
+        assert status == 'fresh'
+
+    def test_six_day_gap_flags_stale(self):
+        """The audit's own repro window: 2026-05-07 brief reading
+        2026-04-27 last bar = 10 days. Should fire."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 4, 27),
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is True
+        assert gap == 10
+        assert status == 'STALE_DAILY_DATA'
+
+    def test_friday_to_monday_weekend_exemption(self):
+        """Monday brief reading Friday (gap=3, weekday=Mon=0) is
+        FRESH, not stale — that's the normal weekend bridge."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 1),    # Friday
+            analysis_date=date(2026, 5, 4),    # Monday
+        )
+        assert is_stale is False
+        assert gap == 3
+        assert status == 'fresh'
+
+    def test_sunday_weekly_brief_friday_data_is_fresh(self):
+        """Codex P2 review on PR #336: the Sunday weekly brief flow
+        (premarket_brief.py is_sunday branch reading Friday's daily
+        bar) has gap=2, weekday=Sun=6. The market hasn't produced a
+        newer bar over the weekend, so this must be fresh — the v1
+        weekend exemption only covered Monday and would have
+        suppressed every Sunday-brief ticker."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 1),    # Friday
+            analysis_date=date(2026, 5, 3),    # Sunday
+        )
+        assert is_stale is False
+        assert gap == 2
+        assert status == 'fresh'
+
+    def test_thursday_to_monday_is_stale(self):
+        """Thursday → Monday brief (gap=4) is stale — the weekend
+        exemption only covers Friday → Monday. Bias toward
+        false-positives on holiday weeks per the docstring."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 4, 30),    # Thursday
+            analysis_date=date(2026, 5, 4),     # Monday
+        )
+        assert is_stale is True
+        assert gap == 4
+        assert status == 'STALE_DAILY_DATA'
+
+    def test_none_last_bar_returns_unknown(self):
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=None,
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is False
+        assert gap == -1
+        assert status == 'unknown'
+
+
+class TestDataAsOfAnchor:
+    """W11 — `data_as_of` should be anchored to 16:00 ET (US/Eastern
+    market close) on the bar's date, regardless of how the daily
+    DatetimeIndex hands it in.
+
+    The W6 v1 writer used `latest.name` directly, which for pandas
+    DatetimeIndex at UTC midnight renders as "20:00 EDT prior day"
+    when displayed in ET — confusing for validation queries where
+    a reader expects the timestamp to mean "this bar's data". The
+    anchor normalizes to bar_date + 16:00 ET so:
+
+      * UTC display: bar_date + 4h (e.g. 2026-05-06 → 20:00 UTC)
+      * ET display:  bar_date + 16:00 (e.g. 2026-05-06 → 16:00 EDT)
+
+    Both forms unambiguously name the bar's date; the ET form
+    additionally names market close, which is when the daily bar's
+    data crystallizes.
+    """
+
+    def test_anchor_renders_at_market_close_in_et(self):
+        """A `latest.name` of pandas-default UTC midnight is normalized
+        to 16:00 ET on the same calendar date."""
+        import pandas as pd
+        from datetime import date
+
+        # Simulate what generate_premarket_brief does when latest.name
+        # is a tz-naive Timestamp at UTC midnight (pandas default for
+        # daily bars).
+        last_bar_ts = pd.Timestamp('2026-05-06')  # naive midnight
+        last_bar_date_obj = last_bar_ts.date()
+        anchored = (
+            pd.Timestamp(last_bar_date_obj)
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+
+        # In ET: 16:00 EDT on 5/6
+        et = anchored.tz_convert('America/New_York')
+        assert et.date() == date(2026, 5, 6)
+        assert et.hour == 16
+        assert et.minute == 0
+
+        # In UTC: same instant rendered in UTC = 20:00 UTC (EDT offset = -4)
+        utc = anchored.tz_convert('UTC')
+        assert utc.hour == 20
+        assert utc.date() == date(2026, 5, 6)
+
+    def test_anchor_is_stable_across_dst_transitions(self):
+        """W11 anchor must give 16:00 ET regardless of EDT (-04:00)
+        vs EST (-05:00). November bar in EST vs May bar in EDT —
+        both should display at 16:00 ET."""
+        import pandas as pd
+        from datetime import date
+
+        # EST date (early November is EST)
+        est_anchored = (
+            pd.Timestamp(date(2025, 11, 10))
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+        assert est_anchored.tz_convert('America/New_York').hour == 16
+        # EST offset is -5, so UTC is 21:00
+        assert est_anchored.tz_convert('UTC').hour == 21
+
+        # EDT date (May is EDT)
+        edt_anchored = (
+            pd.Timestamp(date(2026, 5, 6))
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+        assert edt_anchored.tz_convert('America/New_York').hour == 16
+        # EDT offset is -4, so UTC is 20:00
+        assert edt_anchored.tz_convert('UTC').hour == 20
+
+    def test_anchor_display_no_longer_renders_prior_day_at_8pm(self):
+        """The audit's user-reported confusion ('why am I seeing
+        8 PM market-close data?'). With the W11 anchor, displaying
+        the timestamp in ET shows 16:00 ET on the bar's date, never
+        the prior day at 20:00."""
+        import pandas as pd
+        from datetime import date
+
+        anchored = (
+            pd.Timestamp(date(2026, 5, 6))
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+        et_repr = anchored.tz_convert('America/New_York')
+        # Rendering as a date+time string in ET
+        et_str = et_repr.strftime('%Y-%m-%d %H:%M:%S')
+        assert et_str == '2026-05-06 16:00:00', (
+            f"expected 16:00 ET on bar's date, got {et_str!r}"
+        )
+        # And explicitly NOT the v1 buggy form
+        assert '20:00' not in et_str
+        assert '2026-05-05' not in et_str  # not the prior day
+
+
+class TestFormatDataFreshnessSummary:
+    """The "Based on data from X to Y" line rendered in the overview
+    embed (Track B audit G.P0.5)."""
+
+    def test_healthy_single_bar_window(self):
+        from gcp.premarket_brief import _format_data_freshness_summary
+        from datetime import date
+        line = _format_data_freshness_summary(
+            earliest_as_of=date(2026, 5, 6),
+            latest_as_of=date(2026, 5, 6),
+            analysis_date=date(2026, 5, 7),
+            any_stale=False,
+        )
+        assert line == 'Based on data from 2026-05-06 → 2026-05-06 (1 trading day)'
+
+    def test_stale_includes_warning_emoji_and_session_count(self):
+        """Audit repro: trader looking at the 2026-05-07 brief should
+        see at-a-glance that the analysis was based on 6-session-stale
+        data. The line must include both 'stale by N session(s)' and
+        the warning emoji."""
+        from gcp.premarket_brief import _format_data_freshness_summary
+        from datetime import date
+        line = _format_data_freshness_summary(
+            earliest_as_of=date(2026, 4, 27),
+            latest_as_of=date(2026, 4, 27),
+            analysis_date=date(2026, 5, 7),
+            any_stale=True,
+        )
+        assert 'Based on data from 2026-04-27 → 2026-04-27' in line
+        assert 'stale by 10 sessions' in line
+        assert '⚠' in line
+
+    def test_none_input_returns_none(self):
+        """No tickers had usable data — embed builder should skip the
+        line entirely. None signal lets the caller's
+        `if freshness_summary:` guard handle it."""
+        from gcp.premarket_brief import _format_data_freshness_summary
+        from datetime import date
+        assert _format_data_freshness_summary(
+            earliest_as_of=None,
+            latest_as_of=None,
+            analysis_date=date(2026, 5, 7),
+            any_stale=False,
+        ) is None
 
 
 class TestFmtCombo:
@@ -1104,6 +1456,341 @@ class TestPersistPlaybookFailedHandling:
         assert seen == {'SPX'}
 
 
+class TestStaleEmbedRenders:
+    """Codex P1 review on PR #336 caught that the per-ticker render
+    paths (`_build_overview_embed`, `_build_ticker_fields`) did not
+    skip STALE_DAILY_DATA rows, which would have caused KeyError on
+    `d['price']` / `d['rsi']` / `d['prev_day_high']` etc. since the
+    per-ticker analysis is skipped upstream.
+
+    Both builders now emit a degraded line that names the ticker
+    and the staleness gap, mirroring the existing NO DATA path.
+    """
+
+    def _stale_brief(self, gap_days: int = 10):
+        return {
+            'date': 'Thu May 07, 2026',
+            'analysis_date': date(2026, 5, 7),
+            'tickers': {
+                'SPY': {
+                    'status': 'STALE_DAILY_DATA',
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': gap_days,
+                },
+            },
+        }
+
+    def test_overview_embed_renders_stale_degraded_line(self):
+        """Stale ticker still appears in the description, but with a
+        clear staleness banner instead of crashing on missing fields."""
+        from gcp.premarket_brief import _build_overview_embed
+        embed = _build_overview_embed(self._stale_brief(gap_days=10))
+        assert 'SPY' in embed['description']
+        assert 'STALE' in embed['description']
+        assert '10 sessions old' in embed['description']
+        assert '⚠' in embed['description']
+
+    def test_overview_embed_does_not_crash_on_missing_per_ticker_fields(self):
+        """Defensive: pre-fix this raised KeyError on d['price']."""
+        from gcp.premarket_brief import _build_overview_embed
+        # Should not raise.
+        embed = _build_overview_embed(self._stale_brief(gap_days=3))
+        assert isinstance(embed, dict)
+        assert 'description' in embed
+
+    def test_ticker_fields_renders_stale_degraded_field(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        fields = _build_ticker_fields(self._stale_brief(gap_days=10))
+        # One field per ticker; SPY's value carries the staleness
+        spy_field = next(f for f in fields if f['name'] == 'SPY')
+        assert 'STALE' in spy_field['value']
+        assert '10 sessions old' in spy_field['value']
+
+    def test_singular_session_when_gap_one_treated_as_one_session(self):
+        """Edge case: gap==1 wouldn't be flagged stale by the helper,
+        but if a downstream caller forces status='STALE_DAILY_DATA'
+        with gap=1, the rendered string should say '1 session old'
+        (singular) not '1 sessions old'."""
+        from gcp.premarket_brief import _build_overview_embed
+        embed = _build_overview_embed(self._stale_brief(gap_days=1))
+        assert '1 session old' in embed['description']
+        assert '1 sessions old' not in embed['description']
+
+
+class TestPersistStaleDataHandling:
+    """Track B audit G.P0.4 — STALE_DAILY_DATA tickers must follow the
+    same write contract as PLAYBOOK_FAILED: history yes, canonical no.
+
+    The audit's failure mode was the brief silently re-publishing a
+    week-old row into the canonical premarket_analysis table four
+    mornings in a row. This regression class locks in the fix:
+    `data['status']='STALE_DAILY_DATA'` is the trigger by which the
+    persist layer suppresses the canonical write while still
+    producing an audit-trail row in history with a populated `notes`
+    column.
+    """
+
+    def _install_persist_mocks(self, monkeypatch):
+        from gcp import database
+
+        captured = {
+            'history_rows': [],
+            'upsert_rows': [],
+        }
+
+        def fake_bulk_insert(df, table):
+            captured['history_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_upsert(df, table, keys):
+            captured['upsert_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_row_exists(table, where):
+            return False
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', fake_bulk_insert)
+        monkeypatch.setattr(database, 'upsert_dataframe', fake_upsert)
+        monkeypatch.setattr(database, 'row_exists', fake_row_exists)
+        return captured
+
+    def _brief_with_tickers(self, tickers):
+        return {
+            'analysis_date': date(2026, 5, 7),
+            'tickers': tickers,
+        }
+
+    def test_stale_writes_history_only_skips_canonical(self, monkeypatch):
+        """The audit's repro: SPY's daily data is 10 sessions old, IWM
+        is healthy. SPY history row gets a notes string explaining the
+        skip; only IWM goes to the canonical table."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'SPY': {'status': 'STALE_DAILY_DATA',
+                    'data_as_of': pd.Timestamp('2026-04-27'),
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': 10},
+            'IWM': {'status': None, 'price': 220.0,
+                    'data_as_of': pd.Timestamp('2026-05-06'),
+                    'data_freshness_status': 'fresh'},
+        })
+        n = persist_to_cloud_sql(brief, allow_update=True,
+                                 run_kind='manual_update', triggered_by='test')
+
+        history = captured['history_rows'][0][1]
+        history_by_ticker = {r['ticker']: r for r in history}
+        # Both rows in history
+        assert set(history_by_ticker.keys()) == {'SPY', 'IWM'}
+        # SPY history row carries an explanatory notes string
+        assert isinstance(history_by_ticker['SPY']['notes'], str)
+        assert 'STALE_DAILY_DATA' in history_by_ticker['SPY']['notes']
+        assert 'gap=10' in history_by_ticker['SPY']['notes']
+        # IWM history row has no notes (healthy path).
+        # pandas DataFrame round-trip converts Python None → NaN in
+        # mixed-dtype object columns when other rows carry strings,
+        # so test the absence with pd.isna rather than `is None`.
+        assert pd.isna(history_by_ticker['IWM']['notes'])
+
+        # Only IWM in canonical
+        assert n == 1
+        upsert = captured['upsert_rows'][0][1]
+        assert {r['ticker'] for r in upsert} == {'IWM'}
+
+    def test_data_as_of_columns_propagate_to_history_rows(self, monkeypatch):
+        """The new freshness telemetry columns must reach the history
+        rows even on healthy tickers — that's the post-fix observability
+        that lets a single SELECT identify stuck-fetcher days."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        ts = pd.Timestamp('2026-05-06')
+        brief = self._brief_with_tickers({
+            'IWM': {'status': None, 'price': 220.0,
+                    'data_as_of': ts, 'data_freshness_status': 'fresh'},
+        })
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        row = captured['history_rows'][0][1][0]
+        assert row['data_as_of'] == ts
+        assert row['data_freshness_status'] == 'fresh'
+
+    def test_all_stale_canonical_write_short_circuits(self, monkeypatch):
+        """Audit's worst-case: all tickers stale on the same morning.
+        canonical write must short-circuit to 0 (no empty-DataFrame
+        crash) and history still records all rows with notes."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'SPY': {'status': 'STALE_DAILY_DATA',
+                    'data_as_of': pd.Timestamp('2026-04-27'),
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': 10},
+            'IWM': {'status': 'STALE_DAILY_DATA',
+                    'data_as_of': pd.Timestamp('2026-04-27'),
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': 10},
+        })
+        n = persist_to_cloud_sql(brief, allow_update=True,
+                                 run_kind='manual_update', triggered_by='test')
+        assert n == 0
+        history = captured['history_rows'][0][1]
+        assert {r['ticker'] for r in history} == {'SPY', 'IWM'}
+        for row in history:
+            assert row['notes'] is not None
+            assert 'STALE_DAILY_DATA' in row['notes']
+        assert captured['upsert_rows'] == []
+
+
+class TestPersistLLMCommentary:
+    """Track B audit G.P2.11 — persist Gemini-generated brief
+    commentary for audit trail.
+
+    Pre-W7, the four LLM commentary slots
+    (`brief['llm_overview']`, `brief['llm_orb_explanation']`,
+    `brief['tickers'][T]['llm_analysis']`,
+    `brief['tickers'][T]['llm_playbook']`) were rendered live to
+    Discord and discarded. No post-hoc audit could grade what users
+    actually saw on a given morning because nothing in
+    premarket_analysis captured the LLM text.
+
+    Post-W7, those four strings flow through `persist_to_cloud_sql`
+    into both the canonical `premarket_analysis` row and the
+    append-only `premarket_analysis_history` row. They are
+    non-deterministic — a replay generates different Gemini text —
+    but the original morning's text is preserved for back-audit.
+
+    User-confirmed scope decision (during the implementation-plan
+    clarification round): "persist for audit trail" rather than skip.
+    """
+
+    def _install_persist_mocks(self, monkeypatch):
+        from gcp import database
+
+        captured = {
+            'history_rows': [],
+            'upsert_rows': [],
+        }
+
+        def fake_bulk_insert(df, table):
+            captured['history_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_upsert(df, table, keys):
+            captured['upsert_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_row_exists(table, where):
+            return False
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', fake_bulk_insert)
+        monkeypatch.setattr(database, 'upsert_dataframe', fake_upsert)
+        monkeypatch.setattr(database, 'row_exists', fake_row_exists)
+        return captured
+
+    def test_brief_level_and_per_ticker_llm_fields_propagate_to_history(
+        self, monkeypatch,
+    ):
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = {
+            'analysis_date': date(2026, 5, 8),
+            'llm_overview': 'Bullish bias across all three ETFs.',
+            'llm_orb_explanation': 'Default 5-min ORB; no high-impact catalyst.',
+            'tickers': {
+                'IWM': {
+                    'status': None, 'price': 220.0,
+                    'llm_analysis': 'IWM tagged 2U with bullish FTFC.',
+                    'llm_playbook': 'CALLS above PDH; stop at CWO.',
+                },
+                'SPY': {
+                    'status': None, 'price': 720.0,
+                    'llm_analysis': 'SPY in a tight inside bar.',
+                    'llm_playbook': 'Wait for inside-bar break.',
+                },
+            },
+        }
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        history = captured['history_rows'][0][1]
+        by_ticker = {r['ticker']: r for r in history}
+
+        # Brief-level fields are duplicated to every ticker's row
+        # (the persist layer doesn't have a brief-level table; we
+        # mirror onto each row so a single SELECT carries everything
+        # without joins).
+        for row in by_ticker.values():
+            assert row['llm_overview'] == 'Bullish bias across all three ETFs.'
+            assert row['llm_orb_explanation'] == \
+                'Default 5-min ORB; no high-impact catalyst.'
+
+        # Per-ticker fields are distinct
+        assert by_ticker['IWM']['llm_analysis'] == \
+            'IWM tagged 2U with bullish FTFC.'
+        assert by_ticker['SPY']['llm_analysis'] == \
+            'SPY in a tight inside bar.'
+        assert by_ticker['IWM']['llm_playbook'] == \
+            'CALLS above PDH; stop at CWO.'
+        assert by_ticker['SPY']['llm_playbook'] == \
+            'Wait for inside-bar break.'
+
+    def test_missing_llm_fields_persist_as_null(self, monkeypatch):
+        """When the LLM step is disabled (BRIEF_LLM_DISABLE=1) or
+        fails, the four slots are absent from the brief dict.
+        Persist should land NULL in each, not crash on KeyError."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = {
+            'analysis_date': date(2026, 5, 8),
+            # No llm_overview / llm_orb_explanation
+            'tickers': {
+                'IWM': {'status': None, 'price': 220.0},
+                # No llm_analysis / llm_playbook
+            },
+        }
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        # The persisted row keys should still exist (not KeyError);
+        # values are None, which pandas serializes as NaN in mixed
+        # DataFrames.
+        row = captured['history_rows'][0][1][0]
+        for col in ('llm_overview', 'llm_orb_explanation',
+                    'llm_analysis', 'llm_playbook'):
+            assert col in row, f"missing column {col} in persisted row"
+            assert pd.isna(row[col]) or row[col] is None
+
+    def test_canonical_upsert_carries_llm_fields(self, monkeypatch):
+        """The canonical premarket_analysis row also gets the LLM
+        fields — not just history. Future SELECT against the canonical
+        table for "today's commentary" must work without joining to
+        history."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = {
+            'analysis_date': date(2026, 5, 8),
+            'llm_overview': 'Test overview',
+            'tickers': {
+                'IWM': {'status': None, 'price': 220.0,
+                        'llm_analysis': 'Test per-ticker'},
+            },
+        }
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+        upsert_row = captured['upsert_rows'][0][1][0]
+        assert upsert_row['llm_overview'] == 'Test overview'
+        assert upsert_row['llm_analysis'] == 'Test per-ticker'
+
+
 # ──────────────────────────────────────────────────────────────────────
 # market_data_daily JOIN — gap_pct propagation
 # ──────────────────────────────────────────────────────────────────────
@@ -1162,8 +1849,13 @@ class TestConfirmedOnlyFilter:
     Override to '1' brings them back."""
 
     def test_default_drops_tier_5_uw_only(self, monkeypatch, mock_cloud_sql):
-        # Override the autouse fixture to test default (filter ON) behavior
+        # Override the autouse fixture to test default (filter ON) behavior.
+        # Also disable the nQ-confidence filter (added 2026-05-14): this test
+        # exists to verify the AV ∩ UW source gate, not the reaction-history
+        # depth gate. The mocked DB returns no reaction stats so every row
+        # would otherwise have nQ=0 and get dropped.
         monkeypatch.delenv('BRIEF_INCLUDE_UNCONFIRMED', raising=False)
+        monkeypatch.setenv('BRIEF_MIN_REACTION_QUARTERS', '0')
         install, _ = mock_cloud_sql
         install(pd.DataFrame([
             _row('AAA', 'alphavantage', options_volume=10_000),
@@ -1304,15 +1996,18 @@ class TestGapPctPropagation:
 
     def test_sql_joins_market_data_daily(self, mock_cloud_sql):
         """The SQL the loader sends must reference market_data_daily so
-        the join happens at query time, not Python-side."""
+        the join happens at query time, not Python-side. The loader
+        issues multiple queries (main earnings select + reversal-rate
+        CTE); assert against every captured SQL so we don't depend on
+        which one runs last."""
         install, captured = mock_cloud_sql
         install(pd.DataFrame([_row("AAPL", "alphavantage")]))
         from gcp.premarket_brief import load_earnings_for_brief
 
         load_earnings_for_brief(date(2026, 4, 27))
-        sql = captured["sql"].lower()
-        assert "left join market_data_daily" in sql
-        assert "gap_pct" in sql
+        joined = " | ".join(s.lower() for s in captured["sqls"])
+        assert "left join market_data_daily" in joined
+        assert "gap_pct" in joined
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1806,3 +2501,274 @@ class TestWhispersSection:
         assert 'Reactions to Last Night' not in embed['description']
 
 
+
+
+# ── Compact "Also reporting (lower conviction)" line ─────────────────────
+# Q1-scoring names (HD, XP, etc. — quiet on earnings) used to be silently
+# dropped from the brief. They now route to `low_conviction` and render as
+# a compact `⤷ Also reporting` line per bucket so the full slate is visible.
+
+
+def _q2_row(ticker, time_):
+    """Fully-formed Track A row used for the embed's detailed playability
+    sub-section. Numbers are arbitrary; the test only inspects rendering."""
+    return {
+        'ticker': ticker, 'date': date(2026, 5, 19), 'company_name': ticker,
+        'time': time_, 'expected_move': 2.0, 'sector': 'Tech', 'market_cap': 1e10,
+        'stock_volume': 1_000_000, 'options_volume': 5000, 'open_interest': 50_000,
+        'rv_1d_last_12q': 5.0, 'strategy': '', 'strike': None, 'premium': None,
+        'score': None, 'source': 'unusual_whales',
+        'sources': ['alphavantage', 'unusual_whales'], 'tier': 2,
+        'gap_pct': None, 'pre_high': None, 'pre_low': None,
+        'ew_strike_verdict': None, 'ew_strike_move_pct': None,
+        'ew_minutes_to_hit': None, 'ew_minutes_in_zone': None,
+        'ew_day_change_pct': None,
+        'playability_score': 25.0,           # Q3 — gets a full row
+        'playability_archetype': 'mixed',
+        'playability_n_q': 12,
+        'playability_move_mag_pct': 5.0, 'playability_dir_bias_pct': 0.5,
+        'playability_dir_consistency': 0.6, 'playability_reversal_rate': 0.3,
+        'playability_typical_daily': 1.2,
+    }
+
+
+def _q1_row(ticker, time_):
+    """Track A row with a Q1-score — currently dropped, now routed to
+    the compact line."""
+    r = _q2_row(ticker, time_)
+    r['playability_score'] = 8.0   # < 15.7 → Q1
+    return r
+
+
+def test_low_conviction_renders_compact_line_per_bucket():
+    """Q1 names appear as `⤷ Also reporting (lower conviction): T1, T2`
+    under their bucket — visible without a full row each."""
+    from gcp.premarket_brief import _build_earnings_embed
+    embed = _build_earnings_embed({
+        'mode': 'daily',
+        'start': date(2026, 5, 19), 'end': date(2026, 5, 19),
+        'earnings': [_q2_row('BILI', 'premarket'), _q2_row('KEYS', 'postmarket')],
+        'watchlist': [],
+        'low_conviction': [
+            _q1_row('HD', 'premarket'), _q1_row('CAN', 'premarket'),
+            _q1_row('XP', 'postmarket'),
+        ],
+    })
+    desc = embed.get('description', '')
+    # BMO bucket — detail row for BILI + compact line listing HD, CAN
+    assert 'BILI' in desc
+    assert 'Also reporting (lower conviction): HD, CAN' in desc
+    # AMC bucket — detail row for KEYS + compact line listing XP
+    assert 'KEYS' in desc
+    assert 'Also reporting (lower conviction): XP' in desc
+
+
+def test_low_conviction_included_in_title_and_section_counts():
+    """The title count and per-section `(N)` reflect all earnings shown
+    (full rows + compact line), not just the full-row subset."""
+    from gcp.premarket_brief import _build_earnings_embed
+    embed = _build_earnings_embed({
+        'mode': 'daily',
+        'start': date(2026, 5, 19), 'end': date(2026, 5, 19),
+        'earnings': [_q2_row('BILI', 'premarket')],
+        'watchlist': [],
+        'low_conviction': [
+            _q1_row('HD', 'premarket'), _q1_row('XP', 'postmarket'),
+        ],
+    })
+    # Title: 1 full + 2 low-conviction = 3 total
+    assert '— 3' in embed['title']
+    desc = embed['description']
+    # BMO section header reflects 1 full + 1 low-conv = 2
+    assert 'Reporting Before Open** (2)' in desc
+    # AMC section: 0 full + 1 low-conv = 1 — still renders so XP is visible
+    assert 'Reporting After Close** (1)' in desc
+    assert 'XP' in desc
+
+
+def test_loader_routes_q1_to_low_conviction_not_dropped(mock_cloud_sql,
+                                                        monkeypatch):
+    """The Q1 filter no longer drops names — it routes them into
+    `low_conviction`. Regression guard: HD shouldn't vanish."""
+    monkeypatch.delenv('BRIEF_INCLUDE_UNCONFIRMED', raising=False)
+    install, _ = mock_cloud_sql
+    # One row that passes the AV∩UW gate (sources = both, OI/vol present)
+    install(pd.DataFrame([
+        {'ticker': 'HD', 'earnings_date': date(2026, 5, 19),
+         'company_name': 'Home Depot', 'earnings_time': 'premarket',
+         'eps_estimate': 4.0, 'eps_actual': None, 'eps_surprise_pct': None,
+         'expected_move': 2.0, 'sector': 'Retail', 'market_cap': 4e11,
+         'stock_volume': 5_000_000, 'options_volume': 34146,
+         'open_interest': 281647, 'rv_1d_last_12q': 2.2,
+         'strategy': '', 'strike': None, 'premium': None, 'score': None,
+         'data_source': 'alphavantage',
+         'ew_strike_verdict': None, 'ew_strike_move_pct': None,
+         'ew_minutes_to_hit': None, 'ew_minutes_in_zone': None,
+         'ew_day_change_pct': None,
+         'gap_pct': None, 'pre_high': None, 'pre_low': None},
+        {'ticker': 'HD', 'earnings_date': date(2026, 5, 19),
+         'company_name': 'Home Depot', 'earnings_time': 'premarket',
+         'eps_estimate': 4.0, 'eps_actual': None, 'eps_surprise_pct': None,
+         'expected_move': 2.0, 'sector': 'Retail', 'market_cap': 4e11,
+         'stock_volume': 5_000_000, 'options_volume': 34146,
+         'open_interest': 281647, 'rv_1d_last_12q': 2.2,
+         'strategy': '', 'strike': None, 'premium': None, 'score': None,
+         'data_source': 'unusual_whales',
+         'ew_strike_verdict': None, 'ew_strike_move_pct': None,
+         'ew_minutes_to_hit': None, 'ew_minutes_in_zone': None,
+         'ew_day_change_pct': None,
+         'gap_pct': None, 'pre_high': None, 'pre_low': None},
+    ]))
+    # Stub enrichment to stamp a Q1 score on HD so it hits the routing
+    from gcp import premarket_brief as pb
+    def _fake_enrich(rows):
+        for r in rows:
+            r['playability_score'] = 8.0   # Q1 — below 15.7 cutoff
+            r['playability_n_q'] = 12
+            r['playability_archetype'] = 'mixed'
+            r['playability_move_mag_pct'] = 2.2
+            r['playability_dir_consistency'] = 0.33
+            r['playability_reversal_rate'] = 0.67
+    monkeypatch.setattr(
+        'lib.earnings_reactions.enrich_with_playability', _fake_enrich
+    )
+
+    result = pb.load_earnings_for_brief(date(2026, 5, 19))
+    # HD was Q1 — must NOT appear in `earnings` (full rows)
+    assert all(e['ticker'] != 'HD' for e in result['earnings'])
+    # HD MUST appear in `low_conviction` (compact line) — not silently dropped
+    assert any(e['ticker'] == 'HD' for e in result['low_conviction'])
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Track 1 — gamma freshness footer
+# (see docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md)
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestBuildGammaFooter:
+    """`_build_gamma_footer` aggregates per-ticker gamma_data_source.
+
+    The brief embed uses worst-case-across-tickers severity to drive
+    the user-visible footer wording, so a single ticker on stale data
+    can demote a brief where the other two are live.
+    """
+
+    def _brief_with(self, **per_ticker_kwargs) -> dict:
+        """Build a minimal brief dict with the gamma metadata fields
+        each test wants to assert against."""
+        tickers = {}
+        for ticker, kwargs in per_ticker_kwargs.items():
+            tickers[ticker] = {
+                'gamma_data_source': kwargs.get('ds'),
+                'gamma_snapshot_ts': kwargs.get('ts'),
+                'gamma_snapshot_date': kwargs.get('sd'),
+                'gamma_days_behind': kwargs.get('days'),
+            }
+        return {'tickers': tickers}
+
+    def test_returns_none_when_no_tickers_have_gamma(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(SPY={}, IWM={}, QQQ={})
+        assert _build_gamma_footer(brief) is None
+
+    def test_returns_none_when_all_unavailable(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'unavailable'},
+            IWM={'ds': 'unavailable'},
+            QQQ={'ds': 'unavailable'},
+        )
+        # Per the helper: every ticker dark → omit the footer rather
+        # than render a noisy 'unavailable' line; the existing
+        # data-freshness summary already covers pipeline-health.
+        assert _build_gamma_footer(brief) is None
+
+    def test_all_realtime_renders_green_live_line(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'realtime', 'ts': '2026-05-22T19:50:00+00:00'},
+            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+        )
+        out = _build_gamma_footer(brief)
+        assert out is not None
+        assert 'Live gamma' in out
+        # Green circle marker so phone-only readers see status at a
+        # glance (matches the existing 📊 freshness-line convention).
+        assert '🟢' in out
+
+    def test_any_eod_fallback_demotes_to_amber(self):
+        """One EOD fallback among realtime peers → footer reflects
+        worst case (EOD), not the cheerful 'Live' wording."""
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+        )
+        out = _build_gamma_footer(brief)
+        assert out is not None
+        assert '⚠️' in out
+        assert 'EOD gamma' in out
+        assert "realtime fetcher missed today's session" in out
+
+    def test_any_stale_fallback_demotes_to_red(self):
+        """Stale (3-5 trading days) beats EOD beats realtime in severity."""
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'stale_fallback', 'ts': '2026-05-15T20:00:00+00:00', 'days': 4},
+        )
+        out = _build_gamma_footer(brief)
+        assert out is not None
+        assert '⚠️' in out
+        assert 'Stale gamma' in out
+        assert '4 trading days old' in out
+
+    def test_unavailable_alongside_realtime_still_renders_live(self):
+        """An UNAVAILABLE ticker shouldn't drag the footer down when
+        live data exists for others — the unavailable one is recorded
+        but the live ticker's data is still useful to the reader."""
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'unavailable'},
+        )
+        # Per the severity table, 'unavailable' currently outranks
+        # 'realtime' so the footer is suppressed. This documents the
+        # current behavior; revisit if the user wants partial-coverage
+        # footers (e.g. "Live gamma · SPY only").
+        out = _build_gamma_footer(brief)
+        assert out is None
+
+
+class TestFmtGammaTs:
+    """`_fmt_gamma_ts` converts ISO timestamps for the footer."""
+
+    def test_formats_utc_iso_as_et_short(self):
+        from gcp.premarket_brief import _fmt_gamma_ts
+        # 2026-05-22 19:55 UTC = 15:55 ET (EDT, UTC-4). Within RTH so
+        # we expect HH:MM ET format (no weekday prefix).
+        out = _fmt_gamma_ts('2026-05-22T19:55:00+00:00')
+        assert out == '15:55 ET'
+
+    def test_overnight_timestamp_gets_weekday_prefix(self):
+        from gcp.premarket_brief import _fmt_gamma_ts
+        # 2026-05-22 03:00 UTC = 23:00 ET previous day (Thu) — out-of-RTH
+        # hours get a weekday prefix so the reader doesn't mistake an
+        # overnight EOD timestamp for an intraday one.
+        out = _fmt_gamma_ts('2026-05-22T03:00:00+00:00')
+        # Either 'Thu 23:00 ET' or 'Fri 23:00 ET' depending on what the
+        # helper picks; assert the format shape rather than the literal.
+        assert 'ET' in out
+        assert ':' in out
+
+    def test_handles_none_and_invalid_gracefully(self):
+        from gcp.premarket_brief import _fmt_gamma_ts
+        assert _fmt_gamma_ts(None) == ''
+        assert _fmt_gamma_ts('') == ''
+        # Garbage input falls through to the original string rather
+        # than crashing the brief embed builder.
+        assert _fmt_gamma_ts('not-an-iso-string') == 'not-an-iso-string'

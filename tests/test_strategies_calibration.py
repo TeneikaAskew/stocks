@@ -190,6 +190,9 @@ def test_strategy_uses_resolved_range_put():
         "Close": 100.0,
         "VWAP": 102.0,
         "EMA9": 103.0,
+        # B+: MIN_CONDITIONS_MOMENTUM=5 → need scaffolding to push score to 5.
+        # 4 core (consec_down + rsi + below_vwap + below_ema9) + rvol = 5.
+        "RVol_Recent_20": 1.5,
     })
 
     sig_b = MOMENTUM.evaluate(row)  # Tier-B default (50, 75) — RSI 72 in range
@@ -217,3 +220,76 @@ def test_lru_cache_one_query_per_ticker():
 
         assert calibration._latest_calibration("AAPL") is None
         assert m.call_count == first_call_count
+
+
+# ── #250 drift_flagged → Tier-B fallback ────────────────────────────
+
+def test_resolver_falls_back_to_tier_b_when_drift_flagged():
+    """Production drift-guard contract: when ticker_calibration row
+    has drift_flagged=TRUE, _latest_calibration returns None so callers
+    fall through to Tier-B (universal RSI ranges from
+    lib/strategies/config.py). A single anomalous quarter doesn't
+    whipsaw production thresholds."""
+    import pandas as pd
+    calibration._latest_calibration.cache_clear()
+    flagged_row = pd.DataFrame([{
+        "calibration_date": date.today(),
+        "rsi_p10": 25.0, "rsi_p25": 35.0, "rsi_p50": 50.0,
+        "rsi_p75": 65.0, "rsi_p90": 75.0,
+        "lookback_days": 60, "n_bars_used": 30000,
+        "drift_flagged": True,
+    }])
+    with patch("gcp.database.is_cloud_sql_configured", return_value=True), \
+         patch("gcp.database.get_engine", return_value=None), \
+         patch("pandas.read_sql", return_value=flagged_row):
+        result = calibration._latest_calibration("DRIFT_SPY")
+    assert result is None, (
+        "drift_flagged=TRUE must trigger Tier-B fallback (return None)"
+    )
+
+
+def test_resolver_returns_row_when_drift_flagged_false():
+    """Counter-test: drift_flagged=FALSE → row resolves normally."""
+    import pandas as pd
+    calibration._latest_calibration.cache_clear()
+    clean_row = pd.DataFrame([{
+        "calibration_date": date.today(),
+        "rsi_p10": 25.0, "rsi_p25": 35.0, "rsi_p50": 50.0,
+        "rsi_p75": 65.0, "rsi_p90": 75.0,
+        "lookback_days": 60, "n_bars_used": 30000,
+        "drift_flagged": False,
+    }])
+    with patch("gcp.database.is_cloud_sql_configured", return_value=True), \
+         patch("gcp.database.get_engine", return_value=None), \
+         patch("pandas.read_sql", return_value=clean_row):
+        result = calibration._latest_calibration("CLEAN_SPY")
+    assert result is not None
+    assert result["rsi_p50"] == 50.0
+
+
+def test_resolver_legacy_query_when_drift_column_missing():
+    """Pre-#250 deploys without the drift_flagged column: resolver
+    falls back to the legacy SELECT (drift_flagged-less rows treated
+    as drift_flagged=False)."""
+    import pandas as pd
+    calibration._latest_calibration.cache_clear()
+    legacy_row = pd.DataFrame([{
+        "calibration_date": date.today(),
+        "rsi_p10": 25.0, "rsi_p25": 35.0, "rsi_p50": 50.0,
+        "rsi_p75": 65.0, "rsi_p90": 75.0,
+        "lookback_days": 60, "n_bars_used": 30000,
+        # No drift_flagged column — pre-#250 deploy
+    }])
+    call_count = {"n": 0}
+    def fake_read_sql(sql, eng, params):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise Exception('column "drift_flagged" does not exist')
+        return legacy_row
+    with patch("gcp.database.is_cloud_sql_configured", return_value=True), \
+         patch("gcp.database.get_engine", return_value=None), \
+         patch("pandas.read_sql", side_effect=fake_read_sql):
+        result = calibration._latest_calibration("LEGACY_SPY")
+    assert result is not None
+    assert result["rsi_p50"] == 50.0
+    assert call_count["n"] == 2, "Should attempt both new + legacy SELECT"

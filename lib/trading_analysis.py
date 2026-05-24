@@ -686,6 +686,9 @@ class MarketAnalyzer:
         # RSI with Wilder
         print("2/11 - Calculating RSI (Relative Strength Index)...")
         df['RSI14_W'] = self.calculate_rsi(df['Last'], 14)
+        # Phase 0.7.x — signed 3-bar RSI delta for the directional
+        # `rsi_thrust` momentum gate (mirrors `add_all_indicators`).
+        df['RSI_Thrust_3'] = df['RSI14_W'] - df['RSI14_W'].shift(3)
 
         # EMAs with SMA seeding
         print("3/11 - Calculating EMAs (Exponential Moving Averages)...")
@@ -706,6 +709,19 @@ class MarketAnalyzer:
         df['RVOL20'] = self.calculate_rvol(df, 20)
         print("    - RVOL minute of day...")
         df['RVOL_MOD'], df['RVOL_MOD_EXCL'] = self.calculate_rvol_minute_of_day(df, exclude_current=True)
+        # Phase 0.7.x — `rvol_above_recent` confirmer column. Median-based
+        # rolling RVOL (robust to outlier spikes), read by the new
+        # momentum condition. Mirrors `lib.indicators.calculate_rvol_recent`
+        # so the legacy MarketAnalyzer path stays in sync with the canonical
+        # add_all_indicators output. Without this, the rvol confirmer never
+        # fires on this code path (Codex P2 review on PR #262).
+        _rvol_med = df['Volume'].rolling(window=20, min_periods=1).median()
+        df['RVol_Recent_20'] = df['Volume'] / _rvol_med.where(_rvol_med > 0, np.nan)
+        # Phase 0.7.x — `atr_expansion` confirmer column. Short-ATR / long-ATR
+        # ratio. Mirrors `lib.indicators.calculate_atr_expansion`.
+        _atr_short = self.calculate_atr(df, 5)
+        _atr_long  = self.calculate_atr(df, 20)
+        df['ATR_Expansion'] = _atr_short / _atr_long.where(_atr_long > 0, np.nan)
 
         # OBV
         print("6/11 - Calculating OBV (On-Balance Volume)...")
@@ -778,6 +794,9 @@ class MarketAnalyzer:
         # Count consecutive movements
         df['Consecutive_Up'] = df['Up_Move'].rolling(consecutive_periods).sum()
         df['Consecutive_Down'] = df['Down_Move'].rolling(consecutive_periods).sum()
+        # Phase 0.7.2: relaxed 3-of-5 windows for the momentum gate.
+        df['Consecutive_Up_5'] = df['Up_Move'].rolling(5).sum()
+        df['Consecutive_Down_5'] = df['Down_Move'].rolling(5).sum()
         
         signals = []
         total_rows = len(df)
@@ -798,39 +817,97 @@ class MarketAnalyzer:
             signal = None
             signal_strength = 0
             
-            # CALL Signal Conditions
+            # CALL Signal Conditions — Phase 0.7.x:
+            #   - dropped `stoch_rsi_not_overbought` (free score, fired ~72%)
+            #   - relaxed `consecutive_up` from 3-of-3 to 3-of-5
+            #   - added `rvol_above_recent` (volume confirmation)
+            #   - added `atr_expansion` (volatility regime gate)
+            #   - added `rsi_thrust` (directional RSI velocity)
+            rvol_recent = current.get('RVol_Recent_20')
+            rvol_recent_fires = (
+                rvol_recent is not None
+                and not pd.isna(rvol_recent)
+                and rvol_recent > 1.2
+            )
+            atr_exp = current.get('ATR_Expansion')
+            atr_expansion_fires = (
+                atr_exp is not None
+                and not pd.isna(atr_exp)
+                and atr_exp > 1.15
+            )
+            rsi_thrust = current.get('RSI_Thrust_3')
+            rsi_thrust_valid = rsi_thrust is not None and not pd.isna(rsi_thrust)
+
+            # Phase 0.7.x: track CORE-tier counts in parallel so the
+            # tier gate can require a credible setup floor (CORE >= 2)
+            # before CONFIRMING conditions can pile on. CORE = defines
+            # the setup (consec, RSI band, above/below VWAP, above/below
+            # EMA9). CONFIRMING = rvol, atr_expansion, rsi_thrust.
             call_conditions = 0
-            if current['Consecutive_Up'] >= consecutive_periods:  # Consecutive up moves
+            call_core = 0
+            if current.get('Consecutive_Up', 0) >= 3:  # 3-of-3 strict up bars
                 call_conditions += 1
+                call_core += 1
             if current['RSI14_W'] < 50 and current['RSI14_W'] > 25:  # RSI in bullish range
                 call_conditions += 1
-            if current.get('StochRSI_K', 50) < 80:  # StochRSI not overbought
-                call_conditions += 1
+                call_core += 1
             if current['Last'] > current.get('VWAP', current['Last']):  # Price above VWAP
                 call_conditions += 1
+                call_core += 1
             if current['Last'] > current.get('EMA9', current['Last']):  # Price above EMA9
                 call_conditions += 1
-            
-            # PUT Signal Conditions
+                call_core += 1
+            if rvol_recent_fires:  # current vol > 1.2x rolling-20 median
+                call_conditions += 1
+            if atr_expansion_fires:  # ATR(5) > 1.15x ATR(20) — vol expanding
+                call_conditions += 1
+            if rsi_thrust_valid and rsi_thrust > 5.0:  # RSI accelerating up
+                call_conditions += 1
+
+            # PUT Signal Conditions — Phase 0.7.x mirror.
             put_conditions = 0
-            if current['Consecutive_Down'] >= consecutive_periods:  # Consecutive down moves
+            put_core = 0
+            if current.get('Consecutive_Down', 0) >= 3:  # 3-of-3 strict down bars
                 put_conditions += 1
+                put_core += 1
             if current['RSI14_W'] > 50 and current['RSI14_W'] < 75:  # RSI in bearish range
                 put_conditions += 1
-            if current.get('StochRSI_K', 50) > 20:  # StochRSI not oversold
-                put_conditions += 1
+                put_core += 1
             if current['Last'] < current.get('VWAP', current['Last']):  # Price below VWAP
                 put_conditions += 1
+                put_core += 1
             if current['Last'] < current.get('EMA9', current['Last']):  # Price below EMA9
                 put_conditions += 1
-            
-            # Generate signal if enough conditions are met
-            min_conditions = 3
-            
-            if call_conditions >= min_conditions and call_conditions > put_conditions:
+                put_core += 1
+            if rvol_recent_fires:  # direction-agnostic volume confirmation
+                put_conditions += 1
+            if atr_expansion_fires:  # direction-agnostic vol regime gate
+                put_conditions += 1
+            if rsi_thrust_valid and rsi_thrust < -5.0:  # RSI accelerating down
+                put_conditions += 1
+
+            # Generate signal if enough conditions are met. A gate-blocked
+            # direction can't suppress the eligible direction — see
+            # MomentumStrategy.evaluate for the parallel logic.
+            min_conditions = 5  # B+: raised from 3, only score>=5 clears costs
+            min_core_conditions = 2
+
+            call_eligible = (call_conditions >= min_conditions
+                             and call_core >= min_core_conditions)
+            put_eligible  = (put_conditions  >= min_conditions
+                             and put_core   >= min_core_conditions)
+
+            if call_eligible and put_eligible:
+                if call_conditions > put_conditions:
+                    signal = 'call'
+                    signal_strength = call_conditions
+                elif put_conditions > call_conditions:
+                    signal = 'put'
+                    signal_strength = put_conditions
+            elif call_eligible:
                 signal = 'call'
                 signal_strength = call_conditions
-            elif put_conditions >= min_conditions and put_conditions > call_conditions:
+            elif put_eligible:
                 signal = 'put'
                 signal_strength = put_conditions
             

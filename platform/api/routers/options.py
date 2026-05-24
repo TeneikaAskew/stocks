@@ -1,5 +1,14 @@
 """
-Options flow router — Cloud SQL reader over etf_options_snapshots (AlphaVantage EOD).
+Options flow router — Cloud SQL reader over etf_options_snapshots.
+
+The underlying table now holds BOTH EOD and intraday-realtime rows
+(market_session ∈ {'EOD', 'REALTIME'}). The 09 PM ET av-options-daily
+scheduler writes EOD rows via gcp.fetchers.fetch_av_historical_options;
+the */5 9-15 ET av-options-realtime scheduler writes intraday rows via
+gcp.fetchers.fetch_av_realtime_options. Both share the same AV API key
+(realtime-options tier, $199.99/mo, 600 req/min — upgraded 2026-05-22)
+and coexist in etf_options_snapshots via the unique key
+(ticker, snapshot_ts, option_type, expiration, strike).
 
 Endpoints
 ---------
@@ -11,8 +20,8 @@ GET /api/options/dates/{ticker}
 GET /api/options/{ticker}/{date_str}
     Returns the normalized option chain for a given ticker and snapshot date.
     Reads Cloud SQL only — no live AlphaVantage proxy on the request path.
-    Data is ingested by `gcp.fetchers.fetch_av_historical_options` via the
-    daily GitHub Actions workflow.
+    Data is ingested by `gcp.fetchers.fetch_av_historical_options` (EOD) and
+    `gcp.fetchers.fetch_av_realtime_options` (intraday).
 
 GET /api/options/live/{ticker}/{date_str}
     Live AlphaVantage HISTORICAL_OPTIONS proxy. Replaces the decommissioned
@@ -27,6 +36,8 @@ Design notes
   Yahoo-sourced rows (`data_source IS NULL`) are explicitly excluded.
 * Cache: cachetools.TTLCache keyed on (ticker, date). EOD rows are immutable
   once written, so cache hit rate approaches 100% after first request each day.
+  Track 4 (OptionsFlowPage freshness badge) will tighten the TTL for REALTIME
+  rows so the UI sees ≤60 s staleness.
 * Response shape is kept identical to the prior live-proxy implementation so
   the React page needs no contract change. Column mapping:
     option_type ('calls'|'puts') → type ('call'|'put')
