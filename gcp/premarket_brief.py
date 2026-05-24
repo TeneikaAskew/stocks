@@ -2876,7 +2876,7 @@ def _build_playbook_embed(brief: dict) -> dict:
 def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     """Format brief as a list of (channel_kind, payload) tuples.
 
-    Returns 1-3 messages, each tagged with the webhook channel it
+    Returns 1-4 messages, each tagged with the webhook channel it
     should post to:
 
       ('main', overview + ticker_analysis + playbook)   — analytics
@@ -2904,10 +2904,17 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
         'color': overview.get('color', 0x3498db),
     }
 
-    # ── Main channel — analytics ────────────────────────────────────
-    main_msg = [overview, ticker_embed]
+    # ── Main channel — analytics (overview + ticker analysis) ──────
+    analytics_msg = [overview, ticker_embed]
+
+    # ── Main channel — Strat Playbook (separate message so it doesn't
+    # share the analytics char budget — historically the playbook was
+    # dropped on most runs because overview+ticker already filled the
+    # 6000-char per-message cap. Same split-for-budget pattern the
+    # macro calendar already uses below.) ────────────────────────────
+    playbook_msg = []
     if playbook.get('fields'):
-        main_msg.append(playbook)
+        playbook_msg.append(playbook)
 
     # ── Earnings channel — company earnings ─────────────────────────
     earnings_msg = []
@@ -2921,7 +2928,8 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
         calendar_msg.append(calendar)
 
     output: list[tuple[str, dict]] = []
-    for kind, embeds in [('main', main_msg),
+    for kind, embeds in [('main', analytics_msg),
+                         ('main', playbook_msg),
                          ('earnings', earnings_msg),
                          ('main', calendar_msg)]:
         # Per-message truncation
@@ -2947,14 +2955,26 @@ def format_discord_messages(brief: dict) -> list[dict]:
 
 def format_discord_message(brief: dict) -> dict:
     """Legacy single-payload API kept for back-compat with tests + any
-    direct callers. Returns the FIRST message from format_discord_messages,
-    which is overview + tickers + playbook (the analytics half). Earnings
-    and calendar move to a second message — callers using this legacy
-    function will silently lose them. New code should prefer
-    format_discord_messages.
+    direct callers. Returns one Discord payload containing the analytics
+    half — Overview + Ticker Analysis + Strat Playbook (when present).
+
+    PR #522 split the playbook into its own routed message so it gets
+    its own 6000-char budget. This function merges it back in for the
+    single-payload contract so the playbook isn't silently lost for any
+    legacy caller. Earnings + Calendar move to other messages and are
+    not included here (matches pre-#522 behavior — the legacy contract
+    was analytics-only).
     """
-    msgs = format_discord_messages(brief)
-    return msgs[0] if msgs else {'embeds': []}
+    routed = format_discord_messages_routed(brief)
+    embeds: list[dict] = []
+    for kind, msg in routed:
+        if kind != 'main':
+            break   # hit the earnings channel — stop
+        first = (msg.get('embeds') or [{}])[0]
+        if 'Calendar' in (first.get('title') or ''):
+            break   # hit the macro calendar (still 'main') — stop
+        embeds.extend(msg.get('embeds') or [])
+    return {'embeds': embeds}
 
 
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────

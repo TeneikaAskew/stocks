@@ -121,13 +121,54 @@ def test_calendar_not_in_earnings_channel(patched_builders):
 
 
 def test_calendar_is_separate_message_from_analytics(patched_builders):
-    """Calendar is its OWN main message, not appended to analytics —
-    keeps the analytics char budget bounded."""
+    """Calendar + Playbook are each their OWN main message, not appended
+    to analytics — keeps each message's char budget bounded. Analytics
+    (overview + ticker) historically blew the 6000-char cap and dropped
+    the Strat Playbook every run; splitting them gives each its own
+    budget so nothing gets silently truncated."""
     out = patched_builders.format_discord_messages_routed(_full_brief())
     main_msgs = [msg for kind, msg in out if kind == 'main']
-    assert len(main_msgs) == 2, (
-        f"Expected 2 'main' messages (analytics + calendar), got {len(main_msgs)}"
+    assert len(main_msgs) == 3, (
+        f"Expected 3 'main' messages (analytics + playbook + calendar), "
+        f"got {len(main_msgs)}"
     )
+
+
+def test_playbook_is_its_own_main_message(patched_builders):
+    """Strat Playbook must NOT share a message with overview/ticker —
+    that historical pairing blew the 6000-char per-message cap and the
+    playbook was the embed that got dropped. Pin: the playbook is in
+    a separate ('main', {...}) tuple."""
+    out = patched_builders.format_discord_messages_routed(_full_brief())
+    titles_per_msg = [
+        (kind, [e.get('title', '') for e in msg['embeds']])
+        for kind, msg in out
+    ]
+    playbook_msgs = [
+        (kind, titles) for kind, titles in titles_per_msg
+        if any('Playbook' in (t or '') for t in titles)
+    ]
+    assert len(playbook_msgs) == 1, (
+        f"Playbook should be in exactly one message, got {playbook_msgs}")
+    kind, titles = playbook_msgs[0]
+    assert kind == 'main'
+    # Crucially: it must not share a message with the analytics embeds
+    assert 'Premarket Overview' not in titles
+    assert 'Ticker Analysis' not in titles
+
+
+def test_no_playbook_message_when_playbook_empty(monkeypatch, patched_builders):
+    """When `_build_playbook_embed` returns no fields (nothing to show),
+    we don't emit an empty playbook message."""
+    monkeypatch.setattr(
+        patched_builders, '_build_playbook_embed',
+        lambda b: {'title': 'Playbook', 'fields': [], 'color': 0},
+    )
+    out = patched_builders.format_discord_messages_routed(_full_brief())
+    for kind, msg in out:
+        for emb in msg['embeds']:
+            assert 'Playbook' not in (emb.get('title') or ''), (
+                f"Empty playbook should not be emitted, got: {emb}")
 
 
 def test_no_earnings_message_when_no_earnings(patched_builders):
@@ -138,6 +179,24 @@ def test_no_earnings_message_when_no_earnings(patched_builders):
     assert earnings_msgs == [], (
         f"Empty earnings should produce no earnings message; got {len(earnings_msgs)}"
     )
+
+
+def test_legacy_single_payload_preserves_playbook(patched_builders):
+    """format_discord_message (singular) must NOT silently lose the
+    Strat Playbook when the routed function splits it into its own
+    message — back-compat regression guard for PR #522. Pre-split the
+    single payload was [overview, ticker, playbook]; after the split
+    msgs[0] is just [overview, ticker] and a naive `msgs[0]` would
+    drop the playbook for any legacy caller."""
+    msg = patched_builders.format_discord_message(_full_brief())
+    titles = [e.get('title', '') for e in msg['embeds']]
+    assert 'Premarket Overview' in titles
+    assert 'Ticker Analysis' in titles
+    assert 'Playbook' in titles, (
+        f"Playbook missing from legacy single-payload — got: {titles}")
+    # Earnings + Calendar were never in the legacy single payload
+    assert not any('Earnings' in t for t in titles)
+    assert not any('Calendar' in t for t in titles)
 
 
 # ────────────────────────────────────────────────────────────────────────────
