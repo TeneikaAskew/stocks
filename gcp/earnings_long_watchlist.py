@@ -100,7 +100,7 @@ def _query_watchlist(days_ahead: int, min_prior_wins: int = 2) -> "pd.DataFrame"
                    MAX(sector) AS sector
             FROM earnings_calendar
             WHERE earnings_date BETWEEN CURRENT_DATE
-                                    AND CURRENT_DATE + :days_ahead
+                                    AND CURRENT_DATE + (:days_ahead)::int
             GROUP BY ticker
         )
         SELECT u.ticker,
@@ -161,14 +161,14 @@ def build_discord_message(df, as_of: date, days_ahead: int) -> dict:
     note so the cron's presence is visible (vs. silently dropping).
     """
     title = f"📈 Next-NVAX Long-Side Watchlist — {as_of.isoformat()}"
-    end = "this week" if days_ahead <= 7 else f"next {days_ahead} days"
+    window = "this week" if days_ahead <= 7 else f"the next {days_ahead} days"
 
     if df is None or df.empty:
         return {
             "embeds": [{
                 "title": title,
                 "description": (
-                    f"No candidate reporters in the {end}.\n\n"
+                    f"No candidate reporters {window}.\n\n"
                     "Filter: ≥2 prior historical long-side winners on "
                     "`earnings_options_strategy_winners` (latest calibration "
                     "run). Will refresh next Sunday."
