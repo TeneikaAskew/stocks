@@ -1,0 +1,4 @@
+model,mean_ic,std_ic,mean_rank_ic,mean_auc,mean_ls_sharpe,mean_ls_bps,mean_ls_win
+lasso,0.0264,0.0265,0.0277,0.5137,0.3098,1.966,0.4818
+lgbm,0.023,0.0099,0.0202,0.5087,1.136,3.852,0.5066
+ridge,0.0232,0.0321,0.0238,0.5122,0.331,2.202,0.479
