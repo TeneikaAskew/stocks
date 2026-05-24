@@ -47,7 +47,7 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from gcp.database import execute_sql, get_engine, upsert_dataframe
+from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert
 from lib.data_loader import DataLoader
 from lib.strat import StratClassifier
 from lib.indicators import add_all_indicators
@@ -158,36 +158,80 @@ def _load_chain_quarter(engine, ticker: str, year: int, q: int) -> pd.DataFrame:
 
 
 def _compute_daily_vex(engine, ticker: str, spot_lookup: dict) -> pd.DataFrame:
-    """Compute total_vex per (ticker, date) by iterating chain quarter-by-quarter.
-
-    spot_lookup maps date -> spot price for the dealer-vanna formula in
-    lib.gamma.total_vex. We pull spot from gamma_levels_eod (already in
-    spot_lookup) — if missing for a date, skip that date.
+    """Compute total_vex per (ticker, date), using daily_vex cache to skip
+    already-computed dates. ~7 min on first run per ticker → near-zero on
+    subsequent runs.
     """
-    rows: list[dict] = []
-    log.info("%s: computing daily VEX by quarter...", ticker)
+    # Load already-cached dates
+    cache_sql = text("""
+        SELECT snapshot_date, total_vex
+        FROM daily_vex
+        WHERE ticker = :ticker
+    """)
+    with engine.connect() as conn:
+        cached = pd.read_sql(cache_sql, conn, params={"ticker": ticker})
+    if not cached.empty:
+        cached["snapshot_date"] = pd.to_datetime(cached["snapshot_date"]).dt.date
+        cached_dates = set(cached["snapshot_date"].tolist())
+        log.info("%s: %d dates already in daily_vex cache", ticker, len(cached_dates))
+    else:
+        cached_dates = set()
+        log.info("%s: daily_vex cache empty — computing fresh", ticker)
+
+    target_dates = set(spot_lookup.keys())
+    missing_dates = target_dates - cached_dates
+    log.info("%s: %d dates need VEX compute (%d cached)",
+             ticker, len(missing_dates), len(cached_dates))
+
+    if not missing_dates:
+        return cached.set_index("snapshot_date")
+
+    new_rows: list[dict] = []
+    log.info("%s: computing daily VEX by quarter (missing dates only)...", ticker)
     for year in range(2015, 2027):
         for q in (1, 2, 3, 4):
             t0 = time.time()
             chain = _load_chain_quarter(engine, ticker, year, q)
             if chain.empty:
                 continue
-            # Map column names to what total_vex expects (it reads .get("vega"), .get("open_interest"))
+            n_done = 0
             for snap_date, day_chain in chain.groupby("snapshot_date"):
+                if snap_date not in missing_dates:
+                    continue
                 spot = spot_lookup.get(snap_date)
                 if spot is None or not spot:
                     continue
-                # total_vex expects list of dicts with 'vega', 'open_interest'
                 opts = day_chain.to_dict("records")
                 vex = total_vex(opts, float(spot))
-                rows.append({"snapshot_date": snap_date, "total_vex": float(vex)})
-            log.info("  %s %dQ%d: %d dates, %.1fs", ticker, year, q,
-                     chain["snapshot_date"].nunique(), time.time() - t0)
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
-    return df.drop_duplicates("snapshot_date").set_index("snapshot_date")
+                new_rows.append({
+                    "ticker": ticker,
+                    "snapshot_date": snap_date,
+                    "total_vex": float(vex),
+                    "spot_estimate": float(spot),
+                })
+                n_done += 1
+            if n_done:
+                log.info("  %s %dQ%d: %d new dates, %.1fs",
+                         ticker, year, q, n_done, time.time() - t0)
+
+    # Persist new rows to cache
+    if new_rows:
+        new_df = pd.DataFrame(new_rows)
+        bulk_copy_upsert(
+            new_df, "daily_vex",
+            conflict_cols=["ticker", "snapshot_date"],
+            update_cols=["total_vex", "spot_estimate"],
+        )
+        log.info("%s: cached %d new VEX rows to daily_vex", ticker, len(new_df))
+
+    # Combine cache + new for return
+    combined = pd.concat([
+        cached if not cached.empty else pd.DataFrame(columns=["snapshot_date", "total_vex"]),
+        pd.DataFrame([{"snapshot_date": r["snapshot_date"], "total_vex": r["total_vex"]}
+                       for r in new_rows]) if new_rows else pd.DataFrame(columns=["snapshot_date", "total_vex"]),
+    ], ignore_index=True)
+    combined = combined.drop_duplicates("snapshot_date").set_index("snapshot_date")
+    return combined
 
 
 # ──────────────────── TF aggregation + featurization ────────────────────
@@ -421,12 +465,14 @@ def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame) 
 
         table = f"strat_features_{tf_label}"
         n = len(feat)
-        # Use ON CONFLICT DO UPDATE so re-runs converge
+        # Use ON CONFLICT DO UPDATE so re-runs converge. bulk_copy_upsert
+        # uses psycopg2 COPY FROM STDIN → 10-30× faster than pg8000 binds.
+        # Falls back to upsert_dataframe if psycopg2 unavailable.
         update_cols = [c for c in feat.columns
                        if c not in ("ticker", "ts", "computed_at")]
-        upsert_dataframe(feat, table,
-                         conflict_cols=["ticker", "ts"],
-                         update_cols=update_cols)
+        bulk_copy_upsert(feat, table,
+                          conflict_cols=["ticker", "ts"],
+                          update_cols=update_cols)
         log.info("%s %s: upserted %d rows (%.1fs)", ticker, tf_label, n, time.time() - t_tf)
         results["tfs"][tf_label] = n
 

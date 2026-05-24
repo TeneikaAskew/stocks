@@ -355,6 +355,130 @@ def upsert_dataframe(
     return total
 
 
+def bulk_copy_upsert(
+    df: pd.DataFrame,
+    table: str,
+    conflict_cols: List[str],
+    update_cols: Optional[List[str]] = None,
+) -> int:
+    """Fast bulk upsert via psycopg2 COPY FROM STDIN → temp table → INSERT ... ON CONFLICT.
+
+    10-30× faster than `upsert_dataframe()` (which uses pg8000 per-row binds)
+    for large DataFrames. Uses the same Cloud SQL Connector but with the
+    psycopg2 driver path. Falls back to `upsert_dataframe()` if psycopg2
+    isn't installed or the COPY path errors.
+
+    Implementation:
+      1. Open psycopg2 connection via Cloud SQL Connector
+      2. CREATE TEMPORARY TABLE matching target schema
+      3. COPY FROM STDIN (CSV) into temp — single binary stream, no per-row
+         binds, no parameter-count limit
+      4. INSERT INTO target SELECT * FROM temp ON CONFLICT DO UPDATE
+      5. Drop temp (implicit on connection close)
+
+    Why this matters: pg8000's bind-param limit caps row throughput at
+    ~890 rows per round-trip. With a ~1M row 1-min bar table that's
+    1,124 round-trips × 1-2s each = 20-40 min per upsert. COPY does the
+    same volume in ~30s.
+    """
+    if df.empty:
+        return 0
+
+    try:
+        import psycopg2
+    except ImportError:
+        logger.warning("psycopg2 not installed — falling back to upsert_dataframe()")
+        return upsert_dataframe(df, table, conflict_cols, update_cols)
+
+    # Reflect target columns first so we drop extra DataFrame cols (same
+    # safety check as upsert_dataframe) before COPY.
+    import sqlalchemy
+    engine = get_engine()
+    meta = sqlalchemy.MetaData()
+    meta.reflect(bind=engine, only=[table])
+    tbl = meta.tables[table]
+    table_col_names = {col.name for col in tbl.columns}
+    dropped = [c for c in df.columns if c not in table_col_names]
+    if dropped:
+        logger.warning("bulk_copy_upsert(%s): dropping %d cols not in schema: %s",
+                        table, len(dropped), dropped[:5])
+    df = df[[c for c in df.columns if c in table_col_names]].copy()
+
+    cols = list(df.columns)
+    if update_cols is None:
+        update_cols = [c for c in cols if c not in conflict_cols]
+
+    try:
+        from google.cloud.sql.connector import Connector
+        connector = Connector(refresh_strategy="lazy")
+        # psycopg2 driver path through the Cloud SQL Connector
+        conn = connector.connect(
+            _connection_name(),
+            "psycopg2",
+            user=os.environ['DB_USER'],
+            password=os.environ['DB_PASS'],
+            db=os.environ['DB_NAME'],
+        )
+    except Exception as e:
+        logger.warning("psycopg2 Cloud SQL connection failed (%s) — falling back to upsert_dataframe()", e)
+        return upsert_dataframe(df, table, conflict_cols, update_cols)
+
+    try:
+        # COPY-into-temp-table-then-INSERT pattern.
+        # Use a session-private temp table name to avoid collisions across
+        # concurrent jobs (Cloud Run can run multiple executions of the
+        # same job in parallel — each gets its own connection / session).
+        import uuid, io
+        temp_name = f"tmp_upsert_{table}_{uuid.uuid4().hex[:8]}"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TEMPORARY TABLE {temp_name} (LIKE {table} INCLUDING DEFAULTS) "
+                f"ON COMMIT DROP"
+            )
+
+            # COPY FROM STDIN as CSV. Use \\N for NULLs.
+            # Convert DataFrame to CSV in-memory.
+            sio = io.StringIO()
+            df.to_csv(sio, index=False, header=False, na_rep='\\N')
+            sio.seek(0)
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            copy_sql = (
+                f"COPY {temp_name} ({col_list}) FROM STDIN WITH "
+                f"(FORMAT CSV, NULL '\\N')"
+            )
+            cur.copy_expert(copy_sql, sio)
+            copied = cur.rowcount
+
+            # INSERT INTO target SELECT * FROM temp ON CONFLICT DO UPDATE
+            conflict_clause = ", ".join(f'"{c}"' for c in conflict_cols)
+            update_clause = ", ".join(
+                f'"{c}" = EXCLUDED."{c}"' for c in update_cols
+            )
+            upsert_sql = (
+                f"INSERT INTO {table} ({col_list}) "
+                f"SELECT {col_list} FROM {temp_name} "
+                f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
+            )
+            cur.execute(upsert_sql)
+            upserted = cur.rowcount
+
+        conn.commit()
+        logger.info("bulk_copy_upsert(%s): COPY'd %d rows, upserted %d",
+                     table, copied, upserted)
+        return upserted
+    except Exception as e:
+        conn.rollback()
+        logger.exception("bulk_copy_upsert(%s) failed: %s — falling back",
+                          table, e)
+        return upsert_dataframe(df, table, conflict_cols, update_cols)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def bulk_insert_dataframe(
     df: pd.DataFrame,
     table: str,
