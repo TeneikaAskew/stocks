@@ -125,6 +125,9 @@ reports/
 # Local Claude scheduler state
 .claude/scheduled_tasks.lock
 
+# Personal Claude permission overrides — local-only, not for commit
+.claude/settings.local.json
+
 # Claude sub-agent git worktrees — transient, local-only git internals
 .claude/worktrees/
 
