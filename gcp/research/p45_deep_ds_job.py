@@ -32,19 +32,10 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-# Install ML deps at startup if missing.
-# Cleaner than baking into the prod image — see requirements-gcp.txt
-def _ensure_ml_deps():
-    needed = ['lightgbm', 'scikit-learn', 'scipy']
-    for pkg in needed:
-        try:
-            __import__(pkg.replace('-', '_').replace('scikit_learn', 'sklearn'))
-        except ImportError:
-            print(f"installing {pkg}...", flush=True)
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", pkg])
-
-_ensure_ml_deps()
-
+# ML deps are baked into the research image via gcp/Dockerfile.research +
+# requirements-research.txt. The prod fetcher image (gcp/Dockerfile) does
+# NOT have these — running this script there will ImportError, which is
+# the intended fail-loud (do not pip install at runtime in production).
 import lightgbm as lgb
 from sklearn.linear_model import Ridge, Lasso
 from sklearn.preprocessing import StandardScaler
