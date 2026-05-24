@@ -2535,6 +2535,47 @@ CREATE TABLE IF NOT EXISTS backtest_reports (
 CREATE INDEX IF NOT EXISTS idx_backtest_reports_created
     ON backtest_reports (created_at DESC);
 
+-- backtest_walk_forward_folds — one row per (run_id, ticker, mode, fold).
+-- Stores the per-fold aggregate metrics from WalkForwardValidator.run() so
+-- the report can compare mean OOS Sharpe against the in-sample sharpe
+-- from backtest_trades. stability_score is denormalised on every row
+-- (same value for all folds in a (run_id, ticker, mode)) for simple query
+-- patterns — there are only ~16 rows per (run_id, ticker, mode) so the
+-- redundancy is negligible.
+CREATE TABLE IF NOT EXISTS backtest_walk_forward_folds (
+    run_id           UUID             NOT NULL,
+    ticker           VARCHAR(10)      NOT NULL,
+    use_strat        BOOLEAN          NOT NULL,
+    mode             VARCHAR(8)       NOT NULL,    -- 'base' | 'strat'
+    fold_index       INTEGER          NOT NULL,    -- 0-based
+
+    train_start      DATE,
+    train_end        DATE,
+    test_start       DATE,
+    test_end         DATE,
+
+    total_trades     INTEGER,
+    win_rate         DOUBLE PRECISION,
+    profit_factor    DOUBLE PRECISION,
+    expectancy       DOUBLE PRECISION,
+    sharpe           DOUBLE PRECISION,
+    max_dd           DOUBLE PRECISION,
+    avg_win          DOUBLE PRECISION,
+    avg_loss         DOUBLE PRECISION,
+
+    stability_score  DOUBLE PRECISION,   -- denormalised — same for all folds in a (run_id, ticker, mode)
+
+    created_at       TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_walk_forward_folds UNIQUE (run_id, ticker, mode, fold_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_folds_run
+    ON backtest_walk_forward_folds (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_folds_ticker_created
+    ON backtest_walk_forward_folds (ticker, created_at DESC);
+
 -- ─────────────────────────────────────────────────────────
 -- WALK_FORWARD_RESULTS: per-(parameter combo) walk-forward sweep output
 --
