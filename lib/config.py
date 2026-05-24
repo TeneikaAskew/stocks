@@ -9,7 +9,7 @@ codebase — every tunable value flows from these config objects.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +291,15 @@ class StratConfig:
     ftfc_direction_threshold: float = 0.3
     ftfc_filter_enabled: bool = True    # Reject trades contradicted by FTFC
     orb_filter_enabled: bool = True     # Reject trades contradicted by ORB trend
+    # Per-direction gate: when a signal's direction is NOT in this set,
+    # the Strat overlay (FTFC + ORB filter and bonus) is skipped and the
+    # trade enters with base-mode scoring (strat_bonus=0). Default is
+    # both directions for back-compat. Added 2026-05-24 after WF
+    # diagnostic on IWM showed Strat is anti-predictive on PUTs but
+    # has a positive cohort on CALLs — gating by direction is the
+    # cheapest principled fix (see scripts/calibrate_iwm_strat.py).
+    allowed_directions: Set[str] = field(
+        default_factory=lambda: {'CALL', 'PUT'})
     timeframes: list = field(default_factory=lambda: ['5m', '15m', '1h', '4h', '12h', '1d', '1w'])
     ftfc_weights: Dict[str, float] = field(default_factory=lambda: {
         '5m':  0.05, '15m': 0.10, '1h': 0.15,
@@ -645,6 +654,8 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         app.strat.ftfc_direction_threshold = strat_data.get('ftfc_direction_threshold', app.strat.ftfc_direction_threshold)
         app.strat.ftfc_filter_enabled = strat_data.get('ftfc_filter_enabled', app.strat.ftfc_filter_enabled)
         app.strat.orb_filter_enabled = strat_data.get('orb_filter_enabled', app.strat.orb_filter_enabled)
+        if 'allowed_directions' in strat_data:
+            app.strat.allowed_directions = set(strat_data['allowed_directions'])
         app.strat.timeframes = strat_data.get('timeframes', app.strat.timeframes)
         app.strat.ftfc_weights = strat_data.get('ftfc_weights', app.strat.ftfc_weights)
 

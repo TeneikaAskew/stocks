@@ -644,7 +644,16 @@ class BacktestEngine:
         bar_ftfc_score = 0.0
         bar_orb_trend = 0
 
-        if use_strat and strat_df is not None:
+        # Direction-gated Strat overlay: when the signal's direction is
+        # not in StratConfig.allowed_directions, fall through with
+        # strat_bonus=0 (base-mode scoring). The trade still enters; we
+        # just don't apply the FTFC/ORB filter or the per-direction Strat
+        # bonus. Added 2026-05-24 to let per-ticker configs disable Strat
+        # on one direction (e.g. IWM PUTs) without losing the working
+        # direction. Default allowed_directions = {'CALL','PUT'} preserves
+        # legacy behaviour.
+        if (use_strat and strat_df is not None
+                and sig['direction'] in self.strat_config.allowed_directions):
             bar_index = day_df.index[bar_idx]
 
             # 1) Look up real FTFC score
