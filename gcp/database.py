@@ -428,7 +428,9 @@ def bulk_copy_upsert(
         df.to_csv(sio, index=False, header=False, sep='\t', na_rep='\\N')
         sio.seek(0)
 
-        with raw_conn.cursor() as cur:
+        # pg8000's cursor doesn't support context manager protocol — use plain assignment
+        cur = raw_conn.cursor()
+        try:
             cur.execute(
                 f"CREATE TEMPORARY TABLE {temp_name} (LIKE {table} INCLUDING DEFAULTS) "
                 f"ON COMMIT DROP"
@@ -447,6 +449,9 @@ def bulk_copy_upsert(
                 f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
             )
             upserted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else copied
+        finally:
+            try: cur.close()
+            except Exception: pass
 
         raw_conn.commit()
         logger.info("bulk_copy_upsert(%s): COPY'd %d rows, upserted %d",

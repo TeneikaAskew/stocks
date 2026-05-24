@@ -48,7 +48,8 @@ log = logging.getLogger(__name__)
 
 # ML deps come from the research image (gcp/Dockerfile.research)
 import lightgbm as lgb
-from sklearn.linear_model import Ridge, Lasso
+from sklearn.linear_model import Ridge, Lasso, ElasticNet, BayesianRidge
+from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
 from scipy import stats as sps
@@ -289,18 +290,36 @@ def train_models(df: pd.DataFrame, fwd_col: str = "fwd_ret_5bars_bps") -> dict:
         yv = test[fwd_col].fillna(0).values
         yv_up = (yv > 0).astype(int)
 
+        # Expanded linear model family per user request — validate signal
+        # is robust across regularization styles + that linear-vs-tree gap
+        # holds with more model variants.
+        # PLSRegression must use a small n_components since we have 100+ feats
         for name, model, use_scaled in [
             ("ridge", Ridge(alpha=1.0), True),
+            ("ridge_strong", Ridge(alpha=10.0), True),
             ("lasso", Lasso(alpha=0.001, max_iter=3000), True),
+            ("lasso_sparse", Lasso(alpha=0.01, max_iter=3000), True),
+            ("elasticnet", ElasticNet(alpha=0.001, l1_ratio=0.5, max_iter=3000), True),
+            ("bayes_ridge", BayesianRidge(), True),
+            ("pls5", PLSRegression(n_components=5, max_iter=500), True),
+            ("pls10", PLSRegression(n_components=10, max_iter=500), True),
             ("lgbm", lgb.LGBMRegressor(
                 n_estimators=300, learning_rate=0.05, max_depth=6, num_leaves=31,
                 min_child_samples=100, random_state=42, verbose=-1,
-                n_jobs=-1,  # use all CPUs
+                n_jobs=-1,
+            ), False),
+            ("lgbm_shallow", lgb.LGBMRegressor(
+                n_estimators=500, learning_rate=0.03, max_depth=4, num_leaves=15,
+                min_child_samples=200, random_state=42, verbose=-1,
+                n_jobs=-1,
             ), False),
         ]:
             try:
                 model.fit(Xt_s if use_scaled else Xt, yt)
                 pred = model.predict(Xv_s if use_scaled else Xv)
+                # PLSRegression returns (n, 1) — flatten for downstream stats
+                if hasattr(pred, "ndim") and pred.ndim > 1:
+                    pred = pred.ravel()
                 ic = _ic(yv, pred); ric = _rank_ic(yv, pred)
                 try: auc = roc_auc_score(yv_up, pred)
                 except Exception: auc = float("nan")
