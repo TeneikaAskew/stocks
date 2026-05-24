@@ -37,7 +37,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import date as _date
+from datetime import date as _date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -73,6 +73,17 @@ VIX_P33, VIX_P67 = 14.65, 19.40
 
 
 # ──────────────────────── Data loaders ────────────────────────
+
+
+def _max_cached_date(engine, ticker: str, tf_label: str) -> Optional[_date]:
+    """Return max(bar_date) currently in strat_features_<tf> for this ticker,
+    or None if table is empty for this ticker. Drives incremental backfill —
+    only featurize+upsert dates strictly after this."""
+    table = f"strat_features_{tf_label}"
+    sql = text(f"SELECT max(bar_date) FROM {table} WHERE ticker = :t")
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"t": ticker}).fetchone()
+    return row[0] if row and row[0] else None
 
 
 def _load_1m_bars(engine, ticker: str, start_date: str) -> pd.DataFrame:
@@ -432,7 +443,34 @@ def _compute_terciles(s: pd.Series) -> tuple[float, float]:
 def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame) -> dict:
     log.info("=== %s: loading 1m bars and gamma context ===", ticker)
     t0 = time.time()
-    bars_1m = _load_1m_bars(engine, ticker, start_date)
+
+    # Incremental: query per-TF max cached date. If all TFs are up to date,
+    # skip ticker. Otherwise load 1m bars from (min cached date - 30 day
+    # lookback for indicator warmup) → only featurize+upsert NEW dates.
+    max_dates_per_tf = {tf_label: _max_cached_date(engine, ticker, tf_label)
+                        for tf_label, _ in TF_LIST}
+    log.info("%s: max cached bar_date per TF: %s", ticker, max_dates_per_tf)
+
+    cached_dates = [d for d in max_dates_per_tf.values() if d is not None]
+    if cached_dates and len(cached_dates) == len(TF_LIST):
+        # All TFs have some cache. Load bars from (earliest_cached - 30 days)
+        # to ensure indicator warmup. Earlier cached dates won't be reupserted
+        # because we filter post-featurize on bar_date > max_cached.
+        earliest_cached = min(cached_dates)
+        # 30 trading-day lookback ≈ 45 calendar days; 60m × 200 bar warmup = ~30 trading days
+        lookback_start = earliest_cached - timedelta(days=45)
+        bar_load_start = max(
+            pd.Timestamp(start_date).date(),
+            lookback_start,
+        ).strftime("%Y-%m-%d")
+        log.info("%s: INCREMENTAL — loading 1m bars from %s (earliest cached=%s, with 45d lookback)",
+                 ticker, bar_load_start, earliest_cached)
+    else:
+        bar_load_start = start_date
+        log.info("%s: FULL BACKFILL — loading from %s (some TFs have empty cache)",
+                 ticker, bar_load_start)
+
+    bars_1m = _load_1m_bars(engine, ticker, bar_load_start)
     log.info("%s: loaded %d 1m RTH bars", ticker, len(bars_1m))
     if bars_1m.empty:
         return {"ticker": ticker, "skipped": True}
@@ -464,6 +502,21 @@ def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame) 
             feat["ts"] = feat["Time"]
 
         table = f"strat_features_{tf_label}"
+
+        # Incremental skip: drop rows whose bar_date is already in cache.
+        # Keeps lookback bars in `feat` (needed for indicator warmup of
+        # newer rows) but doesn't re-upsert them.
+        max_cached = max_dates_per_tf.get(tf_label)
+        if max_cached is not None:
+            before = len(feat)
+            feat = feat[feat["bar_date"] > max_cached]
+            log.info("%s %s: skipped %d already-cached rows (max_cached=%s); %d new to upsert",
+                     ticker, tf_label, before - len(feat), max_cached, len(feat))
+            if feat.empty:
+                log.info("%s %s: nothing new to upsert", ticker, tf_label)
+                results["tfs"][tf_label] = 0
+                continue
+
         n = len(feat)
         # Use ON CONFLICT DO UPDATE so re-runs converge. bulk_copy_upsert
         # uses psycopg2 COPY FROM STDIN → 10-30× faster than pg8000 binds.
