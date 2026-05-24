@@ -408,75 +408,59 @@ def bulk_copy_upsert(
     if update_cols is None:
         update_cols = [c for c in cols if c not in conflict_cols]
 
+    # Use pg8000's native COPY support via the existing Cloud SQL engine.
+    # google-cloud-sql-python-connector only supports pg8000/asyncpg drivers
+    # (not psycopg2), so we route COPY through pg8000.copy_from on the raw
+    # connection. Much simpler than swapping drivers.
     try:
-        from google.cloud.sql.connector import Connector
-        connector = Connector(refresh_strategy="lazy")
-        # psycopg2 driver path through the Cloud SQL Connector
-        conn = connector.connect(
-            _connection_name(),
-            "psycopg2",
-            user=os.environ['DB_USER'],
-            password=os.environ['DB_PASS'],
-            db=os.environ['DB_NAME'],
-        )
+        engine = get_engine()
+        raw_conn = engine.raw_connection()
     except Exception as e:
-        logger.warning("psycopg2 Cloud SQL connection failed (%s) — falling back to upsert_dataframe()", e)
+        logger.warning("bulk_copy_upsert(%s): raw_connection failed (%s); fallback", table, e)
         return upsert_dataframe(df, table, conflict_cols, update_cols)
 
     try:
-        # COPY-into-temp-table-then-INSERT pattern.
-        # Use a session-private temp table name to avoid collisions across
-        # concurrent jobs (Cloud Run can run multiple executions of the
-        # same job in parallel — each gets its own connection / session).
         import uuid, io
         temp_name = f"tmp_upsert_{table}_{uuid.uuid4().hex[:8]}"
 
-        with conn.cursor() as cur:
+        # NOTE pg8000 needs CSV with \\N for NULL. Tab separator is safest.
+        sio = io.StringIO()
+        df.to_csv(sio, index=False, header=False, sep='\t', na_rep='\\N')
+        sio.seek(0)
+
+        with raw_conn.cursor() as cur:
             cur.execute(
                 f"CREATE TEMPORARY TABLE {temp_name} (LIKE {table} INCLUDING DEFAULTS) "
                 f"ON COMMIT DROP"
             )
 
-            # COPY FROM STDIN as CSV. Use \\N for NULLs.
-            # Convert DataFrame to CSV in-memory.
-            sio = io.StringIO()
-            df.to_csv(sio, index=False, header=False, na_rep='\\N')
-            sio.seek(0)
-            col_list = ", ".join(f'"{c}"' for c in cols)
-            copy_sql = (
-                f"COPY {temp_name} ({col_list}) FROM STDIN WITH "
-                f"(FORMAT CSV, NULL '\\N')"
-            )
-            cur.copy_expert(copy_sql, sio)
-            copied = cur.rowcount
+            # pg8000 cursor exposes copy_from(stream, table, sep, null, columns)
+            cur.copy_from(sio, temp_name, sep='\t', null='\\N', columns=cols)
+            copied = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(df)
 
-            # INSERT INTO target SELECT * FROM temp ON CONFLICT DO UPDATE
+            col_list = ", ".join(f'"{c}"' for c in cols)
             conflict_clause = ", ".join(f'"{c}"' for c in conflict_cols)
-            update_clause = ", ".join(
-                f'"{c}" = EXCLUDED."{c}"' for c in update_cols
-            )
-            upsert_sql = (
+            update_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
+            cur.execute(
                 f"INSERT INTO {table} ({col_list}) "
                 f"SELECT {col_list} FROM {temp_name} "
                 f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
             )
-            cur.execute(upsert_sql)
-            upserted = cur.rowcount
+            upserted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else copied
 
-        conn.commit()
+        raw_conn.commit()
         logger.info("bulk_copy_upsert(%s): COPY'd %d rows, upserted %d",
                      table, copied, upserted)
         return upserted
     except Exception as e:
-        conn.rollback()
-        logger.exception("bulk_copy_upsert(%s) failed: %s — falling back",
-                          table, e)
+        try: raw_conn.rollback()
+        except Exception: pass
+        logger.warning("bulk_copy_upsert(%s) COPY path failed (%s); fallback to upsert_dataframe",
+                        table, e)
         return upsert_dataframe(df, table, conflict_cols, update_cols)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        try: raw_conn.close()
+        except Exception: pass
 
 
 def bulk_insert_dataframe(
