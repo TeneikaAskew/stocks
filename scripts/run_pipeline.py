@@ -74,6 +74,21 @@ def main():
               "backtests."),
     )
     parser.add_argument(
+        "--walk-forward", action="store_true",
+        help=("Run walk-forward validation as part of a full pipeline. "
+              "Adds an out-of-sample fold matrix per (ticker, mode) "
+              "into backtest_walk_forward_folds, rendered in the report "
+              "as the 'Walk-Forward Validation' section. Adds ~2-3h to "
+              "wall-clock on top of the base/strat backtests."),
+    )
+    parser.add_argument(
+        "--walk-forward-only", action="store_true",
+        help=("Only re-run walk-forward + report for an existing run, "
+              "reusing that run's base/strat trades from backtest_trades "
+              "for the in-sample-vs-OOS comparison (requires --run-id). "
+              "Mutually exclusive with --report-only."),
+    )
+    parser.add_argument(
         "--output", type=str, default=None,
         help="Output path for the report (default: BACKTEST_RESULTS.md)",
     )
@@ -111,21 +126,48 @@ def main():
     if args.sweep_only and args.skip_sweep:
         log.error("--sweep-only with --skip-sweep would run nothing.")
         sys.exit(2)
+    # --walk-forward-only is the WF analogue of --sweep-only: reuses an
+    # existing run's base/strat trades so the IS-vs-OOS comparison in
+    # the report has something to anchor against, and runs ONLY the WF
+    # + report steps.
+    if args.walk_forward_only and not args.run_id:
+        log.error("--walk-forward-only requires --run-id (the run whose "
+                  "base/strat trades to compare against); a fresh uuid "
+                  "would match no rows.")
+        sys.exit(2)
+    if args.walk_forward_only and args.report_only:
+        log.error("--walk-forward-only and --report-only are mutually "
+                  "exclusive.")
+        sys.exit(2)
+    if args.walk_forward_only and args.sweep_only:
+        log.error("--walk-forward-only and --sweep-only are mutually "
+                  "exclusive.")
+        sys.exit(2)
     run_id = args.run_id or str(uuid.uuid4())
 
+    # --walk-forward-only implies --walk-forward; normalise so the
+    # gating logic below stays a single boolean.
+    do_walk_forward = args.walk_forward or args.walk_forward_only
+
     log.info("Pipeline: run_id=%s  tickers=%s  skip_sweep=%s  "
-             "report_only=%s  sweep_only=%s",
+             "report_only=%s  sweep_only=%s  walk_forward=%s  "
+             "walk_forward_only=%s",
              run_id, tickers, args.skip_sweep, args.report_only,
-             args.sweep_only)
+             args.sweep_only, do_walk_forward, args.walk_forward_only)
     t_start = time.time()
 
     # Step gating:
-    #   full          → backtests + sweep + report
-    #   --skip-sweep   → backtests + report
-    #   --sweep-only   → sweep + report   (reuses existing base/strat trades)
-    #   --report-only  → report
-    run_backtests = not (args.report_only or args.sweep_only)
-    run_sweep = not (args.report_only or args.skip_sweep)
+    #   full                  → backtests + sweep + report
+    #   full --walk-forward   → backtests + sweep + WF + report
+    #   --skip-sweep          → backtests + report
+    #   --sweep-only          → sweep + report   (reuses existing base/strat trades)
+    #   --walk-forward-only   → WF + report      (reuses existing base/strat trades)
+    #   --report-only         → report
+    run_backtests = not (args.report_only or args.sweep_only
+                         or args.walk_forward_only)
+    run_sweep = not (args.report_only or args.skip_sweep
+                     or args.walk_forward_only)
+    run_wf = do_walk_forward and not args.report_only
 
     if run_backtests:
         # --- Step 1: Base backtests (no Strat) ---
@@ -165,6 +207,28 @@ def main():
             )
             if not ok:
                 failed.append(f"sweep-{ticker}")
+
+    if run_wf:
+        # --- Step 3b: Walk-forward validation (per ticker × mode) ---
+        # Capacity: ~16 folds per (ticker, mode) for the default 12mo
+        # train / 3mo test over ~5y of intraday data, × 3 tickers × 2
+        # modes = ~96 fold-engine-runs total. Each fold runs on a ~3mo
+        # slice (small) so per-fold wall-clock is faster than a full
+        # backtest. Total ~2-3h; well inside the 8h job task-timeout.
+        for ticker in tickers:
+            for use_strat in (False, True):
+                strat_flag = ["--use-strat"] if use_strat else []
+                ok = run_step(
+                    [python, str(SCRIPTS_DIR / "run_walk_forward.py"),
+                     "--ticker", ticker, *strat_flag,
+                     "--run-id", run_id],
+                    f"Walk-forward {ticker} "
+                    f"({'strat' if use_strat else 'base'})",
+                )
+                if not ok:
+                    failed.append(
+                        f"walk-forward-{'strat' if use_strat else 'base'}-"
+                        f"{ticker}")
 
     # --- Step 4: Generate report ---
     report_cmd = [
