@@ -369,6 +369,70 @@ def insight_combo_sweep(sweep_data: Dict[str, pd.DataFrame]) -> List[str]:
     return lines
 
 
+def insight_general_combo_sweep(sweep_data: Dict[str, pd.DataFrame]) -> List[str]:
+    """Insights from the Phase 3 sweep — coarser entry timeframes (5m,
+    15m, 30m) paired with a higher-TF trend filter.
+
+    insight_combo_sweep() only covers the 1m-anchored combos (rows tagged
+    ``type == 'combo'``). Phase 3 rows are tagged ``general_combo`` and
+    would otherwise be computed + stored but never rendered. Returns
+    ``[]`` when no Phase 3 rows are present (e.g. a sweep run without
+    ``--all-combos``) so the section simply doesn't appear.
+    """
+    # Collect general_combo rows across all tickers up front — if there
+    # are none, render nothing rather than an empty heading.
+    has_rows = any(
+        not df[df['type'] == 'general_combo'].empty
+        for df in sweep_data.values()
+    )
+    if not has_rows:
+        return []
+
+    lines = [
+        "### Combination Analysis — Coarser Entry TF + Higher-TF Filter",
+        "",
+        "*Phase 3: entries on 5m / 15m / 30m bars, gated by a coarser "
+        "timeframe's EMA20 trend. Lets you compare a coarser entry "
+        "timeframe against the 1m-anchored combos above.*",
+        "",
+        "| Ticker | Combo | Trades | Win Rate | PF | Sharpe | Max DD | Expectancy |",
+        "|--------|-------|--------|----------|----|--------|--------|------------|",
+    ]
+    best_per_ticker = {}
+    for ticker, df in sweep_data.items():
+        general = df[df['type'] == 'general_combo']
+        if general.empty:
+            continue
+        # Rank by Sharpe descending for readability.
+        general = general.sort_values('sharpe', ascending=False)
+        for _, row in general.iterrows():
+            lines.append(
+                f"| **{ticker}** "
+                f"| {row['label']} "
+                f"| {int(row['trades']):,} "
+                f"| {row['win_rate']:.1%} "
+                f"| {row['pf']:.2f} "
+                f"| {row['sharpe']:.2f} "
+                f"| {row['max_dd']:.2%} "
+                f"| {row['expectancy']:+.4%} |"
+            )
+        best_idx = general['sharpe'].idxmax()
+        best_per_ticker[ticker] = general.loc[best_idx]
+    lines.append("")
+
+    if best_per_ticker:
+        lines.append("**Best coarser-entry combo per ticker:**")
+        lines.append("")
+        for ticker, best in best_per_ticker.items():
+            lines.append(
+                f"- **{ticker}**: **{best['label']}** "
+                f"(Sharpe {best['sharpe']:.2f}, WR {best['win_rate']:.1%}, "
+                f"E={best['expectancy']:+.4%}/trade)"
+            )
+        lines.append("")
+    return lines
+
+
 def insight_base_vs_strat(
     base_dfs: Dict[str, pd.DataFrame],
     strat_dfs: Dict[str, pd.DataFrame],

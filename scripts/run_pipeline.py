@@ -66,6 +66,14 @@ def main():
               "the backtest tables (requires --run-id)"),
     )
     parser.add_argument(
+        "--sweep-only", action="store_true",
+        help=("Only re-run the timeframe sweep + report for an existing "
+              "run, reusing that run's base/strat trades from "
+              "backtest_trades (requires --run-id). Use after a change "
+              "that affects only the sweep — skips the ~2h of base/strat "
+              "backtests."),
+    )
+    parser.add_argument(
         "--output", type=str, default=None,
         help="Output path for the report (default: BACKTEST_RESULTS.md)",
     )
@@ -90,13 +98,36 @@ def main():
         log.error("--report-only requires --run-id (the run to report on); "
                   "a fresh uuid would match no rows in backtest_trades.")
         sys.exit(2)
+    # --sweep-only reuses an existing run's base/strat trades, so it too
+    # needs an explicit --run-id. It's mutually exclusive with the other
+    # two scoping flags.
+    if args.sweep_only and not args.run_id:
+        log.error("--sweep-only requires --run-id (the run whose base/strat "
+                  "trades to reuse); a fresh uuid would match no rows.")
+        sys.exit(2)
+    if args.sweep_only and args.report_only:
+        log.error("--sweep-only and --report-only are mutually exclusive.")
+        sys.exit(2)
+    if args.sweep_only and args.skip_sweep:
+        log.error("--sweep-only with --skip-sweep would run nothing.")
+        sys.exit(2)
     run_id = args.run_id or str(uuid.uuid4())
 
-    log.info("Pipeline: run_id=%s  tickers=%s  skip_sweep=%s  report_only=%s",
-             run_id, tickers, args.skip_sweep, args.report_only)
+    log.info("Pipeline: run_id=%s  tickers=%s  skip_sweep=%s  "
+             "report_only=%s  sweep_only=%s",
+             run_id, tickers, args.skip_sweep, args.report_only,
+             args.sweep_only)
     t_start = time.time()
 
-    if not args.report_only:
+    # Step gating:
+    #   full          → backtests + sweep + report
+    #   --skip-sweep   → backtests + report
+    #   --sweep-only   → sweep + report   (reuses existing base/strat trades)
+    #   --report-only  → report
+    run_backtests = not (args.report_only or args.sweep_only)
+    run_sweep = not (args.report_only or args.skip_sweep)
+
+    if run_backtests:
         # --- Step 1: Base backtests (no Strat) ---
         for ticker in tickers:
             ok = run_step(
@@ -117,16 +148,23 @@ def main():
             if not ok:
                 failed.append(f"backtest-strat-{ticker}")
 
+    if run_sweep:
         # --- Step 3: Timeframe sweeps ---
-        if not args.skip_sweep:
-            for ticker in tickers:
-                ok = run_step(
-                    [python, str(SCRIPTS_DIR / "run_timeframe_sweep.py"),
-                     "--ticker", ticker, "--use-strat", "--run-id", run_id],
-                    f"Timeframe sweep {ticker}",
-                )
-                if not ok:
-                    failed.append(f"sweep-{ticker}")
+        # --all-combos runs Phase 3 — every coarser-entry-TF + higher-TF-filter
+        # pair (5m+15m, 5m+30m, 5m+1h, 15m+30m, 15m+1h, 30m+1h), not just the
+        # 1m-anchored Phase 2 combos. The pipeline is the comprehensive
+        # backtest surface, so it always runs the full matrix; the coarser
+        # entry TFs have far fewer bars than 1m so the extra wall-clock is
+        # modest (~15-25 min/ticker) and well inside the 8h job timeout.
+        for ticker in tickers:
+            ok = run_step(
+                [python, str(SCRIPTS_DIR / "run_timeframe_sweep.py"),
+                 "--ticker", ticker, "--use-strat", "--all-combos",
+                 "--run-id", run_id],
+                f"Timeframe sweep {ticker}",
+            )
+            if not ok:
+                failed.append(f"sweep-{ticker}")
 
     # --- Step 4: Generate report ---
     report_cmd = [
