@@ -188,13 +188,13 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     cm = confusion_matrix(y_test, pred_test, labels=list(range(len(LABEL_CLASSES))))
 
     log.info("=" * 70)
-    log.info("OOS METRICS")
+    log.info("OOS METRICS  (log-loss is the PRIMARY gate; accuracy can be gamed)")
     log.info("=" * 70)
-    log.info("accuracy:  model=%.3f  base=%.3f  Δ=%+.1fpp  (gate>=+%.1fpp)",
-             acc, base_acc, (acc - base_acc) * 100, base_rate_beat_pp)
-    log.info("log-loss:  model=%.4f  base=%.4f  Δ=%+.4f",
+    log.info("log-loss:  model=%.4f  base=%.4f  Δ=%+.4f   [PRIMARY GATE: model < base]",
              ll, base_ll, base_ll - ll)
-    log.info("ECE      : %.4f  (gate<=%.3f)", ece, ece_ceiling)
+    log.info("accuracy:  model=%.3f  base=%.3f  Δ=%+.1fpp  [SECONDARY: >=+%.1fpp]",
+             acc, base_acc, (acc - base_acc) * 100, base_rate_beat_pp)
+    log.info("ECE      : %.4f   [SECONDARY: <=%.3f]", ece, ece_ceiling)
 
     log.info("per-class:")
     for cls in LABEL_CLASSES:
@@ -202,13 +202,18 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
         log.info("  %-3s  prec=%.3f  rec=%.3f  f1=%.3f  n=%d",
                  cls, r["precision"], r["recall"], r["f1-score"], int(r["support"]))
 
-    # Gate verdict
+    # All three gates required to pass:
+    #   PRIMARY:   log-loss beats baseline (any positive improvement)
+    #   SECONDARY: accuracy beats base rate by >= base_rate_beat_pp
+    #   SECONDARY: ECE <= ece_ceiling
+    logloss_gate = ll < base_ll
     accuracy_gate = (acc - base_acc) * 100 >= base_rate_beat_pp
     ece_gate = ece <= ece_ceiling
-    gate_pass = accuracy_gate and ece_gate
+    gate_pass = logloss_gate and accuracy_gate and ece_gate
     log.info("=" * 70)
-    log.info("GATE VERDICT: %s  (accuracy-gate=%s  ece-gate=%s)",
+    log.info("GATE VERDICT: %s  (logloss=%s  accuracy=%s  ece=%s)",
              "PASS" if gate_pass else "FAIL",
+             "PASS" if logloss_gate else "FAIL",
              "PASS" if accuracy_gate else "FAIL",
              "PASS" if ece_gate else "FAIL")
     log.info("=" * 70)
@@ -227,10 +232,11 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
                                                 for j in range(len(LABEL_CLASSES))}
                               for i in range(len(LABEL_CLASSES))},
         "gate": {
+            "primary_logloss_gate_pass": logloss_gate,
+            "secondary_accuracy_gate_pass": accuracy_gate,
+            "secondary_ece_gate_pass": ece_gate,
             "base_rate_beat_pp_threshold": base_rate_beat_pp,
             "ece_ceiling": ece_ceiling,
-            "accuracy_gate_pass": accuracy_gate,
-            "ece_gate_pass": ece_gate,
             "verdict": "PASS" if gate_pass else "FAIL",
         },
         "trained_at": pd.Timestamp.utcnow().isoformat(),
