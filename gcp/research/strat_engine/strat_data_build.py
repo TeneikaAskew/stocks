@@ -259,10 +259,20 @@ def build_4h(engine, ticker: str, source: str = "aggregate_from_60m") -> dict:
         agg["bar_date"] = agg["ts"].dt.date
         log.info("aggregated to %d 4h bars", len(agg))
 
+        # Rename to Capitalized for lib helpers (they expect Open/High/Low/Close)
+        agg = agg.rename(columns={"open": "Open", "high": "High",
+                                   "low": "Low", "close": "Close",
+                                   "volume": "Volume"})
+
         # Indicators + strat
-        agg = add_all_indicators(agg, close_col="close")
+        agg = add_all_indicators(agg, close_col="Close")
         clf = StratClassifier()
         agg = clf.detect_combos(agg)
+
+        # Rename back to lowercase to match strat_features schema
+        agg = agg.rename(columns={"Open": "open", "High": "high",
+                                   "Low": "low", "Close": "close",
+                                   "Volume": "volume"})
 
         # Upsert
         cols = [c for c in agg.columns if c not in ("ts_et",)]
