@@ -88,12 +88,17 @@ CATEGORICAL_FEATURES = [
 ]
 
 
-def load_data(engine, tf: str) -> pd.DataFrame:
+def load_data(engine, tf: str, ticker: str | None = None) -> pd.DataFrame:
     table = f"strat_features_{tf}"
-    sql = text(f"SELECT * FROM {table} WHERE strat_candle IS NOT NULL")
-    log.info("loading %s...", table)
+    if ticker:
+        sql = text(f"SELECT * FROM {table} WHERE strat_candle IS NOT NULL AND ticker = :ticker")
+        params = {"ticker": ticker}
+    else:
+        sql = text(f"SELECT * FROM {table} WHERE strat_candle IS NOT NULL")
+        params = {}
+    log.info("loading %s (ticker=%s)...", table, ticker or "ALL")
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn)
+        df = pd.read_sql(sql, conn, params=params)
     log.info("loaded %d rows × %d cols from %s", len(df), df.shape[1], table)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
@@ -357,21 +362,29 @@ def train_models(df: pd.DataFrame, fwd_col: str = "fwd_ret_5bars_bps") -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tf", required=True, choices=["1m", "5m", "15m", "30m", "60m"])
+    parser.add_argument("--ticker", default=None,
+                        help="If set, filter to one ticker (SPY/IWM/QQQ). Default: pooled across all.")
     parser.add_argument("--fwd-col", default=None,
                         help="Forward-return column to use. Defaults to fwd_ret_5bars_bps.")
     parser.add_argument("--gcs-prefix", default=None,
-                        help="GCS prefix. Defaults to research/p7-analysis/{tf}.")
+                        help="GCS prefix. Defaults to research/p7-analysis[-per-ticker/{ticker}]/{tf}.")
     args = parser.parse_args()
 
     tf = args.tf
     fwd_col = args.fwd_col or "fwd_ret_5bars_bps"
-    prefix = args.gcs_prefix or f"research/p7-analysis/{tf}"
+    if args.gcs_prefix:
+        prefix = args.gcs_prefix
+    elif args.ticker:
+        prefix = f"research/p7-analysis-per-ticker/{args.ticker}/{tf}"
+    else:
+        prefix = f"research/p7-analysis/{tf}"
     bucket = os.environ.get("GCS_BUCKET", "adept-mountain-474619-d4-trading-data")
-    log.info("P7 analysis: tf=%s fwd_col=%s gcs=gs://%s/%s", tf, fwd_col, bucket, prefix)
+    log.info("P7 analysis: tf=%s ticker=%s fwd_col=%s gcs=gs://%s/%s",
+             tf, args.ticker or "ALL", fwd_col, bucket, prefix)
 
     engine = get_engine()
     t0 = time.time()
-    df = load_data(engine, tf)
+    df = load_data(engine, tf, args.ticker)
 
     # Each analysis runs independently — log timing for each
     log.info("=== Analysis 1: strat transition grid ===")
