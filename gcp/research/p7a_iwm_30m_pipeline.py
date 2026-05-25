@@ -137,15 +137,18 @@ def _download_bytes(blob_path: str) -> bytes | None:
 
 # ─────────────────────── Data + featurization ───────────────────────
 
-def load_iwm_30m(engine, since_date: str | None = None, limit: int | None = None) -> pd.DataFrame:
+def load_iwm_30m(engine, since_date: str | None = None, until_date: str | None = None, limit: int | None = None) -> pd.DataFrame:
     where = "WHERE ticker = :ticker AND strat_candle IS NOT NULL"
     params: dict[str, Any] = {"ticker": TICKER}
     if since_date:
         where += " AND bar_date >= :since"
         params["since"] = since_date
+    if until_date:
+        where += " AND bar_date < :until"
+        params["until"] = until_date
     sql = text(f"SELECT * FROM strat_features_{TF} {where} ORDER BY ts" + (f" LIMIT {int(limit)}" if limit else ""))
-    log.info("loading strat_features_%s (ticker=%s, since=%s, limit=%s)...",
-             TF, TICKER, since_date, limit)
+    log.info("loading strat_features_%s (ticker=%s, since=%s, until=%s, limit=%s)...",
+             TF, TICKER, since_date, until_date, limit)
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn, params=params)
     log.info("loaded %d rows × %d cols", len(df), df.shape[1])
@@ -241,9 +244,9 @@ def walk_forward_train_eval(df: pd.DataFrame) -> tuple[lgb.LGBMRegressor, pd.Dat
 
 # ─────────────────────── Train mode ───────────────────────
 
-def run_train(engine) -> tuple[lgb.LGBMRegressor, list[str], pd.DataFrame]:
-    df = load_iwm_30m(engine)
-    log.info("walk-forward eval + final train...")
+def run_train(engine, train_until: str | None = None) -> tuple[lgb.LGBMRegressor, list[str], pd.DataFrame]:
+    df = load_iwm_30m(engine, until_date=train_until)
+    log.info("walk-forward eval + final train (cutoff=%s)...", train_until or "none")
     model, fold_results, feat_cols = walk_forward_train_eval(df)
 
     log.info("CV IC summary: mean=%+.4f  std=%.4f  folds=%d",
@@ -266,8 +269,7 @@ def run_train(engine) -> tuple[lgb.LGBMRegressor, list[str], pd.DataFrame]:
 
 # ─────────────────────── Predict mode ───────────────────────
 
-def run_predict(engine, n_bars: int = 100) -> pd.DataFrame:
-    # Load model + features
+def run_predict(engine, n_bars: int = 100, predict_since: str | None = None) -> pd.DataFrame:
     model_bytes = _download_bytes(MODEL_BLOB)
     feat_text = _download_bytes(FEATURES_BLOB)
     if model_bytes is None or feat_text is None:
@@ -276,19 +278,27 @@ def run_predict(engine, n_bars: int = 100) -> pd.DataFrame:
     saved_features = feat_text.decode().strip().split("\n")
     log.info("loaded model + %d feature columns from GCS", len(saved_features))
 
-    # Pull last N bars from strat_features_30m
-    # Use SQL ORDER BY ts DESC LIMIT N (then re-sort)
-    sql = text(f"""
-        SELECT * FROM strat_features_{TF}
-        WHERE ticker = :ticker AND strat_candle IS NOT NULL
-        ORDER BY ts DESC
-        LIMIT :n
-    """)
-    log.info("pulling last %d IWM 30m bars...", n_bars)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"ticker": TICKER, "n": n_bars})
+    if predict_since:
+        sql = text(f"""
+            SELECT * FROM strat_features_{TF}
+            WHERE ticker = :ticker AND strat_candle IS NOT NULL
+              AND bar_date >= :since
+            ORDER BY ts
+        """)
+        log.info("pulling %s %s bars from %s onwards...", TICKER, TF, predict_since)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"ticker": TICKER, "since": predict_since})
+    else:
+        sql = text(f"""
+            SELECT * FROM strat_features_{TF}
+            WHERE ticker = :ticker AND strat_candle IS NOT NULL
+            ORDER BY ts DESC LIMIT :n
+        """)
+        log.info("pulling last %d %s %s bars...", n_bars, TICKER, TF)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"ticker": TICKER, "n": n_bars})
+        df = df.sort_values("ts").reset_index(drop=True)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.sort_values("ts").reset_index(drop=True)
     log.info("loaded %d bars (%s..%s)", len(df), df["ts"].min(), df["ts"].max())
 
     # Featurize — align to saved feature columns
@@ -343,6 +353,10 @@ def main():
     p.add_argument("--tf", default="30m", choices=["15m", "30m", "60m"])
     p.add_argument("--n-pred-bars", type=int, default=100,
                    help="How many of the most recent bars to score in predict mode")
+    p.add_argument("--train-until", default=None,
+                   help="Train on data with bar_date < this. e.g. 2026-04-01 to do proper OOS test.")
+    p.add_argument("--predict-since", default=None,
+                   help="In predict mode, score ALL bars from this date onwards (overrides --n-pred-bars).")
     args = p.parse_args()
 
     # Override globals from CLI so functions pick them up
@@ -377,13 +391,13 @@ CREATE INDEX IF NOT EXISTS ix_{PREDICTIONS_TABLE}_date
     if args.mode in ("train", "all"):
         log.info("=== TRAIN ===")
         t0 = time.time()
-        model, feat_cols, folds = run_train(engine)
+        model, feat_cols, folds = run_train(engine, train_until=args.train_until)
         log.info("train done in %.1fs", time.time() - t0)
 
     if args.mode in ("predict", "all"):
         log.info("=== PREDICT ===")
         t0 = time.time()
-        preds = run_predict(engine, n_bars=args.n_pred_bars)
+        preds = run_predict(engine, n_bars=args.n_pred_bars, predict_since=args.predict_since)
         log.info("predict done in %.1fs; %d rows", time.time() - t0, len(preds))
 
         log.info("Top 10 predictions by predicted fwd bps:")
