@@ -56,12 +56,14 @@ def rank_features_per_class(df: pd.DataFrame, target_class: str,
     """
     y_binary = (df[LABEL_COL] == target_class).astype(int).values
     sub = df[features].copy()
-    # MI requires no NaNs; replace with column median (data-leakage-safe at
-    # corr stage because we're not training)
+    # MI requires no NaNs / infs. Median-fill, then final 0-fill for all-NaN
+    # columns (e.g. a feature that's NaN for the full training window).
+    sub = sub.replace([np.inf, -np.inf], np.nan)
     for c in features:
         if sub[c].isna().any():
-            sub[c] = sub[c].fillna(sub[c].median())
-    sub = sub.replace([np.inf, -np.inf], 0).astype(float)
+            med = sub[c].median()
+            sub[c] = sub[c].fillna(med if pd.notna(med) else 0.0)
+    sub = sub.fillna(0.0).astype(float)
 
     mi = mutual_info_classif(sub.values, y_binary, random_state=42)
 
