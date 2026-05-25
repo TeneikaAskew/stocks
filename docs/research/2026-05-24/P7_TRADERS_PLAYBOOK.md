@@ -1,22 +1,89 @@
 # Phase 7 — Trader's Playbook (the "where it works" guide)
 
 **Date:** 2026-05-24
-**Last updated:** 2026-05-25 — per-ticker model results landed; IWM is the new top priority
+**Last updated:** 2026-05-25 — **honest OOS results landed**; in-sample numbers were inflated; updated below
 **Purpose:** Translate the Phase 7 audit data into specific, actionable rules a trader can use tomorrow.
 
 ---
 
-## ⭐ NEW HIGHEST-PRIORITY FINDING (per `P7_PER_TICKER_COMPARISON.md`):
+## 🔴 IMPORTANT UPDATE — IN-SAMPLE NUMBERS WERE INFLATED
 
-**IWM with LightGBM at 30m TF: Sharpe +3.24 across 5 walk-forward folds, 59% win rate, +15.8 bps/day after costs.**
+The earlier Sharpe +3.24 / hit_pct 77% figures were measured on data the model had ALSO been trained on (after training the final model on all 33k bars, predictions for the most-recent week looked great because they were essentially memorized).
 
-This is the single strongest signal in the entire 6-phase audit. Per-ticker training revealed it (was hidden by pooling). **Deploy IWM 30m LGBM first** — the cell-level trades below are still valid as confirmation signals.
+**True OOS test (train through Mar 31, predict Apr+May, 481 fresh bars per ticker):**
 
-Secondary: IWM 15m LGBM Sharpe +3.15. QQQ 15m LGBM +2.48. SPY weakest at short TFs.
+| ticker | month | hit_pct | top decile mean | bot decile mean | **L/S spread** |
+|---|---|---|---|---|---|
+| **IWM** | **April** | 41.0% | +8.6 bps | -32.2 bps | **+40.9 bps** ✅ |
+| **IWM** | **May** | 38.9% | +18.1 | -25.1 | **+43.2 bps** ✅ |
+| QQQ | April | 35.2% | +15.3 | +8.8 | +6.5 (weak) |
+| QQQ | May | 36.5% | +27.9 | **+124.9** | **−97.0** ❌ |
+| SPY | April | 37.7% | +8.9 | +24.8 | -16.0 ❌ |
+| SPY | May | 41.3% | n/a (thin) | -57.1 | n/a |
 
-**Avoid** ALL linear models on SPY/QQQ at 15-30m horizons — they have negative Sharpe.
+**The honest read:**
+
+1. **Direction-only hit rate is BELOW 50% OOS** (35-41%) for all 3 tickers. The model is BAD at "is the next bar up or down" in unseen data.
+2. **BUT — IWM's L/S ranking IS positive and reproducible** across both April and May (+40 and +43 bps spread). That's a real edge.
+3. **QQQ and SPY are unreliable OOS.** QQQ May had top-decile bars UNDERPERFORM bottom-decile by 97 bps — the model picked the wrong direction. SPY is marginal.
+
+## ⭐ TRADE THIS, NOT THAT
+
+### ✅ Trade: IWM 30m decile-ranking (NOT direction)
+- Long top-decile predicted bars, short bottom-decile
+- Historical OOS: +40-43 bps gross per bar, **+30-33 bps net of 10 bps round-trip**
+- Bar frequency: 13 RTH bars per day × 252 days = 3,276 bars/yr
+- If you take ~10% of bars (top/bottom decile only) = ~330 bars/yr
+- **Expected annual: ~330 × 30 bps = ~99 bps/yr net** if every signal traded
+- Realistic with risk management: 50-100 bps/yr net
+
+### ❌ Do NOT trade: QQQ or SPY model predictions OOS
+- QQQ went from +6.5 (Apr) to -97 (May) within 4 weeks — regime-fragile
+- SPY shows -16 spread on 81 events in Apr; thin data in May
+- The cell-level findings in `P7_TRADERS_PLAYBOOK.md` below are STILL valid for SPY/QQQ — those are empirical hit rates over 10 years, not model predictions. Just don't deploy the ML model for those tickers.
+
+## How often to retrain
+
+The walk-forward CV revealed real regime sensitivity:
+- Fold 4 (Feb 2023 → Nov 2024, rate-hike regime): **IC = -0.031** (model broke)
+- Fold 5 (Nov 2024 → May 2026, AI rally): **IC = +0.052** (recovered)
+
+Combined with the OOS finding that QQQ degraded from +6.5 (Apr, 1 month after training cutoff) to -97 (May, 2 months after cutoff) — **model degrades fast.**
+
+**Recommended retrain schedule:**
+
+| ticker | retrain frequency | rationale |
+|---|---|---|
+| **IWM** | **Weekly** | L/S spread stable but the +40 bps edge is small; weekly retrain protects it |
+| QQQ | Twice weekly | Regime-sensitive; saw +103 bps swing in Apr→May |
+| SPY | Bi-weekly | Less regime-sensitive but signal is weakest, more retraining can't hurt |
+
+**Plus trigger-based retrains** (run anytime any of these fires):
+- VIX moves > 5 points week-over-week (regime shift)
+- 4-week rolling live IC drops below 0 (signal decay)
+- FOMC week (rate-policy regime change)
+- Earnings season starts (Jan / Apr / Jul / Oct first week — sector rotation)
+
+## Daily prediction service
+
+The trained model is deployed at `gs://adept-mountain-474619-d4-trading-data/research/p7a/iwm_30m/model.pkl`. The Cloud Run Job `p7a-iwm-30m-pipeline` retrains + predicts in ~12 seconds. To auto-fire daily after market close:
+
+```bash
+gcloud scheduler jobs create http p7a-iwm-30m-daily \
+  --schedule="30 16 * * 1-5" \
+  --time-zone=America/New_York \
+  --uri="https://us-east1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/adept-mountain-474619-d4/jobs/p7a-iwm-30m-pipeline:run" \
+  --http-method=POST \
+  --oauth-service-account-email=trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+```
+
+(Apply same for SPY/QQQ when their models are validated.)
 
 ---
+
+## Below: the original cell-level findings (still valid — these are empirical hit rates over 10 years, not ML predictions)
+
+
 
 ---
 
