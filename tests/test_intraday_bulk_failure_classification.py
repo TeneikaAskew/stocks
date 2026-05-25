@@ -248,3 +248,134 @@ def test_dead_ticker_reasons_set_includes_invalid_api():
     # And TRANSIENT reasons must NOT be in the dead set
     assert fai.FETCH_RATE_LIMIT not in fai._DEAD_TICKER_REASONS
     assert fai.FETCH_REQUEST_ERROR not in fai._DEAD_TICKER_REASONS
+
+
+# ── 4. Dead-ticker data-quality issue logging ─────────────────────────
+# The user explicitly requested (2026-05-25): "if there are error in
+# backfill an issue needs to be logged". The fix above already prevents
+# spurious gcp-job-failure issues for dead tickers; these tests pin the
+# NEW behaviour that we file a separate data-quality issue when dead
+# tickers ARE detected, so the watchlist gets pruned on cadence
+# instead of silently rotting.
+
+class _MockResponse:
+    """Minimal requests.Response stand-in for hermetic tests."""
+    def __init__(self, status: int = 200, json_payload=None):
+        self.status_code = status
+        self._json = json_payload if json_payload is not None else []
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception(f'HTTP {self.status_code}')
+
+    def json(self):
+        return self._json
+
+
+def test_file_data_quality_issue_skips_when_no_token(monkeypatch, caplog):
+    """No GH_DATA_QUALITY_TOKEN → log warning + return without raising.
+    The dead-ticker WARNING is already in the log line above the call;
+    we never want a missing token to cascade into a task failure."""
+    monkeypatch.setattr(fai.os, 'environ', {})
+    posted = []
+    monkeypatch.setattr(fai.requests, 'post',
+                        lambda *a, **kw: posted.append((a, kw)) or
+                        _MockResponse(200))
+    fai._file_data_quality_issue(['YSS', 'XXX'])
+    assert posted == [], 'must not POST when token missing'
+
+
+def test_file_data_quality_issue_creates_new_when_none_open(monkeypatch):
+    """No existing open issue with our labels → POST creates a new one
+    with title prefixed 'Data quality: intraday-bulk-backfill'."""
+    monkeypatch.setattr(fai.os, 'environ',
+                        {'GH_DATA_QUALITY_TOKEN': 'fake_token'})
+    monkeypatch.setattr(fai.requests, 'get',
+                        lambda *a, **kw: _MockResponse(200, []))
+    posts = []
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posts.append({'url': url, 'json': json})
+        return _MockResponse(201, {'number': 42})
+    monkeypatch.setattr(fai.requests, 'post', fake_post)
+
+    fai._file_data_quality_issue(['YSS', 'XXX', 'DEADCO'])
+
+    assert len(posts) == 1, 'must POST exactly once (create new issue)'
+    payload = posts[0]['json']
+    assert 'data-quality' in payload['labels']
+    assert 'intraday-bulk-backfill' in payload['labels']
+    assert 'dead-tickers' in payload['labels']
+    assert 'Data quality' in payload['title']
+    assert '3 dead ticker' in payload['title']
+    assert 'YSS' in payload['body']
+    assert 'XXX' in payload['body']
+    assert 'DEADCO' in payload['body']
+
+
+def test_file_data_quality_issue_appends_comment_when_open_exists(monkeypatch):
+    """Open issue with our labels already exists → POST a comment to it,
+    NOT a new issue. Cumulative dead-ticker view across runs without
+    forking issues."""
+    monkeypatch.setattr(fai.os, 'environ',
+                        {'GH_DATA_QUALITY_TOKEN': 'fake_token'})
+    monkeypatch.setattr(fai.requests, 'get',
+                        lambda *a, **kw: _MockResponse(200, [{'number': 99}]))
+    posts = []
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posts.append({'url': url, 'json': json})
+        return _MockResponse(201)
+    monkeypatch.setattr(fai.requests, 'post', fake_post)
+
+    fai._file_data_quality_issue(['YSS'])
+
+    assert len(posts) == 1, 'must POST exactly once'
+    # POST to /issues/99/comments, NOT /issues
+    assert '/issues/99/comments' in posts[0]['url']
+    assert 'labels' not in posts[0]['json'], (
+        'comment payload should not include labels — that field belongs '
+        'to issue-create only'
+    )
+
+
+def test_file_data_quality_issue_failure_doesnt_crash(monkeypatch):
+    """If the GH API itself fails (rate limit, transient outage), the
+    helper raises — but the main() caller wraps in try/except so the
+    task still exits 0. Pin both halves:
+      1. helper raises on HTTP failure (no silent swallow at the
+         API-call layer per CLAUDE.md §3.7)
+      2. main() catches and logs (so a webhook hiccup can't manufacture
+         a fake systemic_error)"""
+    monkeypatch.setattr(fai.os, 'environ',
+                        {'GH_DATA_QUALITY_TOKEN': 'fake_token'})
+    monkeypatch.setattr(fai.requests, 'get',
+                        lambda *a, **kw: _MockResponse(500))
+    with pytest.raises(Exception):
+        fai._file_data_quality_issue(['YSS'])
+
+
+def test_main_calls_data_quality_issue_when_dead_tickers(monkeypatch):
+    """End-to-end glue: when main() ends with dead_tickers,
+    _file_data_quality_issue is called. When it ends with NO dead
+    tickers, the helper is NOT called (no spurious empty issues)."""
+    calls = []
+    monkeypatch.setattr(fai, '_file_data_quality_issue',
+                        lambda dead: calls.append(list(dead)))
+
+    # Case 1: dead tickers present → helper called
+    _patch_main(monkeypatch, {
+        'SPY': fai.OUTCOME_OK,
+        'YSS': fai.OUTCOME_DEAD,
+    })
+    fai.main()
+    assert calls == [['YSS']], (
+        f'expected one call with [YSS], got {calls}'
+    )
+
+    # Case 2: no dead tickers → helper NOT called (no churn on clean runs)
+    calls.clear()
+    _patch_main(monkeypatch, {
+        'SPY': fai.OUTCOME_OK,
+        'IWM': fai.OUTCOME_OK,
+    })
+    fai.main()
+    assert calls == [], 'helper must not fire on clean runs'

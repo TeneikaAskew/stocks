@@ -38,6 +38,13 @@ log = logging.getLogger(__name__)
 
 SYMBOLS = ['SPY', 'IWM', 'QQQ']
 AV_BASE_URL = 'https://www.alphavantage.co/query'
+
+# Watchlist data-quality issue routing — see _file_data_quality_issue().
+# A separate label from `gcp-job-failure` so the auto-issue scanner can
+# distinguish "actionable code/infra bug" (gcp-job-failure → page) from
+# "watchlist hygiene needed" (data-quality → batch-prune on a cadence).
+_DQ_REPO = 'TeneikaAskew/stocks'
+_DQ_LABELS = ['data-quality', 'intraday-bulk-backfill', 'dead-tickers']
 # Per-call interval is read from AlphaVantageConfig so the 150 RPM
 # premium-tier setting is the single source of truth across fetchers.
 # (Previously hardcoded to 13 s — the 5-RPM free-tier value — which
@@ -322,6 +329,83 @@ def process_symbol(
     return OUTCOME_OK
 
 
+def _file_data_quality_issue(dead_tickers: list) -> None:
+    """Create-or-update a GitHub issue summarising dead tickers from
+    this run. Idempotent: if an open issue with our labels exists, we
+    append a comment with the new run's findings instead of opening a
+    duplicate. The issue lives on a different label (``data-quality``)
+    than the failure-notifier path (``gcp-job-failure``) so the
+    operator can triage hygiene separately from real bugs.
+
+    Token source: ``GH_DATA_QUALITY_TOKEN`` env (Secret Manager
+    secret ``gh-stocks-repo-pat``). If unset, log and skip — the
+    dead-ticker WARNING is already in stdout.
+    """
+    token = os.environ.get('GH_DATA_QUALITY_TOKEN', '').strip()
+    if not token:
+        log.warning('GH_DATA_QUALITY_TOKEN unset — skipping data-quality '
+                    'issue. Dead tickers visible only in this log line.')
+        return
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+    api = 'https://api.github.com'
+    task_idx = os.environ.get('CLOUD_RUN_TASK_INDEX', '0')
+    task_cnt = os.environ.get('CLOUD_RUN_TASK_COUNT', '1')
+    exec_name = os.environ.get('CLOUD_RUN_EXECUTION', 'unknown-exec')
+    ts = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    comment_body = (
+        f"### Dead tickers detected — {ts}\n\n"
+        f"**Execution:** `{exec_name}` (task {task_idx}/{task_cnt})\n\n"
+        f"**{len(dead_tickers)} ticker(s)** returned a permanently-broken "
+        "AV reason (Invalid API call / info / no timeseries) for every "
+        "month attempted:\n\n```\n"
+        + ', '.join(dead_tickers)
+        + "\n```\n\n"
+        "These should be pruned from "
+        "`gcp/fetchers/symbol_lists/earnings_universe.txt` (or whichever "
+        "watchlist this run consumed). A pure-dead run is NOT a code bug "
+        "and does NOT exit 1 — see CLAUDE.md §3.7."
+    )
+
+    # Look for an existing open data-quality issue. Using the labels
+    # AND the issue title prefix as the dedupe key so a label-rename
+    # doesn't accidentally fork the issue.
+    label_q = ','.join(_DQ_LABELS)
+    list_url = (f'{api}/repos/{_DQ_REPO}/issues?state=open'
+                f'&labels={label_q}&per_page=1')
+    resp = requests.get(list_url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    existing = resp.json()
+
+    if existing:
+        issue_number = existing[0]['number']
+        comment_url = (
+            f'{api}/repos/{_DQ_REPO}/issues/{issue_number}/comments')
+        r = requests.post(comment_url, headers=headers,
+                          json={'body': comment_body}, timeout=15)
+        r.raise_for_status()
+        log.info('Appended dead-ticker comment to existing issue #%d',
+                 issue_number)
+    else:
+        title = (f'Data quality: intraday-bulk-backfill — '
+                 f'{len(dead_tickers)} dead ticker(s)')
+        create_url = f'{api}/repos/{_DQ_REPO}/issues'
+        r = requests.post(create_url, headers=headers, json={
+            'title': title,
+            'body': comment_body,
+            'labels': _DQ_LABELS,
+        }, timeout=15)
+        r.raise_for_status()
+        new_num = r.json()['number']
+        log.info('Created new data-quality issue #%d for dead tickers',
+                 new_num)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -424,6 +508,19 @@ def main():
     if dead_tickers:
         log.warning("Dead tickers (consider pruning from watchlist): %s",
                     dead_tickers)
+        # Cloud Run logs age out after 30d; without a durable record the
+        # operator can't act on watchlist pruning. File (or update) a
+        # GitHub issue under a distinct label so the dead-ticker view
+        # is cumulative across runs and doesn't fight gcp-job-failure
+        # for the operator's attention. Issue-filing failure is logged
+        # but doesn't fail the task — the dead-ticker data is already
+        # in the log line above, and a Discord webhook outage here
+        # shouldn't cascade into a fake systemic_error.
+        try:
+            _file_data_quality_issue(dead_tickers)
+        except Exception as e:
+            log.error("Failed to file data-quality issue (dead tickers "
+                      "already logged above): %s", e)
     if systemic_errors:
         log.error("Systemic failures: %s", systemic_errors)
         sys.exit(1)
