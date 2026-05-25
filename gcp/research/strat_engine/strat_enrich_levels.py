@@ -47,7 +47,7 @@ from gcp.research.strat_engine.strat_config import (
 )
 from lib.indicators import (
     calculate_all_orb, calculate_historical_levels, calculate_order_blocks,
-    calculate_atr,
+    calculate_atr, calculate_current_period_levels,
 )
 from lib.logging_config import setup_logging
 
@@ -75,10 +75,17 @@ def _compute_enrichments(df: pd.DataFrame) -> pd.DataFrame:
     orb.index = df.index
     log.info("  ORB: %d cols", orb.shape[1])
 
-    # 2) Historical levels (Day/Week/Month/Quarter/Year × ~20 cols each)
+    # 2) Historical levels (PREVIOUS day/week/month/quarter/year HLOC + flags)
     hist = calculate_historical_levels(times, h, l, o, c)
     hist.index = df.index
-    log.info("  Historical levels: %d cols", hist.shape[1])
+    log.info("  Historical levels (prev): %d cols", hist.shape[1])
+
+    # 2b) CURRENT-period running levels (today/WTD/MTD/QTD/YTD HLO + position).
+    # Reviewer-flagged 2026-05-25: previous-period HLOC alone doesn't tell you
+    # "where in today's range are we?" — this fills that gap.
+    cur = calculate_current_period_levels(times, h, l, o, c)
+    cur.index = df.index
+    log.info("  Current-period running levels: %d cols", cur.shape[1])
 
     # 3) Order blocks (uses ATR if available; compute ATR(14) here)
     atr14 = calculate_atr(h, l, c, period=14)
@@ -90,7 +97,7 @@ def _compute_enrichments(df: pd.DataFrame) -> pd.DataFrame:
                              for c in ob.columns})
     log.info("  Order blocks: %d cols", ob.shape[1])
 
-    out = pd.concat([orb, hist, ob], axis=1)
+    out = pd.concat([orb, hist, cur, ob], axis=1)
     # snake_case + lowercase column names for SQL friendliness
     rename = {}
     for col in out.columns:
