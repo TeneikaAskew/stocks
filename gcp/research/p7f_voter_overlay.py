@@ -76,8 +76,16 @@ def _upload(content, blob, ctype="application/octet-stream"):
     _gcs().bucket(MODEL_BUCKET).blob(blob).upload_from_string(content, content_type=ctype)
 
 
+TF_MINUTES = {"15m": 15, "60m": 60}
+
+
 def load_voter_fires(engine, ticker: str, tf: str, since: str,
                      min_strength: int = 3) -> pd.DataFrame:
+    """Pull voter fires, floor to TF boundary, dedupe per (signal_bar, side).
+    Voter writes minute-level entries and often re-fires while a setup is open
+    (e.g. 5 alerts from 17:21-17:30 for the same 17:15-17:30 bar). The user
+    would take at most one — keep the FIRST alert per signal-bar/side, with
+    the highest signal_strength as a tiebreaker."""
     sql = text("""
         SELECT entry_time, trade_type, signal_strength
           FROM historical_signals
@@ -91,9 +99,19 @@ def load_voter_fires(engine, ticker: str, tf: str, since: str,
         df = pd.read_sql(sql, c, params={"t": ticker, "tf": tf, "s": min_strength, "u": since})
     if df.empty:
         return df.assign(ts=pd.Series(dtype="datetime64[ns, UTC]"), side=pd.Series(dtype=int))
-    df["ts"] = pd.to_datetime(df["entry_time"], utc=True)
+    df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True)
+    minutes = TF_MINUTES[tf]
+    # Floor to TF boundary: the bar CONTAINING the alert is the signal bar.
+    df["signal_bar_ts"] = df["entry_time"].dt.floor(f"{minutes}min")
     df["side"] = df["trade_type"].map({"call": 1, "put": -1}).astype("Int64")
-    return df.dropna(subset=["side"])[["ts", "side", "signal_strength"]].reset_index(drop=True)
+    df = df.dropna(subset=["side"]).copy()
+    # Dedupe per (signal_bar, side); keep highest strength, break ties by earliest alert
+    df = (df.sort_values(["signal_bar_ts", "side", "signal_strength", "entry_time"],
+                         ascending=[True, True, False, True])
+            .drop_duplicates(subset=["signal_bar_ts", "side"], keep="first")
+            .rename(columns={"signal_bar_ts": "ts"})
+            .reset_index(drop=True))
+    return df[["ts", "side", "signal_strength", "entry_time"]]
 
 
 def load_bars(engine, ticker: str, tf: str, since_train: str) -> pd.DataFrame:
@@ -174,13 +192,19 @@ def run_set(label: str, fires: pd.DataFrame, df: pd.DataFrame,
             ts_to_loc: dict, r_mult: float) -> dict:
     trades = []
     for _, f in fires.iterrows():
-        entry_loc = ts_to_loc.get(pd.Timestamp(f["ts"]))
-        if entry_loc is None or entry_loc < 1: continue
-        signal_bar = df.iloc[entry_loc - 1]   # bar BEFORE entry → structural reference
+        # f["ts"] is the floored signal bar (the bar containing the alert).
+        # Convention: wait for signal bar to close, enter at NEXT bar's open.
+        # Structural stop = signal bar's low (long) / high (short).
+        signal_loc = ts_to_loc.get(pd.Timestamp(f["ts"]))
+        if signal_loc is None: continue
+        entry_loc = signal_loc + 1
+        if entry_loc >= len(df): continue
+        signal_bar = df.iloc[signal_loc]
         entry_bar  = df.iloc[entry_loc]
         side = int(f["side"])
         stop  = float(signal_bar["low"])  if side == 1 else float(signal_bar["high"])
         entry = float(entry_bar["open"])
+        # Exit walk starts AT entry bar — indexing fix
         bars_from_entry = df.iloc[entry_loc : entry_loc + MAX_BARS_HELD + 1][["open","high","low","close"]]
         r = simulate_structural_with_entry_bar(bars_from_entry, entry, stop, side, r_mult)
         if r["reason"] != "bad_stop":
@@ -235,11 +259,13 @@ def main():
         log.error("NO VOTER FIRES. Verify timeframe_tag/min-strength/since.")
         return
 
-    # Attach classifier edge AT SIGNAL BAR (entry_loc - 1, no peek)
+    # Attach classifier edge AT SIGNAL BAR (the floored alert bar — no peek;
+    # the classifier features are derived from that bar's close which is
+    # known by the next bar's open where we enter).
     def _edge_at_signal(t):
         loc = ts_to_loc.get(pd.Timestamp(t))
-        if loc is None or loc < 1: return np.nan
-        return float(df["edge"].iloc[loc - 1])
+        if loc is None: return np.nan
+        return float(df["edge"].iloc[loc])
     fires = fires.copy()
     fires["edge_at_signal"] = fires["ts"].map(_edge_at_signal)
     fires = fires.dropna(subset=["edge_at_signal"])
