@@ -1,7 +1,22 @@
 # Phase 7 — Trader's Playbook (the "where it works" guide)
 
 **Date:** 2026-05-24
+**Last updated:** 2026-05-25 — per-ticker model results landed; IWM is the new top priority
 **Purpose:** Translate the Phase 7 audit data into specific, actionable rules a trader can use tomorrow.
+
+---
+
+## ⭐ NEW HIGHEST-PRIORITY FINDING (per `P7_PER_TICKER_COMPARISON.md`):
+
+**IWM with LightGBM at 30m TF: Sharpe +3.24 across 5 walk-forward folds, 59% win rate, +15.8 bps/day after costs.**
+
+This is the single strongest signal in the entire 6-phase audit. Per-ticker training revealed it (was hidden by pooling). **Deploy IWM 30m LGBM first** — the cell-level trades below are still valid as confirmation signals.
+
+Secondary: IWM 15m LGBM Sharpe +3.15. QQQ 15m LGBM +2.48. SPY weakest at short TFs.
+
+**Avoid** ALL linear models on SPY/QQQ at 15-30m horizons — they have negative Sharpe.
+
+---
 
 ---
 
