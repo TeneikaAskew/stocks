@@ -397,7 +397,13 @@ def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
         prior_vex = pd.DataFrame()
 
     bd = out["bar_date"]
-    out["vix_close"] = bd.map(vix_df["vix_close"].to_dict())
+    # NO-LEAK FIX 2026-05-25: use PRIOR trading day's VIX close. The previous
+    # implementation used same-day close, which is end-of-day data and would
+    # be unknown to any intraday bar (e.g. a 10am bar wouldn't yet know that
+    # day's VIX close). Audit on 2026-05-25 confirmed s_vix at 14:30 ET equaled
+    # the daily close — a textbook lookahead leak.
+    prior_vix = vix_df.sort_index().shift(1)
+    out["vix_close"] = bd.map(prior_vix["vix_close"].to_dict())
     # VIX tercile
     out["vix_tercile"] = pd.cut(out["vix_close"], bins=[-np.inf, VIX_P33, VIX_P67, np.inf],
                                  labels=["LOW", "MID", "HIGH"]).astype(object)

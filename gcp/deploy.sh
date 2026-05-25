@@ -697,6 +697,42 @@ deploy_premarket_playbook_resolver() {
         --quiet
 }
 
+# ── P7b next-candle classifier (Cloud Run Job, research image) ──────────────
+# Status (2026-05-25): SHIPPED but NOT TRADED. The classifier achieves
+# 58-60% OOS next-candle accuracy on IWM 5m / SPY 5m / QQQ 5m, but P7d
+# backtest showed all tested exit models lose money net of 10 bps
+# round-trip costs. See docs/research/2026-05-25/P7_4track_verdict.md.
+#
+# This deploy function exists so the infrastructure is one command away
+# from being live. The scheduler entry (deploy_schedulers) is COMMENTED
+# OUT until a net-positive cell is identified — uncomment it then.
+#
+# Uses the research image (lightgbm + scikit-learn) instead of the prod
+# image. To rebuild the research image:
+#   gcloud builds submit --tag ${IMAGE}:research -f gcp/Dockerfile.research .
+deploy_p7b_classifier() {
+    echo "Deploying p7b-next-candle-classifier job..."
+    local research_image="${IMAGE}:research"
+
+    gcloud run jobs create p7b-next-candle-classifier \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.p7b_next_candle_classifier,--mode=evaluate" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update p7b-next-candle-classifier \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.p7b_next_candle_classifier,--mode=evaluate" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -2126,6 +2162,14 @@ deploy_schedulers() {
     _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
+    # P&L cell is identified. The classifier hits 58-60% OOS accuracy but the
+    # P7d backtest showed every exit model loses money after 10 bps round-trip
+    # costs. Uncomment when (a) a profitable cell is found via the avenues in
+    # docs/research/2026-05-25/P7_4track_verdict.md §"What I'd push next" and
+    # (b) the deploy function is updated to --mode=predict instead of evaluate.
+    # _schedule_with_args "p7b-classifier-daily" "30 16 * * 1-5" "p7b-next-candle-classifier" \
+    #     "-m" "gcp.research.p7b_next_candle_classifier" "--mode=all" "--ticker=IWM" "--tf=5m"
     # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
     # so any late-arriving intraday bars are queryable). Sweeps any alerts
     # still is_open=TRUE or with exit_ts NULL and resolves them via the
@@ -2476,6 +2520,7 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
+    p7b-classifier) deploy_p7b_classifier ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
