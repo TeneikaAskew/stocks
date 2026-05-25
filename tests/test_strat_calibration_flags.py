@@ -175,6 +175,72 @@ def test_cli_mode_label_rejects_overflow():
             or '8 chars' in (r.stderr + r.stdout))
 
 
+# ── 3b. mode_label actually flows into the persisted rows ─────────────
+
+
+def test_wf_dataframe_uses_mode_label_when_provided():
+    """REGRESSION: the parallel calibration's first dispatch (2026-05-24,
+    parent=6e074587) produced 6 distinct run_ids but ALL strat variants
+    persisted as mode='strat', collapsing s_noorb/s_noftfc/s_tight/s_call
+    into one bucket in the summary. The bug was in
+    _wf_result_to_dataframe hard-coding ``mode = 'strat' if use_strat
+    else 'base'`` and ignoring the CLI override. Fixed by threading
+    --mode-label through to that function.
+
+    This test pins the contract: when mode_label is given, the rows'
+    mode column must equal that label (not 'strat'/'base'). Without
+    this guard, future refactors could silently regress the bug and
+    every calibration dispatch would be ambiguous."""
+    from datetime import date
+    from unittest.mock import MagicMock
+    import scripts.run_walk_forward as rwf
+
+    # Construct a minimal WalkForwardResult-shape mock — three folds
+    # with non-zero metrics so the dataframe has rows to inspect.
+    def _fold(idx, sharpe):
+        m = MagicMock()
+        m.metrics.return_value = {
+            'total_trades': 50, 'win_rate': 0.5, 'profit_factor': 1.2,
+            'expectancy_pct': 0.001, 'sharpe_ratio': sharpe,
+            'max_drawdown_pct': -0.01, 'avg_win_pct': 0.005,
+            'avg_loss_pct': -0.005,
+        }
+        return m
+
+    wf_result = MagicMock()
+    wf_result.fold_results = [_fold(i, 0.5 + i * 0.1) for i in range(3)]
+    wf_result.fold_dates = [{
+        'train_start': date(2024, 1, 1), 'train_end': date(2024, 6, 1),
+        'test_start':  date(2024, 6, 1), 'test_end':  date(2024, 7, 1),
+    } for _ in range(3)]
+    wf_result.stability_score = 0.65
+
+    # use_strat=True with mode_label='s_noorb' — the label MUST win
+    df = rwf._wf_result_to_dataframe(
+        wf_result, run_id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        ticker='IWM', use_strat=True, mode_label='s_noorb')
+    assert (df['mode'] == 's_noorb').all(), (
+        f"mode_label='s_noorb' was ignored; got {df['mode'].unique()}"
+    )
+
+    # use_strat=False with mode_label='base' — explicit base label
+    df2 = rwf._wf_result_to_dataframe(
+        wf_result, run_id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        ticker='IWM', use_strat=False, mode_label='base')
+    assert (df2['mode'] == 'base').all()
+
+    # mode_label=None falls back to use_strat-derived label (back-compat)
+    df3 = rwf._wf_result_to_dataframe(
+        wf_result, run_id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        ticker='IWM', use_strat=True, mode_label=None)
+    assert (df3['mode'] == 'strat').all()
+
+    df4 = rwf._wf_result_to_dataframe(
+        wf_result, run_id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        ticker='IWM', use_strat=False, mode_label=None)
+    assert (df4['mode'] == 'base').all()
+
+
 # ── 4. Calibration orchestrator variant contract ──────────────────────
 
 

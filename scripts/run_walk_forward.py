@@ -60,14 +60,21 @@ def _wf_result_to_dataframe(
     run_id: str,
     ticker: str,
     use_strat: bool,
+    mode_label: str | None = None,
 ) -> pd.DataFrame:
     """Build one row per fold from a WalkForwardResult.
 
     stability_score is denormalised across all rows for the same
     (run_id, ticker, mode) — see schema comment.
+
+    ``mode_label`` (when provided) overrides the default 'strat'/'base'
+    label persisted to the ``mode`` column. This is what lets the
+    calibration orchestrator distinguish multiple parallel strat
+    variants in the same table (e.g. mode='s_noorb', mode='s_call'
+    instead of all rolling up to mode='strat').
     """
     rows: list[dict] = []
-    mode = 'strat' if use_strat else 'base'
+    mode = mode_label or ('strat' if use_strat else 'base')
     for fold_idx, (result, dates) in enumerate(
         zip(wf_result.fold_results, wf_result.fold_dates)
     ):
@@ -290,6 +297,7 @@ def main() -> None:
     wf_df = _wf_result_to_dataframe(
         wf_result, run_id=run_id, ticker=args.ticker,
         use_strat=args.use_strat,
+        mode_label=args.mode_label,
     )
 
     _print_fold_summary(wf_df, args.ticker, mode)
