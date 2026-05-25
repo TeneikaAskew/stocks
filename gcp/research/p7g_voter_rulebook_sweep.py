@@ -152,6 +152,22 @@ def simulate_rulebook(entry: float, side: int, trade_type: str,
     return {"pnl_bps": float(actual), "reason": "time_truncated", "minutes": len(window_1m)}
 
 
+def _tod_bucket(ts_utc: pd.Timestamp) -> str:
+    """Map a UTC timestamp to the rulebook §4 ET time-of-day bucket."""
+    et = ts_utc.tz_convert("America/New_York")
+    h, m = et.hour, et.minute
+    minutes = h * 60 + m
+    if 9 * 60 + 30 <= minutes < 11 * 60 + 30:
+        return "09:30-11:30_prime"
+    if 11 * 60 + 30 <= minutes < 13 * 60 + 30:
+        return "11:30-13:30_lunch"
+    if 13 * 60 + 30 <= minutes < 14 * 60:
+        return "13:30-14:00_normal"
+    if 14 * 60 <= minutes < 16 * 60:
+        return "14:00-16:00_degraded"
+    return "off_hours"
+
+
 def run_strength(fires: pd.DataFrame, tf_bars: pd.DataFrame, bars_1m: pd.DataFrame,
                  tf_lookup: dict, m1_lookup: dict, floor: int) -> dict:
     trades = []
@@ -189,6 +205,23 @@ def run_strength(fires: pd.DataFrame, tf_bars: pd.DataFrame, bars_1m: pd.DataFra
     avg = gross / n
     net_avg = avg - ROUND_TRIP_BPS
     reasons = t["reason"].value_counts().to_dict()
+    # Per-TOD breakdown (rulebook §4)
+    t["tod"] = t["ts"].apply(_tod_bucket)
+    per_tod = {}
+    for tod, sub in t.groupby("tod"):
+        sub_n = len(sub)
+        sub_gross = float(sub["pnl_bps"].sum())
+        sub_se = float(sub["pnl_bps"].std(ddof=1) / np.sqrt(sub_n)) if sub_n > 1 else 0.0
+        sub_avg = sub_gross / sub_n
+        per_tod[tod] = {
+            "n": sub_n, "win_rate": float((sub["pnl_bps"] > 0).mean()),
+            "gross_bps": sub_gross,
+            "avg_gross_per_trade": sub_avg,
+            "avg_net_per_trade": sub_avg - ROUND_TRIP_BPS,
+            "se_per_trade": sub_se,
+            "ci95_net_lo": sub_avg - ROUND_TRIP_BPS - 1.96 * sub_se,
+            "ci95_net_hi": sub_avg - ROUND_TRIP_BPS + 1.96 * sub_se,
+        }
     per_side = {}
     for sd_int, sd_lbl in [(1, "long"), (-1, "short")]:
         sub = t[t["side"] == sd_int]
@@ -211,6 +244,7 @@ def run_strength(fires: pd.DataFrame, tf_bars: pd.DataFrame, bars_1m: pd.DataFra
         "ci95_net_hi": net_avg + 1.96 * se,
         "exit_reasons": reasons,
         "per_side": per_side,
+        "per_tod": per_tod,
     }
 
 
@@ -275,6 +309,14 @@ def main():
                      sd, sd_r["n"], sd_r["win_rate"]*100,
                      sd_r["gross_bps"], sd_r["net_bps"],
                      sd_r["avg_net_per_trade"], sd_r["se_per_trade"])
+        # per-TOD detail (rulebook §4 windows)
+        for tod, td_r in sorted(r["per_tod"].items()):
+            if td_r["n"] < 20: continue
+            verdict_t = "OUT 0" if (td_r["ci95_net_lo"] > 0 or td_r["ci95_net_hi"] < 0) else "spans 0"
+            log.info("    TOD %-24s  n=%-5d win=%5.1f%%  gross/tr=%+6.2f  net/tr=%+6.2f  CI=[%+.2f,%+.2f] %s",
+                     tod, td_r["n"], td_r["win_rate"]*100,
+                     td_r["avg_gross_per_trade"], td_r["avg_net_per_trade"],
+                     td_r["ci95_net_lo"], td_r["ci95_net_hi"], verdict_t)
         summary["by_floor"][floor] = r
 
     blob = f"research/p7g/{args.ticker.lower()}_{args.tf}_rulebook_{int(time.time())}.json"
