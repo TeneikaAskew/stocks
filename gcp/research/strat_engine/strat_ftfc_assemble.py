@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
-    TICKERS, TIMEFRAMES, LABEL_CLASSES, DEFAULT_TRAIN_UNTIL,
+    TICKERS, TIMEFRAMES, TF_MINUTES, LABEL_CLASSES, DEFAULT_TRAIN_UNTIL,
     FTFC_WEIGHTS, GCS_BUCKET_DEFAULT, gcs_model_prefix,
 )
 from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
@@ -75,15 +75,41 @@ def score_tf(engine, ticker: str, tf: str, since: str) -> pd.DataFrame | None:
         if c not in X.columns: X[c] = 0
     X = X[feats].astype(np.float32)
     proba = model.predict_proba(X.values)
+
+    # Reviewer-flagged 2026-05-25 (item 5): map predict_proba columns
+    # through model.classes_ so we're robust to sparse classes (a class
+    # missing in training => fewer columns in proba). Index by class label,
+    # not position.
+    if hasattr(model, "classes_"):
+        cls_to_col = {LABEL_CLASSES[c]: i for i, c in enumerate(model.classes_)}
+    else:
+        cls_to_col = {c: i for i, c in enumerate(LABEL_CLASSES)}
+
+    def _p(cls_label):
+        i = cls_to_col.get(cls_label)
+        return proba[:, i] if i is not None else np.zeros(len(proba))
+
+    p1 = _p("1"); p2u = _p("2U"); p2d = _p("2D"); p3 = _p("3")
+    top_idx = proba.argmax(axis=1)
+    inv = {v: k for k, v in cls_to_col.items()}
+    top_labels = [inv.get(i, "?") for i in top_idx]
+
     out = pd.DataFrame({
         "ts": df["ts"].values,
-        f"{tf}_p_1":  proba[:, LABEL_CLASSES.index("1")],
-        f"{tf}_p_2u": proba[:, LABEL_CLASSES.index("2U")],
-        f"{tf}_p_2d": proba[:, LABEL_CLASSES.index("2D")],
-        f"{tf}_p_3":  proba[:, LABEL_CLASSES.index("3")],
-        f"{tf}_top":  [LABEL_CLASSES[i] for i in proba.argmax(axis=1)],
+        f"{tf}_p_1":  p1, f"{tf}_p_2u": p2u, f"{tf}_p_2d": p2d, f"{tf}_p_3":  p3,
+        f"{tf}_top":  top_labels,
     })
-    log.info("  %s %s: %d scored bars", ticker, tf, len(out))
+
+    # Reviewer-flagged 2026-05-25 (item 4): strat_features ts is BAR OPEN
+    # (pandas resample defaults to label='left'). For an as-of join to be
+    # leak-free, a higher-TF prediction can only be USED after its bar
+    # closes. Shift the ts forward by the bar's duration so the join sees
+    # the prediction at close, not open.
+    duration_min = TF_MINUTES[tf]
+    out["ts"] = pd.to_datetime(out["ts"], utc=True) + pd.Timedelta(minutes=duration_min)
+
+    log.info("  %s %s: %d scored bars (ts shifted +%dm = bar-close stamp)",
+             ticker, tf, len(out), duration_min)
     return out.sort_values("ts").reset_index(drop=True)
 
 
