@@ -63,6 +63,63 @@ def test_strat_config_allowed_directions_loadable_from_json():
         os.unlink(path)
 
 
+def _load_with_strat_directions(value):
+    """Helper: write {'strat': {'allowed_directions': value}} to a temp
+    JSON file and load it. Returns the parsed AppConfig or raises."""
+    from lib.config import load_config
+    import json
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+        json.dump({'strat': {'allowed_directions': value}}, f)
+        path = f.name
+    try:
+        return load_config(config_path=path)
+    finally:
+        os.unlink(path)
+
+
+def test_strat_config_allowed_directions_accepts_single_string():
+    """P2-Codex 2026-05-25 regression: a single-string value like
+    'CALL' (not wrapped in a list) used to be parsed as `set('CALL')` =
+    {'C','A','L'} — silently disabling Strat for both 'CALL' AND 'PUT'.
+    Now must parse to {'CALL'} so a JSON like `'allowed_directions':
+    'CALL'` actually works as the operator intended."""
+    cfg = _load_with_strat_directions('CALL')
+    assert cfg.strat.allowed_directions == {'CALL'}, (
+        f"single-string 'CALL' should parse to {{'CALL'}}, got "
+        f"{cfg.strat.allowed_directions!r}. If this asserts as "
+        f"{{'C','A','L'}} the Codex P2 silent-fallback bug has "
+        "regressed (see lib/config.py:657)."
+    )
+
+
+def test_strat_config_allowed_directions_rejects_invalid_token():
+    """A typo like 'CAL' or 'BUY' must fail loud at load time, not at
+    engine run time. CLAUDE.md §3.7: typed envelope, not silent
+    fallback. Silent {'CAL'} would disable the gate at runtime."""
+    with pytest.raises(ValueError, match="allowed_directions"):
+        _load_with_strat_directions(['CAL'])
+    with pytest.raises(ValueError, match="allowed_directions"):
+        _load_with_strat_directions(['BUY', 'SELL'])
+
+
+def test_strat_config_allowed_directions_rejects_non_iterable():
+    """Boolean / int / dict for allowed_directions must raise — these
+    are config typos that the legacy `set(...)` would either silently
+    coerce or TypeError without context."""
+    with pytest.raises(ValueError, match="allowed_directions"):
+        _load_with_strat_directions(123)
+
+
+def test_strat_config_allowed_directions_rejects_empty():
+    """Empty list/set is meaningless (would disable Strat for every
+    direction). Reject up-front; the operator should set the flag
+    explicitly OR omit it (default = {'CALL','PUT'})."""
+    with pytest.raises(ValueError, match="allowed_directions"):
+        _load_with_strat_directions([])
+
+
 # ── 2. Engine direction gate ──────────────────────────────────────────
 
 

@@ -655,7 +655,34 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         app.strat.ftfc_filter_enabled = strat_data.get('ftfc_filter_enabled', app.strat.ftfc_filter_enabled)
         app.strat.orb_filter_enabled = strat_data.get('orb_filter_enabled', app.strat.orb_filter_enabled)
         if 'allowed_directions' in strat_data:
-            app.strat.allowed_directions = set(strat_data['allowed_directions'])
+            # P2-Codex 2026-05-25: `set(strat_data['allowed_directions'])`
+            # blindly accepts any iterable, so a single-string config
+            # like "CALL" silently became {'C','A','L'} — the engine
+            # gate (`direction in allowed_directions`) then matches
+            # NOTHING and disables Strat for both 'CALL' and 'PUT'.
+            # That's a silent fallback (CLAUDE.md §3.7). Validate type
+            # and contents up front; fail loud on bad input.
+            raw = strat_data['allowed_directions']
+            if isinstance(raw, str):
+                # Single-token CLI-style string → list of one
+                items = [raw]
+            elif isinstance(raw, (list, tuple, set)):
+                items = list(raw)
+            else:
+                raise ValueError(
+                    f"strat.allowed_directions must be a list of "
+                    f"'CALL'/'PUT' strings (got {type(raw).__name__}: "
+                    f"{raw!r})"
+                )
+            dirs = {str(d).strip().upper() for d in items if str(d).strip()}
+            valid = {'CALL', 'PUT'}
+            if not dirs or not dirs.issubset(valid):
+                raise ValueError(
+                    f"strat.allowed_directions={raw!r} — must be a "
+                    f"non-empty subset of {sorted(valid)} "
+                    f"(parsed to {sorted(dirs)})"
+                )
+            app.strat.allowed_directions = dirs
         app.strat.timeframes = strat_data.get('timeframes', app.strat.timeframes)
         app.strat.ftfc_weights = strat_data.get('ftfc_weights', app.strat.ftfc_weights)
 
