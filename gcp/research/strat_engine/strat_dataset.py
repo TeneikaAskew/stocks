@@ -84,19 +84,23 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
     # Deduplicate columns (SELECT s.*, l.* duplicates ticker/ts if not renamed)
     df = df.loc[:, ~df.columns.duplicated()]
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df = df.sort_values("ts").reset_index(drop=True)
+    df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
 
-    # Map source's prev_strat_candle -> prev1_candle (PRD naming)
-    df["prev1_candle"] = df.get("prev_strat_candle")
+    # SESSION-AWARE shifts: group by bar_date so prev/next never cross
+    # overnight gaps. Reviewer-flagged 2026-05-25: previously
+    # `strat_candle.shift(-1)` walked across day boundaries, labeling the
+    # last bar of each day with the next day's opening bar (an overnight
+    # gap, NOT an intraday continuation). Same for prev2/prev3 reaching
+    # into the prior session. At 15m that contaminates ~4% of labels;
+    # at 4h ~40%.
+    grp_candle = df.groupby("bar_date")["strat_candle"]
+    df["prev1_candle"] = grp_candle.shift(1)
+    df["prev2_candle"] = grp_candle.shift(2)
+    df["prev3_candle"] = grp_candle.shift(3)
+    df[LABEL_COL] = grp_candle.shift(-1)
 
-    # NEW lags
-    df["prev2_candle"] = df["strat_candle"].shift(2)
-    df["prev3_candle"] = df["strat_candle"].shift(3)
-
-    # NEW label: next bar's strat_candle. Strictly t+1.
-    df[LABEL_COL] = df["strat_candle"].shift(-1)
-
-    # Drop the final bar (no label) + optionally the 3-bar warmup
+    # Drop the final bar OF EACH DAY (no next-bar label within session)
+    # + optionally the first 3 bars of each day (warmup).
     df = df[df[LABEL_COL].notna()].copy()
     if drop_warmup:
         df = df[df["prev3_candle"].notna()].copy()
@@ -107,6 +111,38 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
 
     log.info("dataset: %d rows after labels + warmup drop", len(df))
     return df.reset_index(drop=True)
+
+
+# Columns excluded from numeric feature discovery (identity, OHLCV, labels,
+# forward-return targets, bookkeeping, derived flags handled separately).
+_FEATURE_DROP_COLS = frozenset({
+    "ticker", "ts", "tf", "bar_date",
+    "open", "high", "low", "close", "volume",
+    "fwd_close_5bars", "fwd_close_15bars", "fwd_close_30bars", "fwd_close_60bars",
+    "fwd_ret_5bars_bps", "fwd_ret_15bars_bps", "fwd_ret_30bars_bps", "fwd_ret_60bars_bps",
+    "computed_at", "trigger_high", "trigger_low",
+    "is_continuation", "is_reversal", "is_inside", "strat_setup",
+    "prev_strat_candle",  # superseded by prev1_candle
+    LABEL_COL,
+})
+
+_NUMERIC_DTYPES = (np.float64, np.int64, np.int32, np.int8, np.float32, np.int16)
+
+
+def discover_numeric_features(df: pd.DataFrame) -> list[str]:
+    """Return numeric-feature column names by inspecting dtype. Used by
+    Stages 2-4 so the enrichment columns from strat_features_levels_{tf}
+    are automatically included, not just the static config list.
+
+    Reviewer-flagged 2026-05-25: previously Stages 2 and 3 iterated the
+    NUMERIC_FEATURES constant, which doesn't list ORB/historical-level/
+    order-block columns, so the correlation layer silently omitted exactly
+    the level-based features the PRD calls out as most directionally
+    relevant. The model stage already used dtype-based discovery; this
+    helper makes Stages 2-4 consistent.
+    """
+    return [c for c in df.columns
+            if c not in _FEATURE_DROP_COLS and df[c].dtype in _NUMERIC_DTYPES]
 
 
 def label_to_idx(label_series: pd.Series) -> np.ndarray:

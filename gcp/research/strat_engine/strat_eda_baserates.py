@@ -28,10 +28,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
-    TICKERS, TIMEFRAMES, NUMERIC_FEATURES, LABEL_COL, LABEL_CLASSES,
+    TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES,
     GCS_BUCKET_DEFAULT, GCS_PREFIX, gcs_model_prefix,
 )
-from gcp.research.strat_engine.strat_dataset import load_labeled_dataset, base_rate
+from gcp.research.strat_engine.strat_dataset import (
+    load_labeled_dataset, base_rate, discover_numeric_features,
+)
 from google.cloud import storage as gcs
 from lib.logging_config import setup_logging
 
@@ -91,7 +93,7 @@ def compute_transition_matrix(df: pd.DataFrame, condition_cols: list[str]) -> di
     return out
 
 
-def compute_indicator_distributions(df: pd.DataFrame) -> dict:
+def compute_indicator_distributions(df: pd.DataFrame, features: list[str]) -> dict:
     """Per next_bar_type, distribution stats for each numeric feature.
     Stage 3 will use these as a sanity-cross-check against MI rankings."""
     out = {}
@@ -100,7 +102,7 @@ def compute_indicator_distributions(df: pd.DataFrame) -> dict:
         if len(sub) < 30:
             continue
         cls_stats = {"n": int(len(sub)), "features": {}}
-        for feat in NUMERIC_FEATURES:
+        for feat in features:
             if feat not in sub.columns: continue
             col = sub[feat].dropna()
             if len(col) < 30: continue
@@ -115,10 +117,10 @@ def compute_indicator_distributions(df: pd.DataFrame) -> dict:
     return out
 
 
-def data_quality(df: pd.DataFrame) -> dict:
+def data_quality(df: pd.DataFrame, features: list[str]) -> dict:
     """Null counts per feature, warmup detection, ts span."""
     null_counts = {}
-    for feat in NUMERIC_FEATURES:
+    for feat in features:
         if feat in df.columns:
             n_null = int(df[feat].isna().sum())
             if n_null > 0:
@@ -141,6 +143,9 @@ def run_eda(engine, ticker: str, tf: str, since: str | None = None,
     log.info("=" * 70)
 
     df = load_labeled_dataset(engine, ticker, tf, since=since, until=until)
+    features = discover_numeric_features(df)
+    log.info("discovered %d numeric features (includes ORB/levels/order_blocks "
+             "from strat_features_levels_%s LEFT JOIN)", len(features), tf)
 
     br = compute_base_rate(df)
     log.info("Base rate (Stage 4 must beat by +5pp):")
@@ -167,10 +172,11 @@ def run_eda(engine, ticker: str, tf: str, since: str | None = None,
                  seq, row["n"],
                  "  ".join(f"{c}:{row['probs'][c]:.2%}" for c in LABEL_CLASSES))
 
-    ind_dist = compute_indicator_distributions(df)
-    log.info("Indicator distributions computed for %d classes", len(ind_dist))
+    ind_dist = compute_indicator_distributions(df, features)
+    log.info("Indicator distributions computed for %d classes × %d features",
+             len(ind_dist), len(features))
 
-    dq = data_quality(df)
+    dq = data_quality(df, features)
     log.info("Data quality: n=%d  span=%s..%s  features-with-nulls=%d",
              dq["n_rows"], dq["bar_date_min"], dq["bar_date_max"],
              len(dq["null_features"]))

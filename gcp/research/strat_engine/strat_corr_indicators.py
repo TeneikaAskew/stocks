@@ -28,10 +28,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
-    TICKERS, TIMEFRAMES, NUMERIC_FEATURES, LABEL_COL, LABEL_CLASSES,
+    TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES,
     DEFAULT_TRAIN_UNTIL, GCS_BUCKET_DEFAULT, gcs_model_prefix,
 )
-from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
+from gcp.research.strat_engine.strat_dataset import (
+    load_labeled_dataset, discover_numeric_features,
+)
 from google.cloud import storage as gcs
 from lib.logging_config import setup_logging
 from sklearn.feature_selection import mutual_info_classif
@@ -129,8 +131,9 @@ def run_corr(engine, ticker: str, tf: str, train_until: str,
 
     # TRAIN-only data (avoid OOS leakage in ranking)
     df = load_labeled_dataset(engine, ticker, tf, until=train_until)
-    feats = [f for f in NUMERIC_FEATURES if f in df.columns]
-    log.info("training rows: %d  features: %d", len(df), len(feats))
+    feats = discover_numeric_features(df)
+    log.info("training rows: %d  features: %d  (includes ORB/levels/order_blocks "
+             "from strat_features_levels_%s)", len(df), len(feats), tf)
 
     rankings = {}
     curves = {}

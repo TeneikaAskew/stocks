@@ -202,20 +202,21 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
         log.info("  %-3s  prec=%.3f  rec=%.3f  f1=%.3f  n=%d",
                  cls, r["precision"], r["recall"], r["f1-score"], int(r["support"]))
 
-    # All three gates required to pass:
-    #   PRIMARY:   log-loss beats baseline (any positive improvement)
-    #   SECONDARY: accuracy beats base rate by >= base_rate_beat_pp
-    #   SECONDARY: ECE <= ece_ceiling
+    # Hard gates (block downstream): log-loss + ECE only. Accuracy is
+    # ADVISORY because a calibrated, informative model on noisier cells
+    # (1m, 4h) can beat base-rate log-loss while missing +5pp accuracy.
+    # That would be a false-negative kill on exactly the model we want.
+    # Reviewer-flagged 2026-05-25.
     logloss_gate = ll < base_ll
-    accuracy_gate = (acc - base_acc) * 100 >= base_rate_beat_pp
     ece_gate = ece <= ece_ceiling
-    gate_pass = logloss_gate and accuracy_gate and ece_gate
+    accuracy_advisory = (acc - base_acc) * 100 >= base_rate_beat_pp
+    gate_pass = logloss_gate and ece_gate  # accuracy NOT required
     log.info("=" * 70)
-    log.info("GATE VERDICT: %s  (logloss=%s  accuracy=%s  ece=%s)",
+    log.info("GATE VERDICT: %s  (HARD: logloss=%s, ece=%s | ADVISORY: accuracy=%s)",
              "PASS" if gate_pass else "FAIL",
              "PASS" if logloss_gate else "FAIL",
-             "PASS" if accuracy_gate else "FAIL",
-             "PASS" if ece_gate else "FAIL")
+             "PASS" if ece_gate else "FAIL",
+             "PASS" if accuracy_advisory else "FAIL")
     log.info("=" * 70)
 
     metrics = {
@@ -232,9 +233,9 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
                                                 for j in range(len(LABEL_CLASSES))}
                               for i in range(len(LABEL_CLASSES))},
         "gate": {
-            "primary_logloss_gate_pass": logloss_gate,
-            "secondary_accuracy_gate_pass": accuracy_gate,
-            "secondary_ece_gate_pass": ece_gate,
+            "hard_logloss_gate_pass": logloss_gate,
+            "hard_ece_gate_pass": ece_gate,
+            "advisory_accuracy_gate_pass": accuracy_advisory,
             "base_rate_beat_pp_threshold": base_rate_beat_pp,
             "ece_ceiling": ece_ceiling,
             "verdict": "PASS" if gate_pass else "FAIL",
