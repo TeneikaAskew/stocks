@@ -138,6 +138,35 @@ class TestBacktestResult:
         assert result.avg_loss == 0.0
         assert result.expectancy == 0.0
 
+    def test_sharpe_ratio_single_day_returns_zero_not_nan(self):
+        """REGRESSION: a fold/result with a SINGLE day of PnL produced a
+        NaN Sharpe (pandas std(ddof=1) needs ≥2 samples). The NaN landed
+        in backtest_walk_forward_folds.sharpe as a Postgres `NaN` value
+        (distinct from NULL), then poisoned downstream AVG/MAX aggregates
+        in the SPY/QQQ WF summaries. The original `if std == 0` guard
+        didn't catch it because `NaN == 0` is False in IEEE 754.
+
+        Sharpe with no return variance to measure is honestly 0.0; this
+        test pins that contract."""
+        result = BacktestResult(
+            trades=[], daily_pnl=[{'pnl': 0.01}],
+            equity_curve=pd.Series(dtype=float),
+        )
+        sh = result.sharpe_ratio
+        assert sh == 0.0, f"single-day Sharpe should be 0.0, got {sh!r}"
+        assert not pd.isna(sh), "Sharpe must never be NaN — poisons AVG"
+
+    def test_sharpe_ratio_zero_variance_returns_zero(self):
+        """All-identical daily PnL → std=0 → return 0.0. Existing
+        behaviour, pin so a refactor doesn't accidentally return
+        +/-inf via division by zero."""
+        result = BacktestResult(
+            trades=[],
+            daily_pnl=[{'pnl': 0.005}, {'pnl': 0.005}, {'pnl': 0.005}],
+            equity_curve=pd.Series(dtype=float),
+        )
+        assert result.sharpe_ratio == 0.0
+
     def test_result_with_trades(self):
         trades = [
             Trade(

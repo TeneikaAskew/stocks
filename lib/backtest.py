@@ -120,9 +120,17 @@ class BacktestResult:
         if not self.daily_pnl:
             return 0.0
         daily_returns = pd.Series([d['pnl'] for d in self.daily_pnl])
-        if daily_returns.std() == 0:
+        std = daily_returns.std()
+        # Guard against NaN AND zero. A fold with a single trading day has
+        # pandas std(ddof=1)=NaN (degrees of freedom = 0). Before this guard
+        # the NaN propagated into backtest_walk_forward_folds.sharpe as
+        # Postgres `NaN`, which then poisoned downstream AVG/MAX aggregates
+        # across the SPY/QQQ WF reports (`NaN == 0` is False in IEEE 754
+        # so the original `== 0` guard didn't catch it). 0.0 is the
+        # honest answer when there's no return variance to measure.
+        if pd.isna(std) or std == 0:
             return 0.0
-        return (daily_returns.mean() / daily_returns.std()) * np.sqrt(self.annualization_factor)
+        return (daily_returns.mean() / std) * np.sqrt(self.annualization_factor)
 
     def _trade_durations(self) -> List[float]:
         """Duration of each trade in minutes."""
