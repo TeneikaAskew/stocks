@@ -278,24 +278,28 @@ def build_4h(engine, ticker: str, source: str = "aggregate_from_60m") -> dict:
 
 def summary(engine) -> dict:
     """Print row counts + class balance per (ticker, tf) so the user sees
-    current coverage before kicking off Stage 2."""
+    current coverage before kicking off Stage 2.
+
+    Uses a FRESH connection per query to avoid aborted-transaction
+    cascade when a 4h-table-missing exception poisons the txn.
+    """
     log.info("=" * 70)
     log.info("Stage 1 SUMMARY")
     log.info("=" * 70)
-    with engine.connect() as c:
-        rows = []
-        for ticker in TICKERS:
-            for tf in TIMEFRAMES:
-                try:
+    rows = []
+    for ticker in TICKERS:
+        for tf in TIMEFRAMES:
+            try:
+                with engine.connect() as c:
                     n = c.execute(text(
                         f"SELECT count(*) FROM {strat_features_table(tf)} "
                         f"WHERE ticker = :t AND strat_candle IS NOT NULL"
                     ), {"t": ticker}).scalar() or 0
-                except Exception as e:
-                    log.warning("  %s %s: table missing (%s)", ticker, tf, e)
-                    n = 0
-                rows.append({"ticker": ticker, "tf": tf, "n": int(n)})
-                log.info("  %-3s %-3s  n=%d", ticker, tf, n)
+            except Exception as e:
+                log.warning("  %s %s: query failed (%s)", ticker, tf, type(e).__name__)
+                n = 0
+            rows.append({"ticker": ticker, "tf": tf, "n": int(n)})
+            log.info("  %-3s %-3s  n=%d", ticker, tf, n)
     return {"summary": rows}
 
 
