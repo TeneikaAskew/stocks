@@ -339,11 +339,39 @@ def write_predictions(predictions: pd.DataFrame, engine):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode", choices=["train", "predict", "all"], default="all")
+    p.add_argument("--ticker", default="IWM", choices=["SPY", "IWM", "QQQ"])
+    p.add_argument("--tf", default="30m", choices=["15m", "30m", "60m"])
     p.add_argument("--n-pred-bars", type=int, default=100,
                    help="How many of the most recent bars to score in predict mode")
     args = p.parse_args()
 
-    log.info("P7a IWM 30m pipeline: mode=%s", args.mode)
+    # Override globals from CLI so functions pick them up
+    global TICKER, TF, FWD_COL, MODEL_PREFIX, MODEL_BLOB, SCALER_BLOB, FEATURES_BLOB, PREDICTIONS_TABLE, PREDICTIONS_TABLE_SQL
+    TICKER = args.ticker
+    TF = args.tf
+    FWD_COL = "fwd_ret_5bars_bps"
+    MODEL_PREFIX = f"research/p7a/{TICKER.lower()}_{TF}"
+    MODEL_BLOB = f"{MODEL_PREFIX}/model.pkl"
+    SCALER_BLOB = f"{MODEL_PREFIX}/scaler.pkl"
+    FEATURES_BLOB = f"{MODEL_PREFIX}/features.txt"
+    PREDICTIONS_TABLE = f"{TICKER.lower()}_{TF}_predictions"
+    PREDICTIONS_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE} (
+    ticker         VARCHAR(16) NOT NULL,
+    bar_ts         TIMESTAMPTZ NOT NULL,
+    bar_date       DATE        NOT NULL,
+    bar_close      DOUBLE PRECISION,
+    pred_fwd_bps   DOUBLE PRECISION,
+    pred_direction VARCHAR(4),
+    pred_decile    SMALLINT,
+    model_version  VARCHAR(64),
+    computed_at    TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ticker, bar_ts)
+);
+CREATE INDEX IF NOT EXISTS ix_{PREDICTIONS_TABLE}_date
+    ON {PREDICTIONS_TABLE} (bar_date);
+"""
+    log.info("P7a pipeline: ticker=%s tf=%s mode=%s", TICKER, TF, args.mode)
     engine = get_engine()
 
     if args.mode in ("train", "all"):
