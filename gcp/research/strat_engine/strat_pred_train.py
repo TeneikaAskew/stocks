@@ -137,54 +137,43 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
 
     train_df = load_labeled_dataset(engine, ticker, tf, until=train_until)
     test_df = load_labeled_dataset(engine, ticker, tf, since=train_until)
+    log.info("split sizes — train=%d  test(OOS)=%d", len(train_df), len(test_df))
 
-    # 80/20 train/calibration split inside the train period (anchored, time-ordered)
-    n_train_full = len(train_df)
-    n_cal = max(int(n_train_full * 0.2), 200)
-    n_fit = n_train_full - n_cal
-    fit_df = train_df.iloc[:n_fit].copy()
-    cal_df = train_df.iloc[n_fit:].copy()
-    log.info("split sizes — fit=%d  calib=%d  test(OOS)=%d",
-             len(fit_df), len(cal_df), len(test_df))
-
-    # Featurize each split independently then align columns
-    X_fit, fit_cols = featurize(fit_df)
-    X_cal, cal_cols = featurize(cal_df)
+    # Featurize train + test, align columns
+    X_train, train_cols = featurize(train_df)
     X_test, test_cols = featurize(test_df)
-    all_cols = sorted(set(fit_cols) | set(cal_cols) | set(test_cols))
-    for X in (X_fit, X_cal, X_test):
+    all_cols = sorted(set(train_cols) | set(test_cols))
+    for X in (X_train, X_test):
         for c in all_cols:
             if c not in X.columns: X[c] = 0
-    X_fit = X_fit[all_cols].astype(np.float32)
-    X_cal = X_cal[all_cols].astype(np.float32)
+    X_train = X_train[all_cols].astype(np.float32)
     X_test = X_test[all_cols].astype(np.float32)
 
-    y_fit = fit_df[LABEL_COL].map(LABEL_TO_IDX).values
-    y_cal = cal_df[LABEL_COL].map(LABEL_TO_IDX).values
+    y_train = train_df[LABEL_COL].map(LABEL_TO_IDX).values
     y_test = test_df[LABEL_COL].map(LABEL_TO_IDX).values
 
-    # 1) Fit base LightGBM
-    log.info("fitting base LightGBM on %d rows × %d cols...", len(X_fit), len(all_cols))
-    base = make_lgbm()
-    base.fit(X_fit.values, y_fit)
+    # CalibratedClassifierCV with internal CV (sklearn 1.6+ deprecated cv='prefit').
+    # cv=3 means the base estimator is trained on each fold and calibration is
+    # learned on the held-out fold. No data leakage because it uses sklearn's
+    # cross-validation internally.
+    log.info("fitting calibrated LightGBM (method=%s, cv=3) on %d train rows × %d cols...",
+             calibration, len(X_train), len(all_cols))
+    calibrated = CalibratedClassifierCV(
+        estimator=make_lgbm(), method=calibration, cv=3, n_jobs=-1,
+    )
+    calibrated.fit(X_train.values, y_train)
 
-    # 2) Calibrate on the held-out calib slice. Use CalibratedClassifierCV
-    # prefit (we already fit base on fit_df).
-    log.info("calibrating with method=%s on %d calib rows...", calibration, len(X_cal))
-    calibrated = CalibratedClassifierCV(estimator=base, method=calibration, cv="prefit")
-    calibrated.fit(X_cal.values, y_cal)
-
-    # 3) OOS evaluation
+    # OOS evaluation
     proba_test = calibrated.predict_proba(X_test.values)
     pred_test = np.argmax(proba_test, axis=1)
     acc = float(accuracy_score(y_test, pred_test))
     ll = float(log_loss(y_test, proba_test, labels=list(range(len(LABEL_CLASSES)))))
 
-    # baseline = always predict majority class from FIT data
-    fit_majority = int(np.bincount(y_fit, minlength=len(LABEL_CLASSES)).argmax())
-    base_acc = float((y_test == fit_majority).mean())
+    # baseline = always predict majority class from TRAIN data
+    train_majority = int(np.bincount(y_train, minlength=len(LABEL_CLASSES)).argmax())
+    base_acc = float((y_test == train_majority).mean())
     base_proba = np.tile(
-        np.bincount(y_fit, minlength=len(LABEL_CLASSES)) / len(y_fit),
+        np.bincount(y_train, minlength=len(LABEL_CLASSES)) / len(y_train),
         (len(y_test), 1))
     base_ll = float(log_loss(y_test, base_proba, labels=list(range(len(LABEL_CLASSES)))))
 
@@ -227,7 +216,7 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     metrics = {
         "ticker": ticker, "tf": tf, "train_until": train_until,
         "calibration": calibration,
-        "n_fit": int(len(X_fit)), "n_calib": int(len(X_cal)), "n_test": int(len(X_test)),
+        "n_train": int(len(X_train)), "n_test": int(len(X_test)),
         "oos_accuracy": acc, "base_accuracy": base_acc,
         "accuracy_beat_pp": (acc - base_acc) * 100,
         "oos_log_loss": ll, "base_log_loss": base_ll,
