@@ -213,7 +213,7 @@ def backtest(engine, train_until: str = "2026-01-01"):
         entry_idx = idx + 1
         if entry_idx >= len(df): continue
         entry_bar = df.iloc[entry_idx]
-        bars_after = df.iloc[entry_idx+1 : entry_idx+1+LOOKFWD][["open","high","low","close"]]
+        bars_after = df.iloc[entry_idx : entry_idx+LOOKFWD][["open","high","low","close"]]
         if len(bars_after) == 0: continue
         side = int(row["signal"])
         for name, spec in EXIT_MODELS.items():

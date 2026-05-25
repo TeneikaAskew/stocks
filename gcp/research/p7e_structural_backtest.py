@@ -144,22 +144,38 @@ def simulate_structural(bars_after: pd.DataFrame, entry: float, stop: float,
             "bars_held": len(bars), "r_realized": float(actual / r_dist)}
 
 
-def classifier_signal(df: pd.DataFrame, model, features, side: str) -> pd.DataFrame:
-    X = featurize(df)
+def _score_edge(model, features, bars: pd.DataFrame) -> np.ndarray:
+    X = featurize(bars)
     for c in features:
         if c not in X.columns: X[c] = 0
     X = X[features].astype(np.float32)
     proba = model.predict_proba(X.values)
+    return proba[:, CLASS_ORDER.index("2U")] - proba[:, CLASS_ORDER.index("2D")]
+
+
+def classifier_signal(df: pd.DataFrame, model, features, side: str,
+                      engine=None, train_until: str | None = None) -> pd.DataFrame:
+    """Score OOS bars, threshold by deciles fit on TRAINING distribution (no OOS leak)."""
     df = df.copy()
-    df["p_2u"] = proba[:, CLASS_ORDER.index("2U")]
-    df["p_2d"] = proba[:, CLASS_ORDER.index("2D")]
-    df["edge"] = df["p_2u"] - df["p_2d"]
-    df["decile"] = pd.qcut(df["edge"], 10, labels=False, duplicates="drop") + 1
+    df["edge"] = _score_edge(model, features, df)
+
+    if engine is not None and train_until:
+        log.info("computing decile thresholds from TRAINING distribution (no OOS leak)...")
+        train_bars = load_bars(engine, until=train_until)
+        train_edge = _score_edge(model, features, train_bars)
+        d10_thr = float(np.percentile(train_edge, 90))
+        d1_thr  = float(np.percentile(train_edge, 10))
+        log.info("training thresholds: D1<=%.4f, D10>=%.4f", d1_thr, d10_thr)
+    else:
+        log.warning("no engine/train_until — fitting deciles on OOS (small leak)")
+        d10_thr = float(df["edge"].quantile(0.9))
+        d1_thr  = float(df["edge"].quantile(0.1))
+
     df["signal"] = 0
     if side in ("long", "both"):
-        df.loc[df["decile"] == 10, "signal"] = 1
+        df.loc[df["edge"] >= d10_thr, "signal"] = 1
     if side in ("short", "both"):
-        df.loc[df["decile"] == 1, "signal"] = -1
+        df.loc[df["edge"] <= d1_thr, "signal"] = -1
     return df
 
 
@@ -186,18 +202,28 @@ def combo_regime_cells(engine, train_until: str, min_n: int = 30, top_n: int = 1
 
 
 def combo_signal(df: pd.DataFrame, cells: pd.DataFrame) -> pd.DataFrame:
+    """Mark bars matching top cells. Also stamp each bar with the cell's |t-stat|
+    as a conviction score so the per-day cap picks the strongest, not the
+    chronologically-first (reviewer-flagged bug)."""
     df = df.copy()
     df["signal"] = 0
+    df["cell_abs_t"] = 0.0
     for _, r in cells.iterrows():
         mask = (df["strat_combo"] == r["strat_combo"]) & (df["dealer_regime"] == r["dealer_regime"])
         df.loc[mask, "signal"] = 1 if r["mean_bps"] > 0 else -1
+        df.loc[mask, "cell_abs_t"] = float(r["abs_t"])
     return df
 
 
 def run_backtest(df: pd.DataFrame, signal_name: str) -> tuple[dict, dict]:
     cands = df[df["signal"] != 0].copy()
     cands["day"] = pd.to_datetime(cands["ts"]).dt.date
-    cands["score"] = cands["edge"].abs() if "edge" in cands.columns else 1.0
+    if "edge" in cands.columns:
+        cands["score"] = cands["edge"].abs()
+    elif "cell_abs_t" in cands.columns:
+        cands["score"] = cands["cell_abs_t"]   # combo-regime: pick highest-conviction cell that day
+    else:
+        cands["score"] = 1.0
     selected = (cands.sort_values(["day", "score"], ascending=[True, False])
                      .groupby("day", group_keys=False).head(MAX_TRADES_PER_DAY))
     log.info("%s: %d candidates, %d after %d-per-day cap",
@@ -208,7 +234,7 @@ def run_backtest(df: pd.DataFrame, signal_name: str) -> tuple[dict, dict]:
         entry_idx = idx + 1
         if entry_idx >= len(df): continue
         entry_bar = df.iloc[entry_idx]
-        bars_after = df.iloc[entry_idx+1 : entry_idx+1+MAX_BARS_HELD+5][["open","high","low","close"]]
+        bars_after = df.iloc[entry_idx : entry_idx+MAX_BARS_HELD+5][["open","high","low","close"]]
         if len(bars_after) == 0: continue
         side = int(row["signal"])
         # STRUCTURAL stop: the SIGNAL bar's low (long) / high (short)
@@ -269,6 +295,8 @@ def main():
                    choices=["classifier-long", "classifier-both", "combo-regime"])
     p.add_argument("--train-until", default="2026-01-01")
     p.add_argument("--top-n-cells", type=int, default=10)
+    p.add_argument("--min-n-cell", type=int, default=30,
+                   help="Drop training cells with n<this. =500 → only trustworthy high-n cells.")
     args = p.parse_args()
 
     global TICKER, TF
@@ -287,10 +315,12 @@ def main():
         model = pickle.loads(mb)
         features = ft.decode().strip().split("\n")
         side = "long" if args.signal == "classifier-long" else "both"
-        df = classifier_signal(df, model, features, side=side)
+        df = classifier_signal(df, model, features, side=side,
+                               engine=engine, train_until=args.train_until)
         signal_name = f"classifier_{side}"
     else:
-        cells = combo_regime_cells(engine, args.train_until, top_n=args.top_n_cells)
+        cells = combo_regime_cells(engine, args.train_until,
+                                   min_n=args.min_n_cell, top_n=args.top_n_cells)
         log.info("Top %d combo×regime cells from TRAINING data (clean OOS test below):", len(cells))
         log.info("\n%s", cells.to_string(index=False))
         df = combo_signal(df, cells)
