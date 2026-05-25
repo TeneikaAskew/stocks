@@ -1,17 +1,21 @@
 """Stage 1 — Data — `strat_data_build.py`.
 
 Modes:
-  --mode=verify        Run the leakage + label-sanity tests on the labeled
-                       dataset for a (ticker, tf). This is the M1 gate.
-  --mode=build-4h      Build strat_features_4h table by aggregating from
-                       strat_features_60m (or from 1m if --source=raw). NOT
-                       needed for the M1 vertical slice — only required
-                       before M3 (all-TF scale).
-  --mode=summary       Print row counts + class balance per ticker/tf.
+  --mode=summary          Print row counts per (ticker, tf). Coverage gap report.
+  --mode=verify           Run the leakage + label-sanity tests on the
+                          labeled dataset for a (ticker, tf). This is the M1 gate.
+  --mode=ensure-coverage  ORCHESTRATOR: identify missing (ticker, tf) combos
+                          vs the config TICKERS x TIMEFRAMES grid and dispatch
+                          backfill jobs for each gap. The strat_engine reuses
+                          existing strat_features_{tf} tables wherever they
+                          exist; this mode only fires builds for missing data.
+  --mode=build-4h         Build strat_features_4h for one ticker by aggregating
+                          from strat_features_60m. Called by ensure-coverage;
+                          can also be run standalone.
 
-PRD scope: this stage produces / verifies the labeled dataset; downstream
-stages (EDA/corr/model/FTFC/readout) consume it via the shared loader in
-strat_dataset.py.
+PRD scope: this stage VERIFIES + BACKFILLS the labeled dataset (orchestrator
+over existing tables); downstream stages (EDA/corr/model/FTFC/readout) consume
+it via the shared loader in strat_dataset.py.
 """
 from __future__ import annotations
 import argparse
@@ -303,16 +307,93 @@ def summary(engine) -> dict:
     return {"summary": rows}
 
 
+# ─────────────────────── Mode: ensure-coverage (orchestrator) ───────────────────────
+
+def ensure_coverage(engine, dry_run: bool = False) -> dict:
+    """Identify missing (ticker, tf) combos and dispatch backfills.
+
+    For 1m / 5m / 15m / 30m / 60m: delegates to the existing
+    `p7-build-multi-tf-features` Cloud Run Job (--tickers=X --tf-only=Y).
+    For 4h: dispatches `--mode=build-4h` on this script itself (or
+    handles in-process if dry_run is False — keeping it as a job
+    dispatch matches the existing pattern).
+
+    The strat_engine reuses existing tables wherever they exist; only
+    real gaps get rebuilt.
+    """
+    import subprocess
+    log.info("=" * 70)
+    log.info("ENSURE COVERAGE  (dry_run=%s)", dry_run)
+    log.info("=" * 70)
+    gaps = []
+    for ticker in TICKERS:
+        for tf in TIMEFRAMES:
+            try:
+                with engine.connect() as c:
+                    n = c.execute(text(
+                        f"SELECT count(*) FROM {strat_features_table(tf)} "
+                        f"WHERE ticker = :t AND strat_candle IS NOT NULL"
+                    ), {"t": ticker}).scalar() or 0
+            except Exception:
+                n = 0
+            # Threshold: <100 rows = effectively missing
+            if n < 100:
+                gaps.append({"ticker": ticker, "tf": tf, "current_rows": int(n)})
+                log.info("  GAP %s %s (current=%d)", ticker, tf, n)
+            else:
+                log.info("  OK  %s %s (n=%d)", ticker, tf, n)
+
+    if not gaps:
+        log.info("No gaps. All (ticker, tf) combos populated.")
+        return {"gaps": [], "dispatched": []}
+
+    if dry_run:
+        log.info("DRY RUN: would dispatch %d backfill jobs", len(gaps))
+        return {"gaps": gaps, "dispatched": []}
+
+    dispatched = []
+    for g in gaps:
+        if g["tf"] == "4h":
+            # Dispatch this script's --mode=build-4h for the ticker
+            cmd = ["gcloud", "run", "jobs", "execute",
+                   "p7b-next-candle-classifier", "--region=us-east1",
+                   f"--args=-m,gcp.research.strat_engine.strat_data_build,"
+                   f"--mode=build-4h,--ticker={g['ticker']}",
+                   "--format=value(metadata.name)", "--async"]
+        else:
+            # Dispatch p7-build-multi-tf-features for the gap
+            cmd = ["gcloud", "run", "jobs", "execute",
+                   "p7-build-multi-tf-features", "--region=us-east1",
+                   f"--args=-m,gcp.research.p7_build_multi_tf_features,"
+                   f"--tickers={g['ticker']},--tf-only={g['tf']}",
+                   "--format=value(metadata.name)", "--async"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            exec_name = r.stdout.strip().split("\n")[-1] if r.returncode == 0 else None
+            dispatched.append({**g, "execution": exec_name,
+                              "ok": r.returncode == 0,
+                              "stderr": r.stderr[-200:] if r.returncode else None})
+            log.info("  dispatched %s %s -> %s", g["ticker"], g["tf"], exec_name)
+        except Exception as e:
+            dispatched.append({**g, "execution": None, "ok": False, "err": str(e)})
+            log.warning("  failed %s %s: %s", g["ticker"], g["tf"], e)
+    log.info("Dispatched %d / %d gap backfills", sum(1 for d in dispatched if d["ok"]), len(dispatched))
+    return {"gaps": gaps, "dispatched": dispatched}
+
+
 # ─────────────────────── Main ───────────────────────
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode", choices=["verify", "build-4h", "summary"],
+    p.add_argument("--mode",
+                   choices=["summary", "verify", "ensure-coverage", "build-4h"],
                    required=True)
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
     p.add_argument("--source", default="aggregate_from_60m",
                    choices=["aggregate_from_60m", "raw_intraday"])
+    p.add_argument("--dry-run", action="store_true",
+                   help="ensure-coverage: report gaps without dispatching")
     args = p.parse_args()
     engine = get_engine()
 
@@ -320,6 +401,8 @@ def main():
         summary(engine)
     elif args.mode == "verify":
         verify(engine, args.ticker, args.tf)
+    elif args.mode == "ensure-coverage":
+        ensure_coverage(engine, dry_run=args.dry_run)
     elif args.mode == "build-4h":
         build_4h(engine, args.ticker, source=args.source)
 
