@@ -86,18 +86,29 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
 
-    # SESSION-AWARE shifts: group by bar_date so prev/next never cross
-    # overnight gaps. Reviewer-flagged 2026-05-25: previously
-    # `strat_candle.shift(-1)` walked across day boundaries, labeling the
-    # last bar of each day with the next day's opening bar (an overnight
-    # gap, NOT an intraday continuation). Same for prev2/prev3 reaching
-    # into the prior session. At 15m that contaminates ~4% of labels;
-    # at 4h ~40%.
-    grp_candle = df.groupby("bar_date")["strat_candle"]
-    df["prev1_candle"] = grp_candle.shift(1)
-    df["prev2_candle"] = grp_candle.shift(2)
-    df["prev3_candle"] = grp_candle.shift(3)
-    df[LABEL_COL] = grp_candle.shift(-1)
+    # SHIFT STRATEGY by TF:
+    # - Intraday (1m-60m): SESSION-AWARE — groupby('bar_date').shift(N) so
+    #   prev/next never cross overnight gaps. Reviewer-flagged 2026-05-25:
+    #   previously walked across day boundaries; at 15m ~4% contaminated,
+    #   at 60m ~14%, at 4h ~40%.
+    # - Coarse (4h+): CROSS-BAR — 4h has only ~2-3 bars per RTH day, so
+    #   session-aware shifts drop EVERY bar (prev3 always null inside a
+    #   2-3 bar day). Reverting to cross-bar for these TFs; the overnight
+    #   gap is a smaller fraction of the bar's own duration anyway.
+    SESSION_AWARE_TFS = {"1m", "5m", "15m", "30m", "60m"}
+    if tf in SESSION_AWARE_TFS:
+        grp_candle = df.groupby("bar_date")["strat_candle"]
+        df["prev1_candle"] = grp_candle.shift(1)
+        df["prev2_candle"] = grp_candle.shift(2)
+        df["prev3_candle"] = grp_candle.shift(3)
+        df[LABEL_COL] = grp_candle.shift(-1)
+    else:
+        # cross-bar shifts (no groupby); first 3 bars of the whole series
+        # have null lags, last bar has null label.
+        df["prev1_candle"] = df["strat_candle"].shift(1)
+        df["prev2_candle"] = df["strat_candle"].shift(2)
+        df["prev3_candle"] = df["strat_candle"].shift(3)
+        df[LABEL_COL] = df["strat_candle"].shift(-1)
 
     # Drop the final bar OF EACH DAY (no next-bar label within session)
     # + optionally the first 3 bars of each day (warmup).
