@@ -53,8 +53,8 @@ def audit_orb(engine, ticker: str, tf: str, sample_date: str = "2026-05-15") -> 
     AFTER the ORB window closes."""
     sql = text(f"""
         SELECT s.ts, s.ts::time AS tod, s.high, s.low,
-               l.orb_5_high, l.orb_5_low, l.orb_15_high, l.orb_15_low,
-               l.orb_30_high, l.orb_30_low
+               l.orb_5m_high, l.orb_5m_low, l.orb_15m_high, l.orb_15m_low,
+               l.orb_30m_high, l.orb_30m_low
           FROM {strat_features_table(tf)} s
           LEFT JOIN {levels_table(tf)} l ON s.ticker = l.ticker AND s.ts = l.ts
          WHERE s.ticker = :t AND s.bar_date = :d AND s.strat_candle IS NOT NULL
@@ -67,8 +67,8 @@ def audit_orb(engine, ticker: str, tf: str, sample_date: str = "2026-05-15") -> 
         return {"status": "NO_DATA"}
 
     findings = []
-    for window, end_min in [(5, 5), (15, 15), (30, 30)]:
-        high_col, low_col = f"orb_{window}_high", f"orb_{window}_low"
+    for window_label, end_min in [("5m", 5), ("15m", 15), ("30m", 30)]:
+        high_col, low_col = f"orb_{window_label}_high", f"orb_{window_label}_low"
         if high_col not in df.columns:
             continue
         # Bars after market open + window_min should have IDENTICAL ORB high/low
@@ -83,22 +83,22 @@ def audit_orb(engine, ticker: str, tf: str, sample_date: str = "2026-05-15") -> 
         )
         after = df[df["tod_et_min"] >= orb_end_et_min]
         if len(after) < 2:
-            findings.append({"window": window, "n_after_window": int(len(after)),
+            findings.append({"window": window_label, "n_after_window": int(len(after)),
                              "status": "INSUFFICIENT_BARS"})
             continue
         n_unique_high = after[high_col].nunique(dropna=False)
         n_unique_low = after[low_col].nunique(dropna=False)
         status = "CLEAN" if (n_unique_high == 1 and n_unique_low == 1) else "VARIES"
         findings.append({
-            "window": window, "n_after_window": int(len(after)),
+            "window": window_label, "n_after_window": int(len(after)),
             "high_uniques": int(n_unique_high),
             "low_uniques": int(n_unique_low),
             "high_value": float(after[high_col].dropna().iloc[0]) if not after[high_col].dropna().empty else None,
             "low_value":  float(after[low_col].dropna().iloc[0])  if not after[low_col].dropna().empty  else None,
             "status": status,
         })
-        log.info("  ORB-%dm after end: %d bars, %d unique high, %d unique low → %s",
-                 window, len(after), n_unique_high, n_unique_low, status)
+        log.info("  ORB-%s after end: %d bars, %d unique high, %d unique low → %s",
+                 window_label, len(after), n_unique_high, n_unique_low, status)
 
     return {"sample_date": sample_date, "ticker": ticker, "tf": tf, "findings": findings}
 
