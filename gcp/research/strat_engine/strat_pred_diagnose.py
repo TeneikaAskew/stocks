@@ -29,22 +29,35 @@ from gcp.research.strat_engine.strat_config import (
 
 
 def list_all_metrics(ticker: str, tf: str) -> list[dict]:
-    """Return EVERY metrics_*.json for a (ticker, tf) cell with summary info.
-    Sorted oldest → newest by GCS create time."""
+    """Return EVERY metrics file for a (ticker, tf) cell with summary info.
+    Pulls from BOTH the per-run archive (runs/{run_id}/metrics.json) AND
+    the legacy timestamped path (metrics_*.json). Sorted oldest → newest
+    by GCS create time."""
     bucket = gcs.Client().bucket(os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT))
     prefix = gcs_model_prefix(ticker, tf)
-    blobs = sorted(bucket.list_blobs(prefix=f"{prefix}/metrics_"),
-                   key=lambda b: b.time_created or b.name)
+    # Per-run archive (preferred — has run_id stamped)
+    archive_blobs = list(bucket.list_blobs(prefix=f"{prefix}/runs/"))
+    archive_blobs = [b for b in archive_blobs if b.name.endswith("/metrics.json")]
+    # Legacy flat path
+    flat_blobs = list(bucket.list_blobs(prefix=f"{prefix}/metrics_"))
+    all_blobs = sorted(archive_blobs + flat_blobs,
+                       key=lambda b: b.time_created or b.name)
     rows = []
-    for b in blobs:
+    for b in all_blobs:
         try:
             payload = json.loads(b.download_as_bytes().decode())
         except Exception:
             continue
+        # Extract run_id from blob path or payload
+        run_id = payload.get("run_id")
+        if not run_id and "/runs/" in b.name:
+            run_id = b.name.split("/runs/")[1].split("/")[0]
         rows.append({
             "blob": b.name,
+            "run_id": run_id or "(legacy)",
             "ts": b.time_created.isoformat() if b.time_created else "?",
             "calibration": payload.get("calibration", "?"),
+            "class_weight": payload.get("class_weight", "natural"),
             "log_loss": payload.get("oos_log_loss"),
             "accuracy": payload.get("oos_accuracy"),
             "ece": payload.get("ece"),
@@ -52,6 +65,16 @@ def list_all_metrics(ticker: str, tf: str) -> list[dict]:
             "payload": payload,
         })
     return rows
+
+
+def load_metrics_by_run_id(ticker: str, tf: str, run_id: str) -> dict:
+    """Load metrics for a specific archived run (e.g., 'strat-engine-2x8rd')."""
+    bucket = gcs.Client().bucket(os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT))
+    prefix = gcs_model_prefix(ticker, tf)
+    blob = bucket.blob(f"{prefix}/runs/{run_id}/metrics.json")
+    if not blob.exists():
+        raise RuntimeError(f"No archived run {run_id} for {ticker} {tf}.")
+    return json.loads(blob.download_as_bytes().decode())
 
 
 def latest_metrics_for(ticker: str, tf: str,
@@ -161,22 +184,24 @@ def diagnose(ticker: str, tf: str, calibration: str | None = None) -> dict:
 
 
 def list_mode(ticker: str, tf: str) -> None:
-    """Print one line per saved metrics file for the (ticker, tf) cell."""
+    """Print one line per saved run for the (ticker, tf) cell."""
     rows = list_all_metrics(ticker, tf)
     if not rows:
-        print(f"No metrics_*.json found for {ticker} {tf}.")
+        print(f"No metrics files found for {ticker} {tf}.")
         return
-    print(f"\n{ticker} {tf} — {len(rows)} metrics file(s) on GCS "
-          f"(oldest → newest):")
-    print(f"  {'created_at':<27}  {'cal':<9}  {'log-loss':>9}  {'acc':>7}  {'ECE':>7}  verdict")
-    print("  " + "-" * 78)
+    print(f"\n{ticker} {tf} — {len(rows)} run(s) on GCS (oldest → newest):")
+    print(f"  {'created_at':<27}  {'run_id':<26}  {'cal':<9} {'cw':<9}  "
+          f"{'log-loss':>9}  {'acc':>7}  {'ECE':>7}  verdict")
+    print("  " + "-" * 122)
     for r in rows:
         ll = f"{r['log_loss']:.4f}" if r['log_loss'] is not None else "?"
         ac = f"{r['accuracy']:.3f}" if r['accuracy'] is not None else "?"
         ec = f"{r['ece']:.4f}" if r['ece'] is not None else "?"
-        print(f"  {r['ts']:<27}  {r['calibration']:<9}  {ll:>9}  {ac:>7}  {ec:>7}  {r['verdict']}")
-    print(f"\nDefault when `--calibration` is omitted: filter to '{DEFAULT_CALIBRATION}' "
-          f"(the LOCKED production default).")
+        run = (r["run_id"][:25] if r["run_id"] else "?")
+        print(f"  {r['ts']:<27}  {run:<26}  {r['calibration']:<9} "
+              f"{r['class_weight']:<9}  {ll:>9}  {ac:>7}  {ec:>7}  {r['verdict']}")
+    print(f"\nDefault when --calibration is omitted: filter to '{DEFAULT_CALIBRATION}' "
+          f"(LOCKED). Pass --run-id <id> for a specific archived run.")
 
 
 def main():
@@ -189,13 +214,19 @@ def main():
                         f"Default '{DEFAULT_CALIBRATION}' is the LOCKED "
                         f"production default. 'any' = chronologically latest "
                         f"regardless of method.")
+    p.add_argument("--run-id", default=None,
+                   help="Load a SPECIFIC archived run (e.g., 'strat-engine-2x8rd'). "
+                        "Overrides --calibration.")
     p.add_argument("--list", action="store_true",
-                   help="List ALL metrics files for the cell instead of "
-                        "printing the diagnostic. Useful to audit which "
-                        "calibration variants have been tried.")
+                   help="List ALL runs for the cell instead of printing "
+                        "the diagnostic.")
     args = p.parse_args()
     if args.list:
         list_mode(args.ticker, args.tf)
+        return
+    if args.run_id:
+        m = load_metrics_by_run_id(args.ticker, args.tf, args.run_id)
+        print_summary(m); print_reliability(m); print_per_class(m); print_confusion(m)
         return
     cal = None if args.calibration == "any" else args.calibration
     diagnose(args.ticker, args.tf, calibration=cal)

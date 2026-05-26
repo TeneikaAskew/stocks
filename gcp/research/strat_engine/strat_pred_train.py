@@ -255,27 +255,43 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     }
 
     # Persist
+    # Every run is archived under runs/{run_id}/ so nothing is ever lost.
+    # The LOCKED-default config ALSO overwrites the top-level pointer files
+    # (model.pkl, features.txt, classes.txt) that Stage 5 + 6 consume.
+    # Variants save the per-run folder only; the production pointer stays
+    # at the latest LOCKED-default run.
     prefix = gcs_model_prefix(ticker, tf)
-    # Only the LOCKED-default config (sigmoid + natural) overwrites the
-    # canonical model.pkl that Stage 5 + 6 consume. Variants save to
-    # suffixed paths so they're available for the diagnostic + comparison
-    # but never trample the production artifact.
+    run_id = (os.environ.get("CLOUD_RUN_EXECUTION")
+              or os.environ.get("STRAT_RUN_ID")
+              or f"run_{int(time.time())}")
+    metrics["run_id"] = run_id
+    run_prefix = f"{prefix}/runs/{run_id}"
+
+    # Archive EVERY run (full set of artifacts in its own folder)
+    _upload(pickle.dumps(calibrated), f"{run_prefix}/model.pkl")
+    _upload("\n".join(all_cols).encode(), f"{run_prefix}/features.txt", "text/plain")
+    _upload("\n".join(LABEL_CLASSES).encode(), f"{run_prefix}/classes.txt", "text/plain")
+    _upload(json.dumps(metrics, indent=2, default=str).encode(),
+            f"{run_prefix}/metrics.json")
+    log.info("archived run to gs://%s/%s/",
+             os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), run_prefix)
+
+    # Maintain the LOCKED-default pointer at the top-level prefix for
+    # downstream consumers. Only sigmoid + natural overwrites this.
     is_locked_default = (calibration == DEFAULT_CALIBRATION and class_weight is None)
     if is_locked_default:
         _upload(pickle.dumps(calibrated), f"{prefix}/model.pkl")
         _upload("\n".join(all_cols).encode(), f"{prefix}/features.txt", "text/plain")
         _upload("\n".join(LABEL_CLASSES).encode(), f"{prefix}/classes.txt", "text/plain")
-        log.info("saved LOCKED-DEFAULT model.pkl (sigmoid cv=3 natural) to gs://%s/%s/",
-                 os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), prefix)
+        log.info("updated LOCKED-DEFAULT pointer model.pkl → run_id=%s", run_id)
     else:
-        suffix = f"{calibration}_cv{cv}_{class_weight or 'natural'}"
-        _upload(pickle.dumps(calibrated), f"{prefix}/model_{suffix}.pkl")
-        log.info("saved VARIANT model_%s.pkl (does NOT touch model.pkl) to gs://%s/%s/",
-                 suffix, os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), prefix)
+        log.info("VARIANT run (%s, cw=%s) — pointer model.pkl NOT touched",
+                 calibration, class_weight or "natural")
+
+    # Also keep the flat metrics_{ts}.json for backward compat with the
+    # diagnostic's existing list mode (still timestamped, never overwrites)
     _upload(json.dumps(metrics, indent=2, default=str).encode(),
             f"{prefix}/metrics_{int(time.time())}.json")
-    log.info("saved metrics to gs://%s/%s/",
-             os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), prefix)
 
     return metrics
 
