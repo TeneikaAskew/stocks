@@ -1,7 +1,10 @@
 # Strat Directionality Engine — Architecture
 
 **Status:** v1 in progress (M2 LOCKED for IWM 15m, calibration=sigmoid cv=3)
-**Companion:** [`STRAT_ENGINE_ARCHITECTURE.drawio`](./STRAT_ENGINE_ARCHITECTURE.drawio) (open in drawio.com or VS Code's drawio plugin)
+**Companions:**
+- [`STRAT_ENGINE_ARCHITECTURE.drawio`](./STRAT_ENGINE_ARCHITECTURE.drawio) — layer diagram
+- [`STRAT_ENGINE_ERD.md`](./STRAT_ENGINE_ERD.md) + [`STRAT_ENGINE_ERD.drawio`](./STRAT_ENGINE_ERD.drawio) — table-level schema + relationships
+
 **Scope:** movement prediction only — `P(next bar ∈ {1, 2U, 2D, 3})` per ticker × TF. NO money / P&L in v1.
 
 ## 1. Design principles
