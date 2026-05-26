@@ -59,11 +59,17 @@ def levels_table(tf: str) -> str:
     return f"strat_features_levels_{tf}"
 
 
-def _compute_enrichments(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute ORB + historical levels + order blocks. Input: DataFrame
-    with columns ts, open, high, low, close, volume (lowercase).
-    Returns: same row count, ticker + ts + enrichment columns only."""
-    # lib helpers want Capitalized columns
+def _compute_enrichments(df: pd.DataFrame, include_current_period: bool = False) -> pd.DataFrame:
+    """Compute ORB + historical levels + (optional current-period) + order
+    blocks. Input: DataFrame with columns ts, open, high, low, close,
+    volume (lowercase). Returns: same row count, ticker + ts +
+    enrichment columns only.
+
+    include_current_period defaults to FALSE to keep the M2 feature set
+    consistent across TFs (the original 15m backfill predates
+    calculate_current_period_levels). Flip to True once 15m has been
+    migrated to add the cur_* cols.
+    """
     times = pd.to_datetime(df["ts"], utc=True)
     h = df["high"].astype(float)
     l = df["low"].astype(float)
@@ -75,17 +81,23 @@ def _compute_enrichments(df: pd.DataFrame) -> pd.DataFrame:
     orb.index = df.index
     log.info("  ORB: %d cols", orb.shape[1])
 
-    # 2) Historical levels (PREVIOUS day/week/month/quarter/year HLOC + flags)
+    # 2) Historical levels (prev day/week/month/quarter/year HLOC + flags)
     hist = calculate_historical_levels(times, h, l, o, c)
     hist.index = df.index
     log.info("  Historical levels (prev): %d cols", hist.shape[1])
 
-    # 2b) CURRENT-period running levels (today/WTD/MTD/QTD/YTD HLO + position).
-    # Reviewer-flagged 2026-05-25: previous-period HLOC alone doesn't tell you
-    # "where in today's range are we?" — this fills that gap.
-    cur = calculate_current_period_levels(times, h, l, o, c)
-    cur.index = df.index
-    log.info("  Current-period running levels: %d cols", cur.shape[1])
+    parts = [orb, hist]
+
+    # 2b) OPTIONAL CURRENT-period running levels (today/WTD/MTD/QTD/YTD).
+    # Gated by `include_current_period` so M2 feature set matches 15m's
+    # pre-existing 143-col schema. Once 15m is migrated, default True.
+    if include_current_period:
+        cur = calculate_current_period_levels(times, h, l, o, c)
+        cur.index = df.index
+        log.info("  Current-period running levels: %d cols", cur.shape[1])
+        parts.append(cur)
+    else:
+        log.info("  Current-period running levels: SKIPPED (M2 schema match)")
 
     # 3) Order blocks (uses ATR if available; compute ATR(14) here)
     atr14 = calculate_atr(h, l, c, period=14)
@@ -97,7 +109,8 @@ def _compute_enrichments(df: pd.DataFrame) -> pd.DataFrame:
                              for c in ob.columns})
     log.info("  Order blocks: %d cols", ob.shape[1])
 
-    out = pd.concat([orb, hist, cur, ob], axis=1)
+    parts.append(ob)
+    out = pd.concat(parts, axis=1)
     # snake_case + lowercase column names for SQL friendliness
     rename = {}
     for col in out.columns:
@@ -127,11 +140,16 @@ CREATE INDEX IF NOT EXISTS ix_{levels_table(tf)}_ts ON {levels_table(tf)} (ts);
     log.info("ensured schema: %s (%d enrichment cols)", levels_table(tf), len(sample_cols))
 
 
-def backfill_one(engine, ticker: str, tf: str, batch_year: bool = True):
+def backfill_one(engine, ticker: str, tf: str, batch_year: bool = True,
+                  include_current_period: bool = False):
     """Compute enrichments for ALL rows of (ticker, TF) in strat_features
-    and UPSERT to strat_features_levels_{tf}. Returns row count."""
+    and UPSERT to strat_features_levels_{tf}. Returns row count.
+
+    include_current_period defaults False for M2 schema consistency with
+    the pre-existing 15m backfill."""
     log.info("=" * 70)
-    log.info("BACKFILL  ticker=%s  tf=%s", ticker, tf)
+    log.info("BACKFILL  ticker=%s  tf=%s  include_current_period=%s",
+             ticker, tf, include_current_period)
     log.info("=" * 70)
     sql = text(f"SELECT ts, open, high, low, close, volume FROM "
                f"{strat_features_table(tf)} WHERE ticker = :t "
@@ -145,7 +163,7 @@ def backfill_one(engine, ticker: str, tf: str, batch_year: bool = True):
         log.warning("  no source rows; skipping")
         return 0
 
-    enrich = _compute_enrichments(df)
+    enrich = _compute_enrichments(df, include_current_period=include_current_period)
     enrich["ticker"] = ticker
     enrich["ts"] = df["ts"].values
     # reorder: ticker, ts first
@@ -174,6 +192,9 @@ def main():
                    required=True)
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
+    p.add_argument("--include-current-period", action="store_true",
+                   help="Include cur_day_*/cur_week_*/etc. cols. Default OFF "
+                        "for M2 to match 15m's 143-col feature set.")
     args = p.parse_args()
     engine = get_engine()
 
@@ -191,7 +212,8 @@ def main():
         _create_table_for_tf(engine, args.tf,
                               [c for c in enrich.columns if c not in ("ticker", "ts")])
     elif args.mode == "backfill":
-        backfill_one(engine, args.ticker, args.tf)
+        backfill_one(engine, args.ticker, args.tf,
+                     include_current_period=args.include_current_period)
     elif args.mode == "schema-all":
         for tf in TIMEFRAMES:
             # Use IWM as sample for column discovery
@@ -214,7 +236,8 @@ def main():
         for ticker in TICKERS:
             for tf in TIMEFRAMES:
                 try:
-                    backfill_one(engine, ticker, tf)
+                    backfill_one(engine, ticker, tf,
+                                 include_current_period=args.include_current_period)
                 except Exception as e:
                     log.error("backfill %s %s failed: %s", ticker, tf, e)
 
