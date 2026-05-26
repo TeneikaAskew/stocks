@@ -1,21 +1,21 @@
-"""Stage 1 — Data — `strat_data_build.py`.
+"""Strat Engine — Stage 1 pipeline orchestrator.
+
+Thin admin wrapper around the heavyweight `strat_data_builder.py`. The
+builder is the source-of-truth that aggregates raw 1-min bars → all TFs
+including 4h; this pipeline file holds the read-only / dispatch ops.
 
 Modes:
-  --mode=summary          Print row counts per (ticker, tf). Coverage gap report.
-  --mode=verify           Run the leakage + label-sanity tests on the
-                          labeled dataset for a (ticker, tf). This is the M1 gate.
-  --mode=ensure-coverage  ORCHESTRATOR: identify missing (ticker, tf) combos
-                          vs the config TICKERS x TIMEFRAMES grid and dispatch
-                          backfill jobs for each gap. The strat_engine reuses
-                          existing strat_features_{tf} tables wherever they
-                          exist; this mode only fires builds for missing data.
-  --mode=build-4h         Build strat_features_4h for one ticker by aggregating
-                          from strat_features_60m. Called by ensure-coverage;
-                          can also be run standalone.
+  --mode=summary          Print row counts per (ticker, tf). Coverage report.
+  --mode=verify           Run the label-correctness + VIX-leak tests on the
+                          labeled dataset for one (ticker, tf). Stage 1 gate.
+  --mode=ensure-coverage  Identify missing (ticker, tf) combos vs the
+                          config grid and dispatch the strat-engine builder
+                          for each gap. 4h is built uniformly with other
+                          TFs via the builder's --tf-only=4h flag.
 
-PRD scope: this stage VERIFIES + BACKFILLS the labeled dataset (orchestrator
-over existing tables); downstream stages (EDA/corr/model/FTFC/readout) consume
-it via the shared loader in strat_dataset.py.
+PRD scope: this stage VERIFIES coverage and DISPATCHES builds for gaps.
+Downstream stages (EDA / corr / model / FTFC / readout) consume the
+labeled dataset via the shared loader in `strat_dataset.py`.
 """
 from __future__ import annotations
 import argparse
@@ -32,7 +32,7 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from gcp.database import get_engine, bulk_copy_upsert, execute_sql
+from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
     TICKERS, TIMEFRAMES, TF_MINUTES,
     NUMERIC_FEATURES, STRAT_SEQUENCE_FEATURES, REGIME_FEATURES,
@@ -161,131 +161,12 @@ def verify(engine, ticker: str, tf: str) -> dict:
     return result
 
 
-# ─────────────────────── Mode: build-4h ───────────────────────
-
-FOUR_H_DDL = """
-CREATE TABLE IF NOT EXISTS strat_features_4h (
-    ticker          VARCHAR(16) NOT NULL,
-    ts              TIMESTAMPTZ NOT NULL,
-    tf              VARCHAR(8) NOT NULL DEFAULT '4h',
-    bar_date        DATE NOT NULL,
-    open            DOUBLE PRECISION,
-    high            DOUBLE PRECISION,
-    low             DOUBLE PRECISION,
-    close           DOUBLE PRECISION,
-    volume          BIGINT,
-    strat_candle    VARCHAR(8),
-    prev_strat_candle VARCHAR(8),
-    strat_combo     VARCHAR(64),
-    is_continuation BOOLEAN,
-    is_reversal     BOOLEAN,
-    is_inside       BOOLEAN,
-    strat_setup     BOOLEAN,
-    consecutive_1s  SMALLINT,
-    trigger_high    DOUBLE PRECISION,
-    trigger_low     DOUBLE PRECISION,
-    ema_9 DOUBLE PRECISION, ema_20 DOUBLE PRECISION, ema_50 DOUBLE PRECISION, ema_200 DOUBLE PRECISION,
-    sma_50 DOUBLE PRECISION, sma_200 DOUBLE PRECISION,
-    rsi_9 DOUBLE PRECISION, rsi_14 DOUBLE PRECISION,
-    stoch_rsi_k DOUBLE PRECISION, stoch_rsi_d DOUBLE PRECISION,
-    macd DOUBLE PRECISION, macd_signal DOUBLE PRECISION, macd_histogram DOUBLE PRECISION,
-    atr_14 DOUBLE PRECISION, atr_20 DOUBLE PRECISION,
-    bb_upper DOUBLE PRECISION, bb_lower DOUBLE PRECISION, bb_width DOUBLE PRECISION, bb_pct DOUBLE PRECISION,
-    obv DOUBLE PRECISION, rvol DOUBLE PRECISION, rvol_10 DOUBLE PRECISION,
-    vwap DOUBLE PRECISION,
-    price_vs_vwap DOUBLE PRECISION, price_vs_ema9 DOUBLE PRECISION, price_vs_ema20 DOUBLE PRECISION,
-    consecutive_up INTEGER, consecutive_down INTEGER,
-    intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
-    fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
-    fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
-    fwd_ret_5bars_bps DOUBLE PRECISION, fwd_ret_15bars_bps DOUBLE PRECISION,
-    fwd_ret_30bars_bps DOUBLE PRECISION, fwd_ret_60bars_bps DOUBLE PRECISION,
-    vix_close DOUBLE PRECISION, vix_tercile VARCHAR(8),
-    total_gex DOUBLE PRECISION, gex_tercile VARCHAR(8),
-    total_vex DOUBLE PRECISION, vex_tercile VARCHAR(8),
-    dealer_regime VARCHAR(32), gamma_regime VARCHAR(32),
-    flip_price DOUBLE PRECISION,
-    distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
-    computed_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (ticker, ts)
-);
-CREATE INDEX IF NOT EXISTS ix_strat_features_4h_date ON strat_features_4h (bar_date);
-CREATE INDEX IF NOT EXISTS ix_strat_features_4h_combo ON strat_features_4h (ticker, strat_combo);
-"""
-
-
-def build_4h(engine, ticker: str, source: str = "aggregate_from_60m") -> dict:
-    """Build/refresh strat_features_4h for one ticker.
-
-    source='aggregate_from_60m' (default): aggregate 60m OHLC → 4h, then
-        re-compute indicators on 4h. Simplest; tracks 60m bars 1:1.
-    source='raw_intraday': aggregate from 1m bars (more faithful but slower).
-        Falls back to delegating to the existing p7_build_multi_tf_features
-        helpers via import.
-    """
-    log.info("=" * 70)
-    log.info("Stage 1 BUILD 4h  ticker=%s  source=%s", ticker, source)
-    log.info("=" * 70)
-    execute_sql(FOUR_H_DDL)
-    log.info("schema ready: strat_features_4h")
-
-    if source == "aggregate_from_60m":
-        # Pull 60m bars; aggregate OHLCV to 4h (every 4 consecutive 60m bars
-        # = one 4h bar, aligned to ET market open 9:30-13:30 / 13:30-17:30
-        # — actually RTH is 9:30-16:00, that's 6.5h not divisible by 4).
-        # Use 240-min bins aligned to ET 9:30 open.
-        from lib.indicators import add_all_indicators
-        from lib.strat import StratClassifier
-
-        sql = text(f"SELECT ts, open, high, low, close, volume FROM "
-                   f"{strat_features_table('60m')} WHERE ticker = :t "
-                   f"AND strat_candle IS NOT NULL ORDER BY ts")
-        with engine.connect() as c:
-            bars_60m = pd.read_sql(sql, c, params={"t": ticker})
-        bars_60m["ts"] = pd.to_datetime(bars_60m["ts"], utc=True)
-        log.info("loaded %d 60m bars for %s", len(bars_60m), ticker)
-
-        # Convert to ET for proper 4h alignment to market open
-        bars_60m_et = bars_60m.set_index(bars_60m["ts"].dt.tz_convert("America/New_York"))
-        # Resample 4h with origin at 9:30 ET (market open)
-        agg = bars_60m_et.resample("4h", origin="start_day", offset="9h30min").agg({
-            "open": "first", "high": "max", "low": "min",
-            "close": "last", "volume": "sum",
-        }).dropna(subset=["open", "close"])
-        agg = agg.reset_index().rename(columns={"ts": "ts_et"})
-        agg["ts"] = pd.to_datetime(agg["ts_et"]).dt.tz_convert("UTC")
-        agg["ticker"] = ticker
-        agg["tf"] = "4h"
-        agg["bar_date"] = agg["ts"].dt.date
-        log.info("aggregated to %d 4h bars", len(agg))
-
-        # Rename to Capitalized for lib helpers (they expect Open/High/Low/Close)
-        agg = agg.rename(columns={"open": "Open", "high": "High",
-                                   "low": "Low", "close": "Close",
-                                   "volume": "Volume"})
-
-        # Indicators + strat
-        agg = add_all_indicators(agg, close_col="Close")
-        clf = StratClassifier()
-        agg = clf.detect_combos(agg)
-
-        # Rename back to lowercase to match strat_features schema
-        agg = agg.rename(columns={"Open": "open", "High": "high",
-                                   "Low": "low", "Close": "close",
-                                   "Volume": "volume"})
-
-        # Upsert
-        cols = [c for c in agg.columns if c not in ("ts_et",)]
-        agg = agg[cols]
-        bulk_copy_upsert(
-            agg, "strat_features_4h",
-            conflict_cols=["ticker", "ts"],
-            update_cols=[c for c in cols if c not in ("ticker", "ts")],
-        )
-        log.info("upserted %d rows to strat_features_4h", len(agg))
-        return {"ticker": ticker, "tf": "4h", "rows": int(len(agg))}
-
-    raise NotImplementedError(f"source={source} not yet supported; use aggregate_from_60m")
+# NOTE: build-4h mode was REMOVED 2026-05-26. The strat_data_builder now
+# handles 4h natively (("4h", "4h") added to TF_LIST + FOUR_H_DDL applied
+# just-in-time). Dispatch 4h gaps via:
+#   gcloud run jobs execute strat-engine \
+#     --args="-m,gcp.research.strat_engine.strat_data_builder,--tickers=X,--tf-only=4h"
+# `ensure-coverage` below handles the dispatch automatically.
 
 
 # ─────────────────────── Mode: summary ───────────────────────
@@ -322,11 +203,9 @@ def summary(engine) -> dict:
 def ensure_coverage(engine, dry_run: bool = False) -> dict:
     """Identify missing (ticker, tf) combos and dispatch backfills.
 
-    For 1m / 5m / 15m / 30m / 60m: delegates to the existing
-    `p7-build-multi-tf-features` Cloud Run Job (--tickers=X --tf-only=Y).
-    For 4h: dispatches `--mode=build-4h` on this script itself (or
-    handles in-process if dry_run is False — keeping it as a job
-    dispatch matches the existing pattern).
+    Uniform dispatch path for ALL TFs (1m / 5m / 15m / 30m / 60m / 4h):
+    delegates to the `strat-engine` Cloud Run Job running
+    `gcp.research.strat_engine.strat_data_builder --tickers=X --tf-only=Y`.
 
     The strat_engine reuses existing tables wherever they exist; only
     real gaps get rebuilt.
@@ -363,24 +242,14 @@ def ensure_coverage(engine, dry_run: bool = False) -> dict:
 
     dispatched = []
     for g in gaps:
-        if g["tf"] == "4h":
-            # Dispatch this script's --mode=build-4h for the ticker
-            cmd = ["gcloud", "run", "jobs", "execute",
-                   "strat-engine", "--region=us-east1",
-                   f"--args=-m,gcp.research.strat_engine.strat_data_build,"
-                   f"--mode=build-4h,--ticker={g['ticker']}",
-                   "--format=value(metadata.name)", "--async"]
-        else:
-            # Dispatch the strat_engine-owned data builder for the gap.
-            # Renamed 2026-05-26: was `p7-build-multi-tf-features` job +
-            # gcp.research.p7_build_multi_tf_features module. Strat engine
-            # now owns its data builder under gcp.research.strat_engine
-            # and uses the `strat-engine` Cloud Run Job.
-            cmd = ["gcloud", "run", "jobs", "execute",
-                   "strat-engine", "--region=us-east1",
-                   f"--args=-m,gcp.research.strat_engine.strat_data_builder,"
-                   f"--tickers={g['ticker']},--tf-only={g['tf']}",
-                   "--format=value(metadata.name)", "--async"]
+        # Uniform dispatch: every TF goes through the strat_data_builder
+        # via the strat-engine Cloud Run Job. The builder's TF_LIST
+        # includes 4h since 2026-05-26 and applies FOUR_H_DDL just-in-time.
+        cmd = ["gcloud", "run", "jobs", "execute",
+               "strat-engine", "--region=us-east1",
+               f"--args=-m,gcp.research.strat_engine.strat_data_builder,"
+               f"--tickers={g['ticker']},--tf-only={g['tf']}",
+               "--format=value(metadata.name)", "--async"]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             exec_name = r.stdout.strip().split("\n")[-1] if r.returncode == 0 else None
@@ -400,12 +269,10 @@ def ensure_coverage(engine, dry_run: bool = False) -> dict:
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode",
-                   choices=["summary", "verify", "ensure-coverage", "build-4h"],
+                   choices=["summary", "verify", "ensure-coverage"],
                    required=True)
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
-    p.add_argument("--source", default="aggregate_from_60m",
-                   choices=["aggregate_from_60m", "raw_intraday"])
     p.add_argument("--dry-run", action="store_true",
                    help="ensure-coverage: report gaps without dispatching")
     args = p.parse_args()
@@ -417,8 +284,6 @@ def main():
         verify(engine, args.ticker, args.tf)
     elif args.mode == "ensure-coverage":
         ensure_coverage(engine, dry_run=args.dry_run)
-    elif args.mode == "build-4h":
-        build_4h(engine, args.ticker, source=args.source)
 
 
 if __name__ == "__main__":

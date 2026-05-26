@@ -51,7 +51,7 @@ NUMERIC_FEATURES: tuple[str, ...] = (
 )
 
 # Categorical/sequence features. The PRD requires prev1/prev2/prev3 — only
-# prev_strat_candle (=prev1) exists in strat_features today; strat_data_build
+# prev_strat_candle (=prev1) exists in strat_features today; strat_dataset.py
 # adds prev2/prev3 via shift.
 STRAT_SEQUENCE_FEATURES: tuple[str, ...] = (
     "strat_candle",

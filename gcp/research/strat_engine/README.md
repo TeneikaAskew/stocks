@@ -27,13 +27,16 @@ gcp/research/strat_engine/
 │                                historical / current-period / order-block
 │                                cols (computation wired, emit commented
 │                                pending schema migration).
-├── strat_data_build.py          Stage 1 orchestrator. Modes:
+├── strat_data_pipeline.py      Thin admin/dispatch wrapper. Modes:
 │                                  --mode=summary        coverage report
 │                                  --mode=verify         label / leak gate
-│                                  --mode=ensure-coverage dispatches
-│                                                       strat_data_builder
-│                                                       for missing combos
-│                                  --mode=build-4h       aggregate 60m→4h
+│                                  --mode=ensure-coverage dispatches the
+│                                                       data builder for
+│                                                       any missing TFs
+│                                                       (uniform path for
+│                                                       1m..4h — 4h is
+│                                                       now native to the
+│                                                       builder)
 ├── strat_enrich_levels.py       Stage 1b — backfill ORB + historical
 │                                levels + current-period + order blocks
 │                                into strat_features_levels_{tf}.
@@ -64,7 +67,7 @@ gcloud run jobs execute strat-engine --region=us-east1 \
 
 # Coverage report
 gcloud run jobs execute strat-engine --region=us-east1 \
-  --args="-m,gcp.research.strat_engine.strat_data_build,--mode=summary"
+  --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
 
 # Backfill the enrichment companion table
 gcloud run jobs execute strat-engine --region=us-east1 \
@@ -77,15 +80,14 @@ The job is defined in `gcp/deploy.sh::deploy_strat_engine`. Run
 ## Dependency graph
 
 ```
-strat_orchestrator.py  ─┬─►  strat_data_build.py    (Stage 1)
+strat_orchestrator.py  ─┬─►  strat_data_pipeline.py    (Stage 1, admin)
                         │     ├── strat_config.py
                         │     ├── strat_dataset.py
-                        │     ├── lib.indicators (build-4h: add_all_indicators)
-                        │     ├── lib.strat (build-4h: StratClassifier)
                         │     └── DISPATCHES via subprocess gcloud:
-                        │           └── strat-engine
-                        │                 ├── strat_data_builder.py
-                        │                 └── strat_data_build.py --mode=build-4h
+                        │           └── strat-engine job →
+                        │               strat_data_builder.py
+                        │               (handles all 6 TFs uniformly,
+                        │                4h via TF_LIST + FOUR_H_DDL)
                         │
                         ├─►  strat_eda_baserates.py  (Stage 2)
                         ├─►  strat_corr_indicators.py (Stage 3)

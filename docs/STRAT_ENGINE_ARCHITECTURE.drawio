@@ -39,7 +39,7 @@
           <mxGeometry x="840" y="140" width="280" height="130" as="geometry" />
         </mxCell>
 
-        <mxCell id="data_build_orch" value="strat_data_build.py&#10;(orchestrator)&#10;&#10;Modes:&#10;• summary&#10;• verify (Stage 1 gate)&#10;• ensure-coverage&#10;• build-4h" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8" vertex="1" parent="1">
+        <mxCell id="data_build_orch" value="strat_data_pipeline.py&#10;(orchestrator)&#10;&#10;Modes:&#10;• summary&#10;• verify (Stage 1 gate)&#10;• ensure-coverage&#10;• (4h native to builder)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8" vertex="1" parent="1">
           <mxGeometry x="1140" y="140" width="240" height="130" as="geometry" />
         </mxCell>
 

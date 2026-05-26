@@ -41,7 +41,7 @@ from gcp.research.strat_engine.strat_config import (
     TICKERS, TIMEFRAMES, DEFAULT_TRAIN_UNTIL,
     DEFAULT_BASE_RATE_BEAT_PP, DEFAULT_ECE_CEILING, DEFAULT_CALIBRATION,
 )
-from gcp.research.strat_engine.strat_data_build import verify as stage1_verify
+from gcp.research.strat_engine.strat_data_pipeline import verify as stage1_verify
 from gcp.research.strat_engine.strat_eda_baserates import run_eda as stage2_eda
 from gcp.research.strat_engine.strat_corr_indicators import run_corr as stage3_corr
 from gcp.research.strat_engine.strat_pred_train import run_train as stage4_train

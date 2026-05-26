@@ -85,7 +85,7 @@
 │                                                                       │
 │   strat_data_builder.py     ← source-of-truth data builder           │
 │   strat_enrich_levels.py    ← levels companion-table backfill        │
-│   strat_data_build.py       ← orchestrator (summary/verify/cov/4h)   │
+│   strat_data_pipeline.py       ← thin orchestrator (summary/verify/cov)│
 │                                                                       │
 │   Reads from:                                                        │
 │   - market_data_intraday_{SPY,IWM,QQQ}  (1-min bars source)          │
@@ -105,8 +105,8 @@ Every script in the package is invoked via `--args`:
 |---|---|
 | Full pipeline (1 ticker × 1 TF) | `--args=-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m` |
 | Data build (one cell) | `--args=-m,gcp.research.strat_engine.strat_data_builder,--tickers=IWM,--tf-only=15m` |
-| Coverage report | `--args=-m,gcp.research.strat_engine.strat_data_build,--mode=summary` |
-| Stage 1 verify (label/leak gate) | `--args=-m,gcp.research.strat_engine.strat_data_build,--mode=verify,--ticker=IWM,--tf=15m` |
+| Coverage report | `--args=-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary` |
+| Stage 1 verify (label/leak gate) | `--args=-m,gcp.research.strat_engine.strat_data_pipeline,--mode=verify,--ticker=IWM,--tf=15m` |
 | Levels backfill (one cell) | `--args=-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m` |
 | Stage 4 only (one cell, locked sigmoid) | `--args=-m,gcp.research.strat_engine.strat_pred_train,--ticker=IWM,--tf=5m` |
 | Local diagnostic (read-only) | `python -m gcp.research.strat_engine.strat_pred_diagnose --ticker IWM --tf 15m` |

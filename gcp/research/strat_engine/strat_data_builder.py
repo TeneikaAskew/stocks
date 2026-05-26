@@ -78,8 +78,64 @@ log = logging.getLogger(__name__)
 
 
 TICKERS_DEFAULT = ["SPY", "IWM", "QQQ"]
-TF_LIST = [("1m", None), ("5m", "5m"), ("15m", "15m"), ("30m", "30m"), ("60m", "1h")]
+TF_LIST = [("1m", None), ("5m", "5m"), ("15m", "15m"), ("30m", "30m"),
+           ("60m", "1h"), ("4h", "4h")]
 # (label_for_table, aggregate_to_timeframe_arg). '1m' = no aggregation.
+# 4h added 2026-05-26: lib.data_loader.RESAMPLE_RULES supports "4h".
+
+
+# DDL for strat_features_4h — kept here (NOT in gcp/queries/p7_schema.sql)
+# because 4h was added LATER than the other TFs. Applied just-in-time before
+# upsert if a 4h run is requested. Schema mirrors strat_features_60m exactly.
+FOUR_H_DDL = """
+CREATE TABLE IF NOT EXISTS strat_features_4h (
+    ticker          VARCHAR(16) NOT NULL,
+    ts              TIMESTAMPTZ NOT NULL,
+    tf              VARCHAR(8) NOT NULL DEFAULT '4h',
+    bar_date        DATE NOT NULL,
+    open            DOUBLE PRECISION,
+    high            DOUBLE PRECISION,
+    low             DOUBLE PRECISION,
+    close           DOUBLE PRECISION,
+    volume          BIGINT,
+    strat_candle    VARCHAR(8),
+    prev_strat_candle VARCHAR(8),
+    strat_combo     VARCHAR(64),
+    is_continuation BOOLEAN,
+    is_reversal     BOOLEAN,
+    is_inside       BOOLEAN,
+    strat_setup     BOOLEAN,
+    consecutive_1s  SMALLINT,
+    trigger_high    DOUBLE PRECISION,
+    trigger_low     DOUBLE PRECISION,
+    ema_9 DOUBLE PRECISION, ema_20 DOUBLE PRECISION, ema_50 DOUBLE PRECISION, ema_200 DOUBLE PRECISION,
+    sma_50 DOUBLE PRECISION, sma_200 DOUBLE PRECISION,
+    rsi_9 DOUBLE PRECISION, rsi_14 DOUBLE PRECISION,
+    stoch_rsi_k DOUBLE PRECISION, stoch_rsi_d DOUBLE PRECISION,
+    macd DOUBLE PRECISION, macd_signal DOUBLE PRECISION, macd_histogram DOUBLE PRECISION,
+    atr_14 DOUBLE PRECISION, atr_20 DOUBLE PRECISION,
+    bb_upper DOUBLE PRECISION, bb_lower DOUBLE PRECISION, bb_width DOUBLE PRECISION, bb_pct DOUBLE PRECISION,
+    obv DOUBLE PRECISION, rvol DOUBLE PRECISION, rvol_10 DOUBLE PRECISION,
+    vwap DOUBLE PRECISION,
+    price_vs_vwap DOUBLE PRECISION, price_vs_ema9 DOUBLE PRECISION, price_vs_ema20 DOUBLE PRECISION,
+    consecutive_up INTEGER, consecutive_down INTEGER,
+    intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
+    fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
+    fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
+    fwd_ret_5bars_bps DOUBLE PRECISION, fwd_ret_15bars_bps DOUBLE PRECISION,
+    fwd_ret_30bars_bps DOUBLE PRECISION, fwd_ret_60bars_bps DOUBLE PRECISION,
+    vix_close DOUBLE PRECISION, vix_tercile VARCHAR(8),
+    total_gex DOUBLE PRECISION, gex_tercile VARCHAR(8),
+    total_vex DOUBLE PRECISION, vex_tercile VARCHAR(8),
+    dealer_regime VARCHAR(32), gamma_regime VARCHAR(32),
+    flip_price DOUBLE PRECISION,
+    distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
+    computed_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ticker, ts)
+);
+CREATE INDEX IF NOT EXISTS ix_strat_features_4h_date ON strat_features_4h (bar_date);
+CREATE INDEX IF NOT EXISTS ix_strat_features_4h_combo ON strat_features_4h (ticker, strat_combo);
+"""
 
 INTRADAY_TABLE = {
     "SPY": "market_data_intraday_spy",
@@ -622,6 +678,12 @@ def main():
         global TF_LIST
         TF_LIST = [(lbl, arg) for (lbl, arg) in TF_LIST if lbl == args.tf_only]
         log.info("TF filter: only %s", args.tf_only)
+
+    # 4h DDL applied just-in-time (the other TFs' tables live in p7_schema.sql;
+    # 4h was added later and lives here for now). Idempotent.
+    if any(lbl == "4h" for lbl, _ in TF_LIST):
+        execute_sql(FOUR_H_DDL)
+        log.info("ensured schema: strat_features_4h")
 
     grand = []
     for ticker in tickers:

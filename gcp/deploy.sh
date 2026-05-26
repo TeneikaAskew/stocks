@@ -705,8 +705,8 @@ deploy_premarket_playbook_resolver() {
 # This single job hosts the entire strat_engine pipeline. Different
 # entry points are selected via --args:
 #   --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m"
-#   --args="-m,gcp.research.strat_engine.strat_data_builder,--tickers=IWM,--tf-only=15m"
-#   --args="-m,gcp.research.strat_engine.strat_data_build,--mode=summary"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipelineer,--tickers=IWM,--tf-only=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
 #   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
 #
 # Image: research (lightgbm + scikit-learn + scipy + shap).
