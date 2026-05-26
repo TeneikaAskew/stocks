@@ -23,8 +23,7 @@ Design (per reviewer 2026-05-26):
      trust. 1m is dropped (FTFC_WEIGHTS=0; pathological probs).
 
 Cutoffs span deliberate regimes:
-  2018-01-01  → test 2018 (low-vol grind + Feb 2018 vol spike)
-  2019-01-01  → test 2019 (recovery bull)
+  2019-01-01  → test 2019 (recovery bull)   ← FIRST fold; trains on 2016-2018 (3yr)
   2020-01-01  → test 2020 (COVID crash + V-recovery)
   2021-01-01  → test 2021 (bull)
   2022-01-01  → test 2022 (bear, Fed tightening)
@@ -32,6 +31,13 @@ Cutoffs span deliberate regimes:
   2024-01-01  → test 2024 (bull continuation)
   2025-01-01  → test 2025 (current regime up to OOS cut)
   2026-01-01  → test Jan-May 2026 (our locked OOS cell)
+
+NOTE on the dropped 2018 fold:
+An anchored expanding window means the earliest folds train on the least
+data. A 2018 fold would train on just 2016-2017 (~2 years), confounding
+"weak fold = regime change" with "weak fold = thin training." Reviewer
+2026-05-26: start the first OOS fold at 2019 so every fold has ≥3 years
+of training behind it.
 
 Run:
   python -m gcp.research.strat_engine.strat_walk_forward \\
@@ -75,7 +81,9 @@ log = logging.getLogger(__name__)
 # Each fold trains on EVERYTHING before its cutoff and tests on the slice
 # up to the next cutoff. NOT evenly spaced — placed to span regimes.
 DEFAULT_CUTOFFS = [
-    "2018-01-01",  # test 2018 (low-vol + Feb '18 volmageddon)
+    # First fold trains on 2016-2018 (3yr) to avoid confounding thin-training
+    # with regime change. 2018 OOS deliberately dropped — only 2yr of training
+    # behind it would make a weak fold ambiguous between regime and undertraining.
     "2019-01-01",  # test 2019 (recovery)
     "2020-01-01",  # test 2020 (COVID)
     "2021-01-01",  # test 2021 (bull)
