@@ -256,12 +256,25 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
 
     # Persist
     prefix = gcs_model_prefix(ticker, tf)
-    _upload(pickle.dumps(calibrated), f"{prefix}/model.pkl")
-    _upload("\n".join(all_cols).encode(), f"{prefix}/features.txt", "text/plain")
-    _upload("\n".join(LABEL_CLASSES).encode(), f"{prefix}/classes.txt", "text/plain")
+    # Only the LOCKED-default config (sigmoid + natural) overwrites the
+    # canonical model.pkl that Stage 5 + 6 consume. Variants save to
+    # suffixed paths so they're available for the diagnostic + comparison
+    # but never trample the production artifact.
+    is_locked_default = (calibration == DEFAULT_CALIBRATION and class_weight is None)
+    if is_locked_default:
+        _upload(pickle.dumps(calibrated), f"{prefix}/model.pkl")
+        _upload("\n".join(all_cols).encode(), f"{prefix}/features.txt", "text/plain")
+        _upload("\n".join(LABEL_CLASSES).encode(), f"{prefix}/classes.txt", "text/plain")
+        log.info("saved LOCKED-DEFAULT model.pkl (sigmoid cv=3 natural) to gs://%s/%s/",
+                 os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), prefix)
+    else:
+        suffix = f"{calibration}_cv{cv}_{class_weight or 'natural'}"
+        _upload(pickle.dumps(calibrated), f"{prefix}/model_{suffix}.pkl")
+        log.info("saved VARIANT model_%s.pkl (does NOT touch model.pkl) to gs://%s/%s/",
+                 suffix, os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), prefix)
     _upload(json.dumps(metrics, indent=2, default=str).encode(),
             f"{prefix}/metrics_{int(time.time())}.json")
-    log.info("saved model + metrics to gs://%s/%s/",
+    log.info("saved metrics to gs://%s/%s/",
              os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), prefix)
 
     return metrics
