@@ -128,11 +128,12 @@ def make_lgbm() -> lgb.LGBMClassifier:
 
 def run_train(engine, ticker: str, tf: str, train_until: str,
               calibration: str = DEFAULT_CALIBRATION,
+              cv: int = 3,
               base_rate_beat_pp: float = DEFAULT_BASE_RATE_BEAT_PP,
               ece_ceiling: float = DEFAULT_ECE_CEILING) -> dict:
     log.info("=" * 70)
-    log.info("Stage 4 TRAIN  ticker=%s  tf=%s  train_until=%s  cal=%s",
-             ticker, tf, train_until, calibration)
+    log.info("Stage 4 TRAIN  ticker=%s  tf=%s  train_until=%s  cal=%s  cv=%d",
+             ticker, tf, train_until, calibration, cv)
     log.info("=" * 70)
 
     train_df = load_labeled_dataset(engine, ticker, tf, until=train_until)
@@ -153,13 +154,13 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     y_test = test_df[LABEL_COL].map(LABEL_TO_IDX).values
 
     # CalibratedClassifierCV with internal CV (sklearn 1.6+ deprecated cv='prefit').
-    # cv=3 means the base estimator is trained on each fold and calibration is
+    # cv=N means the base estimator is trained on each fold and calibration is
     # learned on the held-out fold. No data leakage because it uses sklearn's
     # cross-validation internally.
-    log.info("fitting calibrated LightGBM (method=%s, cv=3) on %d train rows × %d cols...",
-             calibration, len(X_train), len(all_cols))
+    log.info("fitting calibrated LightGBM (method=%s, cv=%d) on %d train rows × %d cols...",
+             calibration, cv, len(X_train), len(all_cols))
     calibrated = CalibratedClassifierCV(
-        estimator=make_lgbm(), method=calibration, cv=3, n_jobs=-1,
+        estimator=make_lgbm(), method=calibration, cv=cv, n_jobs=-1,
     )
     calibrated.fit(X_train.values, y_train)
 
@@ -263,13 +264,15 @@ def main():
     p.add_argument("--train-until", default=DEFAULT_TRAIN_UNTIL)
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                    choices=["isotonic", "sigmoid"])
+    p.add_argument("--cv", type=int, default=3,
+                   help="CV folds for CalibratedClassifierCV (3 or 5)")
     p.add_argument("--base-rate-beat-pp", type=float,
                    default=DEFAULT_BASE_RATE_BEAT_PP)
     p.add_argument("--ece-ceiling", type=float, default=DEFAULT_ECE_CEILING)
     args = p.parse_args()
     engine = get_engine()
     run_train(engine, args.ticker, args.tf, args.train_until,
-              calibration=args.calibration,
+              calibration=args.calibration, cv=args.cv,
               base_rate_beat_pp=args.base_rate_beat_pp,
               ece_ceiling=args.ece_ceiling)
 
