@@ -106,12 +106,21 @@ DEFAULT_ECE_CEILING = 0.05         # Expected Calibration Error must be <= this
 
 
 # ─────────────────────── FTFC weights ───────────────────────
-# Stage 5 weights each TF's contribution to the continuity score. Higher TFs
-# carry more weight (the longer-term trend dominates the alignment read).
-# Sum = 1.0.
+# Stage 5 weights each TF's contribution to the continuity score.
+#
+# 2026-05-26 — switched from Strat-seniority to Option A trust-weighted
+# placeholder, per reviewer: zero 1m (overconfident probs unusable),
+# anchor 15m + 30m (PASS gate cleanly), downweight thin cells (4h, 60m).
+# THIS IS A PLACEHOLDER. The precise 5m/15m/30m split is itself a
+# walk-forward output; do not enshrine these numbers until walk-forward
+# confirms the trust ranking holds across regimes.
 FTFC_WEIGHTS: dict[str, float] = {
-    "1m": 0.05, "5m": 0.10, "15m": 0.15,
-    "30m": 0.20, "60m": 0.25, "4h": 0.25,
+    "1m": 0.00,   # zero: pathological probs (worse-than-base log-loss)
+    "5m": 0.15,   # best accuracy; ECE wrinkle is benign-direction
+    "15m": 0.30,  # PASS gate cleanly (LOCKED cell)
+    "30m": 0.30,  # PASS gate cleanly; promotable
+    "60m": 0.15,  # small n, ECE noise-prone
+    "4h": 0.10,   # provisional: cross-bar shifts, very small n
 }
 
 
@@ -123,6 +132,9 @@ DEFAULT_CALIBRATION = "sigmoid"           # LOCKED 2026-05-26 on IWM 15m: sigmoi
                                           # isotonic cv=3 misses by 0.001 and isotonic
                                           # cv=5 misses by 2x. Sigmoid fixes the mid-range
                                           # underconfidence the isotonic calibrator left.
+DEFAULT_CV = 3                            # CalibratedClassifierCV folds. 3 was chosen on
+                                          # the IWM 15m calibration variant test (5 was
+                                          # strictly worse on ECE).
 DEFAULT_CORR_METRIC = "mutual_info"       # open #4 — captures nonlinear
 DEFAULT_4H_SOURCE = "aggregate_from_60m"  # open #2 — simplest; "raw_intraday" also supported
 DEFAULT_READOUT_FORM = "table"            # open #5 — JSON/table; "dashboard"/"pine" later
