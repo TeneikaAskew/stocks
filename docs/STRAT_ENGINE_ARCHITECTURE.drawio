@@ -1,0 +1,187 @@
+<mxfile host="app.diagrams.net" agent="strat_engine_arch_v1" version="22.0.0">
+  <diagram name="Strat Directionality Engine" id="strat_engine_arch">
+    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ═══════════ TITLE ═══════════ -->
+        <mxCell id="title" value="Strat Directionality Engine — Architecture (v1, M2 LOCKED 2026-05-26)" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1620" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Movement prediction only — P(next bar ∈ {1, 2U, 2D, 3}) per ticker × TF. NO money / P&amp;L in v1." style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="1620" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ LAYER 0 — BUILD PIPELINE ═══════════ -->
+        <mxCell id="layer0_box" value="LAYER 0 — Build pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontStyle=1;verticalAlign=top;arcSize=5" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="1620" height="180" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mkt_intraday" value="market_data_intraday_*&#10;(1-min raw bars, Cloud SQL)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="80" y="160" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="mkt_daily" value="market_data_daily&#10;(^VIX prior-day close)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="80" y="225" width="200" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="opt_snap" value="etf_options_snapshots&#10;(GEX / VEX via lib.gamma)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="300" y="160" width="200" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="gamma_lvl" value="gamma_levels_eod&#10;(King / Gate / Flip)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10" vertex="1" parent="1">
+          <mxGeometry x="300" y="210" width="200" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="builder" value="strat_data_builder.py&#10;(source-of-truth builder)&#10;&#10;• OHLCV → resample to TF&#10;• StratClassifier.detect_combos&#10;• add_all_indicators&#10;• calculate_historical_levels (NEW)&#10;• calculate_current_period_levels (NEW, gated)&#10;• calculate_order_blocks (NEW)&#10;• forward returns (5/15/30/60)&#10;• prior-day VIX (no leak)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="540" y="140" width="280" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="enrich" value="strat_enrich_levels.py&#10;(companion-table backfill)&#10;&#10;• ORB 5m/15m/30m windows&#10;• Prev day/week/month/Q/Y HLOC&#10;• Order blocks&#10;• --include-current-period (gated OFF for M2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="840" y="140" width="280" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="data_build_orch" value="strat_data_build.py&#10;(orchestrator)&#10;&#10;Modes:&#10;• summary&#10;• verify (Stage 1 gate)&#10;• ensure-coverage&#10;• build-4h" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="1140" y="140" width="240" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="archived" value="ARCHIVED — gcp/research/_archive/&#10;p7a/b/c/d/e/f/g, p7_analyze_tf,&#10;p7_compile_report&#10;(DO NOT REVIVE)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;verticalAlign=middle;align=center;dashed=1" vertex="1" parent="1">
+          <mxGeometry x="1400" y="170" width="240" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ LAYER 1 — SOURCE TABLES ═══════════ -->
+        <mxCell id="layer1_box" value="LAYER 1 — Source-of-truth Cloud SQL tables" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;verticalAlign=top;arcSize=5" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="1620" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sf_table" value="strat_features_{1m,5m,15m,30m,60m,4h}  — 69 cols each, ~17k-1M rows per ticker&#10;&#10;OHLCV  •  strat_candle / prev_strat_candle / strat_combo / flags&#10;30+ indicators (RSI, EMA, MACD, BB, ATR, VWAP, RVOL, OBV, StochRSI)&#10;forward returns (5/15/30/60 bars)  •  regime: vix_close / total_gex / total_vex / dealer_regime / gamma_regime&#10;⚠️ vix_close uses PRIOR-day VIX (same-day-leak fix 2026-05-25)  •  ⚠️ prev_strat_candle session-contaminated — loader ignores" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=8" vertex="1" parent="1">
+          <mxGeometry x="80" y="340" width="780" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sl_table" value="strat_features_levels_{tf}  — 146 cols (M2 locked, matches 15m schema)&#10;&#10;ORB 5m/15m/30m windows (36 cols)&#10;Historical levels: prev day/week/month/quarter/year HLOC + midpoints + at-level + breakout flags (100 cols)&#10;Order blocks: institutional consolidation zones (7 cols)&#10;⚠️ Current-period (cur_day_*, cur_week_*, ... — 40 cols) GATED OFF for M2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d4edda;strokeColor=#6c8ebf;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=8" vertex="1" parent="1">
+          <mxGeometry x="880" y="340" width="760" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ LAYER 2 — LOADER ═══════════ -->
+        <mxCell id="layer2_box" value="LAYER 2 — Labeled dataset loader" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1;verticalAlign=top;arcSize=5" vertex="1" parent="1">
+          <mxGeometry x="40" y="470" width="1620" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dataset_loader" value="strat_dataset.py :: load_labeled_dataset(ticker, tf, since, until)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="80" y="510" width="500" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="dataset_steps" value="1. SELECT strat_features_{tf} LEFT JOIN strat_features_levels_{tf}&#10;2. groupby(&apos;bar_date&apos;).shift(N) for prev1, prev2, prev3 (SESSION-SAFE)&#10;3. groupby(&apos;bar_date&apos;).shift(-1) for next_bar_type LABEL (SESSION-SAFE)&#10;4. Drop last bar of each day (no label) + first 3 (warmup)&#10;5. Filter to valid LABEL_CLASSES" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="80" y="540" width="500" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="discover" value="discover_numeric_features(df)&#10;&#10;Discovers ALL numeric cols by dtype (NOT a static list)&#10;→ ensures Stages 2/3/4 pick up the enrichment automatically" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="610" y="510" width="320" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="config" value="strat_config.py — defaults locked here&#10;&#10;TICKERS, TIMEFRAMES, LABEL_CLASSES, FTFC_WEIGHTS&#10;DEFAULT_CALIBRATION=&quot;sigmoid&quot; (LOCKED 2026-05-26)&#10;DEFAULT_ECE_CEILING=0.05  •  DEFAULT_BASE_RATE_BEAT_PP=5.0 (advisory)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="960" y="510" width="680" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ LAYER 3 — STATS & EXPLAIN ═══════════ -->
+        <mxCell id="layer3_box" value="LAYER 3 — Statistics &amp; explainability" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1;verticalAlign=top;arcSize=5" vertex="1" parent="1">
+          <mxGeometry x="40" y="620" width="1620" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="stage2" value="STAGE 2 — strat_eda_baserates.py&#10;&#10;• Base rate per class (the bar Stage 4 must beat)&#10;• 1-bar transition matrix P(next | current)&#10;• 3-bar transition matrix P(next | prev2 → prev1 → current)&#10;• Per-class indicator distributions (mean/median/p25/p75)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="80" y="660" width="780" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="stage3" value="STAGE 3 — strat_corr_indicators.py&#10;&#10;• Per-class one-vs-rest mutual information (MI) ranking&#10;• Point-biserial direction (sign of correlation)&#10;• Indicator-value-vs-P(class) binned curves&#10;• 180+ features ranked (incl. ORB / PDH/PDL / order blocks)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="880" y="660" width="760" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ LAYER 4 — MODEL ═══════════ -->
+        <mxCell id="layer4_box" value="LAYER 4 — Calibrated 4-class classifier (THE gate)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=14;fontStyle=1;verticalAlign=top;arcSize=5" vertex="1" parent="1">
+          <mxGeometry x="40" y="760" width="1620" height="160" as="geometry" />
+        </mxCell>
+
+        <mxCell id="stage4" value="STAGE 4 — strat_pred_train.py  (CalibratedClassifierCV wrapping LGBMClassifier)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="80" y="800" width="780" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="stage4_detail" value="• LGBMClassifier multiclass, num_class=4&#10;• CalibratedClassifierCV(method=&quot;sigmoid&quot;, cv=3)  ← LOCKED 2026-05-26&#10;• Train on bar_date &lt; train_until; eval OOS on ≥ train_until&#10;• GATE — HARD: log-loss &lt; base AND ECE ≤ 0.05&#10;• GATE — ADVISORY: accuracy beats base by ≥ 5pp&#10;• Output: model.pkl + features.txt + classes.txt + metrics_*.json → GCS" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;spacingLeft=8" vertex="1" parent="1">
+          <mxGeometry x="80" y="830" width="780" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="diagnose" value="strat_pred_diagnose.py  +  notebooks/strat_pred_diagnose.ipynb&#10;&#10;Pulls latest metrics_*.json from GCS, prints:&#10;• Per-bin reliability table (over/under-confident flags)&#10;• Per-class P/R/F1 (NEVER-PREDICTED flag for sparse classes)&#10;• Confusion matrix + predicted-class distribution&#10;• Optional reliability-curve chart (.ipynb only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="880" y="800" width="760" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ LAYER 5 — READOUT ═══════════ -->
+        <mxCell id="layer5_box" value="LAYER 5 — Read-out / FTFC stack" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1;verticalAlign=top;arcSize=5" vertex="1" parent="1">
+          <mxGeometry x="40" y="940" width="1620" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="stage5" value="STAGE 5 — strat_ftfc_assemble.py&#10;&#10;• Pulls Stage 4 predictions for every TF that has a saved model&#10;• Shifts each TF prediction ts by +TF_MINUTES[tf]&#10;  (so as-of join sees BAR CLOSE, not open — prevents in-progress-bar leak)&#10;• merge_asof onto finest-TF clock&#10;• Continuity score: weighted agreement via FTFC_WEIGHTS&#10;• aligned_direction ∈ {UP, DOWN, MIXED}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="80" y="980" width="780" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="stage6" value="STAGE 6 — strat_readout.py&#10;&#10;Per-ticker JSON read-out:&#10;• 4 probs at each TF (P(1), P(2U), P(2D), P(3))&#10;• FTFC stack + continuity score + aligned_direction&#10;• Top drivers from latest Stage 3 corr file&#10;• Open decision #5: JSON / dashboard tile / Pine label feed (default JSON; Pine deferred)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="880" y="980" width="760" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ CLOUD RUN JOB ═══════════ -->
+        <mxCell id="job_box" value="strat-engine — single Cloud Run Job (research image, 8 GiB / 4 CPU / 90-min timeout)&#10;Every script invoked via --args; one job manages the whole pipeline." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1;verticalAlign=middle;align=center" vertex="1" parent="1">
+          <mxGeometry x="40" y="1100" width="1620" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════ ARROWS ═══════════ -->
+        <!-- Layer 0 → Layer 1 -->
+        <mxCell id="a1" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="builder" target="sf_table">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a2" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="enrich" target="sl_table">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1" edge="1" parent="1" source="mkt_intraday" target="builder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3b" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1" edge="1" parent="1" source="mkt_daily" target="builder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3c" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1" edge="1" parent="1" source="opt_snap" target="builder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3d" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1" edge="1" parent="1" source="gamma_lvl" target="builder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3e" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1" edge="1" parent="1" source="data_build_orch" target="builder">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a3f" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1" edge="1" parent="1" source="data_build_orch" target="enrich">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Layer 1 → Layer 2 -->
+        <mxCell id="a4" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="sf_table" target="dataset_loader">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a5" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="sl_table" target="dataset_loader">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Layer 2 → Layer 3 + Layer 4 -->
+        <mxCell id="a6" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="dataset_loader" target="stage2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a7" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="dataset_loader" target="stage3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a8" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="dataset_loader" target="stage4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Layer 4 → Layer 5 -->
+        <mxCell id="a9" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="stage4" target="stage5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a10" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2" edge="1" parent="1" source="stage5" target="stage6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
