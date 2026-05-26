@@ -697,40 +697,53 @@ deploy_premarket_playbook_resolver() {
         --quiet
 }
 
-# ── P7b next-candle classifier (Cloud Run Job, research image) ──────────────
-# Status (2026-05-25): SHIPPED but NOT TRADED. The classifier achieves
-# 58-60% OOS next-candle accuracy on IWM 5m / SPY 5m / QQQ 5m, but P7d
-# backtest showed all tested exit models lose money net of 10 bps
-# round-trip costs. See docs/research/2026-05-25/P7_4track_verdict.md.
+# ── Strat Directionality Engine (Cloud Run Job, research image) ─────────────
+# Replaces the P7-era `p7b-next-candle-classifier` job (which is now used
+# only to keep the prior modeling pipeline reachable for reference;
+# scripts moved to gcp/research/_archive/).
 #
-# This deploy function exists so the infrastructure is one command away
-# from being live. The scheduler entry (deploy_schedulers) is COMMENTED
-# OUT until a net-positive cell is identified — uncomment it then.
+# This single job hosts the entire strat_engine pipeline. Different
+# entry points are selected via --args:
+#   --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_builder,--tickers=IWM,--tf-only=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_build,--mode=summary"
+#   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
 #
-# Uses the research image (lightgbm + scikit-learn) instead of the prod
-# image. To rebuild the research image:
+# Image: research (lightgbm + scikit-learn + scipy + shap).
 #   gcloud builds submit --tag ${IMAGE}:research -f gcp/Dockerfile.research .
-deploy_p7b_classifier() {
-    echo "Deploying p7b-next-candle-classifier job..."
+deploy_strat_engine() {
+    echo "Deploying strat-engine job..."
     local research_image="${IMAGE}:research"
 
-    gcloud run jobs create p7b-next-candle-classifier \
+    gcloud run jobs create strat-engine \
         --image "${research_image}" --region "${REGION}" \
         --memory 8Gi --cpu 4 --max-retries 0 \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python" \
-        --args="-m,gcp.research.p7b_next_candle_classifier,--mode=evaluate" \
+        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
-    gcloud run jobs update p7b-next-candle-classifier \
+    gcloud run jobs update strat-engine \
         --image "${research_image}" --region "${REGION}" \
         --command "python" \
-        --args="-m,gcp.research.p7b_next_candle_classifier,--mode=evaluate" \
+        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        --task-timeout 5400 \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
+}
+
+# ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
+# Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
+# Cloud Run Job itself stays around briefly so any in-flight references
+# resolve, but new work should use deploy_strat_engine above.
+# Removing this function next: when no `p7b-next-candle-classifier-*`
+# executions are pending and no other code path dispatches it.
+deploy_p7b_classifier_DEPRECATED() {
+    echo "DEPRECATED — use deploy_strat_engine instead."
+    return 1
 }
 
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
@@ -2520,7 +2533,8 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
-    p7b-classifier) deploy_p7b_classifier ;;
+    strat-engine) deploy_strat_engine ;;
+    p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;

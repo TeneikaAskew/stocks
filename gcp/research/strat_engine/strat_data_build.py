@@ -366,15 +366,19 @@ def ensure_coverage(engine, dry_run: bool = False) -> dict:
         if g["tf"] == "4h":
             # Dispatch this script's --mode=build-4h for the ticker
             cmd = ["gcloud", "run", "jobs", "execute",
-                   "p7b-next-candle-classifier", "--region=us-east1",
+                   "strat-engine", "--region=us-east1",
                    f"--args=-m,gcp.research.strat_engine.strat_data_build,"
                    f"--mode=build-4h,--ticker={g['ticker']}",
                    "--format=value(metadata.name)", "--async"]
         else:
-            # Dispatch p7-build-multi-tf-features for the gap
+            # Dispatch the strat_engine-owned data builder for the gap.
+            # Renamed 2026-05-26: was `p7-build-multi-tf-features` job +
+            # gcp.research.p7_build_multi_tf_features module. Strat engine
+            # now owns its data builder under gcp.research.strat_engine
+            # and uses the `strat-engine` Cloud Run Job.
             cmd = ["gcloud", "run", "jobs", "execute",
-                   "p7-build-multi-tf-features", "--region=us-east1",
-                   f"--args=-m,gcp.research.p7_build_multi_tf_features,"
+                   "strat-engine", "--region=us-east1",
+                   f"--args=-m,gcp.research.strat_engine.strat_data_builder,"
                    f"--tickers={g['ticker']},--tf-only={g['tf']}",
                    "--format=value(metadata.name)", "--async"]
         try:
