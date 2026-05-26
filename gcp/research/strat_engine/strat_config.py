@@ -118,7 +118,11 @@ FTFC_WEIGHTS: dict[str, float] = {
 # ─────────────────────── Open decisions (defaults locked here) ───────────────────────
 # Defaults selected per reviewer guidance. Override via CLI flags on each
 # stage; lock in this file once user confirms.
-DEFAULT_CALIBRATION = "isotonic"          # open #3 — flexible, can switch to sigmoid
+DEFAULT_CALIBRATION = "sigmoid"           # LOCKED 2026-05-26 on IWM 15m: sigmoid passes
+                                          # gate (ECE 0.0439 vs ceiling 0.050) while
+                                          # isotonic cv=3 misses by 0.001 and isotonic
+                                          # cv=5 misses by 2x. Sigmoid fixes the mid-range
+                                          # underconfidence the isotonic calibrator left.
 DEFAULT_CORR_METRIC = "mutual_info"       # open #4 — captures nonlinear
 DEFAULT_4H_SOURCE = "aggregate_from_60m"  # open #2 — simplest; "raw_intraday" also supported
 DEFAULT_READOUT_FORM = "table"            # open #5 — JSON/table; "dashboard"/"pine" later
