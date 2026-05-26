@@ -117,11 +117,18 @@ def expected_calibration_error(y_true_idx: np.ndarray, y_proba: np.ndarray,
     return float(ece), details
 
 
-def make_lgbm() -> lgb.LGBMClassifier:
+def make_lgbm(class_weight: str | None = None) -> lgb.LGBMClassifier:
+    """Base LightGBM classifier.
+
+    class_weight=None (default): natural class frequencies. 2U/2D dominate.
+    class_weight='balanced': inverse-frequency weighting. Penalizes
+        majority-class collapse — helps when classes 1/3 are never
+        predicted AND when mid-range probabilities are underconfident."""
     return lgb.LGBMClassifier(
         objective="multiclass", num_class=len(LABEL_CLASSES),
         n_estimators=300, learning_rate=0.05, max_depth=6,
         num_leaves=31, min_child_samples=100,
+        class_weight=class_weight,
         random_state=42, verbose=-1, n_jobs=-1,
     )
 
@@ -129,11 +136,12 @@ def make_lgbm() -> lgb.LGBMClassifier:
 def run_train(engine, ticker: str, tf: str, train_until: str,
               calibration: str = DEFAULT_CALIBRATION,
               cv: int = 3,
+              class_weight: str | None = None,
               base_rate_beat_pp: float = DEFAULT_BASE_RATE_BEAT_PP,
               ece_ceiling: float = DEFAULT_ECE_CEILING) -> dict:
     log.info("=" * 70)
-    log.info("Stage 4 TRAIN  ticker=%s  tf=%s  train_until=%s  cal=%s  cv=%d",
-             ticker, tf, train_until, calibration, cv)
+    log.info("Stage 4 TRAIN  ticker=%s  tf=%s  train_until=%s  cal=%s  cv=%d  class_weight=%s",
+             ticker, tf, train_until, calibration, cv, class_weight or "natural")
     log.info("=" * 70)
 
     train_df = load_labeled_dataset(engine, ticker, tf, until=train_until)
@@ -160,7 +168,8 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     log.info("fitting calibrated LightGBM (method=%s, cv=%d) on %d train rows × %d cols...",
              calibration, cv, len(X_train), len(all_cols))
     calibrated = CalibratedClassifierCV(
-        estimator=make_lgbm(), method=calibration, cv=cv, n_jobs=-1,
+        estimator=make_lgbm(class_weight=class_weight),
+        method=calibration, cv=cv, n_jobs=-1,
     )
     calibrated.fit(X_train.values, y_train)
 
@@ -223,6 +232,7 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     metrics = {
         "ticker": ticker, "tf": tf, "train_until": train_until,
         "calibration": calibration,
+        "class_weight": class_weight or "natural",
         "n_train": int(len(X_train)), "n_test": int(len(X_test)),
         "oos_accuracy": acc, "base_accuracy": base_acc,
         "accuracy_beat_pp": (acc - base_acc) * 100,
@@ -266,6 +276,11 @@ def main():
                    choices=["isotonic", "sigmoid"])
     p.add_argument("--cv", type=int, default=3,
                    help="CV folds for CalibratedClassifierCV (3 or 5)")
+    p.add_argument("--class-weight", default=None,
+                   choices=[None, "balanced"],
+                   help="LightGBM class_weight. None=natural; 'balanced' "
+                        "= inverse-frequency, helps when 1/3 are never "
+                        "predicted AND mid-range probs are underconfident.")
     p.add_argument("--base-rate-beat-pp", type=float,
                    default=DEFAULT_BASE_RATE_BEAT_PP)
     p.add_argument("--ece-ceiling", type=float, default=DEFAULT_ECE_CEILING)
@@ -273,6 +288,7 @@ def main():
     engine = get_engine()
     run_train(engine, args.ticker, args.tf, args.train_until,
               calibration=args.calibration, cv=args.cv,
+              class_weight=args.class_weight,
               base_rate_beat_pp=args.base_rate_beat_pp,
               ece_ceiling=args.ece_ceiling)
 
