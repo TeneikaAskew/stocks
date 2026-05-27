@@ -200,7 +200,9 @@ def walk_forward(engine, ticker: str, tf: str,
     X_df, feature_cols = featurize(df)
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
-    bar_dates_arr = np.asarray(df["bar_date"].astype("datetime64[D]"))
+    # bar_date is a Series of Python `date` objects after load_labeled_dataset
+    # → pd.DatetimeIndex first, then to day-precision datetime64.
+    bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
     log.info("featurize-once: %d rows × %d cols in %.1fs",
              X_full.shape[0], X_full.shape[1], time.time() - t0)
 
