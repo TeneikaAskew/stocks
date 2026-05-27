@@ -113,6 +113,8 @@ data/
 !docs/research/**/data/
 !docs/research/**/data/*.csv
 !docs/research/**/*.csv
+!docs/exec_backtest_data/
+!docs/exec_backtest_data/*.csv
 
 # Windows nul file (accidentally created by shell redirects)
 nul
