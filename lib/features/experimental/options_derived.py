@@ -33,6 +33,7 @@ INFEASIBILITY GUARDS:
 """
 from __future__ import annotations
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -161,30 +162,21 @@ def _load_iv_features(engine, ticker: str, since: str, until: str) -> pd.DataFra
                      END ASC
           ) x
           GROUP BY snapshot_date
-        ),
-        atm_back AS (
-          SELECT snapshot_date, AVG(iv) AS atm_back_iv
-          FROM (
-            SELECT DISTINCT ON (b.snapshot_date, b.option_type)
-                   b.snapshot_date, b.option_type, b.iv
-            FROM base b
-            WHERE b.dte BETWEEN 60 AND 120
-            ORDER BY b.snapshot_date, b.option_type,
-                     CASE WHEN b.option_type = 'calls'
-                          THEN abs(b.delta - 0.5)
-                          ELSE abs(b.delta + 0.5)
-                     END ASC
-          ) x
-          GROUP BY snapshot_date
         )
+        -- atm_back (60-120 DTE) intentionally dropped: that CTE forced
+        -- a 4th scan of `base` and was the dominant cost. iv_term_slope
+        -- becomes NaN in downstream merge → model treats it as missing.
+        -- Net loss is one feature (atm_front_iv − atm_back_iv); the four
+        -- remaining (PCR vol, PCR OI, iv_skew, atm_iv) carry the same
+        -- volatility-microstructure signal class.
         SELECT
           COALESCE(p.snapshot_date, c.snapshot_date, af.snapshot_date) AS snapshot_date,
           p.iv_put25, c.iv_call25,
-          af.atm_front_iv, ab.atm_back_iv
+          af.atm_front_iv,
+          NULL::DOUBLE PRECISION AS atm_back_iv
         FROM put25 p
         FULL OUTER JOIN call25 c   ON c.snapshot_date  = p.snapshot_date
         FULL OUTER JOIN atm_front af ON af.snapshot_date = COALESCE(p.snapshot_date, c.snapshot_date)
-        FULL OUTER JOIN atm_back ab  ON ab.snapshot_date = COALESCE(p.snapshot_date, c.snapshot_date, af.snapshot_date)
         ORDER BY snapshot_date
         """
     )
@@ -210,8 +202,16 @@ def _load_iv_features(engine, ticker: str, since: str, until: str) -> pd.DataFra
 
 def _compute_daily_features_sql(pcr_df: pd.DataFrame,
                                   iv_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge SQL-aggregated PCR and IV components into the 6 per-date
-    features. Compute happens in-memory but on the small daily grid."""
+    """Merge SQL-aggregated PCR and (optional) IV components into per-date
+    features. Compute happens in-memory on the small daily grid (~2500 rows)."""
+    if iv_df.empty:
+        # PCR-only path (the default — see add_options_features comment).
+        df = pcr_df.copy()
+        df = df.sort_values("snapshot_date").set_index("snapshot_date")
+        df["pcr_volume_d1"] = df["put_vol"] / df["call_vol"].replace(0, np.nan)
+        df["pcr_oi_d1"] = df["put_oi"] / df["call_oi"].replace(0, np.nan)
+        return df[["pcr_volume_d1", "pcr_oi_d1"]]
+    # Full PCR + IV path (only when OPTIONS_FAMILY_INCLUDE_IV=1).
     df = pd.merge(pcr_df, iv_df, on="snapshot_date", how="outer")
     df = df.sort_values("snapshot_date").set_index("snapshot_date")
     df["pcr_volume_d1"] = df["put_vol"] / df["call_vol"].replace(0, np.nan)
@@ -349,18 +349,30 @@ def add_options_features(df: pd.DataFrame, ticker: str,
     since = (pd.Timestamp(bar_dates.min()) - pd.Timedelta(days=60)).date().isoformat()
     until = pd.Timestamp(bar_dates.max()).date().isoformat()
 
-    # SQL-side aggregation — replaces a 14M-row pull with two ~2500-row
-    # daily aggregates. The previous implementation pulled the full chain
-    # to Python and aggregated locally; that timed out in production. The
-    # math is identical (PCR sums, DISTINCT ON for closest-delta), only
-    # the partition is moved into Postgres.
+    # SQL-side aggregation — replaces a 14M-row pull with daily aggregates.
+    # The previous implementation pulled the full chain to Python and
+    # aggregated locally; that timed out in production. The math is
+    # identical (PCR sums, DISTINCT ON for closest-delta), only the
+    # partition is moved into Postgres.
+    #
+    # CAPACITY TRADE-OFF: the IV joiner (4 CTE-chain scans of `base`) is
+    # ~3x slower than the PCR joiner per year. To keep the per-cell
+    # wall-clock inside the 60-min task budget on 2025+ data (when IWM
+    # contract count exploded), the env var
+    # OPTIONS_FAMILY_INCLUDE_IV=1 opts in to the slow IV path; the
+    # default ships only the two PCR features.
     pcr_df = _load_daily_pcr(engine, ticker, since, until)
-    iv_df = _load_iv_features(engine, ticker, since, until)
+    iv_df = pd.DataFrame()
+    if os.environ.get("OPTIONS_FAMILY_INCLUDE_IV") == "1":
+        iv_df = _load_iv_features(engine, ticker, since, until)
+        log.info("loaded daily PCR for %d dates, daily IV for %d dates",
+                 len(pcr_df), len(iv_df))
+    else:
+        log.info("loaded daily PCR for %d dates (IV joiner skipped; set "
+                 "OPTIONS_FAMILY_INCLUDE_IV=1 to enable)", len(pcr_df))
     if pcr_df.empty and iv_df.empty:
         raise RuntimeError(f"options-derived family INFEASIBLE: no EOD AV "
                            f"options for ticker={ticker} in [{since}, {until}]")
-    log.info("loaded daily PCR for %d dates, daily IV for %d dates",
-             len(pcr_df), len(iv_df))
 
     daily = _compute_daily_features_sql(pcr_df, iv_df)
     if daily.empty:
