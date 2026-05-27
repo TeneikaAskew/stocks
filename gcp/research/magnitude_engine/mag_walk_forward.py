@@ -178,13 +178,18 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
 def _persist_results_table(engine, phase: str, ticker: str, tf: str,
                             folds: list[dict], run_id: str) -> None:
     """Insert per-fold rows into magnitude_walk_forward_results."""
+    def _to_date(s):
+        if s is None:
+            return None
+        return pd.to_datetime(s).date()
+
     rows = []
     for f in folds:
         rows.append({
             "phase": phase, "ticker": ticker, "tf": tf,
             "fold": f.get("fold", "?"),
-            "train_end": f.get("train_end"),
-            "test_end": f.get("test_end"),
+            "train_end": _to_date(f.get("train_end")),
+            "test_end": _to_date(f.get("test_end")),
             "n_train": f.get("n_train"),
             "n_test": f.get("n_test"),
             "status": f.get("status"),
