@@ -224,7 +224,15 @@ def train_and_evaluate_fold_adaptive(
     raw_te = base.predict_proba(X_te)
 
     # 3. Fit calibrator(s) per mode
-    if mode in ("vix-tercile", "rolling-vix"):
+    if mode == "none":
+        # No post-hoc calibration — production-config under the "drop the
+        # sigmoid" finding. The reported "ECE" is identical to raw_ECE; this
+        # mode exists to verify the production code path (no
+        # CalibratedClassifierCV wrapper) reproduces the raw column we
+        # measured under the other modes.
+        proba = raw_te
+        y_cal_aligned = y_tr  # for n_cal_slice reporting consistency
+    elif mode in ("vix-tercile", "rolling-vix"):
         # Per-tercile sigmoids — fit one per VIX tercile present in train.
         # Sample-starvation watch: high-VIX is the rare regime that motivates
         # these modes — so a tight rolling-vix window in a calm pre-stress
@@ -315,7 +323,7 @@ def train_and_evaluate_fold_adaptive(
         "mode": mode,
         "n_train": n_train,
         "n_test": n_test,
-        "n_cal_slice": int(len(y_cal_aligned)) if mode in ("static", "rolling") else None,
+        "n_cal_slice": int(len(y_cal_aligned)) if mode in ("static", "rolling", "none") else None,
         "tercile_sample_counts": tercile_sample_counts if mode in ("vix-tercile", "rolling-vix") else None,
         "logloss": ll,
         "base_logloss": base_ll,
@@ -450,7 +458,7 @@ def main():
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="30m", choices=list(TIMEFRAMES))
     p.add_argument("--calibration-mode", default="rolling",
-                   choices=["static", "rolling", "vix-tercile", "rolling-vix"])
+                   choices=["none", "static", "rolling", "vix-tercile", "rolling-vix"])
     p.add_argument("--rolling-days", type=int, default=DEFAULT_ROLLING_DAYS)
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD cutoffs (default: regime-spanning)")
