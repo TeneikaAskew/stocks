@@ -24,6 +24,12 @@ try:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from routers import admin as admin_router
+    # Force-import the strat_pred_serve submodule so unittest.mock.patch can
+    # resolve the dotted target. Without this, the package's __init__.py
+    # doesn't expose strat_pred_serve as an attribute and mock.patch raises
+    # AttributeError on the patch decorator in a clean CI environment.
+    import gcp.research.strat_engine.strat_pred_serve  # noqa: F401
+    import gcp.database  # noqa: F401  same reason
 except ModuleNotFoundError as exc:  # pragma: no cover
     pytest.skip(f"admin router unavailable: {exc}", allow_module_level=True)
 
