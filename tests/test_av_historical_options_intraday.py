@@ -210,3 +210,50 @@ def test_load_timestamps_gs_url_missing_blob_path():
     """gs://bucket alone (no blob) is rejected — fail-fast, not silent."""
     with pytest.raises(ValueError, match="missing blob path"):
         _load_timestamps_from_csv("gs://just-a-bucket")
+
+
+def test_existing_snapshot_keys_accepts_tz_aware_and_naive(monkeypatch):
+    """Both the batch CSV path (tz-aware) and the single-shot
+    --datetime arg path (tz-naive) must work. Regression for the
+    23:07 UTC 2026-05-27 prod failure where the dict comprehension
+    raised 'Cannot pass a datetime or Timestamp with tzinfo with the
+    tz parameter'."""
+    import gcp.fetchers.fetch_av_historical_options_intraday as mod
+
+    # Force the helper to think Cloud SQL is configured + stub the query
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    captured = {}
+    def _fake_query(sql, params):
+        captured["params"] = params
+        return pd.DataFrame(columns=["snapshot_ts"])
+    monkeypatch.setattr(mod, "query_to_dataframe", _fake_query)
+
+    # Mix: one tz-aware (from CSV path) + one tz-naive (single-shot path).
+    aware = datetime(2024, 6, 3, 14, 0, 0, tzinfo=timezone.utc)
+    naive = datetime(2024, 6, 3, 14, 30, 0)
+    result = mod._existing_snapshot_keys("IWM", [aware, naive])
+    assert isinstance(result, set)
+    # Both inputs converted to UTC tz-aware datetimes — that's the
+    # contract for the SQL params:
+    assert captured["params"]["t0"].tzinfo is not None
+    assert captured["params"]["t1"].tzinfo is not None
+
+
+def test_utc_ts_helper_covers_all_input_shapes():
+    """The 23:13 + 23:50 prod failures both came from pd.Timestamp(x, tz='UTC')
+    not accepting tz-aware inputs. Lock that contract here."""
+    from gcp.fetchers.fetch_av_historical_options_intraday import _utc_ts
+
+    aware = datetime(2024, 6, 3, 14, 0, 0, tzinfo=timezone.utc)
+    naive = datetime(2024, 6, 3, 14, 0, 0)
+    ts_aware = pd.Timestamp("2024-06-03 14:00", tz="UTC")
+    ts_naive = pd.Timestamp("2024-06-03 14:00")
+    iso_naive = "2024-06-03T14:00:00"
+    iso_aware = "2024-06-03T14:00:00+00:00"
+
+    for x in (aware, naive, ts_aware, ts_naive, iso_naive, iso_aware):
+        out = _utc_ts(x)
+        assert isinstance(out, pd.Timestamp), f"_utc_ts({x!r}) not a Timestamp"
+        assert out.tzinfo is not None, f"_utc_ts({x!r}) returned naive"
+        assert str(out.tz) == "UTC", f"_utc_ts({x!r}) tz={out.tz}, expected UTC"
+        assert out.hour == 14 and out.minute == 0

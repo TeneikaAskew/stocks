@@ -88,6 +88,18 @@ ATM_BAND = 20
 EXPIRY_HORIZON_DAYS = 1
 
 
+def _utc_ts(x) -> pd.Timestamp:
+    """Convert any datetime-ish input (naive datetime, tz-aware datetime,
+    pd.Timestamp, ISO string) to a UTC tz-aware pd.Timestamp.
+
+    Centralizes the tz handling that 23:13 UTC + 23:50 UTC failures both
+    crashed on (pd.Timestamp(x, tz='UTC') only accepts naive inputs;
+    pd.Timestamp(x).tz_convert('UTC') only accepts tz-aware ones).
+    """
+    ts = pd.Timestamp(x)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
 def _to_et(dt_utc: datetime) -> str:
     """Convert UTC datetime → America/New_York wall-clock string suitable
     for AV's `datetime=` param. AV docs say the timestamp is local ET."""
@@ -138,11 +150,21 @@ def fetch_av_intraday(ticker: str, dt_utc: datetime, api_key: str) -> pd.DataFra
         log.info("  AV intraday: 0 contracts for %s @ %s ET", ticker, dt_et_str)
         return pd.DataFrame()
 
-    return _normalize_intraday_response(pd.DataFrame(records), ticker, dt_utc)
+    # Log the AV-reported expiration spread for the first few calls so a
+    # silent-everything-filtered run is debuggable. Cheap enough to keep
+    # at INFO once per call — the line is one event among hundreds.
+    if len(records) > 0:
+        # Sample 5 unique expirations
+        exps = sorted({r.get('expiration', '?') for r in records[:200]})
+        log.info("  AV intraday: %d contracts for %s @ %s ET — sample expirations=%s",
+                 len(records), ticker, dt_et_str, exps[:5])
+
+    return _normalize_intraday_response(pd.DataFrame(records), ticker, dt_utc, ticker_dt_label=f"{ticker}@{dt_et_str}")
 
 
 def _normalize_intraday_response(df: pd.DataFrame, ticker: str,
-                                  dt_utc: datetime) -> pd.DataFrame:
+                                  dt_utc: datetime,
+                                  ticker_dt_label: str = "") -> pd.DataFrame:
     """Normalize raw AV HISTORICAL_OPTIONS intraday JSON → etf_options_snapshots.
 
     Critical differences from the EOD path:
@@ -158,8 +180,7 @@ def _normalize_intraday_response(df: pd.DataFrame, ticker: str,
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors='coerce')
 
-    snap_ts = pd.Timestamp(dt_utc).tz_convert("UTC") if dt_utc.tzinfo else \
-              pd.Timestamp(dt_utc, tz="UTC")
+    snap_ts = _utc_ts(dt_utc)
     out['snapshot_ts'] = snap_ts
     out['snapshot_date'] = snap_ts.date()
     out['market_session'] = 'HISTORICAL_INTRADAY'
@@ -191,8 +212,16 @@ def _normalize_intraday_response(df: pd.DataFrame, ticker: str,
     out['expiration'] = pd.to_datetime(out['expiration']).dt.date
     snap_date = snap_ts.date()
     horizon = snap_date + pd.Timedelta(days=EXPIRY_HORIZON_DAYS).to_pytimedelta()
+    n_pre_exp = len(out)
     out = out[(out['expiration'] >= snap_date) & (out['expiration'] <= horizon)]
     if out.empty:
+        # When the expiration filter drops everything, log WHICH expirations
+        # were available — diagnoses the "AV returns the chain but no
+        # same-day expiration was issued" case.
+        if ticker_dt_label:
+            available = sorted(pd.to_datetime(df['expiration']).dt.date.unique())[:5]
+            log.info("  filter dropped all %d rows for %s — snap=%s available_exps=%s",
+                     n_pre_exp, ticker_dt_label, snap_date, available)
         return out
 
     # Filter to ATM ± ATM_BAND strikes. We don't know the spot from the
@@ -216,6 +245,27 @@ def _normalize_intraday_response(df: pd.DataFrame, ticker: str,
     return out
 
 
+def _all_existing_snapshot_ts_for_ticker(ticker: str) -> set[datetime]:
+    """Return EVERY distinct snapshot_ts (UTC tz-aware → naive datetime
+    floored to seconds) already in etf_options_snapshots for this
+    ticker × HISTORICAL_INTRADAY. ONE query per ticker; in-memory
+    membership testing on the result is O(1).
+
+    Rule 0 batch pattern: never do N IN-clause queries when one
+    table-load + Python set lookup is correct.
+    """
+    if not is_cloud_sql_configured():
+        return set()
+    df = query_to_dataframe(
+        "SELECT DISTINCT snapshot_ts FROM etf_options_snapshots "
+        "WHERE ticker = :tkr AND market_session = 'HISTORICAL_INTRADAY'",
+        {"tkr": ticker},
+    )
+    if df.empty:
+        return set()
+    return {_utc_ts(ts).floor("s").to_pydatetime() for ts in df["snapshot_ts"]}
+
+
 def _existing_snapshot_keys(ticker: str, datetimes: list[datetime]) -> set[pd.Timestamp]:
     """Return the set of (ticker, snapshot_ts) UTC timestamps already in
     etf_options_snapshots — used by --skip-existing to make re-dispatch
@@ -227,8 +277,7 @@ def _existing_snapshot_keys(ticker: str, datetimes: list[datetime]) -> set[pd.Ti
     # then we'd switch to a temp-table pattern. For our backfill volume
     # (~5-30k total split across many invocations), inline is fine.
     placeholders = ",".join(f":t{i}" for i in range(len(datetimes)))
-    params = {f"t{i}": pd.Timestamp(dt, tz="UTC").to_pydatetime()
-              for i, dt in enumerate(datetimes)}
+    params = {f"t{i}": _utc_ts(dt).to_pydatetime() for i, dt in enumerate(datetimes)}
     params["tkr"] = ticker
     df = query_to_dataframe(
         f"SELECT DISTINCT snapshot_ts FROM etf_options_snapshots "
@@ -336,26 +385,36 @@ def main():
     if args.limit > 0:
         pairs = pairs[:args.limit]
 
-    # --skip-existing: pre-fetch the set of already-ingested keys, group by
-    # ticker for batched lookups.
+    # --skip-existing: build the skip-set with ONE bulk-load query per
+    # ticker (every HISTORICAL_INTRADAY snapshot_ts for that ticker)
+    # rather than N×500-param IN-clause queries. Per CLAUDE.md Rule 0
+    # batch pattern. The previous chunked-IN approach silently hung the
+    # first-run dispatch — 110 IN-clause queries × ~30s each = 55 min
+    # of pre-fetch with zero progress logging.
     skip = set()
     if args.skip_existing:
         by_ticker: dict[str, list[datetime]] = {}
         for t, dt in pairs:
             by_ticker.setdefault(t, []).append(dt)
         for t, dts in by_ticker.items():
-            # Chunk the lookup so the IN-list doesn't exceed Postgres param limits.
-            CHUNK = 500
-            for i in range(0, len(dts), CHUNK):
-                existing = _existing_snapshot_keys(t, dts[i:i + CHUNK])
-                for ts in existing:
-                    skip.add((t, pd.Timestamp(ts).floor("s").to_pydatetime()))
+            existing = _all_existing_snapshot_ts_for_ticker(t)
+            if not existing:
+                log.info("skip-existing: ticker=%s 0 rows in table — fast-path no-skip", t)
+                continue
+            # In-memory membership test against the requested timestamps
+            requested = {_utc_ts(d).floor("s").to_pydatetime() for d in dts}
+            overlap = existing & requested
+            for ts in overlap:
+                skip.add((t, ts))
+            log.info("skip-existing: ticker=%s loaded %d existing snapshot_ts, "
+                     "%d overlap with requested set",
+                     t, len(existing), len(overlap))
         log.info("skip-existing: %d/%d pairs already present", len(skip), len(pairs))
 
     total_inserts = 0
     t0 = time.time()
     for i, (ticker, dt_utc) in enumerate(pairs, 1):
-        key = (ticker, pd.Timestamp(dt_utc, tz="UTC").floor("s").to_pydatetime())
+        key = (ticker, _utc_ts(dt_utc).floor("s").to_pydatetime())
         if args.skip_existing and key in skip:
             if i % 100 == 0:
                 log.info("[%d/%d] skipped (already present)", i, len(pairs))
