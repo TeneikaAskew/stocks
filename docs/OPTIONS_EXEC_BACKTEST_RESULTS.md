@@ -184,28 +184,26 @@ the base case fails the spec by margins > 25%.**
 ## How to reproduce
 
 ```bash
-# 1. Emit setup timestamps from the type model (run locally or as Job)
-python -m lib.options_exec_backtest.cli \
-    --mode=emit_timestamps \
-    --out=/tmp/oeb \
-    --timestamps-out=/tmp/oeb/iwm_setup_timestamps.csv
-
-# 2. Upload the CSV to GCS so the Cloud Run fetcher Job can read it.
-gsutil cp /tmp/oeb/iwm_setup_timestamps.csv \
-    gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv
-
-# 3. Backfill AV intraday snapshots for those timestamps
-gcloud run jobs execute fetch-av-options-historical-intraday \
-    --update-args="--datetimes-file=/tmp/iwm_setup_timestamps.csv,--skip-existing" \
+# 1. Emit setup timestamps. The Cloud Run Job auto-uploads to
+#    gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv
+#    (STABLE handoff path) AND a per-run archival copy at
+#    {prefix}/{run_id}/setup_timestamps.csv.
+gcloud run jobs execute options-exec-backtest \
+    --update-args="--mode=emit_timestamps,--ticker=IWM" \
     --region us-east1 --wait
 
-# 4. Run the base case across BOTH walk-forward windows (default).
+# 2. Backfill AV intraday snapshots. The fetcher's default --datetimes-file
+#    points at the stable gs:// URL above, so no manual handoff needed.
+gcloud run jobs execute fetch-av-options-historical-intraday \
+    --region us-east1 --wait
+
+# 3. Run the base case across BOTH walk-forward windows (default).
 #    Same one Cloud Run Job; loads m1 bars once and reuses them.
 gcloud run jobs execute options-exec-backtest \
     --update-args="--mode=base,--ticker=IWM,--folds-mode=both" \
     --region us-east1 --wait
 
-# 5. Download both ledgers — separate subdirectories per window
+# 4. Download both ledgers — separate subdirectories per window
 gsutil cp -r gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/<run_id>/base_5fold/* \
     docs/options_exec_backtest_data/
 gsutil cp -r gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/<run_id>/base_3fold/* \
