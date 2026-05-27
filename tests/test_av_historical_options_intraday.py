@@ -155,3 +155,58 @@ def test_to_et_winter():
     dt = datetime(2024, 1, 3, 14, 0, 0, tzinfo=timezone.utc)
     et_str = _to_et(dt)
     assert et_str == "2024-01-03T09:00:00"
+
+
+# ─────────────────────────── _load_timestamps_from_csv ───────────────────────
+
+from gcp.fetchers.fetch_av_historical_options_intraday import _load_timestamps_from_csv
+
+
+def test_load_timestamps_local_csv(tmp_path):
+    """Local-file path still works after the GCS-URL extension."""
+    p = tmp_path / "ts.csv"
+    p.write_text("ticker,datetime_utc\nIWM,2024-06-03T14:00:00\nIWM,2024-06-03T14:30:00\n")
+    pairs = _load_timestamps_from_csv(str(p))
+    assert len(pairs) == 2
+    assert pairs[0][0] == "IWM"
+    assert pairs[0][1].isoformat() == "2024-06-03T14:00:00+00:00"
+
+
+def test_load_timestamps_gs_url(monkeypatch):
+    """gs:// URL path: stub the google.cloud.storage import chain so the
+    loader can resolve `from google.cloud import storage as gcs` even
+    when the real google-cloud-storage package isn't installed in the
+    test env (it IS installed in the Cloud Run image)."""
+    import sys
+    import types
+
+    class _FakeBlob:
+        def download_as_text(self):
+            return "ticker,datetime_utc\nIWM,2024-06-03T14:00:00\n"
+
+    class _FakeBucket:
+        def blob(self, _path): return _FakeBlob()
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        def bucket(self, _name): return _FakeBucket()
+
+    fake_storage = types.ModuleType("google.cloud.storage")
+    fake_storage.Client = _FakeClient
+    fake_cloud = types.ModuleType("google.cloud")
+    fake_cloud.storage = fake_storage
+    fake_google = types.ModuleType("google")
+    fake_google.cloud = fake_cloud
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.cloud", fake_cloud)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage)
+
+    pairs = _load_timestamps_from_csv("gs://my-bucket/path/to/ts.csv")
+    assert len(pairs) == 1
+    assert pairs[0][0] == "IWM"
+
+
+def test_load_timestamps_gs_url_missing_blob_path():
+    """gs://bucket alone (no blob) is rejected — fail-fast, not silent."""
+    with pytest.raises(ValueError, match="missing blob path"):
+        _load_timestamps_from_csv("gs://just-a-bucket")

@@ -89,6 +89,13 @@ def run_emit_timestamps(args, engine):
 
     Always emits the WIDER window (5fold = 2022-2026). The 3fold
     window is a subset, so one fetcher pass covers both.
+
+    Writes to GCS at TWO paths when running as a Cloud Run Job:
+      - {prefix}/setup_timestamps.csv (STABLE — the AV fetcher reads
+        from here by default; latest emit overwrites)
+      - {prefix}/{run_id}/setup_timestamps.csv (archival — per-run copy)
+
+    Local mode (--out=...) writes only locally.
     """
     out_csv = args.timestamps_out or f"/tmp/{args.ticker.lower()}_setup_timestamps.csv"
     n = emit_setup_timestamps(
@@ -100,14 +107,16 @@ def run_emit_timestamps(args, engine):
         output_csv=out_csv,
     )
     log.info("✓ wrote %d unique timestamps to %s", n, out_csv)
-    # Also upload to GCS if no local dir
     if args.out:
         return
     with open(out_csv, "rb") as f:
         content = f.read()
-    blob = f"{GCS_PREFIX}/{_run_id()}/setup_timestamps.csv"
-    uri = _gcs_upload(content, blob, ctype="text/csv")
-    log.info("✓ uploaded %s", uri)
+    archival = f"{GCS_PREFIX}/{_run_id()}/setup_timestamps.csv"
+    stable = f"{GCS_PREFIX}/setup_timestamps.csv"
+    uri_archival = _gcs_upload(content, archival, ctype="text/csv")
+    uri_stable = _gcs_upload(content, stable, ctype="text/csv")
+    log.info("✓ uploaded archival copy: %s", uri_archival)
+    log.info("✓ uploaded STABLE handoff path (AV fetcher reads from here): %s", uri_stable)
 
 
 def _resolve_variant(mode: str) -> tuple[int, int, str]:

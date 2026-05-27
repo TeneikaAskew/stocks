@@ -261,10 +261,30 @@ def process_pair(ticker: str, dt_utc: datetime, api_key: str) -> int:
 
 def _load_timestamps_from_csv(path: str) -> list[tuple[str, datetime]]:
     """Read a CSV of (ticker, datetime_utc) pairs. The CSV must have a
-    header row with columns 'ticker' and 'datetime_utc'."""
+    header row with columns 'ticker' and 'datetime_utc'.
+
+    Accepts a local path or a gs:// URL. The Cloud Run Job that emits
+    the CSV (`options-exec-backtest --mode=emit_timestamps`) and this
+    fetcher run in different containers; the canonical handoff is via
+    GCS, so the loader handles `gs://` transparently.
+    """
     pairs = []
-    with open(path) as f:
+    if path.startswith("gs://"):
+        # gs://bucket/blob/path
+        without_scheme = path[len("gs://"):]
+        bucket_name, _, blob_path = without_scheme.partition("/")
+        if not blob_path:
+            raise ValueError(f"Invalid GCS URL (missing blob path): {path!r}")
+        from google.cloud import storage as gcs
+        log.info("downloading timestamps CSV from %s", path)
+        text = gcs.Client().bucket(bucket_name).blob(blob_path).download_as_text()
+        reader = csv.DictReader(text.splitlines())
+        source_desc = path
+    else:
+        f = open(path)  # noqa: SIM115 — we iterate then close manually below
         reader = csv.DictReader(f)
+        source_desc = path
+    try:
         for row in reader:
             t = row['ticker'].upper().strip()
             dt_str = row['datetime_utc'].strip()
@@ -274,7 +294,10 @@ def _load_timestamps_from_csv(path: str) -> list[tuple[str, datetime]]:
             else:
                 dt = dt.tz_convert("UTC")
             pairs.append((t, dt.to_pydatetime()))
-    log.info("loaded %d (ticker, datetime) pairs from %s", len(pairs), path)
+    finally:
+        if not path.startswith("gs://"):
+            f.close()
+    log.info("loaded %d (ticker, datetime) pairs from %s", len(pairs), source_desc)
     return pairs
 
 

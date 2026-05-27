@@ -985,7 +985,7 @@ deploy_av_options_historical_intraday() {
         --task-timeout 14400
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options_intraday"
-        --args "--datetimes-file=/tmp/iwm_setup_timestamps.csv,--skip-existing"
+        --args "--datetimes-file=gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv,--skip-existing"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
         --quiet
