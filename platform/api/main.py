@@ -160,6 +160,79 @@ def _iap_user_email(request: Request) -> Optional[str]:
     return raw.split(":", 1)[-1].strip().lower()
 
 
+_STRAT_ENGINE_TICKERS = ("IWM", "SPY", "QQQ")
+_STRAT_ENGINE_TFS = ("5m", "15m", "30m")
+
+
+def _strat_engine_state() -> list[dict]:
+    """Snapshot the on-shelf strat-engine state for the /dev page.
+
+    Reads model metadata (metrics.json sidecar) + the live-ECE snapshot
+    from GCS for each deployed (ticker, tf) cell. The model is FROZEN
+    (calibration=none, 143-col enriched feature set). This function does
+    not load model.pkl — it only reports artifact metadata, suitable for
+    an operational health snapshot.
+
+    Returns a list of dicts (one per cell). Cells whose artifacts are
+    missing return available=False so the page degrades gracefully.
+    """
+    rows: list[dict] = []
+    try:
+        from google.cloud import storage as _gcs
+    except ImportError:
+        return rows
+    bucket_name = os.environ.get("GCS_BUCKET", "adept-mountain-474619-d4-trading-data")
+    try:
+        client = _gcs.Client()
+        bucket = client.bucket(bucket_name)
+    except Exception:
+        return rows
+
+    # Live-ECE snapshot — same source as the structure brief.
+    import json as _json
+    snap_cells: dict = {}
+    try:
+        snap_blob = bucket.blob("research/strat_engine/structure_brief_latest.json")
+        if snap_blob.exists():
+            snap_cells = _json.loads(snap_blob.download_as_bytes()).get("cells", {})
+    except Exception:
+        snap_cells = {}
+
+    for ticker in _STRAT_ENGINE_TICKERS:
+        for tf in _STRAT_ENGINE_TFS:
+            prefix = f"research/strat_engine/{ticker.lower()}_{tf}"
+            row = {
+                "ticker": ticker,
+                "tf": tf,
+                "available": False,
+                "model_version": None,
+                "last_train_date": None,
+                "live_ece": None,
+            }
+            try:
+                m_blob = bucket.blob(f"{prefix}/metrics.json")
+                if m_blob.exists():
+                    metrics = _json.loads(m_blob.download_as_bytes())
+                    row["available"] = True
+                    row["model_version"] = (
+                        metrics.get("run_id")
+                        or metrics.get("config_signature")
+                        or metrics.get("model_version")
+                    )
+                    row["last_train_date"] = (
+                        metrics.get("trained_at")
+                        or metrics.get("computed_at")
+                        or metrics.get("train_until")
+                    )
+            except Exception:
+                pass
+            ece = snap_cells.get(f"{ticker}_{tf}", {}).get("live_ece")
+            if ece is not None:
+                row["live_ece"] = ece
+            rows.append(row)
+    return rows
+
+
 @app.get("/dev", include_in_schema=False)
 async def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -178,6 +251,34 @@ async def dev_info(request: Request):
     revision = os.environ.get("K_REVISION", "local")
     service_url = str(request.base_url).rstrip("/")
     viewer = email or "(local dev — no IAP)"
+
+    # Strat-engine operational state. Read-only snapshot of the on-shelf
+    # model artifacts + live ECE per (ticker, tf). Best-effort; if GCS
+    # is unreachable the section renders an "unavailable" note.
+    strat_rows = _strat_engine_state()
+    if strat_rows:
+        strat_table_rows = []
+        for r in strat_rows:
+            if r["available"]:
+                ver = r["model_version"] or "—"
+                trained = r["last_train_date"] or "—"
+                ece = (
+                    f"{r['live_ece']:.4f}" if r["live_ece"] is not None else "—"
+                )
+                strat_table_rows.append(
+                    f"<span class='k'>{r['ticker']:>3} {r['tf']:>3}</span>"
+                    f"  <span class='v'>{ver[:24]:<24}</span>"
+                    f"  <span class='v'>{trained[:19]:<19}</span>"
+                    f"  <span class='v'>{ece}</span>"
+                )
+            else:
+                strat_table_rows.append(
+                    f"<span class='k'>{r['ticker']:>3} {r['tf']:>3}</span>"
+                    f"  <span class='warn'>no artifacts</span>"
+                )
+        strat_table = "\n".join(strat_table_rows)
+    else:
+        strat_table = "(strat-engine artifact state unavailable — GCS unreachable)"
 
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>/dev — test accounts</title>
@@ -206,6 +307,14 @@ async def dev_info(request: Request):
 <h2>Playwright tester service account</h2>
 <pre><span class="k">email          </span><span class="v">{sa_email}</span>
 <span class="k">iap_audience   </span><span class="v">{iap_audience}</span></pre>
+
+<h2>Strat-engine model state (on-shelf, no scheduler)</h2>
+<pre><span class="k">cell  </span> <span class="k">model_version           </span>  <span class="k">last_train_date    </span>  <span class="k">live_ece</span>
+{strat_table}</pre>
+<p class="k">Calibrated structure prediction. Not a directional or P&amp;L edge. Use with discretion.
+Tracks B (execution backtest) and C (direction R&amp;D) reported FAIL — the model is callable on demand
+via <code>POST /api/admin/strat-engine/predict</code> and is not wired into any scheduler or user-facing route.
+See <code>docs/STRAT_ENGINE_OPERATIONS.md</code> for the activation gate.</p>
 
 <p class="warn">Note: programmatic auth against this IAP-on-Cloud-Run service
 is currently broken (both for SA keys and gcloud user tokens). The legacy

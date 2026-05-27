@@ -318,3 +318,86 @@ async def admin_structure_brief(
         cells=cells,
         ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
     )
+
+
+# ---------------------------------------------------------------------------
+# Strat-engine on-demand prediction — admin-gated single-bar prediction.
+#
+# Wraps `gcp.research.strat_engine.strat_pred_serve.predict_one`. The model
+# is FROZEN (calibration=none, 143-col enriched feature set). This endpoint
+# does not retrain. It loads the model.pkl from GCS and queries Cloud SQL
+# for the most recent labeled features.
+#
+# This endpoint is admin-gated. It is NOT wired into any user-facing route
+# and is NOT triggered by any scheduler. Production triggers are blocked
+# until a documented use case + a fresh validation pass land.
+# ---------------------------------------------------------------------------
+
+
+class StratEnginePredictRequest(BaseModel):
+    ticker: str
+    timeframe: str
+    as_of_timestamp: Optional[str] = None  # ISO-8601; defaults to latest
+
+
+class StratEnginePredictResponse(BaseModel):
+    ticker: str
+    timeframe: str
+    ts: Optional[str] = None  # bar timestamp the prediction was based on
+    available: bool
+    top_class: Optional[str] = None
+    top_prob: Optional[float] = None
+    class_probs: dict = {}
+    model_version: Optional[str] = None
+    last_train_date: Optional[str] = None
+    live_ece: Optional[float] = None
+    muted: bool = False
+    mute_reason: Optional[str] = None
+    scope_statement: str
+    note: Optional[str] = None
+
+
+@router.post(
+    "/strat-engine/predict",
+    response_model=StratEnginePredictResponse,
+)
+async def admin_strat_engine_predict(
+    body: StratEnginePredictRequest,
+    request: Request,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Run the frozen strat-engine type model for ONE bar.
+
+    Body:
+      { ticker: "IWM", timeframe: "15m", as_of_timestamp: "..." (optional) }
+
+    Returns the 4-class distribution + metadata. When the rolling live
+    ECE exceeds the per-cell ceiling, the prediction is muted (top_class
+    null, mute_reason populated).
+    """
+    _require_admin(request, x_admin_token)
+
+    ticker = body.ticker.upper().strip()
+    tf = body.timeframe.strip()
+    if ticker not in STRUCTURE_BRIEF_TICKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ticker must be one of {STRUCTURE_BRIEF_TICKERS}; got {ticker!r}",
+        )
+    if tf not in STRUCTURE_BRIEF_TFS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"timeframe must be one of {STRUCTURE_BRIEF_TFS}; got {tf!r}",
+        )
+
+    # Lazy-import the predict path so the API container doesn't have
+    # lightgbm + scikit-learn loaded into memory unless this endpoint
+    # is actually hit. Heavy module-load only when needed.
+    from gcp.database import get_engine  # noqa: PLC0415
+    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+    import pandas as _pd  # noqa: PLC0415
+
+    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
+    engine = get_engine()
+    result = predict_one(engine, ticker, tf, as_of=as_of)
+    return StratEnginePredictResponse(**result)
