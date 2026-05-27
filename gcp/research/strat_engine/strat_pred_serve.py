@@ -98,6 +98,52 @@ def _load_metrics(ticker: str, tf: str) -> dict:
         return {}
 
 
+def _load_features_list(ticker: str, tf: str) -> Optional[list[str]]:
+    """Load features.txt — the canonical training-time feature column list.
+
+    Saved by strat_pred_train.py alongside model.pkl. Used at inference
+    time to reindex the featurized DataFrame so it matches exactly the
+    columns the model was fitted on (one-hot expansions of categorical
+    features may not produce every level on a single-bar inference set).
+    """
+    prefix = gcs_model_prefix(ticker, tf)
+    raw = _gcs_load_bytes(f"{prefix}/features.txt")
+    if raw is None:
+        return None
+    try:
+        return [line.strip() for line in raw.decode().splitlines() if line.strip()]
+    except Exception:
+        return None
+
+
+def _load_classes_list(ticker: str, tf: str) -> Optional[list[str]]:
+    """Load classes.txt — the class-label order used by the model."""
+    prefix = gcs_model_prefix(ticker, tf)
+    raw = _gcs_load_bytes(f"{prefix}/classes.txt")
+    if raw is None:
+        return None
+    try:
+        return [line.strip() for line in raw.decode().splitlines() if line.strip()]
+    except Exception:
+        return None
+
+
+def _model_last_modified(ticker: str, tf: str) -> Optional[str]:
+    """Fall back to the GCS object's mtime when metrics.json is absent."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    try:
+        client = _gcs_client()
+        blob = client.bucket(bucket_name).blob(
+            f"{gcs_model_prefix(ticker, tf)}/model.pkl"
+        )
+        blob.reload()
+        if blob.updated:
+            return blob.updated.isoformat()
+    except Exception:
+        pass
+    return None
+
+
 def _load_live_ece_snapshot() -> dict:
     """Load the rolling-live-ECE snapshot if present.
 
@@ -185,6 +231,7 @@ def predict_one(
         metrics.get("trained_at")
         or metrics.get("computed_at")
         or metrics.get("train_until")
+        or _model_last_modified(ticker, tf)  # fall back to GCS mtime
     )
 
     # Apply live-ECE mute first. If the cell is muted we hide the
@@ -228,28 +275,35 @@ def predict_one(
     latest = df.iloc[[-1]].copy()
     response["ts"] = pd.to_datetime(latest["ts"].iloc[0], utc=True).isoformat()
 
-    X, cols = featurize(latest)
-    # Align to model's expected feature shape. We accept a small drift —
-    # any missing columns get filled with 0 (same as training-time reindex).
-    expected_cols: Optional[list[str]] = None
-    if hasattr(model, "booster_") and hasattr(model.booster_, "feature_name"):
-        try:
-            expected_cols = list(model.booster_.feature_name())
-        except Exception:
-            expected_cols = None
+    X, _cols = featurize(latest)
+    # Align to model's expected feature shape. The canonical list lives in
+    # features.txt next to model.pkl in GCS — saved at training time. A
+    # single-bar inference set may not produce every one-hot expansion of
+    # the categorical features, so reindexing is essential.
+    expected_cols = _load_features_list(ticker, tf)
     if expected_cols:
         X = X.reindex(columns=expected_cols, fill_value=0).astype(np.float32)
     else:
         X = X.astype(np.float32)
 
     proba = model.predict_proba(X.values)[0]
-    # Align proba to LABEL_CLASSES order
-    class_probs = {}
+    # Align proba to LABEL_CLASSES order using the canonical class list
+    # (classes.txt next to model.pkl). Index space inside the model is
+    # internal (could be sklearn-style integer or LightGBM-style label).
+    class_probs: dict[str, float] = {}
+    saved_classes = _load_classes_list(ticker, tf)
+    if saved_classes is None:
+        saved_classes = list(LABEL_CLASSES)
     if hasattr(model, "classes_"):
-        for j, idx in enumerate(model.classes_):
-            class_probs[LABEL_CLASSES[int(idx)]] = float(proba[j])
+        for j, internal in enumerate(model.classes_):
+            # model.classes_ may be integer indices or string labels.
+            if isinstance(internal, (int, np.integer)):
+                label = saved_classes[int(internal)]
+            else:
+                label = str(internal)
+            class_probs[label] = float(proba[j])
     else:
-        for j, cls in enumerate(LABEL_CLASSES):
+        for j, cls in enumerate(saved_classes):
             class_probs[cls] = float(proba[j])
     # Ensure all four classes are present (zero-pad rare-class absences)
     for cls in LABEL_CLASSES:
