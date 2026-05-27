@@ -792,30 +792,40 @@ deploy_strat_engine() {
 #   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase1,--ticker=IWM,--tf=15m"
 #   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
 deploy_magnitude_engine() {
-    echo "Deploying magnitude-engine job..."
+    echo "Deploying magnitude-engine job (task-parallel)..."
     local research_image="${IMAGE}:research"
-
-    # 9 cells × 8 folds × LightGBM fit ≈ 30-60 min per cell × 9 ≈ 9 hours
-    # if serialized. With --all-cells in one execution, set timeout high.
-    # task-timeout is the only knob; --max-retries=0 per Rule 0 (a stuck
-    # job should fail loudly, not retry-spam Discord).
+    # Task-parallel design:
+    #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
+    #                                   one per (phase, ticker, tf) cell of
+    #                                   plan=no_backfill (3 phases × 9).
+    #   --task-timeout 5400           — 90 min per cell (one cell ≤ 60 min
+    #                                   in practice with all 4 CPUs to itself)
+    #   --memory 8Gi --cpu 4          — per-task allocation
+    #   --max-retries 0               — Rule 0: a stuck cell fails loud
+    # Run-time plan is chosen at EXECUTE time via --update-env-vars=MAG_PLAN=...
+    # (default plan stamped here is no_backfill so a bare execute works).
+    local plan_default=no_backfill
+    local plan_size=27
     gcloud run jobs create magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
         --memory 8Gi --cpu 4 --max-retries 0 \
-        --task-timeout 36000 \
+        --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python" \
-        --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
         --command "python" \
-        --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells" \
-        --task-timeout 36000 \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
         --quiet
 }
 

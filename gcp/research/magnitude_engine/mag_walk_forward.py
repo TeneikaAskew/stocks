@@ -362,14 +362,22 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
               or f"run_{int(time.time())}")
     summary["run_id"] = run_id
 
-    # Ensure DDL exists (idempotent). If the engine is read-only, log and
-    # skip — GCS persistence is the canonical output anyway.
+    # DDL is idempotent (CREATE IF NOT EXISTS) but concurrent dispatches
+    # of 27 parallel tasks can race on the initial creation. Split DDL +
+    # persist try/except so a DDL race doesn't drop the per-fold rows.
     try:
         execute_sql(RESULTS_DDL_CREATE)
         execute_sql(RESULTS_DDL_INDEX)
+    except Exception as e:
+        # Race on CREATE/INDEX — fine, table will already exist by the
+        # time we try to insert.
+        log.info("DDL race or no-op (%s): %s", type(e).__name__, e)
+    try:
         _persist_results_table(engine, phase, ticker, tf, folds, run_id)
     except Exception as e:
-        log.warning("Cloud SQL persistence skipped (%s): %s", type(e).__name__, e)
+        # Hard failure — log loud, but DON'T fail the task because GCS
+        # persistence is the canonical output anyway.
+        log.error("Cloud SQL persist FAILED (%s): %s", type(e).__name__, e)
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf)
@@ -419,13 +427,89 @@ def run_all_cells(engine, phase: str,
     }
 
 
+# ─────────────────────── Task plans for Cloud Run parallel dispatch ────────
+# Each plan maps a task-index N to ONE (phase, ticker, tf) cell. Cloud Run
+# Job is dispatched with --tasks=len(plan) --parallelism=len(plan) so all
+# cells run on independent workers simultaneously. Wall-clock = slowest
+# single cell (~30-60 min) instead of sum (~5-9 hours sequential).
+TASK_PLANS: dict[str, list[tuple[str, str, str]]] = {
+    # Phase 0 only (9 cells) — smallest dispatch; use when you want a
+    # cheap, fast read on whether the baseline carries any signal.
+    "phase0": [
+        (phase, ticker, tf)
+        for phase in ("phase0",)
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
+    # All three phases that don't need backfills (27 cells) — preferred
+    # default. Same ~30-60 min wall-clock, ~3x compute cost, gives 3
+    # phase verdicts in one shot. Phase 2 + 4 deferred until backfills.
+    "no_backfill": [
+        (phase, ticker, tf)
+        for phase in ("phase0", "phase1", "phase3")
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
+    # Phase 1 only (9 cells)
+    "phase1": [
+        ("phase1", ticker, tf)
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
+    # Phase 3 only (9 cells)
+    "phase3": [
+        ("phase3", ticker, tf)
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
+    # Phase 2 only (9 cells) — REQUIRES market_data_indicators backfill
+    "phase2": [
+        ("phase2", ticker, tf)
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
+    # Phase 4 only (9 cells) — REQUIRES market_data_cross_asset backfill
+    "phase4": [
+        ("phase4", ticker, tf)
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
+}
+
+
+def _resolve_task() -> tuple[str, str, str] | None:
+    """Resolve (phase, ticker, tf) from CLOUD_RUN_TASK_INDEX + MAG_PLAN env.
+
+    Returns None when not running in a task-parallel Cloud Run dispatch.
+    """
+    plan_name = os.environ.get("MAG_PLAN", "")
+    idx_str = os.environ.get("CLOUD_RUN_TASK_INDEX", "")
+    if not plan_name or idx_str == "":
+        return None
+    if plan_name not in TASK_PLANS:
+        raise SystemExit(f"MAG_PLAN={plan_name!r} not in {list(TASK_PLANS)}")
+    plan = TASK_PLANS[plan_name]
+    idx = int(idx_str)
+    if idx >= len(plan):
+        log.info("task-index %d ≥ plan size %d — no-op exit", idx, len(plan))
+        return None
+    return plan[idx]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--phase", default="phase0", choices=list(PHASES))
+    p.add_argument("--phase", default=None, choices=list(PHASES) + [None])
     p.add_argument("--ticker", default=None, choices=list(TICKERS) + [None])
     p.add_argument("--tf", default=None, choices=list(TIMEFRAMES) + [None])
     p.add_argument("--all-cells", action="store_true",
-                   help="Run all 9 (ticker × tf) cells for this phase")
+                   help="In-process loop over 9 cells of one phase (legacy; "
+                        "prefer Cloud Run --tasks parallelism via MAG_PLAN env)")
+    p.add_argument("--plan", default=None, choices=list(TASK_PLANS) + [None],
+                   help="Local-debug equivalent of MAG_PLAN env. With "
+                        "--task-index N, run plan[N] only.")
+    p.add_argument("--task-index", type=int, default=None,
+                   help="Local debug: pick cell N from --plan. In Cloud Run "
+                        "this is auto-resolved from CLOUD_RUN_TASK_INDEX.")
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD (default: regime-spanning)")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
@@ -433,13 +517,47 @@ def main():
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
-    if args.all_cells:
-        run_all_cells(engine, args.phase, cutoffs=cutoffs, calibration=args.calibration)
-    else:
-        if not args.ticker or not args.tf:
-            raise SystemExit("Specify --ticker AND --tf, or --all-cells")
-        walk_forward(engine, args.phase, args.ticker, args.tf,
+
+    # Resolution priority:
+    #   1. Cloud Run task-parallel env (MAG_PLAN + CLOUD_RUN_TASK_INDEX)
+    #   2. --plan + --task-index (local debug for parity check)
+    #   3. --all-cells with --phase (in-process loop — legacy)
+    #   4. --phase --ticker --tf (single cell)
+    cell = _resolve_task()
+    if cell:
+        phase, ticker, tf = cell
+        log.info("task-parallel dispatch: plan=%s idx=%s → %s/%s/%s",
+                 os.environ.get("MAG_PLAN"), os.environ.get("CLOUD_RUN_TASK_INDEX"),
+                 phase, ticker, tf)
+        walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration)
+        return
+
+    if args.plan and args.task_index is not None:
+        plan = TASK_PLANS[args.plan]
+        if args.task_index >= len(plan):
+            log.info("task-index %d ≥ plan size %d — no-op", args.task_index, len(plan))
+            return
+        phase, ticker, tf = plan[args.task_index]
+        walk_forward(engine, phase, ticker, tf,
+                      cutoffs=cutoffs, calibration=args.calibration)
+        return
+
+    if args.all_cells:
+        if not args.phase:
+            raise SystemExit("--all-cells needs --phase")
+        run_all_cells(engine, args.phase, cutoffs=cutoffs, calibration=args.calibration)
+        return
+
+    if not args.phase or not args.ticker or not args.tf:
+        raise SystemExit(
+            "Specify (--phase --ticker --tf) for a single cell, OR "
+            "(--plan --task-index) for a single cell of a plan, OR "
+            "(--phase --all-cells) for in-process 9-cell loop, OR set "
+            "MAG_PLAN + CLOUD_RUN_TASK_INDEX env vars for task-parallel dispatch."
+        )
+    walk_forward(engine, args.phase, args.ticker, args.tf,
+                  cutoffs=cutoffs, calibration=args.calibration)
 
 
 if __name__ == "__main__":
