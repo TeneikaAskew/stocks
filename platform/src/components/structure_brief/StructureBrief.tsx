@@ -11,14 +11,11 @@
 // (IAP email OR X-Admin-Token), and is NOT linked from any user-facing
 // route or nav. It does NOT run via any scheduler.
 //
-// The deploy gate is blocked until Tracks B (execution-system backtest)
-// and C (direction features R&D) report verdicts.
-//
 // Self-mute: if the rolling live ECE for a cell exceeds the per-cell
 // ceiling, the prediction is hidden and a mute reason is shown instead.
 // ---------------------------------------------------------------------------
 
-import { Loader2 } from 'lucide-react';
+import { AlertTriangle, Clock, Loader2 } from 'lucide-react';
 import {
   useStructureBrief,
   type StructureBriefCell,
@@ -34,6 +31,22 @@ export const SCOPE_STATEMENT =
 const TICKERS_ORDER = ['IWM', 'SPY', 'QQQ'] as const;
 const TFS_ORDER = ['5m', '15m', '30m'] as const;
 const CLASSES_ORDER: Array<'1' | '2U' | '2D' | '3'> = ['1', '2U', '2D', '3'];
+
+// Class semantics — color-coded by structural meaning. Mute drops to
+// neutral grey to reinforce that no prediction is being claimed.
+const CLASS_COLOR_VAR: Record<'1' | '2U' | '2D' | '3', string> = {
+  '1': 'var(--color-text-muted)',
+  '2U': 'var(--color-bull)',
+  '2D': 'var(--color-bear)',
+  '3': 'var(--color-warn)',
+};
+
+const CLASS_LABEL: Record<'1' | '2U' | '2D' | '3', string> = {
+  '1': '1 (inside)',
+  '2U': '2U (up)',
+  '2D': '2D (down)',
+  '3': '3 (outside)',
+};
 
 // ---------------------------------------------------------------------------
 // Pure logic — exported for unit tests.
@@ -81,7 +94,7 @@ export function applyMute(cell: StructureBriefCell): StructureBriefCell {
   };
 }
 
-// Banned words / phrases that MUST NOT appear in the brief or design
+// Words / phrases that MUST NOT appear in the brief or design
 // doc. The language audit unit test asserts the brief's source text
 // does not contain any of these.
 export const BANNED_WORDS: readonly string[] = [
@@ -97,6 +110,25 @@ export const BANNED_WORDS: readonly string[] = [
   'directional edge',
 ];
 
+// Format an ISO timestamp as a short relative read ("3m ago", "yesterday").
+// Used in card footers. Falls back to absolute time when older than a day.
+export function formatRefreshed(iso: string | null | undefined): string {
+  if (!iso) return 'no refresh';
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return 'no refresh';
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return new Date(ts).toLocaleString();
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
 
 export function StructureBrief({ enabled }: { enabled: boolean }) {
   const { data, isLoading, error } = useStructureBrief(enabled);
@@ -105,12 +137,7 @@ export function StructureBrief({ enabled }: { enabled: boolean }) {
     return null;
   }
   if (isLoading) {
-    return (
-      <div className="flex items-center gap-2 p-4 text-[var(--color-text-muted)]">
-        <Loader2 size={16} className="animate-spin" />
-        <span>Loading structure prediction snapshot…</span>
-      </div>
-    );
+    return <SkeletonGrid />;
   }
   if (error || !data) {
     return (
@@ -128,10 +155,23 @@ export function StructureBriefView({ data }: { data: StructureBriefResponse }) {
   for (const c of data.cells) {
     cellsByKey.set(`${c.ticker}_${c.timeframe}`, c);
   }
+  const totalCells = TICKERS_ORDER.length * TFS_ORDER.length;
+  let mutedCount = 0;
+  let availableCount = 0;
+  for (const c of data.cells) {
+    if (c.muted) mutedCount += 1;
+    if (c.available) availableCount += 1;
+  }
   return (
     <div className="space-y-4">
       <ScopeStatement statement={data.scope_statement} />
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <BriefStatusBar
+        totalCells={totalCells}
+        availableCount={availableCount}
+        mutedCount={mutedCount}
+        eceCeiling={data.ece_ceiling}
+      />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {TICKERS_ORDER.map((ticker) => (
           <div key={ticker} className="space-y-2">
             <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{ticker}</h3>
@@ -154,9 +194,40 @@ export function ScopeStatement({ statement }: { statement: string }) {
   return (
     <div
       data-testid="structure-brief-scope"
-      className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-muted)] p-3 text-xs text-[var(--color-text-muted)]"
+      className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3 text-xs text-[var(--color-text-muted)]"
     >
       {statement}
+    </div>
+  );
+}
+
+
+// Compact status strip at the top of the grid — shows aggregate health
+// of all 9 cells. Lets the operator see at-a-glance whether anything
+// is muted before scanning the grid.
+function BriefStatusBar({
+  totalCells, availableCount, mutedCount, eceCeiling,
+}: {
+  totalCells: number;
+  availableCount: number;
+  mutedCount: number;
+  eceCeiling: number;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-bg-secondary)] px-3 py-2 text-[11px] text-[var(--color-text-muted)]">
+      <span>
+        <span className="text-[var(--color-text-primary)]">{availableCount}</span> / {totalCells} cells available
+      </span>
+      <span>·</span>
+      {mutedCount > 0 ? (
+        <span className="flex items-center gap-1 text-[var(--color-warn)]">
+          <AlertTriangle size={12} /> {mutedCount} muted
+        </span>
+      ) : (
+        <span>0 muted</span>
+      )}
+      <span>·</span>
+      <span>ECE ceiling {eceCeiling.toFixed(3)}</span>
     </div>
   );
 }
@@ -167,10 +238,13 @@ export function Cell({ cell }: { cell: StructureBriefCell }) {
     return (
       <div
         data-testid={`cell-${cell.ticker}-${cell.timeframe}`}
-        className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-card)] p-3 text-xs text-[var(--color-text-muted)]"
+        className="rounded-md border border-dashed border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3 text-xs text-[var(--color-text-muted)]"
       >
-        <div className="mb-1 font-medium text-[var(--color-text-secondary)]">{cell.timeframe}</div>
-        <div>{cell.note ?? 'unavailable'}</div>
+        <div className="mb-1 flex items-center justify-between">
+          <span className="font-medium text-[var(--color-text-secondary)]">{cell.timeframe}</span>
+          <span className="text-[10px]">unavailable</span>
+        </div>
+        <div>{cell.note ?? 'No live data.'}</div>
       </div>
     );
   }
@@ -179,10 +253,17 @@ export function Cell({ cell }: { cell: StructureBriefCell }) {
       <div
         data-testid={`cell-${cell.ticker}-${cell.timeframe}`}
         data-muted="true"
-        className="rounded-md border border-[var(--color-warning)] bg-[var(--color-bg-card)] p-3 text-xs"
+        className="rounded-md border border-[var(--color-warn)] bg-[var(--color-bg-card)] p-3 text-xs"
       >
-        <div className="mb-1 font-medium text-[var(--color-text-secondary)]">{cell.timeframe}</div>
-        <div className="text-[var(--color-warning)]">{cell.mute_reason ?? 'model muted, ECE breach'}</div>
+        <div className="mb-2 flex items-center justify-between">
+          <span className="font-medium text-[var(--color-text-secondary)]">{cell.timeframe}</span>
+          <span className="text-[10px] text-[var(--color-text-muted)]">{formatRefreshed(cell.refreshed_at)}</span>
+        </div>
+        <div className="flex items-start gap-2 text-[var(--color-warn)]">
+          <AlertTriangle size={14} className="mt-[1px] flex-none" />
+          <span>{cell.mute_reason ?? 'model muted, ECE breach'}</span>
+        </div>
+        <FooterMetrics cell={cell} />
       </div>
     );
   }
@@ -191,14 +272,35 @@ export function Cell({ cell }: { cell: StructureBriefCell }) {
       data-testid={`cell-${cell.ticker}-${cell.timeframe}`}
       className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-card)] p-3 text-xs"
     >
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
         <span className="font-medium text-[var(--color-text-secondary)]">{cell.timeframe}</span>
-        <span className="text-[var(--color-text-primary)]">
-          next bar {cell.top_prob != null ? `${(cell.top_prob * 100).toFixed(0)}%` : '—'} likely to be type {cell.top_class ?? '—'}
+        <span className="flex items-center gap-1 text-[10px] text-[var(--color-text-muted)]">
+          <Clock size={10} /> {formatRefreshed(cell.refreshed_at)}
         </span>
       </div>
+      <TopCallLine cell={cell} />
       <DistributionBars cell={cell} />
       <FooterMetrics cell={cell} />
+    </div>
+  );
+}
+
+
+function TopCallLine({ cell }: { cell: StructureBriefCell }) {
+  if (cell.top_class == null || cell.top_prob == null) return null;
+  const cls = cell.top_class;
+  const pct = (cell.top_prob * 100).toFixed(0);
+  return (
+    <div className="mb-2 text-[var(--color-text-primary)]">
+      next bar{' '}
+      <span className="font-semibold" style={{ color: CLASS_COLOR_VAR[cls] }}>
+        {pct}%
+      </span>{' '}
+      likely to be type{' '}
+      <span className="font-semibold" style={{ color: CLASS_COLOR_VAR[cls] }}>
+        {cls}
+      </span>{' '}
+      <span className="text-[10px] text-[var(--color-text-muted)]">({CLASS_LABEL[cls].split(' ')[1]?.replace(/[()]/g, '') ?? ''})</span>
     </div>
   );
 }
@@ -215,11 +317,20 @@ function DistributionBars({ cell }: { cell: StructureBriefCell }) {
         const p = byCls.get(cls) ?? 0;
         return (
           <div key={cls} className="flex items-center gap-2">
-            <span className="w-6 text-right text-[10px] text-[var(--color-text-muted)]">{cls}</span>
+            <span
+              className="w-12 text-right text-[10px] font-medium"
+              style={{ color: CLASS_COLOR_VAR[cls] }}
+            >
+              {cls}
+            </span>
             <div className="flex-1 overflow-hidden rounded bg-[var(--color-bg-muted)]">
               <div
-                className="h-2 rounded bg-[var(--color-text-secondary)]"
-                style={{ width: `${(p * 100).toFixed(1)}%` }}
+                className="h-2 rounded transition-[width] duration-200"
+                style={{
+                  width: `${(p * 100).toFixed(1)}%`,
+                  backgroundColor: CLASS_COLOR_VAR[cls],
+                  opacity: 0.85,
+                }}
               />
             </div>
             <span className="w-10 text-right text-[10px] tabular-nums text-[var(--color-text-muted)]">
@@ -237,9 +348,41 @@ function FooterMetrics({ cell }: { cell: StructureBriefCell }) {
   return (
     <div className="mt-2 flex justify-between text-[10px] text-[var(--color-text-muted)]">
       <span>
-        live ECE {cell.live_ece != null ? cell.live_ece.toFixed(3) : '—'} / ceiling {cell.ece_ceiling.toFixed(3)}
+        live ECE{' '}
+        <span className="tabular-nums text-[var(--color-text-secondary)]">
+          {cell.live_ece != null ? cell.live_ece.toFixed(3) : '—'}
+        </span>{' '}
+        / ceiling {cell.ece_ceiling.toFixed(3)}
       </span>
-      <span>{cell.refreshed_at ? new Date(cell.refreshed_at).toLocaleString() : 'no refresh'}</span>
+    </div>
+  );
+}
+
+
+function SkeletonGrid() {
+  return (
+    <div className="space-y-4">
+      <div className="h-9 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)]" />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {TICKERS_ORDER.map((ticker) => (
+          <div key={ticker} className="space-y-2">
+            <div className="h-4 w-12 rounded bg-[var(--color-bg-muted)]" />
+            {TFS_ORDER.map((tf) => (
+              <div key={tf} className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-card)] p-3">
+                <div className="mb-2 flex items-center gap-2 text-[var(--color-text-muted)]">
+                  <Loader2 size={12} className="animate-spin" />
+                  <span className="text-[10px]">loading {tf}…</span>
+                </div>
+                <div className="space-y-1">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="h-2 rounded bg-[var(--color-bg-muted)]" />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

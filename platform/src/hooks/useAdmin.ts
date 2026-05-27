@@ -120,6 +120,85 @@ export function useStructureBrief(enabled: boolean) {
 }
 
 
+// ---------------------------------------------------------------------------
+// Strat-engine on-demand predict — admin-gated single-bar prediction.
+// ---------------------------------------------------------------------------
+
+export interface StratPredictRequest {
+  ticker: string;
+  timeframe: string;
+  as_of_timestamp?: string;
+}
+
+export interface StratPredictResponse {
+  ticker: string;
+  timeframe: string;
+  ts: string | null;
+  available: boolean;
+  top_class: '1' | '2U' | '2D' | '3' | null;
+  top_prob: number | null;
+  class_probs: Record<'1' | '2U' | '2D' | '3', number>;
+  model_version: string | null;
+  last_train_date: string | null;
+  live_ece: number | null;
+  muted: boolean;
+  mute_reason: string | null;
+  scope_statement: string;
+  note: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Strat-engine model state — operator snapshot.
+// ---------------------------------------------------------------------------
+
+export interface StratEngineCellState {
+  ticker: string;
+  timeframe: string;
+  available: boolean;
+  model_version: string | null;
+  last_train_date: string | null;
+  live_ece: number | null;
+}
+
+export interface StratEngineStateResponse {
+  cells: StratEngineCellState[];
+  ece_ceiling: number;
+}
+
+export function useStratEngineState(enabled: boolean) {
+  return useQuery<StratEngineStateResponse>({
+    queryKey: ['admin-strat-engine-state'],
+    queryFn: async () => {
+      const r = await fetch('/api/admin/strat-engine/state', { headers: authHeaders() });
+      if (r.status === 401) throw new Error('unauthorized');
+      if (!r.ok) throw new Error(`state ${r.status}`);
+      return r.json();
+    },
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+
+export function usePredictMutation() {
+  return useMutation<StratPredictResponse, Error, StratPredictRequest>({
+    mutationFn: async (body) => {
+      const r = await fetch('/api/admin/strat-engine/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 401) throw new Error('unauthorized');
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new Error(`predict failed: ${r.status} ${text}`);
+      }
+      return r.json();
+    },
+  });
+}
+
+
 export function useUpdateAdminRoute() {
   const qc = useQueryClient();
   return useMutation<

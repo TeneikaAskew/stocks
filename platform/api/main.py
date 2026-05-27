@@ -198,6 +198,7 @@ def _strat_engine_state() -> list[dict]:
     except Exception:
         snap_cells = {}
 
+    import re as _re
     for ticker in _STRAT_ENGINE_TICKERS:
         for tf in _STRAT_ENGINE_TFS:
             prefix = f"research/strat_engine/{ticker.lower()}_{tf}"
@@ -209,21 +210,53 @@ def _strat_engine_state() -> list[dict]:
                 "last_train_date": None,
                 "live_ece": None,
             }
+            # Anchor `available` on the SERVED model.pkl pointer, not on
+            # any metrics_<ts>.json — the trainer writes metrics for every
+            # run (incl. diagnostic variants) but only the LOCKED-default
+            # config updates the top-level model.pkl pointer.
             try:
-                m_blob = bucket.blob(f"{prefix}/metrics.json")
-                if m_blob.exists():
-                    metrics = _json.loads(m_blob.download_as_bytes())
-                    row["available"] = True
+                model_blob = bucket.blob(f"{prefix}/model.pkl")
+                model_blob.reload()
+                model_mtime = model_blob.updated
+            except Exception:
+                rows.append(row)
+                continue
+            row["available"] = True
+            try:
+                model_epoch = int(model_mtime.timestamp())
+                best = None
+                best_delta = None
+                for b in client.list_blobs(bucket, prefix=f"{prefix}/metrics_"):
+                    if not b.name.endswith(".json"):
+                        continue
+                    m = _re.search(r"/metrics_(\d{8,})\.json$", b.name)
+                    if not m:
+                        continue
+                    epoch = int(m.group(1))
+                    delta = abs(epoch - model_epoch)
+                    if best_delta is None or delta < best_delta:
+                        best = b
+                        best_delta = delta
+                if best is not None:
+                    metrics = _json.loads(best.download_as_bytes())
                     row["model_version"] = (
                         metrics.get("run_id")
                         or metrics.get("config_signature")
                         or metrics.get("model_version")
                     )
+                    if row["model_version"] is None:
+                        m = _re.search(r"/metrics_(\d{8,})\.json$", best.name)
+                        if m:
+                            row["model_version"] = f"epoch-{m.group(1)}"
                     row["last_train_date"] = (
                         metrics.get("trained_at")
                         or metrics.get("computed_at")
                         or metrics.get("train_until")
                     )
+                if row["last_train_date"] is None:
+                    row["last_train_date"] = model_mtime.isoformat()
+                if row["model_version"] is None:
+                    row["model_version"] = f"epoch-{model_epoch}"
             except Exception:
                 pass
             ece = snap_cells.get(f"{ticker}_{tf}", {}).get("live_ece")

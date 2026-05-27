@@ -357,6 +357,154 @@ class StratEnginePredictResponse(BaseModel):
     note: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Strat-engine model state — read-only per-cell artifact metadata.
+#
+# Powers the admin-side Model State Snapshot card. Identical data shape to
+# the inline HTML section at /dev, but returned as JSON for the React UI.
+# ---------------------------------------------------------------------------
+
+
+class StratEngineCellState(BaseModel):
+    ticker: str
+    timeframe: str
+    available: bool
+    model_version: Optional[str] = None
+    last_train_date: Optional[str] = None
+    live_ece: Optional[float] = None
+
+
+class StratEngineStateResponse(BaseModel):
+    cells: list[StratEngineCellState]
+    ece_ceiling: float = STRUCTURE_BRIEF_ECE_CEILING
+
+
+def _strat_engine_state_cells() -> list[StratEngineCellState]:
+    """Read each deployed cell's metrics.json + live-ECE snapshot from GCS.
+
+    Best-effort: any cell whose metadata can't be loaded returns
+    available=False. The Cloud Run image is responsible for having
+    google-cloud-storage available (platform/Dockerfile installs it).
+
+    `available=True` requires the top-level `model.pkl` pointer to exist —
+    that's the artifact the predict endpoint actually serves. The Stage 4
+    trainer writes a `metrics_<epoch>.json` for EVERY run including
+    diagnostic/variant runs, but only LOCKED-default runs update the
+    top-level `model.pkl`. So "metrics file exists" ≠ "served model exists";
+    we anchor availability + metadata on `model.pkl` and match metrics to
+    the served model by epoch proximity to its mtime.
+    """
+    rows: list[StratEngineCellState] = []
+    try:
+        from google.cloud import storage as _gcs
+    except ImportError:
+        return rows
+    bucket_name = os.environ.get(
+        "GCS_BUCKET", "adept-mountain-474619-d4-trading-data"
+    )
+    try:
+        client = _gcs.Client()
+        bucket = client.bucket(bucket_name)
+    except Exception:
+        return rows
+
+    import json as _json
+    snap_cells: dict = {}
+    try:
+        snap_blob = bucket.blob("research/strat_engine/structure_brief_latest.json")
+        if snap_blob.exists():
+            snap_cells = _json.loads(snap_blob.download_as_bytes()).get("cells", {})
+    except Exception:
+        snap_cells = {}
+
+    for ticker in STRUCTURE_BRIEF_TICKERS:
+        for tf in STRUCTURE_BRIEF_TFS:
+            prefix = f"research/strat_engine/{ticker.lower()}_{tf}"
+            row = StratEngineCellState(
+                ticker=ticker, timeframe=tf, available=False,
+            )
+            # Production pointer check — this is the served artifact. If
+            # it doesn't exist, the cell is genuinely unavailable; any
+            # metrics_<epoch>.json present here would be from a diagnostic
+            # run that did NOT update the served model.
+            try:
+                model_blob = bucket.blob(f"{prefix}/model.pkl")
+                model_blob.reload()
+                model_mtime = model_blob.updated  # raises if blob missing
+            except Exception:
+                rows.append(row)
+                continue
+
+            row.available = True
+            # Match the metrics file to the served model by picking the
+            # one whose epoch (encoded in filename) is closest to
+            # model.pkl's mtime. Variant runs that wrote metrics after
+            # the locked-default model.pkl was written will not be the
+            # closest match, so they don't poison the metadata report.
+            try:
+                import re as _re
+                model_epoch = int(model_mtime.timestamp())
+                best = None
+                best_delta: Optional[int] = None
+                for b in client.list_blobs(bucket, prefix=f"{prefix}/metrics_"):
+                    if not b.name.endswith(".json"):
+                        continue
+                    m = _re.search(r"/metrics_(\d{8,})\.json$", b.name)
+                    if not m:
+                        continue
+                    epoch = int(m.group(1))
+                    delta = abs(epoch - model_epoch)
+                    if best_delta is None or delta < best_delta:
+                        best = b
+                        best_delta = delta
+                if best is not None:
+                    metrics = _json.loads(best.download_as_bytes())
+                    row.model_version = (
+                        metrics.get("run_id")
+                        or metrics.get("config_signature")
+                        or metrics.get("model_version")
+                    )
+                    if row.model_version is None:
+                        m = _re.search(r"/metrics_(\d{8,})\.json$", best.name)
+                        if m:
+                            row.model_version = f"epoch-{m.group(1)}"
+                    row.last_train_date = (
+                        metrics.get("trained_at")
+                        or metrics.get("computed_at")
+                        or metrics.get("train_until")
+                    )
+                # Fall back to model.pkl mtime if no metrics matched
+                if row.last_train_date is None:
+                    row.last_train_date = model_mtime.isoformat()
+                if row.model_version is None:
+                    row.model_version = f"epoch-{model_epoch}"
+            except Exception:
+                pass
+
+            ece = snap_cells.get(f"{ticker}_{tf}", {}).get("live_ece")
+            if ece is not None:
+                row.live_ece = float(ece)
+            rows.append(row)
+    return rows
+
+
+@router.get("/strat-engine/state", response_model=StratEngineStateResponse)
+async def admin_strat_engine_state(
+    request: Request, x_admin_token: Optional[str] = Header(None)
+):
+    """Operator snapshot of the on-shelf strat-engine model state.
+
+    Read-only: lists per-cell `model_version`, `last_train_date`, and
+    `live_ece` for each deployed (ticker, timeframe). No model is loaded,
+    no Cloud SQL query happens — this is GCS metadata only.
+    """
+    _require_admin(request, x_admin_token)
+    return StratEngineStateResponse(
+        cells=_strat_engine_state_cells(),
+        ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
+    )
+
+
 @router.post(
     "/strat-engine/predict",
     response_model=StratEnginePredictResponse,
