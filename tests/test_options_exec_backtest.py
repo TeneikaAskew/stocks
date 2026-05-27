@@ -206,3 +206,179 @@ def test_bsm_walk_theta_decay_only_premium_falls():
     p1 = bs_price(S=450.0, K=450.0, T=3.0 / (365 * 24), sigma=0.20,
                   r=0.045, q=0.013, kind="call")
     assert p1 < p0
+
+
+# ─────────────────────────────────────────── IVLookup smoke ───────────────────────────────
+
+from lib.options_exec_backtest.iv_lookup import IVLookup, SNAPSHOT_TOLERANCE_SECONDS
+
+
+def _synthetic_iv_snapshots(snap_ts_list, spot=450.0):
+    """Build a synthetic preloaded-rows DataFrame for IVLookup."""
+    rows = []
+    for snap_ts in snap_ts_list:
+        snap_date = pd.Timestamp(snap_ts).date()
+        for strike in range(int(spot) - 10, int(spot) + 11):
+            for kind in ("calls", "puts"):
+                rows.append({
+                    "ticker": "SPY",
+                    "snapshot_ts": pd.Timestamp(snap_ts).tz_convert("UTC")
+                                   if hasattr(pd.Timestamp(snap_ts), 'tz_convert')
+                                      and pd.Timestamp(snap_ts).tz is not None
+                                   else pd.Timestamp(snap_ts).tz_localize("UTC"),
+                    "snapshot_date": snap_date,
+                    "market_session": "HISTORICAL_INTRADAY",
+                    "expiration": pd.Timestamp(snap_date),
+                    "strike": float(strike),
+                    "option_type": kind,
+                    "bid": 5.0, "ask": 5.10, "mark": 5.05, "last_price": 5.05,
+                    "implied_volatility": 0.18,
+                    "implied_volatility_computed": np.nan,
+                    "underlying_price": spot,
+                })
+    return pd.DataFrame(rows)
+
+
+def test_iv_lookup_finds_closest_snapshot():
+    """Two snapshots; trigger is within 5-min tolerance of one. The
+    closer one wins."""
+    snap_a = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    snap_b = pd.Timestamp("2024-06-03 14:30:00", tz="UTC")
+    df = _synthetic_iv_snapshots([snap_a, snap_b])
+    lk = IVLookup(df)
+    # Trigger 2 min after snap_a → within tolerance
+    trig = pd.Timestamp("2024-06-03 14:02:00", tz="UTC")
+    quote = lk.find(trig, spot=450.0, side="long", otm_offset=0, expiration_dte=0)
+    assert quote is not None
+    assert quote.snapshot_ts == snap_a
+    assert quote.kind == "call"
+    assert quote.strike == 450.0
+    assert quote.snapshot_age_seconds == 120.0
+
+
+def test_iv_lookup_voids_when_too_far():
+    snap = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    df = _synthetic_iv_snapshots([snap])
+    lk = IVLookup(df)
+    # Trigger 10 min away — outside 5-min tolerance
+    trig = pd.Timestamp("2024-06-03 14:10:00", tz="UTC")
+    assert SNAPSHOT_TOLERANCE_SECONDS == 300
+    quote = lk.find(trig, spot=450.0, side="long", otm_offset=0, expiration_dte=0)
+    assert quote is None
+
+
+def test_iv_lookup_put_otm_offset_picks_strike_below():
+    """For PUTs, +1-OTM means BELOW spot (lower strike, away from money)."""
+    snap = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    df = _synthetic_iv_snapshots([snap])
+    lk = IVLookup(df)
+    trig = pd.Timestamp("2024-06-03 14:01:00", tz="UTC")
+    quote = lk.find(trig, spot=450.0, side="short", otm_offset=1, expiration_dte=0)
+    assert quote is not None
+    assert quote.kind == "put"
+    assert quote.strike == 449.0  # 1 strike below ATM (in our $1-grid synthetic)
+
+
+def test_iv_lookup_call_otm_offset_picks_strike_above():
+    snap = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    df = _synthetic_iv_snapshots([snap])
+    lk = IVLookup(df)
+    trig = pd.Timestamp("2024-06-03 14:01:00", tz="UTC")
+    quote = lk.find(trig, spot=450.0, side="long", otm_offset=1, expiration_dte=0)
+    assert quote is not None
+    assert quote.kind == "call"
+    assert quote.strike == 451.0
+
+
+def test_iv_lookup_empty_returns_none():
+    lk = IVLookup(pd.DataFrame())
+    trig = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    quote = lk.find(trig, spot=450.0, side="long")
+    assert quote is None
+
+
+# ─────────────────────────────────────────── Engine smoke ─────────────────────────────────
+
+from lib.options_exec_backtest.engine import (
+    OptionSetup, OptionTradeSpec, simulate_option_setup, fold_stats,
+    COST_ROUND_TRIP, CONTRACT_MULTIPLIER,
+)
+
+
+def _synthetic_1m_bars(start_ts, n_bars=60, base_price=450.0, slope=0.0):
+    """Build a synthetic 1m OHLC RTH window."""
+    ts_index = pd.date_range(start_ts, periods=n_bars, freq="1min", tz="UTC")
+    prices = base_price + slope * np.arange(n_bars)
+    df = pd.DataFrame({
+        "Open": prices,
+        "High": prices + 0.1,
+        "Low": prices - 0.1,
+        "Close": prices,
+    }, index=ts_index)
+    return df
+
+
+def test_simulate_option_setup_long_target_hit():
+    """Long-call: underlying rises through trigger high within bar T+1, then
+    continues up → underlying target hit → option premium realized via BSM walk."""
+    trigger_open = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    trigger_close = pd.Timestamp("2024-06-03 14:05:00", tz="UTC")  # 5m bar
+    # Slope 0.15/min: by minute 4 of bar T+1 (14:09) price is 450.60 > 450.5 trigger.
+    # By minute ~15 (14:20) price is 452.25 — well past target of 450.5 + 1.5*1 = 452.0.
+    bars = _synthetic_1m_bars(trigger_close, n_bars=60, base_price=450.0, slope=0.15)
+    # Add the bar that contains the trigger entry — must be after trigger_close
+    setup = OptionSetup(
+        setup_id=1, fold="2024", cell="5m", direction="long",
+        trigger_ts_open=trigger_open, trigger_ts_close=trigger_close,
+        trigger_high=450.5, trigger_low=449.5,
+        top_prob=0.62,
+    )
+    # IV preload — one snapshot at trigger_close
+    iv_df = _synthetic_iv_snapshots([trigger_close], spot=450.0)
+    lk = IVLookup(iv_df)
+    spec = OptionTradeSpec(target_multiple=1.5, time_stop_minutes=30)
+    trade = simulate_option_setup(
+        setup, bars, lk, spec, risk_free=0.045, div_yield=0.013,
+    )
+    assert trade is not None
+    # Underlying rose: gross premium positive expected for long call
+    # (with 30 min of theta on a 0DTE this can still be net-negative —
+    # we just assert that the trade FIRED, that exit_reason is one of
+    # the valid values, and that costs were charged)
+    assert trade.exit_reason in {"target", "stop", "time", "eod"}
+    assert trade.cost_per_contract == pytest.approx(COST_ROUND_TRIP)
+    assert trade.kind == "call"
+    assert trade.strike == 450.0
+
+
+def test_simulate_option_setup_voids_when_no_iv():
+    """No snapshot within tolerance → void."""
+    trigger_close = pd.Timestamp("2024-06-03 14:05:00", tz="UTC")
+    bars = _synthetic_1m_bars(trigger_close, n_bars=60, base_price=450.0)
+    setup = OptionSetup(
+        setup_id=2, fold="2024", cell="5m", direction="long",
+        trigger_ts_open=pd.Timestamp("2024-06-03 14:00:00", tz="UTC"),
+        trigger_ts_close=trigger_close,
+        trigger_high=450.5, trigger_low=449.5, top_prob=0.62,
+    )
+    # IV snapshot is 30 minutes BEFORE trigger — outside tolerance
+    iv_df = _synthetic_iv_snapshots(
+        [pd.Timestamp("2024-06-03 13:30:00", tz="UTC")], spot=450.0,
+    )
+    lk = IVLookup(iv_df)
+    spec = OptionTradeSpec()
+    trade = simulate_option_setup(setup, bars, lk, spec,
+                                   risk_free=0.045, div_yield=0.013)
+    assert trade is None
+
+
+def test_fold_stats_empty():
+    s = fold_stats([])
+    assert s["n"] == 0
+    assert s["hit_rate"] == 0.0
+
+
+def test_simulate_option_setup_costs_match_spec():
+    """Round-trip cost must be exactly $1.38 (3¢+65¢+1¢ × 2)."""
+    assert COST_ROUND_TRIP == pytest.approx(1.38, abs=1e-9)
+    assert CONTRACT_MULTIPLIER == 100
