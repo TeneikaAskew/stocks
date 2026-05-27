@@ -985,7 +985,10 @@ deploy_av_options_historical_intraday() {
         --task-timeout 14400
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options_intraday"
-        --args "--datetimes-file=gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv,--skip-existing"
+        # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
+        # with `-`, otherwise gcloud parses the value as a new flag.
+        # ^|^ delimiter so the gs:// URL's slashes don't trip the parser.
+        "--args=^|^--datetimes-file=gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv|--skip-existing"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
         --quiet
@@ -1016,6 +1019,12 @@ deploy_av_options_historical_intraday() {
 deploy_options_exec_backtest() {
     echo "Deploying options-exec-backtest job..."
 
+    # This job imports gcp.research.strat_engine.strat_pred_train which
+    # depends on lightgbm + scikit-learn — both are in the RESEARCH
+    # image, not the prod image. The research image must be built
+    # first (see deploy_strat_engine for the same dependency).
+    local research_image="${IMAGE}:research"
+
     local non_secret_env
     non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
     non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
@@ -1025,12 +1034,14 @@ deploy_options_exec_backtest() {
     local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
 
     local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
+        --image "${research_image}" --region "${REGION}"
         --memory 8Gi --cpu 2 --max-retries 0
         --task-timeout 14400
         --service-account "${SA_EMAIL}"
         --command "python,-m,lib.options_exec_backtest.cli"
-        --args "--mode=base"
+        # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
+        # with `-`, otherwise gcloud parses the value as a new flag.
+        "--args=--mode=base"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
         --quiet
