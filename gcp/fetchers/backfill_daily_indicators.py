@@ -61,7 +61,6 @@ import sys
 import time
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from gcp.database import (
@@ -200,11 +199,10 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     from lib.indicators import add_all_indicators
 
     enriched = add_all_indicators(df, close_col='Close')
-    # 20-day annualised historical volatility — same recipe the live
-    # writer uses (not part of add_all_indicators).
-    enriched['volatility_20d'] = (
-        enriched['Close'].pct_change().rolling(20).std() * np.sqrt(252)
-    )
+    # volatility_{5,20}d, high_low_spread{,_pct}, ATR20, RSI30 all come
+    # from add_all_indicators now (single source of truth — see
+    # lib/config.py IndicatorConfig.{volatility_periods,atr_extra_periods,
+    # rsi_extra_periods}).
 
     # Strat per-bar classifier output. ftfc is daily+weekly; we compute
     # it row-by-row only at the very end of the backfill since the

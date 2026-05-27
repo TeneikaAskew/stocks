@@ -47,7 +47,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 import requests
 
@@ -299,9 +298,8 @@ def compute_indicators_for_full_range(ticker: str) -> int:
         return 0
 
     enriched = add_all_indicators(df, close_col="Close")
-    enriched["volatility_20d"] = (
-        enriched["Close"].pct_change().rolling(20).std() * np.sqrt(252)
-    )
+    # volatility_{5,20}d + high_low_spread{,_pct} + ATR20/RSI30 now come
+    # from add_all_indicators (single source of truth, 2026-05-27).
 
     rows: list[dict] = []
     for i in range(len(enriched)):
@@ -363,9 +361,6 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
             continue
         df = df.iloc[::-1].reset_index(drop=True)
         enriched = add_all_indicators(df, close_col="Close")
-        enriched["volatility_20d"] = (
-            enriched["Close"].pct_change().rolling(20).std() * np.sqrt(252)
-        )
         last = enriched.iloc[-1]
 
         row: dict = {"ticker": ticker.upper(), "date": fd}
