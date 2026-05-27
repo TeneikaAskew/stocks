@@ -114,6 +114,7 @@ def _base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float
 
 def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                              bar_dates: np.ndarray,
+                             ts_arr: np.ndarray,
                              train_end: str, test_end: str,
                              tf: str,
                              lgbm_n_jobs: int,
@@ -160,8 +161,26 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     decisive = decisive_call_hit_rate(y_te, proba, SUCCESS_BAR_CONFIDENCE_THRESHOLDS)
     explosive = explosive_lift(y_te, proba, explosive_idx=LABEL_TO_IDX["EXPLOSIVE"])
 
+    # Per-bar predictions for downstream event-window concentration analysis
+    # (check 3). Kept as a numpy struct → CSV row list, attached to the fold
+    # dict so walk_forward can flush them all to one GCS CSV per cell-run.
+    ts_te = ts_arr[test_mask]
+    fold_label = f"{train_end}..{test_end}"
+    n_classes = len(LABEL_CLASSES)
+    predictions_rows = [
+        (fold_label, str(ts_te[i]), int(y_te[i]), int(pred[i]),
+          float(proba[i].max()),
+          *(float(proba[i, c]) for c in range(n_classes)))
+        for i in range(len(y_te))
+    ]
+
     return {
-        "fold": f"{train_end}..{test_end}",
+        "fold": fold_label,
+        "_predictions": predictions_rows,  # private; consumed by walk_forward
+        "predictions_columns": [
+            "fold", "ts", "true_bucket_idx", "pred_bucket_idx", "max_proba",
+            *(f"p_{c}" for c in LABEL_CLASSES),
+        ],
         "train_end": train_end, "test_end": test_end,
         "n_train": n_train, "n_test": n_test,
         "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
@@ -285,6 +304,9 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
     bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
+    # Full-precision timestamps for per-bar prediction persistence (check 3
+    # event-window analysis). ns precision; downstream parses as UTC.
+    ts_arr = pd.to_datetime(df["ts"], utc=True).values.astype("datetime64[ns]")
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
 
     cores = max(1, os.cpu_count() or 1)
@@ -302,7 +324,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         try:
             fold_t0 = time.time()
             r = train_and_evaluate_fold(
-                X_full, y_full, bar_dates_arr,
+                X_full, y_full, bar_dates_arr, ts_arr,
                 cut, test_end, tf, lgbm_n_jobs,
                 calibration=calibration, cv=cv,
             )
@@ -351,11 +373,24 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
              gates["g4_lift_pass_folds"], "PASS" if gates["g4_pass"] else "FAIL")
     log.info("=" * 70)
 
+    # Pull predictions OUT of fold dicts (they'd bloat the JSON and aren't
+    # needed by downstream consumers of the summary). Upload as a single
+    # CSV per cell-run; analysis scripts read by run_id.
+    pred_columns = None
+    pred_rows: list[tuple] = []
+    for f in folds:
+        if "_predictions" in f:
+            pred_columns = f.get("predictions_columns") or pred_columns
+            pred_rows.extend(f["_predictions"])
+            f.pop("_predictions", None)
+            f.pop("predictions_columns", None)
+
     summary = {
         "phase": phase, "ticker": ticker, "tf": tf,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
+        "random_seed": int(os.environ.get("MAG_SEED", "42")),
         "n_features": int(X_full.shape[1]),
         "feature_cols": feature_cols,
         "folds": folds,
@@ -366,6 +401,20 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
               or os.environ.get("MAG_RUN_ID")
               or f"run_{int(time.time())}")
     summary["run_id"] = run_id
+
+    # Per-bar predictions CSV.
+    if pred_rows and pred_columns:
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(pred_columns)
+        w.writerows(pred_rows)
+        prefix = gcs_run_prefix(phase, ticker, tf)
+        pred_blob = f"{prefix}/predictions_{run_id}.csv"
+        _gcs_upload(buf.getvalue().encode(), pred_blob, "text/csv")
+        log.info("predictions: wrote %d rows to gs://%s/%s",
+                 len(pred_rows),
+                 os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), pred_blob)
 
     # DDL is idempotent (CREATE IF NOT EXISTS) but concurrent dispatches
     # of 27 parallel tasks can race on the initial creation. Split DDL +

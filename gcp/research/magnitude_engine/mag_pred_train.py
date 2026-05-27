@@ -140,14 +140,28 @@ def explosive_lift(y_true_idx: np.ndarray, y_proba: np.ndarray,
     }
 
 
-def make_lgbm(class_weight: str | None = None, n_jobs: int = -1) -> lgb.LGBMClassifier:
+def make_lgbm(class_weight: str | None = None, n_jobs: int = -1,
+               random_state: int | None = None) -> lgb.LGBMClassifier:
     """Base LightGBM classifier — same hyperparameters as strat_engine so
     a phase-pass is attributable to feature signal, not hyperparameter
-    differences."""
+    differences.
+
+    `random_state` override is provided so replication runs can vary the
+    seed without changing any other config. Default reads MAG_SEED env
+    var; falls back to 42 (the locked production seed). Replication runs
+    set MAG_SEED=<other> at dispatch time and never call this with an
+    explicit value — the override path is reserved for unit tests.
+    """
+    import os
+    if random_state is None:
+        try:
+            random_state = int(os.environ.get("MAG_SEED", "42"))
+        except ValueError:
+            random_state = 42
     return lgb.LGBMClassifier(
         objective="multiclass", num_class=len(LABEL_CLASSES),
         n_estimators=300, learning_rate=0.05, max_depth=6,
         num_leaves=31, min_child_samples=100,
         class_weight=class_weight,
-        random_state=42, verbose=-1, n_jobs=n_jobs,
+        random_state=random_state, verbose=-1, n_jobs=n_jobs,
     )
