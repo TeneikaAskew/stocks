@@ -152,7 +152,7 @@ def compute_bbands_bandwidth(df: pd.DataFrame) -> pd.DataFrame:
 
 def fetch_and_persist(symbol: str, interval: str, api_key: str, engine) -> int:
     cfg = AlphaVantageConfig()
-    interval_sleep = cfg.per_call_interval_seconds
+    interval_sleep = cfg.delay_between_calls
     frames = []
     for ind in INDICATOR_FUNCTIONS:
         log.info("fetching %s %s %s", symbol, interval, ind)
