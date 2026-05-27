@@ -948,6 +948,98 @@ deploy_av_options_realtime() {
     gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
 }
 
+# Backfill SPY 0DTE intraday options snapshots for the options-exec-backtest.
+# The EOD historical AV path (`fetch-av-options-backfill`) only stores one
+# snapshot per day at 4PM ET — too sparse for an intraday setup-window
+# IV anchor. This job hits AV's HISTORICAL_OPTIONS endpoint with the
+# `datetime=` (intraday) param. The list of (ticker, datetime_utc) pairs
+# comes from a CSV emitted by `options-exec-backtest --mode=emit_timestamps`.
+#
+# Per Rule 0 sizing:
+# - Velocity: 1 AV call + 1 INSERT per timestamp; ~250ms wall-clock each
+# - Volume: ~5-30k timestamps total → ~250k-1.5M filtered rows
+# - Wall-clock: 5k * 250ms = 20 min; 30k * 250ms = 2 hr
+# - task-timeout 14400 (4 hr) gives 2-4x headroom
+# - max-retries 0; resume via --skip-existing
+deploy_av_options_historical_intraday() {
+    echo "Deploying fetch-av-options-historical-intraday job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Default args target the setup-driven CSV in GCS. To override at
+    # execute time:
+    #   gcloud run jobs execute fetch-av-options-historical-intraday \
+    #     --update-args="--datetimes-file=/tmp/x.csv,--skip-existing" --wait
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 2Gi --cpu 1 --max-retries 0
+        --task-timeout 14400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_historical_options_intraday"
+        --args "--datetimes-file=/tmp/spy_setup_timestamps.csv,--skip-existing"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-historical-intraday "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-historical-intraday "${common_flags[@]}"
+}
+
+# Options exec backtest — Track B' (parallels lib/exec_backtest but trades
+# SPY 0DTE ATM options instead of the underlying). Mode dispatched at execute
+# time via --update-args:
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=emit_timestamps,--out=gs://..."  --wait
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=base"  --wait
+#
+# Per Rule 0 sizing:
+# - Volume: SPY × 3 cells × 5 folds; each cell-fold trains 1 LGBM and
+#   replays ~3-10k setups against pre-loaded 1m bars + pre-loaded IV
+#   snapshots. ~50k total trades simulated.
+# - Velocity: 5 folds × 3 cells × ~60s per LGBM fit = ~15 min training.
+#   Setups replayed at ~0.5ms each in pure pandas/numpy.
+# - Wall-clock estimate: ~25 min; task-timeout 14400 (4hr) for headroom.
+# - Memory: 1m SPY bars 2018-2026 ~250 MiB + features matrix ~1 GiB per cell.
+#   8Gi allocation.
+# - max-retries 0; non-idempotent (writes to a new GCS run_id each time).
+deploy_options_exec_backtest() {
+    echo "Deploying options-exec-backtest job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 8Gi --cpu 2 --max-retries 0
+        --task-timeout 14400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,lib.options_exec_backtest.cli"
+        --args "--mode=base"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create options-exec-backtest "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update options-exec-backtest "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1371,6 +1463,7 @@ deploy_fetchers() {
     deploy_fetch_alphavantage
     deploy_av_options_backfill
     deploy_av_options_realtime
+    deploy_av_options_historical_intraday
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -1385,6 +1478,7 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_topics
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
+    deploy_options_exec_backtest
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────

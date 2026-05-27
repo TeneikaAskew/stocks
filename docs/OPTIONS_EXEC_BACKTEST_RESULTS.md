@@ -1,0 +1,191 @@
+# Options Exec-Backtest Results — SPY 0DTE ATM
+
+**VERDICT: PENDING RUN** — fill in below after dispatching
+`options-exec-backtest --mode=base` (post-AV-intraday backfill).
+
+This is the companion experiment to
+[`docs/EXEC_BACKTEST_RESULTS.md`](EXEC_BACKTEST_RESULTS.md) (Track B,
+**FAIL** on all 3 cells of IWM underlying). The hypothesis under test:
+the long-option asymmetry (defined downside, leveraged upside) might
+rescue an edgeless setup. Counter-hypothesis: theta is the systematic
+cost of buying optionality, doesn't generally beat a 40%-hit /
+1.5R-target geometry.
+
+## TL;DR
+
+— Pending run —
+
+## Method (reference)
+
+### Setup detection — identical to Track B
+
+We reuse `gcp.research.strat_engine.strat_pred_train.featurize` /
+`make_lgbm` directly. The model is the same calibration-none LightGBM
+classifier. Per-fold retrain — no shared artifact across folds.
+
+- **Long setup**: argmax class = `2U` AND `top_prob ≥ 0.55`
+- **Short setup**: argmax class = `2D` AND `top_prob ≥ 0.55`
+- Type 1 / 3 confident calls produce no setup.
+
+### Trade vehicle — long ATM 0DTE option
+
+| Setup | Vehicle |
+|-------|---------|
+| Long (2U) | Long ATM 0DTE call |
+| Short (2D) | Long ATM 0DTE put |
+| Variant 1 | +1 strike OTM |
+| Variant 2 | ATM 1DTE |
+
+Strike: closest SPY strike to underlying at the trigger fill (read from
+the SPY-IV preload's strike grid — never synthesized).
+
+### Trade lifecycle — underlying-space exits, option-space P&L
+
+- **Entry**: stop-buy at trigger bar's high (long) / stop-sell at low
+  (short), filled inside bar T+1 with slippage. **Voided** if the
+  trigger isn't hit in bar T+1's window.
+- **Stop**: trigger bar's opposite extreme (long stop = trigger low).
+- **Target**: 1.5R from entry.
+- **Time stop**: 30 min (5m/15m) / 60 min (30m).
+- **EOD**: if neither stop / target / time fires by end of session,
+  close at last RTH 1m bar's close.
+- **Per-1m precedence**: target > stop > time, **conservatively assume
+  STOP first on intrabar collision** (Track B parity).
+
+### Pricing — BSM walk with constant anchor IV
+
+For each trade:
+1. At entry, look up the SPY 0DTE ATM option snapshot within ±300 sec
+   of the trigger. Read the implied volatility — this is the
+   **anchor IV** held constant through the trade.
+2. Compute entry premium via `bs_price(S=entry_fill, K, T_entry,
+   sigma=anchor_IV, r, q, kind)` where `r` is the day's
+   `daily_rates.dgs3mo` and `q` is `sp500_div_yld`.
+3. When the trade exits, compute exit premium with the SAME BSM but
+   updated S (underlying at exit) and T (decayed time-to-expiry).
+4. No IV path modeling — the brief locks this as conservative; any
+   passing run holds even when realized IV moves favorably.
+
+If no snapshot is within 300 sec of trigger, or `daily_rates` has no
+row for the trade date, the setup is **voided** (per CLAUDE.md Rule
+3.7 — no silent defaults).
+
+### Costs
+
+Per CONTRACT, per side (× 100-share multiplier already accounted for):
+
+| Cost | $/side | $/round-trip |
+|------|-------:|-------------:|
+| Spread | 0.03 | 0.06 |
+| Commission | 0.65 | 1.30 |
+| Slippage | 0.01 | 0.02 |
+| **Total** | **0.69** | **1.38** |
+
+### Walk-forward — 5 folds (2022-2026)
+
+Restricted to 0DTE-available years (SPY 0DTE was daily-issued from
+2022). Each fold trains on `< cutoff` and tests on
+`[cutoff, next_cutoff)`.
+
+| Fold | Cutoff (train end) | Test window | Regime |
+|-----:|:-------------------|:------------|:-------|
+| 1 | 2022-01-01 | 2022       | bear / Fed tightening |
+| 2 | 2023-01-01 | 2023       | recovery |
+| 3 | 2024-01-01 | 2024       | bull continuation |
+| 4 | 2025-01-01 | 2025       | current regime |
+| 5 | 2026-01-01 | 2026 partial (Jan-May) | partial-year locked OOS |
+
+### Success bar (adapted to 5 folds)
+
+A cell PASSES base case iff ALL FOUR hold:
+
+1. Net expectancy / trade > 0 in **≥ 4 of 5** folds (Track B's 6/8 ≈ 75%;
+   4/5 = 80%, slightly stricter).
+2. Aggregate net expectancy > **$5 / contract** (per brief).
+3. (hit_rate × avg_win) > (miss_rate × avg_loss) with **≥ 20% margin**.
+4. No single fold's net P&L > **50%** of total (no single-regime dom).
+
+If ALL THREE cells fail, variants are NOT run (per spec).
+
+## Data restrictions documented
+
+- **Test window**: 2022-2026 only (5 folds vs Track B's 8). 0DTE coverage.
+- **Snapshot tolerance**: ±300 sec. Setups outside this window are
+  voided, not extrapolated.
+- **IV path**: constant anchor — no IV smile or term-structure walk.
+- **Volume / OI**: no filter. Even thin contracts cleared the snapshot
+  filter; the cost model bakes in the realistic round-trip.
+
+## Results
+
+### Per-cell summary (base case) — PENDING
+
+| Cell | n trades | hit rate | gross exp / contract | **net exp / contract** | total net | pos-exp folds | Verdict |
+|------|---------:|---------:|---------------------:|-----------------------:|----------:|--------------:|:--------|
+| 5m   | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/5 | _pending_ |
+| 15m  | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/5 | _pending_ |
+| 30m  | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/5 | _pending_ |
+
+### Per-fold per-cell — PENDING
+
+Filled from `docs/options_exec_backtest_data/base_per_fold.csv` after
+the run.
+
+## Post-run analysis — required regardless of pass / fail
+
+These four diagnostics ship with both verdicts (per the brief's
+"POST-RUN ANALYSIS" section):
+
+1. **Average theta drag per trade** as a fraction of total cost — _pending_
+2. **Distribution of exit reasons** (target / stop / time / EOD) — _pending_
+3. **Wins: target-hits vs upside surprises beyond target** — _pending_
+4. **Loss concentration by intraday window or regime** — _pending_
+
+## Variants
+
+Variants 1 (1-strike OTM, 0DTE) and 2 (ATM, 1DTE) are only run if
+the base case PASSES or is BORDERLINE per the spec. Borderline =
+within 25% of the four checks. **Do not dispatch variant runs while
+the base case fails the spec by margins > 25%.**
+
+## How to reproduce
+
+```bash
+# 1. Emit setup timestamps from the type model (run locally or as Job)
+python -m lib.options_exec_backtest.cli \
+    --mode=emit_timestamps \
+    --out=/tmp/oeb \
+    --timestamps-out=/tmp/oeb/spy_setup_timestamps.csv
+
+# 2. Upload the CSV to GCS so the Cloud Run fetcher Job can read it.
+gsutil cp /tmp/oeb/spy_setup_timestamps.csv \
+    gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv
+
+# 3. Backfill AV intraday snapshots for those timestamps
+gcloud run jobs execute fetch-av-options-historical-intraday \
+    --update-args="--datetimes-file=/tmp/spy_setup_timestamps.csv,--skip-existing" \
+    --region us-east1 --wait
+
+# 4. Run the base case
+gcloud run jobs execute options-exec-backtest \
+    --update-args="--mode=base" \
+    --region us-east1 --wait
+
+# 5. Download the ledger
+gsutil cp gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/<run_id>/base/* \
+    docs/options_exec_backtest_data/
+```
+
+## Files
+
+| Path | Purpose |
+|------|---------|
+| `lib/options_exec_backtest/pricing.py` | BSM helpers + ATM strike picker |
+| `lib/options_exec_backtest/iv_lookup.py` | Per-fold IV/strike snapshot resolver |
+| `lib/options_exec_backtest/engine.py` | Per-setup lifecycle simulator |
+| `lib/options_exec_backtest/runner.py` | Walk-forward orchestrator + emit-timestamps |
+| `lib/options_exec_backtest/cli.py` | Cloud Run Job entry point |
+| `gcp/fetchers/fetch_av_historical_options_intraday.py` | AV intraday backfill |
+| `docs/options_exec_backtest_data/base_per_fold.csv` | Per-fold-per-cell stats |
+| `docs/options_exec_backtest_data/base_results.json` | Verdict + check details |
+| `docs/options_exec_backtest_data/base_trades.csv.gz` | Per-trade ledger |
