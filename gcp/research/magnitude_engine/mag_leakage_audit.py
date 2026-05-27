@@ -63,35 +63,32 @@ def audit_target_no_future_in_features(engine, ticker: str, tf: str) -> dict:
 
 
 def audit_atr20_is_t_known(engine, ticker: str, tf: str, n_sample: int = 50) -> dict:
-    """Audit 2: atr_20 stored in strat_features for bar T must equal
-    atr_20 computed from a window ENDING at T (not including T+1).
+    """Audit 2: atr_20_computed (the locally-derived target denominator)
+    is t-known — varies bar-to-bar within a session.
 
-    We don't have the raw indicator pipeline here, so the test is
-    weaker but still useful: pull a sample of bars and verify that
-    atr_20 is monotonically updated bar-by-bar (i.e. the stored value
-    at T+1 != value at T — if it WERE the same across all bars, that
-    would suggest the column is ffill'd from future and silently
-    leaks). A passing test isn't proof of cleanness; a failing test
-    IS proof of leakage.
+    Originally tested the stored atr_20; that column is NaN everywhere
+    (upstream pipeline bug, see commit 9751c0e), so we test the
+    locally-computed value instead. If atr_20_computed at adjacent
+    same-day bars were identical across MANY pairs, the rolling
+    aggregation is suspect (windowing bug, ffill leak, etc.).
     """
     df = load_magnitude_dataset(engine, ticker, tf, phase="phase0", since="2026-01-01")
+    if "atr_20_computed" not in df.columns:
+        return {"status": "MISSING_COLUMN"}
     if len(df) < n_sample + 5:
         return {"status": "NOT_ENOUGH_BARS"}
     sample = df.sample(n_sample, random_state=42).sort_values("ts")
-    # Adjacent same-day pairs
     issues = 0
     for ts in sample["ts"]:
         idx = df.index[df["ts"] == ts][0]
         if idx + 1 < len(df) and df.loc[idx + 1, "bar_date"] == df.loc[idx, "bar_date"]:
-            a_now = df.loc[idx, "atr_20"]
-            a_next = df.loc[idx + 1, "atr_20"]
-            if pd.notna(a_now) and pd.notna(a_next) and abs(a_now - a_next) < 1e-9:
-                # Identical to many decimal places — only suspicious if
-                # MANY pairs are identical. We count.
+            a_now = df.loc[idx, "atr_20_computed"]
+            a_next = df.loc[idx + 1, "atr_20_computed"]
+            if pd.notna(a_now) and pd.notna(a_next) and abs(a_now - a_next) < 1e-12:
                 issues += 1
     rate = issues / n_sample
     status = "CLEAN" if rate < 0.2 else f"⚠️ SUSPECT_FLAT (rate={rate:.2f})"
-    log.info("audit-2: %d/%d adjacent same-day atr_20 pairs match exactly  →  %s",
+    log.info("audit-2: %d/%d adjacent same-day atr_20_computed pairs identical  →  %s",
              issues, n_sample, status)
     return {"ticker": ticker, "tf": tf, "sample_n": n_sample,
             "flat_adjacent_pairs": issues, "flat_rate": rate, "status": status}
