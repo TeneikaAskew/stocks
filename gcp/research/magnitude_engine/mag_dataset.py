@@ -45,6 +45,43 @@ log = logging.getLogger(__name__)
 
 # ─────────────────────── Target ───────────────────────
 
+def _compute_atr20_session_aware(df: pd.DataFrame) -> pd.Series:
+    """Compute ATR-20 from OHLCV via session-aware true-range rolling mean.
+
+    Required because `strat_features_{tf}.atr_20` is stored as NaN across all
+    rows (upstream `lib.indicators.add_all_indicators` doesn't compute the
+    20-bar variant; the column is silently NaN-filled by `strat_data_builder`).
+    Computing locally keeps the magnitude target spec-compliant ("ATR-20
+    multiples") rather than substituting atr_14 under a different label.
+
+    Method: simple rolling-20 mean of true range, grouped by bar_date so the
+    window never crosses overnight gaps. Wilder smoothing would also be valid
+    but adds opacity for a research signal; the simple mean is what most
+    docs mean by "20-bar ATR".
+
+    Per Rule 3.7: prev-close at the first bar of each day is NaN by design
+    (no in-session prior close). For that single bar we conservatively use
+    (high - low) as the true range, NOT a synthetic prev-close. The
+    distinction is that (h-l) at the open IS observable and meaningful;
+    a fabricated prev-close is not.
+    """
+    h, l, c = df["high"], df["low"], df["close"]
+    prev_c = c.groupby(df["bar_date"]).shift(1)
+    # At the first bar of each day, prev_c is NaN. tr_components include NaN
+    # via abs(h - prev_c) → NaN. .max(axis=1, skipna=True) keeps (h - l).
+    tr_components = pd.concat([
+        (h - l),
+        (h - prev_c).abs(),
+        (l - prev_c).abs(),
+    ], axis=1)
+    true_range = tr_components.max(axis=1, skipna=True)
+    return (
+        true_range.groupby(df["bar_date"])
+                   .rolling(20, min_periods=20).mean()
+                   .reset_index(level=0, drop=True)
+    )
+
+
 def _bucket_magnitude(move: pd.Series, atr20: pd.Series) -> pd.Series:
     """Bucket |next_close - next_open| by ATR-20 multiple.
 
@@ -87,9 +124,11 @@ def _add_phase1_features(df: pd.DataFrame) -> pd.DataFrame:
         (l - prev_c).abs(),
     ], axis=1).max(axis=1)
     df["atr_5_simple"] = tr.groupby(df["bar_date"]).rolling(5).mean().reset_index(level=0, drop=True)
+    # Use the locally-computed atr_20 (stored atr_20 is NaN in source).
+    atr20 = df["atr_20_computed"]
     df["atr5_atr20_ratio"] = np.where(
-        df["atr_20"].notna() & (df["atr_20"] > 0),
-        df["atr_5_simple"] / df["atr_20"], np.nan,
+        atr20.notna() & (atr20 > 0),
+        df["atr_5_simple"] / atr20, np.nan,
     )
 
     # BB20 bandwidth: (bb_upper - bb_lower) / sma. We have bb_upper/lower
@@ -280,9 +319,12 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
         include_levels=True, include_next_bar_ohlc=True,
     )
 
-    # Compute magnitude target.
+    # Compute magnitude target. atr_20 is stored as NaN in strat_features
+    # (upstream pipeline never computed it) so we recompute locally from
+    # OHLCV via session-aware true-range rolling mean.
+    df["atr_20_computed"] = _compute_atr20_session_aware(df)
     move = (df["next_close"] - df["next_open"]).abs()
-    df[LABEL_COL] = _bucket_magnitude(move, df["atr_20"])
+    df[LABEL_COL] = _bucket_magnitude(move, df["atr_20_computed"])
     # Drop rows missing magnitude (no valid ATR or no next-bar OHLC).
     n_before = len(df)
     df = df[df[LABEL_COL].notna()].copy()
@@ -331,6 +373,8 @@ _FEATURE_DROP_COLS = frozenset({
     # Both labels.
     LABEL_COL,
     STRAT_LABEL_COL,  # = "next_bar_type"
+    # Target-construction intermediate.
+    "atr_20_computed",
 })
 
 _NUMERIC_DTYPES = (np.float64, np.int64, np.int32, np.int8, np.float32, np.int16)

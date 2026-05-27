@@ -51,6 +51,9 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         # Phase-1 intermediate (kept in df for debug, NOT used as a feature)
         "atr_5_simple",
         "prev_daily_range",
+        # Target-construction intermediate — never a feature (would leak
+        # the magnitude target's denominator directly).
+        "atr_20_computed",
     }
     cols = [c for c in enc.columns
             if c not in drop and enc[c].dtype in
