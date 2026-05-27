@@ -385,6 +385,14 @@ def _strat_engine_state_cells() -> list[StratEngineCellState]:
     Best-effort: any cell whose metadata can't be loaded returns
     available=False. The Cloud Run image is responsible for having
     google-cloud-storage available (platform/Dockerfile installs it).
+
+    `available=True` requires the top-level `model.pkl` pointer to exist —
+    that's the artifact the predict endpoint actually serves. The Stage 4
+    trainer writes a `metrics_<epoch>.json` for EVERY run including
+    diagnostic/variant runs, but only LOCKED-default runs update the
+    top-level `model.pkl`. So "metrics file exists" ≠ "served model exists";
+    we anchor availability + metadata on `model.pkl` and match metrics to
+    the served model by epoch proximity to its mtime.
     """
     rows: list[StratEngineCellState] = []
     try:
@@ -415,26 +423,49 @@ def _strat_engine_state_cells() -> list[StratEngineCellState]:
             row = StratEngineCellState(
                 ticker=ticker, timeframe=tf, available=False,
             )
-            # Discover the latest metrics_<epoch>.json (training writes a
-            # new one per run; the highest epoch is the most recent).
+            # Production pointer check — this is the served artifact. If
+            # it doesn't exist, the cell is genuinely unavailable; any
+            # metrics_<epoch>.json present here would be from a diagnostic
+            # run that did NOT update the served model.
             try:
-                metrics_files = sorted(
-                    b.name for b in client.list_blobs(bucket, prefix=f"{prefix}/metrics_")
-                    if b.name.endswith(".json")
-                )
-                if metrics_files:
-                    latest = metrics_files[-1]
-                    metrics = _json.loads(bucket.blob(latest).download_as_bytes())
-                    row.available = True
+                model_blob = bucket.blob(f"{prefix}/model.pkl")
+                model_blob.reload()
+                model_mtime = model_blob.updated  # raises if blob missing
+            except Exception:
+                rows.append(row)
+                continue
+
+            row.available = True
+            # Match the metrics file to the served model by picking the
+            # one whose epoch (encoded in filename) is closest to
+            # model.pkl's mtime. Variant runs that wrote metrics after
+            # the locked-default model.pkl was written will not be the
+            # closest match, so they don't poison the metadata report.
+            try:
+                import re as _re
+                model_epoch = int(model_mtime.timestamp())
+                best = None
+                best_delta: Optional[int] = None
+                for b in client.list_blobs(bucket, prefix=f"{prefix}/metrics_"):
+                    if not b.name.endswith(".json"):
+                        continue
+                    m = _re.search(r"/metrics_(\d{8,})\.json$", b.name)
+                    if not m:
+                        continue
+                    epoch = int(m.group(1))
+                    delta = abs(epoch - model_epoch)
+                    if best_delta is None or delta < best_delta:
+                        best = b
+                        best_delta = delta
+                if best is not None:
+                    metrics = _json.loads(best.download_as_bytes())
                     row.model_version = (
                         metrics.get("run_id")
                         or metrics.get("config_signature")
                         or metrics.get("model_version")
                     )
                     if row.model_version is None:
-                        # Derive from filename when the file itself omits it
-                        import re as _re
-                        m = _re.search(r"/metrics_(\d{8,})\.json$", latest)
+                        m = _re.search(r"/metrics_(\d{8,})\.json$", best.name)
                         if m:
                             row.model_version = f"epoch-{m.group(1)}"
                     row.last_train_date = (
@@ -442,8 +473,14 @@ def _strat_engine_state_cells() -> list[StratEngineCellState]:
                         or metrics.get("computed_at")
                         or metrics.get("train_until")
                     )
+                # Fall back to model.pkl mtime if no metrics matched
+                if row.last_train_date is None:
+                    row.last_train_date = model_mtime.isoformat()
+                if row.model_version is None:
+                    row.model_version = f"epoch-{model_epoch}"
             except Exception:
                 pass
+
             ece = snap_cells.get(f"{ticker}_{tf}", {}).get("live_ece")
             if ece is not None:
                 row.live_ece = float(ece)

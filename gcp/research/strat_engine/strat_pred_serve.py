@@ -86,9 +86,15 @@ def _load_metrics(ticker: str, tf: str) -> dict:
     """Load training metrics for (ticker, tf).
 
     The Stage 4 trainer writes per-training-run flat sidecars at
-    `{prefix}/metrics_{epoch}.json`. We pick the most recent one (max
-    epoch) so model_version and last_train_date reflect the training
-    run that produced the current top-level model.pkl pointer.
+    `{prefix}/metrics_{epoch}.json`. Only LOCKED-default runs update
+    the top-level `{prefix}/model.pkl` pointer; diagnostic/variant
+    runs write metrics but DO NOT update the served model.
+
+    We anchor on the served model.pkl's mtime — among all
+    `metrics_<epoch>.json` files, pick the one whose epoch is closest to
+    that mtime. That's the metrics file that describes the served model.
+    Falling back to "lexically latest" would surface variant metadata
+    when the latest training run was a diagnostic variant.
 
     Also tries a top-level `{prefix}/metrics.json` (used by some
     diagnostic paths) and `{prefix}/runs/{run_id}/metrics.json` (the
@@ -97,9 +103,18 @@ def _load_metrics(ticker: str, tf: str) -> dict:
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
     prefix = gcs_model_prefix(ticker, tf)
     candidates: list[str] = []
+    model_epoch: Optional[int] = None
     try:
         client = _gcs_client()
         bucket = client.bucket(bucket_name)
+        # Anchor: served model.pkl's mtime
+        try:
+            model_blob = bucket.blob(f"{prefix}/model.pkl")
+            model_blob.reload()
+            if model_blob.updated:
+                model_epoch = int(model_blob.updated.timestamp())
+        except Exception:
+            pass
         # Flat per-training-run sidecars
         for blob in client.list_blobs(bucket, prefix=f"{prefix}/metrics_"):
             if blob.name.endswith(".json"):
@@ -116,17 +131,22 @@ def _load_metrics(ticker: str, tf: str) -> dict:
     if flat_top not in candidates:
         candidates.append(flat_top)
 
-    # Pick the most-recent by filename heuristic: filenames with embedded
-    # epoch (`metrics_<int>.json`) sort lexically by recency. Runs/ paths
-    # contain a per-run ID that sorts independently. We pick the
-    # lexically last (most-recent epoch) of the metrics_*.json group,
-    # then fall back to runs/ then to the flat top-level.
-    metrics_flat = sorted(
-        c for c in candidates if "/metrics_" in c and c.endswith(".json")
-    )
-    runs_archive = sorted(c for c in candidates if "/runs/" in c)
+    import re as _re
+    metrics_flat = [c for c in candidates if "/metrics_" in c and c.endswith(".json")]
+    # If we know model.pkl's mtime, prefer the metrics_<epoch>.json whose
+    # epoch is closest to it. Otherwise fall back to lexical-newest.
+    if model_epoch is not None and metrics_flat:
+        def _delta(path: str) -> int:
+            m = _re.search(r"/metrics_(\d{8,})\.json$", path)
+            if not m:
+                return 10**18
+            return abs(int(m.group(1)) - model_epoch)
+        metrics_flat_sorted = sorted(metrics_flat, key=_delta)
+    else:
+        metrics_flat_sorted = sorted(metrics_flat, reverse=True)
+    runs_archive = sorted((c for c in candidates if "/runs/" in c), reverse=True)
     top_level = [c for c in candidates if c.endswith("/metrics.json") and "/runs/" not in c]
-    ordered = list(reversed(metrics_flat)) + list(reversed(runs_archive)) + top_level
+    ordered = metrics_flat_sorted + runs_archive + top_level
     for path in ordered:
         raw = _gcs_load_bytes(path)
         if raw is None:
