@@ -979,10 +979,15 @@ deploy_av_options_historical_intraday() {
     # execute time:
     #   gcloud run jobs execute fetch-av-options-historical-intraday \
     #     --update-args="--datetimes-file=/tmp/x.csv,--skip-existing" --wait
+    # First-run wall-clock budget: ~54k timestamps × ~250 ms (1 AV call +
+    # 1 DB upsert per pair) ≈ 3.8 hr. The 4hr timeout in the original
+    # sizing was right at the edge — a single AV slowdown lost the run.
+    # 8 hr (28800) gives 2x headroom; --skip-existing makes the retry
+    # path converge if we ever exceed even that.
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 2Gi --cpu 1 --max-retries 0
-        --task-timeout 14400
+        --task-timeout 28800
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options_intraday"
         # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
