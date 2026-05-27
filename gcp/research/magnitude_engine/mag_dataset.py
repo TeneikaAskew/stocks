@@ -192,17 +192,22 @@ def _add_phase3_features(df: pd.DataFrame, engine) -> pd.DataFrame:
     # (EDT) / 5 hours (EST). Approximation: 4 hours year-round adds at most
     # 1 hour of error on the "hours_until" feature near DST transitions —
     # acceptable for a research signal at hour resolution.
+    # pg8000 misparses `:lo::date` (sees `::date` and confuses cast-op
+    # with a second bound param). Use CAST(... AS date) instead, and pass
+    # python date objects so no SQL cast is even needed.
+    lo_date = pd.to_datetime(min_ts).date() if pd.notna(min_ts) else None
+    hi_date = pd.to_datetime(max_ts).date() if pd.notna(max_ts) else None
     with engine.connect() as conn:
         events = pd.read_sql(
             text("""
                 SELECT event_date, event_time, importance
                   FROM economic_events
                  WHERE LOWER(importance) = 'high'
-                   AND event_date BETWEEN :lo::date AND :hi::date
+                   AND event_date BETWEEN :lo AND :hi
                  ORDER BY event_date, event_time
             """),
             conn,
-            params={"lo": min_ts, "hi": max_ts},
+            params={"lo": lo_date, "hi": hi_date},
         )
     if not events.empty:
         # Build event_ts as UTC = date + COALESCE(time, 09:00 ET) + 4 hours.
