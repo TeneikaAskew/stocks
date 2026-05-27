@@ -166,20 +166,42 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     y_train = train_df[LABEL_COL].map(LABEL_TO_IDX).values
     y_test = test_df[LABEL_COL].map(LABEL_TO_IDX).values
 
-    # CalibratedClassifierCV with internal CV (sklearn 1.6+ deprecated cv='prefit').
-    # cv=N means the base estimator is trained on each fold and calibration is
-    # learned on the held-out fold. No data leakage because it uses sklearn's
-    # cross-validation internally.
-    log.info("fitting calibrated LightGBM (method=%s, cv=%d) on %d train rows × %d cols...",
-             calibration, cv, len(X_train), len(all_cols))
-    calibrated = CalibratedClassifierCV(
-        estimator=make_lgbm(class_weight=class_weight),
-        method=calibration, cv=cv, n_jobs=-1,
-    )
-    calibrated.fit(X_train.values, y_train)
-
-    # OOS evaluation
-    proba_test = calibrated.predict_proba(X_test.values)
+    # Production config 2026-05-27: NO post-hoc calibration.
+    #
+    # Walk-forward (24 folds across IWM × 5m, 15m, 30m, regimes 2019-2026)
+    # found that the sigmoid wrapper HURT calibration in every single fold:
+    # raw LightGBM-softmax ECE was 0.013-0.049 median by cell; sigmoid pushed
+    # it to 0.042-0.125. Confirmed via --calibration-mode=none reproduction.
+    #
+    # LightGBM with objective="multiclass" minimizes softmax + cross-entropy
+    # directly — that loss IS a calibration loss. Applying Platt scaling on
+    # top is double-calibration. The 24-fold evidence is the basis; do not
+    # cite Niculescu-Mizil 2005 here — that paper found AdaBoost-style
+    # exponential-loss boosting IS miscalibrated and DOES benefit from
+    # Platt. The distinction is the loss, not "boosting in general."
+    #
+    # Scope: validated for IWM on 5m / 15m / 30m only. SPY and QQQ must
+    # re-verify raw ECE before this transfers. Re-introduce calibration
+    # per cell if any future ticker has raw ECE > ceiling.
+    if calibration == "none":
+        log.info("fitting LightGBM (NO post-hoc calibration) on %d train rows × %d cols...",
+                 len(X_train), len(all_cols))
+        model = make_lgbm(class_weight=class_weight)
+        model.fit(X_train.values, y_train)
+        proba_test = model.predict_proba(X_test.values)
+        calibrated = model  # alias used by downstream artifact saving
+    else:
+        # Diagnostic path — preserved so the walk-forward, calibration
+        # variant studies, and any per-ticker re-verification can still
+        # produce sigmoid-wrapped fits.
+        log.info("fitting calibrated LightGBM (method=%s, cv=%d) on %d train rows × %d cols...",
+                 calibration, cv, len(X_train), len(all_cols))
+        calibrated = CalibratedClassifierCV(
+            estimator=make_lgbm(class_weight=class_weight),
+            method=calibration, cv=cv, n_jobs=-1,
+        )
+        calibrated.fit(X_train.values, y_train)
+        proba_test = calibrated.predict_proba(X_test.values)
     pred_test = np.argmax(proba_test, axis=1)
     acc = float(accuracy_score(y_test, pred_test))
     ll = float(log_loss(y_test, proba_test, labels=list(range(len(LABEL_CLASSES)))))

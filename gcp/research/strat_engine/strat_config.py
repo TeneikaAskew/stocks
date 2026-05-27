@@ -127,14 +127,18 @@ FTFC_WEIGHTS: dict[str, float] = {
 # ─────────────────────── Open decisions (defaults locked here) ───────────────────────
 # Defaults selected per reviewer guidance. Override via CLI flags on each
 # stage; lock in this file once user confirms.
-DEFAULT_CALIBRATION = "sigmoid"           # LOCKED 2026-05-26 on IWM 15m: sigmoid passes
-                                          # gate (ECE 0.0439 vs ceiling 0.050) while
-                                          # isotonic cv=3 misses by 0.001 and isotonic
-                                          # cv=5 misses by 2x. Sigmoid fixes the mid-range
-                                          # underconfidence the isotonic calibrator left.
-DEFAULT_CV = 3                            # CalibratedClassifierCV folds. 3 was chosen on
-                                          # the IWM 15m calibration variant test (5 was
-                                          # strictly worse on ECE).
+DEFAULT_CALIBRATION = "none"              # CHANGED 2026-05-27: walk-forward (24 folds
+                                          # across IWM × 5m/15m/30m, regimes 2019-2026)
+                                          # found the sigmoid wrapper hurt calibration in
+                                          # every fold. Raw LightGBM-softmax ECE: 0.013-0.049
+                                          # median by cell; sigmoid pushed it to 0.042-0.125.
+                                          # LightGBM multiclass uses cross-entropy directly,
+                                          # which IS a calibration loss — applying Platt on
+                                          # top is double-calibration. Scope: IWM only;
+                                          # re-verify per-ticker at M3 before any transfer.
+                                          # Diagnostic options preserved: "sigmoid", "isotonic".
+DEFAULT_CV = 3                            # Used only when calibration != "none" (diagnostic
+                                          # path). Kept for backward compat with variant studies.
 DEFAULT_CORR_METRIC = "mutual_info"       # open #4 — captures nonlinear
 DEFAULT_4H_SOURCE = "aggregate_from_60m"  # open #2 — simplest; "raw_intraday" also supported
 DEFAULT_READOUT_FORM = "table"            # open #5 — JSON/table; "dashboard"/"pine" later
