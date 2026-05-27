@@ -132,9 +132,31 @@ def _load_metrics(ticker: str, tf: str) -> dict:
         if raw is None:
             continue
         try:
-            return json.loads(raw)
+            m = json.loads(raw)
         except Exception:
             continue
+        # Synthesize model_version + trained_at from the filename epoch
+        # when the file itself doesn't carry an explicit run_id. The Stage 4
+        # trainer's metrics_<epoch>.json filename uses Unix epoch seconds,
+        # so this is canonical and deterministic per training run.
+        import re as _re
+        match = _re.search(r"/metrics_(\d{8,})\.json$", path)
+        if match:
+            epoch = int(match.group(1))
+            m.setdefault(
+                "model_version",
+                m.get("config_signature") or m.get("run_id") or f"epoch-{epoch}",
+            )
+            m.setdefault(
+                "trained_at",
+                datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(),
+            )
+        # Per-run archive — the run_id is the parent directory
+        elif "/runs/" in path:
+            parts = path.split("/runs/")[-1].split("/")
+            if parts:
+                m.setdefault("model_version", parts[0])
+        return m
     return {}
 
 
