@@ -20,9 +20,10 @@ and the long-vol payoff doesn't generally beat a 40%-hit-rate /
 
 - `pricing.py`  — pure-numpy Black-Scholes-Merton helpers (price, ATM-strike
   rounding, years-to-expiry). py_vollib_vectorized parity tested.
-- `iv_lookup.py` — IV/strike resolver. PRELOADS one fold's worth of SPY
+- `iv_lookup.py` — IV/strike resolver. PRELOADS one fold's worth of
   option snapshots from `etf_options_snapshots` into RAM at fold start
-  (Rule 0 batch pattern — never per-setup SQL).
+  (Rule 0 batch pattern — never per-setup SQL). Generic on ticker
+  (IWM/SPY/QQQ).
 - `engine.py`   — hermetic per-setup trade-lifecycle simulator. Detects
   underlying stop/target/time-stop exactly like Track B's engine, then
   prices the option mid at entry and exit via BSM walked with constant
@@ -35,7 +36,7 @@ and the long-vol payoff doesn't generally beat a 40%-hit-rate /
 
 ## Data dependency: AV intraday backfill
 
-The `etf_options_snapshots` table is EOD-only for 2022-2024 SPY 0DTE
+The `etf_options_snapshots` table is EOD-only for 2022-2024 IWM 0DTE
 (~1 snapshot/day at 4 PM ET). The backtest needs intraday snapshots
 aligned with setup timestamps. The companion fetcher
 [`gcp/fetchers/fetch_av_historical_options_intraday.py`](../../gcp/fetchers/fetch_av_historical_options_intraday.py)
@@ -49,11 +50,11 @@ backfills these by hitting AV's `HISTORICAL_OPTIONS` endpoint with the
 python -m lib.options_exec_backtest.cli \
     --mode=emit_timestamps \
     --out=/tmp/oeb \
-    --timestamps-out=/tmp/oeb/spy_setup_timestamps.csv
+    --timestamps-out=/tmp/oeb/iwm_setup_timestamps.csv
 
 # 2. Backfill AV intraday snapshots for those timestamps
 python -m gcp.fetchers.fetch_av_historical_options_intraday \
-    --datetimes-file /tmp/oeb/spy_setup_timestamps.csv \
+    --datetimes-file /tmp/oeb/iwm_setup_timestamps.csv \
     --skip-existing
 
 # 3. Run the base case (ATM 0DTE)
@@ -62,7 +63,7 @@ python -m lib.options_exec_backtest.cli --mode=base --out=/tmp/oeb/base
 
 ## Walk-forward — 5 folds (2022-2026)
 
-Restricted from Track B's 8 to 5 because SPY 0DTE didn't exist daily
+Restricted from Track B's 8 to 5 because IWM 0DTE didn't exist daily
 until 2022. Each fold trains on data < cutoff and tests on
 [cutoff, next_cutoff).
 
@@ -79,7 +80,7 @@ threshold ratio.
 
 ## Costs
 
-Per SPY 0DTE near-the-money standard execution:
+Per IWM 0DTE near-the-money standard execution:
 
 | Cost | Per side | Round trip |
 |------|---------:|-----------:|

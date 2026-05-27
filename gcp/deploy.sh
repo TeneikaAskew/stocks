@@ -948,7 +948,7 @@ deploy_av_options_realtime() {
     gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
 }
 
-# Backfill SPY 0DTE intraday options snapshots for the options-exec-backtest.
+# Backfill IWM 0DTE intraday options snapshots for the options-exec-backtest.
 # The EOD historical AV path (`fetch-av-options-backfill`) only stores one
 # snapshot per day at 4PM ET — too sparse for an intraday setup-window
 # IV anchor. This job hits AV's HISTORICAL_OPTIONS endpoint with the
@@ -985,7 +985,7 @@ deploy_av_options_historical_intraday() {
         --task-timeout 14400
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options_intraday"
-        --args "--datetimes-file=/tmp/spy_setup_timestamps.csv,--skip-existing"
+        --args "--datetimes-file=/tmp/iwm_setup_timestamps.csv,--skip-existing"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
         --quiet
@@ -996,7 +996,7 @@ deploy_av_options_historical_intraday() {
 }
 
 # Options exec backtest — Track B' (parallels lib/exec_backtest but trades
-# SPY 0DTE ATM options instead of the underlying). Mode dispatched at execute
+# IWM 0DTE ATM options instead of the underlying). Mode dispatched at execute
 # time via --update-args:
 #   gcloud run jobs execute options-exec-backtest \
 #     --update-args="--mode=emit_timestamps,--out=gs://..."  --wait
@@ -1004,13 +1004,13 @@ deploy_av_options_historical_intraday() {
 #     --update-args="--mode=base"  --wait
 #
 # Per Rule 0 sizing:
-# - Volume: SPY × 3 cells × 5 folds; each cell-fold trains 1 LGBM and
+# - Volume: IWM × 3 cells × 5 folds; each cell-fold trains 1 LGBM and
 #   replays ~3-10k setups against pre-loaded 1m bars + pre-loaded IV
 #   snapshots. ~50k total trades simulated.
 # - Velocity: 5 folds × 3 cells × ~60s per LGBM fit = ~15 min training.
 #   Setups replayed at ~0.5ms each in pure pandas/numpy.
 # - Wall-clock estimate: ~25 min; task-timeout 14400 (4hr) for headroom.
-# - Memory: 1m SPY bars 2018-2026 ~250 MiB + features matrix ~1 GiB per cell.
+# - Memory: 1m IWM bars 2018-2026 ~250 MiB + features matrix ~1 GiB per cell.
 #   8Gi allocation.
 # - max-retries 0; non-idempotent (writes to a new GCS run_id each time).
 deploy_options_exec_backtest() {

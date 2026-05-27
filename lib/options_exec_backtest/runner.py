@@ -58,13 +58,19 @@ POSITIVE_FOLD_THRESHOLD = 4
 # Per-cell time stop. 5m/15m → 30 min; 30m → 60 min. Same as Track B.
 TIME_STOP_BY_CELL = {"5m": 30, "15m": 30, "30m": 60}
 
-INTRADAY_TABLE = {"SPY": "market_data_intraday_spy"}
+INTRADAY_TABLE = {
+    "IWM": "market_data_intraday_iwm",
+    "SPY": "market_data_intraday_spy",
+    "QQQ": "market_data_intraday_qqq",
+}
 
 
-def load_1m_spy(engine, start_date: str = "2021-06-01") -> pd.DataFrame:
-    """Pull all 1-min RTH bars for SPY into memory ONCE."""
+def load_1m_bars(engine, ticker: str, start_date: str = "2021-06-01") -> pd.DataFrame:
+    """Pull all 1-min RTH bars for `ticker` into memory ONCE."""
     from sqlalchemy import text
-    table = INTRADAY_TABLE["SPY"]
+    if ticker not in INTRADAY_TABLE:
+        raise ValueError(f"No intraday table mapped for ticker={ticker!r}")
+    table = INTRADAY_TABLE[ticker]
     sql = text(f"""
         SELECT ts, open AS "Open", high AS "High", low AS "Low",
                close AS "Close"
@@ -76,14 +82,14 @@ def load_1m_spy(engine, start_date: str = "2021-06-01") -> pd.DataFrame:
         ORDER BY ts
     """)
     start_ts = pd.Timestamp(start_date, tz="UTC")
-    log.info("loading 1m SPY bars from %s …", start_date)
+    log.info("loading 1m %s bars from %s …", ticker, start_date)
     t0 = time.time()
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn, params={"start_ts": start_ts})
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df = df.set_index("ts").sort_index()
-    log.info("loaded 1m SPY bars: %d rows in %.1fs (%s..%s)",
-             len(df), time.time() - t0, df.index.min(), df.index.max())
+    log.info("loaded 1m %s bars: %d rows in %.1fs (%s..%s)",
+             ticker, len(df), time.time() - t0, df.index.min(), df.index.max())
     return df
 
 

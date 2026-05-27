@@ -1,4 +1,4 @@
-# Options Exec-Backtest Results — SPY 0DTE ATM
+# Options Exec-Backtest Results — IWM 0DTE ATM
 
 **VERDICT: PENDING RUN** — fill in below after dispatching
 `options-exec-backtest --mode=base` (post-AV-intraday backfill).
@@ -36,8 +36,8 @@ classifier. Per-fold retrain — no shared artifact across folds.
 | Variant 1 | +1 strike OTM |
 | Variant 2 | ATM 1DTE |
 
-Strike: closest SPY strike to underlying at the trigger fill (read from
-the SPY-IV preload's strike grid — never synthesized).
+Strike: closest available strike to underlying at the trigger fill
+(read from the IV preload's strike grid — never synthesized).
 
 ### Trade lifecycle — underlying-space exits, option-space P&L
 
@@ -55,7 +55,7 @@ the SPY-IV preload's strike grid — never synthesized).
 ### Pricing — BSM walk with constant anchor IV
 
 For each trade:
-1. At entry, look up the SPY 0DTE ATM option snapshot within ±300 sec
+1. At entry, look up the IWM 0DTE ATM option snapshot within ±300 sec
    of the trigger. Read the implied volatility — this is the
    **anchor IV** held constant through the trade.
 2. Compute entry premium via `bs_price(S=entry_fill, K, T_entry,
@@ -83,7 +83,7 @@ Per CONTRACT, per side (× 100-share multiplier already accounted for):
 
 ### Walk-forward — 5 folds (2022-2026)
 
-Restricted to 0DTE-available years (SPY 0DTE was daily-issued from
+Restricted to 0DTE-available years (IWM 0DTE was daily-issued from
 2022). Each fold trains on `< cutoff` and tests on
 `[cutoff, next_cutoff)`.
 
@@ -155,15 +155,15 @@ the base case fails the spec by margins > 25%.**
 python -m lib.options_exec_backtest.cli \
     --mode=emit_timestamps \
     --out=/tmp/oeb \
-    --timestamps-out=/tmp/oeb/spy_setup_timestamps.csv
+    --timestamps-out=/tmp/oeb/iwm_setup_timestamps.csv
 
 # 2. Upload the CSV to GCS so the Cloud Run fetcher Job can read it.
-gsutil cp /tmp/oeb/spy_setup_timestamps.csv \
+gsutil cp /tmp/oeb/iwm_setup_timestamps.csv \
     gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv
 
 # 3. Backfill AV intraday snapshots for those timestamps
 gcloud run jobs execute fetch-av-options-historical-intraday \
-    --update-args="--datetimes-file=/tmp/spy_setup_timestamps.csv,--skip-existing" \
+    --update-args="--datetimes-file=/tmp/iwm_setup_timestamps.csv,--skip-existing" \
     --region us-east1 --wait
 
 # 4. Run the base case

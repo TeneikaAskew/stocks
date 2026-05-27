@@ -1,10 +1,12 @@
 """Options exec backtest — Cloud Run Job entry point.
 
 Modes:
-  --mode=emit_timestamps  : run the type model on SPY × cells × test
-                            windows 2022-2026, write a CSV of unique
-                            5-min-rounded setup timestamps. Input for
-                            the AV intraday backfill fetcher.
+  --mode=emit_timestamps  : run the type model on `--ticker` × cells ×
+                            test windows 2022-2026 (or the 0DTE-
+                            available window — see runner.DEFAULT_CUTOFFS),
+                            write a CSV of unique 5-min-rounded setup
+                            timestamps. Input for the AV intraday
+                            backfill fetcher.
   --mode=base             : Variant 0 — ATM 0DTE call (long) / put (short)
   --mode=variant_otm      : Variant 1 — +1 OTM strike, 0DTE
   --mode=variant_1dte     : Variant 2 — ATM, 1DTE
@@ -37,7 +39,7 @@ from gcp.database import get_engine
 from lib.logging_config import setup_logging
 from lib.options_exec_backtest.runner import (
     DEFAULT_CUTOFFS, TIME_STOP_BY_CELL, POSITIVE_FOLD_THRESHOLD,
-    emit_setup_timestamps, load_1m_spy, run_one_cell,
+    emit_setup_timestamps, load_1m_bars, run_one_cell,
     trades_to_dataframe, evaluate_base_case_per_cell,
 )
 
@@ -112,8 +114,8 @@ def run_backtest(args, engine):
         expiration_dte = 0
         variant_label = "base"
 
-    log.info("loading 1m SPY bars …")
-    m1_bars = load_1m_spy(engine, start_date="2021-06-01")
+    log.info("loading 1m %s bars …", args.ticker)
+    m1_bars = load_1m_bars(engine, ticker=args.ticker, start_date="2021-06-01")
 
     cells = args.cells.split(",")
     all_trades = []
@@ -204,7 +206,9 @@ def main():
     parser.add_argument("--mode", choices=["emit_timestamps", "base", "variant_otm",
                                             "variant_1dte"],
                         default="base")
-    parser.add_argument("--ticker", default="SPY")
+    parser.add_argument("--ticker", default="IWM",
+                        help="Underlying (IWM default — Track B parity). "
+                             "Also supports SPY, QQQ.")
     parser.add_argument("--cells", default="5m,15m,30m",
                         help="Comma-separated cells (default: 5m,15m,30m)")
     parser.add_argument("--confidence", type=float, default=0.55,
