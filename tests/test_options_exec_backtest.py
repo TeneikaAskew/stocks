@@ -382,3 +382,62 @@ def test_simulate_option_setup_costs_match_spec():
     """Round-trip cost must be exactly $1.38 (3¢+65¢+1¢ × 2)."""
     assert COST_ROUND_TRIP == pytest.approx(1.38, abs=1e-9)
     assert CONTRACT_MULTIPLIER == 100
+
+
+# ─────────────────────────────────────── dual-window verdict path ───────────────
+
+from lib.options_exec_backtest.runner import (
+    WINDOWS, evaluate_base_case_per_cell,
+)
+
+
+def test_windows_dict_shape():
+    """The two windows are defined with the expected fold counts and
+    success bars."""
+    assert "5fold" in WINDOWS
+    assert "3fold" in WINDOWS
+    assert len(WINDOWS["5fold"]["cutoffs"]) == 5
+    assert len(WINDOWS["3fold"]["cutoffs"]) == 3
+    assert WINDOWS["5fold"]["positive_fold_threshold"] == 4
+    assert WINDOWS["3fold"]["positive_fold_threshold"] == 2
+    # 3fold is a SUBSET of 5fold (so emit_timestamps can use the wider
+    # window for fetching; backtests pick a subset).
+    five = set(WINDOWS["5fold"]["cutoffs"])
+    three = set(WINDOWS["3fold"]["cutoffs"])
+    assert three.issubset(five), (
+        f"3fold cutoffs {three} must be a subset of 5fold {five}; otherwise "
+        "the AV intraday backfill emitted from the 5fold range won't cover "
+        "every setup the 3fold backtest needs."
+    )
+
+
+def _fold_stub(n, hit_rate, net_exp, avg_win, avg_loss, total_net):
+    """Tiny helper to build the per-fold dict shape that
+    evaluate_base_case_per_cell expects."""
+    return {
+        "n": n, "hit_rate": hit_rate, "net_exp": net_exp,
+        "avg_win": avg_win, "avg_loss": avg_loss, "total_net": total_net,
+    }
+
+
+def test_evaluate_uses_passed_threshold_not_default():
+    """Same per-fold stats, different positive-fold-threshold → different
+    verdict. Proves the param flows through and isn't shadowed by the
+    module-level POSITIVE_FOLD_THRESHOLD."""
+    # 3 folds, 2 positive: passes the 3fold bar (≥ 2/3) but would FAIL
+    # under the 5fold default of 4 (only 2 positive). Note c4 also
+    # requires total_net > 0, so we keep an honest aggregate.
+    folds = [
+        _fold_stub(n=100, hit_rate=0.45, net_exp=10.0, avg_win=80.0,
+                   avg_loss=-30.0, total_net=1000.0),
+        _fold_stub(n=100, hit_rate=0.45, net_exp=6.0, avg_win=80.0,
+                   avg_loss=-30.0, total_net=600.0),
+        _fold_stub(n=100, hit_rate=0.40, net_exp=-2.0, avg_win=80.0,
+                   avg_loss=-30.0, total_net=-200.0),
+    ]
+    v_3fold = evaluate_base_case_per_cell(folds, positive_fold_threshold=2)
+    v_5fold = evaluate_base_case_per_cell(folds, positive_fold_threshold=4)
+    # 3fold: ≥ 2 of 3 positive folds → c1 passes
+    assert v_3fold["checks"]["c1_pos_exp_folds"][2] is True
+    # 5fold bar applied to the same 3 folds: 2 positive < 4 → c1 fails
+    assert v_5fold["checks"]["c1_pos_exp_folds"][2] is False

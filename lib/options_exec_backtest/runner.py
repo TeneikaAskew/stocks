@@ -1,9 +1,11 @@
 """Walk-forward orchestrator for the options exec backtest.
 
 Two modes:
-  1. emit-timestamps  — runs the frozen type model on SPY × cells × test
-     windows 2022-2026, emits unique 5-min-rounded setup timestamps to a
-     CSV. This is the input to the AV intraday backfill fetcher.
+  1. emit-timestamps  — runs the frozen type model on `ticker` × cells ×
+     test windows, emits unique 5-min-rounded setup timestamps to a
+     CSV. This is the input to the AV intraday backfill fetcher. We
+     always emit the UNION (5-fold = 2022-2026 range) so the same
+     fetched data covers both window-mode backtests.
   2. backtest         — same predictions, but each candidate gets a full
      option-trade lifecycle simulation via engine.simulate_option_setup.
 
@@ -14,10 +16,17 @@ per-fold model identical to the production type model.
 We DO NOT modify lib/exec_backtest. Track B's reference module stays
 untouched.
 
-Walk-forward cutoffs are RESTRICTED to 2022-2026 because SPY 0DTE
-options were only daily-issued from 2022 onward. 5 folds vs Track B's
-8. Success bar adapted: ≥ 4 of 5 positive folds (same 75-80% ratio as
-the original 6/8).
+Walk-forward windows — TWO supported simultaneously (see WINDOWS dict):
+
+  - 5fold (2022-2026): wider regime variety (bear / recovery / bull /
+    current / partial). Test years 2022-2023 had only Mon/Wed/Fri 0DTE
+    expirations for IWM (~62% coverage); setups on Tue/Thu void with
+    `no_iv_snapshot`. Success bar: ≥ 4 of 5 positive folds.
+
+  - 3fold (2024-2026): IWM daily 0DTE started Nov 2023, so 2024+
+    has ~99% coverage and zero void-rate ambiguity. Loses 2022 bear
+    and 2023 recovery regimes — single-bull-market sample. Success
+    bar: ≥ 2 of 3 positive folds.
 """
 from __future__ import annotations
 import logging
@@ -43,17 +52,37 @@ from lib.options_exec_backtest.iv_lookup import IVLookup
 log = logging.getLogger(__name__)
 
 
-# 0DTE-restricted walk-forward. Test windows 2022, 2023, 2024, 2025, 2026.
-# All folds train on data < cutoff and test on [cutoff, next_cutoff).
-DEFAULT_CUTOFFS = [
-    "2022-01-01",
-    "2023-01-01",
-    "2024-01-01",
-    "2025-01-01",
-    "2026-01-01",
-]
-# n_folds = 5; positive-fold-count required = 4 (per the 4/5 bar)
-POSITIVE_FOLD_THRESHOLD = 4
+# 0DTE-restricted walk-forward windows. All folds train on data < cutoff
+# and test on [cutoff, next_cutoff). The last cutoff's test_end is fixed
+# at 2026-12-31 (current year-end).
+WINDOWS: Dict[str, Dict] = {
+    "5fold": {
+        "cutoffs": [
+            "2022-01-01",
+            "2023-01-01",
+            "2024-01-01",
+            "2025-01-01",
+            "2026-01-01",
+        ],
+        # ≥ 4 of 5 positive folds (75-80% threshold, matches Track B's 6/8)
+        "positive_fold_threshold": 4,
+    },
+    "3fold": {
+        "cutoffs": [
+            "2024-01-01",
+            "2025-01-01",
+            "2026-01-01",
+        ],
+        # ≥ 2 of 3 positive folds (~67%, looser — fewer folds, less
+        # statistical power, but coverage is clean)
+        "positive_fold_threshold": 2,
+    },
+}
+
+# Back-compat: callers that imported DEFAULT_CUTOFFS / POSITIVE_FOLD_THRESHOLD
+# before the dual-window refactor keep working against the 5fold window.
+DEFAULT_CUTOFFS = WINDOWS["5fold"]["cutoffs"]
+POSITIVE_FOLD_THRESHOLD = WINDOWS["5fold"]["positive_fold_threshold"]
 
 # Per-cell time stop. 5m/15m → 30 min; 30m → 60 min. Same as Track B.
 TIME_STOP_BY_CELL = {"5m": 30, "15m": 30, "30m": 60}
@@ -416,11 +445,15 @@ def trades_to_dataframe(trades: List[OptionTrade]) -> pd.DataFrame:
     } for t in trades])
 
 
-def evaluate_base_case_per_cell(per_fold_stats: List[dict]) -> dict:
-    """Apply the spec's binary pass/fail bar — adapted to 5 folds.
+def evaluate_base_case_per_cell(
+    per_fold_stats: List[dict],
+    positive_fold_threshold: int = POSITIVE_FOLD_THRESHOLD,
+) -> dict:
+    """Apply the spec's binary pass/fail bar — parameterized on fold count.
 
     A cell PASSES base case iff ALL FOUR hold:
-      1. net expectancy/trade > 0 in ≥ 4 of 5 folds (was 6 of 8)
+      1. net expectancy/trade > 0 in ≥ `positive_fold_threshold` folds
+         (4/5 for 5fold window, 2/3 for 3fold window)
       2. aggregate net expectancy > $5 / contract (per brief)
       3. hit_rate × avg_win > miss_rate × avg_loss with ≥ 20% margin
       4. no single fold's net P&L > 50% of total (no single-regime dependence)
@@ -463,7 +496,7 @@ def evaluate_base_case_per_cell(per_fold_stats: List[dict]) -> dict:
         asymm_ratio = 0.0
 
     checks = {
-        "c1_pos_exp_folds": (pos_exp, n_folds, pos_exp >= POSITIVE_FOLD_THRESHOLD),
+        "c1_pos_exp_folds": (pos_exp, n_folds, pos_exp >= positive_fold_threshold),
         "c2_agg_net_exp": (weighted_exp, 5.0, weighted_exp > 5.0),
         "c3_asymm_ratio": (asymm_ratio, 1.20, asymm_ratio >= 1.20),
         "c4_no_dom": (max_fold_share, 0.50,

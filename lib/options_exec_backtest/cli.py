@@ -2,19 +2,26 @@
 
 Modes:
   --mode=emit_timestamps  : run the type model on `--ticker` × cells ×
-                            test windows 2022-2026 (or the 0DTE-
-                            available window — see runner.DEFAULT_CUTOFFS),
-                            write a CSV of unique 5-min-rounded setup
-                            timestamps. Input for the AV intraday
-                            backfill fetcher.
+                            the UNION test window (2022-2026 = 5fold).
+                            Always emits the wider range so the same
+                            AV intraday backfill covers both window
+                            backtests. Writes a CSV of unique 5-min-
+                            rounded setup timestamps.
   --mode=base             : Variant 0 — ATM 0DTE call (long) / put (short)
   --mode=variant_otm      : Variant 1 — +1 OTM strike, 0DTE
   --mode=variant_1dte     : Variant 2 — ATM, 1DTE
 
+Walk-forward window (`--folds-mode`):
+  - 5fold (2022-2026, ≥4/5 bar) — wider regime variety, partial 0DTE
+    coverage in 2022-2023 (IWM Mon/Wed/Fri only; Tue/Thu setups void).
+  - 3fold (2024-2026, ≥2/3 bar) — clean 99% coverage, single-bull sample.
+  - both (default) — run both windows in one job, emit separate ledgers.
+    Output subdirs `{variant}_5fold/` and `{variant}_3fold/`.
+
 Outputs (Cloud Run Job mode writes to GCS):
-  gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/results.json
-  gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/trades.csv.gz
-  gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/per_fold.csv
+  gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/{variant}_{window}/results.json
+  gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/{variant}_{window}/trades.csv.gz
+  gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/{variant}_{window}/per_fold.csv
   gs://${GCS_BUCKET}/research/options_exec_backtest/{run_id}/setup_timestamps.csv (emit mode)
 
 Local mode (--out=/tmp/...) writes the same files to disk.
@@ -38,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from gcp.database import get_engine
 from lib.logging_config import setup_logging
 from lib.options_exec_backtest.runner import (
-    DEFAULT_CUTOFFS, TIME_STOP_BY_CELL, POSITIVE_FOLD_THRESHOLD,
+    DEFAULT_CUTOFFS, TIME_STOP_BY_CELL, POSITIVE_FOLD_THRESHOLD, WINDOWS,
     emit_setup_timestamps, load_1m_bars, run_one_cell,
     trades_to_dataframe, evaluate_base_case_per_cell,
 )
@@ -78,13 +85,17 @@ def _write_output(content: bytes, name: str, out_local_dir: str | None,
 
 
 def run_emit_timestamps(args, engine):
-    """Mode 1: emit setup timestamps for the AV backfill."""
-    out_csv = args.timestamps_out or "/tmp/spy_setup_timestamps.csv"
+    """Mode 1: emit setup timestamps for the AV backfill.
+
+    Always emits the WIDER window (5fold = 2022-2026). The 3fold
+    window is a subset, so one fetcher pass covers both.
+    """
+    out_csv = args.timestamps_out or f"/tmp/{args.ticker.lower()}_setup_timestamps.csv"
     n = emit_setup_timestamps(
         engine,
         ticker=args.ticker,
         cells=args.cells.split(","),
-        cutoffs=DEFAULT_CUTOFFS,
+        cutoffs=WINDOWS["5fold"]["cutoffs"],
         confidence=args.confidence,
         output_csv=out_csv,
     )
@@ -99,25 +110,27 @@ def run_emit_timestamps(args, engine):
     log.info("✓ uploaded %s", uri)
 
 
-def run_backtest(args, engine):
-    """Mode 2/3/4: run the full backtest in the requested variant."""
-    if args.mode == "variant_otm":
-        otm_offset = 1
-        expiration_dte = 0
-        variant_label = "variant_otm"
-    elif args.mode == "variant_1dte":
-        otm_offset = 0
-        expiration_dte = 1
-        variant_label = "variant_1dte"
-    else:
-        otm_offset = 0
-        expiration_dte = 0
-        variant_label = "base"
+def _resolve_variant(mode: str) -> tuple[int, int, str]:
+    if mode == "variant_otm":
+        return 1, 0, "variant_otm"
+    if mode == "variant_1dte":
+        return 0, 1, "variant_1dte"
+    return 0, 0, "base"
 
-    log.info("loading 1m %s bars …", args.ticker)
-    m1_bars = load_1m_bars(engine, ticker=args.ticker, start_date="2021-06-01")
 
+def _run_one_window(
+    engine, args, m1_bars, variant_label: str,
+    otm_offset: int, expiration_dte: int, window_name: str,
+    cutoffs: list[str], positive_fold_threshold: int,
+    run_id: str,
+) -> str:
+    """Run all cells for ONE walk-forward window, persist its ledger,
+    return the overall verdict.
+    """
     cells = args.cells.split(",")
+    log.info("═" * 70)
+    log.info("WINDOW %s — %d folds, ≥%d positive bar — cutoffs=%s",
+             window_name, len(cutoffs), positive_fold_threshold, cutoffs)
     all_trades = []
     all_per_fold = []
     per_cell_verdict = {}
@@ -128,7 +141,7 @@ def run_backtest(args, engine):
             ticker=args.ticker,
             cell=cell,
             m1_bars=m1_bars,
-            cutoffs=DEFAULT_CUTOFFS,
+            cutoffs=cutoffs,
             confidence=args.confidence,
             target_multiple=args.target,
             otm_offset=otm_offset,
@@ -136,61 +149,60 @@ def run_backtest(args, engine):
         )
         all_trades.extend(trades)
         all_per_fold.extend(per_fold)
-        verdict = evaluate_base_case_per_cell(per_fold)
+        verdict = evaluate_base_case_per_cell(
+            per_fold, positive_fold_threshold=positive_fold_threshold,
+        )
         per_cell_verdict[cell] = verdict
-        log.info("CELL %s verdict: %s — pos_exp=%s/%s  net_exp=$%.4f  asym=%.3f",
-                 cell, verdict["verdict"],
+        log.info("[%s] CELL %s verdict: %s — pos_exp=%s/%s  net_exp=$%.4f  asym=%.3f",
+                 window_name, cell, verdict["verdict"],
                  verdict.get("pos_exp_folds"), verdict.get("n_folds"),
                  verdict.get("weighted_net_exp", 0.0),
                  verdict.get("asymm_ratio", 0.0))
 
-    # Aggregate results
     trades_df = trades_to_dataframe(all_trades)
     per_fold_df = pd.DataFrame(all_per_fold)
     log.info("─" * 70)
-    log.info("AGGREGATE: %d trades across %d cells", len(trades_df), len(cells))
+    log.info("[%s] AGGREGATE: %d trades across %d cells",
+             window_name, len(trades_df), len(cells))
     for cell, v in per_cell_verdict.items():
         log.info("  %s: %s", cell, v["verdict"])
 
     overall_verdict = "PASS" if all(v["verdict"] == "PASS"
                                      for v in per_cell_verdict.values()) else "FAIL"
-    log.info("OVERALL %s: %s", variant_label.upper(), overall_verdict)
+    log.info("[%s] OVERALL %s: %s", window_name, variant_label.upper(),
+             overall_verdict)
 
-    # Persist outputs
-    run_id = _run_id()
-    subdir = f"{run_id}/{variant_label}"
+    subdir = f"{run_id}/{variant_label}_{window_name}"
 
-    # 1. results.json
     results = {
         "variant": variant_label,
+        "window": window_name,
         "verdict": overall_verdict,
         "ticker": args.ticker,
         "cells": cells,
-        "cutoffs": DEFAULT_CUTOFFS,
+        "cutoffs": cutoffs,
         "confidence": args.confidence,
         "target_multiple": args.target,
         "otm_offset": otm_offset,
         "expiration_dte": expiration_dte,
+        "positive_fold_threshold": positive_fold_threshold,
         "per_cell_verdict": per_cell_verdict,
         "trade_count": int(len(trades_df)),
-        "positive_fold_threshold": POSITIVE_FOLD_THRESHOLD,
     }
     _write_output(
         json.dumps(results, indent=2, default=str).encode(),
         "results.json", args.out, subdir, ctype="application/json",
     )
 
-    # 2. per_fold.csv
     if not per_fold_df.empty:
-        # Drop the nested 'voided' dict for the CSV; preserve in JSON
         per_fold_df_csv = per_fold_df.copy()
         if "voided" in per_fold_df_csv.columns:
             per_fold_df_csv["voided"] = per_fold_df_csv["voided"].astype(str)
         buf = io.BytesIO()
         per_fold_df_csv.to_csv(buf, index=False)
-        _write_output(buf.getvalue(), "per_fold.csv", args.out, subdir, ctype="text/csv")
+        _write_output(buf.getvalue(), "per_fold.csv", args.out, subdir,
+                      ctype="text/csv")
 
-    # 3. trades.csv.gz
     if not trades_df.empty:
         buf = io.BytesIO()
         with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
@@ -201,6 +213,48 @@ def run_backtest(args, engine):
     return overall_verdict
 
 
+def _windows_to_run(folds_mode: str) -> list[str]:
+    if folds_mode == "both":
+        return ["3fold", "5fold"]
+    if folds_mode in WINDOWS:
+        return [folds_mode]
+    raise ValueError(f"Unknown --folds-mode={folds_mode!r}")
+
+
+def run_backtest(args, engine):
+    """Mode 2/3/4: run the full backtest in the requested variant.
+
+    Loads m1 bars ONCE (big query), then runs the backtest for each
+    selected window (5fold / 3fold / both) reusing the same bars.
+    """
+    otm_offset, expiration_dte, variant_label = _resolve_variant(args.mode)
+    windows = _windows_to_run(args.folds_mode)
+    log.info("running variant=%s across windows=%s", variant_label, windows)
+
+    log.info("loading 1m %s bars …", args.ticker)
+    m1_bars = load_1m_bars(engine, ticker=args.ticker, start_date="2021-06-01")
+
+    run_id = _run_id()
+    verdicts = {}
+    for window_name in windows:
+        cfg = WINDOWS[window_name]
+        verdicts[window_name] = _run_one_window(
+            engine=engine, args=args, m1_bars=m1_bars,
+            variant_label=variant_label,
+            otm_offset=otm_offset, expiration_dte=expiration_dte,
+            window_name=window_name,
+            cutoffs=cfg["cutoffs"],
+            positive_fold_threshold=cfg["positive_fold_threshold"],
+            run_id=run_id,
+        )
+
+    log.info("═" * 70)
+    log.info("WINDOW VERDICTS — variant=%s", variant_label)
+    for w, v in verdicts.items():
+        log.info("  %s: %s", w, v)
+    return verdicts
+
+
 def main():
     parser = argparse.ArgumentParser(description="Options exec backtest CLI.")
     parser.add_argument("--mode", choices=["emit_timestamps", "base", "variant_otm",
@@ -209,6 +263,12 @@ def main():
     parser.add_argument("--ticker", default="IWM",
                         help="Underlying (IWM default — Track B parity). "
                              "Also supports SPY, QQQ.")
+    parser.add_argument("--folds-mode", choices=["5fold", "3fold", "both"],
+                        default="both",
+                        help="Walk-forward window. 'both' (default) runs 3fold "
+                             "(2024-2026, ≥2/3 bar, clean 0DTE coverage) AND "
+                             "5fold (2022-2026, ≥4/5 bar, wider regime variety "
+                             "with partial 0DTE coverage in 22-23).")
     parser.add_argument("--cells", default="5m,15m,30m",
                         help="Comma-separated cells (default: 5m,15m,30m)")
     parser.add_argument("--confidence", type=float, default=0.55,
@@ -219,7 +279,7 @@ def main():
                         help="Local output dir. If unset, write to GCS.")
     parser.add_argument("--timestamps-out", default=None,
                         help="CSV path for emit_timestamps mode "
-                             "(default: /tmp/spy_setup_timestamps.csv)")
+                             "(default: /tmp/{ticker_lower}_setup_timestamps.csv)")
     args = parser.parse_args()
 
     # Hard guardrail: per the brief, type-model thresholds are frozen.

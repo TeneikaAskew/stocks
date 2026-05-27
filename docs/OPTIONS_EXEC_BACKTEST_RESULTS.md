@@ -81,35 +81,52 @@ Per CONTRACT, per side (× 100-share multiplier already accounted for):
 | Slippage | 0.01 | 0.02 |
 | **Total** | **0.69** | **1.38** |
 
-### Walk-forward — 5 folds (2022-2026)
+### Walk-forward — DUAL WINDOW (3-fold + 5-fold)
 
-Restricted to 0DTE-available years (IWM 0DTE was daily-issued from
-2022). Each fold trains on `< cutoff` and tests on
-`[cutoff, next_cutoff)`.
+IWM 0DTE coverage is partial in 2022-2023 (Mon/Wed/Fri only — Tue/Thu
+expirations launched Nov 2023). To avoid letting that void rate drive
+the verdict, the backtest runs BOTH windows in one job and reports
+each independently. If both agree, the verdict is robust; if they
+disagree, the disagreement itself is information.
+
+#### 5-fold (2022-2026, wider regime variety, partial coverage in 22-23)
 
 | Fold | Cutoff (train end) | Test window | Regime |
 |-----:|:-------------------|:------------|:-------|
-| 1 | 2022-01-01 | 2022       | bear / Fed tightening |
-| 2 | 2023-01-01 | 2023       | recovery |
-| 3 | 2024-01-01 | 2024       | bull continuation |
-| 4 | 2025-01-01 | 2025       | current regime |
-| 5 | 2026-01-01 | 2026 partial (Jan-May) | partial-year locked OOS |
+| 1 | 2022-01-01 | 2022       | bear / Fed tightening — Mon/Wed/Fri 0DTE only |
+| 2 | 2023-01-01 | 2023       | recovery — Mon/Wed/Fri 0DTE; daily added Nov |
+| 3 | 2024-01-01 | 2024       | bull continuation — daily 0DTE |
+| 4 | 2025-01-01 | 2025       | current regime — daily 0DTE |
+| 5 | 2026-01-01 | 2026 YTD   | partial-year locked OOS — daily 0DTE |
 
-### Success bar (adapted to 5 folds)
+#### 3-fold (2024-2026, clean 99% coverage, single-bull sample)
 
-A cell PASSES base case iff ALL FOUR hold:
+| Fold | Cutoff (train end) | Test window | Regime |
+|-----:|:-------------------|:------------|:-------|
+| 1 | 2024-01-01 | 2024 | bull continuation |
+| 2 | 2025-01-01 | 2025 | current regime |
+| 3 | 2026-01-01 | 2026 YTD | partial-year locked OOS |
 
-1. Net expectancy / trade > 0 in **≥ 4 of 5** folds (Track B's 6/8 ≈ 75%;
-   4/5 = 80%, slightly stricter).
+### Success bar (per window)
+
+A cell PASSES base case in a given window iff ALL FOUR hold:
+
+1. Net expectancy / trade > 0 in **≥ K of N** folds, where:
+   - **5-fold**: K=4 (4/5 = 80%, slightly stricter than Track B's 6/8 = 75%)
+   - **3-fold**: K=2 (2/3 ≈ 67%, looser — fewer folds, less statistical power)
 2. Aggregate net expectancy > **$5 / contract** (per brief).
 3. (hit_rate × avg_win) > (miss_rate × avg_loss) with **≥ 20% margin**.
 4. No single fold's net P&L > **50%** of total (no single-regime dom).
 
-If ALL THREE cells fail, variants are NOT run (per spec).
+If ALL THREE cells fail BOTH windows, variants are NOT run (per spec).
+If the windows disagree, treat as BORDERLINE — escalate for review.
 
 ## Data restrictions documented
 
-- **Test window**: 2022-2026 only (5 folds vs Track B's 8). 0DTE coverage.
+- **Test windows**: 5-fold 2022-2026 AND 3-fold 2024-2026 (both run).
+- **0DTE coverage**: ~62% of trading days in 2022-2023 (Mon/Wed/Fri);
+  ~99% in 2024+. Setups on non-0DTE days void with `no_iv_snapshot`
+  in the per-fold counter.
 - **Snapshot tolerance**: ±300 sec. Setups outside this window are
   voided, not extrapolated.
 - **IV path**: constant anchor — no IV smile or term-structure walk.
@@ -118,7 +135,7 @@ If ALL THREE cells fail, variants are NOT run (per spec).
 
 ## Results
 
-### Per-cell summary (base case) — PENDING
+### Per-cell summary (base case, 5-fold) — PENDING
 
 | Cell | n trades | hit rate | gross exp / contract | **net exp / contract** | total net | pos-exp folds | Verdict |
 |------|---------:|---------:|---------------------:|-----------------------:|----------:|--------------:|:--------|
@@ -126,10 +143,26 @@ If ALL THREE cells fail, variants are NOT run (per spec).
 | 15m  | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/5 | _pending_ |
 | 30m  | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/5 | _pending_ |
 
+### Per-cell summary (base case, 3-fold) — PENDING
+
+| Cell | n trades | hit rate | gross exp / contract | **net exp / contract** | total net | pos-exp folds | Verdict |
+|------|---------:|---------:|---------------------:|-----------------------:|----------:|--------------:|:--------|
+| 5m   | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/3 | _pending_ |
+| 15m  | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/3 | _pending_ |
+| 30m  | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _/3 | _pending_ |
+
+### Cross-window consistency check — PENDING
+
+| Cell | 5fold verdict | 3fold verdict | Agree? |
+|------|:-------------:|:-------------:|:------:|
+| 5m   | _pending_ | _pending_ | _pending_ |
+| 15m  | _pending_ | _pending_ | _pending_ |
+| 30m  | _pending_ | _pending_ | _pending_ |
+
 ### Per-fold per-cell — PENDING
 
-Filled from `docs/options_exec_backtest_data/base_per_fold.csv` after
-the run.
+Filled from `docs/options_exec_backtest_data/base_5fold_per_fold.csv`
+and `..._base_3fold_per_fold.csv` after the run.
 
 ## Post-run analysis — required regardless of pass / fail
 
@@ -166,13 +199,16 @@ gcloud run jobs execute fetch-av-options-historical-intraday \
     --update-args="--datetimes-file=/tmp/iwm_setup_timestamps.csv,--skip-existing" \
     --region us-east1 --wait
 
-# 4. Run the base case
+# 4. Run the base case across BOTH walk-forward windows (default).
+#    Same one Cloud Run Job; loads m1 bars once and reuses them.
 gcloud run jobs execute options-exec-backtest \
-    --update-args="--mode=base" \
+    --update-args="--mode=base,--ticker=IWM,--folds-mode=both" \
     --region us-east1 --wait
 
-# 5. Download the ledger
-gsutil cp gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/<run_id>/base/* \
+# 5. Download both ledgers — separate subdirectories per window
+gsutil cp -r gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/<run_id>/base_5fold/* \
+    docs/options_exec_backtest_data/
+gsutil cp -r gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/<run_id>/base_3fold/* \
     docs/options_exec_backtest_data/
 ```
 
