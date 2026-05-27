@@ -1,17 +1,21 @@
 # Magnitude Engine — Results
 
-> **Verdict (2026-05-27 walk-forward, 27 cells × 8 folds parallel)**:
-> - **Phase 0 (baseline 143-col): FAIL** — only 5m TF has ≥2 of 3 tickers passing all 4 gates; 15m and 30m fail.
-> - **Phase 1 (vol-family enrichment): FAIL** — same shape as Phase 0; 5m strengthens to 3/3 but 15m/30m still fail.
-> - **Phase 3 (econ event proximity): PASS** — 5m=3/3 AND 15m=2/3 tickers pass; meets the ≥2 of 3 TF requirement.
-> - **Phase 2 (AV indicators): PENDING_BACKFILL** — see §3.
-> - **Phase 4 (cross-asset): PENDING_BACKFILL** — see §5.
+> **Verdict (2026-05-27 walk-forward, 36 cells × 8 folds across 4 phases)**:
+> - **Phase 0 (baseline 143-col): FAIL** — 5m=2/3, 15m=1/3, 30m=0/3
+> - **Phase 1 (vol-family enrichment): FAIL** — 5m=3/3, 15m=1/3, 30m=0/3
+> - **Phase 2 (AV daily indicators): FAIL** — 5m=3/3, 15m=1/3, 30m=0/3
+> - **Phase 3 (econ event proximity): PASS** — 5m=3/3, 15m=2/3, 30m=0/3
+> - **Phase 4 (cross-asset): PENDING_BACKFILL** — fetcher body stubbed; see §5.
 >
-> **Headline finding**: the existing strat_features baseline does NOT carry
-> magnitude signal at 15m/30m. Event-proximity features (Phase 3) DO
-> add independent signal that lifts both 5m and 15m to passing. 30m
-> remains unlearnable from any feature family tested — log-loss
-> consistently worse than base rate, EXPLOSIVE class rarely predicted.
+> **Headline finding**: the existing strat_features baseline does NOT
+> carry magnitude signal at 15m/30m. Vol-family enrichment (Phase 1)
+> and AV daily indicators (Phase 2) both lift 5m to 3/3 tickers passing
+> but leave 15m/30m unchanged. Only **event-proximity features (Phase 3)**
+> cross the 2-of-3-TFs phase bar: adding three features (`hours_until_next_hi_event`,
+> `hours_since_last_hi_event`, `is_event_day_pm4h`) lifts 15m to 2/3
+> tickers — IWM and SPY — neither of which passed in any other phase.
+> 30m is unlearnable across every phase tested — log-loss consistently
+> worse than base rate, EXPLOSIVE class rarely predicted.
 
 This document records, per-phase / per-cell / per-fold, the magnitude
 model's performance against the **pre-set success bar** below. Any line
@@ -128,13 +132,21 @@ pre-computed values, NOT a local substitute):
 - `av_roc` — rate of change
 - `av_bbands_bandwidth` — derived from AV's BBANDS endpoint
 
+**Computed**: 2026-05-27. AV backfill `magnitude-engine-srk2r` populated `market_data_indicators` (IWM/SPY/QQQ × {daily, 15min} × 6 functions = 12 column-families × 3 tickers; 6.5k–6.7k daily rows per ticker covering 2000+). Walk-forward executed by `magnitude-engine-qh7s9` (9 cells, ~6 min wall-clock, 9 parallel workers).
+
 | ticker | 5m | 15m | 30m |
 |--------|----|-----|-----|
-| IWM    | PENDING_BACKFILL | PENDING_BACKFILL | PENDING_BACKFILL |
-| SPY    | PENDING_BACKFILL | PENDING_BACKFILL | PENDING_BACKFILL |
-| QQQ    | PENDING_BACKFILL | PENDING_BACKFILL | PENDING_BACKFILL |
+| IWM | ✅ **PASS** (g1=6 g2=7 g3=8 g4=8) | ✅ **PASS** (g1=6 g2=7 g3=8 g4=6) | ❌ FAIL (g1=0 g2=8 g3=8 g4=1) |
+| SPY | ✅ **PASS** (g1=7 g2=7 g3=8 g4=7) | ❌ FAIL (g1=4 g2=6 g3=8 g4=5) | ❌ FAIL (g1=0 g2=5 g3=8 g4=5) |
+| QQQ | ✅ **PASS** (g1=8 g2=7 g3=8 g4=8) | ❌ FAIL (g1=6 g2=7 g3=8 g4=5) | ❌ FAIL (g1=1 g2=7 g3=8 g4=4) |
 
-**Phase 2 verdict**: PENDING_BACKFILL
+**Per-TF tickers passing**: 5m=3/3 ✓, 15m=1/3 ✗, 30m=0/3 ✗.
+
+**Phase 2 verdict**: **FAIL** — same shape as Phase 1: 5m lifted to 3/3, 15m and 30m unchanged.
+
+**What the result tells us**: AV's pre-computed daily indicators (ADX, MFI, Chaikin A/D Osc, Aroon Up/Down, ROC, BBANDS bandwidth) broadcast to intraday bars add enough at 5m to strengthen IWM (was PASS in Phase 0, stays PASS) and SPY (was FAIL in Phase 0/1, now PASS) — but they don't carry the additional signal needed to push 15m or 30m across the threshold. Daily-resolution indicators don't capture the intraday magnitude dynamics that 15m would need.
+
+**Data-coverage caveat**: AV's `interval=daily` history goes back 25+ years (6.5k+ rows per ticker — covers all 8 walk-forward folds). AV's `interval=15min` history is only ~1356 rows (~6 months), which would not populate the 2019–2023 folds. For this reason the Phase 2 join in `mag_dataset._add_table_join_features` uses **daily only** with date-broadcast to intraday bars. A future Phase 2b could add `merge_asof` for the 15min indicators if Phase 4 (cross-asset) or any other phase shows the missing-signal lever is intraday vendor data — which the current result does not suggest.
 
 ---
 
