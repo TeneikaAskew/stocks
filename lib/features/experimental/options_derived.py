@@ -45,7 +45,16 @@ def _load_daily_pcr(engine, ticker: str, since: str, until: str) -> pd.DataFrame
     """Aggregate PCR (volume + OI) per snapshot_date via SQL — small result
     set (~2500 rows) replacing a 14M-row pull. Per CLAUDE.md rule 4: batch
     by partition key, never per-row pulls when N exceeds 100.
+
+    Empirically, pg8000 (the Cloud SQL Connector backend used in Cloud Run)
+    is ~10× slower than psycopg2 for bulk reads. A single 11-year scan of
+    the etf_options_snapshots table sat on the pg8000 wire past 165 s in
+    first-pass dispatches. Chunking by year keeps each query under ~5 s
+    server-side and ~30-50 s pg8000-side. 11 round-trips × 50 s ≈ 9 min,
+    well inside our 60-min task-timeout budget.
     """
+    s_year = int(since[:4])
+    u_year = int(until[:4])
     sql = text(
         """
         SELECT
@@ -63,10 +72,20 @@ def _load_daily_pcr(engine, ticker: str, since: str, until: str) -> pd.DataFrame
         ORDER BY snapshot_date
         """
     )
+    chunks: list[pd.DataFrame] = []
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
-    if df.empty:
-        return df
+        for y in range(s_year, u_year + 1):
+            y_since = max(since, f"{y}-01-01")
+            y_until = min(until, f"{y}-12-31")
+            t0 = pd.Timestamp.utcnow()
+            df_y = pd.read_sql(sql, conn, params={"tk": ticker, "s": y_since, "u": y_until})
+            elapsed = (pd.Timestamp.utcnow() - t0).total_seconds()
+            log.info("PCR year=%d rows=%d elapsed=%.1fs", y, len(df_y), elapsed)
+            if not df_y.empty:
+                chunks.append(df_y)
+    if not chunks:
+        return pd.DataFrame()
+    df = pd.concat(chunks, ignore_index=True)
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
     return df
 
@@ -169,10 +188,22 @@ def _load_iv_features(engine, ticker: str, since: str, until: str) -> pd.DataFra
         ORDER BY snapshot_date
         """
     )
+    s_year = int(since[:4])
+    u_year = int(until[:4])
+    chunks: list[pd.DataFrame] = []
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
-    if df.empty:
-        return df
+        for y in range(s_year, u_year + 1):
+            y_since = max(since, f"{y}-01-01")
+            y_until = min(until, f"{y}-12-31")
+            t0 = pd.Timestamp.utcnow()
+            df_y = pd.read_sql(sql, conn, params={"tk": ticker, "s": y_since, "u": y_until})
+            elapsed = (pd.Timestamp.utcnow() - t0).total_seconds()
+            log.info("IV year=%d rows=%d elapsed=%.1fs", y, len(df_y), elapsed)
+            if not df_y.empty:
+                chunks.append(df_y)
+    if not chunks:
+        return pd.DataFrame()
+    df = pd.concat(chunks, ignore_index=True)
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
     return df
 
