@@ -33,7 +33,9 @@ RUN pip install --no-cache-dir -r /tmp/api-reqs.txt \
         cachetools>=5.3.0 \
         tenacity>=8.2.0 \
         requests>=2.31.0 \
-        numpy>=1.26.0
+        numpy>=1.26.0 \
+        scikit-learn>=1.4.0 \
+        lightgbm>=4.3.0
 
 # Source — keep the layout main.py expects: <root>/lib, <root>/gcp, <root>/platform
 COPY lib/ /app/lib/
