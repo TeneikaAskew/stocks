@@ -83,19 +83,59 @@ def _load_model(ticker: str, tf: str):
 
 
 def _load_metrics(ticker: str, tf: str) -> dict:
-    """Load the metrics.json sidecar for (ticker, tf).
+    """Load training metrics for (ticker, tf).
 
-    Includes the training-run identifier (used as model_version) and
-    the last training date. Returns empty dict if missing.
+    The Stage 4 trainer writes per-training-run flat sidecars at
+    `{prefix}/metrics_{epoch}.json`. We pick the most recent one (max
+    epoch) so model_version and last_train_date reflect the training
+    run that produced the current top-level model.pkl pointer.
+
+    Also tries a top-level `{prefix}/metrics.json` (used by some
+    diagnostic paths) and `{prefix}/runs/{run_id}/metrics.json` (the
+    per-run archive when present). Returns empty dict if none exist.
     """
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
     prefix = gcs_model_prefix(ticker, tf)
-    raw = _gcs_load_bytes(f"{prefix}/metrics.json")
-    if raw is None:
-        return {}
+    candidates: list[str] = []
     try:
-        return json.loads(raw)
+        client = _gcs_client()
+        bucket = client.bucket(bucket_name)
+        # Flat per-training-run sidecars
+        for blob in client.list_blobs(bucket, prefix=f"{prefix}/metrics_"):
+            if blob.name.endswith(".json"):
+                candidates.append(blob.name)
+        # Per-run archive
+        for blob in client.list_blobs(bucket, prefix=f"{prefix}/runs/"):
+            if blob.name.endswith("/metrics.json"):
+                candidates.append(blob.name)
     except Exception:
-        return {}
+        candidates = []
+
+    # Also try the flat top-level path (a few diagnostic scripts use it)
+    flat_top = f"{prefix}/metrics.json"
+    if flat_top not in candidates:
+        candidates.append(flat_top)
+
+    # Pick the most-recent by filename heuristic: filenames with embedded
+    # epoch (`metrics_<int>.json`) sort lexically by recency. Runs/ paths
+    # contain a per-run ID that sorts independently. We pick the
+    # lexically last (most-recent epoch) of the metrics_*.json group,
+    # then fall back to runs/ then to the flat top-level.
+    metrics_flat = sorted(
+        c for c in candidates if "/metrics_" in c and c.endswith(".json")
+    )
+    runs_archive = sorted(c for c in candidates if "/runs/" in c)
+    top_level = [c for c in candidates if c.endswith("/metrics.json") and "/runs/" not in c]
+    ordered = list(reversed(metrics_flat)) + list(reversed(runs_archive)) + top_level
+    for path in ordered:
+        raw = _gcs_load_bytes(path)
+        if raw is None:
+            continue
+        try:
+            return json.loads(raw)
+        except Exception:
+            continue
+    return {}
 
 
 def _load_features_list(ticker: str, tf: str) -> Optional[list[str]]:
