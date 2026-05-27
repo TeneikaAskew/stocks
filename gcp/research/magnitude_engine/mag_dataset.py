@@ -256,22 +256,33 @@ def _add_phase3_features(df: pd.DataFrame, engine) -> pd.DataFrame:
 
 def _add_table_join_features(df: pd.DataFrame, engine, table: str,
                               feature_cols: list[str], ticker: str) -> pd.DataFrame:
-    """Generic LEFT JOIN by (ticker, ts) onto an indicator/cross-asset table.
-    If the table doesn't exist yet, log a warning and fill NaN — so the
-    walk-forward harness can still run and report 'phase not yet
-    backfilled' instead of crashing."""
+    """LEFT JOIN av-indicator / cross-asset table onto intraday bars.
+
+    AV's pre-computed indicators are stored per `interval`:
+      - `interval='daily'`  ts is midnight of the bar's DATE
+      - `interval='15min'`  ts is the 15-minute bar's open time
+    Daily features apply to ALL intraday bars of the same date (broadcast).
+    Intraday features need a (ts, interval) join that's a backward-asof if
+    the strat TF doesn't align exactly with av's grid.
+
+    Strategy: pull DAILY rows only and broadcast by date. The 15min AV
+    history is too shallow (~6 months) for the 2019-2026 walk-forward to
+    benefit; daily indicators go back to 2000 so they actually populate
+    all 8 folds. If a future iteration wants the 15min features, add an
+    explicit merge_asof on (ts, interval='15min') here.
+    """
     try:
         col_list = ", ".join(feature_cols)
         with engine.connect() as conn:
             ext = pd.read_sql(
                 text(f"""
-                    SELECT ts, {col_list}
+                    SELECT ts AS av_ts, {col_list}
                       FROM {table}
                      WHERE ticker = :t
-                       AND ts BETWEEN :lo AND :hi
+                       AND interval = 'daily'
                 """),
                 conn,
-                params={"t": ticker, "lo": df["ts"].min(), "hi": df["ts"].max()},
+                params={"t": ticker},
             )
         if ext.empty:
             log.warning("%s: empty for ticker=%s — Phase features filled NaN",
@@ -279,10 +290,22 @@ def _add_table_join_features(df: pd.DataFrame, engine, table: str,
             for c in feature_cols:
                 df[c] = np.nan
             return df
-        ext["ts"] = pd.to_datetime(ext["ts"], utc=True)
-        df = df.merge(ext, on="ts", how="left")
-        log.info("%s: joined %d rows of (%d cols) for ticker=%s",
-                 table, len(ext), len(feature_cols), ticker)
+        ext["av_ts"] = pd.to_datetime(ext["av_ts"], utc=True)
+        # Broadcast daily indicators to intraday bars by DATE.
+        ext["bar_date"] = ext["av_ts"].dt.date
+        # Drop av_ts, keep bar_date as the join key.
+        ext = ext.drop(columns=["av_ts"])
+        # Deduplicate (one row per ticker-date for daily; should be unique).
+        ext = ext.drop_duplicates(subset=["bar_date"], keep="last")
+        # df["bar_date"] is a pandas date or datetime; normalize to date.
+        if pd.api.types.is_datetime64_any_dtype(df["bar_date"]):
+            df["bar_date"] = df["bar_date"].dt.date
+        df = df.merge(ext, on="bar_date", how="left")
+        log.info("%s: joined %d daily-broadcast rows (%d cols) for ticker=%s — "
+                  "covers %d / %d intraday bars",
+                 table, len(ext), len(feature_cols), ticker,
+                 int(df[feature_cols[0]].notna().sum()) if feature_cols else 0,
+                 len(df))
         return df
     except Exception as e:
         # Backfill not yet run — surface clearly, fill NaN, continue.
