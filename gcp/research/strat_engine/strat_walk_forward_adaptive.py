@@ -226,14 +226,25 @@ def train_and_evaluate_fold_adaptive(
     # 3. Fit calibrator(s) per mode
     if mode in ("vix-tercile", "rolling-vix"):
         # Per-tercile sigmoids — fit one per VIX tercile present in train.
+        # Sample-starvation watch: high-VIX is the rare regime that motivates
+        # these modes — so a tight rolling-vix window in a calm pre-stress
+        # period (e.g. Sep-Dec 2021 before the Feb 2022 vol expansion) may
+        # have very few HIGH bars. Log per-tercile sample counts so a
+        # downstream pass/fail isn't read from a 60-bar fit.
         cal_maps = {}
         unique_terciles = pd.Series(vix_tr).dropna().unique().tolist()
+        tercile_sample_counts = {}
         for tercile in unique_terciles:
             X_cal, y_cal = _get_calibration_slice(
                 df_tr, X_tr, y_tr, vix_tr, mode, rolling_days,
                 vix_tercile_target=tercile)
+            tercile_sample_counts[tercile] = int(len(y_cal))
             if len(y_cal) < MIN_CAL_BARS:
+                log.warning("  tercile=%s: n_cal=%d < MIN_CAL_BARS=%d — SKIP, will fall back to overall sigmoid",
+                            tercile, len(y_cal), MIN_CAL_BARS)
                 continue
+            log.info("  tercile=%s: fitting sigmoid on n_cal=%d bars",
+                     tercile, len(y_cal))
             # Use base.predict_proba on the calibration slice — need raw
             # probabilities aligned with the slice
             # Map the slice back to indices in X_tr
@@ -305,6 +316,7 @@ def train_and_evaluate_fold_adaptive(
         "n_train": n_train,
         "n_test": n_test,
         "n_cal_slice": int(len(y_cal_aligned)) if mode in ("static", "rolling") else None,
+        "tercile_sample_counts": tercile_sample_counts if mode in ("vix-tercile", "rolling-vix") else None,
         "logloss": ll,
         "base_logloss": base_ll,
         "beat": base_ll - ll,
