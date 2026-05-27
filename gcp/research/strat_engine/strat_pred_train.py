@@ -77,6 +77,8 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             "computed_at", "trigger_high", "trigger_low",
             "is_continuation", "is_reversal", "is_inside", "strat_setup",
             "prev_strat_candle",   # we use prev1_candle (one-hot) instead
+            # Forward-looking — must never enter the feature matrix
+            "next_open", "next_close", "next_high", "next_low",
             LABEL_COL}
     cols = [c for c in enc.columns
             if c not in drop and enc[c].dtype in

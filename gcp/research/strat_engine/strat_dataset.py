@@ -28,7 +28,8 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
                           since: str | None = None,
                           until: str | None = None,
                           drop_warmup: bool = True,
-                          include_levels: bool = True) -> pd.DataFrame:
+                          include_levels: bool = True,
+                          include_next_bar_ohlc: bool = False) -> pd.DataFrame:
     """Pull strat_features_{tf} for one ticker; add labels + prev2/prev3 lags.
 
     Returns a DataFrame with:
@@ -102,6 +103,12 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
         df["prev2_candle"] = grp_candle.shift(2)
         df["prev3_candle"] = grp_candle.shift(3)
         df[LABEL_COL] = grp_candle.shift(-1)
+        if include_next_bar_ohlc:
+            # Forward-looking — NEVER use as features. Opt-in for reporting only.
+            df["next_open"] = df.groupby("bar_date")["open"].shift(-1)
+            df["next_close"] = df.groupby("bar_date")["close"].shift(-1)
+            df["next_high"] = df.groupby("bar_date")["high"].shift(-1)
+            df["next_low"] = df.groupby("bar_date")["low"].shift(-1)
     else:
         # cross-bar shifts (no groupby); first 3 bars of the whole series
         # have null lags, last bar has null label.
@@ -109,6 +116,11 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
         df["prev2_candle"] = df["strat_candle"].shift(2)
         df["prev3_candle"] = df["strat_candle"].shift(3)
         df[LABEL_COL] = df["strat_candle"].shift(-1)
+        if include_next_bar_ohlc:
+            df["next_open"] = df["open"].shift(-1)
+            df["next_close"] = df["close"].shift(-1)
+            df["next_high"] = df["high"].shift(-1)
+            df["next_low"] = df["low"].shift(-1)
 
     # Drop the final bar OF EACH DAY (no next-bar label within session)
     # + optionally the first 3 bars of each day (warmup).
@@ -134,6 +146,8 @@ _FEATURE_DROP_COLS = frozenset({
     "computed_at", "trigger_high", "trigger_low",
     "is_continuation", "is_reversal", "is_inside", "strat_setup",
     "prev_strat_candle",  # superseded by prev1_candle
+    # Forward-looking — must never enter the feature matrix
+    "next_open", "next_close", "next_high", "next_low",
     LABEL_COL,
 })
 
