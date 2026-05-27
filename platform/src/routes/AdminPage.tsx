@@ -10,6 +10,7 @@ import {
   type AvailableModelRow,
 } from '@/hooks/useAdmin';
 import { useUser } from '@/hooks/useUser';
+import { StructureBrief } from '@/components/structure_brief/StructureBrief';
 
 // ---------------------------------------------------------------------------
 // Admin page — per-role model routing dashboard.
@@ -34,10 +35,21 @@ export default function AdminPage() {
   const authed = isAdmin || !!token;
 
   return (
-    <div className="mx-auto max-w-4xl p-4">
+    <div className="mx-auto max-w-5xl p-4">
       <h1 className="mb-4 text-lg font-semibold text-[var(--color-text-primary)]">Admin</h1>
       {authed ? (
-        <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} showLogout={!isAdmin} />
+        <div className="space-y-6">
+          <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} showLogout={!isAdmin} />
+          <section>
+            <h2 className="mb-3 text-base font-semibold text-[var(--color-text-primary)]">
+              Structure Brief
+              <span className="ml-2 rounded bg-[var(--color-bg-muted)] px-2 py-0.5 text-[10px] font-normal uppercase tracking-wide text-[var(--color-text-muted)]">
+                dev only · deploy blocked
+              </span>
+            </h2>
+            <StructureBrief enabled={authed} />
+          </section>
+        </div>
       ) : (
         <TokenGate onAuthed={(t) => setToken(t)} />
       )}
