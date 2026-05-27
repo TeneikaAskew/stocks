@@ -274,7 +274,6 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     Calling this after the OHLCV row for fetch_date has been upserted ensures
     that every indicator uses the correct daily-close series (not 1-min bars).
     """
-    import numpy as np
     from lib.indicators import add_all_indicators
     from gcp.database import query_to_dataframe, upsert_dataframe
 
@@ -298,13 +297,10 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     # Reverse to chronological order (oldest first)
     df = df.iloc[::-1].reset_index(drop=True)
 
-    # add_all_indicators skips VWAP/ORB when 'Time' column is absent — correct for daily
+    # add_all_indicators skips VWAP/ORB when 'Time' column is absent — correct for daily.
+    # As of 2026-05-27 volatility_{5,20}d and high_low_spread{,_pct} are also produced
+    # by add_all_indicators (see IndicatorConfig.volatility_periods); no manual recompute.
     enriched = add_all_indicators(df, close_col='Close')
-
-    # 20-day annualised historical volatility (not in add_all_indicators)
-    enriched['volatility_20d'] = (
-        enriched['Close'].pct_change().rolling(20).std() * np.sqrt(252)
-    )
 
     _INT_COLS = {'consecutive_up', 'consecutive_down'}
     last = enriched.iloc[-1]
