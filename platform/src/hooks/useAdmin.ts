@@ -72,6 +72,54 @@ export function useAdminModels(enabled: boolean) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Structure brief — dev-only readout of the strat-engine type model's
+// per-cell predictions. Sits behind the same admin auth as the routing
+// dashboard. NOT wired into any user-facing surface; deploy is blocked
+// behind Tracks B and C.
+// ---------------------------------------------------------------------------
+
+export interface StructureBriefClassProb {
+  cls: '1' | '2U' | '2D' | '3';
+  prob: number;
+}
+
+export interface StructureBriefCell {
+  ticker: string;
+  timeframe: string;
+  available: boolean;
+  top_class: '1' | '2U' | '2D' | '3' | null;
+  top_prob: number | null;
+  distribution: StructureBriefClassProb[];
+  live_ece: number | null;
+  ece_ceiling: number;
+  muted: boolean;
+  mute_reason: string | null;
+  refreshed_at: string | null;
+  note: string | null;
+}
+
+export interface StructureBriefResponse {
+  scope_statement: string;
+  cells: StructureBriefCell[];
+  ece_ceiling: number;
+}
+
+export function useStructureBrief(enabled: boolean) {
+  return useQuery<StructureBriefResponse>({
+    queryKey: ['admin-structure-brief'],
+    queryFn: async () => {
+      const r = await fetch('/api/admin/structure-brief', { headers: authHeaders() });
+      if (r.status === 401) throw new Error('unauthorized');
+      if (!r.ok) throw new Error(`structure brief ${r.status}`);
+      return r.json();
+    },
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+
 export function useUpdateAdminRoute() {
   const qc = useQueryClient();
   return useMutation<

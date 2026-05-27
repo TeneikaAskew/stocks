@@ -1,0 +1,13 @@
+finding,n_windows,mean_lift_pp,std_lift_pp,best_window,worst_window,pct_windows_positive,pct_windows_significant,source
+"212_bear_continuation @ HIGH-VIX, 5d",17,4.33,4.18,2019-07-04 (+9.3pp),2016-01-04 (-8.3pp),88.2,88.2,P3
+"clean_2d_bear @ HIGH-VIX, 5d",17,3.89,2.76,2016-07-04 (+10.5pp),2023-07-04 (-1.0pp),88.2,82.4,P3
+"322_bull_continuation, 5d (anti-pred)",17,-2.5,2.15,2020-01-04 (+2.0pp),2016-01-04 (-5.5pp),17.6,70.6,P3
+"212_bear_continuation, 5d",17,3.09,2.97,2017-07-04 (+8.7pp),2021-07-04 (-1.7pp),88.2,52.9,P3
+"f2d_bull_reversal, 1d",17,2.95,2.51,2019-01-04 (+8.0pp),2023-07-04 (-1.1pp),88.2,64.7,P3
+"22_bull_continuation, 5d (largest N)",17,-0.49,0.73,2021-01-04 (+0.7pp),2019-01-04 (-1.9pp),29.4,0.0,P3
+"gate_break CALL, 1d (bull-drift)",17,0.65,0.84,2020-11-10 (+1.7pp),2024-05-10 (-1.3pp),82.4,0.0,P2
+"gate_break PUT, 1d (anti-pred)",17,-0.84,1.18,2019-05-10 (+0.9pp),2024-05-10 (-3.2pp),17.6,17.6,P2
+"king_approach CALL, 15m",17,-2.1,2.02,2017-05-10 (+0.9pp),2019-11-10 (-6.7pp),11.8,41.2,P2
+"king_approach PUT, 15m",17,1.97,4.09,2016-05-10 (+14.0pp),2018-05-10 (-2.7pp),64.7,35.3,P2
+"flip_cross PUT × FTFC-DOWN, 15m",2,-13.07,6.85,2023-11-10 (+-8.2pp),2024-05-10 (-17.9pp),0.0,100.0,P2
+"gate_break PUT × LOW-VIX, 1d",14,-6.41,6.52,2016-05-10 (+0.0pp),2024-05-10 (-20.3pp),0.0,71.4,P2

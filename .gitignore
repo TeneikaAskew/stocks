@@ -109,6 +109,11 @@ MANIFEST
 data/
 *.csv
 
+# Research artifacts ARE committed (small CSVs, reproducible audit trail)
+!docs/research/**/data/
+!docs/research/**/data/*.csv
+!docs/research/**/*.csv
+
 # Windows nul file (accidentally created by shell redirects)
 nul
 **/nul

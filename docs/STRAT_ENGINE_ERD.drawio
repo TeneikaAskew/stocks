@@ -1,0 +1,316 @@
+<mxfile host="app.diagrams.net" agent="strat_engine_erd_v1" version="22.0.0">
+  <diagram name="Strat Engine ERD" id="strat_engine_erd">
+    <mxGraphModel dx="1800" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1500" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- TITLE -->
+        <mxCell id="title" value="Strat Directionality Engine — Entity-Relationship Diagram (v1, M2 LOCKED 2026-05-26)" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="2120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="One PK shape (ticker, ts) joins every operational table. Read upstream → SOURCE OF TRUTH → companion + dataset loader → Stage outputs (some in SQL, some in GCS)." style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="40" y="50" width="2120" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ UPSTREAM SOURCES (LEFT) ═══ -->
+        <mxCell id="hdr_upstream" value="UPSTREAM SOURCES (read-only)" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="320" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_intraday" value="market_data_intraday_*" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="320" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r1" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_intraday">
+          <mxGeometry y="30" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r1c1" value="🔑 ticker" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=4" vertex="1" parent="t_intraday_r1">
+          <mxGeometry width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r1c2" value="VARCHAR" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="t_intraday_r1">
+          <mxGeometry x="120" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r2" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_intraday">
+          <mxGeometry y="60" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r2c1" value="🔑 ts" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=4" vertex="1" parent="t_intraday_r2">
+          <mxGeometry width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r2c2" value="TIMESTAMPTZ" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="t_intraday_r2">
+          <mxGeometry x="120" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r3" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_intraday">
+          <mxGeometry y="90" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r3c1" value="open / high / low / close" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="t_intraday_r3">
+          <mxGeometry width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r3c2" value="DOUBLE" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="t_intraday_r3">
+          <mxGeometry x="200" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r4" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_intraday">
+          <mxGeometry y="120" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r4c1" value="volume" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="t_intraday_r4">
+          <mxGeometry width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r4c2" value="BIGINT" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11" vertex="1" parent="t_intraday_r4">
+          <mxGeometry x="200" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r5" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_intraday">
+          <mxGeometry y="150" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_intraday_r5c1" value="1-min raw bars; per ticker" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2" vertex="1" parent="t_intraday_r5">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_daily" value="market_data_daily" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="320" width="320" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="t_daily_r1" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_daily">
+          <mxGeometry y="30" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_daily_r1c1" value="🔑 (ticker, date)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=4" vertex="1" parent="t_daily_r1">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_daily_r2" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_daily">
+          <mxGeometry y="60" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_daily_r2c1" value="^VIX close → vix_close (PRIOR-day join, no leak)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2" vertex="1" parent="t_daily_r2">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_opts" value="etf_options_snapshots" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="440" width="320" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="t_opts_r1" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_opts">
+          <mxGeometry y="30" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_opts_r1c1" value="🔑 (ticker, snapshot_date)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=4" vertex="1" parent="t_opts_r1">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_opts_r2" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_opts">
+          <mxGeometry y="60" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_opts_r2c1" value="chains → total_vex (lib.gamma) → strat_features" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2" vertex="1" parent="t_opts_r2">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_gamma" value="gamma_levels_eod" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="40" y="560" width="320" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="t_gamma_r1" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_gamma">
+          <mxGeometry y="30" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_gamma_r1c1" value="🔑 (ticker, date)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=4" vertex="1" parent="t_gamma_r1">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_gamma_r2" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_gamma">
+          <mxGeometry y="60" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_gamma_r2c1" value="total_gex / flip_price / king / gate / regime" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10" vertex="1" parent="t_gamma_r2">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_gamma_r3" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_gamma">
+          <mxGeometry y="90" width="320" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_gamma_r3c1" value="PRIOR-day join (no leak)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2" vertex="1" parent="t_gamma_r3">
+          <mxGeometry width="320" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ SOURCE OF TRUTH (CENTER) ═══ -->
+        <mxCell id="hdr_source" value="SOURCE OF TRUTH" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="450" y="90" width="700" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_features" value="strat_features_{1m, 5m, 15m, 30m, 60m, 4h}  —  6 tables, identical 69-col schema" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="450" y="120" width="700" height="640" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r1" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_features">
+          <mxGeometry y="30" width="700" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r1c1" value="🔑 PK (ticker, ts)  •  tf, bar_date" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#dae8fc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=5" vertex="1" parent="t_features_r1">
+          <mxGeometry width="700" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r2" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_features">
+          <mxGeometry y="60" width="700" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r2c1" value="── OHLCV ──&#10;open, high, low, close DOUBLE  •  volume BIGINT" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;align=left;spacingLeft=8" vertex="1" parent="t_features_r2">
+          <mxGeometry width="700" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r3" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_features">
+          <mxGeometry y="120" width="700" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r3c1" value="── Strat sequence (10 cols) ──&#10;strat_candle (1 | 2U | 2D | 3)  •  prev_strat_candle ⚠️ session-contaminated&#10;strat_combo  •  is_continuation / is_reversal / is_inside / strat_setup&#10;consecutive_1s  •  trigger_high, trigger_low" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_features_r3">
+          <mxGeometry width="700" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r4" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_features">
+          <mxGeometry y="200" width="700" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r4c1" value="── Indicators (30+ cols) ──&#10;Trend: ema_9 / 20 / 50 / 200, sma_50 / 200&#10;Momentum: rsi_9, rsi_14, stoch_rsi_k/d, macd, macd_signal, macd_histogram&#10;Volatility: atr_14, atr_20, bb_upper, bb_lower, bb_width, bb_pct&#10;Volume: obv, rvol, rvol_10&#10;VWAP/relative: vwap, price_vs_vwap, price_vs_ema9, price_vs_ema20&#10;Price action: consecutive_up/down, intraday_return, high_low_spread_pct" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_features_r4">
+          <mxGeometry width="700" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r5" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;" vertex="1" parent="t_features_r4">
+          <mxGeometry y="320" width="700" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r5c1" value="── Forward returns (8 cols) ──&#10;fwd_close_{5,15,30,60}bars  •  fwd_ret_{5,15,30,60}bars_bps" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_features">
+          <mxGeometry y="380" width="700" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r6c1" value="── Regime context (11 cols) ──&#10;vix_close ⚠️ PRIOR-day (no leak)  •  vix_tercile (LOW/MID/HIGH @ 14.65/19.40)&#10;total_gex, gex_tercile  •  total_vex, vex_tercile&#10;dealer_regime (9-cell GEX × VEX)  •  gamma_regime  •  flip_price&#10;distance_to_king_pct, distance_to_gate_pct" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_features">
+          <mxGeometry y="440" width="700" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r7c1" value="── Bookkeeping ──&#10;computed_at TIMESTAMPTZ DEFAULT now()" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_features">
+          <mxGeometry y="545" width="700" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="t_features_r8c1" value="Indexes: PK(ticker, ts)  •  ix_combo(ticker, strat_combo)  •  ix_date(bar_date)&#10;Rows: 17k (60m) – 1M (1m) per ticker  •  built by gcp/research/strat_engine/strat_data_builder.py" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#e8f5e9;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2;align=left;spacingLeft=8" vertex="1" parent="t_features">
+          <mxGeometry y="580" width="700" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ COMPANION ENRICHMENT (CENTER-RIGHT) ═══ -->
+        <mxCell id="hdr_enrich" value="COMPANION ENRICHMENT" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=1;fillColor=#d4edda;strokeColor=#6c8ebf" vertex="1" parent="1">
+          <mxGeometry x="1230" y="90" width="450" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_levels" value="strat_features_levels_{1m..4h}  —  6 tables, 146-col M2 schema" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fillColor=#d4edda;strokeColor=#6c8ebf;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1230" y="120" width="450" height="640" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r1c1" value="🔑 PK (ticker, ts) — joins 1:1 to strat_features_{tf}" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#d4edda;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=5" vertex="1" parent="t_levels">
+          <mxGeometry y="30" width="450" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r2c1" value="── ORB (36 cols, 3 windows × 12) ──&#10;orb_{5m, 15m, 30m}_high / _low / _mid / _range&#10;_high_pct / _low_pct / _mid_pct&#10;_broke_high / _broke_low / _within_range / _trend / _distance" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="60" width="450" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r3c1" value="── Prev Day (20 cols, PDH/PDL pattern) ──&#10;prev_day_{high, low, open, close, hl_mid, oc_mid}&#10;+ _pct distance + at_* flags&#10;+ broke_prev_day_high / broke_prev_day_low" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="150" width="450" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r4c1" value="── Prev Week (20 cols) ──&#10;prev_week_* (same pattern)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="230" width="450" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r5c1" value="── Prev Month (20 cols) ──&#10;prev_month_* (same pattern)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="280" width="450" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r6c1" value="── Prev Quarter (20 cols) ──&#10;prev_quarter_* (same pattern)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="330" width="450" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r7c1" value="── Prev Year (20 cols) ──&#10;prev_year_* (same pattern)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="380" width="450" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r8c1" value="── Order Blocks (7 cols) ──&#10;ob_zone, ob_order_block_high / _low / _mid&#10;ob_position, ob_distance, ob_test" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="430" width="450" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r9c1" value="── GATED OFF for M2 (NOT in schema) ──&#10;cur_{day, week, month, quarter, year}_{open, high, low}&#10;+ hl_mid, oc_mid, range_pct, pos_in_*, pct_from_*_open&#10;~40 cols. Re-enable post-M2 via --include-current-period." style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="500" width="450" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="t_levels_r10c1" value="Indexes: PK(ticker, ts) • ix_ts(ts)&#10;Built by gcp/research/strat_engine/strat_enrich_levels.py" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#e8f5e9;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2;align=left;spacingLeft=8" vertex="1" parent="t_levels">
+          <mxGeometry y="580" width="450" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ STAGE OUTPUTS (RIGHT) ═══ -->
+        <mxCell id="hdr_outputs" value="STAGE OUTPUTS (SQL + GCS)" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=12;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6" vertex="1" parent="1">
+          <mxGeometry x="1740" y="90" width="420" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_pred" value="strat_pred_{tf}  —  per-bar probs (PLANNED, not yet created)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;dashed=1" vertex="1" parent="1">
+          <mxGeometry x="1740" y="120" width="420" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="t_pred_r1c1" value="🔑 PK (ticker, ts)  •  tf VARCHAR(8)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#e1d5e7;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=5" vertex="1" parent="t_pred">
+          <mxGeometry y="30" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_pred_r2c1" value="p_1, p_2u, p_2d, p_3 DOUBLE  (calibrated probs)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_pred">
+          <mxGeometry y="60" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_pred_r3c1" value="top_class VARCHAR(4)  (argmax)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_pred">
+          <mxGeometry y="90" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_pred_r4c1" value="calibration VARCHAR(16)  (sigmoid | isotonic)&#10;model_version VARCHAR(64)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_pred">
+          <mxGeometry y="120" width="420" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="t_pred_r5c1" value="Stage 4 OUTPUT — currently in GCS only (model.pkl + metrics.json)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2;align=left;spacingLeft=8" vertex="1" parent="t_pred">
+          <mxGeometry y="170" width="420" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_corr" value="strat_corr_ranked  —  Stage 3 (PLANNED)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;dashed=1" vertex="1" parent="1">
+          <mxGeometry x="1740" y="340" width="420" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="t_corr_r1c1" value="🔑 PK (ticker, tf, target_class, feature)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#e1d5e7;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=5" vertex="1" parent="t_corr">
+          <mxGeometry y="30" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_corr_r2c1" value="mi DOUBLE  (mutual information)&#10;direction VARCHAR(4)  (+ | - | flat | ?)&#10;abs_pointbiserial DOUBLE  •  rank INTEGER" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_corr">
+          <mxGeometry y="60" width="420" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="t_corr_r3c1" value="Stage 3 OUTPUT — currently in GCS only (corr_*.json)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2;align=left;spacingLeft=8" vertex="1" parent="t_corr">
+          <mxGeometry y="120" width="420" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="t_ftfc" value="strat_ftfc  —  Stage 5 stacked read (PLANNED)" style="shape=table;startSize=30;container=1;collapsible=0;childLayout=tableLayout;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;dashed=1" vertex="1" parent="1">
+          <mxGeometry x="1740" y="540" width="420" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="t_ftfc_r1c1" value="🔑 PK (ticker, ts)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#e1d5e7;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=11;fontStyle=5" vertex="1" parent="t_ftfc">
+          <mxGeometry y="30" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_ftfc_r2c1" value="{1m, 5m, 15m, 30m, 60m, 4h}_p_{1, 2u, 2d, 3}&#10;= 24 calibrated prob columns" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_ftfc">
+          <mxGeometry y="60" width="420" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="t_ftfc_r3c1" value="{tf}_top × 6  (per-TF argmax)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_ftfc">
+          <mxGeometry y="100" width="420" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_ftfc_r4c1" value="continuity_score DOUBLE  (weighted agreement [-1, +1])&#10;aligned_direction VARCHAR(8)  (UP | DOWN | MIXED)" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;align=left;spacingLeft=8" vertex="1" parent="t_ftfc">
+          <mxGeometry y="130" width="420" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="t_ftfc_r5c1" value="Stage 5 OUTPUT — currently in GCS sample CSV + summary JSON" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=#fff2cc;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=10;fontStyle=2;align=left;spacingLeft=8" vertex="1" parent="t_ftfc">
+          <mxGeometry y="180" width="420" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ GCS ARTIFACTS BAR ═══ -->
+        <mxCell id="gcs_box" value="GCS artifacts:  gs://adept-mountain-474619-d4-trading-data/research/strat_engine/{ticker}_{tf}/&#10;  • model.pkl (Stage 4)  • features.txt  • classes.txt  • metrics_*.json (gate verdict + ECE bins)&#10;  • eda_*.json (Stage 2)  • corr_*.json (Stage 3)  • verify_*.json (Stage 1)&#10;  • _ftfc/{ticker}/sample_*.csv + summary_*.json (Stage 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4" vertex="1" parent="1">
+          <mxGeometry x="40" y="780" width="2120" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ ARROWS ═══ -->
+        <mxCell id="arr_intraday" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0" edge="1" parent="1" source="t_intraday" target="t_features">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_daily" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.65" edge="1" parent="1" source="t_daily" target="t_features">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_opts" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.75" edge="1" parent="1" source="t_opts" target="t_features">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_gamma" style="endArrow=classic;html=1;rounded=0;strokeColor=#888888;strokeWidth=1;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.85" edge="1" parent="1" source="t_gamma" target="t_features">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arr_features_levels" style="endArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=3;exitX=1;exitY=0.4;entryX=0;entryY=0.4" edge="1" parent="1" source="t_features" target="t_levels">
+          <mxGeometry relative="1" as="geometry" />
+          <mxGraphModel>
+            <mxCell value="reads OHLCV;&#10;1:1 by (ticker, ts)" />
+          </mxGraphModel>
+        </mxCell>
+        <mxCell id="arr_features_levels_lbl" value="reads OHLCV&#10;1:1 by (ticker, ts)" style="text;html=1;align=center;verticalAlign=middle;fontSize=9;fontStyle=2;fillColor=#ffffff;strokeColor=#82b366" vertex="1" parent="1">
+          <mxGeometry x="1155" y="385" width="65" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arr_features_pred" style="endArrow=classic;html=1;rounded=0;strokeColor=#9673a6;strokeWidth=2;dashed=1;exitX=1;exitY=0.15;entryX=0;entryY=0.5" edge="1" parent="1" source="t_features" target="t_pred">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arr_levels_pred" style="endArrow=classic;html=1;rounded=0;strokeColor=#9673a6;strokeWidth=2;dashed=1;exitX=1;exitY=0.2;entryX=0;entryY=0.7" edge="1" parent="1" source="t_levels" target="t_pred">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arr_pred_ftfc" style="endArrow=classic;html=1;rounded=0;strokeColor=#9673a6;strokeWidth=2;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0" edge="1" parent="1" source="t_pred" target="t_ftfc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="arr_features_corr" style="endArrow=classic;html=1;rounded=0;strokeColor=#9673a6;strokeWidth=2;dashed=1;exitX=1;exitY=0.6;entryX=0;entryY=0.3" edge="1" parent="1" source="t_features" target="t_corr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ LEGEND ═══ -->
+        <mxCell id="legend" value="Legend:  🔑 = primary key  •  solid line = production data flow  •  dashed line = planned / future SQL persistence  •  yellow = upstream/source  •  blue = strat_features (SoT)  •  green = enrichment companion  •  purple = stage outputs" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=10;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="40" y="880" width="2120" height="20" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

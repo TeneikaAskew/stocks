@@ -278,6 +278,86 @@ def calculate_consecutive_moves(
 
 
 # ---------------------------------------------------------------------------
+# Current-period running levels (today / WTD / MTD / QTD / YTD)
+# ---------------------------------------------------------------------------
+
+def calculate_current_period_levels(
+    times: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    open_: pd.Series,
+    close: pd.Series,
+) -> pd.DataFrame:
+    """Running HLO for current day / week / month / quarter / year, accumulating
+    up to (and including) each bar. Close is NOT emitted here because the
+    current bar's close is already in the OHLC source.
+
+    For each period (Day/Week/Month/Quarter/Year), emits per-bar:
+      Cur_<Period>_Open : first bar's open of the current period
+      Cur_<Period>_High : running max of high up to and including this bar
+      Cur_<Period>_Low  : running min of low up to and including this bar
+      Cur_<Period>_HL_Mid: (Cur_High + Cur_Low) / 2
+      Cur_<Period>_OC_Mid: (Cur_Open + close) / 2
+
+    Plus normalized features per period:
+      Cur_<Period>_Range_Pct  : (Cur_High - Cur_Low) / Cur_Open * 100
+      Pos_in_Cur_<Period>     : (close - Cur_Low) / (Cur_High - Cur_Low)  in [0, 1]
+      Pct_From_Cur_<Period>_Open : (close - Cur_Open) / Cur_Open * 100
+
+    Returns: DataFrame indexed like input with ~40 columns.
+
+    NO LOOKAHEAD: every value is computed using only bars at or before
+    the current index within the same period bucket.
+    """
+    df = pd.DataFrame({
+        'Time': times, 'High': high.values, 'Low': low.values,
+        'Open': open_.values, 'Close': close.values,
+    })
+    ts = pd.to_datetime(df['Time'])
+    df['Date'] = ts.dt.date
+    df['Week'] = ts.dt.to_period('W')
+    df['Month'] = ts.dt.to_period('M')
+    df['Quarter'] = ts.dt.to_period('Q')
+    df['Year'] = ts.dt.to_period('Y')
+
+    result = pd.DataFrame(index=df.index)
+    for period_col, label in [
+        ('Date', 'Day'), ('Week', 'Week'), ('Month', 'Month'),
+        ('Quarter', 'Quarter'), ('Year', 'Year'),
+    ]:
+        prefix = f'Cur_{label}'
+        grp = df.groupby(period_col, sort=False)
+        # running min/max (cummax/cummin, NOT period-final)
+        result[f'{prefix}_High'] = grp['High'].cummax().values
+        result[f'{prefix}_Low'] = grp['Low'].cummin().values
+        # first open per period (broadcast — period's first bar's open)
+        first_open = grp['Open'].transform('first')
+        result[f'{prefix}_Open'] = first_open.values
+        # midpoints
+        result[f'{prefix}_HL_Mid'] = (
+            (result[f'{prefix}_High'] + result[f'{prefix}_Low']) / 2.0
+        )
+        result[f'{prefix}_OC_Mid'] = (
+            (result[f'{prefix}_Open'] + close.values) / 2.0
+        )
+        # normalized features
+        rng = result[f'{prefix}_High'] - result[f'{prefix}_Low']
+        result[f'{prefix}_Range_Pct'] = (
+            rng / result[f'{prefix}_Open'].replace(0, np.nan) * 100.0
+        )
+        # position-in-range: 0 = at low, 1 = at high. NaN if range is 0.
+        result[f'Pos_in_{prefix}'] = np.where(
+            rng > 0, (close.values - result[f'{prefix}_Low']) / rng, np.nan,
+        )
+        result[f'Pct_From_{prefix}_Open'] = (
+            (close.values - result[f'{prefix}_Open'])
+            / result[f'{prefix}_Open'].replace(0, np.nan) * 100.0
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Historical levels (prev day/week/month/year)
 # ---------------------------------------------------------------------------
 

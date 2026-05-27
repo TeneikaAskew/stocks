@@ -194,6 +194,36 @@ Add King/Gate proximity awareness to `gcp/signal_monitor.py`. Most impactful tra
 - Alert dedup window (5 min? 15 min?) — start at 15 min per (ticker, alert_kind, level)
 - Should Gate breaks fire on touch or on bar close? — close-only initially
 
+### Post-build empirical findings (2026-05-23)
+
+Two direction-mapping bugs were caught **before** the alerts were
+wired into the live monitor, via offline backtests against
+`market_data_intraday` + `etf_options_snapshots`. Both are documented
+in `docs/audits/gamma_proximity_2026-05-23.md`.
+
+1. **King direction was inverted** (commit a4d3153). The textbook
+   "rejection at resistance/support" thesis assumes price gets
+   rejected at the wall. SPY 14-day backtest (N=33) showed the
+   OPPOSITE: in a positive-gamma regime dealers buy dips and sell
+   rallies, dragging price TOWARD the highest-OI strike at 65-77%
+   continuation. Production mapping is now `below → CALL`, `above
+   → PUT` (magnet, not barrier).
+
+2. **Gate + Flip alerts need an FTFC filter** (commit 35766be).
+   30-day backtest across SPY/IWM/QQQ showed against-FTFC PUT
+   alerts had 39-46% hit rates (catastrophic for gate PUTs in a
+   bullish-FTFC regime). The shipped fix adds an optional
+   `prev_day_dir` kwarg to `evaluate_gate_break` and
+   `evaluate_flip_cross`; alerts only fire when alert_direction
+   aligns with the prior day's daily-candle direction. King is
+   FTFC-independent (75-77% both regimes, both directions).
+
+   When the signal_monitor consumer ships, it MUST pass
+   `prev_day_dir` computed once per session from
+   `market_data_daily` (no leak — yesterday's bar is closed
+   before today's first bar). The 4-TF intraday FTFC stack is a
+   follow-up that should further sharpen the edge.
+
 ---
 
 ## Track 4 — OptionsFlowPage freshness badge

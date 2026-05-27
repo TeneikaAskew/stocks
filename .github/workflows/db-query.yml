@@ -58,7 +58,12 @@ concurrency:
 jobs:
   run-query:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 90 min lets longer-window analytical queries finish. The Postgres
+    # statement_timeout (default 120s, overridable per dispatch via
+    # statement_timeout_seconds up to 1800s) is the real per-statement
+    # cap; this is just the outer runner ceiling. Bumped 2026-05-23
+    # after a 60d gate-break × FTFC backtest hit the 30-min default.
+    timeout-minutes: 90
     permissions:
       contents: read
       issues: write

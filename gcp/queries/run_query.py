@@ -34,6 +34,12 @@ from typing import Any
 
 import pandas as pd
 import sqlparse
+# Lift sqlparse's default 10k-token grouping limit so multi-row INSERTs
+# (e.g. yfinance-backed VIX backfill, 8500+ rows ≈ 130k tokens) don't
+# blow up in clean_for_wrap. Affects parsing only — the resulting SQL
+# is still sent verbatim to Postgres. Added 2026-05-23.
+import sqlparse.engine.grouping as _sqlparse_grouping
+_sqlparse_grouping.MAX_GROUPING_TOKENS = 5_000_000
 from sqlalchemy import text
 from sqlalchemy.exc import (
     DataError,

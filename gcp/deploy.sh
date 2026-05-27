@@ -697,6 +697,55 @@ deploy_premarket_playbook_resolver() {
         --quiet
 }
 
+# ── Strat Directionality Engine (Cloud Run Job, research image) ─────────────
+# Replaces the P7-era `p7b-next-candle-classifier` job (which is now used
+# only to keep the prior modeling pipeline reachable for reference;
+# scripts moved to gcp/research/_archive/).
+#
+# This single job hosts the entire strat_engine pipeline. Different
+# entry points are selected via --args:
+#   --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipelineer,--tickers=IWM,--tf-only=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
+#   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
+#
+# Image: research (lightgbm + scikit-learn + scipy + shap).
+#   gcloud builds submit --tag ${IMAGE}:research -f gcp/Dockerfile.research .
+deploy_strat_engine() {
+    echo "Deploying strat-engine job..."
+    local research_image="${IMAGE}:research"
+
+    gcloud run jobs create strat-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update strat-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
+# Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
+# Cloud Run Job itself stays around briefly so any in-flight references
+# resolve, but new work should use deploy_strat_engine above.
+# Removing this function next: when no `p7b-next-candle-classifier-*`
+# executions are pending and no other code path dispatches it.
+deploy_p7b_classifier_DEPRECATED() {
+    echo "DEPRECATED — use deploy_strat_engine instead."
+    return 1
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -2126,6 +2175,14 @@ deploy_schedulers() {
     _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
+    # P&L cell is identified. The classifier hits 58-60% OOS accuracy but the
+    # P7d backtest showed every exit model loses money after 10 bps round-trip
+    # costs. Uncomment when (a) a profitable cell is found via the avenues in
+    # docs/research/2026-05-25/P7_4track_verdict.md §"What I'd push next" and
+    # (b) the deploy function is updated to --mode=predict instead of evaluate.
+    # _schedule_with_args "p7b-classifier-daily" "30 16 * * 1-5" "p7b-next-candle-classifier" \
+    #     "-m" "gcp.research.p7b_next_candle_classifier" "--mode=all" "--ticker=IWM" "--tf=5m"
     # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
     # so any late-arriving intraday bars are queryable). Sweeps any alerts
     # still is_open=TRUE or with exit_ts NULL and resolves them via the
@@ -2476,6 +2533,8 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
+    strat-engine) deploy_strat_engine ;;
+    p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
