@@ -156,18 +156,33 @@ def _add_phase3_features(df: pd.DataFrame, engine) -> pd.DataFrame:
     # economic_events schema: event_ts, impact, event_type, ...
     min_ts = df["ts"].min()
     max_ts = df["ts"].max()
+    # economic_events schema: event_date + event_time + importance.
+    # event_time may be NULL for all-day events — default to 09:00 ET (13:00
+    # UTC) for those. ET-vs-UTC: the table stores ET local times in the
+    # event_time column for U.S. data. We convert to UTC by adding 4 hours
+    # (EDT) / 5 hours (EST). Approximation: 4 hours year-round adds at most
+    # 1 hour of error on the "hours_until" feature near DST transitions —
+    # acceptable for a research signal at hour resolution.
     with engine.connect() as conn:
         events = pd.read_sql(
             text("""
-                SELECT event_ts, impact
+                SELECT event_date, event_time, importance
                   FROM economic_events
-                 WHERE impact = 'high'
-                   AND event_ts BETWEEN :lo AND :hi
-                 ORDER BY event_ts
+                 WHERE LOWER(importance) = 'high'
+                   AND event_date BETWEEN :lo::date AND :hi::date
+                 ORDER BY event_date, event_time
             """),
             conn,
             params={"lo": min_ts, "hi": max_ts},
         )
+    if not events.empty:
+        # Build event_ts as UTC = date + COALESCE(time, 09:00 ET) + 4 hours.
+        events["event_time"] = events["event_time"].fillna(pd.Timestamp("09:00").time())
+        events["event_ts"] = (
+            pd.to_datetime(events["event_date"].astype(str) + " "
+                            + events["event_time"].astype(str), utc=False)
+            + pd.Timedelta(hours=4)
+        ).dt.tz_localize("UTC")
     if events.empty:
         log.warning("phase3: no high-impact events in window — features filled NaN")
         df["hours_until_next_hi_event"] = np.nan
