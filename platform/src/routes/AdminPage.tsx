@@ -11,6 +11,8 @@ import {
 } from '@/hooks/useAdmin';
 import { useUser } from '@/hooks/useUser';
 import { StructureBrief } from '@/components/structure_brief/StructureBrief';
+import { PredictForm } from '@/components/structure_brief/PredictForm';
+import { ModelStateSnapshot } from '@/components/structure_brief/ModelStateSnapshot';
 
 // ---------------------------------------------------------------------------
 // Admin page — per-role model routing dashboard.
@@ -38,8 +40,9 @@ export default function AdminPage() {
     <div className="mx-auto max-w-5xl p-4">
       <h1 className="mb-4 text-lg font-semibold text-[var(--color-text-primary)]">Admin</h1>
       {authed ? (
-        <div className="space-y-6">
+        <div className="space-y-8">
           <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} showLogout={!isAdmin} />
+
           <section>
             <h2 className="mb-3 text-base font-semibold text-[var(--color-text-primary)]">
               Structure Brief
@@ -48,6 +51,26 @@ export default function AdminPage() {
               </span>
             </h2>
             <StructureBrief enabled={authed} />
+          </section>
+
+          <section>
+            <h2 className="mb-3 text-base font-semibold text-[var(--color-text-primary)]">
+              On-Demand Predict
+              <span className="ml-2 rounded bg-[var(--color-bg-muted)] px-2 py-0.5 text-[10px] font-normal uppercase tracking-wide text-[var(--color-text-muted)]">
+                admin tool · single bar
+              </span>
+            </h2>
+            <PredictForm enabled={authed} />
+          </section>
+
+          <section>
+            <h2 className="mb-3 text-base font-semibold text-[var(--color-text-primary)]">
+              Model State Snapshot
+              <span className="ml-2 rounded bg-[var(--color-bg-muted)] px-2 py-0.5 text-[10px] font-normal uppercase tracking-wide text-[var(--color-text-muted)]">
+                operator view · on shelf
+              </span>
+            </h2>
+            <ModelStateSnapshot enabled={authed} />
           </section>
         </div>
       ) : (

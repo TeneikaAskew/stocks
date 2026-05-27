@@ -357,6 +357,117 @@ class StratEnginePredictResponse(BaseModel):
     note: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Strat-engine model state — read-only per-cell artifact metadata.
+#
+# Powers the admin-side Model State Snapshot card. Identical data shape to
+# the inline HTML section at /dev, but returned as JSON for the React UI.
+# ---------------------------------------------------------------------------
+
+
+class StratEngineCellState(BaseModel):
+    ticker: str
+    timeframe: str
+    available: bool
+    model_version: Optional[str] = None
+    last_train_date: Optional[str] = None
+    live_ece: Optional[float] = None
+
+
+class StratEngineStateResponse(BaseModel):
+    cells: list[StratEngineCellState]
+    ece_ceiling: float = STRUCTURE_BRIEF_ECE_CEILING
+
+
+def _strat_engine_state_cells() -> list[StratEngineCellState]:
+    """Read each deployed cell's metrics.json + live-ECE snapshot from GCS.
+
+    Best-effort: any cell whose metadata can't be loaded returns
+    available=False. The Cloud Run image is responsible for having
+    google-cloud-storage available (platform/Dockerfile installs it).
+    """
+    rows: list[StratEngineCellState] = []
+    try:
+        from google.cloud import storage as _gcs
+    except ImportError:
+        return rows
+    bucket_name = os.environ.get(
+        "GCS_BUCKET", "adept-mountain-474619-d4-trading-data"
+    )
+    try:
+        client = _gcs.Client()
+        bucket = client.bucket(bucket_name)
+    except Exception:
+        return rows
+
+    import json as _json
+    snap_cells: dict = {}
+    try:
+        snap_blob = bucket.blob("research/strat_engine/structure_brief_latest.json")
+        if snap_blob.exists():
+            snap_cells = _json.loads(snap_blob.download_as_bytes()).get("cells", {})
+    except Exception:
+        snap_cells = {}
+
+    for ticker in STRUCTURE_BRIEF_TICKERS:
+        for tf in STRUCTURE_BRIEF_TFS:
+            prefix = f"research/strat_engine/{ticker.lower()}_{tf}"
+            row = StratEngineCellState(
+                ticker=ticker, timeframe=tf, available=False,
+            )
+            # Discover the latest metrics_<epoch>.json (training writes a
+            # new one per run; the highest epoch is the most recent).
+            try:
+                metrics_files = sorted(
+                    b.name for b in client.list_blobs(bucket, prefix=f"{prefix}/metrics_")
+                    if b.name.endswith(".json")
+                )
+                if metrics_files:
+                    latest = metrics_files[-1]
+                    metrics = _json.loads(bucket.blob(latest).download_as_bytes())
+                    row.available = True
+                    row.model_version = (
+                        metrics.get("run_id")
+                        or metrics.get("config_signature")
+                        or metrics.get("model_version")
+                    )
+                    if row.model_version is None:
+                        # Derive from filename when the file itself omits it
+                        import re as _re
+                        m = _re.search(r"/metrics_(\d{8,})\.json$", latest)
+                        if m:
+                            row.model_version = f"epoch-{m.group(1)}"
+                    row.last_train_date = (
+                        metrics.get("trained_at")
+                        or metrics.get("computed_at")
+                        or metrics.get("train_until")
+                    )
+            except Exception:
+                pass
+            ece = snap_cells.get(f"{ticker}_{tf}", {}).get("live_ece")
+            if ece is not None:
+                row.live_ece = float(ece)
+            rows.append(row)
+    return rows
+
+
+@router.get("/strat-engine/state", response_model=StratEngineStateResponse)
+async def admin_strat_engine_state(
+    request: Request, x_admin_token: Optional[str] = Header(None)
+):
+    """Operator snapshot of the on-shelf strat-engine model state.
+
+    Read-only: lists per-cell `model_version`, `last_train_date`, and
+    `live_ece` for each deployed (ticker, timeframe). No model is loaded,
+    no Cloud SQL query happens — this is GCS metadata only.
+    """
+    _require_admin(request, x_admin_token)
+    return StratEngineStateResponse(
+        cells=_strat_engine_state_cells(),
+        ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
+    )
+
+
 @router.post(
     "/strat-engine/predict",
     response_model=StratEnginePredictResponse,
