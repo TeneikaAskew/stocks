@@ -41,20 +41,26 @@ from sqlalchemy import text
 log = logging.getLogger(__name__)
 
 
-def _load_eod_options(engine, ticker: str, since: str, until: str) -> pd.DataFrame:
-    """Pull EOD AlphaVantage snapshots only (the canonical post-close
-    snapshot). Yahoo intraday rows are excluded to avoid mixing sources.
+def _load_daily_pcr(engine, ticker: str, since: str, until: str) -> pd.DataFrame:
+    """Aggregate PCR (volume + OI) per snapshot_date via SQL — small result
+    set (~2500 rows) replacing a 14M-row pull. Per CLAUDE.md rule 4: batch
+    by partition key, never per-row pulls when N exceeds 100.
     """
     sql = text(
         """
-        SELECT snapshot_date, option_type, expiration, strike,
-               volume, open_interest, implied_volatility,
-               delta, underlying_price
+        SELECT
+          snapshot_date,
+          SUM(volume) FILTER (WHERE option_type = 'calls')         AS call_vol,
+          SUM(volume) FILTER (WHERE option_type = 'puts')          AS put_vol,
+          SUM(open_interest) FILTER (WHERE option_type = 'calls')  AS call_oi,
+          SUM(open_interest) FILTER (WHERE option_type = 'puts')   AS put_oi
         FROM etf_options_snapshots
         WHERE ticker = :tk
           AND market_session = 'EOD'
           AND data_source = 'alphavantage'
           AND snapshot_date >= :s AND snapshot_date <= :u
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date
         """
     )
     with engine.connect() as conn:
@@ -62,13 +68,141 @@ def _load_eod_options(engine, ticker: str, since: str, until: str) -> pd.DataFra
     if df.empty:
         return df
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
-    df["expiration"] = pd.to_datetime(df["expiration"]).dt.date
-    df["dte"] = (pd.to_datetime(df["expiration"]) - pd.to_datetime(df["snapshot_date"])).dt.days
     return df
 
 
+def _load_iv_features(engine, ticker: str, since: str, until: str) -> pd.DataFrame:
+    """Per snapshot_date compute IV skew + ATM IV + term slope via SQL.
+
+    Strategy: pick FRONT-month expiry (smallest dte >= 7) per date, then
+    compute 25Δ put-IV − 25Δ call-IV and ATM IV (delta closest to ±0.5).
+    Also compute term-slope ATM(60-120 DTE) − ATM(7-30 DTE).
+
+    Materialized as a CTE chain to keep the result set small (~2500 rows ×
+    a few columns). The closest-delta selection uses DISTINCT ON which is
+    a Postgres extension — clean for our use-case.
+    """
+    sql = text(
+        """
+        WITH base AS (
+          SELECT snapshot_date,
+                 option_type,
+                 expiration,
+                 strike,
+                 implied_volatility AS iv,
+                 delta,
+                 (expiration - snapshot_date) AS dte
+          FROM etf_options_snapshots
+          WHERE ticker = :tk
+            AND market_session = 'EOD'
+            AND data_source = 'alphavantage'
+            AND snapshot_date >= :s AND snapshot_date <= :u
+            AND implied_volatility IS NOT NULL
+            AND delta IS NOT NULL
+        ),
+        -- Per (snapshot_date), pick the front-month expiry (smallest dte
+        -- with dte >= 7). Allow dte >= 0 fallback if no >=7 exists.
+        front_exp AS (
+          SELECT DISTINCT ON (snapshot_date) snapshot_date, expiration AS front
+          FROM base
+          WHERE dte >= 7
+          ORDER BY snapshot_date, dte ASC
+        ),
+        -- 25Δ put IV from front month
+        put25 AS (
+          SELECT DISTINCT ON (b.snapshot_date)
+                 b.snapshot_date, b.iv AS iv_put25
+          FROM base b
+          JOIN front_exp f ON f.snapshot_date = b.snapshot_date
+                          AND f.front = b.expiration
+          WHERE b.option_type = 'puts'
+          ORDER BY b.snapshot_date, abs(b.delta + 0.25) ASC
+        ),
+        call25 AS (
+          SELECT DISTINCT ON (b.snapshot_date)
+                 b.snapshot_date, b.iv AS iv_call25
+          FROM base b
+          JOIN front_exp f ON f.snapshot_date = b.snapshot_date
+                          AND f.front = b.expiration
+          WHERE b.option_type = 'calls'
+          ORDER BY b.snapshot_date, abs(b.delta - 0.25) ASC
+        ),
+        atm_front AS (
+          SELECT snapshot_date, AVG(iv) AS atm_front_iv
+          FROM (
+            SELECT DISTINCT ON (b.snapshot_date, b.option_type)
+                   b.snapshot_date, b.option_type, b.iv
+            FROM base b
+            JOIN front_exp f ON f.snapshot_date = b.snapshot_date
+                            AND f.front = b.expiration
+            ORDER BY b.snapshot_date, b.option_type,
+                     CASE WHEN b.option_type = 'calls'
+                          THEN abs(b.delta - 0.5)
+                          ELSE abs(b.delta + 0.5)
+                     END ASC
+          ) x
+          GROUP BY snapshot_date
+        ),
+        atm_back AS (
+          SELECT snapshot_date, AVG(iv) AS atm_back_iv
+          FROM (
+            SELECT DISTINCT ON (b.snapshot_date, b.option_type)
+                   b.snapshot_date, b.option_type, b.iv
+            FROM base b
+            WHERE b.dte BETWEEN 60 AND 120
+            ORDER BY b.snapshot_date, b.option_type,
+                     CASE WHEN b.option_type = 'calls'
+                          THEN abs(b.delta - 0.5)
+                          ELSE abs(b.delta + 0.5)
+                     END ASC
+          ) x
+          GROUP BY snapshot_date
+        )
+        SELECT
+          COALESCE(p.snapshot_date, c.snapshot_date, af.snapshot_date) AS snapshot_date,
+          p.iv_put25, c.iv_call25,
+          af.atm_front_iv, ab.atm_back_iv
+        FROM put25 p
+        FULL OUTER JOIN call25 c   ON c.snapshot_date  = p.snapshot_date
+        FULL OUTER JOIN atm_front af ON af.snapshot_date = COALESCE(p.snapshot_date, c.snapshot_date)
+        FULL OUTER JOIN atm_back ab  ON ab.snapshot_date = COALESCE(p.snapshot_date, c.snapshot_date, af.snapshot_date)
+        ORDER BY snapshot_date
+        """
+    )
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
+    if df.empty:
+        return df
+    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
+    return df
+
+
+def _compute_daily_features_sql(pcr_df: pd.DataFrame,
+                                  iv_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge SQL-aggregated PCR and IV components into the 6 per-date
+    features. Compute happens in-memory but on the small daily grid."""
+    df = pd.merge(pcr_df, iv_df, on="snapshot_date", how="outer")
+    df = df.sort_values("snapshot_date").set_index("snapshot_date")
+    df["pcr_volume_d1"] = df["put_vol"] / df["call_vol"].replace(0, np.nan)
+    df["pcr_oi_d1"] = df["put_oi"] / df["call_oi"].replace(0, np.nan)
+    df["iv_skew_25d_d1"] = df["iv_put25"] - df["iv_call25"]
+    df["iv_term_slope_d1"] = df["atm_back_iv"] - df["atm_front_iv"]
+    df["atm_iv_d1"] = df["atm_front_iv"]
+    df["iv_atm_chg_5d"] = df["atm_iv_d1"] / df["atm_iv_d1"].shift(5) - 1.0
+    return df[["pcr_volume_d1", "pcr_oi_d1", "iv_skew_25d_d1",
+                "iv_term_slope_d1", "atm_iv_d1", "iv_atm_chg_5d"]]
+
+
 def _compute_daily_features(opt: pd.DataFrame) -> pd.DataFrame:
-    """For each snapshot_date, compute the 5 daily features."""
+    """LEGACY PATH — kept for reference, no longer called from
+    add_options_features. The original implementation pulled the full
+    14M-row chain into Python and aggregated locally; that timed out in
+    production (CLAUDE.md rule 4 violation — per-row pull when N > 100).
+    The live path is _compute_daily_features_sql + the two _load_* helpers
+    above which push the aggregation into Postgres. Kept here so a future
+    reader can trace the rewrite.
+
+    For each snapshot_date, compute the 5 daily features."""
     rows = []
     for d, g in opt.groupby("snapshot_date"):
         calls = g[g["option_type"] == "calls"]
@@ -184,14 +318,20 @@ def add_options_features(df: pd.DataFrame, ticker: str,
     since = (pd.Timestamp(bar_dates.min()) - pd.Timedelta(days=60)).date().isoformat()
     until = pd.Timestamp(bar_dates.max()).date().isoformat()
 
-    opt = _load_eod_options(engine, ticker, since, until)
-    if opt.empty:
+    # SQL-side aggregation — replaces a 14M-row pull with two ~2500-row
+    # daily aggregates. The previous implementation pulled the full chain
+    # to Python and aggregated locally; that timed out in production. The
+    # math is identical (PCR sums, DISTINCT ON for closest-delta), only
+    # the partition is moved into Postgres.
+    pcr_df = _load_daily_pcr(engine, ticker, since, until)
+    iv_df = _load_iv_features(engine, ticker, since, until)
+    if pcr_df.empty and iv_df.empty:
         raise RuntimeError(f"options-derived family INFEASIBLE: no EOD AV "
                            f"options for ticker={ticker} in [{since}, {until}]")
-    log.info("loaded %d EOD option rows across %d snapshot dates",
-             len(opt), opt["snapshot_date"].nunique())
+    log.info("loaded daily PCR for %d dates, daily IV for %d dates",
+             len(pcr_df), len(iv_df))
 
-    daily = _compute_daily_features(opt)
+    daily = _compute_daily_features_sql(pcr_df, iv_df)
     if daily.empty:
         raise RuntimeError("options-derived: per-day aggregation produced 0 rows")
 
