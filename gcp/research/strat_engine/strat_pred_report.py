@@ -201,6 +201,20 @@ def main():
         log.info(f"- hits: {n_hits}")
         log.info(f"- hit rate: {n_hits/n_calls:.3f}")
 
+    # ── TABLE 3 — Every test bar ──
+    log.info("")
+    log.info("=" * 70)
+    log.info("TABLE 3 — EVERY TEST BAR (no confidence filter, no predicted-class filter)")
+    log.info("=" * 70)
+    log.info("| timestamp ET | prev | P(1) | P(2U) | P(2D) | P(3) | pred | top_p | actual | result | open | high | low | close |")
+    log.info("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for _, r in rep.iterrows():
+        mark = "HIT ✓" if (r["predicted"] == r["actual"]) else "MISS ✗"
+        log.info(f"| {r['ts'].strftime('%a %m-%d %H:%M')} | {r['prev_strat']} "
+                 f"| {r['p1']:.2f} | {r['p2u']:.2f} | {r['p2d']:.2f} | {r['p3']:.2f} "
+                 f"| {r['predicted']} | {r['top_prob']:.2f} | {r['actual']} | {mark} "
+                 f"| {r['open']:.2f} | {r['high']:.2f} | {r['low']:.2f} | {r['close']:.2f} |")
+
     log.info("=" * 70)
     log.info("REPORT COMPLETE")
     log.info("=" * 70)
