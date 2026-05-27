@@ -117,19 +117,25 @@ def expected_calibration_error(y_true_idx: np.ndarray, y_proba: np.ndarray,
     return float(ece), details
 
 
-def make_lgbm(class_weight: str | None = None) -> lgb.LGBMClassifier:
+def make_lgbm(class_weight: str | None = None,
+              n_jobs: int = -1) -> lgb.LGBMClassifier:
     """Base LightGBM classifier.
 
     class_weight=None (default): natural class frequencies. 2U/2D dominate.
-    class_weight='balanced': inverse-frequency weighting. Penalizes
-        majority-class collapse — helps when classes 1/3 are never
-        predicted AND when mid-range probabilities are underconfident."""
+    class_weight='balanced': inverse-frequency weighting.
+
+    n_jobs: pass an explicit thread count when the caller wraps this in a
+    parallel sklearn meta-estimator (e.g. CalibratedClassifierCV(n_jobs=cv)).
+    LightGBM nested under sklearn n_jobs=-1 oversubscribes — 3 CV folds × 8
+    LGBM threads each = 24 threads on 8 cores. Walk-forward sets this to
+    cores // cv.
+    """
     return lgb.LGBMClassifier(
         objective="multiclass", num_class=len(LABEL_CLASSES),
         n_estimators=300, learning_rate=0.05, max_depth=6,
         num_leaves=31, min_child_samples=100,
         class_weight=class_weight,
-        random_state=42, verbose=-1, n_jobs=-1,
+        random_state=42, verbose=-1, n_jobs=n_jobs,
     )
 
 
@@ -148,15 +154,14 @@ def run_train(engine, ticker: str, tf: str, train_until: str,
     test_df = load_labeled_dataset(engine, ticker, tf, since=train_until)
     log.info("split sizes — train=%d  test(OOS)=%d", len(train_df), len(test_df))
 
-    # Featurize train + test, align columns
+    # Featurize train + test, align columns.
+    # reindex(fill_value=0) is ONE C-pass; the previous Python loop fragmented
+    # the DataFrame on every assignment.
     X_train, train_cols = featurize(train_df)
     X_test, test_cols = featurize(test_df)
     all_cols = sorted(set(train_cols) | set(test_cols))
-    for X in (X_train, X_test):
-        for c in all_cols:
-            if c not in X.columns: X[c] = 0
-    X_train = X_train[all_cols].astype(np.float32)
-    X_test = X_test[all_cols].astype(np.float32)
+    X_train = X_train.reindex(columns=all_cols, fill_value=0).astype(np.float32)
+    X_test = X_test.reindex(columns=all_cols, fill_value=0).astype(np.float32)
 
     y_train = train_df[LABEL_COL].map(LABEL_TO_IDX).values
     y_test = test_df[LABEL_COL].map(LABEL_TO_IDX).values

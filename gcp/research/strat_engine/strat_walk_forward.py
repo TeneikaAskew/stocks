@@ -114,45 +114,48 @@ def base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float:
         y_test_idx, proba, labels=list(range(len(LABEL_CLASSES)))))
 
 
-def train_and_evaluate_fold(df: pd.DataFrame, train_end: str, test_end: str) -> dict:
+def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
+                             bar_dates: np.ndarray,
+                             train_end: str, test_end: str,
+                             lgbm_n_jobs: int) -> dict:
     """ONE fold of walk-forward. Full retrain + recalibrate from scratch.
 
+    Inputs are pre-featurized arrays + a bar_date array for slicing — the
+    featurize() call has been hoisted out of the loop to avoid 16 redundant
+    one-hot rebuilds across 8 folds. Per-fold work is now O(numpy slice +
+    LGBM fit), not O(featurize + pandas concat + column align).
+
     Critical: the CalibratedClassifierCV is constructed FRESH inside this
-    function. NEVER reuse a calibrator from a different fold — that
-    leaks future data into past test windows.
+    function. NEVER reuse a calibrator from a different fold — that leaks
+    future data into past test windows.
     """
-    train_df = df[df["bar_date"] < pd.Timestamp(train_end).date()]
-    test_df = df[(df["bar_date"] >= pd.Timestamp(train_end).date())
-                 & (df["bar_date"] < pd.Timestamp(test_end).date())]
-    if len(test_df) < MIN_TEST_BARS:
+    train_end_dt = np.datetime64(train_end)
+    test_end_dt = np.datetime64(test_end)
+    train_mask = bar_dates < train_end_dt
+    test_mask = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt)
+    n_train = int(train_mask.sum())
+    n_test = int(test_mask.sum())
+    if n_test < MIN_TEST_BARS:
         return {"fold": f"{train_end}..{test_end}",
-                "n_test": len(test_df), "n_train": len(train_df),
+                "n_test": n_test, "n_train": n_train,
                 "status": "SKIP_THIN"}
 
-    # Featurize independently then align columns (one-hot categoricals may
-    # differ between train and test slices).
-    X_tr, tr_cols = featurize(train_df)
-    X_te, te_cols = featurize(test_df)
-    all_cols = sorted(set(tr_cols) | set(te_cols))
-    for X in (X_tr, X_te):
-        for c in all_cols:
-            if c not in X.columns: X[c] = 0
-    X_tr, X_te = X_tr[all_cols].astype(np.float32), X_te[all_cols].astype(np.float32)
-    y_tr = train_df[LABEL_COL].map(LABEL_TO_IDX).values
-    y_te = test_df[LABEL_COL].map(LABEL_TO_IDX).values
+    X_tr = X_full[train_mask]
+    X_te = X_full[test_mask]
+    y_tr = y_full[train_mask]
+    y_te = y_full[test_mask]
 
     # FRESH calibrated classifier — refit base + sigmoid from scratch.
-    # The retrain-and-recalibrate happens inside this single fit() call:
-    # CalibratedClassifierCV(cv=3) trains the base LGBM on each of 3 folds
-    # of train data, fits the sigmoid on each held-out third, then averages.
+    # Untangled parallelism: CalibratedClassifierCV(n_jobs=cv) parallelizes
+    # the cv inner folds; each LGBM is given n_jobs = cores // cv so total
+    # threads ≤ core count. Previous nested -1 created 24 threads on 8 cores.
     calibrated = CalibratedClassifierCV(
-        estimator=make_lgbm(class_weight=None),
-        method=DEFAULT_CALIBRATION, cv=DEFAULT_CV, n_jobs=-1,
+        estimator=make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs),
+        method=DEFAULT_CALIBRATION, cv=DEFAULT_CV, n_jobs=DEFAULT_CV,
     )
-    calibrated.fit(X_tr.values, y_tr)
+    calibrated.fit(X_tr, y_tr)
 
-    # Evaluate on the test slice
-    proba = calibrated.predict_proba(X_te.values)
+    proba = calibrated.predict_proba(X_te)
     ll = float(log_loss(y_te, proba, labels=list(range(len(LABEL_CLASSES)))))
     base_ll = base_rate_logloss(y_tr, y_te)
     pred = np.argmax(proba, axis=1)
@@ -162,8 +165,8 @@ def train_and_evaluate_fold(df: pd.DataFrame, train_end: str, test_end: str) -> 
 
     return {
         "fold": f"{train_end}..{test_end}",
-        "n_train": int(len(train_df)),
-        "n_test": int(len(test_df)),
+        "n_train": n_train,
+        "n_test": n_test,
         "logloss": ll,
         "base_logloss": base_ll,
         "beat": base_ll - ll,
@@ -189,6 +192,26 @@ def walk_forward(engine, ticker: str, tf: str,
     log.info("loaded full dataset: %d rows  (%s..%s)",
              len(df), df["bar_date"].min(), df["bar_date"].max())
 
+    # FEATURIZE ONCE — hoisted out of the fold loop. Previously called per
+    # fold (8 folds × train+test = 16 re-encodings), which was the main
+    # walk-forward bottleneck. Now: one pd.get_dummies + one reindex; each
+    # fold just numpy-slices.
+    t0 = time.time()
+    X_df, feature_cols = featurize(df)
+    X_full = X_df.values.astype(np.float32, copy=False)
+    y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
+    bar_dates_arr = np.asarray(df["bar_date"].astype("datetime64[D]"))
+    log.info("featurize-once: %d rows × %d cols in %.1fs",
+             X_full.shape[0], X_full.shape[1], time.time() - t0)
+
+    # Untangle nested parallelism. With cv=3 on 8 cores: outer parallelizes
+    # the 3 CV folds; each LGBM gets ⌊8/3⌋ = 2 threads. Total = 6 threads,
+    # under the core count. Previous nested n_jobs=-1 created 24 threads.
+    cores = max(1, os.cpu_count() or 1)
+    lgbm_n_jobs = max(1, cores // DEFAULT_CV)
+    log.info("threading: cores=%d, calibrated_cv n_jobs=%d, lgbm n_jobs=%d",
+             cores, DEFAULT_CV, lgbm_n_jobs)
+
     folds = []
     for i, cut in enumerate(cutoffs):
         if i + 1 < len(cutoffs):
@@ -201,7 +224,10 @@ def walk_forward(engine, ticker: str, tf: str,
         log.info("fold %d/%d  train<%s  test=[%s..%s)",
                  i + 1, len(cutoffs), cut, cut, test_end)
         try:
-            r = train_and_evaluate_fold(df, cut, test_end)
+            fold_t0 = time.time()
+            r = train_and_evaluate_fold(
+                X_full, y_full, bar_dates_arr, cut, test_end, lgbm_n_jobs)
+            r["fold_seconds"] = round(time.time() - fold_t0, 1)
             folds.append(r)
             if r["status"] == "OK":
                 log.info("  n_train=%d  n_test=%d", r["n_train"], r["n_test"])
