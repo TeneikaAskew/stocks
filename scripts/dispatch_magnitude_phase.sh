@@ -4,6 +4,13 @@
 # The job spreads N cells across N parallel worker instances. Wall-clock
 # is the slowest single cell (~30-60 min), not the sum.
 #
+# Per Phase-3 post-mortem (2026-05-28), every walk-forward dispatch should
+# be followed by bootstrap gate-fragility (gate 5) and mechanism check
+# (gate 6) on the resulting predictions. Use `--with-checks` flag to
+# auto-dispatch those follow-ups against the just-completed run, OR run
+# them manually with scripts/bootstrap_gate_fragility.py +
+# scripts/check_event_window_concentration.py.
+#
 # Usage:
 #   ./scripts/dispatch_magnitude_phase.sh no_backfill     # 27 cells (phases 0+1+3) parallel
 #   ./scripts/dispatch_magnitude_phase.sh phase0          # 9 cells of phase0 parallel
@@ -11,6 +18,7 @@
 #   ./scripts/dispatch_magnitude_phase.sh phase3          # 9 cells of phase3
 #   ./scripts/dispatch_magnitude_phase.sh phase2          # 9 cells of phase2  (needs backfill!)
 #   ./scripts/dispatch_magnitude_phase.sh phase4          # 9 cells of phase4  (needs backfill!)
+#   ./scripts/dispatch_magnitude_phase.sh phase_calendar  # 9 cells of phase_calendar
 #   ./scripts/dispatch_magnitude_phase.sh audit           # leakage audit (IWM 15m), single task
 #
 # The job must already exist:  ./gcp/deploy.sh magnitude-engine
