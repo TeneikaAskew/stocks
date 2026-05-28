@@ -343,15 +343,64 @@ construction — EXPLOSIVE has 3% base rate, no calendar cell has it as
 modal bucket, the lookup never argmaxes EXPLOSIVE, lift is undefined
 every fold.
 
-**Open follow-up: Model EXPLOSIVE decomposition** — when the model
-DOES argmax EXPLOSIVE on a bar, is it just picking bars from the
-highest-historical-EXPLOSIVE-rate calendar cells (amplification of
-calendar), or is it discriminating WITHIN cells using bar features
-(real bar-feature edge)? `scripts/model_vs_calendar_explosive_decomp.py`
-runs the test. Outcome will determine whether Phase 4 (cross-asset)
-and the trade-test are worth pursuing or whether the project verdict
-is "calendar volatility, already priced into 0DTE theta, no actionable
-edge."
+## 5d. Model EXPLOSIVE decomposition (added 2026-05-28)
+
+Question: when the phase_calendar model argmax-predicts EXPLOSIVE, is
+it (a) just picking bars from highest-historical-rate calendar cells
+(amplification of calendar — no edge), or (b) discriminating WITHIN
+cells using bar features (real edge)?
+
+Method (in `scripts/model_vs_calendar_explosive_decomp.py`): for each
+model-predicted-EXPLOSIVE bar in the test set, look up its training-data
+calendar-cell historical EXPLOSIVE rate. Compute:
+1. Mean cell rate across model-EXPLOSIVE bars vs base rate
+2. % of model-EXPLOSIVE bars whose cell is in the top-10% historical-rate cells
+3. Within-top-cell coverage: of bars whose cell IS in top-10%, what
+   fraction does the model predict EXPLOSIVE for?
+
+**Result**:
+
+| ticker | mean cell rate | base | ratio | % in top-10% cells | within-top-cell pred rate |
+|---|---|---|---|---|---|
+| **IWM 5m** | 0.103 | 0.033 | **3.09x** | **63.3%** | 5-14% per fold |
+| SPY 5m | 0.075 | 0.033 | 2.28x | 58.4% | 1-9% per fold |
+| QQQ 5m | 0.082 | 0.033 | 2.48x | 46.4% | 1-7% per fold |
+
+**Diagnosis: mixed — neither pure amplification nor pure bar-feature edge.**
+
+The model uses calendar cells as a strong PRIOR (~3x concentration in
+top-historical-rate cells for IWM) AND uses bar features as a secondary
+SELECTOR within those cells (only ~5-15% of bars in top cells get
+EXPLOSIVE-tagged). If it were pure amplification, the within-top-cell
+rate would be near 100%. Instead it's selective.
+
+**That selectivity is bar features doing work — but they're working as a
+secondary filter ON TOP of calendar selection.** The bulk of the model's
+EXPLOSIVE-precision lift (the original gate-4 numbers showing 6-10x
+precision over base rate) decomposes as roughly:
+- ~3x from calendar concentration (a lookup-table thresholding would replicate)
+- ~2-3x from bar-feature within-cell selection (this part is real edge)
+
+**Practical implication for trade-test**: the calendar concentration is
+mostly "trade the open" (the user already does this). The bar-feature
+within-cell selection is "of the open-window bars, pick which specific
+5-15% to size up on." THAT could be edge — IF the within-cell
+discrimination is stable across regimes AND the bar features doing
+the work are non-obvious to a normal intraday trader.
+
+The next experiment that answers this is the **trade-test**:
+
+1. Take the magnitude model's EXPLOSIVE-confidence threshold from each
+   fold's calibration (or pick a few thresholds).
+2. Rerun Track B (or Track 2 options) using the type model alone as
+   baseline AND filtered by magnitude-EXPLOSIVE-above-threshold.
+3. Compare per-fold expectancy of the two. Is the magnitude-filtered
+   subset higher expectancy than the unfiltered? Higher than
+   trade-the-open alone?
+
+Per-fold caveat: the within-top-cell rate ranges from 0.8% (IWM 5m 2020
+COVID fold) to 14.5% (IWM 5m 2025) — wide regime variation. A
+trade-test should report per-regime expectancy, not just aggregate.
 
 ---
 
