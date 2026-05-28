@@ -27,11 +27,11 @@ from __future__ import annotations
 import argparse
 import io
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
+from google.cloud import storage as gcs
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.research.magnitude_engine.mag_config import (
@@ -39,36 +39,24 @@ from gcp.research.magnitude_engine.mag_config import (
 )
 
 
-def _ls(prefix: str) -> list[str]:
-    try:
-        out = subprocess.check_output(
-            ["gcloud", "storage", "ls", prefix],
-            stderr=subprocess.DEVNULL,
-        )
-        return [l for l in out.decode().splitlines() if l.endswith(".csv")]
-    except subprocess.CalledProcessError:
-        return []
-
-
-def _cat(uri: str) -> str:
-    return subprocess.check_output(
-        ["gcloud", "storage", "cat", uri], stderr=subprocess.DEVNULL
-    ).decode()
-
-
 def load_predictions(phase: str, ticker: str, tf: str,
                       bucket: str, run_id: str | None) -> pd.DataFrame:
-    prefix = f"gs://{bucket}/research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
-    files = _ls(prefix)
-    if not files:
-        raise SystemExit(f"no prediction CSV under {prefix}")
+    """List + load via google-cloud-storage SDK (the Cloud Run image
+    has this, not the gcloud CLI)."""
+    client = gcs.Client()
+    bkt = client.bucket(bucket)
+    prefix = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
+    blobs = [b for b in bkt.list_blobs(prefix=prefix)
+             if b.name.endswith(".csv") and "predictions_" in b.name]
+    if not blobs:
+        raise SystemExit(f"no prediction CSV under gs://{bucket}/{prefix}")
     if run_id:
-        files = [f for f in files if run_id in f]
-        if not files:
-            raise SystemExit(f"no prediction CSV matching run_id={run_id} under {prefix}")
-    target = sorted(files)[-1]
-    print(f"loading predictions: {target}", file=sys.stderr)
-    return pd.read_csv(io.StringIO(_cat(target)))
+        blobs = [b for b in blobs if run_id in b.name]
+        if not blobs:
+            raise SystemExit(f"no prediction CSV matching run_id={run_id}")
+    target = sorted(blobs, key=lambda b: b.name)[-1]
+    print(f"loading predictions: gs://{bucket}/{target.name}", file=sys.stderr)
+    return pd.read_csv(io.BytesIO(target.download_as_bytes()))
 
 
 def load_high_impact_events(min_ts: pd.Timestamp, max_ts: pd.Timestamp) -> pd.DataFrame:
