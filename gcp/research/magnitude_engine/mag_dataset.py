@@ -252,6 +252,61 @@ def _add_phase3_features(df: pd.DataFrame, engine) -> pd.DataFrame:
     return df
 
 
+# ─────────────────────── Phase-calendar features (no DB lookup, ts-only) ────────────
+
+def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Calendar-replacement test (Phase 3b) features.
+
+    Per reviewer 2026-05-28: if Phase 3's QQQ 5m + SPY 5m gate-passing
+    REPLICATES with calendar features only (no event_proximity), the
+    answer is 'calendar proxy' and we know what the Phase 3 features
+    were actually encoding. If those cells fail with calendar-only,
+    the Phase 3 features encode something more specific.
+
+    Features (all derivable from `ts` alone; no DB lookup):
+      - hour_of_day, minute_of_hour
+      - day_of_week (0=Mon..4=Fri; non-RTH weekends are pre-filtered upstream)
+      - week_of_month (1..5)
+      - is_first_friday — NFP day proxy (binary)
+      - is_fomc_week — rough proxy: 3rd or 4th week of month (binary)
+      - is_month_end — last 2 trading days of month (binary)
+      - is_quarter_end — last 3 trading days of quarter (binary)
+
+    These are GLOBALLY observable at bar t — no future data.
+    """
+    df = df.copy()
+    ts_et = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("America/New_York")
+
+    df["cal_hour_of_day"] = ts_et.dt.hour
+    df["cal_minute_of_hour"] = ts_et.dt.minute
+    df["cal_day_of_week"] = ts_et.dt.dayofweek
+    # week_of_month: 1..5, where week 1 = day 1-7
+    df["cal_week_of_month"] = ((ts_et.dt.day - 1) // 7) + 1
+
+    # First Friday of the month — NFP traditionally released here
+    is_friday = ts_et.dt.dayofweek == 4
+    is_first_week = ts_et.dt.day <= 7
+    df["cal_is_first_friday"] = (is_friday & is_first_week).astype(int)
+
+    # FOMC-week proxy. FOMC meetings happen ~every 6 weeks, typically
+    # Tuesday-Wednesday. Without a calendar lookup the cheapest proxy
+    # is "is this week 3 or 4 of the month" — captures ~half the actual
+    # FOMC weeks. Imperfect; meant as a calendar-feature, not as a
+    # claim about FOMC dates.
+    df["cal_is_fomc_week"] = df["cal_week_of_month"].isin([3, 4]).astype(int)
+
+    # Month-end and quarter-end approximations. We don't have the trading
+    # calendar to identify "last N trading days" precisely without
+    # joining a calendar table; the cheap proxy is "last 3 calendar days
+    # of the month" / "last 5 calendar days of {Mar, Jun, Sep, Dec}".
+    days_in_month = ts_et.dt.daysinmonth
+    df["cal_is_month_end"] = (ts_et.dt.day >= (days_in_month - 2)).astype(int)
+    is_quarter_month = ts_et.dt.month.isin([3, 6, 9, 12])
+    df["cal_is_quarter_end"] = (is_quarter_month & (ts_et.dt.day >= (days_in_month - 4))).astype(int)
+
+    return df
+
+
 # ─────────────────────── Phase-2 / Phase-4 features (table joins) ───────────────────────
 
 def _add_table_join_features(df: pd.DataFrame, engine, table: str,
@@ -365,6 +420,8 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
             df, engine, NEW_CROSS_ASSET_TABLE,
             list(PHASE_FEATURES["phase4"]), ticker,
         )
+    if phase in ("phase_calendar",):
+        df = _add_calendar_features(df)
 
     # Class-balance log
     balance = df[LABEL_COL].value_counts(normalize=True).reindex(LABEL_CLASSES, fill_value=0)

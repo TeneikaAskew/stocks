@@ -528,6 +528,14 @@ TASK_PLANS: dict[str, list[tuple[str, str, str]]] = {
         for ticker in TICKERS
         for tf in TIMEFRAMES
     ],
+    # Phase-calendar — REPLACES event features with calendar features.
+    # Same Phase-0 baseline + 8 calendar columns. Tests reviewer's
+    # calendar-proxy hypothesis on QQQ/SPY 5m.
+    "phase_calendar": [
+        ("phase_calendar", ticker, tf)
+        for ticker in TICKERS
+        for tf in TIMEFRAMES
+    ],
 }
 
 

@@ -55,7 +55,8 @@ MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
 # Phase 0 (baseline) uses the existing 143-col enrichment as-is.
 # Phase 1+ adds new features computed on-the-fly in mag_dataset.
 # Phase 2+ requires backfilled tables (deferred for first dispatch).
-PHASES: tuple[str, ...] = ("phase0", "phase1", "phase2", "phase3", "phase4")
+PHASES: tuple[str, ...] = ("phase0", "phase1", "phase2", "phase3", "phase4",
+                            "phase_calendar")
 
 # Per-phase feature additions. Phase N includes Phase N-1's features
 # ONLY IF a prior phase passed. The spec says: "do not retrain Phase 0
@@ -95,6 +96,28 @@ PHASE_FEATURES: dict[str, tuple[str, ...]] = {
         "dxy_delta",
         "oil_z",
         "gold_z",
+    ),
+    # Phase-3b — CALENDAR REPLACEMENT TEST (added 2026-05-28).
+    # Reviewer's hypothesis: QQQ 5m and SPY 5m passed Phase 3's gates with
+    # robust bootstrap BUT mechanism check fails (0.85x / 0.82x event-window
+    # concentration, BELOW base rate). The event features might be acting
+    # as a calendar proxy rather than encoding event causality.
+    #
+    # This phase REPLACES the event features with a richer calendar set
+    # (no event-proximity features at all). Same Phase-0 baseline + these.
+    # If 5m gate-passing reproduces, the answer is "calendar proxy" and
+    # we've identified what the Phase 3 features were actually encoding.
+    # If 5m gate-passing fails, the event features encode something
+    # specific beyond raw calendar.
+    "phase_calendar": (
+        "cal_hour_of_day",
+        "cal_minute_of_hour",
+        "cal_day_of_week",
+        "cal_week_of_month",
+        "cal_is_first_friday",      # NFP day
+        "cal_is_fomc_week",         # rough proxy: 3rd or 4th week
+        "cal_is_month_end",         # last 2 trading days of month
+        "cal_is_quarter_end",       # last 3 trading days of quarter
     ),
     # Phase 5 (gamma) intentionally omitted from default config — only
     # built if Phases 0-4 hint at signal.

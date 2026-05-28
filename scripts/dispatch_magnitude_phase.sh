@@ -38,7 +38,7 @@ case "$plan" in
         --tasks=27 --parallelism=27 \
         --async
     ;;
-  phase0|phase1|phase2|phase3|phase4)
+  phase0|phase1|phase2|phase3|phase4|phase_calendar)
     echo "Dispatching plan=$plan (9 cells parallel)…"
     gcloud run jobs execute "$JOB" --region="$REGION" \
         --update-env-vars="MAG_PLAN=$plan" \
