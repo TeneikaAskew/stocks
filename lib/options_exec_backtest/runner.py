@@ -84,6 +84,13 @@ WINDOWS: Dict[str, Dict] = {
 DEFAULT_CUTOFFS = WINDOWS["5fold"]["cutoffs"]
 POSITIVE_FOLD_THRESHOLD = WINDOWS["5fold"]["positive_fold_threshold"]
 
+# The last fold's test_end (open-ended in our cutoffs scheme — every other
+# fold's test_end is the next cutoff). Single source of truth used by BOTH
+# the fold-iteration test_end derivation AND the rates preload range.
+# Mismatch between these two was the bug that voided 100% of fold-5 setups
+# with `no_rate` in run options-exec-backtest-xbkcv.
+FINAL_FOLD_TEST_END = "2026-12-31"
+
 # Per-cell time stop. 5m/15m → 30 min; 30m → 60 min. Same as Track B.
 TIME_STOP_BY_CELL = {"5m": 30, "15m": 30, "30m": 60}
 
@@ -252,7 +259,7 @@ def emit_setup_timestamps(
 
         tf_min = TF_MINUTES[cell]
         for i, cut in enumerate(cutoffs):
-            test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else "2026-12-31"
+            test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else FINAL_FOLD_TEST_END
             log.info("  fold %d: %s..%s", i + 1, cut, test_end)
             cands = train_predict_fold(
                 df, X_full, y_full, bar_dates_arr,
@@ -333,14 +340,19 @@ def run_one_cell(
     lookforward_min = max(240, tf_minutes + time_stop + 60)
 
     # Risk-free + div yield once per fold (full-year span; per-day lookup
-    # within engine call uses this dict)
-    rates_full = _load_daily_rates(engine, cutoffs[0], cutoffs[-1])
+    # within engine call uses this dict). The load range must extend
+    # through the LAST fold's test_end (FINAL_FOLD_TEST_END), not just
+    # cutoffs[-1] — otherwise every setup in the final fold voids with
+    # `no_rate` because the date isn't in the in-memory dict. (Bug
+    # discovered during the 2026-05-28 run where fold 5 voided 100%
+    # of candidates.)
+    rates_full = _load_daily_rates(engine, cutoffs[0], FINAL_FOLD_TEST_END)
 
     all_trades: List[OptionTrade] = []
     per_fold = []
 
     for i, cut in enumerate(cutoffs):
-        test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else "2026-12-31"
+        test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else FINAL_FOLD_TEST_END
         fold_label = f"{cut}..{test_end}"
         log.info("  fold %d/%d  %s", i + 1, len(cutoffs), fold_label)
 

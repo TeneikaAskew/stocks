@@ -500,3 +500,21 @@ def test_evaluate_uses_passed_threshold_not_default():
     assert v_3fold["checks"]["c1_pos_exp_folds"][2] is True
     # 5fold bar applied to the same 3 folds: 2 positive < 4 → c1 fails
     assert v_5fold["checks"]["c1_pos_exp_folds"][2] is False
+
+
+def test_runner_rates_load_range_covers_final_fold():
+    """Regression: the daily_rates preload must extend through the LAST
+    fold's test_end, not just cutoffs[-1]. The 2026-05-28 run hit
+    100% no_rate voids in fold 5 because rates_full only covered up to
+    cutoffs[-1] (= start of the final test window, not its end)."""
+    from lib.options_exec_backtest.runner import (
+        WINDOWS, FINAL_FOLD_TEST_END,
+    )
+    final_end = pd.Timestamp(FINAL_FOLD_TEST_END).date()
+    for name, cfg in WINDOWS.items():
+        last_cutoff = pd.Timestamp(cfg["cutoffs"][-1]).date()
+        assert final_end > last_cutoff, (
+            f"WINDOW {name}: FINAL_FOLD_TEST_END={final_end} must be strictly "
+            f"AFTER the last cutoff {last_cutoff}; otherwise the final fold's "
+            f"test window is empty AND the rates preload misses it."
+        )
