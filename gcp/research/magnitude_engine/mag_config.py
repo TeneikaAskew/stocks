@@ -116,6 +116,24 @@ SUCCESS_BAR_MIN_FOLDS_LIFT = 6         # of 8
 SUCCESS_BAR_EXPLOSIVE_LIFT_MIN = 1.5
 SUCCESS_BAR_CONFIDENCE_THRESHOLDS: tuple[float, ...] = (0.40, 0.50, 0.60, 0.70)
 
+# Two ADDED gates after the Phase 3 post-mortem (2026-05-28). The original
+# 1-4 produced 5 deterministic gate-passes for Phase 3; only 3 survived
+# bootstrap, and only 1 of those had a matching mechanism. Both follow-up
+# checks are now part of the cell-level bar.
+SUCCESS_BAR_BOOTSTRAP_PASS_MIN = 0.80     # gate 5: bootstrap-on-test-bars
+                                          # cell-pass rate across 1000 iters
+SUCCESS_BAR_MECHANISM_RATIO_MIN = 2.0     # gate 6: predicted-EXPLOSIVE
+                                          # concentration ÷ base rate for the
+                                          # feature family's claimed mechanism
+
+# Bucket terminology for the augmented bar:
+#   PASS    — all 6 gates hold
+#   SQUEAKER — gates 1-4 hold but gate 5 (bootstrap) < 80%
+#   MECHANISM-MISMATCH — gates 1-5 hold but gate 6 < 2.0x base rate
+#                       (signal is real, but features aren't doing what
+#                        their names say; investigate before extending)
+#   FAIL    — any of gates 1-4 misses
+
 # ECE ceiling by timeframe (per spec: 0.05 for 5m + 15m, 0.075 for 30m)
 ECE_CEILING_BY_TF: dict[str, float] = {
     "5m": 0.05,
@@ -123,9 +141,34 @@ ECE_CEILING_BY_TF: dict[str, float] = {
     "30m": 0.075,
 }
 
-# A phase PASSES if all four gates hold across at least 2 of 3 cells per TF
+# A phase PASSES if all six gates hold across at least 2 of 3 cells per TF
 # (i.e. 2 of 3 tickers). Repeated for each (TF) cell-row of the 3×3 grid.
 SUCCESS_BAR_MIN_PASSING_TICKERS_PER_TF = 2  # of 3
+
+
+# ─────────────────────── Harness lessons (READ BEFORE EXPERIMENTING) ────
+# Each is a mistake we made once, calibrated, and don't intend to repeat.
+#
+# L1. "Seed replication" is NOT perturbation for deterministic models.
+#     LightGBM with no bagging (`subsample`/`colsample_bytree` both = 1.0,
+#     the default in make_lgbm) is fully deterministic given the data.
+#     Changing `random_state` produces byte-identical results. For real
+#     robustness testing, use bootstrap-on-test-bars
+#     (`scripts/bootstrap_gate_fragility.py`) or cutoff-shift perturbation.
+#
+# L2. "Gate-count PASS" is necessary but not sufficient — see gates 5+6.
+#     Phase 3 verdict decomposed into 2 noise-edge + 2 wrong-mechanism + 1
+#     genuinely-validated cell once we ran the follow-up checks.
+#
+# L3. "Feature names match mechanism" is a hypothesis, not a given. Always
+#     run the mechanism check before claiming a feature family drove a
+#     verdict.  `scripts/check_event_window_concentration.py` for event
+#     features; analogous custom checks for other families.
+#
+# L4. A passing research gate is not a trade. The pipeline from a
+#     validated magnitude cell to "tradeable" goes through the execution
+#     layer (Track B / Track 2). See docs/MAGNITUDE_ENGINE_RESULTS.md
+#     §"Open: trade-test the validated signal" for the next step.
 
 
 # ─────────────────────── Calibration (mirror strat_engine production) ───────────────────────
