@@ -305,9 +305,57 @@ signal. The next experiment a pure-calendar feature set (dropping
 isolate whether the signal is in raw weekday/hour clustering or
 specifically in the calendar features that ARE event-adjacent.
 
+## 5c. Naive (DoW × 30-min-bucket) lookup baseline (added 2026-05-28)
+
+Reviewer 2026-05-28: bootstrap-robust ≠ tradeable. Intraday calendar
+volatility (open / lunch / close, DoW, FOMC/NFP weeks) is the single
+most-known and most-priced-in pattern. The real question is whether
+the phase_calendar model adds edge OVER a naive lookup table.
+
+**Method**: for each fold, group training bars by (day_of_week, 30-min
+time-bucket) → empirical 4-class distribution per cell. For each test
+bar, predict the historical distribution of its (DoW, bucket) cell.
+Apply the same four gates. No model, no LightGBM, no bar features.
+
+**Result**: naive lookup gates per fold (sample, IWM 5m):
+
+```
+fold                       beat       ece    ece_p  mono   lift
+2019-01-01..2020-01-01   +0.0165   0.0144   True   True    —
+2020-01-01..2021-01-01   +0.0153   0.0056   True   True    —
+... [identical pattern across all 8 folds]
+```
+
+| ticker | g1 logloss-beat | g2 ECE-pass | g3 monotone | g4 lift ≥ 1.5 | cell PASS |
+|---|---|---|---|---|---|
+| IWM 5m | **8/8** | **8/8** | **8/8** | **0/8** | NO |
+| SPY 5m | **8/8** | **8/8** | **8/8** | **0/8** | NO |
+| QQQ 5m | **8/8** | **8/8** | **8/8** | **0/8** | NO |
+
+**Interpretation**: as a PROBABILITY ESTIMATOR over magnitude buckets,
+calendar slot fully explains the signal that gates 1–3 measure. The
+phase_calendar model is NOT adding probabilistic edge over a (DoW,
+time-bucket) lookup table on those three gates.
+
+Gate 4 (EXPLOSIVE lift) is the only one where the model could plausibly
+add value. The naive lookup CANNOT pass gate 4 by architectural
+construction — EXPLOSIVE has 3% base rate, no calendar cell has it as
+modal bucket, the lookup never argmaxes EXPLOSIVE, lift is undefined
+every fold.
+
+**Open follow-up: Model EXPLOSIVE decomposition** — when the model
+DOES argmax EXPLOSIVE on a bar, is it just picking bars from the
+highest-historical-EXPLOSIVE-rate calendar cells (amplification of
+calendar), or is it discriminating WITHIN cells using bar features
+(real bar-feature edge)? `scripts/model_vs_calendar_explosive_decomp.py`
+runs the test. Outcome will determine whether Phase 4 (cross-asset)
+and the trade-test are worth pursuing or whether the project verdict
+is "calendar volatility, already priced into 0DTE theta, no actionable
+edge."
+
 ---
 
-## 6. Phase 5 — Gamma exposure (deferred)
+
 
 Conditional on **at least one** of Phases 0-4 passing or sitting at
 borderline. If all of Phases 0-4 fail decisively, Phase 5 is dropped
