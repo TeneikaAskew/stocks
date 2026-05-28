@@ -52,12 +52,25 @@ Strike: closest available strike to underlying at the trigger fill
 - **Per-1m precedence**: target > stop > time, **conservatively assume
   STOP first on intrabar collision** (Track B parity).
 
-### Pricing — BSM walk with constant anchor IV
+### Pricing — BSM walk with T-1 EOD anchor IV
+
+**Pivot 2026-05-28**: the brief asked for "anchor IV within ±300s of
+trigger". Empirical testing showed AV's `HISTORICAL_OPTIONS` endpoint
+is EOD-only (`date=YYYY-MM-DD` param, one snapshot/day at 4 PM ET; the
+`datetime=` param the original design assumed does not exist — AV
+silently returns the current chain for any unsupported param value).
+`REALTIME_OPTIONS` returns the chain AT the moment of the request, not
+at past moments. No vendor offers historical intraday options at our
+price point. So the brief's ±300s anchor is unfulfillable for any
+historical date, and we pivot to T-1 EOD anchor:
 
 For each trade:
-1. At entry, look up the IWM 0DTE ATM option snapshot within ±300 sec
-   of the trigger. Read the implied volatility — this is the
-   **anchor IV** held constant through the trade.
+1. Find the most-recent EOD snapshot STRICTLY PRIOR to the trigger
+   date (no look-ahead — same-day 4 PM IV did not exist at a 10:25
+   AM trigger). Filter to (option_type, expiration = trigger_date +
+   `expiration_dte`). Pick ATM/OTM strike against underlying-at-
+   trigger (not underlying-at-anchor). Read implied_volatility —
+   this is the **anchor IV** held constant through the trade.
 2. Compute entry premium via `bs_price(S=entry_fill, K, T_entry,
    sigma=anchor_IV, r, q, kind)` where `r` is the day's
    `daily_rates.dgs3mo` and `q` is `sp500_div_yld`.
@@ -66,9 +79,21 @@ For each trade:
 4. No IV path modeling — the brief locks this as conservative; any
    passing run holds even when realized IV moves favorably.
 
-If no snapshot is within 300 sec of trigger, or `daily_rates` has no
-row for the trade date, the setup is **voided** (per CLAUDE.md Rule
-3.7 — no silent defaults).
+**The semantic of "constant anchor IV through the trade" is preserved
+exactly.** Only the IV SOURCE changed from a ±300s intraday snapshot
+to T-1 EOD. The conservatism direction: EOD IV often differs from the
+actual intraday IV the trader would have paid; on average we expect
+this introduces noise but not directional bias. On high-vol days
+(FOMC, earnings, gap-open Monday after a weekend event) the anchor
+may be materially wrong — documented as a known limitation.
+
+If no anchor snapshot exists prior to the trigger date (e.g. the first
+trade-day of the preload window has no T-1 within the 7-day preload
+extension), the setup is **voided**. Same if the requested expiration
+isn't in the anchor's chain (e.g. IWM Tuesday-expiring contracts in
+2022 — not issued until Nov 2023). All voids count toward the
+per-fold `voided` counter; nothing is silently filled with a default
+(per CLAUDE.md Rule 3.7).
 
 ### Costs
 
@@ -124,9 +149,15 @@ If the windows disagree, treat as BORDERLINE — escalate for review.
 ## Data restrictions documented
 
 - **Test windows**: 5-fold 2022-2026 AND 3-fold 2024-2026 (both run).
-- **0DTE coverage**: ~62% of trading days in 2022-2023 (Mon/Wed/Fri);
-  ~99% in 2024+. Setups on non-0DTE days void with `no_iv_snapshot`
-  in the per-fold counter.
+- **IV anchor**: T-1 EOD snapshot from `etf_options_snapshots`
+  (`market_session='EOD'`). EOD coverage is complete: ~252 days/yr for
+  IWM in every year 2016-2026, verified 2026-05-28.
+- **0DTE issuance coverage**: ~62% of trading days in 2022-2023 had a
+  same-day-expiring IWM contract (Mon/Wed/Fri only — Tue/Thu were
+  added Nov 2023). Tue/Thu setups in 2022-2023 void cleanly with
+  "expiration not in chain" reason.
+- **Look-ahead protection**: anchor must be from a date STRICTLY
+  prior to the trigger date. Same-day 4 PM IV is rejected.
 - **Snapshot tolerance**: ±300 sec. Setups outside this window are
   voided, not extrapolated.
 - **IV path**: constant anchor — no IV smile or term-structure walk.
