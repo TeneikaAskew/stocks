@@ -321,6 +321,27 @@ def test_iv_lookup_empty_returns_none():
     assert quote is None
 
 
+def test_iv_lookup_handles_decimal_fields_from_eod_rows():
+    """EOD rows from etf_options_snapshots come back with implied_volatility
+    and underlying_price as decimal.Decimal (or object-dtype string) on
+    some queries — np.isfinite chokes on those. Regression for
+    options-exec-backtest-nsj4m prod failure 00:44:40 UTC 2026-05-28:
+      TypeError: ufunc 'isfinite' not supported for the input types ...
+    """
+    from decimal import Decimal
+    df = _synthetic_eod_snapshots(["2024-06-03", "2024-06-04"])
+    # Force the two fields to object dtype carrying Decimal values —
+    # this is what some Cloud SQL <-> pandas paths produce for NUMERIC cols.
+    df["implied_volatility"] = df["implied_volatility"].apply(lambda v: Decimal(str(v)))
+    df["underlying_price"] = df["underlying_price"].apply(lambda v: Decimal(str(v)))
+    lk = IVLookup(df)
+    trig = pd.Timestamp("2024-06-04 14:00:00", tz="UTC")
+    quote = lk.find(trig, spot=450.0, side="long", otm_offset=0, expiration_dte=0)
+    assert quote is not None
+    assert quote.iv == pytest.approx(0.18)
+    assert quote.spot_at_snapshot == pytest.approx(450.0)
+
+
 def test_iv_lookup_snapshot_tolerance_constant_preserved_for_backcompat():
     """SNAPSHOT_TOLERANCE_SECONDS is kept as a module constant for any
     callers that imported it before the EOD-anchor pivot. Under the new

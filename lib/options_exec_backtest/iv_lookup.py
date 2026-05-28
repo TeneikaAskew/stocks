@@ -216,18 +216,29 @@ class IVLookup:
             return None
         row = row_matches.iloc[0]
 
-        # 4. Resolve IV — prefer AV-reported, fallback to computed
-        iv = row["implied_volatility"]
+        # 4. Resolve IV — prefer AV-reported, fallback to computed.
+        # Same EOD-row-may-be-object-dtype concern as underlying_price above;
+        # coerce via pd.to_numeric.
+        def _coerce(v):
+            x = pd.to_numeric(v, errors="coerce")
+            return float(x) if pd.notna(x) else float("nan")
+        iv = _coerce(row["implied_volatility"])
         iv_source = "av_reported"
         if not np.isfinite(iv) or iv <= 0:
-            iv = row.get("implied_volatility_computed", np.nan)
+            iv = _coerce(row.get("implied_volatility_computed", np.nan))
             iv_source = "av_computed"
         if not np.isfinite(iv) or iv <= 0:
             return None
 
-        spot_snap = row.get("underlying_price", np.nan)
+        # EOD rows sometimes have underlying_price as Decimal or string
+        # (the daily fetcher path differs from the intraday path). Coerce
+        # via pd.to_numeric so np.isfinite has a real float to check.
+        spot_snap = pd.to_numeric(
+            row.get("underlying_price", np.nan), errors="coerce"
+        )
+        spot_snap = float(spot_snap) if pd.notna(spot_snap) else float("nan")
         if not np.isfinite(spot_snap):
-            spot_snap = spot
+            spot_snap = float(spot)
 
         # snapshot_age = wall-clock seconds between trigger_ts and the
         # anchor's 4 PM ET snapshot. Informational only — under the
