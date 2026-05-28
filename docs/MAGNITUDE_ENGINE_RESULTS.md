@@ -413,6 +413,54 @@ tested feature families."
 
 ---
 
+## 5e. Implied-vs-realized check — the trade-test gate (added 2026-05-28)
+
+**The decisive test for whether the within-cell discrimination is edge.**
+
+The decomposition's "2-3x within-cell boost" could be three things, and
+two of them are already priced:
+1. Genuine bar-specific structure → potentially unpriced (edge)
+2. Finer-grained time effects (5m within 30m bucket) → still calendar, priced
+3. Volatility clustering (GARCH) → very well known, priced
+
+The decomposition cannot separate these. The implied-vs-realized check
+can. The magnitude model predicts SIZE not direction, so the only
+honest vehicle is non-directional (straddle/strangle), and the only
+honest benchmark is the option premium — because the straddle premium
+IS the market's priced estimate of the expected move.
+
+**Pre-set pass bar (gate 7, IMMUTABLE, set BEFORE any number is computed)**:
+
+- For each phase_calendar EXPLOSIVE-predicted test bar at time t on date D:
+  - `realized_move` = `|next_open - next_close|` (the magnitude target's
+    numerator, in dollar terms — captures the actual 5-min move)
+  - `implied_move` = `spot × IV × sqrt(5 / (252 × 390))` where IV is the
+    at-or-before EOD ATM IV from `etf_options_snapshots` on date D-1
+    (T-1 anchor — same data constraint Track 2 hit)
+- Per cell (ticker × tf=5m), per fold:
+  - `ratio` = mean(realized_move on EXPL-predicted bars) / mean(implied_move on EXPL-predicted bars)
+- **Gate 7 pass**: ratio ≥ **1.25** in ≥ 6 of the folds that have IV
+  coverage. The 1.25 margin sits above 1.0 to leave room for the
+  bid/ask spread + theta on a real 5-min straddle round-trip. Below
+  1.25, even if mean-realized > mean-implied, the trade doesn't clear
+  execution friction. **This threshold is committed before any
+  number lands — per the project's anti-fitting rule.**
+
+**Caveat (acknowledged before running)**: AV has no historical intraday
+option prices. The T-1 EOD anchor introduces noise — overnight IV
+shifts can move the priced expected move. The check is therefore a
+**necessary but not sufficient** test: if ratio < 1.25 even with
+stale-IV noise, edge is unlikely; if ratio ≥ 1.25, a full intraday-IV
+backtest is warranted to confirm.
+
+**Coverage note**: `etf_options_snapshots` started recording sometime
+in 2024-2025. Early walk-forward folds (2019-2023) will lack IV
+coverage and will be reported as `NO_COVERAGE`, not counted toward
+the 6-of-folds threshold. If fewer than 4 folds have coverage, the
+verdict is `INSUFFICIENT_DATA` — needs a different IV source.
+
+---
+
 ## Open: trade-test the validated signal
 
 The IWM 5m EXPLOSIVE-bucket signal (the one cell that passed all 6 gates)
