@@ -287,13 +287,25 @@ hit — survivor bias toward big-move days. Three of the next four
 folds were flat-to-negative; one cell-fold dominating the cell's
 total fails c4.
 
-**5-fold YTD 2026 fold (#5) was entirely voided:**
-all candidates voided with `no_rate=4706` (5m), `no_rate=1201` (15m),
-`no_rate=544` (30m) — meaning `daily_rates.dgs3mo` is missing rows
-for early-2026 dates. This is a data freshness issue in the
-`fetch-fred-rates` job (separate from the experiment); the verdict
-holds even ignoring fold 5 because folds 1-4 alone don't meet the
-≥4/5 bar.
+**5-fold YTD 2026 fold (#5) was entirely voided** with `no_rate=4706`
+(5m), `no_rate=1201` (15m), `no_rate=544` (30m). Initial attribution
+was to FRED-rates freshness; on investigation `daily_rates` is fully
+populated through 2026-05-26 (2,846 rows, all `dgs3mo` non-null).
+The real cause was a bug in `lib/options_exec_backtest/runner.py`:
+
+  `rates_full = _load_daily_rates(engine, cutoffs[0], cutoffs[-1])`
+
+This loaded rates only through `cutoffs[-1]` = `2026-01-01`, but the
+final fold's test window is `[2026-01-01, 2026-12-31)`. Every setup
+with `rate_date >= 2026-01-02` wasn't in the in-memory dict → voided
+as `no_rate`. Fixed in a follow-up commit on `fix/fred-rates-freshness`
+(hoist `FINAL_FOLD_TEST_END` to a module constant used by both the
+fold-iteration `test_end` derivation AND the rates preload range;
+regression test asserts `FINAL_FOLD_TEST_END` > every window's last
+cutoff). A re-run of the backtest after the fix would populate fold-5;
+the verdict on folds 1-4 alone already rejects the hypothesis (not
+≥4/5 positive on any cell), so the re-run is optional for completeness
+rather than for the verdict.
 
 ## Post-run analysis
 
