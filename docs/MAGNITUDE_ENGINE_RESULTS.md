@@ -243,12 +243,49 @@ Caveat: the published *schedule* is what we use, not the released *value* — we
 
 ---
 
+## 5b. Phase calendar — calendar-replacement test (added 2026-05-28)
+
+Reviewer hypothesis: Phase 3's QQQ 5m + SPY 5m pass with robust bootstrap
+(100% / 77.6%) but mechanism check FAILS (0.85x / 0.82x event-window
+concentration — below base rate). This phase REPLACES the event features
+with calendar features only. If QQQ/SPY 5m reproduces, the answer is
+"Phase 3 was a calendar proxy."
+
+**Status**: dispatched 2026-05-28 (execution `magnitude-engine-7jsgk`,
+9 cells parallel, MAG_SEED=42). Results pending.
+
+---
+
 ## 6. Phase 5 — Gamma exposure (deferred)
 
 Conditional on **at least one** of Phases 0-4 passing or sitting at
 borderline. If all of Phases 0-4 fail decisively, Phase 5 is dropped
 and the project verdict stands as "magnitude is unlearnable from the
 tested feature families."
+
+---
+
+## Open: trade-test the validated signal
+
+The IWM 5m EXPLOSIVE-bucket signal (the one cell that passed all 6 gates)
+is a **research artifact, not a trade**. Converting it to a trading
+question requires the execution layer:
+
+1. **Combine with the type model** — rerun Track B (or Track 2 options
+   version) with the magnitude probability as a setup FILTER on top of
+   the strat_engine type model. Take only setups where:
+     - type model says high-confidence 2U or 2D
+     - magnitude model says EXPLOSIVE above some confidence threshold
+2. **Compare expectancy** to the type-model-alone baseline. Does the
+   combination produce positive expectancy where the type model alone
+   didn't? That's the question that converts "magnitude signal exists"
+   into "magnitude signal is tradeable."
+3. **Scope**: IWM 5m specifically. The other Phase 3 cells (QQQ 5m, SPY
+   5m) are either mechanism-mismatch or fragile, so the trade-test should
+   be cell-specific, not phase-wide.
+
+This is the bridge from research to execution and should be the first
+question asked after Phase 4 lands.
 
 ---
 
