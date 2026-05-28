@@ -948,6 +948,73 @@ deploy_av_options_realtime() {
     gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
 }
 
+# REMOVED 2026-05-28: deploy_av_options_historical_intraday and the
+# companion fetcher gcp/fetchers/fetch_av_historical_options_intraday.py.
+# The premise was wrong — AV's HISTORICAL_OPTIONS endpoint accepts a
+# `date=YYYY-MM-DD` param (EOD snapshot only); there is no `datetime=`
+# param for historical intraday options. Empirical test on
+# 2022-01-03T09:50:00 ET returned the CURRENT chain (2026-05-26
+# expirations), not the 2022 chain — AV silently ignored the
+# unsupported param and returned the live snapshot.
+#
+# The options-exec-backtest pivots to use the EXISTING EOD path
+# (fetch_av_historical_options.py via deploy_av_options_backfill) +
+# lib/options_intraday.reprice_intraday_option for the intraday
+# minute-by-minute BSM walk anchored to T-1 EOD IV.
+
+# Options exec backtest — Track B' (parallels lib/exec_backtest but trades
+# IWM 0DTE ATM options instead of the underlying). Mode dispatched at execute
+# time via --update-args:
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=emit_timestamps,--out=gs://..."  --wait
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=base"  --wait
+#
+# Per Rule 0 sizing:
+# - Volume: IWM × 3 cells × 5 folds; each cell-fold trains 1 LGBM and
+#   replays ~3-10k setups against pre-loaded 1m bars + pre-loaded IV
+#   snapshots. ~50k total trades simulated.
+# - Velocity: 5 folds × 3 cells × ~60s per LGBM fit = ~15 min training.
+#   Setups replayed at ~0.5ms each in pure pandas/numpy.
+# - Wall-clock estimate: ~25 min; task-timeout 14400 (4hr) for headroom.
+# - Memory: 1m IWM bars 2018-2026 ~250 MiB + features matrix ~1 GiB per cell.
+#   8Gi allocation.
+# - max-retries 0; non-idempotent (writes to a new GCS run_id each time).
+deploy_options_exec_backtest() {
+    echo "Deploying options-exec-backtest job..."
+
+    # This job imports gcp.research.strat_engine.strat_pred_train which
+    # depends on lightgbm + scikit-learn — both are in the RESEARCH
+    # image, not the prod image. The research image must be built
+    # first (see deploy_strat_engine for the same dependency).
+    local research_image="${IMAGE}:research"
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${research_image}" --region "${REGION}"
+        --memory 8Gi --cpu 2 --max-retries 0
+        --task-timeout 14400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,lib.options_exec_backtest.cli"
+        # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
+        # with `-`, otherwise gcloud parses the value as a new flag.
+        "--args=--mode=base"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create options-exec-backtest "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update options-exec-backtest "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1385,6 +1452,9 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_topics
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
+    deploy_options_exec_backtest
+    # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
+    # above that function; AV has no historical intraday options endpoint.)
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────
