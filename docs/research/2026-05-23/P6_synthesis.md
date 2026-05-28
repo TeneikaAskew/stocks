@@ -252,3 +252,22 @@ Each follow-up can use the same `research:` image + `gcp/research/` Cloud Run Jo
 > **The 76.7% live "flip-PUT" figure that the codebase cites as empirical justification for the production direction mapping cannot be reproduced in any 2-year window over 10 years of historical data, and the only 2 windows with enough events to evaluate show catastrophic negative lift (-13pp average).**
 
 If only one thing changes from this audit, it should be reconciling that discrepancy. Everything else is incremental; that one is structural.
+
+---
+
+## 10. P7 verification status
+
+The P2–P5 findings above were re-tested in Phase 7 against the new bar-level multi-TF dataset (`strat_features_{1m,5m,15m,30m,60m}` — 602k rows in `strat_features_5m` alone, 3 ETFs × 10 yr, all docs in `docs/research/2026-05-24/` + `docs/research/2026-05-25/`).
+
+| §3 priority finding | P7 reverification | replicated? |
+|---|---|---|
+| P3: `212_bear_continuation` × HIGH-VIX, 5d, +5.15pp | 60m × fwd_5bars × VIX_HIGH, hit_pct 51.8% on n=338 | ✅ direction; weaker magnitude (per-bar hit-pct ≈ 50% vs P3's +5pp per-day mean) |
+| P3: `clean_2d_bear` × HIGH-VIX, 5d, +5.05pp | 60m × fwd_5bars × VIX_HIGH, hit_pct 53.7% on n=341 | ✅ direction; same gap |
+| P3: `322_bull_continuation`, 5d, -2.79pp (anti) | 60m × fwd_5bars, hit_pct 59.6% on n=1003 | ❌ flips sign — anti-signal in P3 is a coin-flip-or-better in P7 |
+| P5: `flip_cross PUT × FTFC-DOWN` at 15m, live=76.7% | 5m PUT-cross ⋈ 60m FTFC-DOWN, fwd_15bars, weighted hit-pct ≈ 59.2% on n=120 | ❌ stands — live figure does not replicate on either the event-level (gamma_events, P5) or bar-level (strat_features, P7) foundation |
+
+The P5 flip-PUT refutation is now supported by **two independent datasets**: the original event-level `gamma_events` table (14 PUT events, P5) and the bar-level `strat_features_5m` cross detection (120 FTFC-DOWN crosses, P7). Both produce ~50-60% hit rates. The PUT direction mapping in `lib/strategies/gamma_proximity.py:23-29` still has no empirical floor.
+
+P3's qualitative signs hold for HIGH-VIX bear-continuation findings but the **magnitudes are weaker** at bar-level than they were at the day-level. This means the priority-1 production change recommendations should be re-sized before activation — the P3 numbers were measuring the right phenomenon at the wrong granularity. Full breakdown: `docs/research/2026-05-24/P7_reverify_prior_findings.md`.
+
+Phase 7 also produced significant **net-new** findings beyond reverification: the 9-cell GEX × VEX dealer-regime grid (§4 of `P7_multi_tf_dataset.md`), the walk-forward IC/Sharpe table per TF (§1), and the P7g voter / 5-month overlay verdicts (`docs/research/2026-05-25/`). The follow-on conclusion (`P7_4track_verdict.md`): classifier accuracy is real, but the gross-of-cost backtest does not survive a 10bp round-trip — no production trigger should ship until that's reconciled.

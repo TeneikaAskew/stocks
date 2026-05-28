@@ -746,6 +746,46 @@ deploy_p7b_classifier_DEPRECATED() {
     return 1
 }
 
+# ── Phase 7 multi-TF strat-features builder (Cloud Run Job, research image) ──
+# Populates strat_features_{1m,5m,15m,30m,60m} from raw 1-min bars +
+# strat classification + indicator suite + forward-return targets +
+# VIX/GEX/VEX context. Single-pass per ticker; ON CONFLICT idempotent.
+#
+# See: gcp/research/p7_build_multi_tf_features.py (Rule 0 capacity math
+# documented inline). The schema (`gcp/queries/p7_schema.sql`) must be
+# applied via db-query.yml commit=true before the first run.
+#
+# Sizing rationale:
+#   --memory 16Gi: ~400 MB peak DataFrame × headroom for indicator passes
+#   --cpu 4: pandas/indicator math is single-threaded; 4 cores is plenty
+#   --task-timeout 5400: 2× the ~30-45 min wall-clock estimate (matches
+#       p45-deep-ds proven sizing)
+#   --max-retries 0: idempotent on (ticker, ts) PK, but Cloud Run can't
+#       distinguish transient from permanent failure
+deploy_p7_build_multi_tf() {
+    echo "Deploying p7-build-multi-tf-features job..."
+    local research_image="${IMAGE}:research"
+
+    gcloud run jobs create p7-build-multi-tf-features \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.p7_build_multi_tf_features,--tickers=SPY,IWM,QQQ" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update p7-build-multi-tf-features \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.p7_build_multi_tf_features,--tickers=SPY,IWM,QQQ" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -2534,6 +2574,7 @@ case "${1:-help}" in
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
+    p7-build-multi-tf) deploy_p7_build_multi_tf ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
