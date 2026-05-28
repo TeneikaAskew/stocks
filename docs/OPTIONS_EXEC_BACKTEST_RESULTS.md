@@ -33,6 +33,46 @@ and 2 (1DTE) are NOT run — base fails by > 25% margin on every cell.
 
 Both windows agree on the FAIL verdict — no BORDERLINE state.
 
+### Why this is a clean rejection: options cannot fix a hit-rate problem
+
+The deeper read on the diagnostic: this is the **direction failure
+showing up again wearing an options costume**, not a new finding.
+
+Options are a payoff-shaping tool. The underlying setup already had
+fine asymmetry — 1.5R target / 1R stop gives ~1.7-2× win/loss in
+option-space (gamma convexity transmits cleanly through the wrapper).
+What the setup LACKED was hit rate. At ~35% hit rate × 1.85× asymmetry:
+
+  0.35 × 1.85 − 0.65 × 1.0 = +0.0025 / contract gross, i.e. break-even
+  before theta; clearly negative after the $1.38 round-trip cost.
+
+That 35% comes directly from the type model having no directional
+edge — the same 49% finding the direction work surfaced weeks ago.
+Long ATM 0DTE doesn't reshape that; it just inherits it and pays
+theta on top.
+
+**Implication for the unrun variants:** 1DTE (variant 2) reduces theta
+but cannot rescue a 35% hit rate (theta wasn't the binding constraint;
+the c3 asymmetry-margin check was, at ratio 1.00-1.10 vs the 1.20
+bar). OTM (variant 1) would make the hit rate strictly worse. Per the
+brief the variants don't run when base fails by > 25% margin; per
+this analysis, the variants don't run because no option-shape change
+can compensate for the underlying signal not carrying directional
+information.
+
+### One stone left unturned
+
+The base case imposed an underlying stop, which is what made the
+option's bounded-downside property redundant. A **no-stop structure**
+(buy the option, premium is the max risk, hold to target or expiry)
+is a genuinely different trade that this diagnostic does not
+automatically kill — it's how a lot of 0DTE traders actually trade.
+We name it for completeness, not as a recommendation: the prior
+remains negative (direction model is a ~coin flip, magnitude is
+likely the known intraday IV curve), so any future test of it should
+set the success bar in advance and expect it to fail. The options
+question is ~95% sealed, not 100%.
+
 **Source data**: see `docs/options_exec_backtest_data/base_3fold/` and
 `base_5fold/` (per_fold.csv + trades.csv.gz + results.json).
 **Run ID**: `options-exec-backtest-xbkcv` (2026-05-28, 1h20m wall-clock).
