@@ -1,6 +1,6 @@
 # Magnitude Engine — Results
 
-> **Final verdict (2026-05-28 — after replication, mechanism, and bootstrap-fragility checks)**:
+> **Final verdict (2026-05-28 — after replication, mechanism, bootstrap, and calendar-replacement checks)**:
 >
 > ### Phase-by-phase gate counts
 > | phase | 5m tickers passing | 15m tickers passing | 30m tickers passing | gate-count verdict |
@@ -8,7 +8,8 @@
 > | 0 (baseline 143-col) | 2/3 | 1/3 | 0/3 | FAIL |
 > | 1 (vol-family) | 3/3 | 1/3 | 0/3 | FAIL |
 > | 2 (AV daily indicators) | 3/3 | 1/3 | 0/3 | FAIL |
-> | 3 (event proximity) | 3/3 | 2/3 | 0/3 | PASS |
+> | 3 (event proximity) | 3/3 | 2/3 | 0/3 | PASS — but see §3 |
+> | **3b (calendar replacement)** | **3/3** | **1/3** | **0/3** | **FAIL by count, but REPLICATES Phase 3 5m → calendar-proxy confirmed (§5b)** |
 > | 4 (cross-asset) | PENDING_BACKFILL | | | |
 >
 > ### Phase 3 PASS decomposed (this is the real headline)
@@ -34,10 +35,19 @@
 > point estimates that would flip to FAIL ~92% of the time under
 > resampling of their own test bars.
 >
-> Net: **Phase 3 produced ONE robust + mechanism-validated cell (IWM 5m)**
-> plus 2 robust-but-mechanism-mystery cells (QQQ 5m, SPY 5m) plus 2
-> noise-passes (IWM 15m, SPY 15m). Treat the 15m row's passing
-> tickers as suggestive only, not validated.
+> ### Phase calendar refines Phase 3's IWM 5m finding (2026-05-28 follow-up)
+>
+> Even the "validated" IWM 5m result with 3.14x event concentration
+> turned out to be calendar-driven, not event-driven. Phase_calendar
+> (calendar-only features, no event lookups) reproduces Phase 3's 5m
+> gate-passing across ALL THREE tickers, with bootstrap 100% in every
+> cell and gate counts equal-or-stronger than Phase 3.
+>
+> Net: **the only validated cross-ticker magnitude signal is calendar-driven
+> at 5m**. Phase 3 was a calendar proxy at 5m. The 15m row's apparent
+> passes were fragile gate-edge artifacts that don't replicate under
+> bootstrap and don't replicate under feature variation. 30m remains
+> unlearnable.
 >
 > ### Method notes
 >
@@ -248,11 +258,52 @@ Caveat: the published *schedule* is what we use, not the released *value* — we
 Reviewer hypothesis: Phase 3's QQQ 5m + SPY 5m pass with robust bootstrap
 (100% / 77.6%) but mechanism check FAILS (0.85x / 0.82x event-window
 concentration — below base rate). This phase REPLACES the event features
-with calendar features only. If QQQ/SPY 5m reproduces, the answer is
-"Phase 3 was a calendar proxy."
+with calendar features only (`day_of_week`, `hour`, `minute`, `week_of_month`,
+`is_first_friday`, `is_fomc_week`, `is_month_end`, `is_quarter_end`).
+No event-proximity lookups; everything is derivable from `ts` alone.
 
-**Status**: dispatched 2026-05-28 (execution `magnitude-engine-7jsgk`,
-9 cells parallel, MAG_SEED=42). Results pending.
+**Result: hypothesis confirmed decisively.**
+
+| | Phase 3 5m | **Phase_calendar 5m** |
+|---|---|---|
+| IWM gates | 6/7/8/8 | **8/8/7/8** |
+| SPY gates | 7/8/8/7 | **8/8/8/8** |
+| QQQ gates | 7/8/8/8 | **8/7/8/8** |
+| IWM bootstrap | 99.6% | **100.0%** |
+| SPY bootstrap | 77.6% | **100.0%** |
+| QQQ bootstrap | 100.0% | **100.0%** |
+
+Calendar features REPLICATE Phase 3's 5m gate-passing AND IMPROVE on
+it (SPY 5m bootstrap jumps from 77.6% → 100%). At 15m the two diverge:
+calendar features pass QQQ 15m (Phase 3 failed it) but lose IWM 15m
+and SPY 15m (both already bootstrap-fragile in Phase 3 at ~8%).
+
+**What this means for the project verdict.**
+
+The Phase 3 "PASS" verdict, and the seemingly-validated IWM 5m result
+within it, are NOT event-driven. The features named
+`hours_until_next_hi_event` / `hours_since_last_hi_event` /
+`is_event_day_pm4h` were encoding day-of-week / hour-of-day patterns
+that happen to overlap with event windows. The 3.14x event-window
+concentration we measured on Phase 3 IWM 5m is best explained as:
+EXPLOSIVE bars cluster on calendar features, and those calendar features
+overlap with event windows because real-world events are scheduled in
+predictable calendar slots (Wed FOMC, first Friday NFP, etc.).
+
+**The real magnitude signal is calendar-driven, at 5m, across all 3 tickers.**
+This is robust under bootstrap (100% in every 5m cell). It is NOT
+event-driven. The honest claim is that magnitude predictability comes
+from "what hour of what day of what week is this" — a much narrower
+and lower-edge mechanism than "events cause big moves."
+
+**Implications for trading**: setup filters that align with the
+calendar pattern (e.g., size up during the hour-of-week clusters where
+EXPLOSIVE base rate spikes, avoid the dead-window clusters) are the
+concrete artifact. This is a sizing/filtering edge, not a directional
+signal. The next experiment a pure-calendar feature set (dropping
+`is_first_friday` and `is_fomc_week`, which are event-adjacent) would
+isolate whether the signal is in raw weekday/hour clustering or
+specifically in the calendar features that ARE event-adjacent.
 
 ---
 
