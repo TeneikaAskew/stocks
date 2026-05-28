@@ -1,21 +1,51 @@
 # Magnitude Engine — Results
 
-> **Verdict (2026-05-27 walk-forward, 36 cells × 8 folds across 4 phases)**:
-> - **Phase 0 (baseline 143-col): FAIL** — 5m=2/3, 15m=1/3, 30m=0/3
-> - **Phase 1 (vol-family enrichment): FAIL** — 5m=3/3, 15m=1/3, 30m=0/3
-> - **Phase 2 (AV daily indicators): FAIL** — 5m=3/3, 15m=1/3, 30m=0/3
-> - **Phase 3 (econ event proximity): PASS** — 5m=3/3, 15m=2/3, 30m=0/3
-> - **Phase 4 (cross-asset): PENDING_BACKFILL** — fetcher body stubbed; see §5.
+> **Updated verdict (2026-05-28 — after replication + mechanism check)**:
+> - **Phase 0 (baseline 143-col)**: FAIL — 5m=2/3, 15m=1/3, 30m=0/3
+> - **Phase 1 (vol-family enrichment)**: FAIL — 5m=3/3, 15m=1/3, 30m=0/3
+> - **Phase 2 (AV daily indicators)**: FAIL — 5m=3/3, 15m=1/3, 30m=0/3
+> - **Phase 3 (econ event proximity)**: **PASS in gate-count terms, MECHANISM CONFIRMED WRONG**
+>   - Per-cell verdict reproduces under seed perturbation (replication run with `MAG_SEED=7`
+>     produced byte-identical numbers — LightGBM with no bagging is deterministic, so
+>     seed-only replication is NOT a real perturbation. The result IS stable on the data
+>     it was tested on, but seed-replication doesn't tell us anything about its
+>     robustness to fold-boundary or train-set perturbations).
+>   - **Event-window concentration check FAILED**: of the bars the model
+>     predicts as EXPLOSIVE for SPY 15m, only 13.0% fall within ±4 hours of
+>     a high-impact event — versus a base rate of 17.3% in the test set.
+>     **Concentration ratio = 0.75x** (slightly *below* random). In 7 of 8
+>     walk-forward folds the predicted-EXPLOSIVE concentration is at or
+>     below the base rate. Adding the event-proximity features measurably
+>     helps the model pass gates, but the model's high-confidence EXPLOSIVE
+>     calls are NOT clustered around scheduled events. **The feature names
+>     misrepresent what the model is doing.**
+> - **Phase 4 (cross-asset)**: PENDING_BACKFILL — see §5.
 >
-> **Headline finding**: the existing strat_features baseline does NOT
-> carry magnitude signal at 15m/30m. Vol-family enrichment (Phase 1)
-> and AV daily indicators (Phase 2) both lift 5m to 3/3 tickers passing
-> but leave 15m/30m unchanged. Only **event-proximity features (Phase 3)**
-> cross the 2-of-3-TFs phase bar: adding three features (`hours_until_next_hi_event`,
-> `hours_since_last_hi_event`, `is_event_day_pm4h`) lifts 15m to 2/3
-> tickers — IWM and SPY — neither of which passed in any other phase.
-> 30m is unlearnable across every phase tested — log-loss consistently
-> worse than base rate, EXPLOSIVE class rarely predicted.
+> **Net headline**: there is a candidate magnitude-prediction signal at
+> certain (ticker × TF) cells, but the only feature family to cross the
+> per-phase bar (Phase 3) does so via a mechanism that does not match its
+> feature names. Treat as suggestive-of-something-real, but NOT validated
+> as event-driven. Three alternative mechanisms remain plausible:
+>   1. **Calendar/temporal proxy** — `hours_until_next_hi_event` is dense
+>      for many bars in an event-week, sparse otherwise, effectively
+>      encoding "is this an event-week bar." That's a calendar feature.
+>   2. **Class-imbalance interaction** — the features may shift the
+>      model's prediction threshold for EXPLOSIVE in a way that happens
+>      to correlate with high-vol regimes that aren't event-driven.
+>   3. **Volatility leakage proxy** — next-event timing at bar t encodes
+>      "the world's expectation of upcoming volatility" which may
+>      correlate with t-side realized vol for non-causal reasons.
+>
+> Also significant: even **actually-EXPLOSIVE** bars (the ground truth)
+> cluster at only 0.87x base rate in event windows. The underlying
+> market reality doesn't match the assumption that scheduled events
+> produce discrete EXPLOSIVE bars at 15m resolution — event effects are
+> broader (regime-level) than the bar-level discretization we used.
+>
+> 30m remains unlearnable across every phase. The Claude Code diagnosis
+> (~13 RTH bars/day × 3% EXPLOSIVE base rate ≈ 0.4 EXPLOSIVE bars per
+> session per ticker) is below the statistical floor for confident
+> classification. Drop 30m from future feature-engineering iterations.
 
 This document records, per-phase / per-cell / per-fold, the magnitude
 model's performance against the **pre-set success bar** below. Any line

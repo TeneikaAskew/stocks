@@ -187,18 +187,36 @@ def report(preds: pd.DataFrame, phase: str, ticker: str, tf: str,
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--phase", required=True)
-    p.add_argument("--ticker", required=True)
-    p.add_argument("--tf", required=True)
+    p.add_argument("--ticker", default=None,
+                   help="One ticker, OR omit + use --all-cells to sweep IWM/SPY/QQQ")
+    p.add_argument("--tf", default=None,
+                   help="One timeframe, OR omit + use --all-cells to sweep 5m/15m/30m")
+    p.add_argument("--all-cells", action="store_true",
+                   help="Run for every (ticker × tf) cell of --phase")
     p.add_argument("--run-id", default=None)
     p.add_argument("--window-hours", type=float, default=4.0)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
     args = p.parse_args()
 
-    preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
-    preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
-    events = load_high_impact_events(preds["ts"].min(), preds["ts"].max())
-    annotated = add_event_proximity(preds, events, args.window_hours)
-    report(annotated, args.phase, args.ticker, args.tf, args.window_hours)
+    if args.all_cells:
+        tickers = ["IWM", "SPY", "QQQ"]
+        tfs = ["5m", "15m", "30m"]
+    else:
+        if not args.ticker or not args.tf:
+            raise SystemExit("Need --ticker AND --tf, or --all-cells")
+        tickers = [args.ticker]; tfs = [args.tf]
+
+    for t in tickers:
+        for tf in tfs:
+            try:
+                preds = load_predictions(args.phase, t, tf, args.bucket, args.run_id)
+            except SystemExit as e:
+                print(f"\n[{args.phase} {t} {tf}] skipped: {e}")
+                continue
+            preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
+            events = load_high_impact_events(preds["ts"].min(), preds["ts"].max())
+            annotated = add_event_proximity(preds, events, args.window_hours)
+            report(annotated, args.phase, t, tf, args.window_hours)
 
 
 if __name__ == "__main__":
