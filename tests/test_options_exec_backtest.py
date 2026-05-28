@@ -213,66 +213,91 @@ def test_bsm_walk_theta_decay_only_premium_falls():
 from lib.options_exec_backtest.iv_lookup import IVLookup, SNAPSHOT_TOLERANCE_SECONDS
 
 
-def _synthetic_iv_snapshots(snap_ts_list, spot=450.0):
-    """Build a synthetic preloaded-rows DataFrame for IVLookup."""
+def _synthetic_eod_snapshots(snapshot_dates, spot=450.0, ticker="IWM",
+                              expiration_offsets=(1, 2)):
+    """Build a synthetic preloaded-rows DataFrame for IVLookup under the
+    EOD-anchor design.
+
+    Each EOD snapshot is recorded at 21:00 UTC (4 PM ET) of `snapshot_date`,
+    and contains contracts expiring on snapshot_date + offset for each
+    offset in `expiration_offsets`. Default = {1, 2} = 1DTE + 2DTE from
+    the snapshot's perspective (= 0DTE + 1DTE from the next-day setup's
+    perspective, which is what the EOD lookup serves).
+    """
     rows = []
-    for snap_ts in snap_ts_list:
-        snap_date = pd.Timestamp(snap_ts).date()
-        for strike in range(int(spot) - 10, int(spot) + 11):
-            for kind in ("calls", "puts"):
-                rows.append({
-                    "ticker": "SPY",
-                    "snapshot_ts": pd.Timestamp(snap_ts).tz_convert("UTC")
-                                   if hasattr(pd.Timestamp(snap_ts), 'tz_convert')
-                                      and pd.Timestamp(snap_ts).tz is not None
-                                   else pd.Timestamp(snap_ts).tz_localize("UTC"),
-                    "snapshot_date": snap_date,
-                    "market_session": "HISTORICAL_INTRADAY",
-                    "expiration": pd.Timestamp(snap_date),
-                    "strike": float(strike),
-                    "option_type": kind,
-                    "bid": 5.0, "ask": 5.10, "mark": 5.05, "last_price": 5.05,
-                    "implied_volatility": 0.18,
-                    "implied_volatility_computed": np.nan,
-                    "underlying_price": spot,
-                })
+    for snap_d in snapshot_dates:
+        snap_date = pd.Timestamp(snap_d).date()
+        snap_ts = pd.Timestamp(snap_date) + pd.Timedelta(hours=21)  # 4 PM ET ≈ 21:00 UTC EDT
+        snap_ts = snap_ts.tz_localize("UTC")
+        for off in expiration_offsets:
+            exp_date = snap_date + pd.Timedelta(days=off).to_pytimedelta()
+            for strike in range(int(spot) - 10, int(spot) + 11):
+                for kind in ("calls", "puts"):
+                    rows.append({
+                        "ticker": ticker,
+                        "snapshot_ts": snap_ts,
+                        "snapshot_date": snap_date,
+                        "market_session": "EOD",
+                        "expiration": exp_date,
+                        "strike": float(strike),
+                        "option_type": kind,
+                        "bid": 5.0, "ask": 5.10, "mark": 5.05, "last_price": 5.05,
+                        "implied_volatility": 0.18,
+                        "implied_volatility_computed": np.nan,
+                        "underlying_price": spot,
+                    })
     return pd.DataFrame(rows)
 
 
-def test_iv_lookup_finds_closest_snapshot():
-    """Two snapshots; trigger is within 5-min tolerance of one. The
-    closer one wins."""
-    snap_a = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
-    snap_b = pd.Timestamp("2024-06-03 14:30:00", tz="UTC")
-    df = _synthetic_iv_snapshots([snap_a, snap_b])
+def test_iv_lookup_eod_anchor_picks_most_recent_prior_day():
+    """Setup on 2024-06-04 with trigger at 14:02 UTC: anchor is 2024-06-03's
+    EOD snapshot (the day BEFORE the trigger — no look-ahead).
+    expiration_dte=0 means we want a contract expiring on the trigger date
+    (= 2024-06-04 = snapshot_date+1)."""
+    df = _synthetic_eod_snapshots(["2024-06-03", "2024-06-04"])
     lk = IVLookup(df)
-    # Trigger 2 min after snap_a → within tolerance
-    trig = pd.Timestamp("2024-06-03 14:02:00", tz="UTC")
+    trig = pd.Timestamp("2024-06-04 14:02:00", tz="UTC")
     quote = lk.find(trig, spot=450.0, side="long", otm_offset=0, expiration_dte=0)
     assert quote is not None
-    assert quote.snapshot_ts == snap_a
     assert quote.kind == "call"
     assert quote.strike == 450.0
-    assert quote.snapshot_age_seconds == 120.0
+    # Anchor is 2024-06-03's EOD (21:00 UTC)
+    assert quote.snapshot_ts.date() == pd.Timestamp("2024-06-03").date()
+    # The expiration we requested is the trigger date
+    assert quote.expiration.date() == pd.Timestamp("2024-06-04").date()
+    # snapshot_age ≈ overnight gap (~17h from 6/3 21:00 UTC to 6/4 14:02 UTC)
+    assert 16 * 3600 < quote.snapshot_age_seconds < 18 * 3600
 
 
-def test_iv_lookup_voids_when_too_far():
-    snap = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
-    df = _synthetic_iv_snapshots([snap])
+def test_iv_lookup_voids_when_no_prior_day():
+    """If there's no EOD snapshot strictly prior to the trigger date,
+    the lookup voids. (First trading day of the preload window with
+    no T-1 to anchor against.)"""
+    df = _synthetic_eod_snapshots(["2024-06-03"])
     lk = IVLookup(df)
-    # Trigger 10 min away — outside 5-min tolerance
-    trig = pd.Timestamp("2024-06-03 14:10:00", tz="UTC")
-    assert SNAPSHOT_TOLERANCE_SECONDS == 300
+    # Trigger on the SAME date as the only snapshot → no prior anchor available
+    trig = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
+    quote = lk.find(trig, spot=450.0, side="long", otm_offset=0, expiration_dte=0)
+    assert quote is None
+
+
+def test_iv_lookup_voids_when_expiration_not_in_chain():
+    """If the requested expiration didn't exist in the anchor's chain,
+    void. Regression for IWM 2022 Tue/Thu — Tuesday-expiring contracts
+    weren't issued until Nov 2023; a Tue setup in 2022 should void."""
+    df = _synthetic_eod_snapshots(["2024-06-03"], expiration_offsets=(2,))  # ONLY 2-day-out exp
+    lk = IVLookup(df)
+    trig = pd.Timestamp("2024-06-04 14:00:00", tz="UTC")
+    # Asking for a 0DTE-from-trigger (= 1d-from-snapshot) → not in chain
     quote = lk.find(trig, spot=450.0, side="long", otm_offset=0, expiration_dte=0)
     assert quote is None
 
 
 def test_iv_lookup_put_otm_offset_picks_strike_below():
     """For PUTs, +1-OTM means BELOW spot (lower strike, away from money)."""
-    snap = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
-    df = _synthetic_iv_snapshots([snap])
+    df = _synthetic_eod_snapshots(["2024-06-03", "2024-06-04"])
     lk = IVLookup(df)
-    trig = pd.Timestamp("2024-06-03 14:01:00", tz="UTC")
+    trig = pd.Timestamp("2024-06-04 14:01:00", tz="UTC")
     quote = lk.find(trig, spot=450.0, side="short", otm_offset=1, expiration_dte=0)
     assert quote is not None
     assert quote.kind == "put"
@@ -280,10 +305,9 @@ def test_iv_lookup_put_otm_offset_picks_strike_below():
 
 
 def test_iv_lookup_call_otm_offset_picks_strike_above():
-    snap = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
-    df = _synthetic_iv_snapshots([snap])
+    df = _synthetic_eod_snapshots(["2024-06-03", "2024-06-04"])
     lk = IVLookup(df)
-    trig = pd.Timestamp("2024-06-03 14:01:00", tz="UTC")
+    trig = pd.Timestamp("2024-06-04 14:01:00", tz="UTC")
     quote = lk.find(trig, spot=450.0, side="long", otm_offset=1, expiration_dte=0)
     assert quote is not None
     assert quote.kind == "call"
@@ -295,6 +319,13 @@ def test_iv_lookup_empty_returns_none():
     trig = pd.Timestamp("2024-06-03 14:00:00", tz="UTC")
     quote = lk.find(trig, spot=450.0, side="long")
     assert quote is None
+
+
+def test_iv_lookup_snapshot_tolerance_constant_preserved_for_backcompat():
+    """SNAPSHOT_TOLERANCE_SECONDS is kept as a module constant for any
+    callers that imported it before the EOD-anchor pivot. Under the new
+    design it's informational only — never used to gate."""
+    assert SNAPSHOT_TOLERANCE_SECONDS == 300
 
 
 # ─────────────────────────────────────────── Engine smoke ─────────────────────────────────
@@ -333,8 +364,14 @@ def test_simulate_option_setup_long_target_hit():
         trigger_high=450.5, trigger_low=449.5,
         top_prob=0.62,
     )
-    # IV preload — one snapshot at trigger_close
-    iv_df = _synthetic_iv_snapshots([trigger_close], spot=450.0)
+    # IV preload — T-1 EOD snapshot (2024-05-31 Friday, since 6/1-6/2 is
+    # weekend). Anchor IV pulled from the 2024-05-31 EOD chain; expiration
+    # = 2024-06-03 (the trigger date = 0DTE from trigger's perspective =
+    # 3 days out from the 5/31 snapshot perspective).
+    iv_df = _synthetic_eod_snapshots(
+        ["2024-05-31"], spot=450.0, ticker="IWM",
+        expiration_offsets=(3, 4),  # 5/31 + 3 = 6/3 (the trigger date)
+    )
     lk = IVLookup(iv_df)
     spec = OptionTradeSpec(target_multiple=1.5, time_stop_minutes=30)
     trade = simulate_option_setup(
@@ -351,8 +388,11 @@ def test_simulate_option_setup_long_target_hit():
     assert trade.strike == 450.0
 
 
-def test_simulate_option_setup_voids_when_no_iv():
-    """No snapshot within tolerance → void."""
+def test_simulate_option_setup_voids_when_no_anchor():
+    """Under EOD-anchor design, a setup voids when the EOD preload has
+    no snapshot STRICTLY PRIOR to trigger_date (first-day-of-window
+    edge case, or the only snapshot is from the same day as trigger
+    which would be look-ahead)."""
     trigger_close = pd.Timestamp("2024-06-03 14:05:00", tz="UTC")
     bars = _synthetic_1m_bars(trigger_close, n_bars=60, base_price=450.0)
     setup = OptionSetup(
@@ -361,10 +401,8 @@ def test_simulate_option_setup_voids_when_no_iv():
         trigger_ts_close=trigger_close,
         trigger_high=450.5, trigger_low=449.5, top_prob=0.62,
     )
-    # IV snapshot is 30 minutes BEFORE trigger — outside tolerance
-    iv_df = _synthetic_iv_snapshots(
-        [pd.Timestamp("2024-06-03 13:30:00", tz="UTC")], spot=450.0,
-    )
+    # Only snapshot is FROM THE TRIGGER DATE — not strictly prior → void.
+    iv_df = _synthetic_eod_snapshots(["2024-06-03"], spot=450.0)
     lk = IVLookup(iv_df)
     spec = OptionTradeSpec()
     trade = simulate_option_setup(setup, bars, lk, spec,

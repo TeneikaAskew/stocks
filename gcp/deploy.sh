@@ -948,60 +948,19 @@ deploy_av_options_realtime() {
     gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
 }
 
-# Backfill IWM 0DTE intraday options snapshots for the options-exec-backtest.
-# The EOD historical AV path (`fetch-av-options-backfill`) only stores one
-# snapshot per day at 4PM ET — too sparse for an intraday setup-window
-# IV anchor. This job hits AV's HISTORICAL_OPTIONS endpoint with the
-# `datetime=` (intraday) param. The list of (ticker, datetime_utc) pairs
-# comes from a CSV emitted by `options-exec-backtest --mode=emit_timestamps`.
+# REMOVED 2026-05-28: deploy_av_options_historical_intraday and the
+# companion fetcher gcp/fetchers/fetch_av_historical_options_intraday.py.
+# The premise was wrong — AV's HISTORICAL_OPTIONS endpoint accepts a
+# `date=YYYY-MM-DD` param (EOD snapshot only); there is no `datetime=`
+# param for historical intraday options. Empirical test on
+# 2022-01-03T09:50:00 ET returned the CURRENT chain (2026-05-26
+# expirations), not the 2022 chain — AV silently ignored the
+# unsupported param and returned the live snapshot.
 #
-# Per Rule 0 sizing:
-# - Velocity: 1 AV call + 1 INSERT per timestamp; ~250ms wall-clock each
-# - Volume: ~5-30k timestamps total → ~250k-1.5M filtered rows
-# - Wall-clock: 5k * 250ms = 20 min; 30k * 250ms = 2 hr
-# - task-timeout 14400 (4 hr) gives 2-4x headroom
-# - max-retries 0; resume via --skip-existing
-deploy_av_options_historical_intraday() {
-    echo "Deploying fetch-av-options-historical-intraday job..."
-
-    local non_secret_env
-    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
-    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
-    non_secret_env="${non_secret_env},DB_NAME=trading"
-    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
-
-    local secrets_flag
-    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
-    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
-    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
-
-    # Default args target the setup-driven CSV in GCS. To override at
-    # execute time:
-    #   gcloud run jobs execute fetch-av-options-historical-intraday \
-    #     --update-args="--datetimes-file=/tmp/x.csv,--skip-existing" --wait
-    # First-run wall-clock budget: ~54k timestamps × ~250 ms (1 AV call +
-    # 1 DB upsert per pair) ≈ 3.8 hr. The 4hr timeout in the original
-    # sizing was right at the edge — a single AV slowdown lost the run.
-    # 8 hr (28800) gives 2x headroom; --skip-existing makes the retry
-    # path converge if we ever exceed even that.
-    local common_flags=(
-        --image "${IMAGE}" --region "${REGION}"
-        --memory 2Gi --cpu 1 --max-retries 0
-        --task-timeout 28800
-        --service-account "${SA_EMAIL}"
-        --command "python,-m,gcp.fetchers.fetch_av_historical_options_intraday"
-        # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
-        # with `-`, otherwise gcloud parses the value as a new flag.
-        # ^|^ delimiter so the gs:// URL's slashes don't trip the parser.
-        "--args=^|^--datetimes-file=gs://${PROJECT_ID}-trading-data/research/options_exec_backtest/setup_timestamps.csv|--skip-existing"
-        ${secrets_flag}
-        --set-env-vars "${non_secret_env}"
-        --quiet
-    )
-
-    gcloud run jobs create fetch-av-options-historical-intraday "${common_flags[@]}" 2>/dev/null || \
-    gcloud run jobs update fetch-av-options-historical-intraday "${common_flags[@]}"
-}
+# The options-exec-backtest pivots to use the EXISTING EOD path
+# (fetch_av_historical_options.py via deploy_av_options_backfill) +
+# lib/options_intraday.reprice_intraday_option for the intraday
+# minute-by-minute BSM walk anchored to T-1 EOD IV.
 
 # Options exec backtest — Track B' (parallels lib/exec_backtest but trades
 # IWM 0DTE ATM options instead of the underlying). Mode dispatched at execute
@@ -1479,7 +1438,6 @@ deploy_fetchers() {
     deploy_fetch_alphavantage
     deploy_av_options_backfill
     deploy_av_options_realtime
-    deploy_av_options_historical_intraday
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -1495,6 +1453,8 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
     deploy_options_exec_backtest
+    # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
+    # above that function; AV has no historical intraday options endpoint.)
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────
