@@ -819,6 +819,36 @@ deploy_backfill_daily_indicators() {
         --quiet
 }
 
+deploy_db_query() {
+    echo "Deploying db-query job..."
+    # Cloud Run-native alternative to .github/workflows/db-query.yml. Sandbox
+    # sessions dispatch via `gcloud run jobs execute db-query
+    # --update-env-vars="SQL=...,RESULT_GCS_URI=gs://..." --wait` and fetch
+    # results from GCS via `gcloud storage cp` (both go over 443).
+    # No GitHub-runner dependency = immune to GH Actions hosted-runner outages.
+    # 1800s timeout: same statement_timeout cap as the GH workflow (120s
+    # default, 1800s max). Memory 1Gi: identical to backfill-daily-indicators.
+    # max-retries=0: a query failure is the caller's problem to re-dispatch,
+    # not Cloud Run's to silently double-execute.
+    gcloud run jobs create db-query \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.db_query_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update db-query \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.db_query_job" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
     # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per

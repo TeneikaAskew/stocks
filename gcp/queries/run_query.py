@@ -363,6 +363,29 @@ def build_summary(stmts: list[dict], database: str, run_url: str | None,
 
 # ─────────────────────── main ───────────────────────
 
+def _upload_dir_to_gcs(out_dir: Path, gcs_uri: str) -> None:
+    """Upload every file in out_dir to ``gs://bucket/prefix/<filename>``.
+
+    Used by the db-query Cloud Run Job so the dispatching sandbox session
+    can fetch results via ``gcloud storage cp`` (port 443) instead of
+    needing GitHub Actions artifact access.
+    """
+    if not gcs_uri.startswith('gs://'):
+        raise ValueError(f'--upload-to-gcs must start with gs:// (got {gcs_uri!r})')
+    from google.cloud import storage  # local import — only when needed
+    rest = gcs_uri[len('gs://'):]
+    bucket_name, _, prefix = rest.partition('/')
+    prefix = prefix.rstrip('/')
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    for fp in sorted(out_dir.iterdir()):
+        if not fp.is_file():
+            continue
+        blob_name = f'{prefix}/{fp.name}' if prefix else fp.name
+        bucket.blob(blob_name).upload_from_filename(str(fp))
+        print(f'uploaded {fp.name} → gs://{bucket_name}/{blob_name}')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Run SQL and emit summary artifacts.')
     ap.add_argument('--sql', default='', help='Inline SQL (multi-statement OK separated by ;).')
@@ -371,6 +394,9 @@ def main() -> int:
     ap.add_argument('--statement-timeout-seconds', type=int, default=120)
     ap.add_argument('--output-dir', default='.', help='Where to write artifacts.')
     ap.add_argument('--run-url', default='', help='Workflow run URL for summary footer.')
+    ap.add_argument('--upload-to-gcs', default='',
+                    help='gs://bucket/prefix to upload every artifact file to '
+                         'after the run completes. Used by the db-query Cloud Run Job.')
     args = ap.parse_args()
 
     if bool(args.sql) == bool(args.sql_file):
@@ -457,6 +483,16 @@ def main() -> int:
 
     statuses = [r['status'] for r in results]
     print(f'done: {len(results)} statements, statuses={statuses}, system_error={saw_system_error}')
+
+    if args.upload_to_gcs:
+        try:
+            _upload_dir_to_gcs(out_dir, args.upload_to_gcs)
+        except Exception as e:
+            # Treat upload failure as a system error so the caller knows
+            # the artifacts didn't reach GCS (without it, the sandbox has
+            # no way to retrieve results).
+            print(f'GCS upload failed: {e!r}', file=sys.stderr)
+            return 1
 
     return 1 if saw_system_error else 0
 
