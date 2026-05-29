@@ -1,6 +1,34 @@
 # Magnitude Engine — Results
 
-> **Final verdict (2026-05-28 — after replication, mechanism, bootstrap, and calendar-replacement checks)**:
+> ## PROJECT VERDICT: FAIL (closed 2026-05-29 by gate 7)
+>
+> **Headline**: magnitude is statistically learnable at 5m but **not
+> tradeably-extractable** as a non-directional play. The within-cell
+> precision boost the model provides is the priced finer-calendar and
+> vol-clustering effects, not unpriced bar-specific structure. Gate 7
+> (implied-vs-realized): 0 of 23 IV-covered folds across IWM/SPY/QQQ
+> 5m crossed the 1.25 ratio threshold. Aggregate realized/implied
+> ratio on EXPLOSIVE-predicted bars is 0.83-0.92 — the option chain
+> has already incorporated everything the model finds.
+>
+> **What this rules out**: Phase 4 (cross-asset) and Phase 5 (gamma)
+> for magnitude prediction. Those phases would face the same gate
+> against the same systematic 0.85-0.95 baseline. The plausible-best-
+> case effect of adding more features is to nudge the ratio from 0.92
+> to 0.93. Not enough.
+>
+> **What survives**: the platform-as-cockpit direction using the
+> validated strat_engine type model. The magnitude work is closed.
+>
+> See §5e for the gate-7 calculation, §"Final project verdict" for
+> the full debrief. The prior intermediate verdicts (gate-count PASS,
+> mechanism-misread, calendar-proxy confirmation, decomposition-mixed)
+> are preserved below for the audit trail — each step refined the
+> finding until gate 7 settled it.
+>
+> ---
+>
+> **Intermediate verdict (2026-05-28 — pre gate-7)**:
 >
 > ### Phase-by-phase gate counts
 > | phase | 5m tickers passing | 15m tickers passing | 30m tickers passing | gate-count verdict |
@@ -458,6 +486,86 @@ in 2024-2025. Early walk-forward folds (2019-2023) will lack IV
 coverage and will be reported as `NO_COVERAGE`, not counted toward
 the 6-of-folds threshold. If fewer than 4 folds have coverage, the
 verdict is `INSUFFICIENT_DATA` — needs a different IV source.
+
+### Result (run 2026-05-29 against phase_calendar predictions)
+
+Coverage was BETTER than the pre-run pessimistic assumption —
+`etf_options_snapshots` actually has IV anchors going back to 2019.
+23 of 24 attempted folds had ≥20 IV-covered EXPLOSIVE-predicted bars
+(1 fold skipped as `THIN_n=18`). `INSUFFICIENT_DATA` did not fire.
+
+| ticker | folds w/ coverage | folds passing gate 7 | aggregate mean ratio | best fold ratio | verdict |
+|---|---|---|---|---|---|
+| IWM 5m | 8/8 | **0/8** | 0.92 | 1.10 (2025) | **FAIL** |
+| SPY 5m | 7/8 | **0/7** | 0.87 | 1.23 (2020 COVID) | **FAIL** |
+| QQQ 5m | 8/8 | **0/8** | 0.83 | 1.16 (2024) | **FAIL** |
+
+Per-fold ratios (IWM 5m sample):
+```
+2019: 0.56   2020: 1.03   2021: 0.85   2022: 0.93
+2023: 0.98   2024: 0.99   2025: 1.10   2026: 0.90
+```
+
+**Gate 7 verdict**: **FAIL on every cell.** Zero of 23 IV-covered folds
+across all three 5m-passing cells crossed the 1.25 ratio threshold.
+The highest single-fold ratio was 1.23 (SPY 5m, 2020 COVID regime) —
+still under the bar.
+
+### What this resolves
+
+Per the reviewer's framework, gate 7 separates the three possible
+sources of the 2-3x within-cell precision boost:
+1. Genuine bar-specific structure → potentially unpriced (would show ratio > 1.25)
+2. Finer-grained calendar effects → priced (ratio ≈ 1.0)
+3. Volatility clustering / GARCH → priced (ratio ≈ 1.0)
+
+Aggregate ratios of 0.83-0.92 are consistent with **the 2-3x within-cell
+boost being the priced finer-calendar and vol-clustering effects, not
+unpriced bar-specific structure.** The IV market has incorporated the
+calendar × vol-clustering patterns the model picks up. The magnitude
+model finds real patterns; those patterns are already in the option
+chain.
+
+This closes the last open research thread on magnitude. Subsequent
+phases (Phase 4 cross-asset, Phase 5 gamma) would face the same
+gate against the same systematic 0.85-0.95 baseline. The
+plausible-best-case effect of adding cross-asset or gamma features
+is to nudge the ratio from 0.92 to 0.93. That doesn't change a
+verdict at the 1.25 bar.
+
+---
+
+## Final project verdict
+
+**Magnitude is statistically learnable at 5m but not tradeably-extractable
+as a non-directional play.**
+
+What we've validated:
+- ✅ Magnitude IS predictable at 5m for all 3 tickers (phase_calendar
+  passes gates 1-4 across the board with 100% bootstrap)
+- ✅ The signal is real and robust under perturbation
+- ✅ Bar features add a real 2-3x within-cell precision boost over a
+  naive (DoW, hour) lookup
+
+What we've ruled out:
+- ❌ Phase 0 / 1 / 2 / 3 framings were all calendar-proxy at root
+  (proven by the phase_calendar replacement test)
+- ❌ The within-cell discrimination is not unpriced edge — gate 7's
+  0/23 fold pass at the 1.25 threshold settles this
+- ❌ 30m magnitude is unlearnable across all phases tested
+- ❌ 15m magnitude is bootstrap-fragile; "passing" cells are gate-edge
+  artifacts
+
+The practical takeaway: the magnitude signal is what every intraday
+trader already knows — open and close are more volatile, FOMC and NFP
+windows expand vol, weekday/hour patterns matter, recent vol predicts
+near-future vol. The option chain has priced it all. There is no edge
+to extract via a non-directional vehicle.
+
+**Recommendation**: do not invest further compute in Phase 4 (cross-asset)
+or Phase 5 (gamma) for magnitude prediction. Pivot remaining
+research budget toward platform-as-cockpit work where the validated
+strat_engine type model already has a clearer path to value.
 
 ---
 
