@@ -23,17 +23,17 @@
       "verdict": "FAIL",
       "checks": {
         "c1_pos_exp_folds": [
-          1,
+          2,
           3,
-          false
+          true
         ],
         "c2_agg_net_exp": [
-          -0.2843558244751419,
+          -0.13910034774038524,
           5.0,
           false
         ],
         "c3_asymm_ratio": [
-          0.9691950563124425,
+          0.985671545010736,
           1.2,
           false
         ],
@@ -43,30 +43,30 @@
           false
         ]
       },
-      "total_trades": 12312,
-      "pos_exp_folds": 1,
+      "total_trades": 15135,
+      "pos_exp_folds": 2,
       "n_folds": 3,
-      "weighted_net_exp": -0.2843558244751419,
-      "overall_hit_rate": 0.3776803118908382,
-      "asymm_ratio": 0.9691950563124425,
-      "total_net": -3500.9889109379474,
+      "weighted_net_exp": -0.13910034774038524,
+      "overall_hit_rate": 0.3795176742649488,
+      "asymm_ratio": 0.985671545010736,
+      "total_net": -2105.2837630507306,
       "max_fold_share": Infinity
     },
     "15m": {
       "verdict": "FAIL",
       "checks": {
         "c1_pos_exp_folds": [
-          1,
+          2,
           3,
-          false
+          true
         ],
         "c2_agg_net_exp": [
-          -0.49045405029753464,
+          -0.3746853140776113,
           5.0,
           false
         ],
         "c3_asymm_ratio": [
-          0.9527107526346146,
+          0.9647839955385529,
           1.2,
           false
         ],
@@ -76,48 +76,48 @@
           false
         ]
       },
-      "total_trades": 3619,
-      "pos_exp_folds": 1,
+      "total_trades": 4307,
+      "pos_exp_folds": 2,
       "n_folds": 3,
-      "weighted_net_exp": -0.49045405029753464,
-      "overall_hit_rate": 0.3733075435203095,
-      "asymm_ratio": 0.9527107526346146,
-      "total_net": -1774.953208026778,
+      "weighted_net_exp": -0.3746853140776113,
+      "overall_hit_rate": 0.3742744369630834,
+      "asymm_ratio": 0.9647839955385529,
+      "total_net": -1613.7696477322718,
       "max_fold_share": Infinity
     },
     "30m": {
       "verdict": "FAIL",
       "checks": {
         "c1_pos_exp_folds": [
-          1,
+          2,
           3,
-          false
+          true
         ],
         "c2_agg_net_exp": [
-          0.17372276293149366,
+          1.2440018150015788,
           5.0,
           false
         ],
         "c3_asymm_ratio": [
-          1.0127436009870616,
+          1.090605679282838,
           1.2,
           false
         ],
         "c4_no_dom": [
-          3.8145323768278265,
+          0.88483796117178,
           0.5,
           false
         ]
       },
-      "total_trades": 1505,
-      "pos_exp_folds": 1,
+      "total_trades": 1825,
+      "pos_exp_folds": 2,
       "n_folds": 3,
-      "weighted_net_exp": 0.17372276293149366,
-      "overall_hit_rate": 0.3401993355481728,
-      "asymm_ratio": 1.0127436009870616,
-      "total_net": 261.45275821189796,
-      "max_fold_share": 3.8145323768278265
+      "weighted_net_exp": 1.2440018150015788,
+      "overall_hit_rate": 0.3495890410958904,
+      "asymm_ratio": 1.090605679282838,
+      "total_net": 2270.3033123778814,
+      "max_fold_share": 0.88483796117178
     }
   },
-  "trade_count": 17436
+  "trade_count": 21267
 }
