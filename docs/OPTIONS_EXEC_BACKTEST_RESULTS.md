@@ -24,12 +24,12 @@ and 2 (1DTE) are NOT run — base fails by > 25% margin on every cell.
 
 | Window | Cell | n trades | hit | net exp/contract | pos-exp folds | Verdict |
 |--------|:----:|---------:|----:|-----------------:|:-------------:|:-------:|
-| 3-fold (2024-2026) | 5m  | 12,312 | 37.8% | **-$0.28** | 1/3 | FAIL |
-| 3-fold | 15m | 3,619  | 37.3% | **-$0.49** | 1/3 | FAIL |
-| 3-fold | 30m | 1,505  | 33.9% | **+$0.17** | 1/3 | FAIL |
-| 5-fold (2022-2026) | 5m  | 19,292 | 37.7% | **+$0.02** | 3/5 | FAIL |
-| 5-fold | 15m | 5,794  | 38.0% | **-$0.02** | 3/5 | FAIL |
-| 5-fold | 30m | 2,307  | 36.4% | **+$1.29** | 2/5 | FAIL |
+| 3-fold (2024-2026) | 5m  | 15,135 | 38.0% | **-$0.14** | 2/3 | FAIL |
+| 3-fold | 15m | 4,307  | 37.4% | **-$0.37** | 2/3 | FAIL |
+| 3-fold | 30m | 1,825  | 34.6% | **+$1.24** | 2/3 | FAIL |
+| 5-fold (2022-2026) | 5m  | 22,115 | 37.9% | **+$0.08** | 4/5 ✅ | FAIL (c2, c3) |
+| 5-fold | 15m | 6,482  | 38.0% | **+$0.01** | 4/5 ✅ | FAIL (c2, c3) |
+| 5-fold | 30m | 2,627  | 36.8% | **+$1.90** | 3/5 | FAIL |
 
 Both windows agree on the FAIL verdict — no BORDERLINE state.
 
@@ -75,7 +75,10 @@ question is ~95% sealed, not 100%.
 
 **Source data**: see `docs/options_exec_backtest_data/base_3fold/` and
 `base_5fold/` (per_fold.csv + trades.csv.gz + results.json).
-**Run ID**: `options-exec-backtest-xbkcv` (2026-05-28, 1h20m wall-clock).
+**Run ID**: `options-exec-backtest-vg5rh` (2026-05-29, 53m wall-clock,
+post-rates-fix). Replaces the original `options-exec-backtest-xbkcv`
+run (2026-05-28, 1h20m) whose fold-5 was voided by the rates-preload
+range bug — see "Methodology note" below for the fix details.
 
 ## Method (reference)
 
@@ -236,21 +239,23 @@ folds for the cell. "pos-exp folds" counts folds with mean net exp > 0.
 
 | Cell | n trades | hit rate | gross exp / contract | **net exp / contract** | total net | pos-exp folds | Verdict |
 |------|---------:|---------:|---------------------:|-----------------------:|----------:|--------------:|:--------|
-| 5m   | 19,292 | 37.7% | +$1.39 | **+$0.02** | +$375.30 | 3/5 | FAIL (c1, c2) |
-| 15m  | 5,794  | 38.0% | +$1.36 | **-$0.02** | -$100.85 | 3/5 | FAIL (c1, c2) |
-| 30m  | 2,307  | 36.4% | +$2.67 | **+$1.29** | +$2,983.52 | 2/5 | FAIL (c1, c2, c4*) |
+| 5m   | 22,115 | 37.9% | +$1.46 | **+$0.08** | +$1,771.00 | **4/5** | FAIL (c2, c3) |
+| 15m  | 6,482  | 38.0% | +$1.39 | **+$0.01** | +$60.32   | **4/5** | FAIL (c2, c3) |
+| 30m  | 2,627  | 36.8% | +$3.30 | **+$1.90** | +$4,992.36 | 3/5 | FAIL (c1, c2, c4*) |
 
-\* 30m's c4 (no-single-regime-dominance) fails because 2022 alone
-contributed +$2,755 of the +$2,983 total (92% — far above the 50%
-cap). The 2022 anomaly is examined in the diagnostics below.
+\* 30m's c4 (no-single-regime-dominance) fails because 2022 (+$2,755)
+plus 2026 YTD (+$2,009) together contribute 95% of the +$4,992 total
+— both above the 50%-of-total cap individually no, but jointly they
+crowd the middle folds. 2024 was net -$736, only 2023 and 2025 were
+in-range positive. Diagnostics below.
 
 ### Per-cell summary (base case, 3-fold 2024-2026)
 
 | Cell | n trades | hit rate | gross exp / contract | **net exp / contract** | total net | pos-exp folds | Verdict |
 |------|---------:|---------:|---------------------:|-----------------------:|----------:|--------------:|:--------|
-| 5m   | 12,312 | 37.8% | +$1.08 | **-$0.28** | -$3,500.99 | 1/3 | FAIL (c1, c2) |
-| 15m  | 3,619  | 37.3% | +$0.89 | **-$0.49** | -$1,774.95 | 1/3 | FAIL (c1, c2) |
-| 30m  | 1,505  | 33.9% | +$1.55 | **+$0.17** | +$261.45 | 1/3 | FAIL (c1, c2) |
+| 5m   | 15,135 | 38.0% | +$1.18 | **-$0.14** | -$2,105.27 | 2/3 | FAIL (c2, c3) |
+| 15m  | 4,307  | 37.4% | +$0.97 | **-$0.37** | -$1,613.78 | 2/3 | FAIL (c2, c3) |
+| 30m  | 1,825  | 34.6% | +$2.62 | **+$1.24** | +$2,270.30 | 2/3 | FAIL (c1, c2) |
 
 ### Cross-window consistency check
 
@@ -268,7 +273,7 @@ Full per-fold breakdown in
 `docs/options_exec_backtest_data/base_5fold/per_fold.csv` and
 `base_3fold/per_fold.csv`. Key picks below.
 
-**5-fold 30m cell — the only fold-cell with eye-catching positive exp:**
+**5-fold 30m cell — two positive-outlier folds bookend the window:**
 
 | Fold | Window | n | hit | net_exp | total_net |
 |-----:|:-------|--:|----:|--------:|----------:|
@@ -276,49 +281,43 @@ Full per-fold breakdown in
 | 2 | 2023 | 397 | 34.8% | -$0.08 | -$33 |
 | 3 | 2024 | 731 | 31.7% | -$1.01 | -$735 |
 | 4 | 2025 | 774 | 36.2% | +$1.29 | +$997 |
-| 5 | 2026 YTD | 0 | — | — | — (voided, see data-quality note) |
+| 5 | 2026 YTD | 320 | 39.4% | **+$6.28** | +$2,009 |
 
-2022's +$6.80/contract is an outlier — driven by Fed-tightening
-regime where IV was systematically elevated AND the underlying was
-trending hard. The 2022 30m bsm_void count (894 of 1,299 candidates)
-is far higher than later folds, which suggests the type model
-generated many candidates that the underlying-space trigger never
-hit — survivor bias toward big-move days. Three of the next four
-folds were flat-to-negative; one cell-fold dominating the cell's
-total fails c4.
+Notable: the 2026 YTD fold (+$6.28/contract) is the second-highest
+per-contract expectancy in the entire run, behind only 2022's +$6.80.
+Same pattern: positive in trending / elevated-IV regimes (2022's Fed
+tightening; 2026 YTD's tariff-policy regime), flat-to-negative in
+the in-between calmer years. The c4 (no-single-regime-dominance)
+check still fails — the two outlier folds combined contribute 95%
+of the cell's positive total.
 
-**5-fold YTD 2026 fold (#5) was entirely voided** with `no_rate=4706`
-(5m), `no_rate=1201` (15m), `no_rate=544` (30m). Initial attribution
-was to FRED-rates freshness; on investigation `daily_rates` is fully
-populated through 2026-05-26 (2,846 rows, all `dgs3mo` non-null).
-The real cause was a bug in `lib/options_exec_backtest/runner.py`:
-
-  `rates_full = _load_daily_rates(engine, cutoffs[0], cutoffs[-1])`
-
-This loaded rates only through `cutoffs[-1]` = `2026-01-01`, but the
-final fold's test window is `[2026-01-01, 2026-12-31)`. Every setup
-with `rate_date >= 2026-01-02` wasn't in the in-memory dict → voided
-as `no_rate`. Fixed in a follow-up commit on `fix/fred-rates-freshness`
-(hoist `FINAL_FOLD_TEST_END` to a module constant used by both the
-fold-iteration `test_end` derivation AND the rates preload range;
-regression test asserts `FINAL_FOLD_TEST_END` > every window's last
-cutoff). A re-run of the backtest after the fix would populate fold-5;
-the verdict on folds 1-4 alone already rejects the hypothesis (not
-≥4/5 positive on any cell), so the re-run is optional for completeness
-rather than for the verdict.
+**Methodology note (re-run with rates-preload fix).** The initial run
+(`options-exec-backtest-xbkcv`, 2026-05-28) had fold-5 voiding 100%
+of candidates with `no_rate`. Root cause was a runner bug in
+`_load_daily_rates(engine, cutoffs[0], cutoffs[-1])` — `cutoffs[-1]`
+is the START of the final test window, not its end, so any setup
+with `rate_date >= 2026-01-02` wasn't in the in-memory rates dict.
+Fixed in commit `9cf0e56` (hoist `FINAL_FOLD_TEST_END` to a module
+constant used by both the fold-iteration `test_end` derivation AND
+the rates preload range; regression test asserts the invariant).
+The numbers above are from the re-run (`options-exec-backtest-vg5rh`,
+2026-05-29, 53m) with the fix applied. Fold-5 now contributes
+properly. The OVERALL verdict is unchanged (the original fold-1..4
+data already rejected the hypothesis), but two 5-fold cells (5m, 15m)
+went from `pos_exp=3/5` to `4/5` — they now PASS c1 alone, fail c2/c3.
 
 ## Post-run analysis
 
 Computed from `docs/options_exec_backtest_data/base_5fold/trades.csv.gz`
-(n=27,393 trades). Same patterns in the 3-fold subset.
+(n=31,224 trades, post-fix). Same patterns in the 3-fold subset.
 
 ### 1. Theta drag — fraction of total trade friction
 
 | Cell | mean theta share | median |
 |------|-----------------:|-------:|
-| 5m   | 45.7% | 50.9% |
-| 15m  | 58.4% | 68.1% |
-| 30m  | 67.7% | 82.1% |
+| 5m   | 46.2% | 51.6% |
+| 15m  | 58.8% | 68.6% |
+| 30m  | 68.0% | 82.5% |
 
 The 30m cell pays disproportionate theta — 0DTE option holders are
 bleeding ~⅔ of their per-trade friction to time decay. As expected:
@@ -328,8 +327,8 @@ longer holds on 0DTE = more theta eaten.
 
 | exit_reason | share |
 |:------------|------:|
-| stop        | 40.0% |
-| time        | 33.9% |
+| stop        | 40.1% |
+| time        | 33.8% |
 | target      | 21.6% |
 | eod         |  4.5% |
 
@@ -342,9 +341,9 @@ underlying-flat trades, where theta dominates the close.
 
 | Cell | win rate | avg win | avg loss | (win × hit) vs (loss × miss) ratio |
 |------|---------:|--------:|---------:|----------------------------------:|
-| 5m   | 37.8% | +$24.40 | -$14.78 | 1.003 |
-| 15m  | 37.6% | +$26.83 | -$16.20 | 0.998 |
-| 30m  | 35.2% | +$41.58 | -$20.63 | 1.095 |
+| 5m   | 37.9% | +$25.36 | -$15.34 | 1.008 |
+| 15m  | 37.6% | +$27.42 | -$16.54 | 1.001 |
+| 30m  | 35.7% | +$42.98 | -$20.95 | 1.141 |
 
 **This is the cleanest rejection of the hypothesis.** The brief's c3
 check is "(hit_rate × avg_win) > (miss_rate × avg_loss) with ≥ 20%
@@ -365,19 +364,25 @@ column shows: $1.39 / $1.36 / $2.67 for 5m/15m/30m) and below-cost
 
 ### 4. Loss concentration — by fold (5-fold)
 
-See per-fold tables above. The single bright spot was 5-fold 30m
-in 2022 (+$6.80/contract on n=405, total +$2,755). That fold-cell
-contributes 92% of the 30m cell's total positive net — far above
-the 50% c4 cap. It's the kind of single-regime windfall that
-backtests pick up and overfit on; the c4 check exists exactly to
-catch this. 2023 / 2024 / 2025 all flat-to-negative confirms the
-2022 print didn't generalize.
+See per-fold tables above. **Two** bright-spot folds bookend the
+window: 5-fold 30m in 2022 (+$6.80/contract on n=405) and 5-fold
+30m in 2026 YTD (+$6.28/contract on n=320). Both are positive-trend
++ elevated-IV regimes — 2022's Fed tightening, 2026's tariff-policy
+regime. Their combined contribution is +$4,764 out of +$4,992
+total cell net (95%). The three middle folds (2023/2024/2025) all
+sit at -$1.01 to +$1.29 per contract — flat or barely positive
+after costs. c4 fails because no single fold > 50% on its own, but
+the regime-dependence pattern is clear.
 
-The pattern across cells & windows: 2022 was the most-positive
-regime (Fed tightening + elevated IV + trending underlying = long
-0DTE option holders benefited from sharp directional moves before
-theta could overwhelm). Every subsequent regime tightened that
-window.
+The 2022 + 2026 pattern is the same lesson the diagnostic surfaced
+above: long ATM 0DTE benefits from sharp directional moves before
+theta has time to overwhelm. That happens in regimes where the
+underlying trends hard AND IV is elevated enough that the gamma
+convexity has room to work. In calmer years (2023, 2025) the type
+model's setups produce small directional moves that the option
+wrapper's payoff convexity can't amplify above the theta cost.
+That's not an edge — that's the option benefiting from regime, not
+from any property of the setup itself.
 
 ## Variants
 
@@ -388,14 +393,15 @@ within 25% of the four checks.
 **NOT RUN** — base case fails by > 25% margin on every cell × window
 combo:
 
-- c1 (positive-folds bar): 3-fold has 1/3 on every cell (need 2/3 =
-  borderline if 2/3, fail at 1/3 by margin). 5-fold has 3/5 on 5m
-  and 15m (need 4/5, off by 25% which is borderline-equal), and 2/5
-  on 30m (FAR off).
+- c1 (positive-folds bar): 3-fold has 2/3 on every cell (meets the
+  3-fold bar of ≥2/3 — borderline-equal, not a margin miss).
+  5-fold has 4/5 on 5m and 15m (meets the bar), 3/5 on 30m (off by
+  20%).
 - c2 (≥$5/contract net expectancy): every cell × window combo is in
-  the -$0.49 to +$1.29 range — off the $5 bar by **74-110% margin**.
+  the -$0.37 to +$1.90 range — off the $5 bar by **62-107% margin**.
+  This is the binding constraint.
 - c3 (≥20% margin on (hit × win) vs (miss × loss)): actual ratios
-  are 0.998, 1.00, 1.10 — off the 1.20 bar by **8-17%**, also FAIL.
+  are 1.001, 1.008, 1.141 — off the 1.20 bar by **5-17%**, also FAIL.
 
 Running OTM / 1DTE variants on top of a base case that misses c2 by
 ~100% would be hope-mode optimization. Per the brief: "If base fails,
