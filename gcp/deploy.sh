@@ -247,6 +247,37 @@ deploy_signal_quality_alarm() {
         --quiet
 }
 
+# ── Indicator → forward-return correlation (Cloud Run Job) ───────────────────
+# Computes the full production indicator suite on 1-min RTH bars and ranks
+# each indicator by Information Coefficient (Spearman) vs forward returns.
+# Writes to indicator_correlation. Read-only on market_data_intraday; one
+# upsert at the end.
+#
+# Capacity (CLAUDE.md Rule 0): 3 tickers × ~30 sessions × 390 RTH bars
+# ≈ 35k bars total, held in memory at once (~tens of MB). 3 SELECTs total
+# (one per ticker, batched by date range — NOT per-bar). Pandas corr over
+# ~74 cols × 3 horizons is seconds. 1800s timeout is ~10× headroom.
+# --max-retries 1: pure read+single-upsert, idempotent, transient-retry safe.
+deploy_indicator_correlation() {
+    echo "Deploying indicator-correlation job..."
+    gcloud run jobs create indicator-correlation \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update indicator-correlation \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
 # Re-posts stored signal_alerts to the signals Discord channel for a
 # historical date + ET time block. Triggered by the /replay-signals
@@ -2622,6 +2653,7 @@ case "${1:-help}" in
     intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
+    indicator-correlation) build_image && deploy_indicator_correlation ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -2642,6 +2674,7 @@ case "${1:-help}" in
         deploy_signal_quality_report
         deploy_signal_quality_alarm
         deploy_signal_replay
+        deploy_indicator_correlation
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers

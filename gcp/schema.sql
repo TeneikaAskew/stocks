@@ -2691,3 +2691,37 @@ ALTER TABLE earnings_calibration
     ADD COLUMN IF NOT EXISTS avg_short_strangle_pnl_pct  DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;
+
+-- ---------------------------------------------------------------------------
+-- Intraday indicator → forward-return correlation / Information Coefficient
+-- ---------------------------------------------------------------------------
+-- Populated by `gcp.indicator_correlation_job`. One row per
+-- (ticker, indicator, horizon) for a given trailing window. The 'POOLED'
+-- ticker stacks all tickers for the cross-sectional ranking.
+--
+-- rank_ic is the Spearman rank correlation (the quant Information
+-- Coefficient); pearson is the linear correlation. Both are NULLABLE on
+-- purpose — a NULL means "could not be computed for this column/window"
+-- and must NOT be read as 0 (CLAUDE.md Rule 3.7: 0 ≠ missing for a
+-- financial statistic).
+CREATE TABLE IF NOT EXISTS indicator_correlation (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,   -- as-of date of the run
+    window_start    DATE              NOT NULL,   -- inclusive start of data window
+    window_end      DATE              NOT NULL,   -- inclusive end (== computed_date)
+    lookback_days   INTEGER,                      -- calendar days requested
+    ticker          VARCHAR(10)       NOT NULL,   -- 'SPY'|'IWM'|'QQQ'|'POOLED'
+    indicator       VARCHAR(64)       NOT NULL,   -- e.g. 'ATR14', 'ORB_15m_Range'
+    horizon_min     INTEGER           NOT NULL,   -- forward-return horizon (minutes)
+    pearson         DOUBLE PRECISION,             -- linear corr (NULL = unavailable)
+    rank_ic         DOUBLE PRECISION,             -- Spearman IC (NULL = unavailable)
+    abs_rank_ic     DOUBLE PRECISION,             -- |rank_ic| for ranking convenience
+    n               INTEGER,                      -- paired observations
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_indicator_correlation
+        UNIQUE (computed_date, window_start, window_end, ticker, indicator, horizon_min)
+);
+
+CREATE INDEX IF NOT EXISTS idx_indicator_correlation_rank
+    ON indicator_correlation (computed_date, horizon_min, abs_rank_ic DESC);
