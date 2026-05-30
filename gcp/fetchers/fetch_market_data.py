@@ -628,6 +628,14 @@ def _backfill_targets() -> list:
     EVERY ticker in earnings_history — used when backfilling for a
     multi-quarter reactions recompute, where past reporters need OHLCV
     even if they're not in the current options/stock-volume window.
+
+    With ``BACKFILL_ALL_HISTORY=true`` the union also includes tickers
+    that already exist in ``market_data_daily`` but are NOT in
+    earnings_history. Audit 2026-05-30 found 152 such orphans — real
+    S&P 500 names (AAL, AMP, ARI…) that joined the active universe
+    via ``earnings_calendar`` ~35 days prior and only ever got a single
+    bar fetched. Without this union they're invisible to --backfill
+    and stay broken indefinitely.
     """
     if not is_cloud_sql_configured():
         return []
@@ -639,18 +647,25 @@ def _backfill_targets() -> list:
     backfill_all = os.environ.get('BACKFILL_ALL_HISTORY', '').strip().lower() == 'true'
 
     if backfill_all:
-        # Skip the eligible filter — every earnings_history ticker counts.
+        # Skip the eligible filter — every earnings_history ticker counts,
+        # PLUS every ticker already in market_data_daily (catches
+        # universe-expansion orphans not yet in earnings_history).
         sql = """
-            SELECT eh.ticker,
+            WITH targets AS (
+                SELECT DISTINCT ticker FROM earnings_history
+              UNION
+                SELECT DISTINCT ticker FROM market_data_daily
+            )
+            SELECT t.ticker,
                    COALESCE(mdd.n, 0)        AS bar_count,
                    mdd.max_date              AS max_date
-              FROM (SELECT DISTINCT ticker FROM earnings_history) eh
+              FROM targets t
               LEFT JOIN (
                   SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
                     FROM market_data_daily
                    GROUP BY ticker
-              ) mdd ON mdd.ticker = eh.ticker
-             ORDER BY eh.ticker
+              ) mdd ON mdd.ticker = t.ticker
+             ORDER BY t.ticker
         """
     else:
         sql = """
