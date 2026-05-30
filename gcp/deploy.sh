@@ -1067,6 +1067,43 @@ deploy_db_query() {
     gcloud run jobs update db-query "${common_flags[@]}"
 }
 
+# Freshness watchdog — CR-native replacement for the GHA
+# `.github/workflows/freshness-watchdog.yml` workflow. Runs
+# `scripts/audit_data_freshness.py --strict` against Cloud SQL on a
+# schedule; any stale table makes the job exit non-zero, which the
+# existing failure-notifier Cloud Run Service catches via its log sink
+# and posts to Discord. Same coverage, same alerting, no GHA dependency.
+#
+# Triggered 2026-05-30 by the GHA-side outage that broke the GHA
+# watchdog (along with every other workflow in the repo).
+#
+# Sizing: 1 vCPU, 512MiB, 5-min timeout. The audit hits one SELECT per
+# table (~25 tables), <30s total.
+deploy_freshness_watchdog() {
+    echo "Deploying freshness-watchdog job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 300
+        --service-account "${SA_EMAIL}"
+        --command "python,scripts/audit_data_freshness.py"
+        # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
+        "--args=--strict"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create freshness-watchdog "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update freshness-watchdog "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1506,6 +1543,7 @@ deploy_fetchers() {
     deploy_backtest_pipeline
     deploy_options_exec_backtest
     deploy_db_query
+    deploy_freshness_watchdog
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
     # above that function; AV has no historical intraday options endpoint.)
 }
@@ -2296,6 +2334,10 @@ deploy_schedulers() {
     # historical post-earnings reaction pattern. Plain _schedule (no
     # containerOverride) — the job carries no run-kind label of its own.
     _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
+    # Freshness watchdog — CR-native, replaces .github/workflows/freshness-watchdog.yml
+    # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
+    _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
+    _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
@@ -2668,6 +2710,7 @@ case "${1:-help}" in
     setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     db-query)     build_image && deploy_db_query ;;
+    freshness-watchdog) build_image && deploy_freshness_watchdog ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
