@@ -629,7 +629,25 @@ sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
 sandbox IP to authorized networks does not help — the binding constraint is
 the sandbox's outbound firewall, not the DB's inbound ACL.
 
-To query Cloud SQL Postgres (`trading` database) from any session, dispatch
+**Primary path (CR-native, added 2026-05-30 after the GHA-platform
+outage broke the workflow path):**
+
+```bash
+./scripts/db_query_cr.sh -q "SELECT count(*) FROM trades WHERE date > current_date - 7"
+./scripts/db_query_cr.sh -f gcp/queries/check_daily_rates_nulls.sql
+./scripts/db_query_cr.sh -q "UPDATE x SET y=1 WHERE z=2" --commit
+```
+
+The script dispatches the `db-query` Cloud Run Job (entrypoint
+`gcp/db_query_job.py`), which runs `gcp/queries/run_query.py` inside
+the trading-system image with full Cloud SQL access, writes results
+to `gs://${PROJECT_ID}-trading-data/query-results/${exec_id}/`, and
+the dispatcher pulls and prints the summary. Total latency ~5-15s
+for typical reads. Same safety guarantee as the GHA path: every
+statement runs in its own transaction; default is rollback;
+`--commit` to persist.
+
+**Fallback path** (kept for parity / when CR is unavailable): dispatch
 the `.github/workflows/db-query.yml` workflow. It runs the SQL inside a
 GitHub Actions runner (which has unrestricted egress to Cloud SQL via the
 project's existing `gcp/database.py` connector), captures structured results,

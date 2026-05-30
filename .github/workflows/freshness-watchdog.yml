@@ -1,21 +1,27 @@
 name: Freshness Watchdog
 
-# Runs `scripts/audit_data_freshness.py --strict` against Cloud SQL every hour
-# during active hours and once post-close. Any stale table makes the workflow
-# fail, which the standard handle-workflow-failure reusable workflow turns into
-# a labeled GitHub issue (with the audit JSON embedded) so the next data gap
-# is caught within ~1 hour instead of on user complaint.
+# DEPRECATED 2026-05-30: migrated to a CR-native Cloud Run Job +
+# Cloud Scheduler triggers (job `freshness-watchdog`, schedulers
+# `freshness-watchdog-hourly` + `freshness-watchdog-nightly` in
+# us-east1). The GHA workflow is kept manual-dispatch-only as a
+# transition fallback; both the schedule and the workflow can be
+# safely deleted once the CR version has run cleanly for a week.
 #
-# Rationale: see docs/incidents/2026-04-14-market-data-daily-gap.md — the
-# April 10 regression was silent for 3 days because nothing was actively
+# Why migrated: the GHA workflow was completely broken from
+# 2026-05-29 (along with every other workflow in the repo), which
+# silently disabled freshness monitoring. Cloud Run + Scheduler is
+# the more reliable scheduling substrate for our footprint and
+# routes around GHA reliability dependency.
+#
+# Manual dispatch of the CR job:
+#   gcloud run jobs execute freshness-watchdog --region=us-east1 --wait
+#
+# Original rationale (still relevant): see
+# docs/incidents/2026-04-14-market-data-daily-gap.md — the April 10
+# regression was silent for 3 days because nothing was actively
 # checking freshness.
 
 on:
-  schedule:
-    # Hourly 09:00–19:00 ET Mon–Fri (13:00–23:00 UTC during DST; close enough)
-    - cron: '0 13-23 * * 1-5'
-    # Nightly post-close summary (all days so weekends surface stale pipelines)
-    - cron: '0 23 * * *'
   workflow_dispatch:
 
 permissions:

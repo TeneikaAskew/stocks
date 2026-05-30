@@ -1,5 +1,19 @@
 name: DB Query
 
+# DEPRECATED 2026-05-30 — superseded by the CR-native db-query path:
+#   ./scripts/db_query_cr.sh -q "SELECT ..."
+#   ./scripts/db_query_cr.sh -f gcp/queries/some_query.sql
+#
+# That script dispatches the `db-query` Cloud Run Job (entrypoint
+# gcp/db_query_job.py) which runs the same gcp/queries/run_query.py
+# code, uploads results to GCS, and prints the summary. Same safety
+# guarantee (every statement in its own transaction; rollback default;
+# commit=true to persist). Faster than this workflow (~5-10s overhead
+# vs ~30-90s for GHA), no dependency on GitHub Actions availability.
+#
+# This workflow stays as a fallback for parity / migration testing,
+# but new usage should prefer the CR path.
+#
 # Ad-hoc SQL execution against Cloud SQL Postgres for Claude Code on the web
 # sessions whose sandbox cannot reach Cloud SQL on TCP 5432/3307. Runs the
 # query inside GitHub's network via the project's existing Cloud SQL Python
