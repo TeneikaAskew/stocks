@@ -1077,8 +1077,18 @@ deploy_db_query() {
 # Triggered 2026-05-30 by the GHA-side outage that broke the GHA
 # watchdog (along with every other workflow in the repo).
 #
-# Sizing: 1 vCPU, 512MiB, 5-min timeout. The audit hits one SELECT per
-# table (~25 tables), <30s total.
+# Sizing: 1 vCPU, 512MiB, 15-min timeout. The audit hits one SELECT
+# per table (~20 tables); first run on the CR image clocked 14m9s
+# end-to-end (vs the GHA runs that took ~1-2m). The wall-clock
+# difference is suspicious — likely Cloud SQL connector setup +
+# per-query handshake latency adds up, OR the script's tabulate
+# output is buffered and only flushes at the end (all log lines
+# stamp the same second). Functionally correct either way; 15-min
+# task-timeout (900s) gives 2x headroom over the observed worst case.
+# The hourly scheduler will queue overlapping invocations naturally
+# (max-retries=0 prevents snowball; concurrent runs are independent).
+# TODO: profile the script under CR — if connection-pool reuse fixes
+# the 14m, drop task-timeout back to 300s.
 deploy_freshness_watchdog() {
     echo "Deploying freshness-watchdog job..."
 
@@ -1090,7 +1100,7 @@ deploy_freshness_watchdog() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 300
+        --task-timeout 900
         --service-account "${SA_EMAIL}"
         --command "python,scripts/audit_data_freshness.py"
         # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
