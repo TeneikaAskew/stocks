@@ -611,6 +611,10 @@ def _earnings_tickers_in_window(
 
 BACKFILL_LOOKBACK_DAYS = 365 * 10
 BACKFILL_DEPTH_THRESHOLD_BARS = 1500   # ~6y; below this needs full pull
+# Per-call delay between AV requests in --backfill mode. Default 13s ≈ 5 RPM
+# (free-tier safe). Premium AV (75-150 RPM) can run at 1s. Override via
+# AV_BACKFILL_SLEEP_SECS env var. Float seconds.
+BACKFILL_AV_SLEEP_SECS_DEFAULT = 13.0
 
 
 def _backfill_targets() -> list:
@@ -769,13 +773,22 @@ def _run_backfill() -> None:
     n_compact = sum(1 for _, _, _, sz in pending if sz == 'compact')
     skipped = len(plan) - len(pending)
 
+    try:
+        sleep_secs = float(os.environ.get('AV_BACKFILL_SLEEP_SECS',
+                                          BACKFILL_AV_SLEEP_SECS_DEFAULT))
+    except ValueError:
+        sleep_secs = BACKFILL_AV_SLEEP_SECS_DEFAULT
+    if sleep_secs < 0:
+        sleep_secs = 0.0
+
     log.info("Backfill mode")
     log.info("  Eligible targets: %d", len(plan))
     log.info("  Already current (skipped): %d", skipped)
     log.info("  Full pulls (~20y, filtered to 10y on write): %d", n_full)
     log.info("  Compact pulls (last 100 days): %d", n_compact)
-    log.info("  Estimated wall clock: %d min (13s rate limit)",
-             len(pending) * 13 // 60 + 1)
+    log.info("  AV sleep: %.2fs/call (env=AV_BACKFILL_SLEEP_SECS)", sleep_secs)
+    log.info("  Estimated wall clock: %d min",
+             int(len(pending) * sleep_secs) // 60 + 1)
 
     if not pending:
         log.info("Nothing to do — all eligible tickers are already current.")
@@ -803,8 +816,8 @@ def _run_backfill() -> None:
                 upserted += len(df)
                 log.info("    %d bars upserted: %s..%s",
                          len(df), df['date'].min(), df['date'].max())
-        if i < len(pending) - 1:
-            _time.sleep(13)  # AV rate limit (5 rpm)
+        if i < len(pending) - 1 and sleep_secs > 0:
+            _time.sleep(sleep_secs)
 
     log.info("Backfill done: %d bars upserted across %d tickers",
              upserted, len(pending) - len(failures))
