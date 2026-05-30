@@ -623,6 +623,37 @@ anything else that needs production network access — they're triggered from
 > gotchas, MCP caveats, and the rationale behind the patterns documented
 > below.
 
+**Two paths exist:** the original `db-query.yml` GitHub Actions workflow
+(documented below) and a Cloud Run Job named `db-query` (added 2026-05-30).
+The two run the SAME `gcp/queries/run_query.py` so behaviour is identical;
+the difference is the dispatch mechanism. Prefer the Cloud Run path when:
+
+- GitHub Actions hosted runners are degraded
+- You're already in a dispatch-via-`gcloud` workflow and don't want to
+  context-switch to `gh`
+- You need results in GCS (not a GH artifact) — e.g. for a downstream
+  Cloud Run Job to consume
+
+Dispatch the Cloud Run path:
+
+```bash
+gcloud run jobs execute db-query \
+  --update-env-vars="^|^SQL=SELECT count(*) FROM trades|RESULT_GCS_URI=gs://${PROJECT}-trading-data/query-results/my-run/" \
+  --region=us-east1 --project=adept-mountain-474619-d4 --wait
+# Or with a .sql file shipped in the image:
+gcloud run jobs execute db-query \
+  --update-env-vars="^|^SQL_FILE=gcp/queries/audit_ticker_coverage.sql|RESULT_GCS_URI=gs://${PROJECT}-trading-data/query-results/audit/|STATEMENT_TIMEOUT_SECONDS=300" \
+  --wait --region=us-east1
+# Fetch results:
+gcloud storage cp 'gs://${PROJECT}-trading-data/query-results/my-run/*' /tmp/results/
+```
+
+Env vars: `SQL` OR `SQL_FILE` (one required); `COMMIT=true` to persist
+writes (default rollback); `STATEMENT_TIMEOUT_SECONDS=120`; `RESULT_GCS_URI`
+(optional — defaults to `gs://${GCS_BUCKET}/query-results/${EXECUTION_ID}/`).
+Same row caps + rollback semantics as `db-query.yml`. Artifacts written:
+`results.json`, `result_NNN.csv`, `summary.md`, `summary_for_comment.md`.
+
 Direct DB connections from Claude Code on the web sandbox are blocked: the
 sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
 5432 (Postgres) or 3307 (Auth Proxy backend). Both time out. Adding the
