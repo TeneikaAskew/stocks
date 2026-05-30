@@ -1208,9 +1208,16 @@ deploy_fetch_earnings_history() {
     # This self-heals the OHLCV coverage gap that blocked the
     # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
     # missing reaction rows because their bars weren't ever fetched).
+    # AV_BACKFILL_SLEEP_SECS=1.0: the chained _run_backfill step was
+    # tripping the 7200s timeout every night for 5+ consecutive runs
+    # (audit 2026-05-30 — t8jq5, 4v9br, xwsk8, hf92b, cwftn all died at
+    # ticker [518/627]). Root cause: the hardcoded 13s free-tier sleep
+    # in _run_backfill made ~600 non-skipped tickers cost 13s × 600 =
+    # 2.2h, blowing the budget on retry. We're on premium AV (75 RPM),
+    # so 1.0s/call is safe and cuts wall-clock to ~10 min.
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     local env_string
-    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true"
+    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
