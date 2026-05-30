@@ -44,21 +44,7 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
 from sklearn.metrics import log_loss
-
-
-def load_predictions(phase, ticker, tf, bucket, run_id):
-    client = gcs.Client()
-    bkt = client.bucket(bucket)
-    prefix = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
-    blobs = [b for b in bkt.list_blobs(prefix=prefix)
-             if b.name.endswith(".csv") and "predictions_" in b.name]
-    if run_id:
-        blobs = [b for b in blobs if run_id in b.name]
-    if not blobs:
-        raise SystemExit(f"no prediction CSV under gs://{bucket}/{prefix} matching run_id={run_id}")
-    target = sorted(blobs, key=lambda b: b.name)[-1]
-    print(f"loading: gs://{bucket}/{target.name}", file=sys.stderr)
-    return pd.read_csv(io.BytesIO(target.download_as_bytes()))
+from scripts._magnitude_analysis_helpers import load_predictions
 
 
 def fold_gates(fold_df: pd.DataFrame, tf: str) -> dict:

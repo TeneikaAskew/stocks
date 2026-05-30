@@ -70,7 +70,11 @@ def per_phase_verdict(cells: dict[tuple[str, str], dict]) -> dict:
     by_tf: dict[str, int] = {tf: 0 for tf in TIMEFRAMES}
     cell_pass_map: dict[tuple[str, str], bool] = {}
     for (ticker, tf), result in cells.items():
-        passed = bool(result.get("gates", {}).get("cell_pass"))
+        # Prefer the explicit `cell_pass_gates_1_to_4` key (new harness) and
+        # fall back to `cell_pass` (older GCS JSONs written before 2026-05-29).
+        # Both mean "gates 1-4 pass"; neither implies gates 5-7 pass.
+        g = result.get("gates", {})
+        passed = bool(g.get("cell_pass_gates_1_to_4", g.get("cell_pass")))
         cell_pass_map[(ticker, tf)] = passed
         if passed:
             by_tf[tf] += 1
@@ -100,7 +104,8 @@ def fmt_cell_table(phase: str, cells: dict[tuple[str, str], dict],
                 row.append("MISSING")
                 continue
             g = r["gates"]
-            ok = "✅ PASS" if g["cell_pass"] else "❌ FAIL"
+            passed_1_to_4 = g.get("cell_pass_gates_1_to_4", g.get("cell_pass"))
+            ok = "✅ PASS" if passed_1_to_4 else "❌ FAIL"
             row.append(
                 f"{ok}<br>"
                 f"g1={g['g1_logloss_beat_folds']}/{g['n_ok_folds']} "

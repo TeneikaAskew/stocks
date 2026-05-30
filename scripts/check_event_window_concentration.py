@@ -31,32 +31,12 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from google.cloud import storage as gcs
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_CLASSES, LABEL_TO_IDX, GCS_BUCKET_DEFAULT,
 )
-
-
-def load_predictions(phase: str, ticker: str, tf: str,
-                      bucket: str, run_id: str | None) -> pd.DataFrame:
-    """List + load via google-cloud-storage SDK (the Cloud Run image
-    has this, not the gcloud CLI)."""
-    client = gcs.Client()
-    bkt = client.bucket(bucket)
-    prefix = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
-    blobs = [b for b in bkt.list_blobs(prefix=prefix)
-             if b.name.endswith(".csv") and "predictions_" in b.name]
-    if not blobs:
-        raise SystemExit(f"no prediction CSV under gs://{bucket}/{prefix}")
-    if run_id:
-        blobs = [b for b in blobs if run_id in b.name]
-        if not blobs:
-            raise SystemExit(f"no prediction CSV matching run_id={run_id}")
-    target = sorted(blobs, key=lambda b: b.name)[-1]
-    print(f"loading predictions: gs://{bucket}/{target.name}", file=sys.stderr)
-    return pd.read_csv(io.BytesIO(target.download_as_bytes()))
+from scripts._magnitude_analysis_helpers import load_predictions
 
 
 def load_high_impact_events(min_ts: pd.Timestamp, max_ts: pd.Timestamp) -> pd.DataFrame:

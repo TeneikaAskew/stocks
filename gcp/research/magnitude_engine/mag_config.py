@@ -149,6 +149,17 @@ SUCCESS_BAR_MECHANISM_RATIO_MIN = 2.0     # gate 6: predicted-EXPLOSIVE
                                           # concentration ÷ base rate for the
                                           # feature family's claimed mechanism
 
+# Gate 7 (added 2026-05-28) — implied-vs-realized check. The decisive trade-
+# test gate for non-directional vehicles. Asks: on EXPLOSIVE-predicted bars,
+# does realized |move| exceed the implied move priced into the ATM straddle
+# (computed off the at-or-before T-1 EOD ATM IV)?
+# Threshold 1.25 sits above 1.0 to leave room for bid-ask + theta on a
+# real 5-min straddle round-trip. See docs/MAGNITUDE_ENGINE_RESULTS.md §5e
+# for the derivation and the COMMITTED-BEFORE-RUN epistemic claim.
+SUCCESS_BAR_GATE7_RATIO_MIN = 1.25
+SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS = 6     # of folds with IV coverage
+SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS = 4    # below this → INSUFFICIENT_DATA
+
 # Bucket terminology for the augmented bar:
 #   PASS    — all 6 gates hold
 #   SQUEAKER — gates 1-4 hold but gate 5 (bootstrap) < 80%

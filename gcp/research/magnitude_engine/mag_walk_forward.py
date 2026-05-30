@@ -277,10 +277,18 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
         "g4_lift_pass_folds": n_lift_pass,
         "g4_pass": n_lift_pass >= SUCCESS_BAR_MIN_FOLDS_LIFT,
     }
-    gates["cell_pass"] = (
+    # Gates 1-4 only — gates 5 (bootstrap), 6 (mechanism), 7 (implied-vs-realized)
+    # are computed by external scripts and are NOT reflected here. A cell with
+    # `cell_pass_gates_1_to_4 = true` is preliminary; the full 7-gate verdict
+    # may still be FAIL after the post-hoc checks. See mag_config.py L1-L4 and
+    # docs/MAGNITUDE_ENGINE_RESULTS.md §0 for the complete bar.
+    gates["cell_pass_gates_1_to_4"] = (
         gates["g1_pass"] and gates["g2_pass"]
         and gates["g3_pass"] and gates["g4_pass"]
     )
+    # Back-compat alias — older consumers / GCS JSONs use `cell_pass`.
+    # New writers populate both so a mid-rollout reader on either name still works.
+    gates["cell_pass"] = gates["cell_pass_gates_1_to_4"]
     return gates
 
 
@@ -358,8 +366,9 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
     gates = _evaluate_phase_gate(folds, tf)
     log.info("=" * 70)
-    log.info("CELL VERDICT  phase=%s  ticker=%s  tf=%s  →  %s",
-             phase, ticker, tf, "PASS" if gates["cell_pass"] else "FAIL")
+    log.info("CELL VERDICT (gates 1-4 only — gates 5-7 are post-hoc)  "
+              "phase=%s  ticker=%s  tf=%s  →  %s",
+             phase, ticker, tf, "PASS" if gates["cell_pass_gates_1_to_4"] else "FAIL")
     log.info("  g1 log-loss beat ≥ %d/8 folds: %d  →  %s",
              SUCCESS_BAR_MIN_FOLDS_LOGLOSS, gates["g1_logloss_beat_folds"],
              "PASS" if gates["g1_pass"] else "FAIL")
@@ -463,7 +472,8 @@ def run_all_cells(engine, phase: str,
     # Phase-level verdict: passes if ≥ 2 of 3 tickers per TF passed
     pass_count_by_tf = {tf: 0 for tf in TIMEFRAMES}
     for s in all_summaries:
-        if s.get("gates", {}).get("cell_pass"):
+        g = s.get("gates", {})
+        if g.get("cell_pass_gates_1_to_4", g.get("cell_pass")):
             pass_count_by_tf[s["tf"]] += 1
     phase_pass_tfs = [tf for tf, n in pass_count_by_tf.items() if n >= 2]
     phase_verdict = "PASS" if len(phase_pass_tfs) >= 2 else "FAIL"

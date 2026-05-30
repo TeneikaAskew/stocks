@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, MAGNITUDE_THRESHOLDS, PHASE_FEATURES,
@@ -362,16 +363,20 @@ def _add_table_join_features(df: pd.DataFrame, engine, table: str,
                  int(df[feature_cols[0]].notna().sum()) if feature_cols else 0,
                  len(df))
         return df
-    except Exception as e:
-        # Backfill not yet run — surface clearly, fill NaN, continue.
-        # Per Rule 3.7: this IS an explicit failure (table doesn't exist
+    except (ProgrammingError, OperationalError) as e:
+        # Backfill not yet run — table doesn't exist OR can't be reached.
+        # ProgrammingError catches "relation does not exist" (table not
+        # yet created); OperationalError catches connection / permission
+        # issues. We DO NOT catch bare Exception because any other failure
+        # (e.g. an invalid feature column name) is a real bug we want loud.
+        # Per Rule 3.7: this is an explicit failure (table doesn't exist
         # → schema not yet deployed), reported with structured log and a
         # column indicating the data was unavailable. The model will see
         # NaN for the entire phase, so Phase 2/4 results will be
         # uninformative until backfill lands — which is reported in the
         # results doc as PENDING_BACKFILL, not a "0" passing the gate.
-        log.warning("phase feature join failed for %s (%s) — filling NaN: %s",
-                    table, ticker, type(e).__name__)
+        log.warning("phase feature join skipped for %s (%s: %s) — filling NaN",
+                    table, type(e).__name__, str(e).split('\n')[0][:200])
         for c in feature_cols:
             df[c] = np.nan
         df[f"{table}__pending_backfill"] = 1  # explicit flag

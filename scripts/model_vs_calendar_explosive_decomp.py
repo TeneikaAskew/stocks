@@ -56,29 +56,7 @@ from gcp.research.magnitude_engine.mag_config import (
     DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
-
-
-def calendar_keys(ts_series: pd.Series, bucket_minutes: int = 30):
-    ts_et = pd.to_datetime(ts_series, utc=True).dt.tz_convert("America/New_York")
-    dow = ts_et.dt.dayofweek.values
-    minutes_of_day = ts_et.dt.hour.values * 60 + ts_et.dt.minute.values
-    bucket = (minutes_of_day // bucket_minutes).astype(int)
-    return dow, bucket
-
-
-def load_predictions(phase, ticker, tf, bucket, run_id):
-    client = gcs.Client()
-    bkt = client.bucket(bucket)
-    prefix = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
-    blobs = [b for b in bkt.list_blobs(prefix=prefix)
-             if b.name.endswith(".csv") and "predictions_" in b.name]
-    if run_id:
-        blobs = [b for b in blobs if run_id in b.name]
-    if not blobs:
-        raise SystemExit(f"no predictions CSV under gs://{bucket}/{prefix} for run_id={run_id}")
-    target = sorted(blobs, key=lambda b: b.name)[-1]
-    print(f"loading predictions: gs://{bucket}/{target.name}", file=sys.stderr)
-    return pd.read_csv(io.BytesIO(target.download_as_bytes()))
+from scripts._magnitude_analysis_helpers import load_predictions, calendar_keys
 
 
 def main():

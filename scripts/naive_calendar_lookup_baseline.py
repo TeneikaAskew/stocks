@@ -54,20 +54,7 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     expected_calibration_error, decisive_call_hit_rate, explosive_lift,
 )
 from sklearn.metrics import log_loss
-
-
-def _calendar_keys(ts_series: pd.Series, bucket_minutes: int = 30) -> pd.DataFrame:
-    """Compute (day_of_week, time_bucket) keys for each timestamp.
-
-    bucket_minutes = 30 → 13 RTH buckets per day × 5 DoW = 65 cells.
-    At ~250 trading days per year × 8 training years ≈ 2000 days, that's
-    ~30 days of samples per cell — enough for stable rates.
-    """
-    ts_et = pd.to_datetime(ts_series, utc=True).dt.tz_convert("America/New_York")
-    dow = ts_et.dt.dayofweek.values
-    minutes_of_day = ts_et.dt.hour.values * 60 + ts_et.dt.minute.values
-    bucket = (minutes_of_day // bucket_minutes).astype(int)
-    return dow, bucket
+from scripts._magnitude_analysis_helpers import calendar_keys
 
 
 def naive_lookup_predict(y_tr: np.ndarray, ts_tr: pd.Series,
@@ -76,8 +63,8 @@ def naive_lookup_predict(y_tr: np.ndarray, ts_tr: pd.Series,
                           bucket_minutes: int = 30) -> np.ndarray:
     """Build a (DoW, time_bucket) → class-dist lookup from training data and
     apply it to test data. Returns probability matrix of shape (n_test, n_classes)."""
-    dow_tr, bucket_tr = _calendar_keys(ts_tr, bucket_minutes)
-    dow_te, bucket_te = _calendar_keys(ts_te, bucket_minutes)
+    dow_tr, bucket_tr = calendar_keys(ts_tr, bucket_minutes)
+    dow_te, bucket_te = calendar_keys(ts_te, bucket_minutes)
 
     counts = collections.defaultdict(lambda: np.zeros(n_classes, dtype=np.float64))
     for i in range(len(y_tr)):

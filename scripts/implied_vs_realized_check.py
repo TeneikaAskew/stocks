@@ -49,6 +49,9 @@ from gcp.database import get_engine
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
     DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
+    SUCCESS_BAR_GATE7_RATIO_MIN as GATE_7_RATIO_THRESHOLD,
+    SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS as GATE_7_MIN_PASSING_FOLDS,
+    SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS as GATE_7_MIN_FOLDS_WITH_COVERAGE,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 
@@ -58,25 +61,7 @@ from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 # not the 365×24×60 calendar convention.
 TRADING_MINUTES_PER_YEAR = 252 * 390  # 98,280
 
-# Pre-set gate (gate 7) — see docs/MAGNITUDE_ENGINE_RESULTS.md §5e.
-GATE_7_RATIO_THRESHOLD = 1.25
-GATE_7_MIN_PASSING_FOLDS = 6
-GATE_7_MIN_FOLDS_WITH_COVERAGE = 4
-
-
-def load_predictions(phase, ticker, tf, bucket, run_id):
-    client = gcs.Client()
-    bkt = client.bucket(bucket)
-    prefix = f"research/magnitude_engine/{phase}/{ticker.lower()}_{tf}/"
-    blobs = [b for b in bkt.list_blobs(prefix=prefix)
-             if b.name.endswith(".csv") and "predictions_" in b.name]
-    if run_id:
-        blobs = [b for b in blobs if run_id in b.name]
-    if not blobs:
-        raise SystemExit(f"no predictions CSV under gs://{bucket}/{prefix} for run_id={run_id}")
-    target = sorted(blobs, key=lambda b: b.name)[-1]
-    print(f"loading predictions: gs://{bucket}/{target.name}", file=sys.stderr)
-    return pd.read_csv(io.BytesIO(target.download_as_bytes()))
+from scripts._magnitude_analysis_helpers import load_predictions
 
 
 def load_atm_iv_per_date(engine, ticker: str,
