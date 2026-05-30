@@ -1022,6 +1022,98 @@ deploy_options_exec_backtest() {
     gcloud run jobs update options-exec-backtest "${common_flags[@]}"
 }
 
+# Ad-hoc DB query Cloud Run Job — CR-native replacement for the GHA
+# `.github/workflows/db-query.yml` workflow. Reads SQL from env vars
+# (overridable at execute time via `gcloud run jobs execute db-query
+# --update-env-vars=DB_QUERY_SQL=...`); writes results to GCS at
+# `gs://${PROJECT_ID}-trading-data/query-results/${CLOUD_RUN_EXECUTION}/`.
+# The sandbox dispatches over 443 (no Cloud SQL port needed); reads
+# results back via `gcloud storage cat`. See gcp/db_query_job.py for the
+# entrypoint and scripts/db_query_cr.sh for the dispatcher.
+#
+# Why this exists 2026-05-30: the GHA workflow has been broken by a
+# repo-level Actions outage since 2026-05-29. The CR-native path
+# routes around it.
+#
+# Sizing: 1 vCPU, 512MiB, 10-min timeout. Same Postgres connector
+# code path as the other CR jobs.
+deploy_db_query() {
+    echo "Deploying db-query job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    # Default SQL — overridden at execute time via --update-env-vars.
+    # SELECT 1 is a safe sanity check that proves the job pipeline works.
+    non_secret_env="${non_secret_env},DB_QUERY_SQL=SELECT 1 AS sanity_check"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.db_query_job"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create db-query "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update db-query "${common_flags[@]}"
+}
+
+# Freshness watchdog — CR-native replacement for the GHA
+# `.github/workflows/freshness-watchdog.yml` workflow. Runs
+# `scripts/audit_data_freshness.py --strict` against Cloud SQL on a
+# schedule; any stale table makes the job exit non-zero, which the
+# existing failure-notifier Cloud Run Service catches via its log sink
+# and posts to Discord. Same coverage, same alerting, no GHA dependency.
+#
+# Triggered 2026-05-30 by the GHA-side outage that broke the GHA
+# watchdog (along with every other workflow in the repo).
+#
+# Sizing: 1 vCPU, 512MiB, 15-min timeout. The audit hits one SELECT
+# per table (~20 tables); first run on the CR image clocked 14m9s
+# end-to-end (vs the GHA runs that took ~1-2m). The wall-clock
+# difference is suspicious — likely Cloud SQL connector setup +
+# per-query handshake latency adds up, OR the script's tabulate
+# output is buffered and only flushes at the end (all log lines
+# stamp the same second). Functionally correct either way; 15-min
+# task-timeout (900s) gives 2x headroom over the observed worst case.
+# The hourly scheduler will queue overlapping invocations naturally
+# (max-retries=0 prevents snowball; concurrent runs are independent).
+# TODO: profile the script under CR — if connection-pool reuse fixes
+# the 14m, drop task-timeout back to 300s.
+deploy_freshness_watchdog() {
+    echo "Deploying freshness-watchdog job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 900
+        --service-account "${SA_EMAIL}"
+        --command "python,scripts/audit_data_freshness.py"
+        # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
+        "--args=--strict"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create freshness-watchdog "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update freshness-watchdog "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1460,6 +1552,8 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
     deploy_options_exec_backtest
+    deploy_db_query
+    deploy_freshness_watchdog
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
     # above that function; AV has no historical intraday options endpoint.)
 }
@@ -2250,6 +2344,10 @@ deploy_schedulers() {
     # historical post-earnings reaction pattern. Plain _schedule (no
     # containerOverride) — the job carries no run-kind label of its own.
     _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
+    # Freshness watchdog — CR-native, replaces .github/workflows/freshness-watchdog.yml
+    # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
+    _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
+    _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
@@ -2621,6 +2719,8 @@ case "${1:-help}" in
     pg-dump)      build_image && deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
+    db-query)     build_image && deploy_db_query ;;
+    freshness-watchdog) build_image && deploy_freshness_watchdog ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
