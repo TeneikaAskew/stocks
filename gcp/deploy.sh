@@ -893,6 +893,11 @@ deploy_av_options_backfill() {
         --task-timeout 43200
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options"
+        # CLAUDE.md Rule 0 — `--args "value"` (space form) works ONLY if value
+        # contains no `=`. Empirically verified 2026-05-29: any `=` in the
+        # value (even after a comma, e.g. `--tickers,SPY,--from=2025`) makes
+        # gcloud's argparse reject it with "expected one argument". If you
+        # add a `--flag=value` here, switch to `--args=^|^arg1|arg2` form.
         --args "--tickers,SPY IWM QQQ SPX,--from-latest"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
@@ -938,6 +943,8 @@ deploy_av_options_realtime() {
         --task-timeout 600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_realtime_options"
+        # Same `=`-trap as deploy_av_options_backfill above — if you add a
+        # `--flag=value` to args, switch to `--args=^|^arg1|arg2` form.
         --args "--tickers,SPY IWM QQQ"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
