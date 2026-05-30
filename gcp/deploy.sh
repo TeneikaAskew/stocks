@@ -1022,6 +1022,51 @@ deploy_options_exec_backtest() {
     gcloud run jobs update options-exec-backtest "${common_flags[@]}"
 }
 
+# Ad-hoc DB query Cloud Run Job — CR-native replacement for the GHA
+# `.github/workflows/db-query.yml` workflow. Reads SQL from env vars
+# (overridable at execute time via `gcloud run jobs execute db-query
+# --update-env-vars=DB_QUERY_SQL=...`); writes results to GCS at
+# `gs://${PROJECT_ID}-trading-data/query-results/${CLOUD_RUN_EXECUTION}/`.
+# The sandbox dispatches over 443 (no Cloud SQL port needed); reads
+# results back via `gcloud storage cat`. See gcp/db_query_job.py for the
+# entrypoint and scripts/db_query_cr.sh for the dispatcher.
+#
+# Why this exists 2026-05-30: the GHA workflow has been broken by a
+# repo-level Actions outage since 2026-05-29. The CR-native path
+# routes around it.
+#
+# Sizing: 1 vCPU, 512MiB, 10-min timeout. Same Postgres connector
+# code path as the other CR jobs.
+deploy_db_query() {
+    echo "Deploying db-query job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    # Default SQL — overridden at execute time via --update-env-vars.
+    # SELECT 1 is a safe sanity check that proves the job pipeline works.
+    non_secret_env="${non_secret_env},DB_QUERY_SQL=SELECT 1 AS sanity_check"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.db_query_job"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create db-query "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update db-query "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1460,6 +1505,7 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
     deploy_options_exec_backtest
+    deploy_db_query
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
     # above that function; AV has no historical intraday options endpoint.)
 }
@@ -2621,6 +2667,7 @@ case "${1:-help}" in
     pg-dump)      build_image && deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
+    db-query)     build_image && deploy_db_query ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
