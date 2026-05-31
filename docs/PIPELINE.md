@@ -38,13 +38,17 @@ RAW 1-min OHLCV  ──►  Cloud SQL: market_data_intraday  (SPY / IWM / QQQ)
 code, so live and research can never drift (CLAUDE.md "one source of truth for
 math"):
 
-- `lib/indicators.py : add_all_indicators` — the full indicator suite. **The
-  single assembler.** As of 2026-05-31 the live `signal_monitor` delegates to
-  it (`calculate_indicators` → `add_all_indicators` with a per-ticker
-  `IndicatorConfig` for the Tier-A consecutive window). It previously
-  hand-rolled its own subset, which silently lagged the engine whenever a
-  feature was added — that gap is now closed. Every indicator we use is
-  computed in exactly one place.
+- `lib/indicators.py : add_all_indicators` — the full indicator suite, **the
+  single assembler**, decomposed into ~14 idempotent `_add_*` blocks. As of
+  2026-05-31 the live `signal_monitor` calls the lean `add_signal_indicators`
+  and the premarket brief calls `add_brief_indicators` — each runs only the
+  blocks that capability reads, off the SAME block definitions, so values can't
+  drift from the full engine (`add_all_indicators` output stays byte-identical,
+  pinned by a 0.0-max-abs-diff parity test). `FEATURE_GROUPS = {signal, brief,
+  regime, strat}` is the per-capability output-column contract; research/nightly
+  paths still call `add_all_indicators`. It previously hand-rolled its own
+  subset, which silently lagged the engine whenever a feature was added — that
+  gap is now closed. Every indicator we use is computed in exactly one place.
 - `lib/strat.py : StratClassifier` — candle classification (1 / 2U / 2D / 3).
 
 Any feature added to `add_all_indicators` is automatically picked up by **every**
@@ -68,7 +72,7 @@ market_data_intraday
         ▼
 signal-monitor                 09:25 ET, Mon–Fri   (gcp/signal_monitor.py)
   rolling 1-min window
-  → add_all_indicators         ← SAME engine
+  → add_signal_indicators      ← lean tier of the SAME engine (§ shared foundation)
   → StratClassifier            ← SAME classifier
   → strategy evaluation (momentum, agreement, brief-bias, levels)
   → fires signal_alerts + Discord webhook
@@ -139,6 +143,27 @@ The shared label `next_bar_type` has ONE definition —
 `strat_dataset.label_next_bar_type` (session-aware t+1) — used by both the
 Cloud SQL path and the sandbox driver.
 
+### Track C — Target-modular indicator correlation  *(2026-05-31)*
+
+`indicator-correlation` (`gcp/indicator_correlation_job.py`) scores each
+indicator against any of the four prediction targets the platform makes,
+selectable via `--target` / `--targets` (env `INDICATOR_CORR_TARGETS`; default =
+all four). All rows land in `indicator_correlation`, tagged by `target_name`
+(+ `target_class` for the per-class metrics):
+
+| `target_name` | Label source | Metrics |
+|---|---|---|
+| `forward_return` | forward returns per horizon | `pearson`, `rank_ic` (`target_class=''`) |
+| `regime` | `regime_combo_miner.label_regimes` (BIG/UP/DOWN/FLAT) | per-class `mutual_info` + `class_lift` + `rank_ic` |
+| `strat` | `label_next_bar_type` (1/2U/2D/3) | per-class `mutual_info` + `class_lift` + `rank_ic` |
+| `signal` | `signal_alerts` win/loss at fire-bar | binary metrics over `FEATURE_GROUPS['signal']` (what the live monitor saw) |
+
+Metric helpers reuse the label-agnostic `lib/combo_mining`. Per Rule 3.7 every
+metric is `NULL` when unavailable — never `0`; `target_class` uses an
+empty-string sentinel for the regression/overall row so the upsert dedups (NULLs
+are distinct in a Postgres UNIQUE index). Bars are pulled once per ticker
+(Rule 0: no per-row SQL).
+
 ## How research feeds back to live
 
 Lane 2 produces **evidence**, not trades. The loop is:
@@ -162,7 +187,7 @@ moves and/or the next Strat candle across IWM/SPY/QQQ.
 | `signal-monitor-eod-resolver` | Live | 16:30 ET daily | `gcp/signal_monitor_eod_resolver.py` | win/loss |
 | `regime-combo` | Research A | Sun 05:00 ET weekly | `gcp/regime_combo_job.py` | `regime_combo_results` |
 | `strat-engine` (incl. Stage 3b) | Research B | manual | `…strat_orchestrator` | `strat_features_*`, GCS JSON |
-| `indicator-correlation` | Research | manual/weekly | `gcp/indicator_correlation_job.py` | `indicator_correlation` |
+| `indicator-correlation` | Research | manual/weekly | `gcp/indicator_correlation_job.py` | `indicator_correlation` (target-modular: forward_return / regime / strat / signal) |
 | `fetch-market-data` | Foundation | 23:00 UTC daily | fetcher | `market_data_intraday` |
 | `av-intraday-monthly` | Foundation | 1st monthly | fetcher | `market_data_intraday` |
 
