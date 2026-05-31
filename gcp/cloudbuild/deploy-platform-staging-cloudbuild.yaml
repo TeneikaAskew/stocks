@@ -1,0 +1,24 @@
+# Builds + deploys the trading-platform Cloud Run service to a
+# `staging`-tagged revision (0% traffic) on every push to main that
+# touches platform/, lib/, requirements.txt, or gcp/database.py.
+# Replaces the GHA workflow .github/workflows/deploy-platform-staging.yml.
+#
+# Required IAM grants on the trigger SA (trading-runner@) — see
+# the README commit message for the gcloud add-iam-policy-binding
+# commands. Without these, the trigger run fails with either
+# "service account does not have permission to write logs to Cloud
+# Logging" or "permission denied" on the gcloud builds submit
+# sub-build inside platform/deploy.sh.
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export DB_USER=$$(gcloud secrets versions access latest --secret=db-trading-user)
+        export DB_NAME=trading
+        ./platform/deploy.sh
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s
