@@ -562,11 +562,24 @@ deploy_backtest() {
 }
 
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
+# Capacity (CLAUDE.md Rule 0): LLM-summary + multiple Cloud SQL probes +
+# Discord webhook. Observed worst-case ~7-12 min on slow LLM responses or
+# large earnings calendars (issues #122, #377, #425, #466, #538 — five
+# documented timeouts at the default 600s task-timeout). 1800s = 30 min
+# is 3x the observed worst-case with comfortable headroom; Cloud Run
+# bills wall-time, not the cap, so headroom is free.
+#
+# --max-retries 0 because the brief is idempotent on its content but a
+# blind retry that succeeds posts a SECOND Discord embed for the same
+# session, AND a retry that ALSO times out files a second `gcp-job-
+# failure` issue against the same root cause. With 0 retries a timeout
+# is a single loud failure that the operator triages once.
 deploy_premarket() {
     echo "Deploying pre-market brief job..."
     gcloud run jobs create premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
@@ -574,6 +587,7 @@ deploy_premarket() {
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
+        --max-retries 0 --task-timeout 1800 \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
