@@ -579,15 +579,27 @@ def _compute_terciles(s: pd.Series) -> tuple[float, float]:
 # ──────────────────── Main per-ticker driver ────────────────────
 
 
-def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame) -> dict:
+def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame,
+                    rebuild: bool = False) -> dict:
     log.info("=== %s: loading 1m bars and gamma context ===", ticker)
     t0 = time.time()
 
     # Incremental: query per-TF max cached date. If all TFs are up to date,
     # skip ticker. Otherwise load 1m bars from (min cached date - 30 day
     # lookback for indicator warmup) → only featurize+upsert NEW dates.
-    max_dates_per_tf = {tf_label: _max_cached_date(engine, ticker, tf_label)
-                        for tf_label, _ in TF_LIST}
+    #
+    # --rebuild forces a full re-featurize: treat every TF as having no cache so
+    # bars load from start_date and the post-featurize `bar_date > max_cached`
+    # filter is skipped (guarded by `if max_cached is not None`). Upserts via
+    # ON CONFLICT DO UPDATE, so existing rows get newly-added columns backfilled
+    # without any truncate / data loss.
+    if rebuild:
+        max_dates_per_tf = {tf_label: None for tf_label, _ in TF_LIST}
+        log.info("%s: REBUILD — bypassing incremental cache, re-featurizing from %s",
+                 ticker, start_date)
+    else:
+        max_dates_per_tf = {tf_label: _max_cached_date(engine, ticker, tf_label)
+                            for tf_label, _ in TF_LIST}
     log.info("%s: max cached bar_date per TF: %s", ticker, max_dates_per_tf)
 
     cached_dates = [d for d in max_dates_per_tf.values() if d is not None]
@@ -678,6 +690,12 @@ def main():
     parser.add_argument("--start-date", default="2016-01-01")
     parser.add_argument("--tf-only", default=None,
                         help="If set, only build this single TF (e.g. '5m'). Useful for testing.")
+    parser.add_argument("--rebuild", action="store_true",
+                        default=os.environ.get("STRAT_REBUILD", "") not in ("", "0", "false", "False"),
+                        help="Bypass the incremental cache skip and re-featurize ALL "
+                             "history from --start-date, upserting (ON CONFLICT DO UPDATE) "
+                             "over existing rows. Use to backfill newly-added feature "
+                             "columns into historical bars. Non-destructive.")
     args = parser.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
@@ -703,7 +721,7 @@ def main():
     grand = []
     for ticker in tickers:
         try:
-            r = _process_ticker(engine, ticker, args.start_date, vix_df)
+            r = _process_ticker(engine, ticker, args.start_date, vix_df, rebuild=args.rebuild)
             grand.append(r)
         except Exception as e:
             log.exception("Ticker %s failed: %s", ticker, e)
