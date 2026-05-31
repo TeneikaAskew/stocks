@@ -192,6 +192,47 @@ class TestAddAllIndicators:
             f"ORB_5m_Trend contains unexpected values: {actual_values - valid_values}"
         )
 
+    # ── Promoted volatility-regime / momentum-velocity features (2026-05-31) ──
+    def test_promoted_features_present(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        for col in ['Realized_Vol_Short', 'Mins_Since_Open', 'Price_vs_EMA9_ATR',
+                    'Price_vs_EMA20_ATR', 'Price_vs_VWAP_ATR', 'EMA_Spread_ATR',
+                    'EMA9_Slope', 'BB_Squeeze', 'RSI_Divergence']:
+            assert col in result.columns, f"promoted feature missing: {col}"
+
+    def test_mins_since_open_first_rth_bar_is_zero(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        # sample_ohlcv starts at the 09:30 open per the fixture.
+        first = pd.to_datetime(result['Time']).iloc[0]
+        if first.hour == 9 and first.minute == 30:
+            assert result['Mins_Since_Open'].iloc[0] == 0.0
+
+    def test_promoted_features_absent_pieces_without_time(self):
+        """No Time → no Mins_Since_Open (parity with ORB guard)."""
+        n = 60
+        close = pd.Series(np.linspace(100, 105, n))
+        df = pd.DataFrame({
+            'Open': close * 0.999, 'High': close * 1.001, 'Low': close * 0.998,
+            'Close': close, 'Volume': np.random.RandomState(0).randint(1e3, 1e4, n).astype(float),
+        })
+        result = add_all_indicators(df)
+        assert 'Mins_Since_Open' not in result.columns
+        # ATR-based ones still computed (no Time needed)
+        assert 'Realized_Vol_Short' in result.columns
+
+    def test_rsi_divergence_equals_fast_minus_slow(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        expected = result['RSI9'] - result['RSI14']
+        pd.testing.assert_series_equal(
+            result['RSI_Divergence'], expected, check_names=False)
+
+    def test_atr_normalised_distance_matches_formula(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        atr = result['ATR14']
+        expected = (result['Close'] - result['VWAP']) / atr.where(atr.abs() > 0, np.nan)
+        pd.testing.assert_series_equal(
+            result['Price_vs_VWAP_ATR'], expected, check_names=False)
+
     def test_orb_custom_windows(self):
         """add_all_indicators with custom orb_windows should produce matching columns."""
         from lib.config import IndicatorConfig

@@ -344,79 +344,34 @@ def model_lift(
 def add_candidate_features(
     df: pd.DataFrame,
     indicator_config=None,
-    *,
-    bb_squeeze_window: int = 20,
-    ema_slope_lookback: int = 5,
-    realized_vol_window: int = 20,
 ) -> pd.DataFrame:
-    """Append un-promoted candidate features ON TOP of ``add_all_indicators``
-    output. MEASURE-FIRST staging area — winners are promoted into
-    ``lib/indicators.py`` in a separate gated step; losers stay here or are
-    deleted (never silently shipped, Rule 3.7).
+    """Append the still-experimental candidate features + research-only leakage
+    controls ON TOP of ``add_all_indicators`` output.
 
-    Every candidate is stationary by construction (slopes / ATR-normalised
-    distances / ratios) and derives only from columns ``add_all_indicators``
-    already produced (EMA9/20, VWAP, ATR14, BB_Width, Close), so promotion later
-    is a copy of the formula, not a reimplementation.
+    As of 2026-05-31 the proven winners (Realized_Vol_Short, Mins_Since_Open,
+    Price_vs_{EMA9,EMA20,VWAP}_ATR, EMA_Spread_ATR, EMA9_Slope, BB_Squeeze,
+    RSI_Divergence) were PROMOTED into ``lib/indicators.add_all_indicators`` and
+    are now produced by the engine itself. This function therefore only computes
+    columns the engine does NOT yet emit — guarded by ``not in out.columns`` so
+    a promoted feature flows through from the engine unchanged (research↔live
+    parity, Rule 3.6) and is never double-computed.
 
-    Also emits 1-bar-LAGGED variants of intrabar-range features
-    (``Daily_Range_Pct``, ``Close_vs_Range``) so a same-bar regime label cannot
-    see the labelled bar's own range (leakage control, user decision).
+    What remains here:
+      * ``MACD_Hist_Slope`` — exploratory; did not earn promotion.
+      * ``Daily_Range_Pct_Lag1`` / ``Close_vs_Range_Lag1`` — 1-bar-lagged
+        intrabar-range variants. These are a research LEAKAGE CONTROL (a same-
+        bar regime label must not see the labelled bar's own range), not a live
+        trading indicator, so they intentionally stay out of the engine.
     """
-    from lib.config import IndicatorConfig
-    ic = indicator_config or IndicatorConfig()
     out = df.copy()
-    c = out["Close"].astype(float)
 
-    atr_col = ic.atr_col  # e.g. "ATR14"
-    atr = out[atr_col].astype(float) if atr_col in out.columns else None
-
-    def _safe_div(num, den):
-        den = den.where(den.abs() > 0, np.nan)
-        return num / den
-
-    # 1. EMA9_Slope — n-bar change in EMA9, ATR-normalised (momentum velocity).
-    if "EMA9" in out.columns and atr is not None:
-        out["EMA9_Slope"] = _safe_div(out["EMA9"].astype(float).diff(ema_slope_lookback), atr)
-
-    # 2. Mins_Since_Open — minutes since 09:30 (intraday clock). Guarded on Time.
-    if "Time" in out.columns:
-        ts = pd.to_datetime(out["Time"])
-        out["Mins_Since_Open"] = (ts.dt.hour * 60 + ts.dt.minute - (9 * 60 + 30)).astype(float)
-
-    # 3. ATR-normalised distances (stationary twins of the %-based columns).
-    if atr is not None:
-        if "EMA9" in out.columns:
-            out["Price_vs_EMA9_ATR"] = _safe_div(c - out["EMA9"].astype(float), atr)
-        if "EMA20" in out.columns:
-            out["Price_vs_EMA20_ATR"] = _safe_div(c - out["EMA20"].astype(float), atr)
-        if "VWAP" in out.columns:
-            out["Price_vs_VWAP_ATR"] = _safe_div(c - out["VWAP"].astype(float), atr)
-        # 4. EMA_Spread_ATR — trend separation, vol-normalised.
-        if "EMA9" in out.columns and "EMA20" in out.columns:
-            out["EMA_Spread_ATR"] = _safe_div(
-                out["EMA9"].astype(float) - out["EMA20"].astype(float), atr)
-
-    # 5. BB_Squeeze — BB_Width relative to its own rolling median (compression).
-    if "BB_Width" in out.columns:
-        bw = out["BB_Width"].astype(float)
-        roll = bw.rolling(bb_squeeze_window, min_periods=bb_squeeze_window).median()
-        out["BB_Squeeze"] = _safe_div(bw, roll)
-
-    # 6. Realized_Vol_Short — rolling std of 1-bar log returns.
-    logret = np.log(c).diff()
-    out["Realized_Vol_Short"] = logret.rolling(
-        realized_vol_window, min_periods=realized_vol_window).std()
-
-    # Exploratory: RSI fast-vs-slow divergence + MACD histogram slope.
-    if "RSI9" in out.columns and "RSI14" in out.columns:
-        out["RSI_Divergence"] = out["RSI9"].astype(float) - out["RSI14"].astype(float)
-    if "MACD_Histogram" in out.columns:
+    # Exploratory (un-promoted): MACD histogram slope.
+    if "MACD_Hist_Slope" not in out.columns and "MACD_Histogram" in out.columns:
         out["MACD_Hist_Slope"] = out["MACD_Histogram"].astype(float).diff(3)
 
-    # 1-bar-lagged intrabar-range features (leakage-safe regime inputs).
+    # Research-only leakage-safe lags of intrabar-range features.
     for src in ("Daily_Range_Pct", "Close_vs_Range"):
-        if src in out.columns:
+        if src in out.columns and f"{src}_Lag1" not in out.columns:
             out[f"{src}_Lag1"] = out[src].astype(float).shift(1)
 
     return out

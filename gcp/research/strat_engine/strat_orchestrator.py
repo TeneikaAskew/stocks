@@ -44,6 +44,7 @@ from gcp.research.strat_engine.strat_config import (
 from gcp.research.strat_engine.strat_data_pipeline import verify as stage1_verify
 from gcp.research.strat_engine.strat_eda_baserates import run_eda as stage2_eda
 from gcp.research.strat_engine.strat_corr_indicators import run_corr as stage3_corr
+from gcp.research.strat_engine.strat_corr_combos import run_combos as stage3b_combos
 from gcp.research.strat_engine.strat_pred_train import run_train as stage4_train
 from gcp.research.strat_engine.strat_ftfc_assemble import assemble_ftfc as stage5_ftfc
 from gcp.research.strat_engine.strat_readout import build_readout as stage6_readout
@@ -102,6 +103,25 @@ def run_pipeline(engine, ticker: str, tf: str, train_until: str,
                 for cls in s3["rankings"]
             },
         }
+
+        # Stage 3b — COMBINATION mining (Effort B). Explainability add-on that
+        # sits alongside the single-feature Stage 3; it NEVER gates the pipeline
+        # (a combo-mining hiccup must not block the model train). Runs whenever
+        # Stage 3 runs.
+        log.info(">>> STAGE 3b COMBINATION MINING")
+        try:
+            s3b = stage3b_combos(engine, ticker, tf, train_until)
+            result["stages"]["3b_combos"] = {
+                "model_oos_lift": s3b["model"]["lift"],
+                "model_oos_accuracy": s3b["model"]["oos_accuracy"],
+                "best_combo_per_class": {
+                    cls: (combos[0] if combos else None)
+                    for cls, combos in s3b["combos"].items()
+                },
+            }
+        except Exception as e:  # noqa: BLE001 — non-gating explainability stage
+            log.warning("Stage 3b combos failed (non-gating): %s", e)
+            result["stages"]["3b_combos"] = {"status": "skipped", "reason": str(e)}
 
     # Stage 4 (THE gate)
     if should_run(4):

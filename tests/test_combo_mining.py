@@ -187,24 +187,33 @@ def _ohlcv(n=120):
     return df
 
 
-def test_add_candidate_features_columns_and_finiteness():
+def test_promoted_features_flow_from_engine():
+    """Post-promotion: the engine produces the winners; add_candidate_features
+    leaves them untouched (research↔live parity) and only adds the experimental
+    + leakage-control columns."""
     from lib.indicators import add_all_indicators
     base = add_all_indicators(_ohlcv())
-    out = cm.add_candidate_features(base)
+    # promoted features are the ENGINE's responsibility now
     for col in ["EMA9_Slope", "Mins_Since_Open", "Price_vs_EMA9_ATR",
                 "Price_vs_VWAP_ATR", "EMA_Spread_ATR", "BB_Squeeze",
-                "Realized_Vol_Short", "RSI_Divergence", "MACD_Hist_Slope",
-                "Daily_Range_Pct_Lag1"]:
-        assert col in out.columns, f"missing candidate {col}"
-    # Mins_Since_Open: first RTH bar is 0
-    assert out["Mins_Since_Open"].iloc[0] == 0.0
-    # ATR-normalised distance finite where warmed up
-    assert out["Price_vs_EMA9_ATR"].iloc[-1] == out["Price_vs_EMA9_ATR"].iloc[-1]
+                "Realized_Vol_Short", "RSI_Divergence"]:
+        assert col in base.columns, f"engine missing promoted {col}"
+
+    out = cm.add_candidate_features(base)
+    # candidate layer adds only the un-promoted / research-only columns
+    added = [c for c in out.columns if c not in base.columns]
+    assert set(added) == {"MACD_Hist_Slope", "Daily_Range_Pct_Lag1",
+                          "Close_vs_Range_Lag1"}
+    # and it does NOT mutate a promoted feature
+    pd.testing.assert_series_equal(out["Realized_Vol_Short"], base["Realized_Vol_Short"])
 
 
-def test_mins_since_open_absent_without_time():
+def test_candidate_layer_idempotent_on_lags():
+    """Calling twice doesn't double-add or overwrite (guarded by not-in-columns)."""
     from lib.indicators import add_all_indicators
     base = add_all_indicators(_ohlcv())
-    base_no_time = base.drop(columns=["Time"])
-    out = cm.add_candidate_features(base_no_time)
-    assert "Mins_Since_Open" not in out.columns  # guard parity with engine
+    once = cm.add_candidate_features(base)
+    twice = cm.add_candidate_features(once)
+    assert list(once.columns) == list(twice.columns)
+    pd.testing.assert_series_equal(once["Daily_Range_Pct_Lag1"],
+                                   twice["Daily_Range_Pct_Lag1"])

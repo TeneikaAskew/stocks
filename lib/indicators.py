@@ -785,4 +785,56 @@ def add_all_indicators(
         )
         out = pd.concat([out, orb_result], axis=1)
 
+    # ── Volatility-regime / momentum-velocity features ───────────────────────
+    # Promoted 2026-05-31 from the combo-mining measure-first study: each was a
+    # top permutation-importance driver of the forward regime (BIG move) and/or
+    # the next Strat candle, out-of-sample, across IWM/SPY/QQQ. All are
+    # stationary (slopes / ATR-normalised distances / ratios) and derive only
+    # from columns already computed above, so live (signal_monitor) and research
+    # (strat_data_builder) share one definition.
+    atr_col = ind.atr_col
+    atr = out[atr_col] if atr_col in out.columns else None
+
+    def _norm(num, den):
+        return num / den.where(den.abs() > 0, np.nan)
+
+    # Realized short-horizon volatility — rolling std of 1-bar log returns.
+    logret = np.log(c).diff()
+    out['Realized_Vol_Short'] = logret.rolling(
+        ind.realized_vol_window, min_periods=ind.realized_vol_window).std()
+
+    # Minutes since the 09:30 open (intraday clock; NaN-safe without Time).
+    if 'Time' in out.columns:
+        _ts = pd.to_datetime(out['Time'])
+        out['Mins_Since_Open'] = (
+            _ts.dt.hour * 60 + _ts.dt.minute - (9 * 60 + 30)).astype(float)
+
+    if atr is not None:
+        # ATR-normalised distances (stationary twins of the %-based Price_vs_*).
+        if f'EMA{ema_fast_p}' in out.columns:
+            out['Price_vs_EMA9_ATR'] = _norm(c - out[f'EMA{ema_fast_p}'], atr)
+        if f'EMA{ema_mid_p}' in out.columns:
+            out['Price_vs_EMA20_ATR'] = _norm(c - out[f'EMA{ema_mid_p}'], atr)
+        if 'VWAP' in out.columns:
+            out['Price_vs_VWAP_ATR'] = _norm(c - out['VWAP'], atr)
+        # Trend separation, vol-normalised.
+        if f'EMA{ema_fast_p}' in out.columns and f'EMA{ema_mid_p}' in out.columns:
+            out['EMA_Spread_ATR'] = _norm(
+                out[f'EMA{ema_fast_p}'] - out[f'EMA{ema_mid_p}'], atr)
+        # Momentum velocity — n-bar change in EMA9, ATR-normalised.
+        if f'EMA{ema_fast_p}' in out.columns:
+            out['EMA9_Slope'] = _norm(
+                out[f'EMA{ema_fast_p}'].diff(ind.ema_slope_lookback), atr)
+
+    # Bollinger compression — BB_Width vs its own rolling median.
+    if 'BB_Width' in out.columns:
+        bw = out['BB_Width']
+        out['BB_Squeeze'] = _norm(
+            bw, bw.rolling(ind.bb_squeeze_window,
+                           min_periods=ind.bb_squeeze_window).median())
+
+    # RSI fast-vs-slow divergence.
+    if 'RSI9' in out.columns and 'RSI14' in out.columns:
+        out['RSI_Divergence'] = out['RSI9'] - out['RSI14']
+
     return out
