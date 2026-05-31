@@ -1114,6 +1114,86 @@ deploy_freshness_watchdog() {
     gcloud run jobs update freshness-watchdog "${common_flags[@]}"
 }
 
+# Per-factor walk-forward audit — CR-native replacement for the GHA
+# `.github/workflows/per-factor-walkforward.yml` workflow. Runs the
+# audit script weekly via the gcp/audit_job_runner.py wrapper which
+# uploads the report to GCS + posts a phone-friendly comment to the
+# tracking issue (variable AUDIT_TRACKING_ISSUE in the env block).
+#
+# Wired 2026-05-30 alongside db-query + freshness-watchdog as part of
+# the "everything on Cloud Run" consolidation triggered by the
+# GHA-platform outage.
+deploy_audit_walkforward() {
+    echo "Deploying audit-walkforward job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--folds 4"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=30"
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0,3"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔁 Weekly walk-forward audit"
+    # Tracking issue lives in the env; an empty value disables the
+    # GitHub comment without breaking the run. Override per-execution
+    # if needed via --update-env-vars=AUDIT_TRACKING_ISSUE=NNN.
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-walkforward "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-walkforward "${common_flags[@]}"
+}
+
+# Brief bias verification audit — CR-native replacement for the GHA
+# `.github/workflows/verify-brief-bias.yml` workflow. Same pattern as
+# audit-walkforward but uses --since (not --start/--end) and exits
+# strictly on any NULL bias (no AUDIT_ALLOWED_EXIT_CODES tolerance for
+# exit 1, which is the "found NULL" signal).
+deploy_audit_brief_bias() {
+    echo "Deploying audit-brief-bias job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    # Pass --since via AUDIT_SCRIPT_ARGS (defaults to 2026-05-12 per the
+    # script's docstring). The wrapper's auto-window logic only fires
+    # when --since / --start aren't already in args.
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--since 2026-05-12 --tickers SPY,IWM,QQQ"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=0"   # disable auto-window
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔍 Weekly brief bias verification"
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-brief-bias "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-brief-bias "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1554,6 +1634,8 @@ deploy_fetchers() {
     deploy_options_exec_backtest
     deploy_db_query
     deploy_freshness_watchdog
+    deploy_audit_walkforward
+    deploy_audit_brief_bias
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
     # above that function; AV has no historical intraday options endpoint.)
 }
@@ -2348,6 +2430,10 @@ deploy_schedulers() {
     # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
     _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
     _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
+    # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
+    _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
+    # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)
+    _schedule "audit-brief-bias-weekly"  "0 10 * * 0" "audit-brief-bias"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
@@ -2721,6 +2807,8 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     db-query)     build_image && deploy_db_query ;;
     freshness-watchdog) build_image && deploy_freshness_watchdog ;;
+    audit-walkforward) build_image && deploy_audit_walkforward ;;
+    audit-brief-bias) build_image && deploy_audit_brief_bias ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
