@@ -229,30 +229,46 @@ python -m scripts.analysis.regime_combo_miner --ticker SPY --horizons 5,15,30,60
 
 ### 2.4 Real example output (from the 2026-05-31 run)
 
-These are **actual rows** from `regime_combo_results` (576 rows, `computed_date =
-2026-05-31`), top combos by OOS lift — note they're dominated by the vol/momentum
-features promoted that same day:
+These are **actual rows** from `regime_combo_results` (576 rows = 3 tickers × 4
+horizons × 4 classes × top-12, `computed_date = 2026-05-31`), pulled via
+`db_query_cr.sh`. Top combos overall by OOS lift — every one is a 3-way AND
+(`combo_order=3`) and they're dominated by the vol/momentum features promoted
+that same day:
 
 | Ticker | Horizon | Class | Combo (AND-joined) | OOS hit | Base | **Lift** | Support |
 |---|--:|---|---|--:|--:|--:|--:|
-| QQQ | 30m | FLAT | `RSI_Divergence_Lag1≤med AND Realized_Vol_Short≤med AND MACD_Hist_Slope≤med` | 38.2% | 18.4% | **2.08×** | 1342 |
-| QQQ | 15m | FLAT | `RSI_Divergence_Lag1≤med AND Realized_Vol_Short≤med AND ATR_Expansion≤med` | 29.8% | 14.6% | **2.04×** | 1187 |
-| SPY | 15m | FLAT | `Realized_Vol_Short>med AND Mins_Since_Open≤med AND ATR_Expansion≤med` | 29.8% | 14.6% | **2.04×** | 1187 |
-| QQQ | 60m | FLAT | `RSI_Divergence_Lag1≤med AND MACD_Hist_Slope≤med AND Realized_Vol_Short≤med` | 46.7% | 23.5% | **1.99×** | 1521 |
-| SPY | 30m | FLAT | `Realized_Vol_Short≤med AND Mins_Since_Open≤med AND BB_Squeeze≤med` | 37.6% | 18.9% | **1.99×** | 1894 |
-| IWM | 60m | FLAT | `Mins_Since_Open≤med AND Realized_Vol_Short≤med AND RVol_Recent_20≤med` | 45.6% | 23.7% | **1.93×** | 1601 |
-| IWM | 30m | BIG | `Realized_Vol_Short>med AND Mins_Since_Open>med AND RVol_Recent_20>med` | 44.7% | 24.3% | **1.84×** | 1582 |
-| QQQ | 60m | BIG | `Realized_Vol_Short>med AND MACD_Hist_Slope>med AND Mins_Since_Open>med` | 44.7% | 24.6% | **1.82×** | 1498 |
+| SPY | 60m | FLAT | `Realized_Vol_Short≤med AND Mins_Since_Open≤med AND Price_vs_VWAP>med` | 47.1% | 23.2% | **2.04×** | 2709 |
+| SPY | 60m | FLAT | `BB_Width≤med AND Mins_Since_Open≤med AND Price_vs_VWAP>med` | 46.9% | 23.2% | **2.02×** | 2454 |
+| SPY | 60m | FLAT | `Realized_Vol_Short≤med AND Mins_Since_Open≤med AND Price_vs_VWAP_ATR>med` | 46.6% | 23.2% | **2.01×** | 2813 |
+| SPY | 60m | FLAT | `Realized_Vol_Short≤med AND BB_Width≤med AND Mins_Since_Open≤med` | 45.7% | 23.2% | **1.97×** | 3203 |
+| IWM | 60m | FLAT | `Realized_Vol_Short≤med AND Mins_Since_Open≤med AND ORB_15m_Within_Range>med` | 46.4% | 23.7% | **1.96×** | 1274 |
+| QQQ | 60m | FLAT | `BB_Width≤med AND Mins_Since_Open≤med AND ORB_15m_Within_Range>med` | 45.6% | 23.3% | **1.96×** | 1385 |
+| IWM | 30m | FLAT | `Realized_Vol_Short≤med AND Mins_Since_Open≤med AND ORB_15m_Within_Range>med` | 43.8% | 22.5% | **1.95×** | 1274 |
 
-**How to read row 4:** for QQQ, when 1-bar-lagged RSI divergence is below its
-median AND the MACD-histogram slope is below median AND short-horizon realized vol
-is below median, the next 60 minutes were flat/chop **46.7% of the time vs a 23.5%
-base rate — 1.99× more likely than random**, across 1,521 out-of-sample bars.
-Economically sensible: weak momentum + low vol = consolidation.
+Best **BIG**-move combo (the magnitude class has a much higher base rate, so its
+top lift is naturally lower):
 
-Note the **symmetry**: the same three features (`Realized_Vol_Short`,
-`Mins_Since_Open`, `RVol_Recent_20`/`BB_Squeeze`) predict FLAT when **below**
-median and BIG when **above** — low-vol/early = chop, high-vol/late = expansion.
+| Ticker | Horizon | Class | Combo (AND-joined) | OOS hit | Base | **Lift** | Support |
+|---|--:|---|---|--:|--:|--:|--:|
+| QQQ | 60m | BIG | `Mins_Since_Open>med AND ORB_15m_Within_Range>med` | 72.3% | 48.8% | **1.48×** | 1129 |
+
+**Max OOS lift per class** (latest run): FLAT **2.04×**, BIG **1.48×**, DOWN
+**1.39×**, UP **1.32×**. FLAT carries by far the strongest lift because the
+direction/magnitude classes (BIG/UP/DOWN) have much higher base rates (~0.49 for
+BIG), leaving less headroom over random.
+
+**How to read row 1:** for SPY, when short-horizon realized vol is below its
+median AND it's early in the session (`Mins_Since_Open≤med`) AND price is holding
+above VWAP, the next 60 minutes were flat/chop **47.1% of the time vs a 23.2%
+base rate — 2.04× more likely than random**, across 2,709 out-of-sample bars.
+Economically sensible: low-vol + early + above-VWAP = consolidation, not a
+breakout.
+
+The one clean **sign-flip**: `Mins_Since_Open` predicts FLAT when **below**
+median (early session) and appears in the top BIG combo when **above** median
+(late session) — early = chop, late = expansion. (The other top-FLAT features —
+`Realized_Vol_Short`, `BB_Width` — are low-vol markers and don't reappear in the
+top BIG combo, so this is a partial, not a perfect, symmetry.)
 
 ### 2.5 Querying the results
 
@@ -266,16 +282,16 @@ median and BIG when **above** — low-vol/early = chop, high-vol/late = expansio
 
 # Track how a combo's lift drifts week-over-week (computed_date is the time axis)
 ./scripts/db_query_cr.sh -q "
-  SELECT computed_date, round(lift::numeric,2) AS lift, round(oos_hit_rate::numeric,3) AS hit
+  SELECT computed_date, round(lift::numeric,2) AS lift, round(hit_rate::numeric,3) AS hit
   FROM regime_combo_results
   WHERE ticker='SPY' AND target_class='FLAT' AND horizon_min=60
-    AND conditions LIKE 'Realized_Vol_Short%'
+    AND conditions LIKE '%Realized_Vol_Short%'
   ORDER BY computed_date DESC LIMIT 8"
 ```
 
-`regime_combo_results` columns: `computed_date, ticker, horizon_min,
-target_class, conditions, oos_hit_rate, base_rate, lift, support, model_accuracy,
-model_lift, model_base_rate, perm_importance (jsonb), feature_count`.
+`regime_combo_results` columns (actual schema): `id, computed_date,
+window_start, window_end, ticker, horizon_min, target_class, conditions,
+combo_order, hit_rate, base_rate, lift, support, train_support, computed_at`.
 
 ---
 
@@ -393,10 +409,10 @@ gcloud run jobs execute indicator-correlation --region us-east1 \
 ### 4.3 Example output — pending first run
 
 > ⚠️ **No real rows yet.** As of 2026-05-31 `indicator_correlation` is **empty**
-> (0 rows): the schema migration + first target-modular run are pending deploy
-> (`apply-schema-migrations` → Cloud Build → `indicator-correlation`). Once the
-> first run lands, this section will be replaced with actual top-indicator rows
-> per `target_name`. The **expected** shape is one row per
+> (verified: 0 rows): the schema migration + first target-modular run are pending
+> deploy (`apply-schema-migrations` → Cloud Build → `indicator-correlation`).
+> Once the first run lands, this section will be replaced with actual
+> top-indicator rows per `target_name`. The **expected** shape is one row per
 > `(ticker, indicator, horizon_min, target_name, target_class)`:
 
 ```text
@@ -451,11 +467,11 @@ stop a live signal, and a live change can never silently alter a backtest.
 ### Worked example — the 2026-05-31 loop (what actually happened this session)
 
 1. `regime-combo` mining surfaced `Realized_Vol_Short`, `Mins_Since_Open`,
-   `RVol_Recent_20`, `BB_Squeeze`, `MACD_Hist_Slope`/`RSI_Divergence`,
-   `Price_vs_*_ATR`, `EMA9_Slope`, `EMA_Spread_ATR` as top OOS drivers of FLAT
-   (below-median) and BIG (above-median) across IWM/SPY/QQQ — see the **real**
-   table in §2.4 (576 rows, `computed_date=2026-05-31`).
-2. Those features were **promoted** into `add_all_indicators` (one place).
+   `BB_Width`, `Price_vs_VWAP`/`Price_vs_VWAP_ATR`, and the ORB-range features as
+   top OOS drivers of FLAT (low-vol/early/above-VWAP) and BIG (late session)
+   across SPY/IWM/QQQ — see the **real** tables in §2.4 (576 rows,
+   `computed_date=2026-05-31`; FLAT tops out at 2.04× lift).
+2. The promoted vol/momentum features live in `add_all_indicators` (one place).
 3. `add_all_indicators` was **decomposed into `_add_*` blocks** and the live
    `signal_monitor` was switched to the lean `add_signal_indicators` (the brief to
    `add_brief_indicators`) — so the live paths compute only what they read while
