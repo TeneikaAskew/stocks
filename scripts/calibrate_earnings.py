@@ -234,6 +234,24 @@ def main() -> None:
                         default=True,
                         help="Run the sweep but do NOT write "
                              "earnings_calibration")
+    parser.add_argument("--long-only-detail", action="store_true",
+                        default=False,
+                        help="After the sweep, print a detailed long-only "
+                             "report for the winner's Q5 subset — segmented "
+                             "stats (ratio>1.5 / fair / over-priced), top-10 "
+                             "long-straddle/call/put winners with named "
+                             "tickers and dates, and predictors of "
+                             "long-wins. Output goes to stdout / Cloud Run "
+                             "logs; not persisted to a table.")
+    parser.add_argument("--options-insights", action="store_true",
+                        default=False,
+                        help="Comprehensive options-strategy report — ALL "
+                             "quintiles (Q1-Q5) × ALL ratio buckets × ALL "
+                             "structures (long+short). PERSISTS to "
+                             "earnings_options_strategy_insights and "
+                             "earnings_options_strategy_winners tables so "
+                             "the data survives Cloud Run log expiry. Use "
+                             "this for the canonical insights run.")
     args = parser.parse_args()
 
     results = run_sweep()
@@ -266,6 +284,39 @@ def main() -> None:
         log.info("applied winner to earnings_calibration")
     else:
         log.info("--no-apply set: winner NOT written")
+
+    if args.long_only_detail or args.options_insights:
+        # Re-run the winning combo to get the per-event predictions df.
+        # The sweep doesn't persist per-event predictions so we have to
+        # recompute — fast (~30s for one combo).
+        from scripts.backtest_playability import (
+            _load_options_snapshots,
+            compute_long_only_report,
+            compute_options_insights,
+            run_backtest,
+            write_options_insights_to_db,
+        )
+        log.info("computing insights report for winner...")
+        preds = run_backtest(
+            min_nq=int(winner["min_nq"]),
+            lookback=int(winner["lookback_quarters"]),
+        )
+        opts = _load_options_snapshots()
+
+        if args.options_insights:
+            insight_rows, winner_rows, md = compute_options_insights(preds, opts)
+            n_i, n_w = write_options_insights_to_db(insight_rows, winner_rows)
+            log.info("wrote %d insight rows + %d winner rows to Cloud SQL",
+                     n_i, n_w)
+            print("\n===== BEGIN OPTIONS INSIGHTS =====\n")
+            print(md)
+            print("\n===== END OPTIONS INSIGHTS =====\n")
+
+        if args.long_only_detail:
+            report_md = compute_long_only_report(preds, opts)
+            print("\n===== BEGIN LONG-ONLY REPORT =====\n")
+            print(report_md)
+            print("\n===== END LONG-ONLY REPORT =====\n")
 
 
 if __name__ == "__main__":

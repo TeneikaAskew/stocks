@@ -2691,3 +2691,82 @@ ALTER TABLE earnings_calibration
     ADD COLUMN IF NOT EXISTS avg_short_strangle_pnl_pct  DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;
+
+
+-- ── earnings_options_strategy_insights (PR-B follow-up, 2026-05-22) ─────────
+-- Per-(quintile × ratio_bucket × structure) breakdown of historical
+-- options P&L. Persisted in DB so the report from
+-- scripts/calibrate_earnings.py --options-insights is queryable
+-- forever (Cloud Run logs expire after 30 days).
+--
+-- Covers BOTH long AND short structures across ALL quintiles (not
+-- just Q5) so the user can audit why Q5 was selected as the strongest
+-- bucket and spot any hidden edge in Q1-Q4.
+--
+-- Structures: long_straddle, long_call, long_put, long_strangle,
+--             short_straddle, short_strangle.
+-- (Single-leg short_call/short_put omitted — they're income
+-- strategies requiring covered/cash-secured positioning, not
+-- directional bets.)
+--
+-- ratio_bucket values: 'over_realized' (realized/implied > 1.5,
+--                       long-wins-big subset),
+--                      'fair'          (0.85-1.5),
+--                      'over_priced'   (< 0.85, the IC subset from PR-B),
+--                      'all'           (no ratio filter, baseline).
+--
+-- Re-running the sweep with --options-insights replaces today's rows
+-- via the unique (calculation_date, quintile, ratio_bucket, structure)
+-- constraint.
+CREATE TABLE IF NOT EXISTS earnings_options_strategy_insights (
+    id                       BIGSERIAL PRIMARY KEY,
+    calculation_date         DATE NOT NULL,
+    quintile                 TEXT NOT NULL,
+    ratio_bucket             TEXT NOT NULL,
+    structure                TEXT NOT NULL,
+    n_events                 INTEGER NOT NULL,
+    hit_rate_pct             DOUBLE PRECISION,
+    mean_pnl_pct             DOUBLE PRECISION,
+    median_pnl_pct           DOUBLE PRECISION,
+    p10_pnl_pct              DOUBLE PRECISION,
+    p90_pnl_pct              DOUBLE PRECISION,
+    avg_implied_move_pct     DOUBLE PRECISION,
+    avg_realized_move_pct    DOUBLE PRECISION,
+    notes                    TEXT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (calculation_date, quintile, ratio_bucket, structure)
+);
+
+CREATE INDEX IF NOT EXISTS idx_eosi_recent
+    ON earnings_options_strategy_insights (calculation_date DESC);
+
+
+-- ── earnings_options_strategy_winners (named drill-downs) ──────────────────
+-- Top-10 historical winners per (calculation_date × structure × quintile).
+-- Lets the brief surface "the next NVAX" — events where a ticker has
+-- historically blown through implied. Joined back to
+-- earnings_options_snapshots via (ticker, event_date - 1 day = snapshot_date).
+CREATE TABLE IF NOT EXISTS earnings_options_strategy_winners (
+    id                       BIGSERIAL PRIMARY KEY,
+    calculation_date         DATE NOT NULL,
+    structure                TEXT NOT NULL,
+    quintile                 TEXT NOT NULL,
+    rank                     INTEGER NOT NULL,
+    ticker                   TEXT NOT NULL,
+    event_date               DATE NOT NULL,
+    archetype                TEXT,
+    spot_entry               DOUBLE PRECISION,
+    spot_exit                DOUBLE PRECISION,
+    strike                   DOUBLE PRECISION,
+    premium_per_share        DOUBLE PRECISION,
+    exit_value_per_share     DOUBLE PRECISION,
+    pnl_pct                  DOUBLE PRECISION,
+    implied_move_pct         DOUBLE PRECISION,
+    realized_move_pct        DOUBLE PRECISION,
+    ratio                    DOUBLE PRECISION,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (calculation_date, structure, quintile, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_eosw_recent
+    ON earnings_options_strategy_winners (calculation_date DESC, structure);
