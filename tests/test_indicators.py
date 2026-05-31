@@ -154,6 +154,39 @@ class TestAddAllIndicators:
         assert 'MACD' in result.columns
         assert 'Consecutive_Up' in result.columns
 
+    def test_emits_secondary_atr_rsi_volatility_and_spread(self, sample_ohlcv):
+        """Regression guard for the 2026-05-27 silent-NaN fix:
+        ATR20, RSI30, volatility_5d, volatility_20d, high_low_spread,
+        and high_low_spread_pct must be produced by default. Pre-fix,
+        each was declared in market_data_daily but never computed —
+        every row shipped NaN in those columns.
+        """
+        result = add_all_indicators(sample_ohlcv)
+        for col in (
+            'ATR20', 'RSI30',
+            'volatility_5d', 'volatility_20d',
+            'high_low_spread', 'high_low_spread_pct',
+        ):
+            assert col in result.columns, f"{col} missing from add_all_indicators output"
+            # At least one non-NaN value must exist on a >20-bar sample.
+            assert result[col].notna().any(), f"{col} is all-NaN — computation never ran"
+
+    def test_daily_indicator_to_sql_column_covers_new_cols(self, sample_ohlcv):
+        """Every key in DAILY_INDICATOR_TO_SQL_COLUMN must resolve to a
+        real column in add_all_indicators output. Pre-fix, ATR20/RSI30/
+        volatility_5d/high_low_spread{,_pct} keys were missing, so the
+        SQL columns shipped NaN. This test pins the mapping ↔ producer
+        contract so a future rename can't silently break it.
+        """
+        from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN
+        result = add_all_indicators(sample_ohlcv)
+        missing = [src for src in DAILY_INDICATOR_TO_SQL_COLUMN
+                   if src not in result.columns]
+        assert not missing, (
+            f"DAILY_INDICATOR_TO_SQL_COLUMN references columns not produced "
+            f"by add_all_indicators: {missing}"
+        )
+
     def test_orb_columns_present_when_time_exists(self, sample_ohlcv):
         """add_all_indicators should produce ORB columns when Time column exists."""
         result = add_all_indicators(sample_ohlcv)

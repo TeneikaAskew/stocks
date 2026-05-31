@@ -128,7 +128,6 @@ def backfill_daily_indicators(data_dir: Path, dry_run: bool):
     Usage:
         python gcp/migrate_to_gcp.py --table daily_indicators --skip-gcs
     """
-    import numpy as np
     from lib.indicators import add_all_indicators
     from gcp.database import query_to_dataframe, upsert_dataframe
 
@@ -162,11 +161,10 @@ def backfill_daily_indicators(data_dir: Path, dry_run: bool):
         log.info("  %s: %d rows (%s → %s)",
                  ticker, len(df), df['date'].min(), df['date'].max())
 
-        # Compute indicators on the full series
+        # Compute indicators on the full series. volatility_{5,20}d,
+        # high_low_spread{,_pct}, ATR20, and RSI30 are all produced by
+        # add_all_indicators as of 2026-05-27 (single source of truth).
         enriched = add_all_indicators(df, close_col='Close')
-        enriched['volatility_20d'] = (
-            enriched['Close'].pct_change().rolling(20).std() * np.sqrt(252)
-        )
 
         # Integer columns in the schema
         _INT_COLS = {'consecutive_up', 'consecutive_down'}

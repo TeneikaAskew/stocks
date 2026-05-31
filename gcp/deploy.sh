@@ -816,16 +816,19 @@ deploy_weekend() {
 # ── Data-fetching jobs ────────────────────────────────────────────────────────
 deploy_fetch_market_data() {
     echo "Deploying fetch-market-data job..."
-    # 1800s timeout: with EARNINGS_WINDOW_DAYS=7 we may pull bars for
-    # ~100 tickers; at 150 RPM that's ~80s of AV calls plus per-ticker
-    # indicator computation. 30 min leaves comfortable headroom.
+    # 5400s (90 min) timeout: nightly path (EARNINGS_WINDOW_DAYS=7, ~100
+    # tickers at 150 RPM) finishes in ~5 min. The headroom is for
+    # `--backfill BACKFILL_ALL_HISTORY=true` runs against the full
+    # earnings_history universe (~1,700 tickers); at the premium-tier
+    # 1.0s AV pacing default that's ~30 min, plus per-ticker upsert.
+    # Headroom = ~3x; Cloud Run charges runtime, not the cap.
     local env
     env="$(_env_string),EARNINGS_WINDOW_DAYS=7"
 
     gcloud run jobs create fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 2 \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
@@ -833,7 +836,7 @@ deploy_fetch_market_data() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
@@ -1469,9 +1472,16 @@ deploy_fetch_earnings_history() {
     # This self-heals the OHLCV coverage gap that blocked the
     # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
     # missing reaction rows because their bars weren't ever fetched).
+    # AV_BACKFILL_SLEEP_SECS=1.0: the chained _run_backfill step was
+    # tripping the 7200s timeout every night for 5+ consecutive runs
+    # (audit 2026-05-30 — t8jq5, 4v9br, xwsk8, hf92b, cwftn all died at
+    # ticker [518/627]). Root cause: the hardcoded 13s free-tier sleep
+    # in _run_backfill made ~600 non-skipped tickers cost 13s × 600 =
+    # 2.2h, blowing the budget on retry. We're on premium AV (75 RPM),
+    # so 1.0s/call is safe and cuts wall-clock to ~10 min.
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     local env_string
-    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true"
+    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \

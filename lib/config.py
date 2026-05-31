@@ -21,9 +21,18 @@ class IndicatorConfig:
     """Periods and parameters for all technical indicators."""
     rsi_period: int = 14
     rsi_fast_period: int = 9
+    # Additional RSI windows produced by add_all_indicators alongside the
+    # primary `rsi_period` and `rsi_fast_period`. Schema declares `rsi_30`
+    # in market_data_daily; without 30 here the column ships all-NaN.
+    rsi_extra_periods: List[int] = field(default_factory=lambda: [30])
     ema_periods: List[int] = field(default_factory=lambda: [9, 20, 50])
     sma_periods: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 200])
     atr_period: int = 14
+    # Additional ATR windows. Schema declares `atr_20`; same reasoning.
+    atr_extra_periods: List[int] = field(default_factory=lambda: [20])
+    # Annualised historical-volatility windows. Each entry N produces a
+    # `volatility_{N}d` series (std of pct_change × sqrt(252)).
+    volatility_periods: List[int] = field(default_factory=lambda: [5, 20])
     rvol_period: int = 20
     stoch_rsi_period: int = 14
     stoch_rsi_k_period: int = 3
