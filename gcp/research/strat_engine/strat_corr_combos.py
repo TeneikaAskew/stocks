@@ -27,7 +27,7 @@ import pandas as pd
 
 from gcp.database import get_engine
 from gcp.research.strat_engine.strat_config import (
-    TICKERS, TIMEFRAMES, LABEL_CLASSES, DEFAULT_TRAIN_UNTIL,
+    TICKERS, TIMEFRAMES, LABEL_COL, LABEL_CLASSES, DEFAULT_TRAIN_UNTIL,
     GCS_BUCKET_DEFAULT, gcs_model_prefix,
 )
 from gcp.research.strat_engine.strat_dataset import (
