@@ -3,7 +3,7 @@
 > Everything the **Strat directionality engine** and the **combination-mining
 > pipelines** (regime combos + Strat-candle combos) do, end to end, with
 > runnable commands and real example output. Companion to
-> [`PIPELINE.md`](PIPELINE.md) (the high-level two-lane map) — this is the deep
+> [`PIPELINE.md`](../../../docs/PIPELINE.md) (the high-level two-lane map) — this is the deep
 > dive into the research/discovery lane.
 
 Last updated: 2026-05-31. All three pipelines are **research** (Lane 2): they

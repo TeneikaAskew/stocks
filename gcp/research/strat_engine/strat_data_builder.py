@@ -119,6 +119,10 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     vwap DOUBLE PRECISION,
     price_vs_vwap DOUBLE PRECISION, price_vs_ema9 DOUBLE PRECISION, price_vs_ema20 DOUBLE PRECISION,
     consecutive_up INTEGER, consecutive_down INTEGER,
+    realized_vol_short DOUBLE PRECISION, mins_since_open DOUBLE PRECISION,
+    price_vs_ema9_atr DOUBLE PRECISION, price_vs_ema20_atr DOUBLE PRECISION,
+    price_vs_vwap_atr DOUBLE PRECISION, ema_spread_atr DOUBLE PRECISION,
+    ema9_slope DOUBLE PRECISION, bb_squeeze DOUBLE PRECISION, rsi_divergence DOUBLE PRECISION,
     intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
     fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
     fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
@@ -454,6 +458,17 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["price_vs_ema20"] = _safe("Price_vs_EMA20")
     out["consecutive_up"] = _safe("Consecutive_Up").astype("Int32")
     out["consecutive_down"] = _safe("Consecutive_Down").astype("Int32")
+    # Promoted 2026-05-31 volatility/momentum features — persisted so research
+    # SQL / training can query them historically (previously computed-then-dropped).
+    out["realized_vol_short"] = _safe("Realized_Vol_Short")
+    out["mins_since_open"] = _safe("Mins_Since_Open")
+    out["price_vs_ema9_atr"] = _safe("Price_vs_EMA9_ATR")
+    out["price_vs_ema20_atr"] = _safe("Price_vs_EMA20_ATR")
+    out["price_vs_vwap_atr"] = _safe("Price_vs_VWAP_ATR")
+    out["ema_spread_atr"] = _safe("EMA_Spread_ATR")
+    out["ema9_slope"] = _safe("EMA9_Slope")
+    out["bb_squeeze"] = _safe("BB_Squeeze")
+    out["rsi_divergence"] = _safe("RSI_Divergence")
     out["intraday_return"] = (closes - df_tf["Open"]) / df_tf["Open"] * 100
     out["high_low_spread_pct"] = (df_tf["High"] - df_tf["Low"]) / closes * 100
 

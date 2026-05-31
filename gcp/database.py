@@ -619,4 +619,13 @@ DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'Price_vs_EMA9':    'price_vs_ema9',
     'Price_vs_EMA20':   'price_vs_ema20',
     'volatility_20d':   'volatility_20d',
+    # Promoted 2026-05-31 (daily-meaningful subset; Mins_Since_Open and
+    # Price_vs_VWAP_ATR omitted — no intraday clock / degenerate daily VWAP).
+    'Realized_Vol_Short': 'realized_vol_short',
+    'Price_vs_EMA9_ATR':  'price_vs_ema9_atr',
+    'Price_vs_EMA20_ATR': 'price_vs_ema20_atr',
+    'EMA_Spread_ATR':     'ema_spread_atr',
+    'EMA9_Slope':         'ema9_slope',
+    'BB_Squeeze':         'bb_squeeze',
+    'RSI_Divergence':     'rsi_divergence',
 }

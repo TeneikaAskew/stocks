@@ -65,6 +65,16 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
     price_vs_ema9       DOUBLE PRECISION,
     price_vs_ema20      DOUBLE PRECISION,   -- renamed from price_vs_ema21
 
+    -- Promoted 2026-05-31 vol/momentum features (daily-meaningful subset).
+    -- Also added via idempotent ALTER at the end of this file for live DBs.
+    realized_vol_short  DOUBLE PRECISION,
+    price_vs_ema9_atr   DOUBLE PRECISION,
+    price_vs_ema20_atr  DOUBLE PRECISION,
+    ema_spread_atr      DOUBLE PRECISION,
+    ema9_slope          DOUBLE PRECISION,
+    bb_squeeze          DOUBLE PRECISION,
+    rsi_divergence      DOUBLE PRECISION,
+
     -- Strat fields (populated by analyze_market_data)
     strat_candle        VARCHAR(10),
     strat_combo         VARCHAR(30),
@@ -2868,3 +2878,86 @@ CREATE TABLE IF NOT EXISTS earnings_options_strategy_winners (
 
 CREATE INDEX IF NOT EXISTS idx_eosw_recent
     ON earnings_options_strategy_winners (calculation_date DESC, structure);
+
+-- ---------------------------------------------------------------------------
+-- Persist the 2026-05-31 promoted volatility/momentum features
+-- ---------------------------------------------------------------------------
+-- These features were promoted into lib.indicators.add_all_indicators and are
+-- computed everywhere, but the feature tables write a fixed column allow-list,
+-- so they were computed-then-dropped (a known gap). Add the columns so the
+-- backfill + strat builder persist them. All NULLABLE (no fabricated 0 —
+-- CLAUDE.md Rule 3.7); a re-backfill populates history. Idempotent.
+--
+-- market_data_daily (DAILY bars): the intraday-only Mins_Since_Open and the
+-- daily-degenerate Price_vs_VWAP_ATR are intentionally omitted (daily has no
+-- intraday clock and no meaningful intraday VWAP).
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+
+-- strat_features_<tf> (INTRADAY 1m/5m/15m/30m/60m/4h): all 9 are meaningful.
+ALTER TABLE strat_features_1m
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+ALTER TABLE strat_features_5m
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+ALTER TABLE strat_features_15m
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+ALTER TABLE strat_features_30m
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+ALTER TABLE strat_features_60m
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+ALTER TABLE strat_features_4h
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
