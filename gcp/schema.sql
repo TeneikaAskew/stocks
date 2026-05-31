@@ -2723,15 +2723,62 @@ CREATE TABLE IF NOT EXISTS indicator_correlation (
     ticker          VARCHAR(10)       NOT NULL,   -- 'SPY'|'IWM'|'QQQ'|'POOLED'
     indicator       VARCHAR(64)       NOT NULL,   -- e.g. 'ATR14', 'ORB_15m_Range'
     horizon_min     INTEGER           NOT NULL,   -- forward-return horizon (minutes)
+    -- target_name distinguishes WHAT the indicator is scored against:
+    --   'forward_return' (regression vs fwd log-return; the original behaviour),
+    --   'regime'  (BIG/UP/DOWN/FLAT class membership),
+    --   'strat'   (next-bar 1/2U/2D/3 class membership),
+    --   'signal'  (signal_alerts win/loss outcome).
+    -- target_class is the per-class label for classification targets. It uses
+    -- '' (empty string) — NOT NULL — for the regression / overall case
+    -- (forward_return). The empty string is a CATEGORICAL sentinel (a class
+    -- label), not a financial-zero, so Rule 3.7 (NULL≠0 on numeric stats) does
+    -- not apply; making it NOT NULL keeps the UNIQUE key a single plain
+    -- constraint that the generic upsert_dataframe ON CONFLICT path can target
+    -- (NULLs are distinct in a UNIQUE index, which would defeat dedup).
+    target_name     VARCHAR(32)       NOT NULL DEFAULT 'forward_return',
+    target_class    VARCHAR(12)       NOT NULL DEFAULT '',  -- '' = regression/overall; else 'BIG','UP','2U',...
     pearson         DOUBLE PRECISION,             -- linear corr (NULL = unavailable)
     rank_ic         DOUBLE PRECISION,             -- Spearman IC (NULL = unavailable)
     abs_rank_ic     DOUBLE PRECISION,             -- |rank_ic| for ranking convenience
+    mutual_info     DOUBLE PRECISION,             -- MI(indicator; class) (NULL = unavailable / regression)
+    class_lift      DOUBLE PRECISION,             -- P(class | feat>med) / base-rate (NULL = unavailable / regression)
     n               INTEGER,                      -- paired observations
     computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_indicator_correlation
-        UNIQUE (computed_date, window_start, window_end, ticker, indicator, horizon_min)
+        UNIQUE (computed_date, window_start, window_end, ticker, indicator,
+                horizon_min, target_name, target_class)
 );
+
+-- Idempotent migration for instances created before the target-modular columns
+-- (2026-05-31). The two metric columns are NULLABLE (Rule 3.7: NULL ≠ 0 for a
+-- statistic). target_name / target_class carry NOT-NULL defaults so legacy
+-- forward_return rows stay valid and the UNIQUE key stays a single plain
+-- constraint (see column comment above for why target_class is '' not NULL).
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS target_name  VARCHAR(32) NOT NULL DEFAULT 'forward_return';
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS target_class VARCHAR(12) NOT NULL DEFAULT '';
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS mutual_info  DOUBLE PRECISION;
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS class_lift   DOUBLE PRECISION;
+
+-- Recreate the UNIQUE constraint to include (target_name, target_class). Drop
+-- the legacy 6-column constraint first if it exists, then add the 8-column one
+-- (guarded so re-runs are no-ops).
+ALTER TABLE indicator_correlation DROP CONSTRAINT IF EXISTS uq_indicator_correlation;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_indicator_correlation'
+    ) THEN
+        ALTER TABLE indicator_correlation
+            ADD CONSTRAINT uq_indicator_correlation
+            UNIQUE (computed_date, window_start, window_end, ticker, indicator,
+                    horizon_min, target_name, target_class);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_indicator_correlation_rank
     ON indicator_correlation (computed_date, horizon_min, abs_rank_ic DESC);

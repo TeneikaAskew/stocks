@@ -144,7 +144,8 @@ def test_run_io_shape_and_pooled_row(monkeypatch):
     tickers = ["SPY", "IWM", "QQQ"]
     horizons = [5, 15]
     results = job.run(tickers, horizons, lookback_days=10,
-                      as_of=date(2026, 5, 8), dry_run=False)
+                      as_of=date(2026, 5, 8), dry_run=False,
+                      targets=["forward_return"])
 
     # Exactly one SELECT per ticker — NOT per bar (the Rule 0 N+1 guard).
     assert calls["load"] == tickers
@@ -156,6 +157,9 @@ def test_run_io_shape_and_pooled_row(monkeypatch):
     assert (results["computed_date"] == date(2026, 5, 8)).all()
     assert (results["window_end"] == date(2026, 5, 8)).all()
     assert (results["lookback_days"] == 10).all()
+    # forward_return target tag + class sentinel on every row.
+    assert (results["target_name"] == "forward_return").all()
+    assert (results["target_class"] == "").all()
     # Both horizons present, correlations bounded.
     assert set(results["horizon_min"].unique()) == {5, 15}
     finite_ic = results["rank_ic"].dropna()
@@ -177,7 +181,7 @@ def test_run_dry_run_does_not_persist(monkeypatch):
     monkeypatch.setattr(job, "_persist", lambda r: called.__setitem__("n", called["n"] + 1))
 
     out = job.run(["SPY"], [5], lookback_days=5,
-                  as_of=date(2026, 5, 6), dry_run=True)
+                  as_of=date(2026, 5, 6), dry_run=True, targets=["forward_return"])
     assert called["n"] == 0
     assert not out.empty
 
@@ -196,7 +200,7 @@ def test_run_raises_when_all_tickers_empty(monkeypatch):
 
     with pytest.raises(RuntimeError, match="No intraday data for ANY"):
         job.run(["SPY", "IWM"], [5], lookback_days=5,
-                as_of=date(2026, 5, 6), dry_run=False)
+                as_of=date(2026, 5, 6), dry_run=False, targets=["forward_return"])
 
 
 def test_run_skips_empty_ticker_but_continues(monkeypatch):
@@ -215,7 +219,7 @@ def test_run_skips_empty_ticker_but_continues(monkeypatch):
     monkeypatch.setattr(job, "_persist", lambda r: len(r))
 
     results = job.run(["SPY", "IWM", "QQQ"], [5], lookback_days=5,
-                      as_of=date(2026, 5, 6), dry_run=True)
+                      as_of=date(2026, 5, 6), dry_run=True, targets=["forward_return"])
     # IWM dropped; SPY/QQQ present (+ POOLED since ≥2 real tickers loaded).
     assert "IWM" not in set(results["ticker"].unique())
     assert {"SPY", "QQQ", "POOLED"}.issubset(set(results["ticker"].unique()))
@@ -234,7 +238,8 @@ def test_main_returns_zero_on_success(monkeypatch):
     monkeypatch.setattr("lib.data_loader.DataLoader", FakeLoader)
     monkeypatch.setattr(job, "_persist", lambda r: len(r))
     rc = job.main(["--tickers", "SPY,QQQ", "--horizons", "5",
-                   "--lookback-days", "5", "--as-of", "2026-05-06", "--dry-run"])
+                   "--lookback-days", "5", "--as-of", "2026-05-06",
+                   "--targets", "forward_return", "--dry-run"])
     assert rc == 0
 
 
@@ -248,5 +253,142 @@ def test_main_returns_one_on_failure(monkeypatch):
 
     monkeypatch.setattr("lib.data_loader.DataLoader", FakeLoader)
     rc = job.main(["--tickers", "SPY", "--horizons", "5",
-                   "--lookback-days", "5", "--as-of", "2026-05-06"])
+                   "--lookback-days", "5", "--as-of", "2026-05-06",
+                   "--targets", "forward_return"])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Target-modular tests (regime / strat / signal classification targets)
+# ---------------------------------------------------------------------------
+
+def _enriched_fixture(days, seed=21):
+    """A multi-session enriched frame (full indicators + fwd returns)."""
+    raw = _multi_session(days, seed=seed)
+    raw = raw.reset_index(drop=True)
+    return job.enrich(raw, job.IndicatorConfig(), [job._REGIME_HORIZON])
+
+
+def test_resolve_targets_validates_and_orders():
+    ns = job.parse_args(["--targets", "strat,forward_return"])
+    assert job._resolve_targets(ns) == ["forward_return", "strat"]
+    ns2 = job.parse_args(["--target", "regime"])
+    assert job._resolve_targets(ns2) == ["regime"]
+    with pytest.raises(ValueError, match="unknown target"):
+        job._resolve_targets(job.parse_args(["--targets", "bogus"]))
+
+
+def test_regime_target_emits_per_class_metrics():
+    days = [f"2026-05-{d:02d}" for d in range(4, 16)]  # 12 sessions
+    enr = _enriched_fixture(days)
+    ind_cols = job.indicator_columns(enr)
+    rows = job.compute_target_rows(enr, ind_cols, [job._REGIME_HORIZON], "regime")
+    assert not rows.empty
+    assert (rows["target_name"] == "regime").all()
+    # Multiple regime classes scored.
+    assert set(rows["target_class"].unique()).issubset({"BIG", "UP", "DOWN", "FLAT"})
+    assert len(set(rows["target_class"].unique())) >= 2
+    # Each row carries the classification metric trio (at least one non-null).
+    for _, r in rows.iterrows():
+        assert (r["mutual_info"] is not None) or (r["class_lift"] is not None) \
+            or (r["rank_ic"] is not None)
+    # rank_ic bounded; pearson left NULL for class targets.
+    fic = rows["rank_ic"].dropna()
+    assert ((fic >= -1.0001) & (fic <= 1.0001)).all()
+    assert rows["pearson"].isna().all()
+
+
+def test_strat_target_emits_valid_classes():
+    days = [f"2026-05-{d:02d}" for d in range(4, 16)]
+    enr = _enriched_fixture(days)
+    ind_cols = job.indicator_columns(enr)
+    rows = job.compute_target_rows(enr, ind_cols, [job._REGIME_HORIZON], "strat")
+    assert not rows.empty
+    assert (rows["target_name"] == "strat").all()
+    assert set(rows["target_class"].unique()).issubset({"1", "2U", "2D", "3"})
+
+
+def test_class_lift_shuffled_label_is_near_one_and_mi_near_zero():
+    """Control: a randomly-shuffled label must show no edge — lift≈1, MI≈0."""
+    rng = np.random.default_rng(0)
+    n = 4000
+    x = pd.Series(rng.normal(size=n))
+    y = rng.integers(0, 2, n)  # independent of x
+    lift = job._class_lift(x, y)
+    mi = job._class_mutual_info(x, y)
+    rank_ic = job._class_rank_ic(x, y)
+    assert lift == pytest.approx(1.0, abs=0.15)
+    assert mi == pytest.approx(0.0, abs=0.02)
+    assert abs(rank_ic) < 0.1
+
+
+def test_class_metrics_detect_a_real_signal():
+    """A label that IS the indicator's high-half must show lift>1, MI>0."""
+    rng = np.random.default_rng(1)
+    n = 4000
+    x = pd.Series(rng.normal(size=n))
+    y = (x > x.median()).astype(int).to_numpy()  # perfectly aligned
+    assert job._class_lift(x, y) > 1.5
+    assert job._class_mutual_info(x, y) > 0.1
+    assert job._class_rank_ic(x, y) > 0.5
+
+
+def test_class_metrics_return_none_on_insufficient_rows():
+    """Rule 3.7: too-few rows → None, never a fabricated 0 / 1."""
+    x = pd.Series([1.0, 2.0, 3.0])
+    y = np.array([0, 1, 0])
+    assert job._class_lift(x, y) is None
+    assert job._class_mutual_info(x, y) is None
+    assert job._class_rank_ic(x, y) is None
+
+
+def test_signal_target_skips_when_no_outcomes(monkeypatch):
+    """Sparse / empty signal_alerts → skip with warning, no fabricated rows."""
+    monkeypatch.setattr(job, "_load_signal_outcomes", lambda *a, **k: pd.DataFrame())
+    enr = _enriched_fixture(["2026-05-04", "2026-05-05", "2026-05-06"])
+    out = job.compute_signal_target({"SPY": enr}, ["SPY"], "2026-05-01", "2026-05-06")
+    assert out.empty
+
+
+def test_signal_target_scores_matched_alerts(monkeypatch):
+    """Alerts joined to fire-bar indicators produce signal-target rows."""
+    enr = _enriched_fixture(["2026-05-04", "2026-05-05", "2026-05-06"])
+    # Build 60 synthetic alerts pinned to real bar timestamps, alternating win/loss.
+    fire_bars = enr.iloc[20:200:3]
+    alerts = pd.DataFrame({
+        "ticker": "SPY",
+        "alert_ts": pd.to_datetime(fire_bars["Time"]).values,
+        "exit_return_pct": [0.5 if i % 2 == 0 else -0.5 for i in range(len(fire_bars))],
+    })
+    monkeypatch.setattr(job, "_load_signal_outcomes", lambda *a, **k: alerts)
+    out = job.compute_signal_target({"SPY": enr}, ["SPY"], "2026-05-01", "2026-05-06")
+    assert not out.empty
+    assert (out["target_name"] == "signal").all()
+    assert (out["target_class"] == "WIN").all()
+
+
+def test_run_default_targets_includes_all_four(monkeypatch):
+    """Default-all run emits forward_return + regime + strat rows (signal skipped
+    here since the DB is unavailable in the hermetic test)."""
+    days = [f"2026-05-{d:02d}" for d in range(4, 16)]
+
+    class FakeLoader:
+        def __init__(self, *a, **k):
+            pass
+
+        def load_intraday(self, ticker, start_date=None, end_date=None, **k):
+            return _multi_session(days, seed=33)
+
+    monkeypatch.setattr("lib.data_loader.DataLoader", FakeLoader)
+    # No signal_alerts → signal target skips cleanly.
+    monkeypatch.setattr(job, "_load_signal_outcomes", lambda *a, **k: pd.DataFrame())
+    captured = {}
+    monkeypatch.setattr(job, "_persist", lambda r: captured.__setitem__("r", r) or len(r))
+
+    results = job.run(["SPY", "QQQ"], [job._REGIME_HORIZON], lookback_days=20,
+                      as_of=date(2026, 5, 15), dry_run=False)
+    tnames = set(results["target_name"].unique())
+    assert {"forward_return", "regime", "strat"}.issubset(tnames)
+    # forward_return rows still carry the empty-string class sentinel.
+    fr = results[results["target_name"] == "forward_return"]
+    assert (fr["target_class"] == "").all()
