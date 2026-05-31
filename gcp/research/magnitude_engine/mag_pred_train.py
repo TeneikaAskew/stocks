@@ -23,7 +23,11 @@ from gcp.research.strat_engine.strat_config import (
     CATEGORICAL_FEATURES, LABEL_COL as STRAT_LABEL_COL,
 )
 
-import lightgbm as lgb
+# lightgbm is a heavy dep installed only in the research Cloud Run image
+# (requirements-research.txt), not in requirements.txt that CI uses.
+# Lazy-import inside make_lgbm() so tests that only exercise the gate
+# functions (expected_calibration_error / decisive_call_hit_rate /
+# explosive_lift) can import this module without LightGBM installed.
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +145,7 @@ def explosive_lift(y_true_idx: np.ndarray, y_proba: np.ndarray,
 
 
 def make_lgbm(class_weight: str | None = None, n_jobs: int = -1,
-               random_state: int | None = None) -> lgb.LGBMClassifier:
+               random_state: int | None = None):
     """Base LightGBM classifier — same hyperparameters as strat_engine so
     a phase-pass is attributable to feature signal, not hyperparameter
     differences.
@@ -151,8 +155,12 @@ def make_lgbm(class_weight: str | None = None, n_jobs: int = -1,
     var; falls back to 42 (the locked production seed). Replication runs
     set MAG_SEED=<other> at dispatch time and never call this with an
     explicit value — the override path is reserved for unit tests.
+
+    Returns: lightgbm.LGBMClassifier. Lazy-imported so this module can
+    load in CI environments without the lightgbm package.
     """
     import os
+    import lightgbm as lgb
     if random_state is None:
         try:
             random_state = int(os.environ.get("MAG_SEED", "42"))
