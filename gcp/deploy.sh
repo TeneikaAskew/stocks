@@ -391,6 +391,12 @@ _env_string() {
     env="${env},DB_USER=$(_secret db-trading-user)"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    # User-preference flag — set to true so the morning brief
+    # recommends LONG STRADDLE / LONG CALL / LONG PUT / SKIP instead
+    # of IC. The user explicitly only buys premium ("I would always
+    # buy them sell" — 2026-05-22). See
+    # lib/earnings_reactions.recommended_structure() for the logic.
+    env="${env},RECOMMEND_LONG_ONLY=true"
     echo "$env"
 }
 

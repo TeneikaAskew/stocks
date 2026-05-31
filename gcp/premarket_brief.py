@@ -2454,6 +2454,15 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 recommended_structure, score_quintile,
             )
             q = score_quintile(r.get('playability_score'))
+            # implied_move_pct intentionally not passed — the
+            # earnings_calendar.expected_move field is stored in
+            # DOLLARS, not pct, and we don't have a clean per-event
+            # underlying price in this row context to compute the pct.
+            # Long-only mode's SKIP filter degrades gracefully when
+            # implied_move_pct=None (no SKIP, just returns the
+            # archetype-mapped long structure). A follow-up could
+            # join market_data_daily here to populate it, but the
+            # core long-only flip works fine without it.
             action = recommended_structure(
                 archetype, q, _BRIEF_CAL_OPTS,
             )
