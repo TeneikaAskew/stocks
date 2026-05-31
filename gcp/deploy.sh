@@ -278,6 +278,39 @@ deploy_indicator_correlation() {
         --quiet
 }
 
+# ── Regime combination miner (Cloud Run Job — Effort A) ──────────────────────
+# Mines indicator-value COMBINATIONS predictive of forward regime (BIG/UP/DOWN/
+# FLAT) and upserts to regime_combo_results. Read-only on market_data_intraday;
+# one upsert at the end.
+#
+# Capacity (Rule 0): 3 tickers × ~1yr × ~390 RTH bars ≈ 290k bars total, held
+# in memory at once (~tens of MB). 3 batched SELECTs (one per ticker, NOT
+# per-bar). The cost driver is sklearn permutation_importance + mutual_info,
+# both row-capped in lib.combo_mining (perm 8k, MI 30k, train fit 80k) so
+# wall-clock is bounded ~2 min/ticker. 2 vCPU / 2Gi gives headroom; 3600s
+# timeout is ~5× the wall estimate. --max-retries 1: pure read + single
+# idempotent upsert.
+deploy_regime_combo() {
+    echo "Deploying regime-combo job..."
+    gcloud run jobs create regime-combo \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 1 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update regime-combo \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 3600 \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
 # Re-posts stored signal_alerts to the signals Discord channel for a
 # historical date + ET time block. Triggered by the /replay-signals
@@ -2457,6 +2490,11 @@ deploy_schedulers() {
     # always available: `gcloud run jobs execute calibrate-thresholds`.
     _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
 
+    # Regime combination miner (Effort A) — weekly, Sunday 05:00 ET, after the
+    # weekly data settles. Refreshes regime_combo_results so combo edge + its
+    # drift over time are queryable. Trailing-365d window by default.
+    _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
+
     # Phase 0.5 — signal-quality report.
     # Hourly during market hours: --mode=rolling, incremental update of
     # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
@@ -2654,6 +2692,7 @@ case "${1:-help}" in
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     indicator-correlation) build_image && deploy_indicator_correlation ;;
+    regime-combo) build_image && deploy_regime_combo ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -2675,6 +2714,7 @@ case "${1:-help}" in
         deploy_signal_quality_alarm
         deploy_signal_replay
         deploy_indicator_correlation
+        deploy_regime_combo
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers

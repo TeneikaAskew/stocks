@@ -2725,3 +2725,68 @@ CREATE TABLE IF NOT EXISTS indicator_correlation (
 
 CREATE INDEX IF NOT EXISTS idx_indicator_correlation_rank
     ON indicator_correlation (computed_date, horizon_min, abs_rank_ic DESC);
+
+-- ---------------------------------------------------------------------------
+-- Regime combination predictors  (Effort A — regime_combo_miner / job)
+-- ---------------------------------------------------------------------------
+-- One row per interpretable indicator-combination that predicts a forward
+-- regime (BIG / UP / DOWN / FLAT) out-of-sample, per ticker × horizon. The
+-- `conditions` text is the AND-joined combo (e.g. "Realized_Vol_Short>med AND
+-- ORB_15m_High_Pct>med"). hit_rate/base_rate/lift are NULLABLE on purpose — a
+-- NULL means "not computable for this window", never 0 (CLAUDE.md Rule 3.7).
+CREATE TABLE IF NOT EXISTS regime_combo_results (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,
+    window_start    DATE              NOT NULL,
+    window_end      DATE              NOT NULL,
+    ticker          VARCHAR(10)       NOT NULL,
+    horizon_min     INTEGER           NOT NULL,
+    target_class    VARCHAR(8)        NOT NULL,   -- 'BIG'|'UP'|'DOWN'|'FLAT'
+    conditions      TEXT              NOT NULL,   -- AND-joined combo
+    combo_order     INTEGER,                      -- 1 / 2 / 3-way
+    hit_rate        DOUBLE PRECISION,             -- OOS P(target | combo)
+    base_rate       DOUBLE PRECISION,             -- OOS P(target)
+    lift            DOUBLE PRECISION,             -- hit_rate / base_rate
+    support         INTEGER,                      -- OOS rows matching combo
+    train_support   INTEGER,
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_regime_combo
+        UNIQUE (computed_date, window_start, window_end, ticker, horizon_min,
+                target_class, conditions)
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_combo_rank
+    ON regime_combo_results (computed_date, ticker, horizon_min, target_class,
+                             lift DESC);
+
+-- ---------------------------------------------------------------------------
+-- Strat next-candle combination predictors  (Effort B — strat_combo_miner)
+-- ---------------------------------------------------------------------------
+-- One row per indicator-combination that predicts the NEXT Strat candle
+-- (1/2U/2D/3) out-of-sample, per ticker × timeframe. Same nullable-stat
+-- discipline as above.
+CREATE TABLE IF NOT EXISTS strat_combo_results (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,
+    window_start    DATE              NOT NULL,
+    window_end      DATE              NOT NULL,
+    ticker          VARCHAR(10)       NOT NULL,
+    tf              VARCHAR(4)        NOT NULL,   -- '5m'|'15m'|'30m'|'60m'|'D'
+    target_class    VARCHAR(4)        NOT NULL,   -- '1'|'2U'|'2D'|'3'
+    conditions      TEXT              NOT NULL,
+    combo_order     INTEGER,
+    hit_rate        DOUBLE PRECISION,
+    base_rate       DOUBLE PRECISION,
+    lift            DOUBLE PRECISION,
+    support         INTEGER,
+    train_support   INTEGER,
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_strat_combo
+        UNIQUE (computed_date, window_start, window_end, ticker, tf,
+                target_class, conditions)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strat_combo_rank
+    ON strat_combo_results (computed_date, ticker, tf, target_class, lift DESC);
