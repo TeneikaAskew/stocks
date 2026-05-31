@@ -261,17 +261,15 @@ def compute_greeks_from_prices(
     if df.empty:
         return df
 
-    # Lazy imports — module loads fine even if py_vollib_vectorized isn't installed
-    # (e.g. environments running only the no-op tests). The vectorized API
-    # accepts numpy arrays for every parameter and broadcasts internally.
-    from py_vollib_vectorized import (
-        vectorized_implied_volatility,
-        vectorized_delta,
-        vectorized_gamma,
-        vectorized_theta,
-        vectorized_vega,
-        vectorized_rho,
-    )
+    # IV solver and Greeks formulas — implemented inline with scipy. We used
+    # to import these from py_vollib_vectorized; that library's IV solver and
+    # BSM pricer route through numba-decorated functions that have a self-
+    # recursive call current numba can't type-infer ("cannot type infer
+    # runaway recursion"). The bug started after a 2026-05 numba upgrade
+    # and broke both production and tests on main. Inlined scipy
+    # implementations are independent of py_vollib_vectorized entirely.
+    from scipy.stats import norm
+    from scipy.optimize import brentq
 
     out = df.copy()
 
@@ -314,44 +312,87 @@ def compute_greeks_from_prices(
         "flag":   flag[valid].values,
     })
 
-    # IV solve. Vectorized API returns a DataFrame by default; numpy mode is
-    # cheaper and what we want here.
-    def _to_numpy(arr_or_df):
-        if hasattr(arr_or_df, "values"):
-            return np.asarray(arr_or_df.values, dtype="float64").ravel()
-        return np.asarray(arr_or_df, dtype="float64").ravel()
+    # --- BSM building blocks (scipy-based, no py_vollib) ---
+    def _bsm_price_scalar(S, K, t, r, q, sigma, flag):
+        if t <= 0 or sigma <= 0:
+            intrinsic = max(S - K, 0.0) if flag == "c" else max(K - S, 0.0)
+            return float(intrinsic)
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma * sigma) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
+        if flag == "c":
+            return float(S * np.exp(-q * t) * norm.cdf(d1)
+                          - K * np.exp(-r * t) * norm.cdf(d2))
+        return float(K * np.exp(-r * t) * norm.cdf(-d2)
+                      - S * np.exp(-q * t) * norm.cdf(-d1))
 
-    iv = _to_numpy(vectorized_implied_volatility(
-        price=sub["price"].values,
-        S=sub["S"].values,
-        K=sub["K"].values,
-        t=sub["t"].values,
-        r=sub["r"].values,
-        flag=sub["flag"].values,
-        q=sub["q"].values,
-        model="black_scholes_merton",
-        return_as="numpy",
-    ))
+    def _bsm_iv_solve(price_arr, S_arr, K_arr, t_arr, r_arr, q_arr, flag_arr):
+        """Per-row Brent IV solver. Bracket [1e-6, 5.0] = 0.0001%..500% vol.
+        Returns NaN where the solver fails (deep OTM/ITM with vega ~ 0,
+        price outside no-arbitrage bounds, etc.)."""
+        out_iv = np.full(len(price_arr), np.nan, dtype="float64")
+        for i in range(len(price_arr)):
+            S, K, t, r, q = S_arr[i], K_arr[i], t_arr[i], r_arr[i], q_arr[i]
+            tgt = float(price_arr[i])
+            flg = flag_arr[i]
+            def f(sigma):
+                return _bsm_price_scalar(S, K, t, r, q, sigma, flg) - tgt
+            try:
+                out_iv[i] = brentq(f, 1e-6, 5.0, xtol=1e-6, maxiter=100)
+            except (ValueError, RuntimeError):
+                # Brent's bracket failed (price outside no-arb bounds, etc.)
+                out_iv[i] = np.nan
+        return out_iv
+
+    def _bsm_greeks_vec(S, K, t, r, q, sigma, flag):
+        """Vectorized BSM Greeks. Returns (delta, gamma, theta, vega, rho).
+        Conventions match py_vollib_vectorized:
+          - vega: per 1% change in sigma → divided by 100
+          - rho:  per 1% change in r     → divided by 100
+          - theta: per CALENDAR day      → divided by 365
+        """
+        # Mask non-finite sigma; carry NaN through.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sqrt_t = np.sqrt(t)
+            d1 = (np.log(S / K) + (r - q + 0.5 * sigma * sigma) * t) / (sigma * sqrt_t)
+            d2 = d1 - sigma * sqrt_t
+            n_d1 = norm.cdf(d1)
+            n_d2 = norm.cdf(d2)
+            nn_d1 = norm.cdf(-d1)
+            nn_d2 = norm.cdf(-d2)
+            pdf_d1 = norm.pdf(d1)
+            is_call = flag == "c"
+
+            delta = np.where(is_call,
+                              np.exp(-q * t) * n_d1,
+                              -np.exp(-q * t) * nn_d1)
+            gamma = np.exp(-q * t) * pdf_d1 / (S * sigma * sqrt_t)
+            # Theta (annualised), then convert to per-calendar-day below.
+            term1 = -(S * np.exp(-q * t) * pdf_d1 * sigma) / (2.0 * sqrt_t)
+            theta_call = term1 - r * K * np.exp(-r * t) * n_d2 + q * S * np.exp(-q * t) * n_d1
+            theta_put  = term1 + r * K * np.exp(-r * t) * nn_d2 - q * S * np.exp(-q * t) * nn_d1
+            theta_annual = np.where(is_call, theta_call, theta_put)
+            theta = theta_annual / 365.0
+            vega = (S * np.exp(-q * t) * pdf_d1 * sqrt_t) / 100.0  # per 1% sigma
+            rho_call = (K * t * np.exp(-r * t) * n_d2) / 100.0     # per 1% r
+            rho_put  = -(K * t * np.exp(-r * t) * nn_d2) / 100.0
+            rho = np.where(is_call, rho_call, rho_put)
+        return delta, gamma, theta, vega, rho
+
+    iv = _bsm_iv_solve(
+        sub["price"].values,
+        sub["S"].values,
+        sub["K"].values,
+        sub["t"].values,
+        sub["r"].values,
+        sub["q"].values,
+        sub["flag"].values,
+    )
     iv = np.where((iv > 0) & np.isfinite(iv), iv, np.nan)
 
-    def _greek(fn):
-        return _to_numpy(fn(
-            sub["flag"].values,
-            sub["S"].values,
-            sub["K"].values,
-            sub["t"].values,
-            sub["r"].values,
-            iv,
-            q=sub["q"].values,
-            model="black_scholes_merton",
-            return_as="numpy",
-        ))
-
-    deltas = _greek(vectorized_delta)
-    gammas = _greek(vectorized_gamma)
-    thetas = _greek(vectorized_theta)
-    vegas  = _greek(vectorized_vega)
-    rhos   = _greek(vectorized_rho)
+    deltas, gammas, thetas, vegas, rhos = _bsm_greeks_vec(
+        sub["S"].values, sub["K"].values, sub["t"].values,
+        sub["r"].values, sub["q"].values, iv, sub["flag"].values,
+    )
 
     # Write into the sidecar columns at the right positions.
     out.loc[valid, "implied_volatility_computed"] = iv

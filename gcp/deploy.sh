@@ -783,6 +783,52 @@ deploy_strat_engine() {
         --quiet
 }
 
+# ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
+# Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
+# Walk-forward research only — NO production hooks. Same image as strat-engine.
+#
+# Common entry points:
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells"
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase1,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
+deploy_magnitude_engine() {
+    echo "Deploying magnitude-engine job (task-parallel)..."
+    local research_image="${IMAGE}:research"
+    # Task-parallel design:
+    #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
+    #                                   one per (phase, ticker, tf) cell of
+    #                                   plan=no_backfill (3 phases × 9).
+    #   --task-timeout 5400           — 90 min per cell (one cell ≤ 60 min
+    #                                   in practice with all 4 CPUs to itself)
+    #   --memory 8Gi --cpu 4          — per-task allocation
+    #   --max-retries 0               — Rule 0: a stuck cell fails loud
+    # Run-time plan is chosen at EXECUTE time via --update-env-vars=MAG_PLAN=...
+    # (default plan stamped here is no_backfill so a bare execute works).
+    local plan_default=no_backfill
+    local plan_size=27
+    gcloud run jobs create magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --quiet
+}
+
 # ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
 # Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
 # Cloud Run Job itself stays around briefly so any in-flight references
@@ -2861,6 +2907,7 @@ case "${1:-help}" in
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
+    magnitude-engine) deploy_magnitude_engine ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
