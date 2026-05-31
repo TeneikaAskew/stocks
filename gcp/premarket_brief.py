@@ -356,7 +356,15 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
                ec.ew_strike_verdict, ec.ew_strike_move_pct,
                ec.ew_minutes_to_hit, ec.ew_minutes_in_zone,
                ec.ew_day_change_pct,
-               md.gap_pct, md.pre_high, md.pre_low, md.pre_vwap
+               md.gap_pct, md.pre_high, md.pre_low, md.pre_vwap,
+               -- Most recent trading day's close BEFORE earnings_date.
+               -- Used to convert ec.expected_move (in DOLLARS) to a
+               -- percent so long-only mode's SKIP filter can fire on
+               -- expensive-premium events (implied_move_pct > 15%).
+               (SELECT close FROM market_data_daily
+                 WHERE ticker = ec.ticker
+                   AND date < ec.earnings_date
+                 ORDER BY date DESC LIMIT 1)         AS prev_close
         FROM earnings_calendar ec
         LEFT JOIN market_data_daily md
           ON md.ticker = ec.ticker AND md.date = ec.earnings_date
@@ -527,6 +535,10 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             'gap_pct': gap,
             'pre_high': pre_h,
             'pre_low': pre_l,
+            # Most recent close BEFORE earnings_date — used to convert
+            # the dollar-denominated expected_move to a percent for
+            # recommended_structure()'s long-only SKIP guard.
+            'prev_close': _first_non_null('prev_close'),
             'ew_strike_verdict': ew_verdict,
             'ew_strike_move_pct': ew_move_pct,
             'ew_minutes_to_hit': ew_min_to_hit,
@@ -2454,17 +2466,21 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 recommended_structure, score_quintile,
             )
             q = score_quintile(r.get('playability_score'))
-            # implied_move_pct intentionally not passed — the
-            # earnings_calendar.expected_move field is stored in
-            # DOLLARS, not pct, and we don't have a clean per-event
-            # underlying price in this row context to compute the pct.
-            # Long-only mode's SKIP filter degrades gracefully when
-            # implied_move_pct=None (no SKIP, just returns the
-            # archetype-mapped long structure). A follow-up could
-            # join market_data_daily here to populate it, but the
-            # core long-only flip works fine without it.
+            # Convert ec.expected_move (dollars) → implied_move_pct
+            # using the most-recent prior close. This unlocks
+            # long-only mode's SKIP guard for >15% implied events.
+            # When either field is missing, implied_pct stays None
+            # and recommended_structure() degrades gracefully (no
+            # SKIP filter, returns the long archetype mapping).
+            em_dollars = _valid_num(r.get('expected_move'))
+            prev_close = _valid_num(r.get('prev_close'))
+            implied_pct = None
+            if (em_dollars is not None and prev_close is not None
+                    and prev_close > 0):
+                implied_pct = em_dollars / prev_close * 100.0
             action = recommended_structure(
                 archetype, q, _BRIEF_CAL_OPTS,
+                implied_move_pct=implied_pct,
             )
         except Exception:
             # Calibration unavailable / lib import failed — fall back to
