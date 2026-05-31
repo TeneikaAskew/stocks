@@ -622,14 +622,24 @@ anything else that needs production network access — they're triggered from
 > gotchas, MCP caveats, and the rationale behind the patterns documented
 > below.
 
+> **TL;DR — querying Cloud SQL over 443 IS possible from the sandbox.** Use
+> `./scripts/db_query_cr.sh` (the CR-native db-query Cloud Run Job). The old
+> `.github/workflows/db-query.yml` GitHub Actions workflow is **deleted and no
+> longer used** — do not look for it or try to dispatch it. The Cloud Run Job
+> is the one and only supported DB-access path. The dispatch travels over 443
+> (Cloud Run control-plane API); the actual SQL runs inside GCP with full Cloud
+> SQL networking, so the sandbox's port-443-only egress is never a blocker.
+
 Direct DB connections from Claude Code on the web sandbox are blocked: the
 sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
 5432 (Postgres) or 3307 (Auth Proxy backend). Both time out. Adding the
 sandbox IP to authorized networks does not help — the binding constraint is
-the sandbox's outbound firewall, not the DB's inbound ACL.
+the sandbox's outbound firewall, not the DB's inbound ACL. **But you are not
+blocked from querying the DB** — the CR-native path below routes the work over
+443 and runs the SQL inside GCP.
 
-**Primary path (CR-native, added 2026-05-30 after the GHA-platform
-outage broke the workflow path):**
+**Primary path — the ONLY supported path (CR-native Cloud Run Job; the old
+GitHub Actions `db-query.yml` workflow is deleted and unavailable):**
 
 ```bash
 ./scripts/db_query_cr.sh -q "SELECT count(*) FROM trades WHERE date > current_date - 7"

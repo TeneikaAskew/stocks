@@ -162,7 +162,10 @@ Metric helpers reuse the label-agnostic `lib/combo_mining`. Per Rule 3.7 every
 metric is `NULL` when unavailable — never `0`; `target_class` uses an
 empty-string sentinel for the regression/overall row so the upsert dedups (NULLs
 are distinct in a Postgres UNIQUE index). Bars are pulled once per ticker
-(Rule 0: no per-row SQL).
+(Rule 0: no per-row SQL). Runs on the **research image** (sklearn's
+`mutual_info_classif` is excluded from the main image), same as `regime-combo`.
+First run 2026-05-31 produced 3,016 rows across the four targets; top next-Strat
+predictor was `Close_vs_Range` (rank_ic +0.465 for 2U / −0.466 for 2D).
 
 ## How research feeds back to live
 
@@ -187,7 +190,7 @@ moves and/or the next Strat candle across IWM/SPY/QQQ.
 | `signal-monitor-eod-resolver` | Live | 16:30 ET daily | `gcp/signal_monitor_eod_resolver.py` | win/loss |
 | `regime-combo` | Research A | Sun 05:00 ET weekly | `gcp/regime_combo_job.py` | `regime_combo_results` |
 | `strat-engine` (incl. Stage 3b) | Research B | manual | `…strat_orchestrator` | `strat_features_*`, GCS JSON |
-| `indicator-correlation` | Research | manual/weekly | `gcp/indicator_correlation_job.py` | `indicator_correlation` (target-modular: forward_return / regime / strat / signal) |
+| `indicator-correlation` | Research (research image) | manual/weekly | `gcp/indicator_correlation_job.py` | `indicator_correlation` (target-modular: forward_return / regime / strat / signal) |
 | `fetch-market-data` | Foundation | 23:00 UTC daily | fetcher | `market_data_intraday` |
 | `av-intraday-monthly` | Foundation | 1st monthly | fetcher | `market_data_intraday` |
 

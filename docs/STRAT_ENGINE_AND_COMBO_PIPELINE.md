@@ -354,7 +354,7 @@ gcloud run jobs execute strat-engine --region us-east1 \
 ## 4. Target-Modular Indicator Correlation (new — 2026-05-31)
 
 **Code:** `gcp/indicator_correlation_job.py`
-**Cloud Run Job:** `indicator-correlation`
+**Cloud Run Job:** `indicator-correlation` (**research image** — needs sklearn for MI)
 **Cadence:** manual / weekly
 **Output table:** `indicator_correlation`
 **Question it answers:** *"How strongly does each single indicator predict each of
@@ -406,30 +406,62 @@ gcloud run jobs execute indicator-correlation --region us-east1 \
   --args="--targets=forward_return,strat" --wait
 ```
 
-### 4.3 Example output — pending first run
+### 4.3 Real example output (first run — 2026-05-31)
 
-> ⚠️ **No real rows yet.** As of 2026-05-31 `indicator_correlation` is **empty**
-> (verified: 0 rows): the schema migration + first target-modular run are pending
-> deploy (`apply-schema-migrations` → Cloud Build → `indicator-correlation`).
-> Once the first run lands, this section will be replaced with actual
-> top-indicator rows per `target_name`. The **expected** shape is one row per
-> `(ticker, indicator, horizon_min, target_name, target_class)`:
+Deployed + run 2026-05-31 (on the **research image** — see note below). Row
+counts per target, pulled via `db_query_cr.sh`:
 
-```text
-target_name | target_class | indicator           | mutual_info | class_lift | rank_ic
-------------+--------------+---------------------+-------------+------------+--------
-regime      | BIG          | Realized_Vol_Short  |    <value>  |   <value>  | <value>
-regime      | FLAT         | Mins_Since_Open     |    <value>  |   <value>  | <value>
-strat       | 2U           | RSI_Divergence      |    <value>  |   <value>  | <value>
-forward_ret | (blank)      | EMA9_Slope          |    NULL     |    NULL    | <value>   ← pearson/rank_ic only
-signal      | WIN          | RVOL                |    <value>  |   <value>  | <value>
-```
+| `target_name` | rows | classes |
+|---|--:|---|
+| `forward_return` | 996 | 1 (regression, `target_class=''`) |
+| `regime` | 996 | 4 × 249 (BIG/UP/DOWN/FLAT) |
+| `strat` | 996 | 4 × 249 (1/2U/2D/3) |
+| `signal` | 28 | 1 (WIN; sparse — only resolved fired alerts) |
 
-Verify after the first run:
+**Top interpretable (stationary) indicator per class**, ranked by `|rank_ic|`
+(raw-level `VWAP`/`OBV` excluded — near-unique price levels inflate
+`mutual_info_classif`, so the stationary features carry the trustworthy signal):
+
+| target | class | ticker | indicator | mutual_info | class_lift | rank_ic |
+|---|---|---|---|--:|--:|--:|
+| regime | BIG | QQQ | `Daily_Range` | 0.046 | 1.37 | **+0.286** |
+| regime | FLAT | IWM | `Daily_Range_Pct` | 0.048 | 0.71 | **−0.217** |
+| regime | UP | IWM | `ATR14` | 0.005 | 0.84 | −0.092 |
+| regime | DOWN | QQQ | `Mins_Since_Open` | 0.005 | 0.84 | −0.083 |
+| strat | 2U | QQQ | `Close_vs_Range` | 0.123 | 1.56 | **+0.465** |
+| strat | 2D | QQQ | `Close_vs_Range` | 0.122 | 0.42 | **−0.466** |
+| strat | 1 | QQQ | `Daily_Range_Pct` | 0.024 | 1.29 | +0.183 |
+| strat | 3 | QQQ | `Daily_Range` | 0.012 | 0.64 | −0.163 |
+
+**How to read it:** `Close_vs_Range` (where a bar closes within its high-low
+range) is the strongest single predictor of the next Strat candle's direction —
+**rank_ic +0.465 for 2U and −0.466 for 2D**, a clean symmetric pair: a bar
+closing near its high makes the next bar more likely directional-up, near its low
+more likely directional-down. For the price *regime*, range/volatility features
+(`Daily_Range`, `Daily_Range_Pct`, `ATR14`) lead — high range predicts BIG
+(rank_ic +0.286), low range predicts FLAT (−0.217), matching the regime-combo
+findings in §2.4. Top `forward_return` (regression) drivers were `Price_vs_VWAP`
+/ `Price_vs_VWAP_ATR` / the ORB-percent features at the 30-min horizon (rank_ic
+≈ −0.25).
+
+> ⚠️ **The job runs on the RESEARCH image, not the main image.** The per-class
+> `mutual_info` is computed with sklearn's `mutual_info_classif`, and sklearn +
+> scipy are deliberately excluded from the main trading-system image (dev-only,
+> to keep `signal-monitor`'s cold-start lean). On the **first** run we deployed
+> on the main image and every `mutual_info` came back `NULL` — the helper hit its
+> `ImportError` path and correctly wrote NULL (never 0, per Rule 3.7) while
+> `class_lift` / `rank_ic` still populated. The fix: `deploy_indicator_correlation`
+> in `gcp/deploy.sh` now uses `${IMAGE}:research` (same as `regime-combo`), so all
+> three metrics compute. This is exactly the INTERNAL-vs-EXTERNAL discipline
+> working as designed — the missing dependency surfaced as an explicit NULL, not
+> a fabricated 0.
+
+Re-verify any run:
 
 ```bash
 ./scripts/db_query_cr.sh -q "
-  SELECT target_name, target_class, count(*) AS n_rows
+  SELECT target_name, target_class, count(*) AS n_rows,
+         count(mutual_info) AS mi_nonnull
   FROM indicator_correlation
   WHERE computed_date = current_date
   GROUP BY target_name, target_class ORDER BY target_name, target_class"

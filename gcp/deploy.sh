@@ -258,10 +258,19 @@ deploy_signal_quality_alarm() {
 # (one per ticker, batched by date range — NOT per-bar). Pandas corr over
 # ~74 cols × 3 horizons is seconds. 1800s timeout is ~10× headroom.
 # --max-retries 1: pure read+single-upsert, idempotent, transient-retry safe.
+#
+# Uses the RESEARCH image: the target-modular classification targets (regime/
+# strat/signal) compute per-class mutual information via sklearn's
+# mutual_info_classif, and sklearn + scipy are deliberately excluded from the
+# main image (dev-only in requirements-gcp.txt) to keep signal-monitor's
+# cold-start lean. On the main image the MI helper hits its ImportError path
+# and writes mutual_info=NULL for every row (class_lift/rank_ic still populate);
+# the research image is the right home so all three metrics compute.
 deploy_indicator_correlation() {
     echo "Deploying indicator-correlation job..."
+    local research_image="${IMAGE}:research"
     gcloud run jobs create indicator-correlation \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${research_image}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
@@ -270,7 +279,7 @@ deploy_indicator_correlation() {
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update indicator-correlation \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${research_image}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.indicator_correlation_job" \
         ${DB_SECRET_FLAG} \
