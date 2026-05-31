@@ -60,14 +60,21 @@ def _wf_result_to_dataframe(
     run_id: str,
     ticker: str,
     use_strat: bool,
+    mode_label: str | None = None,
 ) -> pd.DataFrame:
     """Build one row per fold from a WalkForwardResult.
 
     stability_score is denormalised across all rows for the same
     (run_id, ticker, mode) — see schema comment.
+
+    ``mode_label`` (when provided) overrides the default 'strat'/'base'
+    label persisted to the ``mode`` column. This is what lets the
+    calibration orchestrator distinguish multiple parallel strat
+    variants in the same table (e.g. mode='s_noorb', mode='s_call'
+    instead of all rolling up to mode='strat').
     """
     rows: list[dict] = []
-    mode = 'strat' if use_strat else 'base'
+    mode = mode_label or ('strat' if use_strat else 'base')
     for fold_idx, (result, dates) in enumerate(
         zip(wf_result.fold_results, wf_result.fold_dates)
     ):
@@ -196,11 +203,58 @@ def main() -> None:
                               'passes one id to every sub-step so the '
                               'report stage can group all rows from one '
                               'run. If omitted, a fresh uuid4 is generated.'))
+    # ---- Strat-config overrides (calibration knobs) ---------------------
+    # These let scripts/calibrate_iwm_strat.py (and ad-hoc operators)
+    # run WF with non-default StratConfig without editing alert_config.json.
+    # Each flag is back-compat: default=None means "leave config as-is."
+    parser.add_argument('--no-ftfc-filter', action='store_true',
+                        help='Override StratConfig.ftfc_filter_enabled=False')
+    parser.add_argument('--no-orb-filter', action='store_true',
+                        help='Override StratConfig.orb_filter_enabled=False')
+    parser.add_argument('--ftfc-threshold', type=float, default=None,
+                        help='Override StratConfig.ftfc_threshold (e.g. 0.8 '
+                             'for strong-trend-only)')
+    parser.add_argument('--strat-directions', type=str, default=None,
+                        help='Comma-separated direction allow-list for the '
+                             'Strat overlay (e.g. "CALL" to skip Strat on '
+                             'PUTs). Default: both directions.')
+    parser.add_argument('--mode-label', type=str, default=None,
+                        help='Override the persisted mode label (default '
+                             'derived from --use-strat). Used by the '
+                             'calibration orchestrator to distinguish '
+                             'multi-config runs that share a ticker.')
 
     args = parser.parse_args()
     run_id = args.run_id or str(uuid.uuid4())
 
+    # Validate CLI inputs EARLY — before the ~10s data load — so the
+    # operator sees the error immediately rather than 5-7 min in.
+    if args.mode_label is not None and len(args.mode_label) > 8:
+        raise ValueError(
+            f'--mode-label={args.mode_label!r} exceeds 8 chars '
+            '(schema VARCHAR(8))')
+
     cfg = load_config(ticker=args.ticker)
+    # Apply StratConfig overrides BEFORE the validator is constructed —
+    # the dataclass is passed by reference and mutated in-place.
+    if args.no_ftfc_filter:
+        cfg.strat.ftfc_filter_enabled = False
+    if args.no_orb_filter:
+        cfg.strat.orb_filter_enabled = False
+    if args.ftfc_threshold is not None:
+        if not (0.0 <= args.ftfc_threshold <= 1.0):
+            raise ValueError(
+                f'--ftfc-threshold={args.ftfc_threshold}, must be in [0,1]')
+        cfg.strat.ftfc_threshold = args.ftfc_threshold
+    if args.strat_directions is not None:
+        dirs = {d.strip().upper() for d in args.strat_directions.split(',')
+                if d.strip()}
+        valid = {'CALL', 'PUT'}
+        if not dirs or not dirs.issubset(valid):
+            raise ValueError(
+                f'--strat-directions={args.strat_directions!r} must be a '
+                f'comma-separated subset of {sorted(valid)}')
+        cfg.strat.allowed_directions = dirs
     train_months = (args.train_months if args.train_months is not None
                     else cfg.walk_forward.default_train_months)
     test_months = (args.test_months if args.test_months is not None
@@ -224,7 +278,7 @@ def main() -> None:
     print("Calculating indicators...")
     df = add_all_indicators(df, close_col=close_col)
 
-    mode = 'strat' if args.use_strat else 'base'
+    mode = args.mode_label or ('strat' if args.use_strat else 'base')
     print(f"\nRunning walk-forward validation ({train_months}mo train / "
           f"{test_months}mo test, mode={mode})...")
     validator = WalkForwardValidator(
@@ -243,6 +297,7 @@ def main() -> None:
     wf_df = _wf_result_to_dataframe(
         wf_result, run_id=run_id, ticker=args.ticker,
         use_strat=args.use_strat,
+        mode_label=args.mode_label,
     )
 
     _print_fold_summary(wf_df, args.ticker, mode)

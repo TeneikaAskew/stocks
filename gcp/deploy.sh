@@ -631,11 +631,24 @@ deploy_backtest() {
 }
 
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
+# Capacity (CLAUDE.md Rule 0): LLM-summary + multiple Cloud SQL probes +
+# Discord webhook. Observed worst-case ~7-12 min on slow LLM responses or
+# large earnings calendars (issues #122, #377, #425, #466, #538 — five
+# documented timeouts at the default 600s task-timeout). 1800s = 30 min
+# is 3x the observed worst-case with comfortable headroom; Cloud Run
+# bills wall-time, not the cap, so headroom is free.
+#
+# --max-retries 0 because the brief is idempotent on its content but a
+# blind retry that succeeds posts a SECOND Discord embed for the same
+# session, AND a retry that ALSO times out files a second `gcp-job-
+# failure` issue against the same root cause. With 0 retries a timeout
+# is a single loud failure that the operator triages once.
 deploy_premarket() {
     echo "Deploying pre-market brief job..."
     gcloud run jobs create premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
@@ -643,6 +656,7 @@ deploy_premarket() {
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
+        --max-retries 0 --task-timeout 1800 \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
@@ -674,6 +688,40 @@ deploy_earnings_reactions_brief() {
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Long-side "Next NVAX" weekly watchlist (Cloud Run Job, Sunday 7:45pm) ────
+# Joins upcoming earnings_calendar reporters against
+# earnings_options_strategy_winners to surface tickers with prior
+# long-side history. Posts a Discord embed to the standard
+# DISCORD_WEBHOOK_URL.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume: ~1,500 upcoming reporters × 360 winner rows joined
+#   Velocity: 1 SQL query + 1 Discord POST = ~3-5s total
+#   Wall: ~10s typical
+#   timeout: 600s (5× headroom — Discord can take 30+ sec under load)
+#   memory: 512Mi (single query result + small DataFrame)
+#   retries: 0 (idempotent — Sunday cron, miss is recoverable manually)
+deploy_earnings_long_watchlist() {
+    echo "Deploying earnings-long-watchlist job..."
+    gcloud run jobs create earnings-long-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_long_watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-long-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_long_watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -962,6 +1010,11 @@ deploy_av_options_backfill() {
         --task-timeout 43200
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options"
+        # CLAUDE.md Rule 0 — `--args "value"` (space form) works ONLY if value
+        # contains no `=`. Empirically verified 2026-05-29: any `=` in the
+        # value (even after a comma, e.g. `--tickers,SPY,--from=2025`) makes
+        # gcloud's argparse reject it with "expected one argument". If you
+        # add a `--flag=value` here, switch to `--args=^|^arg1|arg2` form.
         --args "--tickers,SPY IWM QQQ SPX,--from-latest"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
@@ -1007,6 +1060,8 @@ deploy_av_options_realtime() {
         --task-timeout 600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_realtime_options"
+        # Same `=`-trap as deploy_av_options_backfill above — if you add a
+        # `--flag=value` to args, switch to `--args=^|^arg1|arg2` form.
         --args "--tickers,SPY IWM QQQ"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
@@ -1082,6 +1137,178 @@ deploy_options_exec_backtest() {
 
     gcloud run jobs create options-exec-backtest "${common_flags[@]}" 2>/dev/null || \
     gcloud run jobs update options-exec-backtest "${common_flags[@]}"
+}
+
+# Ad-hoc DB query Cloud Run Job — CR-native replacement for the GHA
+# `.github/workflows/db-query.yml` workflow. Reads SQL from env vars
+# (overridable at execute time via `gcloud run jobs execute db-query
+# --update-env-vars=DB_QUERY_SQL=...`); writes results to GCS at
+# `gs://${PROJECT_ID}-trading-data/query-results/${CLOUD_RUN_EXECUTION}/`.
+# The sandbox dispatches over 443 (no Cloud SQL port needed); reads
+# results back via `gcloud storage cat`. See gcp/db_query_job.py for the
+# entrypoint and scripts/db_query_cr.sh for the dispatcher.
+#
+# Why this exists 2026-05-30: the GHA workflow has been broken by a
+# repo-level Actions outage since 2026-05-29. The CR-native path
+# routes around it.
+#
+# Sizing: 1 vCPU, 512MiB, 10-min timeout. Same Postgres connector
+# code path as the other CR jobs.
+deploy_db_query() {
+    echo "Deploying db-query job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    # Default SQL — overridden at execute time via --update-env-vars.
+    # SELECT 1 is a safe sanity check that proves the job pipeline works.
+    non_secret_env="${non_secret_env},DB_QUERY_SQL=SELECT 1 AS sanity_check"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.db_query_job"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create db-query "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update db-query "${common_flags[@]}"
+}
+
+# Freshness watchdog — CR-native replacement for the GHA
+# `.github/workflows/freshness-watchdog.yml` workflow. Runs
+# `scripts/audit_data_freshness.py --strict` against Cloud SQL on a
+# schedule; any stale table makes the job exit non-zero, which the
+# existing failure-notifier Cloud Run Service catches via its log sink
+# and posts to Discord. Same coverage, same alerting, no GHA dependency.
+#
+# Triggered 2026-05-30 by the GHA-side outage that broke the GHA
+# watchdog (along with every other workflow in the repo).
+#
+# Sizing: 1 vCPU, 512MiB, 15-min timeout. The audit hits one SELECT
+# per table (~20 tables); first run on the CR image clocked 14m9s
+# end-to-end (vs the GHA runs that took ~1-2m). The wall-clock
+# difference is suspicious — likely Cloud SQL connector setup +
+# per-query handshake latency adds up, OR the script's tabulate
+# output is buffered and only flushes at the end (all log lines
+# stamp the same second). Functionally correct either way; 15-min
+# task-timeout (900s) gives 2x headroom over the observed worst case.
+# The hourly scheduler will queue overlapping invocations naturally
+# (max-retries=0 prevents snowball; concurrent runs are independent).
+# TODO: profile the script under CR — if connection-pool reuse fixes
+# the 14m, drop task-timeout back to 300s.
+deploy_freshness_watchdog() {
+    echo "Deploying freshness-watchdog job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 900
+        --service-account "${SA_EMAIL}"
+        --command "python,scripts/audit_data_freshness.py"
+        # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
+        "--args=--strict"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create freshness-watchdog "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update freshness-watchdog "${common_flags[@]}"
+}
+
+# Per-factor walk-forward audit — CR-native replacement for the GHA
+# `.github/workflows/per-factor-walkforward.yml` workflow. Runs the
+# audit script weekly via the gcp/audit_job_runner.py wrapper which
+# uploads the report to GCS + posts a phone-friendly comment to the
+# tracking issue (variable AUDIT_TRACKING_ISSUE in the env block).
+#
+# Wired 2026-05-30 alongside db-query + freshness-watchdog as part of
+# the "everything on Cloud Run" consolidation triggered by the
+# GHA-platform outage.
+deploy_audit_walkforward() {
+    echo "Deploying audit-walkforward job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--folds 4"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=30"
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0,3"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔁 Weekly walk-forward audit"
+    # Tracking issue lives in the env; an empty value disables the
+    # GitHub comment without breaking the run. Override per-execution
+    # if needed via --update-env-vars=AUDIT_TRACKING_ISSUE=NNN.
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-walkforward "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-walkforward "${common_flags[@]}"
+}
+
+# Brief bias verification audit — CR-native replacement for the GHA
+# `.github/workflows/verify-brief-bias.yml` workflow. Same pattern as
+# audit-walkforward but uses --since (not --start/--end) and exits
+# strictly on any NULL bias (no AUDIT_ALLOWED_EXIT_CODES tolerance for
+# exit 1, which is the "found NULL" signal).
+deploy_audit_brief_bias() {
+    echo "Deploying audit-brief-bias job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    # Pass --since via AUDIT_SCRIPT_ARGS (defaults to 2026-05-12 per the
+    # script's docstring). The wrapper's auto-window logic only fires
+    # when --since / --start aren't already in args.
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--since 2026-05-12 --tickers SPY,IWM,QQQ"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=0"   # disable auto-window
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔍 Weekly brief bias verification"
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-brief-bias "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-brief-bias "${common_flags[@]}"
 }
 
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
@@ -1522,6 +1749,10 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
     deploy_options_exec_backtest
+    deploy_db_query
+    deploy_freshness_watchdog
+    deploy_audit_walkforward
+    deploy_audit_brief_bias
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
     # above that function; AV has no historical intraday options endpoint.)
 }
@@ -1875,6 +2106,10 @@ deploy_intraday_bulk_backfill() {
     secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
     secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
     secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    # GH PAT for filing data-quality issues when dead tickers detected
+    # (see fetch_alphavantage_intraday.py:_file_data_quality_issue).
+    # Same secret used by db-query.yml and the web-sandbox tooling.
+    secrets_flag="${secrets_flag},GH_DATA_QUALITY_TOKEN=gh-stocks-repo-pat:latest"
 
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
@@ -2312,6 +2547,14 @@ deploy_schedulers() {
     # historical post-earnings reaction pattern. Plain _schedule (no
     # containerOverride) — the job carries no run-kind label of its own.
     _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
+    # Freshness watchdog — CR-native, replaces .github/workflows/freshness-watchdog.yml
+    # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
+    _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
+    _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
+    # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
+    _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
+    # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)
+    _schedule "audit-brief-bias-weekly"  "0 10 * * 0" "audit-brief-bias"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
@@ -2472,6 +2715,9 @@ deploy_schedulers() {
     _schedule "weekly-earnings-refresh-calendar"   "0 19 * * 0"  "fetch-earnings-calendar"
     _schedule "weekly-earnings-refresh-history"   "15 19 * * 0"  "fetch-earnings-history"
     _schedule "weekly-earnings-refresh-reactions" "30 19 * * 0"  "compute-earnings-reactions"
+    # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
+    # Fires after the refresh chain so the data is current.
+    _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
@@ -2674,6 +2920,7 @@ case "${1:-help}" in
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
+    earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
@@ -2688,6 +2935,10 @@ case "${1:-help}" in
     pg-dump)      build_image && deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
+    db-query)     build_image && deploy_db_query ;;
+    freshness-watchdog) build_image && deploy_freshness_watchdog ;;
+    audit-walkforward) build_image && deploy_audit_walkforward ;;
+    audit-brief-bias) build_image && deploy_audit_brief_bias ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;

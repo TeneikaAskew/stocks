@@ -58,3 +58,10 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pynacl>=1.5.0
 google-cloud-run>=0.10.0
+
+# Used by gcp/db_query_job → gcp.queries.run_query for SQL statement splitting
+# and result table formatting (formerly only the GHA db-query workflow needed
+# these; CR-native pivot 2026-05-30 brings them into the GCP image).
+sqlparse>=0.4.4
+tabulate>=0.9.0
+

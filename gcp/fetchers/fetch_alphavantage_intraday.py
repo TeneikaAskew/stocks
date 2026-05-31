@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import requests
@@ -38,6 +38,13 @@ log = logging.getLogger(__name__)
 
 SYMBOLS = ['SPY', 'IWM', 'QQQ']
 AV_BASE_URL = 'https://www.alphavantage.co/query'
+
+# Watchlist data-quality issue routing — see _file_data_quality_issue().
+# A separate label from `gcp-job-failure` so the auto-issue scanner can
+# distinguish "actionable code/infra bug" (gcp-job-failure → page) from
+# "watchlist hygiene needed" (data-quality → batch-prune on a cadence).
+_DQ_REPO = 'TeneikaAskew/stocks'
+_DQ_LABELS = ['data-quality', 'intraday-bulk-backfill', 'dead-tickers']
 # Per-call interval is read from AlphaVantageConfig so the 150 RPM
 # premium-tier setting is the single source of truth across fetchers.
 # (Previously hardcoded to 13 s — the 5-RPM free-tier value — which
@@ -71,8 +78,34 @@ def get_trading_months(start_date: str, end_date: str) -> list:
     return months
 
 
-def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd.DataFrame]:
-    """Fetch one month of 1-minute data from AlphaVantage."""
+# Per-month outcome reasons returned from fetch_month. The string is
+# distinct from None so the caller can categorise WHY a fetch returned
+# no data — critical for the dead-ticker vs transient-error
+# classification in process_symbol's outcome (see _TICKER_OUTCOME_*).
+FETCH_OK             = 'success'
+FETCH_INVALID_API    = 'invalid_api_call'   # AV "Error Message" — symbol unknown / delisted
+FETCH_RATE_LIMIT     = 'rate_limit'         # AV "Note" — burned through RPM
+FETCH_INFO_MSG       = 'info_message'       # AV "Information" — generic non-data response
+FETCH_NO_TIMESERIES  = 'no_timeseries'      # response shape unexpected
+FETCH_REQUEST_ERROR  = 'request_error'      # network / HTTP error
+
+# Reasons that indicate a permanently-broken ticker (not a transient).
+# A symbol whose entire month-range returns ONLY these is treated as
+# a data-quality failure (dead/delisted ticker), not a systemic failure.
+_DEAD_TICKER_REASONS = {FETCH_INVALID_API, FETCH_INFO_MSG, FETCH_NO_TIMESERIES}
+
+
+def fetch_month(
+    symbol: str, year: int, month: int, api_key: str,
+) -> Tuple[Optional[pd.DataFrame], str]:
+    """Fetch one month of 1-minute data from AlphaVantage.
+
+    Returns ``(df, reason)`` where ``df`` is the data (or None on any
+    failure) and ``reason`` is one of the ``FETCH_*`` constants above.
+    The reason is what lets process_symbol categorise the outcome:
+    "every month said INVALID_API" → dead ticker (data quality),
+    "every month said REQUEST_ERROR" → systemic (network outage).
+    """
     month_str = f"{year}-{month:02d}"
     params = {
         'function': 'TIME_SERIES_INTRADAY',
@@ -92,18 +125,18 @@ def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd
 
         if 'Error Message' in data:
             log.warning("    AV error for %s %s: %s", symbol, month_str, data['Error Message'])
-            return None
+            return None, FETCH_INVALID_API
         if 'Note' in data:
             log.warning("    AV rate limit for %s %s", symbol, month_str)
-            return None
+            return None, FETCH_RATE_LIMIT
         if 'Information' in data:
             log.warning("    AV info: %s", data['Information'])
-            return None
+            return None, FETCH_INFO_MSG
 
         ts_key = 'Time Series (1min)'
         if ts_key not in data:
             log.warning("    No time series data for %s %s", symbol, month_str)
-            return None
+            return None, FETCH_NO_TIMESERIES
 
         records = []
         for ts, values in data[ts_key].items():
@@ -120,11 +153,25 @@ def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd
         df['ticker'] = symbol
         df['interval'] = '1min'
         df['data_source'] = 'alphavantage'
-        return df.sort_values('ts').reset_index(drop=True)
+        return df.sort_values('ts').reset_index(drop=True), FETCH_OK
 
     except Exception as e:
         log.error("    Request error for %s %s: %s", symbol, year, e)
-        return None
+        return None, FETCH_REQUEST_ERROR
+
+
+# Per-ticker outcome categories returned by process_symbol. Used by the
+# outer loop to decide whether to exit(1). Only OUTCOME_SYSTEMIC trips
+# the failure exit — dead-ticker outcomes are logged at WARNING level
+# but don't fail the task (3.7 §5: typed UNAVAILABLE envelope, not
+# silent fallback). Per CLAUDE.md Rule 0.4 (bounded retries, idempotent
+# re-runs), a single delisted ticker in a 339-ticker watchlist must
+# not crash the entire task and auto-file a gcp-job-failure issue —
+# that pattern produced 8 spurious issues over 6 days on `s2fpq`.
+OUTCOME_OK         = 'ok'                 # at least one month yielded data
+OUTCOME_SKIPPED    = 'skipped'            # already-backfilled (not a failure)
+OUTCOME_DEAD       = 'dead_ticker'        # every month returned a data-quality reason
+OUTCOME_SYSTEMIC   = 'systemic'           # process_symbol raised (caught by outer loop)
 
 
 # Ticker-level skip threshold for the bulk-backfill re-run path.
@@ -180,8 +227,15 @@ def process_symbol(
     end_date: str,
     api_keys: list,
     force: bool,
-):
+) -> str:
     """Fetch all months for a symbol and write to Cloud SQL.
+
+    Returns one of the ``OUTCOME_*`` constants so the outer loop can
+    distinguish data-quality failures (dead ticker — every month said
+    "Invalid API call") from real successes from systemic errors
+    (which still propagate as raised exceptions and are caught by the
+    outer loop's try/except). Per CLAUDE.md Rule 3.7: this is a TYPED
+    envelope — never a silent fallback.
 
     Re-fetches every month in the range unconditionally. The previous
     parquet_exists_in_gcs sentinel had completion semantics — a parquet
@@ -206,7 +260,7 @@ def process_symbol(
     if not force and _ticker_already_backfilled(symbol):
         log.info("  %s: already has ≥%d rows from a prior run — skipping",
                  symbol, _SKIP_TICKER_ROW_THRESHOLD)
-        return
+        return OUTCOME_SKIPPED
     months = get_trading_months(start_date, end_date)
     log.info("  %s: %d months (%s → %s)", symbol, len(months), start_date, end_date)
 
@@ -214,6 +268,8 @@ def process_symbol(
     call_count = 0
     last_call_time = 0.0
     inserted_total = 0
+    # Track per-reason counts for the dead-ticker classification at end.
+    reason_counts: dict = {}
 
     for year, month in months:
         month_str = f"{year}-{month:02d}"
@@ -225,9 +281,10 @@ def process_symbol(
             time.sleep(_av_cfg.delay_between_calls - elapsed)
 
         api_key = api_keys[key_idx % len(api_keys)]
-        df = fetch_month(symbol, year, month, api_key)
+        df, reason = fetch_month(symbol, year, month, api_key)
         last_call_time = time.time()
         call_count += 1
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
         # Rotate key on rate limit detection
         if df is None and call_count % 5 == 0:
@@ -253,7 +310,100 @@ def process_symbol(
             )
             inserted_total += len(df)
 
-    log.info("  %s complete: %d rows inserted", symbol, inserted_total)
+    log.info("  %s complete: %d rows inserted (reasons=%s)",
+             symbol, inserted_total, reason_counts)
+
+    # Dead-ticker classification: ZERO successful fetches AND every
+    # non-success fetch returned a permanently-broken reason (Invalid
+    # API call / info / no timeseries). If ANY month returned a
+    # transient reason (rate_limit, request_error) the ticker is NOT
+    # confirmed-dead — a re-run gets another shot at the transient
+    # month. We key on FETCH_OK count rather than inserted_total
+    # because inserted_total is also 0 when Cloud SQL is unconfigured
+    # (dev / dry-run env), which should NOT mark a ticker as dead.
+    got_any_data = reason_counts.get(FETCH_OK, 0) > 0
+    if not got_any_data and reason_counts:
+        non_dead_reasons = set(reason_counts) - _DEAD_TICKER_REASONS
+        if not non_dead_reasons:
+            return OUTCOME_DEAD
+    return OUTCOME_OK
+
+
+def _file_data_quality_issue(dead_tickers: list) -> None:
+    """Create-or-update a GitHub issue summarising dead tickers from
+    this run. Idempotent: if an open issue with our labels exists, we
+    append a comment with the new run's findings instead of opening a
+    duplicate. The issue lives on a different label (``data-quality``)
+    than the failure-notifier path (``gcp-job-failure``) so the
+    operator can triage hygiene separately from real bugs.
+
+    Token source: ``GH_DATA_QUALITY_TOKEN`` env (Secret Manager
+    secret ``gh-stocks-repo-pat``). If unset, log and skip — the
+    dead-ticker WARNING is already in stdout.
+    """
+    token = os.environ.get('GH_DATA_QUALITY_TOKEN', '').strip()
+    if not token:
+        log.warning('GH_DATA_QUALITY_TOKEN unset — skipping data-quality '
+                    'issue. Dead tickers visible only in this log line.')
+        return
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+    api = 'https://api.github.com'
+    task_idx = os.environ.get('CLOUD_RUN_TASK_INDEX', '0')
+    task_cnt = os.environ.get('CLOUD_RUN_TASK_COUNT', '1')
+    exec_name = os.environ.get('CLOUD_RUN_EXECUTION', 'unknown-exec')
+    ts = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    comment_body = (
+        f"### Dead tickers detected — {ts}\n\n"
+        f"**Execution:** `{exec_name}` (task {task_idx}/{task_cnt})\n\n"
+        f"**{len(dead_tickers)} ticker(s)** returned a permanently-broken "
+        "AV reason (Invalid API call / info / no timeseries) for every "
+        "month attempted:\n\n```\n"
+        + ', '.join(dead_tickers)
+        + "\n```\n\n"
+        "These should be pruned from "
+        "`gcp/fetchers/symbol_lists/earnings_universe.txt` (or whichever "
+        "watchlist this run consumed). A pure-dead run is NOT a code bug "
+        "and does NOT exit 1 — see CLAUDE.md §3.7."
+    )
+
+    # Look for an existing open data-quality issue. Using the labels
+    # AND the issue title prefix as the dedupe key so a label-rename
+    # doesn't accidentally fork the issue.
+    label_q = ','.join(_DQ_LABELS)
+    list_url = (f'{api}/repos/{_DQ_REPO}/issues?state=open'
+                f'&labels={label_q}&per_page=1')
+    resp = requests.get(list_url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    existing = resp.json()
+
+    if existing:
+        issue_number = existing[0]['number']
+        comment_url = (
+            f'{api}/repos/{_DQ_REPO}/issues/{issue_number}/comments')
+        r = requests.post(comment_url, headers=headers,
+                          json={'body': comment_body}, timeout=15)
+        r.raise_for_status()
+        log.info('Appended dead-ticker comment to existing issue #%d',
+                 issue_number)
+    else:
+        title = (f'Data quality: intraday-bulk-backfill — '
+                 f'{len(dead_tickers)} dead ticker(s)')
+        create_url = f'{api}/repos/{_DQ_REPO}/issues'
+        r = requests.post(create_url, headers=headers, json={
+            'title': title,
+            'body': comment_body,
+            'labels': _DQ_LABELS,
+        }, timeout=15)
+        r.raise_for_status()
+        new_num = r.json()['number']
+        log.info('Created new data-quality issue #%d for dead tickers',
+                 new_num)
 
 
 def main():
@@ -325,16 +475,54 @@ def main():
     log.info("  API keys  : %d available", len(api_keys))
     log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO')
 
-    errors = []
+    # Per-CLAUDE.md Rule 3.7: typed UNAVAILABLE envelope, not silent
+    # swallow. We track three buckets so partial failures are surfaced
+    # but only SYSTEMIC failures crash the task:
+    #   * dead_tickers    — every month returned a permanently-broken
+    #                       AV reason (Invalid API call / info / no
+    #                       timeseries). Logged WARNING. Not fatal —
+    #                       these tickers should be pruned from the
+    #                       watchlist on the next manual sweep.
+    #   * systemic_errors — process_symbol raised (DB write failed,
+    #                       network outage, anything else). Logged
+    #                       ERROR. EXIT 1 — the operator must triage.
+    #   * (implicit OK)   — at least one month yielded data.
+    dead_tickers: list = []
+    systemic_errors: list = []
+    succeeded = 0
     for symbol in symbols:
         try:
-            process_symbol(symbol, start_date, end_date, api_keys, args.force)
+            outcome = process_symbol(
+                symbol, start_date, end_date, api_keys, args.force)
         except Exception as e:
-            log.error("  ✗ %s failed: %s", symbol, e)
-            errors.append(symbol)
+            log.error("  ✗ %s SYSTEMIC failure: %s", symbol, e)
+            systemic_errors.append(symbol)
+            continue
+        if outcome == OUTCOME_DEAD:
+            dead_tickers.append(symbol)
+        elif outcome in (OUTCOME_OK, OUTCOME_SKIPPED):
+            succeeded += 1
 
-    if errors:
-        log.error("Failed: %s", errors)
+    log.info("Run summary: %d succeeded, %d dead_tickers, %d systemic",
+             succeeded, len(dead_tickers), len(systemic_errors))
+    if dead_tickers:
+        log.warning("Dead tickers (consider pruning from watchlist): %s",
+                    dead_tickers)
+        # Cloud Run logs age out after 30d; without a durable record the
+        # operator can't act on watchlist pruning. File (or update) a
+        # GitHub issue under a distinct label so the dead-ticker view
+        # is cumulative across runs and doesn't fight gcp-job-failure
+        # for the operator's attention. Issue-filing failure is logged
+        # but doesn't fail the task — the dead-ticker data is already
+        # in the log line above, and a Discord webhook outage here
+        # shouldn't cascade into a fake systemic_error.
+        try:
+            _file_data_quality_issue(dead_tickers)
+        except Exception as e:
+            log.error("Failed to file data-quality issue (dead tickers "
+                      "already logged above): %s", e)
+    if systemic_errors:
+        log.error("Systemic failures: %s", systemic_errors)
         sys.exit(1)
 
     log.info("Done.")
