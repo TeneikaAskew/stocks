@@ -292,8 +292,13 @@ deploy_indicator_correlation() {
 # idempotent upsert.
 deploy_regime_combo() {
     echo "Deploying regime-combo job..."
+    # Uses the RESEARCH image: model_lift/select_top_features need scikit-learn +
+    # scipy, which are deliberately excluded from the main image (dev-only in
+    # requirements-gcp.txt) to keep signal-monitor's cold-start lean. regime-combo
+    # is a Lane-2 research job, so the heavier image is the right home.
+    local research_image="${IMAGE}:research"
     gcloud run jobs create regime-combo \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${research_image}" --region "${REGION}" \
         --memory 2Gi --cpu 2 --max-retries 1 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
@@ -302,7 +307,7 @@ deploy_regime_combo() {
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update regime-combo \
-        --image "${IMAGE}" --region "${REGION}" \
+        --image "${research_image}" --region "${REGION}" \
         --memory 2Gi --cpu 2 \
         --task-timeout 3600 \
         --command "python,-m,gcp.regime_combo_job" \
@@ -2692,7 +2697,7 @@ case "${1:-help}" in
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     indicator-correlation) build_image && deploy_indicator_correlation ;;
-    regime-combo) build_image && deploy_regime_combo ;;
+    regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -2714,7 +2719,6 @@ case "${1:-help}" in
         deploy_signal_quality_alarm
         deploy_signal_replay
         deploy_indicator_correlation
-        deploy_regime_combo
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
