@@ -38,12 +38,27 @@ RAW 1-min OHLCV  ──►  Cloud SQL: market_data_intraday  (SPY / IWM / QQQ)
 code, so live and research can never drift (CLAUDE.md "one source of truth for
 math"):
 
-- `lib/indicators.py : add_all_indicators` — the full indicator suite.
+- `lib/indicators.py : add_all_indicators` — the full indicator suite. **The
+  single assembler.** As of 2026-05-31 the live `signal_monitor` delegates to
+  it (`calculate_indicators` → `add_all_indicators` with a per-ticker
+  `IndicatorConfig` for the Tier-A consecutive window). It previously
+  hand-rolled its own subset, which silently lagged the engine whenever a
+  feature was added — that gap is now closed. Every indicator we use is
+  computed in exactly one place.
 - `lib/strat.py : StratClassifier` — candle classification (1 / 2U / 2D / 3).
 
 Any feature added to `add_all_indicators` is automatically picked up by **every**
 consumer (live monitor, research featurizer, both combo miners). This is why
 promoting a candidate feature is a one-place change.
+
+> ⚠️ **Persistence is separate from computation.** `add_all_indicators` is the
+> single *compute* path, but the *persisted* feature tables
+> (`market_data_daily`, `strat_features_<tf>`) write a fixed allow-list of
+> columns — a newly promoted feature is computed everywhere but is **not**
+> stored in those tables until its column is added to the schema + writer map +
+> re-backfilled. Live firing and the brief use the in-memory computation, so
+> they get new features immediately; historical SQL queries / model training on
+> the feature tables do not until a backfill runs.
 
 ## Lane 1 — Live trading (daily)
 
