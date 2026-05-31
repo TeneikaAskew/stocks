@@ -2003,6 +2003,10 @@ deploy_intraday_bulk_backfill() {
     secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
     secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
     secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    # GH PAT for filing data-quality issues when dead tickers detected
+    # (see fetch_alphavantage_intraday.py:_file_data_quality_issue).
+    # Same secret used by db-query.yml and the web-sandbox tooling.
+    secrets_flag="${secrets_flag},GH_DATA_QUALITY_TOKEN=gh-stocks-repo-pat:latest"
 
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
