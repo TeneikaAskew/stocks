@@ -624,6 +624,40 @@ deploy_earnings_reactions_brief() {
         --quiet
 }
 
+# ── Long-side "Next NVAX" weekly watchlist (Cloud Run Job, Sunday 7:45pm) ────
+# Joins upcoming earnings_calendar reporters against
+# earnings_options_strategy_winners to surface tickers with prior
+# long-side history. Posts a Discord embed to the standard
+# DISCORD_WEBHOOK_URL.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume: ~1,500 upcoming reporters × 360 winner rows joined
+#   Velocity: 1 SQL query + 1 Discord POST = ~3-5s total
+#   Wall: ~10s typical
+#   timeout: 600s (5× headroom — Discord can take 30+ sec under load)
+#   memory: 512Mi (single query result + small DataFrame)
+#   retries: 0 (idempotent — Sunday cron, miss is recoverable manually)
+deploy_earnings_long_watchlist() {
+    echo "Deploying earnings-long-watchlist job..."
+    gcloud run jobs create earnings-long-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_long_watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-long-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_long_watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Signal monitor (Cloud Run Job — runs during market hours, exits at close) ─
 deploy_monitor() {
     echo "Deploying signal monitor job..."
@@ -2612,6 +2646,9 @@ deploy_schedulers() {
     _schedule "weekly-earnings-refresh-calendar"   "0 19 * * 0"  "fetch-earnings-calendar"
     _schedule "weekly-earnings-refresh-history"   "15 19 * * 0"  "fetch-earnings-history"
     _schedule "weekly-earnings-refresh-reactions" "30 19 * * 0"  "compute-earnings-reactions"
+    # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
+    # Fires after the refresh chain so the data is current.
+    _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
@@ -2809,6 +2846,7 @@ case "${1:-help}" in
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
+    earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
