@@ -675,86 +675,124 @@ def calculate_order_blocks(
 # Convenience: add all indicators to a DataFrame
 # ---------------------------------------------------------------------------
 
-def add_all_indicators(
-    df: pd.DataFrame,
-    close_col: str = 'Close',
-    indicator_config=None,
-) -> pd.DataFrame:
-    """Add a comprehensive set of indicators to an OHLCV DataFrame.
+# ---------------------------------------------------------------------------
+# Indicator block helpers (idempotent — each mutates & returns `out`)
+# ---------------------------------------------------------------------------
+# add_all_indicators (and the leaner capability tiers below) are composed from
+# these blocks. Each block takes (out, ind, close_col) where:
+#   out       : the working DataFrame (already a copy of the caller's input)
+#   ind       : an IndicatorConfig
+#   close_col : the close column name ('Close' or 'Last')
+# The blocks were extracted VERBATIM from the historical inline body of
+# add_all_indicators — the arithmetic is byte-identical. Each block documents
+# the upstream columns it reads so the leaner tiers can order their calls so
+# every dependency exists before it's consumed. The 'Time' guards for
+# VWAP / ORB / Mins_Since_Open are preserved exactly.
 
-    Expects columns: Open, High, Low, Close (or `close_col`), Volume, Time.
-    Handles both 'Close' and 'Last' column naming via `close_col`.
 
-    Parameters
-    ----------
-    indicator_config : IndicatorConfig, optional
-        All indicator periods and parameters. Uses defaults if None.
-    """
-    if indicator_config is None:
-        from lib.config import IndicatorConfig
-        indicator_config = IndicatorConfig()
-
-    ind = indicator_config
-    out = df.copy()
+def _add_atr(out, ind, close_col):
+    """ATR + short/long ATR-expansion ratio. Deps: High, Low, close_col."""
     c = out[close_col]
     h = out['High']
     l = out['Low']
-    v = out['Volume']
-
-    # ATR
     out[ind.atr_col] = calculate_atr(h, l, c, ind.atr_period)
     # Phase 0.7.x — short/long ATR ratio for the `atr_expansion` gate.
     # Values > 1 = recent volatility above baseline (regime expansion).
     out['ATR_Expansion'] = calculate_atr_expansion(h, l, c, short=5, long=20)
+    return out
 
-    # RSI
+
+def _add_rsi(out, ind, close_col):
+    """RSI (slow + fast) and 3-bar RSI thrust. Deps: close_col."""
+    c = out[close_col]
     out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)
     out[ind.rsi_fast_col] = calculate_rsi(c, ind.rsi_fast_period)
     # Phase 0.7.x — signed 3-bar RSI delta for the directional
     # `rsi_thrust` momentum gate.
     out['RSI_Thrust_3'] = calculate_rsi_thrust(out[ind.rsi_col], lookback=3)
+    return out
 
-    # EMAs
+
+def _add_emas(out, ind, close_col):
+    """Exponential moving averages. Deps: close_col."""
+    c = out[close_col]
     for p in ind.ema_periods:
         out[f'EMA{p}'] = calculate_ema(c, p)
+    return out
 
-    # SMAs
+
+def _add_smas(out, ind, close_col):
+    """Simple moving averages. Deps: close_col."""
+    c = out[close_col]
     for p in ind.sma_periods:
         out[f'SMA{p}'] = calculate_sma(c, p)
+    return out
 
-    # VWAP
+
+def _add_vwap(out, ind, close_col):
+    """Session-resetting VWAP. Deps: High, Low, close_col, Volume, Time.
+
+    Time-gated: produces no VWAP column when 'Time' is absent."""
     if 'Time' in out.columns:
+        c = out[close_col]
+        h = out['High']
+        l = out['Low']
+        v = out['Volume']
         dates = pd.to_datetime(out['Time']).dt.date
         out['VWAP'] = calculate_vwap(h, l, c, v, dates)
+    return out
 
-    # RVOL
+
+def _add_rvol(out, ind, close_col):
+    """Mean- and median-based relative volume. Deps: Volume."""
+    v = out['Volume']
     out['RVOL'] = calculate_rvol(v, ind.rvol_period)
     # Phase 0.7.x — median-based RVOL for the `rvol_above_recent` gate
     # (robust to outlier-volume bars vs. the mean-based RVOL above).
     out['RVol_Recent_20'] = calculate_rvol_recent(v, ind.rvol_period)
+    return out
 
-    # OBV
+
+def _add_obv(out, ind, close_col):
+    """On-balance volume. Deps: close_col, Volume."""
+    c = out[close_col]
+    v = out['Volume']
     out['OBV'] = calculate_obv(c, v)
+    return out
 
-    # Stochastic RSI
+
+def _add_stochrsi(out, ind, close_col):
+    """Stochastic RSI %K / %D. Deps: ind.rsi_col (run _add_rsi first)."""
     out['StochRSI_K'], out['StochRSI_D'] = calculate_stoch_rsi(
         out[ind.rsi_col], ind.stoch_rsi_period, ind.stoch_rsi_k_period, ind.stoch_rsi_d_period,
     )
+    return out
 
-    # Bollinger Bands
+
+def _add_bollinger(out, ind, close_col):
+    """Bollinger bands + width + %B. Deps: close_col."""
+    c = out[close_col]
     out['BB_Upper'], out['BB_Middle'], out['BB_Lower'] = calculate_bollinger_bands(
         c, ind.bb_period, ind.bb_std_mult,
     )
     out['BB_Width'] = out['BB_Upper'] - out['BB_Lower']
     bb_range = out['BB_Upper'] - out['BB_Lower']
     out['BB_Pct'] = (c - out['BB_Lower']) / bb_range.where(bb_range > 0, np.nan)
+    return out
 
-    # MACD
+
+def _add_macd(out, ind, close_col):
+    """MACD line / signal / histogram. Deps: close_col."""
+    c = out[close_col]
     out['MACD'], out['MACD_Signal'], out['MACD_Histogram'] = calculate_macd(
         c, ind.macd_fast, ind.macd_slow, ind.macd_signal,
     )
+    return out
 
-    # Consecutive moves
+
+def _add_consecutive(out, ind, close_col):
+    """Price-change % + consecutive up/down move counts. Deps: close_col."""
+    c = out[close_col]
     price_change = c.pct_change() * 100.0
     out['Price_Change'] = price_change
     out['Consecutive_Up'], out['Consecutive_Down'] = calculate_consecutive_moves(
@@ -763,8 +801,18 @@ def add_all_indicators(
     out['Consecutive_Up_5'], out['Consecutive_Down_5'] = calculate_consecutive_moves(
         price_change, ind.consecutive_relaxed_window,
     )
+    return out
 
-    # Price position relative to first two EMAs
+
+def _add_price_levels(out, ind, close_col):
+    """Price-vs-EMA/VWAP %-distances + daily-range metrics.
+
+    Deps: close_col, High, Low, EMA{fast}/EMA{mid} (run _add_emas first),
+    VWAP (run _add_vwap first; VWAP-distance is Time-gated via VWAP presence).
+    """
+    c = out[close_col]
+    h = out['High']
+    l = out['Low']
     ema_fast_p = ind.ema_fast_period
     ema_mid_p = ind.ema_mid_period
     out[f'Price_vs_EMA{ema_fast_p}'] = (c - out[f'EMA{ema_fast_p}']) / out[f'EMA{ema_fast_p}'] * 100.0
@@ -776,22 +824,42 @@ def add_all_indicators(
     out['Daily_Range'] = h - l
     out['Daily_Range_Pct'] = (h - l) / c * 100.0
     out['Close_vs_Range'] = (c - l) / (h - l).where((h - l) > 0, np.nan)
+    return out
 
-    # ORB (Opening Range Breakout)
+
+def _add_orb(out, ind, close_col):
+    """Opening Range Breakout columns (~39). Deps: High, Low, close_col, Time.
+
+    Time-gated: produces no ORB columns when 'Time' is absent."""
     if 'Time' in out.columns:
+        c = out[close_col]
+        h = out['High']
+        l = out['Low']
         orb_result = calculate_all_orb(
             pd.to_datetime(out['Time']), h, l, c,
             orb_windows=ind.orb_windows,
         )
         out = pd.concat([out, orb_result], axis=1)
+    return out
 
-    # ── Volatility-regime / momentum-velocity features ───────────────────────
-    # Promoted 2026-05-31 from the combo-mining measure-first study: each was a
-    # top permutation-importance driver of the forward regime (BIG move) and/or
-    # the next Strat candle, out-of-sample, across IWM/SPY/QQQ. All are
-    # stationary (slopes / ATR-normalised distances / ratios) and derive only
-    # from columns already computed above, so live (signal_monitor) and research
-    # (strat_data_builder) share one definition.
+
+def _add_promoted_regime(out, ind, close_col):
+    """Volatility-regime / momentum-velocity features.
+
+    Promoted 2026-05-31 from the combo-mining measure-first study: each was a
+    top permutation-importance driver of the forward regime (BIG move) and/or
+    the next Strat candle, out-of-sample, across IWM/SPY/QQQ. All are
+    stationary (slopes / ATR-normalised distances / ratios) and derive only
+    from columns already computed by earlier blocks, so live (signal_monitor)
+    and research (strat_data_builder) share one definition.
+
+    Deps: close_col, ind.atr_col (_add_atr), EMA{fast}/EMA{mid} (_add_emas),
+    VWAP (_add_vwap, Time-gated), BB_Width (_add_bollinger), RSI9+RSI14
+    (_add_rsi). Time-gated for Mins_Since_Open.
+    """
+    c = out[close_col]
+    ema_fast_p = ind.ema_fast_period
+    ema_mid_p = ind.ema_mid_period
     atr_col = ind.atr_col
     atr = out[atr_col] if atr_col in out.columns else None
 
@@ -838,3 +906,271 @@ def add_all_indicators(
         out['RSI_Divergence'] = out['RSI9'] - out['RSI14']
 
     return out
+
+
+def _resolve_config(indicator_config):
+    if indicator_config is None:
+        from lib.config import IndicatorConfig
+        return IndicatorConfig()
+    return indicator_config
+
+
+# ---------------------------------------------------------------------------
+# Convenience: add all indicators to a DataFrame
+# ---------------------------------------------------------------------------
+
+def add_all_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Add a comprehensive set of indicators to an OHLCV DataFrame.
+
+    Expects columns: Open, High, Low, Close (or `close_col`), Volume, Time.
+    Handles both 'Close' and 'Last' column naming via `close_col`.
+
+    This is a thin composition over the ``_add_*`` block helpers, called in
+    dependency order. The 89-column output is byte-identical to the historical
+    inline implementation (~25 callers + an in-flight backfill depend on it).
+
+    Parameters
+    ----------
+    indicator_config : IndicatorConfig, optional
+        All indicator periods and parameters. Uses defaults if None.
+    """
+    ind = _resolve_config(indicator_config)
+    out = df.copy()
+    out = _add_atr(out, ind, close_col)
+    out = _add_rsi(out, ind, close_col)
+    out = _add_emas(out, ind, close_col)
+    out = _add_smas(out, ind, close_col)
+    out = _add_vwap(out, ind, close_col)
+    out = _add_rvol(out, ind, close_col)
+    out = _add_obv(out, ind, close_col)
+    out = _add_stochrsi(out, ind, close_col)
+    out = _add_bollinger(out, ind, close_col)
+    out = _add_macd(out, ind, close_col)
+    out = _add_consecutive(out, ind, close_col)
+    out = _add_price_levels(out, ind, close_col)
+    out = _add_orb(out, ind, close_col)
+    out = _add_promoted_regime(out, ind, close_col)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Capability tiers — lean indicator subsets for latency-sensitive consumers
+# ---------------------------------------------------------------------------
+# The live signal monitor and the premarket brief each read only ~12-20 of the
+# 89 add_all_indicators columns, yet historically paid for the full suite
+# (incl. the ~39 ORB columns + the promoted-regime block). The functions below
+# run ONLY the blocks each capability needs, with byte-identical per-block
+# arithmetic — verified 0.0 max-abs-diff vs add_all_indicators on the shared
+# columns in tests/test_indicators.py. Research / nightly paths keep calling
+# add_all_indicators unchanged.
+#
+# FEATURE_GROUPS is the authoritative output-column list per capability. It is
+# the contract the parity test pins; if a consumer starts reading a new column,
+# add the producing block to the tier AND the column here.
+
+
+def _signal_columns(ind) -> List[str]:
+    ema_fast_p, ema_mid_p = ind.ema_fast_period, ind.ema_mid_period
+    return [
+        ind.atr_col, 'ATR_Expansion',
+        ind.rsi_col, ind.rsi_fast_col, 'RSI_Thrust_3',
+        *[f'EMA{p}' for p in ind.ema_periods],
+        'VWAP',
+        'RVOL', 'RVol_Recent_20',
+        'OBV',
+        'StochRSI_K', 'StochRSI_D',
+        'MACD', 'MACD_Signal', 'MACD_Histogram',
+        'Price_Change', 'Consecutive_Up', 'Consecutive_Down',
+        'Consecutive_Up_5', 'Consecutive_Down_5',
+        f'Price_vs_EMA{ema_fast_p}', f'Price_vs_EMA{ema_mid_p}', 'Price_vs_VWAP',
+        'Daily_Range', 'Daily_Range_Pct', 'Close_vs_Range',
+    ]
+
+
+def _brief_columns(ind) -> List[str]:
+    ema_fast_p, ema_mid_p = ind.ema_fast_period, ind.ema_mid_period
+    return [
+        ind.atr_col, 'ATR_Expansion',
+        ind.rsi_col, ind.rsi_fast_col, 'RSI_Thrust_3',
+        *[f'EMA{p}' for p in ind.ema_periods],
+        *[f'SMA{p}' for p in ind.sma_periods],
+        'VWAP',
+        'StochRSI_K', 'StochRSI_D',
+        'BB_Upper', 'BB_Middle', 'BB_Lower', 'BB_Width', 'BB_Pct',
+        'MACD', 'MACD_Signal', 'MACD_Histogram',
+        'Price_Change', 'Consecutive_Up', 'Consecutive_Down',
+        'Consecutive_Up_5', 'Consecutive_Down_5',
+        # Price levels — the brief's check_call/put_conditions score on
+        # Price_vs_VWAP, so the VWAP + price-levels blocks must run to stay
+        # byte-identical to add_all_indicators (incl. the daily-bar VWAP
+        # recompute-overwrite on Cloud-SQL daily frames). See test_brief_*.
+        f'Price_vs_EMA{ema_fast_p}', f'Price_vs_EMA{ema_mid_p}', 'Price_vs_VWAP',
+        'Daily_Range', 'Daily_Range_Pct', 'Close_vs_Range',
+    ]
+
+
+# Stationary leak-safe feature set for the research regime model. Mirrors
+# lib.combo_mining._STATIONARY_EXACT (minus MACD_Hist_Slope, which is a
+# combo_mining candidate feature not produced by add_all_indicators).
+_REGIME_EXACT = [
+    'RSI14', 'RSI9', 'RSI_Thrust_3', 'StochRSI_K', 'StochRSI_D', 'MACD_Histogram',
+    'ATR_Expansion', 'BB_Pct', 'BB_Width',
+    'RVOL', 'RVol_Recent_20',
+    'Price_Change', 'Close_vs_Range', 'Daily_Range_Pct',
+    'Consecutive_Up', 'Consecutive_Down', 'Consecutive_Up_5', 'Consecutive_Down_5',
+    'Price_vs_VWAP', 'Price_vs_EMA9', 'Price_vs_EMA20',
+    'EMA9_Slope', 'Mins_Since_Open', 'Price_vs_EMA9_ATR', 'Price_vs_EMA20_ATR',
+    'Price_vs_VWAP_ATR', 'EMA_Spread_ATR', 'BB_Squeeze', 'Realized_Vol_Short',
+    'RSI_Divergence',
+]
+
+
+def _all_indicator_columns(ind) -> List[str]:
+    """Every column add_all_indicators emits beyond the OHLCV/Time source set."""
+    cols = (_signal_columns(ind) + _brief_columns(ind) + [
+        'RSI_Divergence', 'Realized_Vol_Short', 'Mins_Since_Open',
+        'Price_vs_EMA9_ATR', 'Price_vs_EMA20_ATR', 'Price_vs_VWAP_ATR',
+        'EMA_Spread_ATR', 'EMA9_Slope', 'BB_Squeeze',
+    ])
+    # ORB columns for every configured window.
+    for w in ind.orb_windows:
+        lab = w['label']
+        for ref in ['High', 'Low', 'Range', 'Mid']:
+            cols.append(f'ORB_{lab}_{ref}')
+        for ref in ['High', 'Low', 'Mid']:
+            cols.append(f'ORB_{lab}_{ref}_Pct')
+        for ref in ['Broke_High', 'Broke_Low', 'Within_Range', 'Trend', 'Distance']:
+            cols.append(f'ORB_{lab}_{ref}')
+    # de-dup preserving order
+    seen, ordered = set(), []
+    for c in cols:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
+def _feature_groups() -> Dict[str, List[str]]:
+    """Build FEATURE_GROUPS from the default IndicatorConfig.
+
+    Computed at import with the default config; periods rarely change and the
+    membership is the authoritative contract pinned by the parity test.
+    """
+    from lib.config import IndicatorConfig
+    ind = IndicatorConfig()
+    return {
+        'signal': _signal_columns(ind),
+        'brief': _brief_columns(ind),
+        'regime': list(_REGIME_EXACT),
+        'strat': list(_REGIME_EXACT),
+    }
+
+
+FEATURE_GROUPS: Dict[str, List[str]] = _feature_groups()
+
+
+def add_signal_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Lean indicator set for the live signal monitor.
+
+    Runs ONLY the blocks the live strategies (+ Discord embed) read: ATR, RSI,
+    EMAs, VWAP, RVOL, OBV, StochRSI, MACD, consecutive moves, and price levels.
+    Skips the heavy SMA / Bollinger / ORB (~39 cols) / promoted-regime blocks.
+
+    Per-block arithmetic is byte-identical to add_all_indicators on the shared
+    columns (FEATURE_GROUPS['signal']). Time guards for VWAP are preserved.
+    """
+    ind = _resolve_config(indicator_config)
+    out = df.copy()
+    out = _add_atr(out, ind, close_col)
+    out = _add_rsi(out, ind, close_col)
+    out = _add_emas(out, ind, close_col)
+    out = _add_vwap(out, ind, close_col)
+    out = _add_rvol(out, ind, close_col)
+    out = _add_obv(out, ind, close_col)
+    out = _add_stochrsi(out, ind, close_col)
+    out = _add_macd(out, ind, close_col)
+    out = _add_consecutive(out, ind, close_col)
+    out = _add_price_levels(out, ind, close_col)
+    return out
+
+
+def add_brief_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Lean indicator set for the premarket brief.
+
+    Runs the blocks the brief reads: ATR, RSI, EMAs, SMAs, VWAP, StochRSI,
+    Bollinger, MACD, consecutive moves, and price levels. The price-levels block
+    is required because the brief's check_call/put_conditions score on
+    ``Price_vs_VWAP``; VWAP must run first so that distance is computed (and, on
+    Cloud-SQL daily frames carrying a pre-existing ``price_vs_vwap`` column, the
+    daily-bar VWAP recompute overwrites it exactly as add_all_indicators did).
+    Skips only RVOL / OBV / ORB (~39 cols) / promoted-regime — none are read by
+    the brief. Per-block arithmetic is byte-identical to add_all_indicators on
+    the shared columns (FEATURE_GROUPS['brief']).
+    """
+    ind = _resolve_config(indicator_config)
+    out = df.copy()
+    out = _add_atr(out, ind, close_col)
+    out = _add_rsi(out, ind, close_col)
+    out = _add_emas(out, ind, close_col)
+    out = _add_smas(out, ind, close_col)
+    out = _add_vwap(out, ind, close_col)
+    out = _add_stochrsi(out, ind, close_col)
+    out = _add_bollinger(out, ind, close_col)
+    out = _add_macd(out, ind, close_col)
+    out = _add_consecutive(out, ind, close_col)
+    out = _add_price_levels(out, ind, close_col)
+    return out
+
+
+def add_regime_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Indicator set for the research regime model (near-full).
+
+    Provided for API symmetry. The regime model consumes the stationary
+    feature set (FEATURE_GROUPS['regime']), which spans the promoted-regime
+    block; producing it requires nearly every block, so this delegates to
+    add_all_indicators (research path — latency is not the constraint).
+    """
+    return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
+
+
+def add_strat_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Indicator set for the strat next-bar model (near-full).
+
+    Provided for API symmetry; see add_regime_indicators. Research path.
+    """
+    return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
+
+
+def select_features(df: pd.DataFrame, capability: str) -> pd.DataFrame:
+    """Return the subset of `df` columns that belong to `capability`.
+
+    Tolerant of Time-gated absences (e.g. VWAP/ORB when there is no Time
+    column) — only columns actually present are returned, never KeyError.
+    """
+    if capability not in FEATURE_GROUPS:
+        raise KeyError(
+            f"unknown capability {capability!r}; "
+            f"known: {sorted(FEATURE_GROUPS)}"
+        )
+    cols = [c for c in FEATURE_GROUPS[capability] if c in df.columns]
+    return df[cols]

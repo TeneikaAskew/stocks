@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import numpy as np
 
-from lib.indicators import add_all_indicators
+from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
@@ -347,9 +347,7 @@ class SignalMonitor:
             self.indicator_cfg,
             consecutive_periods=get_consecutive_periods(ticker),
         )
-        return add_all_indicators(df, close_col='Close', indicator_config=cfg)
-
-        return df
+        return add_signal_indicators(df, close_col='Close', indicator_config=cfg)
 
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
