@@ -826,8 +826,25 @@ deploy_premarket_playbook_resolver() {
 #   --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
 #   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
 #
-# Image: research (lightgbm + scikit-learn + scipy + shap).
-#   gcloud builds submit --tag ${IMAGE}:research -f gcp/Dockerfile.research .
+# Image: research (lightgbm + scikit-learn + scipy + shap). Build it with the
+# `build-research` target below — `gcloud builds submit` has no -f/--file flag,
+# so the Dockerfile must be named `Dockerfile` in the build context (we stage a
+# tmpdir, exactly like build_image does for the main image).
+build_research_image() {
+    echo "Building RESEARCH Docker image (lightgbm + sklearn + scipy + shap)..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp requirements-gcp.txt requirements-research.txt "$tmpdir/"
+    cp requirements-gcp.lock "$tmpdir/" 2>/dev/null || true
+    cp alert_config.json "$tmpdir/"
+    cp gcp/Dockerfile.research "$tmpdir/Dockerfile"
+    cp -r lib/    "$tmpdir/lib/"
+    cp -r gcp/    "$tmpdir/gcp/"
+    cp -r scripts/ "$tmpdir/scripts/"
+    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir"
+    rm -rf "$tmpdir"
+}
+
 deploy_strat_engine() {
     echo "Deploying strat-engine job..."
     local research_image="${IMAGE}:research"
@@ -2918,6 +2935,7 @@ case "${1:-help}" in
     setup)       setup ;;
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
+    build-research) build_research_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
     earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
