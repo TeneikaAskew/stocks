@@ -856,6 +856,18 @@ build_research_image() {
 
 deploy_strat_engine() {
     echo "Deploying strat-engine job..."
+    # 8Gi memory is sized for the production cron path (incremental
+    # daily update on the per-bar feature tables). Operator-only mode
+    # `--rebuild --start-date=2016-01-01` loads ~1M 1-min SPY bars +
+    # the equivalent for IWM/QQQ into memory before featurizing and
+    # has tripped OOM at 8Gi (rrjlc, 2026-06-01 05:53 UTC — see
+    # docs/incidents/2026-06-01-pipeline-failures-audit.md F3). To run
+    # a full-history rebuild, dispatch with --memory 32Gi:
+    #   gcloud run jobs update strat-engine --memory 32Gi --region us-east1
+    #   gcloud run jobs execute strat-engine \
+    #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01" \
+    #       --region us-east1 --wait
+    #   gcloud run jobs update strat-engine --memory 8Gi --region us-east1
     local research_image="${IMAGE}:research"
 
     gcloud run jobs create strat-engine \
@@ -1292,7 +1304,14 @@ deploy_freshness_watchdog() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 900
+        # 3600s (1h) task-timeout: observed wall-clock floats 8m–14m9s
+        # across recent runs (variance >50%). The 900s budget had only
+        # 1.07x headroom and tripped a timeout on 2026-05-30 15:50
+        # (rndfd) and 2026-06-01 13:00 (nd4x2). Per CLAUDE.md Rule 0.5,
+        # task-timeout >= 4x wall-clock — 60 min is 4.3x the 14 min p100.
+        # Cloud Run charges runtime, not the cap. See
+        # docs/incidents/2026-06-01-pipeline-failures-audit.md F2.
+        --task-timeout 3600
         --service-account "${SA_EMAIL}"
         --command "python,scripts/audit_data_freshness.py"
         # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
