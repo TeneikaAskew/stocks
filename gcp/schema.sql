@@ -2972,7 +2972,8 @@ DECLARE
         ADD COLUMN IF NOT EXISTS bb20_bandwidth             DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS realized_vol_z             DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS range_expansion_ratio      DOUBLE PRECISION,
-        ADD COLUMN IF NOT EXISTS intraday_range_vs_prevday  DOUBLE PRECISION';
+        ADD COLUMN IF NOT EXISTS intraday_range_vs_prevday  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS atr_expansion              DOUBLE PRECISION';
 BEGIN
     FOREACH tf IN ARRAY ARRAY['1m','5m','15m','30m','60m','4h'] LOOP
         IF to_regclass('public.strat_features_' || tf) IS NOT NULL THEN

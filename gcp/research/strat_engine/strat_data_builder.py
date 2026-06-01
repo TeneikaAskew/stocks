@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     ema9_slope DOUBLE PRECISION, bb_squeeze DOUBLE PRECISION, rsi_divergence DOUBLE PRECISION,
     bb20_bandwidth DOUBLE PRECISION, realized_vol_z DOUBLE PRECISION,
     range_expansion_ratio DOUBLE PRECISION, intraday_range_vs_prevday DOUBLE PRECISION,
+    atr_expansion DOUBLE PRECISION,
     intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
     fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
     fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
@@ -479,6 +480,7 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["realized_vol_z"] = _safe("Realized_Vol_Z")
     out["range_expansion_ratio"] = _safe("Range_Expansion_Ratio")
     out["intraday_range_vs_prevday"] = _safe("Intraday_Range_vs_PrevDay")
+    out["atr_expansion"] = _safe("ATR_Expansion")  # ATR5/ATR20, Wilder (single source)
     out["intraday_return"] = (closes - df_tf["Open"]) / df_tf["Open"] * 100
     out["high_low_spread_pct"] = (df_tf["High"] - df_tf["Low"]) / closes * 100
 
@@ -707,6 +709,7 @@ _RECOMPUTE_COL_MAP = {
     "realized_vol_z": "Realized_Vol_Z",
     "range_expansion_ratio": "Range_Expansion_Ratio",
     "intraday_range_vs_prevday": "Intraday_Range_vs_PrevDay",
+    "atr_expansion": "ATR_Expansion",
 }
 
 
