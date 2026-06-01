@@ -9,6 +9,7 @@ evaluates signals, and fires Discord alerts when conditions align.
 import os
 import sys
 import json
+import dataclasses
 import logging
 import time as time_module
 import requests
@@ -27,11 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import numpy as np
 
-from lib.indicators import (
-    calculate_rsi, calculate_ema, calculate_atr, calculate_vwap,
-    calculate_rvol, calculate_obv, calculate_stoch_rsi, calculate_consecutive_moves,
-    calculate_rvol_recent, calculate_atr_expansion, calculate_rsi_thrust,
-)
+from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
@@ -323,59 +320,34 @@ class SignalMonitor:
         self.windows[ticker] = combined.tail(self.monitor_cfg.rolling_window_bars).reset_index(drop=True)
 
     def calculate_indicators(self, ticker: str) -> pd.DataFrame:
-        """Calculate indicators on the rolling window."""
+        """Calculate indicators on the rolling window via the ONE shared
+        engine, ``lib.indicators.add_all_indicators``.
+
+        This used to hand-roll a subset of indicators inline, which meant the
+        live monitor silently lagged the engine whenever a feature was added
+        to ``add_all_indicators`` (research / brief saw it, live firing did
+        not). It now delegates to the single source of truth so every
+        indicator we use is computed in exactly one place and the live set can
+        never diverge from research again.
+
+        The ONE live-specific nuance is preserved: ``Consecutive_Up/Down`` use
+        a per-ticker window (Tier-A from the walk-forward calibration sweep),
+        threaded through a per-ticker ``IndicatorConfig`` so the column window
+        still matches the threshold ``evaluate_signal`` checks. Parity with the
+        former inline path was verified exact (0.0 max-abs-diff) across all 20
+        columns the strategies read; see ``tests/test_signal_monitor_indicators``.
+        """
         df = self.windows[ticker].copy()
         if len(df) < self.monitor_cfg.min_bars_for_indicators:
             return df
 
-        close = df['Close']
-        high = df['High']
-        low = df['Low']
-        volume = df['Volume']
-
-        ind = self.indicator_cfg
-
-        df[ind.rsi_col] = calculate_rsi(close, ind.rsi_period)
-        df[f'EMA{ind.ema_fast_period}'] = calculate_ema(close, ind.ema_fast_period)
-        df[f'EMA{ind.ema_mid_period}'] = calculate_ema(close, ind.ema_mid_period)
-        df[ind.atr_col] = calculate_atr(high, low, close, ind.atr_period)
-
-        # VWAP
-        dates = pd.to_datetime(df['Time']).dt.date
-        df['VWAP'] = calculate_vwap(high, low, close, volume, dates)
-
-        df['RVOL'] = calculate_rvol(volume, ind.rvol_period)
-        df['OBV'] = calculate_obv(close, volume)
-
-        stoch_k, stoch_d = calculate_stoch_rsi(df[ind.rsi_col])
-        df['StochRSI_K'] = stoch_k
-        df['StochRSI_D'] = stoch_d
-
-        price_change = close.pct_change() * 100
-        df['Price_Change'] = price_change
-        # Per-ticker consecutive-bar window — Tier-A from the walk-forward
-        # calibration sweep, Tier-B = SignalConfig default. The column
-        # window MUST match the threshold evaluate_signal checks, so both
-        # read get_consecutive_periods(ticker).
-        df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(
-            price_change, get_consecutive_periods(ticker),
+        # Per-ticker consecutive window (Tier-A calibration). consecutive_relaxed_window
+        # (the *_5 columns) stays at the config default, matching prior behaviour.
+        cfg = dataclasses.replace(
+            self.indicator_cfg,
+            consecutive_periods=get_consecutive_periods(ticker),
         )
-        # Phase 0.7.x — relaxed 3-of-5 gate columns + 3 new momentum
-        # confirmer indicators read by `lib.strategies.MOMENTUM.evaluate`.
-        # Without these, every Phase 0.7.x condition silently fails to
-        # fire in production because the row.get(...) calls return None.
-        df['Consecutive_Up_5'], df['Consecutive_Down_5'] = calculate_consecutive_moves(
-            price_change, ind.consecutive_relaxed_window,
-        )
-        df['RVol_Recent_20'] = calculate_rvol_recent(volume, ind.rvol_period)
-        df['ATR_Expansion'] = calculate_atr_expansion(high, low, close, short=5, long=20)
-        df['RSI_Thrust_3'] = calculate_rsi_thrust(df[ind.rsi_col], lookback=3)
-
-        df['Price_vs_VWAP'] = (close - df['VWAP']) / df['VWAP'] * 100
-        df[ind.price_vs_ema_fast_col] = (close - df[f'EMA{ind.ema_fast_period}']) / df[f'EMA{ind.ema_fast_period}'] * 100
-        df[ind.price_vs_ema_mid_col] = (close - df[f'EMA{ind.ema_mid_period}']) / df[f'EMA{ind.ema_mid_period}'] * 100
-
-        return df
+        return add_signal_indicators(df, close_col='Close', indicator_config=cfg)
 
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild

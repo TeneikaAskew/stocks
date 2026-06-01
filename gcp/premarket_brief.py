@@ -21,7 +21,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.data_loader import DataLoader
-from lib.indicators import add_all_indicators
+from lib.indicators import add_brief_indicators
 from lib.strat import StratClassifier, compute_strat_status
 from lib.strat_levels import build_level_map, format_levels_for_brief, levels_to_named_dict
 from lib.signals import check_call_conditions, check_put_conditions
@@ -1027,7 +1027,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
 
-        df = add_all_indicators(df, close_col=close_col)
+        df = add_brief_indicators(df, close_col=close_col)
 
         latest = df.iloc[-1]       # yesterday (most recent trading day)
         prior = df.iloc[-2]        # day before yesterday

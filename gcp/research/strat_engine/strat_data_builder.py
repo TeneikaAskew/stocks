@@ -47,6 +47,7 @@ Rule 0 capacity:
 from __future__ import annotations
 import argparse
 import logging
+import os
 import sys
 import time
 from datetime import date as _date, timedelta
@@ -119,6 +120,10 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     vwap DOUBLE PRECISION,
     price_vs_vwap DOUBLE PRECISION, price_vs_ema9 DOUBLE PRECISION, price_vs_ema20 DOUBLE PRECISION,
     consecutive_up INTEGER, consecutive_down INTEGER,
+    realized_vol_short DOUBLE PRECISION, mins_since_open DOUBLE PRECISION,
+    price_vs_ema9_atr DOUBLE PRECISION, price_vs_ema20_atr DOUBLE PRECISION,
+    price_vs_vwap_atr DOUBLE PRECISION, ema_spread_atr DOUBLE PRECISION,
+    ema9_slope DOUBLE PRECISION, bb_squeeze DOUBLE PRECISION, rsi_divergence DOUBLE PRECISION,
     intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
     fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
     fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
@@ -454,6 +459,17 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["price_vs_ema20"] = _safe("Price_vs_EMA20")
     out["consecutive_up"] = _safe("Consecutive_Up").astype("Int32")
     out["consecutive_down"] = _safe("Consecutive_Down").astype("Int32")
+    # Promoted 2026-05-31 volatility/momentum features — persisted so research
+    # SQL / training can query them historically (previously computed-then-dropped).
+    out["realized_vol_short"] = _safe("Realized_Vol_Short")
+    out["mins_since_open"] = _safe("Mins_Since_Open")
+    out["price_vs_ema9_atr"] = _safe("Price_vs_EMA9_ATR")
+    out["price_vs_ema20_atr"] = _safe("Price_vs_EMA20_ATR")
+    out["price_vs_vwap_atr"] = _safe("Price_vs_VWAP_ATR")
+    out["ema_spread_atr"] = _safe("EMA_Spread_ATR")
+    out["ema9_slope"] = _safe("EMA9_Slope")
+    out["bb_squeeze"] = _safe("BB_Squeeze")
+    out["rsi_divergence"] = _safe("RSI_Divergence")
     out["intraday_return"] = (closes - df_tf["Open"]) / df_tf["Open"] * 100
     out["high_low_spread_pct"] = (df_tf["High"] - df_tf["Low"]) / closes * 100
 
@@ -564,15 +580,27 @@ def _compute_terciles(s: pd.Series) -> tuple[float, float]:
 # ──────────────────── Main per-ticker driver ────────────────────
 
 
-def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame) -> dict:
+def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame,
+                    rebuild: bool = False) -> dict:
     log.info("=== %s: loading 1m bars and gamma context ===", ticker)
     t0 = time.time()
 
     # Incremental: query per-TF max cached date. If all TFs are up to date,
     # skip ticker. Otherwise load 1m bars from (min cached date - 30 day
     # lookback for indicator warmup) → only featurize+upsert NEW dates.
-    max_dates_per_tf = {tf_label: _max_cached_date(engine, ticker, tf_label)
-                        for tf_label, _ in TF_LIST}
+    #
+    # --rebuild forces a full re-featurize: treat every TF as having no cache so
+    # bars load from start_date and the post-featurize `bar_date > max_cached`
+    # filter is skipped (guarded by `if max_cached is not None`). Upserts via
+    # ON CONFLICT DO UPDATE, so existing rows get newly-added columns backfilled
+    # without any truncate / data loss.
+    if rebuild:
+        max_dates_per_tf = {tf_label: None for tf_label, _ in TF_LIST}
+        log.info("%s: REBUILD — bypassing incremental cache, re-featurizing from %s",
+                 ticker, start_date)
+    else:
+        max_dates_per_tf = {tf_label: _max_cached_date(engine, ticker, tf_label)
+                            for tf_label, _ in TF_LIST}
     log.info("%s: max cached bar_date per TF: %s", ticker, max_dates_per_tf)
 
     cached_dates = [d for d in max_dates_per_tf.values() if d is not None]
@@ -663,6 +691,12 @@ def main():
     parser.add_argument("--start-date", default="2016-01-01")
     parser.add_argument("--tf-only", default=None,
                         help="If set, only build this single TF (e.g. '5m'). Useful for testing.")
+    parser.add_argument("--rebuild", action="store_true",
+                        default=os.environ.get("STRAT_REBUILD", "") not in ("", "0", "false", "False"),
+                        help="Bypass the incremental cache skip and re-featurize ALL "
+                             "history from --start-date, upserting (ON CONFLICT DO UPDATE) "
+                             "over existing rows. Use to backfill newly-added feature "
+                             "columns into historical bars. Non-destructive.")
     args = parser.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
@@ -688,7 +722,7 @@ def main():
     grand = []
     for ticker in tickers:
         try:
-            r = _process_ticker(engine, ticker, args.start_date, vix_df)
+            r = _process_ticker(engine, ticker, args.start_date, vix_df, rebuild=args.rebuild)
             grand.append(r)
         except Exception as e:
             log.exception("Ticker %s failed: %s", ticker, e)

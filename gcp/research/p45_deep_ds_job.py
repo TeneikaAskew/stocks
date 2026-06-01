@@ -19,6 +19,29 @@ Rule 0 sizing:
   Memory:   ~4GB peak (250k rows × 200 engineered features × 8 bytes
             = 400MB + LightGBM working set ~2GB)
   Retries:  0
+
+TODO (revisit — fold into the strat-engine):
+  This job already writes Rank IC of model predictions vs forward returns
+  (see compute_rank_ic + the fwd_close_* targets below). That makes it a
+  *daily, cross-sectional* drift tracker — re-running it over time shows
+  whether feature predictability decays, which is exactly the kind of
+  signal the strat-engine should own as a first-class stage rather than a
+  one-off research run. Two concrete follow-ups when picking this back up:
+    1. Schedule it (no scheduler today — it only runs on-demand, so drift
+       can't be observed without manual re-runs) and persist the per-fold
+       Rank IC to a Cloud SQL table (like indicator_correlation does for
+       the intraday side) instead of GCS-only, so trends are queryable.
+    2. Reconcile scope with the two sibling correlation surfaces so we
+       don't grow three overlapping-but-subtly-different definitions:
+         - gcp/research/strat_engine/strat_corr_indicators.py — mutual
+           information of indicators vs next-bar Strat *type* (closest
+           cousin; classification, not forward returns).
+         - gcp/indicator_correlation_job.py — per-indicator Rank IC vs
+           intraday 1-min forward returns (scheduled, SQL-persisted).
+       This p45 job is the *daily / ML-feature-importance* member of that
+       family. Decide whether they converge into one strat-engine stage
+       with a shared results schema, or stay deliberately separate by
+       granularity (intraday / daily / classification).
 """
 from __future__ import annotations
 import argparse

@@ -65,6 +65,16 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
     price_vs_ema9       DOUBLE PRECISION,
     price_vs_ema20      DOUBLE PRECISION,   -- renamed from price_vs_ema21
 
+    -- Promoted 2026-05-31 vol/momentum features (daily-meaningful subset).
+    -- Also added via idempotent ALTER at the end of this file for live DBs.
+    realized_vol_short  DOUBLE PRECISION,
+    price_vs_ema9_atr   DOUBLE PRECISION,
+    price_vs_ema20_atr  DOUBLE PRECISION,
+    ema_spread_atr      DOUBLE PRECISION,
+    ema9_slope          DOUBLE PRECISION,
+    bb_squeeze          DOUBLE PRECISION,
+    rsi_divergence      DOUBLE PRECISION,
+
     -- Strat fields (populated by analyze_market_data)
     strat_candle        VARCHAR(10),
     strat_combo         VARCHAR(30),
@@ -2692,6 +2702,151 @@ ALTER TABLE earnings_calibration
     ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;
 
+-- ---------------------------------------------------------------------------
+-- Intraday indicator → forward-return correlation / Information Coefficient
+-- ---------------------------------------------------------------------------
+-- Populated by `gcp.indicator_correlation_job`. One row per
+-- (ticker, indicator, horizon) for a given trailing window. The 'POOLED'
+-- ticker stacks all tickers for the cross-sectional ranking.
+--
+-- rank_ic is the Spearman rank correlation (the quant Information
+-- Coefficient); pearson is the linear correlation. Both are NULLABLE on
+-- purpose — a NULL means "could not be computed for this column/window"
+-- and must NOT be read as 0 (CLAUDE.md Rule 3.7: 0 ≠ missing for a
+-- financial statistic).
+CREATE TABLE IF NOT EXISTS indicator_correlation (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,   -- as-of date of the run
+    window_start    DATE              NOT NULL,   -- inclusive start of data window
+    window_end      DATE              NOT NULL,   -- inclusive end (== computed_date)
+    lookback_days   INTEGER,                      -- calendar days requested
+    ticker          VARCHAR(10)       NOT NULL,   -- 'SPY'|'IWM'|'QQQ'|'POOLED'
+    indicator       VARCHAR(64)       NOT NULL,   -- e.g. 'ATR14', 'ORB_15m_Range'
+    horizon_min     INTEGER           NOT NULL,   -- forward-return horizon (minutes)
+    -- target_name distinguishes WHAT the indicator is scored against:
+    --   'forward_return' (regression vs fwd log-return; the original behaviour),
+    --   'regime'  (BIG/UP/DOWN/FLAT class membership),
+    --   'strat'   (next-bar 1/2U/2D/3 class membership),
+    --   'signal'  (signal_alerts win/loss outcome).
+    -- target_class is the per-class label for classification targets. It uses
+    -- '' (empty string) — NOT NULL — for the regression / overall case
+    -- (forward_return). The empty string is a CATEGORICAL sentinel (a class
+    -- label), not a financial-zero, so Rule 3.7 (NULL≠0 on numeric stats) does
+    -- not apply; making it NOT NULL keeps the UNIQUE key a single plain
+    -- constraint that the generic upsert_dataframe ON CONFLICT path can target
+    -- (NULLs are distinct in a UNIQUE index, which would defeat dedup).
+    target_name     VARCHAR(32)       NOT NULL DEFAULT 'forward_return',
+    target_class    VARCHAR(12)       NOT NULL DEFAULT '',  -- '' = regression/overall; else 'BIG','UP','2U',...
+    pearson         DOUBLE PRECISION,             -- linear corr (NULL = unavailable)
+    rank_ic         DOUBLE PRECISION,             -- Spearman IC (NULL = unavailable)
+    abs_rank_ic     DOUBLE PRECISION,             -- |rank_ic| for ranking convenience
+    mutual_info     DOUBLE PRECISION,             -- MI(indicator; class) (NULL = unavailable / regression)
+    class_lift      DOUBLE PRECISION,             -- P(class | feat>med) / base-rate (NULL = unavailable / regression)
+    n               INTEGER,                      -- paired observations
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_indicator_correlation
+        UNIQUE (computed_date, window_start, window_end, ticker, indicator,
+                horizon_min, target_name, target_class)
+);
+
+-- Idempotent migration for instances created before the target-modular columns
+-- (2026-05-31). The two metric columns are NULLABLE (Rule 3.7: NULL ≠ 0 for a
+-- statistic). target_name / target_class carry NOT-NULL defaults so legacy
+-- forward_return rows stay valid and the UNIQUE key stays a single plain
+-- constraint (see column comment above for why target_class is '' not NULL).
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS target_name  VARCHAR(32) NOT NULL DEFAULT 'forward_return';
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS target_class VARCHAR(12) NOT NULL DEFAULT '';
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS mutual_info  DOUBLE PRECISION;
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS class_lift   DOUBLE PRECISION;
+
+-- Recreate the UNIQUE constraint to include (target_name, target_class). Drop
+-- the legacy 6-column constraint first if it exists, then add the 8-column one
+-- (guarded so re-runs are no-ops).
+ALTER TABLE indicator_correlation DROP CONSTRAINT IF EXISTS uq_indicator_correlation;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_indicator_correlation'
+    ) THEN
+        ALTER TABLE indicator_correlation
+            ADD CONSTRAINT uq_indicator_correlation
+            UNIQUE (computed_date, window_start, window_end, ticker, indicator,
+                    horizon_min, target_name, target_class);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_indicator_correlation_rank
+    ON indicator_correlation (computed_date, horizon_min, abs_rank_ic DESC);
+
+-- ---------------------------------------------------------------------------
+-- Regime combination predictors  (Effort A — regime_combo_miner / job)
+-- ---------------------------------------------------------------------------
+-- One row per interpretable indicator-combination that predicts a forward
+-- regime (BIG / UP / DOWN / FLAT) out-of-sample, per ticker × horizon. The
+-- `conditions` text is the AND-joined combo (e.g. "Realized_Vol_Short>med AND
+-- ORB_15m_High_Pct>med"). hit_rate/base_rate/lift are NULLABLE on purpose — a
+-- NULL means "not computable for this window", never 0 (CLAUDE.md Rule 3.7).
+CREATE TABLE IF NOT EXISTS regime_combo_results (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,
+    window_start    DATE              NOT NULL,
+    window_end      DATE              NOT NULL,
+    ticker          VARCHAR(10)       NOT NULL,
+    horizon_min     INTEGER           NOT NULL,
+    target_class    VARCHAR(8)        NOT NULL,   -- 'BIG'|'UP'|'DOWN'|'FLAT'
+    conditions      TEXT              NOT NULL,   -- AND-joined combo
+    combo_order     INTEGER,                      -- 1 / 2 / 3-way
+    hit_rate        DOUBLE PRECISION,             -- OOS P(target | combo)
+    base_rate       DOUBLE PRECISION,             -- OOS P(target)
+    lift            DOUBLE PRECISION,             -- hit_rate / base_rate
+    support         INTEGER,                      -- OOS rows matching combo
+    train_support   INTEGER,
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_regime_combo
+        UNIQUE (computed_date, window_start, window_end, ticker, horizon_min,
+                target_class, conditions)
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_combo_rank
+    ON regime_combo_results (computed_date, ticker, horizon_min, target_class,
+                             lift DESC);
+
+-- ---------------------------------------------------------------------------
+-- Strat next-candle combination predictors  (Effort B — strat_combo_miner)
+-- ---------------------------------------------------------------------------
+-- One row per indicator-combination that predicts the NEXT Strat candle
+-- (1/2U/2D/3) out-of-sample, per ticker × timeframe. Same nullable-stat
+-- discipline as above.
+CREATE TABLE IF NOT EXISTS strat_combo_results (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,
+    window_start    DATE              NOT NULL,
+    window_end      DATE              NOT NULL,
+    ticker          VARCHAR(10)       NOT NULL,
+    tf              VARCHAR(4)        NOT NULL,   -- '5m'|'15m'|'30m'|'60m'|'D'
+    target_class    VARCHAR(4)        NOT NULL,   -- '1'|'2U'|'2D'|'3'
+    conditions      TEXT              NOT NULL,
+    combo_order     INTEGER,
+    hit_rate        DOUBLE PRECISION,
+    base_rate       DOUBLE PRECISION,
+    lift            DOUBLE PRECISION,
+    support         INTEGER,
+    train_support   INTEGER,
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_strat_combo
+        UNIQUE (computed_date, window_start, window_end, ticker, tf,
+                target_class, conditions)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strat_combo_rank
+    ON strat_combo_results (computed_date, ticker, tf, target_class, lift DESC);
 
 -- ── earnings_options_strategy_insights (PR-B follow-up, 2026-05-22) ─────────
 -- Per-(quintile × ratio_bucket × structure) breakdown of historical
@@ -2770,3 +2925,56 @@ CREATE TABLE IF NOT EXISTS earnings_options_strategy_winners (
 
 CREATE INDEX IF NOT EXISTS idx_eosw_recent
     ON earnings_options_strategy_winners (calculation_date DESC, structure);
+
+-- ---------------------------------------------------------------------------
+-- Persist the 2026-05-31 promoted volatility/momentum features
+-- ---------------------------------------------------------------------------
+-- These features were promoted into lib.indicators.add_all_indicators and are
+-- computed everywhere, but the feature tables write a fixed column allow-list,
+-- so they were computed-then-dropped (a known gap). Add the columns so the
+-- backfill + strat builder persist them. All NULLABLE (no fabricated 0 —
+-- CLAUDE.md Rule 3.7); a re-backfill populates history. Idempotent.
+--
+-- market_data_daily (DAILY bars): the intraday-only Mins_Since_Open and the
+-- daily-degenerate Price_vs_VWAP_ATR are intentionally omitted (daily has no
+-- intraday clock and no meaningful intraday VWAP).
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+
+-- strat_features_<tf> (INTRADAY 1m/5m/15m/30m/60m/4h): all 9 are meaningful.
+-- Unlike market_data_daily, the strat_features_<tf> tables are NOT created by
+-- this schema file — the strat-engine feature builder creates them at runtime
+-- (gcp/research/strat_engine/strat_data_builder.py). A bare `ALTER TABLE
+-- strat_features_1m ...` therefore aborts the whole script with "relation does
+-- not exist" when schema.sql is loaded into a fresh DB (e.g. the ephemeral
+-- Postgres CI job). Guard each ALTER with a to_regclass existence check so the
+-- columns are added where the table exists and skipped (with a NOTICE) where it
+-- doesn't — idempotent in both cases.
+DO $$
+DECLARE
+    tf   text;
+    cols text := '
+        ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION';
+BEGIN
+    FOREACH tf IN ARRAY ARRAY['1m','5m','15m','30m','60m','4h'] LOOP
+        IF to_regclass('public.strat_features_' || tf) IS NOT NULL THEN
+            EXECUTE 'ALTER TABLE strat_features_' || tf || cols;
+        ELSE
+            RAISE NOTICE 'strat_features_% not present — skipping promoted-feature columns (built at runtime by strat-engine)', tf;
+        END IF;
+    END LOOP;
+END $$;

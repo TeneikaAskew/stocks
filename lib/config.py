@@ -44,6 +44,12 @@ class IndicatorConfig:
     macd_signal: int = 9
     consecutive_periods: int = 3
     consecutive_relaxed_window: int = 5
+    # Volatility-regime / momentum-velocity features promoted 2026-05-31 from the
+    # combo-mining measure-first study (regime BIG-move + Strat next-candle, all
+    # of IWM/SPY/QQQ). Defaults match the values they were validated at.
+    realized_vol_window: int = 20      # Realized_Vol_Short rolling std of logret
+    bb_squeeze_window: int = 20        # BB_Squeeze = BB_Width / rolling median
+    ema_slope_lookback: int = 5        # EMA9_Slope = n-bar EMA9 change / ATR
     orb_windows: List[Dict] = field(default_factory=lambda: [
         {'minutes': 5, 'label': '5m'},
         {'minutes': 15, 'label': '15m'},

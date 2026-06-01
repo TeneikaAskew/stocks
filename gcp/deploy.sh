@@ -247,6 +247,84 @@ deploy_signal_quality_alarm() {
         --quiet
 }
 
+# ── Indicator → forward-return correlation (Cloud Run Job) ───────────────────
+# Computes the full production indicator suite on 1-min RTH bars and ranks
+# each indicator by Information Coefficient (Spearman) vs forward returns.
+# Writes to indicator_correlation. Read-only on market_data_intraday; one
+# upsert at the end.
+#
+# Capacity (CLAUDE.md Rule 0): 3 tickers × ~30 sessions × 390 RTH bars
+# ≈ 35k bars total, held in memory at once (~tens of MB). 3 SELECTs total
+# (one per ticker, batched by date range — NOT per-bar). Pandas corr over
+# ~74 cols × 3 horizons is seconds. 1800s timeout is ~10× headroom.
+# --max-retries 1: pure read+single-upsert, idempotent, transient-retry safe.
+#
+# Uses the RESEARCH image: the target-modular classification targets (regime/
+# strat/signal) compute per-class mutual information via sklearn's
+# mutual_info_classif, and sklearn + scipy are deliberately excluded from the
+# main image (dev-only in requirements-gcp.txt) to keep signal-monitor's
+# cold-start lean. On the main image the MI helper hits its ImportError path
+# and writes mutual_info=NULL for every row (class_lift/rank_ic still populate);
+# the research image is the right home so all three metrics compute.
+deploy_indicator_correlation() {
+    echo "Deploying indicator-correlation job..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create indicator-correlation \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update indicator-correlation \
+        --image "${research_image}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Regime combination miner (Cloud Run Job — Effort A) ──────────────────────
+# Mines indicator-value COMBINATIONS predictive of forward regime (BIG/UP/DOWN/
+# FLAT) and upserts to regime_combo_results. Read-only on market_data_intraday;
+# one upsert at the end.
+#
+# Capacity (Rule 0): 3 tickers × ~1yr × ~390 RTH bars ≈ 290k bars total, held
+# in memory at once (~tens of MB). 3 batched SELECTs (one per ticker, NOT
+# per-bar). The cost driver is sklearn permutation_importance + mutual_info,
+# both row-capped in lib.combo_mining (perm 8k, MI 30k, train fit 80k) so
+# wall-clock is bounded ~2 min/ticker. 2 vCPU / 2Gi gives headroom; 3600s
+# timeout is ~5× the wall estimate. --max-retries 1: pure read + single
+# idempotent upsert.
+deploy_regime_combo() {
+    echo "Deploying regime-combo job..."
+    # Uses the RESEARCH image: model_lift/select_top_features need scikit-learn +
+    # scipy, which are deliberately excluded from the main image (dev-only in
+    # requirements-gcp.txt) to keep signal-monitor's cold-start lean. regime-combo
+    # is a Lane-2 research job, so the heavier image is the right home.
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create regime-combo \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 1 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update regime-combo \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 3600 \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
 # Re-posts stored signal_alerts to the signals Discord channel for a
 # historical date + ET time block. Triggered by the /replay-signals
@@ -757,8 +835,25 @@ deploy_premarket_playbook_resolver() {
 #   --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
 #   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
 #
-# Image: research (lightgbm + scikit-learn + scipy + shap).
-#   gcloud builds submit --tag ${IMAGE}:research -f gcp/Dockerfile.research .
+# Image: research (lightgbm + scikit-learn + scipy + shap). Build it with the
+# `build-research` target below — `gcloud builds submit` has no -f/--file flag,
+# so the Dockerfile must be named `Dockerfile` in the build context (we stage a
+# tmpdir, exactly like build_image does for the main image).
+build_research_image() {
+    echo "Building RESEARCH Docker image (lightgbm + sklearn + scipy + shap)..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp requirements-gcp.txt requirements-research.txt "$tmpdir/"
+    cp requirements-gcp.lock "$tmpdir/" 2>/dev/null || true
+    cp alert_config.json "$tmpdir/"
+    cp gcp/Dockerfile.research "$tmpdir/Dockerfile"
+    cp -r lib/    "$tmpdir/lib/"
+    cp -r gcp/    "$tmpdir/gcp/"
+    cp -r scripts/ "$tmpdir/scripts/"
+    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir"
+    rm -rf "$tmpdir"
+}
+
 deploy_strat_engine() {
     echo "Deploying strat-engine job..."
     local research_image="${IMAGE}:research"
@@ -2728,6 +2823,11 @@ deploy_schedulers() {
     # always available: `gcloud run jobs execute calibrate-thresholds`.
     _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
 
+    # Regime combination miner (Effort A) — weekly, Sunday 05:00 ET, after the
+    # weekly data settles. Refreshes regime_combo_results so combo edge + its
+    # drift over time are queryable. Trailing-365d window by default.
+    _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
+
     # Phase 0.5 — signal-quality report.
     # Hourly during market hours: --mode=rolling, incremental update of
     # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
@@ -2900,6 +3000,7 @@ case "${1:-help}" in
     setup)       setup ;;
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
+    build-research) build_research_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
     earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
@@ -2930,6 +3031,8 @@ case "${1:-help}" in
     intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
+    indicator-correlation) build_image && deploy_indicator_correlation ;;
+    regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -2950,6 +3053,7 @@ case "${1:-help}" in
         deploy_signal_quality_report
         deploy_signal_quality_alarm
         deploy_signal_replay
+        deploy_indicator_correlation
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
