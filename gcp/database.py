@@ -423,9 +423,12 @@ def bulk_copy_upsert(
         import uuid, io
         temp_name = f"tmp_upsert_{table}_{uuid.uuid4().hex[:8]}"
 
-        # NOTE pg8000 needs CSV with \\N for NULL. Tab separator is safest.
+        # pg8000 has NO psycopg2-style cur.copy_from(); its native COPY is
+        # cur.execute("COPY ... FROM STDIN WITH (FORMAT CSV ...)", stream=sio).
+        # Use real CSV (quoted) so embedded commas/newlines are safe; NULLs as
+        # an explicit sentinel via the CSV NULL option.
         sio = io.StringIO()
-        df.to_csv(sio, index=False, header=False, sep='\t', na_rep='\\N')
+        df.to_csv(sio, index=False, header=False, na_rep='\\N')
         sio.seek(0)
 
         # pg8000's cursor doesn't support context manager protocol — use plain assignment
@@ -436,8 +439,12 @@ def bulk_copy_upsert(
                 f"ON COMMIT DROP"
             )
 
-            # pg8000 cursor exposes copy_from(stream, table, sep, null, columns)
-            cur.copy_from(sio, temp_name, sep='\t', null='\\N', columns=cols)
+            col_list_copy = ", ".join(f'"{c}"' for c in cols)
+            cur.execute(
+                f"COPY {temp_name} ({col_list_copy}) FROM STDIN "
+                f"WITH (FORMAT CSV, NULL '\\N')",
+                stream=sio,
+            )
             copied = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(df)
 
             col_list = ", ".join(f'"{c}"' for c in cols)
