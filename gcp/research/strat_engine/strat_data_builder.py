@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     price_vs_ema9_atr DOUBLE PRECISION, price_vs_ema20_atr DOUBLE PRECISION,
     price_vs_vwap_atr DOUBLE PRECISION, ema_spread_atr DOUBLE PRECISION,
     ema9_slope DOUBLE PRECISION, bb_squeeze DOUBLE PRECISION, rsi_divergence DOUBLE PRECISION,
+    bb20_bandwidth DOUBLE PRECISION, realized_vol_z DOUBLE PRECISION,
+    range_expansion_ratio DOUBLE PRECISION, intraday_range_vs_prevday DOUBLE PRECISION,
     intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
     fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
     fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
@@ -470,6 +472,13 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["ema9_slope"] = _safe("EMA9_Slope")
     out["bb_squeeze"] = _safe("BB_Squeeze")
     out["rsi_divergence"] = _safe("RSI_Divergence")
+    # Magnitude-engine volatility-expansion features (migrated 2026-06-01 into
+    # add_all_indicators._add_magnitude). Persisted so the magnitude engine reads
+    # them from the spine instead of recomputing inline.
+    out["bb20_bandwidth"] = _safe("BB20_Bandwidth")
+    out["realized_vol_z"] = _safe("Realized_Vol_Z")
+    out["range_expansion_ratio"] = _safe("Range_Expansion_Ratio")
+    out["intraday_range_vs_prevday"] = _safe("Intraday_Range_vs_PrevDay")
     out["intraday_return"] = (closes - df_tf["Open"]) / df_tf["Open"] * 100
     out["high_low_spread_pct"] = (df_tf["High"] - df_tf["Low"]) / closes * 100
 

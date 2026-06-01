@@ -66,11 +66,15 @@ PHASES: tuple[str, ...] = ("phase0", "phase1", "phase2", "phase3", "phase4",
 PHASE_FEATURES: dict[str, tuple[str, ...]] = {
     "phase0": (),  # baseline 143-col only
     "phase1": (
-        "atr5_atr20_ratio",        # short-term vol expansion
+        # Migrated 2026-06-01 into lib.indicators.add_all_indicators (one source
+        # of truth) and persisted in strat_features_<tf>. Loaded with the base
+        # frame — NOT recomputed in mag_dataset. ATR_Expansion (ATR5/ATR20,
+        # Wilder) is the single-source replacement for the old atr5_atr20_ratio.
+        "atr_expansion",           # was atr5_atr20_ratio — now the spine column
         "bb20_bandwidth",          # rolling vol envelope width
-        "realized_vol_z15",        # 15-bar realized-vol z-score
+        "realized_vol_z",          # 15-bar realized-vol z-score (was realized_vol_z15)
         "range_expansion_ratio",   # cur range / avg prior-5-bar range
-        "intraday_range_vs_prior_day",
+        "intraday_range_vs_prevday",
     ),
     "phase2": (
         # AlphaVantage-sourced. Backfilled into market_data_indicators.
