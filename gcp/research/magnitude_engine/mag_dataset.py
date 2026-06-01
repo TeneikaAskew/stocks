@@ -32,6 +32,7 @@ from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, MAGNITUDE_THRESHOLDS, PHASE_FEATURES,
+    LABEL_MODES, DEFAULT_LABEL_MODE,
     NEW_INDICATORS_TABLE, NEW_CROSS_ASSET_TABLE,
 )
 from gcp.research.strat_engine.strat_dataset import (
@@ -312,8 +313,18 @@ def _add_table_join_features(df: pd.DataFrame, engine, table: str,
 
 def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
                             since: str | None = None,
-                            until: str | None = None) -> pd.DataFrame:
-    """Load the labeled dataset for one (ticker, tf, phase) cell."""
+                            until: str | None = None,
+                            label_mode: str = DEFAULT_LABEL_MODE) -> pd.DataFrame:
+    """Load the labeled dataset for one (ticker, tf, phase) cell.
+
+    label_mode='body'      → target = |next_close - next_open| / atr_20 (the IV
+                             expected-move comparison; default).
+    label_mode='excursion' → target = (next_high - next_low) / atr_20 (intrabar
+                             path/range; the gamma-scalp question). See
+                             mag_config.LABEL_MODES.
+    """
+    if label_mode not in LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {LABEL_MODES}, got {label_mode!r}")
     # Reuse strat_engine's loader with next-bar OHLC so we can compute the
     # magnitude target. The strat_engine label (next_bar_type) is also in
     # the frame; we drop it explicitly via featurize()'s drop set.
@@ -337,7 +348,11 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
             "strat_features.atr_20 is entirely NaN/zero — the upstream rebuild "
             "that persists ATR20 from add_all_indicators has not run. Fix the "
             "data (rebuild), do not work around it.")
-    move = (df["next_close"] - df["next_open"]).abs()
+    if label_mode == "excursion":
+        # Intrabar path/range — the gamma-scalp question.
+        move = (df["next_high"] - df["next_low"]).abs()
+    else:  # "body" — open→close, the IV expected-move comparison.
+        move = (df["next_close"] - df["next_open"]).abs()
     df[LABEL_COL] = _bucket_magnitude(move, atr20)
     # Drop rows missing magnitude (no valid ATR or no next-bar OHLC).
     n_before = len(df)

@@ -49,6 +49,17 @@ LABEL_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(LABEL_CLASSES)}
 # move >= 1.5    → EXPLOSIVE (3)
 MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
 
+# Label modes (reviewer 2026-06-01). The default "body" target,
+# |next_close - next_open| / atr_20, matches the IV expected-move comparison at
+# the bar-close horizon (a straddle prices the open→close move) — the right
+# target for gate 7. The "excursion" target, (next_high - next_low) / atr_20,
+# captures intrabar path/range — what a 0DTE long-gamma scalp actually harvests
+# (a bar that spikes 2 ATR and closes flat has ~0 body but a large excursion).
+# Run both: body answers "does it beat IV", excursion answers "is there a gamma
+# scalp", and they can diverge. Thresholds are reused (ATR multiples).
+LABEL_MODES: tuple[str, ...] = ("body", "excursion")
+DEFAULT_LABEL_MODE = "body"
+
 
 # ─────────────────────── Phases ───────────────────────
 # Each phase is an additive feature set tested ONCE through walk-forward.
