@@ -475,6 +475,71 @@ def bulk_copy_upsert(
         except Exception: pass
 
 
+def bulk_copy_update(
+    df: pd.DataFrame,
+    table: str,
+    key_cols: List[str],
+    update_cols: List[str],
+) -> int:
+    """Bulk UPDATE-only of `update_cols` on existing rows, keyed by `key_cols`.
+
+    Unlike bulk_copy_upsert this NEVER inserts: it COPYs (keys + update_cols)
+    into a temp table, then `UPDATE target SET col=t.col FROM temp WHERE keys
+    match`. Use when you are backfilling a column SUBSET on rows that already
+    exist and the target has NOT-NULL columns you are deliberately not touching
+    (an INSERT...ON CONFLICT would still validate NOT-NULL on the insert attempt
+    and fail). Rows present in `df` but absent in `target` are silently ignored
+    (no insert). Idempotent. Falls back to a pg8000 per-row UPDATE on COPY error.
+    """
+    df = df[[c for c in df.columns if c in (set(key_cols) | set(update_cols))]].copy()
+    cols = list(df.columns)
+    try:
+        engine = get_engine()
+        raw_conn = engine.raw_connection()
+    except Exception as e:
+        logger.warning("bulk_copy_update(%s): raw_connection failed (%s)", table, e)
+        raise
+
+    try:
+        import uuid, io
+        temp_name = f"tmp_update_{table}_{uuid.uuid4().hex[:8]}"
+        sio = io.StringIO()
+        df.to_csv(sio, index=False, header=False, na_rep='\\N')
+        sio.seek(0)
+        col_defs = ", ".join(f'"{c}" DOUBLE PRECISION' if c not in key_cols
+                             else (f'"{c}" TIMESTAMPTZ' if 'ts' in c else f'"{c}" TEXT')
+                             for c in cols)
+        cur = raw_conn.cursor()
+        try:
+            cur.execute(f"CREATE TEMPORARY TABLE {temp_name} ({col_defs}) ON COMMIT DROP")
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            cur.execute(
+                f"COPY {temp_name} ({col_list}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')",
+                stream=sio,
+            )
+            set_clause = ", ".join(f'"{c}" = t."{c}"' for c in update_cols)
+            where = " AND ".join(f'{table}."{k}" = t."{k}"' for k in key_cols)
+            cur.execute(
+                f"UPDATE {table} SET {set_clause} FROM {temp_name} t WHERE {where}"
+            )
+            updated = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        finally:
+            try: cur.close()
+            except Exception: pass
+        raw_conn.commit()
+        logger.info("bulk_copy_update(%s): updated %d rows (%d cols)",
+                     table, updated, len(update_cols))
+        return updated
+    except Exception as e:
+        try: raw_conn.rollback()
+        except Exception: pass
+        logger.warning("bulk_copy_update(%s) COPY path failed (%s)", table, e)
+        raise
+    finally:
+        try: raw_conn.close()
+        except Exception: pass
+
+
 def bulk_insert_dataframe(
     df: pd.DataFrame,
     table: str,

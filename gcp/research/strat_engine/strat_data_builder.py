@@ -60,7 +60,7 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert
+from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert, bulk_copy_update
 from lib.data_loader import DataLoader
 from lib.strat import StratClassifier
 from lib.indicators import (
@@ -752,10 +752,11 @@ def _recompute_columns_for_ticker(engine, ticker: str, tf_label: str,
     for snake in cols:
         cap = src[snake]
         out[snake] = enriched[cap].to_numpy() if cap in enriched.columns else np.nan
-    # ON CONFLICT DO UPDATE touches ONLY the recomputed columns (+ keys).
-    n = bulk_copy_upsert(out, table,
-                         conflict_cols=["ticker", "ts"],
-                         update_cols=cols)
+    # UPDATE-only (not upsert): every (ticker,ts) already exists, and the table
+    # has NOT-NULL columns (e.g. tf) we deliberately don't touch — an
+    # INSERT...ON CONFLICT would still validate NOT-NULL on the insert attempt
+    # and fail. bulk_copy_update touches ONLY the recomputed columns.
+    n = bulk_copy_update(out, table, key_cols=["ticker", "ts"], update_cols=cols)
     nn = {c: int(out[c].notna().sum()) for c in cols}
     log.info("%s %s: recomputed %d rows; non-null %s (%.1fs)",
              ticker, tf_label, n, nn, time.time() - t0)
