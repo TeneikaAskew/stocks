@@ -1025,6 +1025,44 @@ gh issue list --label "bug"
 & "C:\Program Files\GitHub CLI\gh.exe" issue list
 ```
 
+### Workflow retirement / Cloud-Run-migration convention
+
+Most data-fetching and analysis workflows that used to run on GH Actions
+crons have moved to Cloud Run Jobs scheduled by Cloud Scheduler. The
+repo distinguishes two states a "non-active" workflow can be in, and
+the convention is:
+
+| state | convention | meaning |
+|---|---|---|
+| **Fully retired** | rename file to `*.yml.disabled` | GH Actions ignores it (only picks up `.yml`/`.yaml`). The workload itself is gone; there is NO Cloud Run replacement. Add a header comment at the top of the disabled file explaining when and why it was retired and what (if anything) replaced it. |
+| **Migrated to Cloud Run, manual fallback retained** | keep `.yml`, remove the cron, leave `workflow_dispatch:` only, add a header comment naming the Cloud Run Job + Cloud Scheduler trigger that owns the primary execution | Primary execution runs in Cloud Run (cheaper, more capable, has GCP networking); the GH Actions workflow stays as a manual break-glass / backfill path. Cron was removed so the two surfaces don't both fire daily and burn metered Actions minutes. |
+
+When migrating a new workflow to Cloud Run, do the second pattern by
+default:
+1. Add the Cloud Run Job to `gcp/deploy.sh`
+2. Add the Cloud Scheduler entry that drives it
+3. In the GH workflow file, delete the `schedule:` trigger, keep
+   `workflow_dispatch:`, and add a header comment of the form:
+   ```yaml
+   on:
+     # Primary execution: Cloud Scheduler (<scheduler-name>) ->
+     # <cloud-run-job-name> Cloud Run Job. The GA cron was removed so
+     # this workflow no longer duplicates that schedule and burns
+     # Actions minutes; workflow_dispatch is kept as a manual break-glass.
+     workflow_dispatch:
+   ```
+4. Only rename to `.yml.disabled` if the workload is being fully retired
+   (no Cloud Run replacement, no expected future need). The disabled
+   file's body is kept for archaeology — it documents what the old
+   approach did.
+
+Live examples to copy from:
+- `analyze-market-data.yml` — pattern 2 (manual fallback)
+- `fetch-alphavantage-intraday-monthly.yml` — pattern 2 (manual fallback)
+- `fetch-news-sentiment.yml` — pattern 2 (manual fallback)
+- `fetch-market-data.yml.disabled` — pattern 1 (fully retired)
+- `earnings-options-analytics.yml.disabled` — pattern 1 (fully retired)
+
 ### Automated Workflow Failure Handling
 
 This project uses an automated system to handle workflow failures by creating/updating GitHub issues and pull requests.

@@ -594,7 +594,9 @@ def execute_sql(sql: str, params: Optional[dict] = None) -> None:
 DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'RSI14':          'rsi_14',
     'RSI9':           'rsi_9',
+    'RSI30':          'rsi_30',
     'ATR14':          'atr_14',
+    'ATR20':          'atr_20',
     'EMA9':           'ema_9',
     'EMA20':          'ema_20',
     'EMA50':          'ema_50',
@@ -618,7 +620,11 @@ DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'Consecutive_Down': 'consecutive_down',
     'Price_vs_EMA9':    'price_vs_ema9',
     'Price_vs_EMA20':   'price_vs_ema20',
+    # Sourced from `add_all_indicators` (snake_case keys match SQL cols).
     'volatility_20d':   'volatility_20d',
+    'volatility_5d':    'volatility_5d',
+    'high_low_spread':     'high_low_spread',
+    'high_low_spread_pct': 'high_low_spread_pct',
     # Promoted 2026-05-31 (daily-meaningful subset; Mins_Since_Open and
     # Price_vs_VWAP_ATR omitted — no intraday clock / degenerate daily VWAP).
     'Realized_Vol_Short': 'realized_vol_short',

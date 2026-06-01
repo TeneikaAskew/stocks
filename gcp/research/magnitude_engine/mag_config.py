@@ -1,0 +1,242 @@
+"""Magnitude Engine — shared config.
+
+Single source of truth for tickers, timeframes, target buckets,
+ATR thresholds, phase definitions, and pre-set success bar.
+
+The success bar is documented here AND in docs/MAGNITUDE_ENGINE_RESULTS.md
+and MUST NOT be tuned after running. Per the project spec:
+
+    "Each phase tested ONCE through the walk-forward. No tuning after
+     a failed phase."
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Sequence
+
+
+# ─────────────────────── Scope ───────────────────────
+# Same 3 tickers as strat_engine. 1m + 60m dropped for the same reasons
+# (1m: pathological probs; 60m: too few bars per fold).
+TICKERS: tuple[str, ...] = ("IWM", "SPY", "QQQ")
+TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m")
+TF_MINUTES: dict[str, int] = {"5m": 5, "15m": 15, "30m": 30}
+
+# Anchored / expanding-window cutoffs — IDENTICAL to strat_engine so cross-
+# experiment comparisons stay apples-to-apples.
+DEFAULT_CUTOFFS = [
+    "2019-01-01",  # test 2019 (recovery)
+    "2020-01-01",  # test 2020 (COVID)
+    "2021-01-01",  # test 2021 (bull)
+    "2022-01-01",  # test 2022 (bear)
+    "2023-01-01",  # test 2023 (recovery)
+    "2024-01-01",  # test 2024 (bull continuation)
+    "2025-01-01",  # test 2025
+    "2026-01-01",  # test Jan-May 2026 (locked OOS)
+]
+MIN_TEST_BARS = 200  # below this a fold is reported but excluded from gate counts
+
+
+# ─────────────────────── Target ───────────────────────
+# Bucketed |next_close - next_open| in ATR-20 multiples.
+LABEL_COL = "magnitude_bucket"
+LABEL_CLASSES: tuple[str, ...] = ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
+LABEL_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(LABEL_CLASSES)}
+
+# ATR-20 multiplier thresholds. Bucket = bisect_right(THRESHOLDS, move/atr).
+# move < 0.5     → TIGHT (0)
+# 0.5 <= move<1.0 → NORMAL (1)
+# 1.0 <= move<1.5 → EXPANDED (2)
+# move >= 1.5    → EXPLOSIVE (3)
+MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
+
+
+# ─────────────────────── Phases ───────────────────────
+# Each phase is an additive feature set tested ONCE through walk-forward.
+# Phase 0 (baseline) uses the existing 143-col enrichment as-is.
+# Phase 1+ adds new features computed on-the-fly in mag_dataset.
+# Phase 2+ requires backfilled tables (deferred for first dispatch).
+PHASES: tuple[str, ...] = ("phase0", "phase1", "phase2", "phase3", "phase4",
+                            "phase_calendar")
+
+# Per-phase feature additions. Phase N includes Phase N-1's features
+# ONLY IF a prior phase passed. The spec says: "do not retrain Phase 0
+# with later phases combined unless one of the later phases shows
+# independent signal." So each phase tests its additions in isolation
+# on top of the baseline.
+PHASE_FEATURES: dict[str, tuple[str, ...]] = {
+    "phase0": (),  # baseline 143-col only
+    "phase1": (
+        "atr5_atr20_ratio",        # short-term vol expansion
+        "bb20_bandwidth",          # rolling vol envelope width
+        "realized_vol_z15",        # 15-bar realized-vol z-score
+        "range_expansion_ratio",   # cur range / avg prior-5-bar range
+        "intraday_range_vs_prior_day",
+    ),
+    "phase2": (
+        # AlphaVantage-sourced. Backfilled into market_data_indicators.
+        # NOT computed locally — substitution forbidden by spec.
+        "av_adx",
+        "av_mfi",
+        "av_chaikin_ad_osc",
+        "av_aroon_up",
+        "av_aroon_down",
+        "av_roc",
+        "av_bbands_bandwidth",
+    ),
+    "phase3": (
+        "hours_until_next_hi_event",
+        "hours_since_last_hi_event",
+        "is_event_day_pm4h",       # within 4h of high-impact event
+    ),
+    "phase4": (
+        # Cross-asset. Backfilled into market_data_cross_asset.
+        "vix_5m_delta",
+        "vix_z_15",
+        "ust10y_delta",
+        "dxy_delta",
+        "oil_z",
+        "gold_z",
+    ),
+    # Phase-3b — CALENDAR REPLACEMENT TEST (added 2026-05-28).
+    # Reviewer's hypothesis: QQQ 5m and SPY 5m passed Phase 3's gates with
+    # robust bootstrap BUT mechanism check fails (0.85x / 0.82x event-window
+    # concentration, BELOW base rate). The event features might be acting
+    # as a calendar proxy rather than encoding event causality.
+    #
+    # This phase REPLACES the event features with a richer calendar set
+    # (no event-proximity features at all). Same Phase-0 baseline + these.
+    # If 5m gate-passing reproduces, the answer is "calendar proxy" and
+    # we've identified what the Phase 3 features were actually encoding.
+    # If 5m gate-passing fails, the event features encode something
+    # specific beyond raw calendar.
+    "phase_calendar": (
+        "cal_hour_of_day",
+        "cal_minute_of_hour",
+        "cal_day_of_week",
+        "cal_week_of_month",
+        "cal_is_first_friday",      # NFP day
+        "cal_is_fomc_week",         # rough proxy: 3rd or 4th week
+        "cal_is_month_end",         # last 2 trading days of month
+        "cal_is_quarter_end",       # last 3 trading days of quarter
+    ),
+    # Phase 5 (gamma) intentionally omitted from default config — only
+    # built if Phases 0-4 hint at signal.
+}
+
+
+# ─────────────────────── Success bar (PRE-SET, IMMUTABLE) ───────────────────────
+# Per spec: pre-set in PR description AND code BEFORE running experiments.
+# Per-cell-per-phase gates:
+#   1. log-loss beat positive in at least 6 of 8 walk-forward folds
+#   2. ECE within ceiling on the same 6 folds
+#        (0.05 for 5m + 15m; 0.075 for 30m)
+#   3. confidence discriminates: decisive-call hit rate rises monotonically
+#        across thresholds [0.40, 0.50, 0.60, 0.70]
+#   4. top-bucket (EXPLOSIVE) lift over base rate >= 1.5 in at least 6 folds
+SUCCESS_BAR_MIN_FOLDS_LOGLOSS = 6      # of 8
+SUCCESS_BAR_MIN_FOLDS_ECE = 6          # of 8
+SUCCESS_BAR_MIN_FOLDS_LIFT = 6         # of 8
+SUCCESS_BAR_EXPLOSIVE_LIFT_MIN = 1.5
+SUCCESS_BAR_CONFIDENCE_THRESHOLDS: tuple[float, ...] = (0.40, 0.50, 0.60, 0.70)
+
+# Two ADDED gates after the Phase 3 post-mortem (2026-05-28). The original
+# 1-4 produced 5 deterministic gate-passes for Phase 3; only 3 survived
+# bootstrap, and only 1 of those had a matching mechanism. Both follow-up
+# checks are now part of the cell-level bar.
+SUCCESS_BAR_BOOTSTRAP_PASS_MIN = 0.80     # gate 5: bootstrap-on-test-bars
+                                          # cell-pass rate across 1000 iters
+SUCCESS_BAR_MECHANISM_RATIO_MIN = 2.0     # gate 6: predicted-EXPLOSIVE
+                                          # concentration ÷ base rate for the
+                                          # feature family's claimed mechanism
+
+# Gate 7 (added 2026-05-28) — implied-vs-realized check. The decisive trade-
+# test gate for non-directional vehicles. Asks: on EXPLOSIVE-predicted bars,
+# does realized |move| exceed the implied move priced into the ATM straddle
+# (computed off the at-or-before T-1 EOD ATM IV)?
+# Threshold 1.25 sits above 1.0 to leave room for bid-ask + theta on a
+# real 5-min straddle round-trip. See docs/MAGNITUDE_ENGINE_RESULTS.md §5e
+# for the derivation and the COMMITTED-BEFORE-RUN epistemic claim.
+SUCCESS_BAR_GATE7_RATIO_MIN = 1.25
+SUCCESS_BAR_GATE7_MIN_PASSING_FOLDS = 6     # of folds with IV coverage
+SUCCESS_BAR_GATE7_MIN_COVERAGE_FOLDS = 4    # below this → INSUFFICIENT_DATA
+
+# Bucket terminology for the augmented bar:
+#   PASS    — all 6 gates hold
+#   SQUEAKER — gates 1-4 hold but gate 5 (bootstrap) < 80%
+#   MECHANISM-MISMATCH — gates 1-5 hold but gate 6 < 2.0x base rate
+#                       (signal is real, but features aren't doing what
+#                        their names say; investigate before extending)
+#   FAIL    — any of gates 1-4 misses
+
+# ECE ceiling by timeframe (per spec: 0.05 for 5m + 15m, 0.075 for 30m)
+ECE_CEILING_BY_TF: dict[str, float] = {
+    "5m": 0.05,
+    "15m": 0.05,
+    "30m": 0.075,
+}
+
+# A phase PASSES if all six gates hold across at least 2 of 3 cells per TF
+# (i.e. 2 of 3 tickers). Repeated for each (TF) cell-row of the 3×3 grid.
+SUCCESS_BAR_MIN_PASSING_TICKERS_PER_TF = 2  # of 3
+
+
+# ─────────────────────── Harness lessons (READ BEFORE EXPERIMENTING) ────
+# Each is a mistake we made once, calibrated, and don't intend to repeat.
+#
+# L1. "Seed replication" is NOT perturbation for deterministic models.
+#     LightGBM with no bagging (`subsample`/`colsample_bytree` both = 1.0,
+#     the default in make_lgbm) is fully deterministic given the data.
+#     Changing `random_state` produces byte-identical results. For real
+#     robustness testing, use bootstrap-on-test-bars
+#     (`scripts/bootstrap_gate_fragility.py`) or cutoff-shift perturbation.
+#
+# L2. "Gate-count PASS" is necessary but not sufficient — see gates 5+6.
+#     Phase 3 verdict decomposed into 2 noise-edge + 2 wrong-mechanism + 1
+#     genuinely-validated cell once we ran the follow-up checks.
+#
+# L3. "Feature names match mechanism" is a hypothesis, not a given. Always
+#     run the mechanism check before claiming a feature family drove a
+#     verdict.  `scripts/check_event_window_concentration.py` for event
+#     features; analogous custom checks for other families.
+#
+# L4. A passing research gate is not a trade. The pipeline from a
+#     validated magnitude cell to "tradeable" goes through the execution
+#     layer (Track B / Track 2). See docs/MAGNITUDE_ENGINE_RESULTS.md
+#     §"Open: trade-test the validated signal" for the next step.
+
+
+# ─────────────────────── Calibration (mirror strat_engine production) ───────────────────────
+# DEFAULT_CALIBRATION = "none" — same evidence-based decision as
+# strat_engine production. Raw LightGBM-softmax cross-entropy IS a
+# calibration loss. We will re-check ECE on the new target; if it
+# breaches the ceiling on this dataset, the per-phase report will flag
+# and we can switch to "isotonic" or "sigmoid" — but ONLY after Phase 0
+# results land (not pre-emptively).
+DEFAULT_CALIBRATION = "none"
+DEFAULT_CV = 3
+
+
+# ─────────────────────── Storage ───────────────────────
+GCS_BUCKET_DEFAULT = "adept-mountain-474619-d4-trading-data"
+GCS_PREFIX = "research/magnitude_engine"
+
+
+def gcs_run_prefix(phase: str, ticker: str, tf: str) -> str:
+    return f"{GCS_PREFIX}/{phase}/{ticker.lower()}_{tf}"
+
+
+# Tables for Phase 2 + 4 (NOT created by default — only when those phases
+# are dispatched).
+NEW_INDICATORS_TABLE = "market_data_indicators"
+NEW_CROSS_ASSET_TABLE = "market_data_cross_asset"
+
+
+@dataclass(frozen=True)
+class MagConfig:
+    """Snapshot of effective config for one walk-forward dispatch."""
+    phase: str = "phase0"
+    tickers: Sequence[str] = TICKERS
+    timeframes: Sequence[str] = TIMEFRAMES
+    cutoffs: Sequence[str] = tuple(DEFAULT_CUTOFFS)
+    calibration: str = DEFAULT_CALIBRATION
+    cv: int = DEFAULT_CV

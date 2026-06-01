@@ -878,6 +878,52 @@ deploy_strat_engine() {
         --quiet
 }
 
+# ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
+# Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
+# Walk-forward research only — NO production hooks. Same image as strat-engine.
+#
+# Common entry points:
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells"
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase1,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
+deploy_magnitude_engine() {
+    echo "Deploying magnitude-engine job (task-parallel)..."
+    local research_image="${IMAGE}:research"
+    # Task-parallel design:
+    #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
+    #                                   one per (phase, ticker, tf) cell of
+    #                                   plan=no_backfill (3 phases × 9).
+    #   --task-timeout 5400           — 90 min per cell (one cell ≤ 60 min
+    #                                   in practice with all 4 CPUs to itself)
+    #   --memory 8Gi --cpu 4          — per-task allocation
+    #   --max-retries 0               — Rule 0: a stuck cell fails loud
+    # Run-time plan is chosen at EXECUTE time via --update-env-vars=MAG_PLAN=...
+    # (default plan stamped here is no_backfill so a bare execute works).
+    local plan_default=no_backfill
+    local plan_size=27
+    gcloud run jobs create magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --quiet
+}
+
 # ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
 # Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
 # Cloud Run Job itself stays around briefly so any in-flight references
@@ -911,16 +957,19 @@ deploy_weekend() {
 # ── Data-fetching jobs ────────────────────────────────────────────────────────
 deploy_fetch_market_data() {
     echo "Deploying fetch-market-data job..."
-    # 1800s timeout: with EARNINGS_WINDOW_DAYS=7 we may pull bars for
-    # ~100 tickers; at 150 RPM that's ~80s of AV calls plus per-ticker
-    # indicator computation. 30 min leaves comfortable headroom.
+    # 5400s (90 min) timeout: nightly path (EARNINGS_WINDOW_DAYS=7, ~100
+    # tickers at 150 RPM) finishes in ~5 min. The headroom is for
+    # `--backfill BACKFILL_ALL_HISTORY=true` runs against the full
+    # earnings_history universe (~1,700 tickers); at the premium-tier
+    # 1.0s AV pacing default that's ~30 min, plus per-ticker upsert.
+    # Headroom = ~3x; Cloud Run charges runtime, not the cap.
     local env
     env="$(_env_string),EARNINGS_WINDOW_DAYS=7"
 
     gcloud run jobs create fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 2 \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
@@ -928,7 +977,7 @@ deploy_fetch_market_data() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
@@ -1564,9 +1613,16 @@ deploy_fetch_earnings_history() {
     # This self-heals the OHLCV coverage gap that blocked the
     # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
     # missing reaction rows because their bars weren't ever fetched).
+    # AV_BACKFILL_SLEEP_SECS=1.0: the chained _run_backfill step was
+    # tripping the 7200s timeout every night for 5+ consecutive runs
+    # (audit 2026-05-30 — t8jq5, 4v9br, xwsk8, hf92b, cwftn all died at
+    # ticker [518/627]). Root cause: the hardcoded 13s free-tier sleep
+    # in _run_backfill made ~600 non-skipped tickers cost 13s × 600 =
+    # 2.2h, blowing the budget on retry. We're on premium AV (75 RPM),
+    # so 1.0s/call is safe and cuts wall-clock to ~10 min.
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     local env_string
-    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true"
+    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
@@ -2952,6 +3008,7 @@ case "${1:-help}" in
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
+    magnitude-engine) deploy_magnitude_engine ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;

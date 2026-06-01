@@ -696,6 +696,11 @@ def _add_atr(out, ind, close_col):
     h = out['High']
     l = out['Low']
     out[ind.atr_col] = calculate_atr(h, l, c, ind.atr_period)
+    # Additional ATR windows (e.g. ATR20 for research / longer-horizon
+    # vol gauges). Skip the primary period to avoid recomputing it.
+    for p in ind.atr_extra_periods:
+        if p != ind.atr_period:
+            out[f'ATR{p}'] = calculate_atr(h, l, c, p)
     # Phase 0.7.x — short/long ATR ratio for the `atr_expansion` gate.
     # Values > 1 = recent volatility above baseline (regime expansion).
     out['ATR_Expansion'] = calculate_atr_expansion(h, l, c, short=5, long=20)
@@ -707,6 +712,11 @@ def _add_rsi(out, ind, close_col):
     c = out[close_col]
     out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)
     out[ind.rsi_fast_col] = calculate_rsi(c, ind.rsi_fast_period)
+    # Additional RSI windows (e.g. RSI30). Skip any period that matches
+    # the primary or fast period — already computed above.
+    for p in ind.rsi_extra_periods:
+        if p not in (ind.rsi_period, ind.rsi_fast_period):
+            out[f'RSI{p}'] = calculate_rsi(c, p)
     # Phase 0.7.x — signed 3-bar RSI delta for the directional
     # `rsi_thrust` momentum gate.
     out['RSI_Thrust_3'] = calculate_rsi_thrust(out[ind.rsi_col], lookback=3)
@@ -824,6 +834,20 @@ def _add_price_levels(out, ind, close_col):
     out['Daily_Range'] = h - l
     out['Daily_Range_Pct'] = (h - l) / c * 100.0
     out['Close_vs_Range'] = (c - l) / (h - l).where((h - l) > 0, np.nan)
+    # Same values under the canonical snake_case names the SQL writer
+    # maps to `market_data_daily.high_low_spread{,_pct}`. Pre-2026-05-27,
+    # only Daily_Range[_Pct] existed in indicator output and the snake_case
+    # schema columns shipped all-NaN.
+    out['high_low_spread'] = out['Daily_Range']
+    out['high_low_spread_pct'] = out['Daily_Range_Pct']
+
+    # Annualised historical volatility (single source of truth — pre-fix
+    # each writer recomputed `volatility_20d` separately, and the 5-day
+    # variant was simply missing). The snake_case key matches the SQL
+    # column so the standard writer loop persists it without renaming.
+    returns = c.pct_change()
+    for p in ind.volatility_periods:
+        out[f'volatility_{p}d'] = returns.rolling(p).std() * np.sqrt(252)
     return out
 
 

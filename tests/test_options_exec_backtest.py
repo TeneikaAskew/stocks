@@ -23,20 +23,44 @@ from lib.options_exec_backtest.pricing import (
 # ─────────────────────────────────────────── BSM parity ───────────────────────────────────
 
 def _pvv_price(S, K, T, sigma, r, q, kind):
-    """Reference price from py_vollib_vectorized. Loaded lazily because the
-    library isn't a hard dep — if missing, the parity test is skipped."""
-    try:
-        from py_vollib_vectorized.api import price_dataframe
-    except ImportError:
-        pytest.skip("py_vollib_vectorized not installed")
-    flag = "c" if kind == "call" else "p"
-    df = pd.DataFrame({
-        "S": [S], "K": [K], "t": [T], "r": [r], "q": [q], "flag": [flag],
-        "price": [0.0],  # not used for forward price; library wants the col
-    })
-    # The vectorized API exposes black_scholes_merton via `price`:
-    from py_vollib.black_scholes_merton import black_scholes_merton as bsm_ref
-    return float(bsm_ref(flag, S, K, T, r, sigma, q))
+    """Reference Black-Scholes-Merton price computed inline from the
+    textbook formula. Uses only scipy (already a hard dep).
+
+    HISTORICAL NOTE on why this isn't `py_vollib`:
+    Earlier versions of this test used `py_vollib_vectorized` or
+    `py_vollib` as the reference. Both are now poisoned by an import-
+    time side effect: when `py_vollib_vectorized.api` loads anywhere in
+    the test session (e.g. via `pytest.importorskip("py_vollib_vectorized")`
+    at the top of tests/test_options_greeks.py), it monkey-patches both
+    `py_vollib.black_scholes_merton.black_scholes_merton` AND
+    `vollib.black_scholes_merton.black_scholes_merton` to route through
+    a numba-decorated `_black_scholes_merton_vectorized_call`. Inside
+    that path, `black(F, K, sigma, T, q)` has a self-recursive call
+    `return intrinsic + black(F, K, sigma, T, -q)` that current numba
+    can't type-infer ("cannot type infer runaway recursion"). The
+    monkey-patch is process-wide and can't be reversed.
+
+    BSM is well-known textbook math. Both production (`bs_price`) and
+    this reference follow the same formula; they will agree to
+    numerical precision. That's the property this parity test verifies.
+    """
+    from scipy.stats import norm
+    if T <= 0:
+        # Expired option — intrinsic
+        intrinsic = max(S - K, 0.0) if kind == "call" else max(K - S, 0.0)
+        return float(intrinsic)
+    if sigma <= 0:
+        # Degenerate — return discounted forward intrinsic
+        F = S * math.exp((r - q) * T)
+        intrinsic = max(F - K, 0.0) if kind == "call" else max(K - F, 0.0)
+        return float(math.exp(-r * T) * intrinsic)
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    if kind == "call":
+        price = S * math.exp(-q * T) * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+    else:
+        price = K * math.exp(-r * T) * norm.cdf(-d2) - S * math.exp(-q * T) * norm.cdf(-d1)
+    return float(price)
 
 
 PARITY_GRID = [

@@ -29,8 +29,8 @@ from lib.indicators import (
 # the byte-identical contract ~25 callers + an in-flight backfill depend on; if
 # this list changes, the change to add_all_indicators was NOT a pure refactor.
 _PINNED_ADD_ALL_COLUMNS = {
-    'ATR14', 'ATR_Expansion', 'BB_Lower', 'BB_Middle', 'BB_Pct', 'BB_Squeeze',
-    'BB_Upper', 'BB_Width', 'Close_vs_Range', 'Consecutive_Down',
+    'ATR14', 'ATR20', 'ATR_Expansion', 'BB_Lower', 'BB_Middle', 'BB_Pct',
+    'BB_Squeeze', 'BB_Upper', 'BB_Width', 'Close_vs_Range', 'Consecutive_Down',
     'Consecutive_Down_5', 'Consecutive_Up', 'Consecutive_Up_5', 'Daily_Range',
     'Daily_Range_Pct', 'EMA20', 'EMA50', 'EMA9', 'EMA9_Slope', 'EMA_Spread_ATR',
     'MACD', 'MACD_Histogram', 'MACD_Signal', 'Mins_Since_Open', 'OBV',
@@ -44,10 +44,13 @@ _PINNED_ADD_ALL_COLUMNS = {
     'ORB_5m_High_Pct', 'ORB_5m_Low', 'ORB_5m_Low_Pct', 'ORB_5m_Mid',
     'ORB_5m_Mid_Pct', 'ORB_5m_Range', 'ORB_5m_Trend', 'ORB_5m_Within_Range',
     'Price_Change', 'Price_vs_EMA20', 'Price_vs_EMA20_ATR', 'Price_vs_EMA9',
-    'Price_vs_EMA9_ATR', 'Price_vs_VWAP', 'Price_vs_VWAP_ATR', 'RSI14', 'RSI9',
-    'RSI_Divergence', 'RSI_Thrust_3', 'RVOL', 'RVol_Recent_20',
+    'Price_vs_EMA9_ATR', 'Price_vs_VWAP', 'Price_vs_VWAP_ATR', 'RSI14', 'RSI30',
+    'RSI9', 'RSI_Divergence', 'RSI_Thrust_3', 'RVOL', 'RVol_Recent_20',
     'Realized_Vol_Short', 'SMA10', 'SMA20', 'SMA200', 'SMA5', 'SMA50',
     'StochRSI_D', 'StochRSI_K', 'VWAP',
+    # Added on main (merged 2026-05-31): snake_case SQL-writer aliases +
+    # annualised historical volatility periods.
+    'high_low_spread', 'high_low_spread_pct', 'volatility_5d', 'volatility_20d',
 }
 _SOURCE_COLUMNS = {'Time', 'Open', 'High', 'Low', 'Close', 'Volume'}
 
@@ -82,8 +85,9 @@ class TestFeatureTiering:
             f"  added: {sorted(new - _PINNED_ADD_ALL_COLUMNS)}\n"
             f"  removed: {sorted(_PINNED_ADD_ALL_COLUMNS - new)}"
         )
-        # 6 source + 83 indicators = 89 total.
-        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 89
+        # 6 source + 89 indicators = 95 total (89 after the 2026-05-31 main
+        # merge added ATR20/RSI30 + high_low_spread{,_pct} + volatility_{5,20}d).
+        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 95
 
     def test_feature_groups_keys_and_membership(self):
         assert set(FEATURE_GROUPS) == {'signal', 'brief', 'regime', 'strat'}
@@ -321,6 +325,39 @@ class TestAddAllIndicators:
         assert 'BB_Upper' in result.columns
         assert 'MACD' in result.columns
         assert 'Consecutive_Up' in result.columns
+
+    def test_emits_secondary_atr_rsi_volatility_and_spread(self, sample_ohlcv):
+        """Regression guard for the 2026-05-27 silent-NaN fix:
+        ATR20, RSI30, volatility_5d, volatility_20d, high_low_spread,
+        and high_low_spread_pct must be produced by default. Pre-fix,
+        each was declared in market_data_daily but never computed —
+        every row shipped NaN in those columns.
+        """
+        result = add_all_indicators(sample_ohlcv)
+        for col in (
+            'ATR20', 'RSI30',
+            'volatility_5d', 'volatility_20d',
+            'high_low_spread', 'high_low_spread_pct',
+        ):
+            assert col in result.columns, f"{col} missing from add_all_indicators output"
+            # At least one non-NaN value must exist on a >20-bar sample.
+            assert result[col].notna().any(), f"{col} is all-NaN — computation never ran"
+
+    def test_daily_indicator_to_sql_column_covers_new_cols(self, sample_ohlcv):
+        """Every key in DAILY_INDICATOR_TO_SQL_COLUMN must resolve to a
+        real column in add_all_indicators output. Pre-fix, ATR20/RSI30/
+        volatility_5d/high_low_spread{,_pct} keys were missing, so the
+        SQL columns shipped NaN. This test pins the mapping ↔ producer
+        contract so a future rename can't silently break it.
+        """
+        from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN
+        result = add_all_indicators(sample_ohlcv)
+        missing = [src for src in DAILY_INDICATOR_TO_SQL_COLUMN
+                   if src not in result.columns]
+        assert not missing, (
+            f"DAILY_INDICATOR_TO_SQL_COLUMN references columns not produced "
+            f"by add_all_indicators: {missing}"
+        )
 
     def test_orb_columns_present_when_time_exists(self, sample_ohlcv):
         """add_all_indicators should produce ORB columns when Time column exists."""

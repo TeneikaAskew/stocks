@@ -274,7 +274,6 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     Calling this after the OHLCV row for fetch_date has been upserted ensures
     that every indicator uses the correct daily-close series (not 1-min bars).
     """
-    import numpy as np
     from lib.indicators import add_all_indicators
     from gcp.database import query_to_dataframe, upsert_dataframe
 
@@ -298,13 +297,10 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     # Reverse to chronological order (oldest first)
     df = df.iloc[::-1].reset_index(drop=True)
 
-    # add_all_indicators skips VWAP/ORB when 'Time' column is absent — correct for daily
+    # add_all_indicators skips VWAP/ORB when 'Time' column is absent — correct for daily.
+    # As of 2026-05-27 volatility_{5,20}d and high_low_spread{,_pct} are also produced
+    # by add_all_indicators (see IndicatorConfig.volatility_periods); no manual recompute.
     enriched = add_all_indicators(df, close_col='Close')
-
-    # 20-day annualised historical volatility (not in add_all_indicators)
-    enriched['volatility_20d'] = (
-        enriched['Close'].pct_change().rolling(20).std() * np.sqrt(252)
-    )
 
     _INT_COLS = {'consecutive_up', 'consecutive_down'}
     last = enriched.iloc[-1]
@@ -615,6 +611,10 @@ def _earnings_tickers_in_window(
 
 BACKFILL_LOOKBACK_DAYS = 365 * 10
 BACKFILL_DEPTH_THRESHOLD_BARS = 1500   # ~6y; below this needs full pull
+# Per-call delay between AV requests in --backfill mode. Default 13s ≈ 5 RPM
+# (free-tier safe). Premium AV (75-150 RPM) can run at 1s. Override via
+# AV_BACKFILL_SLEEP_SECS env var. Float seconds.
+BACKFILL_AV_SLEEP_SECS_DEFAULT = 13.0
 
 
 def _backfill_targets() -> list:
@@ -628,6 +628,14 @@ def _backfill_targets() -> list:
     EVERY ticker in earnings_history — used when backfilling for a
     multi-quarter reactions recompute, where past reporters need OHLCV
     even if they're not in the current options/stock-volume window.
+
+    With ``BACKFILL_ALL_HISTORY=true`` the union also includes tickers
+    that already exist in ``market_data_daily`` but are NOT in
+    earnings_history. Audit 2026-05-30 found 152 such orphans — real
+    S&P 500 names (AAL, AMP, ARI…) that joined the active universe
+    via ``earnings_calendar`` ~35 days prior and only ever got a single
+    bar fetched. Without this union they're invisible to --backfill
+    and stay broken indefinitely.
     """
     if not is_cloud_sql_configured():
         return []
@@ -639,18 +647,25 @@ def _backfill_targets() -> list:
     backfill_all = os.environ.get('BACKFILL_ALL_HISTORY', '').strip().lower() == 'true'
 
     if backfill_all:
-        # Skip the eligible filter — every earnings_history ticker counts.
+        # Skip the eligible filter — every earnings_history ticker counts,
+        # PLUS every ticker already in market_data_daily (catches
+        # universe-expansion orphans not yet in earnings_history).
         sql = """
-            SELECT eh.ticker,
+            WITH targets AS (
+                SELECT DISTINCT ticker FROM earnings_history
+              UNION
+                SELECT DISTINCT ticker FROM market_data_daily
+            )
+            SELECT t.ticker,
                    COALESCE(mdd.n, 0)        AS bar_count,
                    mdd.max_date              AS max_date
-              FROM (SELECT DISTINCT ticker FROM earnings_history) eh
+              FROM targets t
               LEFT JOIN (
                   SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
                     FROM market_data_daily
                    GROUP BY ticker
-              ) mdd ON mdd.ticker = eh.ticker
-             ORDER BY eh.ticker
+              ) mdd ON mdd.ticker = t.ticker
+             ORDER BY t.ticker
         """
     else:
         sql = """
@@ -773,13 +788,22 @@ def _run_backfill() -> None:
     n_compact = sum(1 for _, _, _, sz in pending if sz == 'compact')
     skipped = len(plan) - len(pending)
 
+    try:
+        sleep_secs = float(os.environ.get('AV_BACKFILL_SLEEP_SECS',
+                                          BACKFILL_AV_SLEEP_SECS_DEFAULT))
+    except ValueError:
+        sleep_secs = BACKFILL_AV_SLEEP_SECS_DEFAULT
+    if sleep_secs < 0:
+        sleep_secs = 0.0
+
     log.info("Backfill mode")
     log.info("  Eligible targets: %d", len(plan))
     log.info("  Already current (skipped): %d", skipped)
     log.info("  Full pulls (~20y, filtered to 10y on write): %d", n_full)
     log.info("  Compact pulls (last 100 days): %d", n_compact)
-    log.info("  Estimated wall clock: %d min (13s rate limit)",
-             len(pending) * 13 // 60 + 1)
+    log.info("  AV sleep: %.2fs/call (env=AV_BACKFILL_SLEEP_SECS)", sleep_secs)
+    log.info("  Estimated wall clock: %d min",
+             int(len(pending) * sleep_secs) // 60 + 1)
 
     if not pending:
         log.info("Nothing to do — all eligible tickers are already current.")
@@ -807,8 +831,8 @@ def _run_backfill() -> None:
                 upserted += len(df)
                 log.info("    %d bars upserted: %s..%s",
                          len(df), df['date'].min(), df['date'].max())
-        if i < len(pending) - 1:
-            _time.sleep(13)  # AV rate limit (5 rpm)
+        if i < len(pending) - 1 and sleep_secs > 0:
+            _time.sleep(sleep_secs)
 
     log.info("Backfill done: %d bars upserted across %d tickers",
              upserted, len(pending) - len(failures))
