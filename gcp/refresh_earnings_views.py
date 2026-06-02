@@ -31,7 +31,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -235,7 +234,13 @@ def refresh_daily(days_ahead: int) -> None:
             'lean_score':          _safe_float(lean_row.get('lean_score')),
             'long_winner_count':   _safe_int(lean_row.get('long_winner_count')),
             'short_winner_count':  _safe_int(lean_row.get('short_winner_count')),
-            'last_3_events':       json.dumps(last3_by_ticker.get(ticker, [])),
+            # Pass the Python list directly. SQLAlchemy + pg8000 bind
+            # Python list/dict to JSONB as a proper JSON array, NOT as
+            # a JSON-encoded string. (Calling json.dumps() here would
+            # produce a string that Postgres stores as a JSON string
+            # literal — frontend would get "[...]" instead of the
+            # iterable array.) Codex review on PR #585.
+            'last_3_events':       last3_by_ticker.get(ticker, []),
         })
 
     # ── Replace today's rows

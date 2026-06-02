@@ -56,9 +56,10 @@ history_deduped AS (
              fiscal_date_ending DESC NULLS LAST
 ),
 atm_picks AS (
-    -- For each (symbol, snapshot_date, expiration), pick the strike
-    -- closest to d_minus_1_close (the underlying at T-1). Window-by
-    -- abs(strike - underlying), keep rank=1.
+    -- For each (symbol, snapshot_date, expiration, option_type), pick
+    -- the strike closest to d_minus_1_close (the underlying at T-1).
+    -- ALSO filters to post-event expirations (the straddle must
+    -- capture the earnings reaction).
     SELECT
         eos.symbol AS ticker,
         eos.snapshot_date,
@@ -68,6 +69,7 @@ atm_picks AS (
         (eos.bid + eos.ask) / 2.0 AS mid_price,
         eos.implied_volatility,
         er.d_minus_1_close AS spot_t_minus_1,
+        er.reported_date,
         ROW_NUMBER() OVER (
             PARTITION BY eos.symbol, eos.snapshot_date, eos.expiration, eos.option_type
             ORDER BY abs(eos.strike - er.d_minus_1_close)
@@ -80,23 +82,43 @@ atm_picks AS (
       AND eos.bid > 0 AND eos.ask > 0
       AND er.d_minus_1_close IS NOT NULL
       AND er.d_minus_1_close > 0
+      AND eos.expiration >= er.reported_date
 ),
-atm_per_event AS (
-    -- Collapse to one row per (ticker, reported_date) with both
-    -- ATM call + ATM put mids from the nearest-expiry chain.
-    -- We pick the smallest expiration that's >= reported_date so the
-    -- straddle captures the earnings event.
+chosen_expiry AS (
+    -- One row per (ticker, snapshot_date): the SINGLE earliest
+    -- post-event expiration that has at least one ATM strike (rank=1).
+    -- Aggregating MIN(expiration) over rank_by_dist=1 rows guarantees
+    -- we don't mix call/put from different expiries. The straddle
+    -- MUST be priced from one consistent contract pair.
     SELECT
         ticker,
-        snapshot_date + INTERVAL '1 day' AS reported_date,
-        MIN(atm_strike) FILTER (WHERE option_type='calls' AND rank_by_dist=1) AS atm_strike,
-        MIN(mid_price) FILTER (WHERE option_type='calls' AND rank_by_dist=1) AS call_mid,
-        MIN(mid_price) FILTER (WHERE option_type='puts'  AND rank_by_dist=1) AS put_mid,
-        MIN(implied_volatility) FILTER (WHERE option_type='calls' AND rank_by_dist=1) AS call_iv,
-        MIN(implied_volatility) FILTER (WHERE option_type='puts'  AND rank_by_dist=1) AS put_iv,
-        MIN(spot_t_minus_1) AS spot_t_minus_1
+        snapshot_date,
+        MIN(expiration) AS chosen_exp
     FROM atm_picks
+    WHERE rank_by_dist = 1
     GROUP BY ticker, snapshot_date
+),
+atm_per_event AS (
+    -- Collapse to one row per (ticker, reported_date) using only the
+    -- rows that match the chosen_expiry. Now call_mid + put_mid are
+    -- guaranteed to come from the SAME expiry, and ditto for IVs and
+    -- the strike (call and put are at the same ATM strike by construction).
+    SELECT
+        ap.ticker,
+        ap.snapshot_date + INTERVAL '1 day' AS reported_date,
+        MAX(ap.atm_strike)         FILTER (WHERE ap.option_type='calls') AS atm_strike,
+        MAX(ap.mid_price)          FILTER (WHERE ap.option_type='calls') AS call_mid,
+        MAX(ap.mid_price)          FILTER (WHERE ap.option_type='puts')  AS put_mid,
+        MAX(ap.implied_volatility) FILTER (WHERE ap.option_type='calls') AS call_iv,
+        MAX(ap.implied_volatility) FILTER (WHERE ap.option_type='puts')  AS put_iv,
+        MAX(ap.spot_t_minus_1) AS spot_t_minus_1
+    FROM atm_picks ap
+    JOIN chosen_expiry ce
+        ON ce.ticker = ap.ticker
+       AND ce.snapshot_date = ap.snapshot_date
+       AND ap.expiration = ce.chosen_exp
+    WHERE ap.rank_by_dist = 1
+    GROUP BY ap.ticker, ap.snapshot_date
 ),
 long_wins AS (
     -- Per-event flag: which long structures won here?
