@@ -101,9 +101,51 @@ For this audit: defer to a follow-up. Comment the issue (#574) with the diagnosi
 
 The job is deprecated per `deploy.sh` (replaced by `strat-engine`). It still has an active scheduler from before deprecation, so it fires + fails. Close the scheduler or delete the job.
 
-### F8 · [INFO · INSPECT] `magnitude-engine` (issues #569, #570, #571), `fetch-av-options-historical-intraday` (#573), `options-exec-backtest` (#572)
+### F8 · [INFO · INSPECT] `fetch-av-options-historical-intraday` (#573), `options-exec-backtest` (#572)
 
 Not investigated in detail in this audit; logged here for the issue-cleanup pass.
+
+### F9 · [HIGH · PANDAS-3.0] `historical-signals-watchlist-qjllq` crashed on every ticker (`fillna(method=)` removed)
+
+**When**: 2026-06-02 05:00 UTC.
+
+**Symptom**: `TypeError: NDFrame.fillna() got an unexpected keyword argument 'method'`, raised on IWM / SPY / QQQ / every ticker the job processed.
+
+**Cause**: `lib/trading_analysis.py:_calculate_order_blocks` called `fillna(method='ffill', limit=30)` three times (lines 653-655). The `method` kwarg was deprecated in pandas 2.1 and **REMOVED in pandas 3.0**. The production image runs pandas 3.0.3 since the last pin bump.
+
+**Job-level disposition**: The per-ticker exception handler in `scripts/run_historical_signals.py:_process_ticker` logged the traceback and continued, so the job reported `Execution completed successfully in 50.18s` — but produced ZERO output. This is a silent-fallback violation of CLAUDE.md §3.7 (data-quality counter would catch it; exit-non-zero on `errors == n_tickers` would catch it).
+
+**Fix**: ✅ This PR. Replaced with `.ffill(limit=30)` — semantically identical, supported in every pandas version from 1.0 forward. Added `tests/test_order_blocks_pandas3_compat.py` (3 cases).
+
+**Follow-up**: Tighten the per-ticker exception handler in `scripts/run_historical_signals.py` so `errors == n_tickers` exits non-zero. Currently it can't distinguish "all tickers crashed" from "all tickers succeeded."
+
+### F10 · [HIGH · INFRA · CAPACITY] `magnitude-engine-wtxb4` Cloud SQL connection pool exhausted
+
+**When**: 2026-06-02 03:03 UTC.
+
+**Symptom**:
+- 23 simultaneous "loading strat_features_5m LEFT JOIN strat_features_levels_5m (ticker=IWM, ...)" log lines within 14 ms (= 23 parallel DB connections).
+- 5× "levels join failed (DatabaseError)" warnings.
+- SQLAlchemy traceback through `google.cloud.sql.connector` → `Shutting down user disabled instance` (repeated 20+ times).
+- Container exited 1.
+
+**Cause**: Magnitude-engine launches parallel tasks (CR Jobs `--parallelism=N`) — each independently connects to Cloud SQL via the python connector. When N is high enough, the connector library hits its internal "instance" caching limit and the next caller sees "Shutting down user disabled instance" from a torn-down cached instance. Cloud SQL itself is `RUNNABLE / ALWAYS` (verified), so the binding constraint is connector-side, not DB-side.
+
+**Recurring**: Yes — 3 open issues (#569, #570, #571), all `magnitude-engine`.
+
+**Fix options** (in increasing order of effort):
+
+1. **Lower task parallelism** — investigate whether `--parallelism` was bumped recently; revert if so.
+2. **Single-process connector** — instantiate `Connector()` once at module level and share across tasks; the connector caches "instances" but per-process. Avoid re-creating in each subprocess.
+3. **Retry-with-backoff on `DatabaseError`** — `_handle_dbapi_exception_noconnection` is a transient surface; one retry would mask the brief window during instance refresh.
+
+(2) is the right fix; (3) is the band-aid. Out of scope for this audit.
+
+### F11 · [MEDIUM · GUARDRAIL] `historical-signals-watchlist` reports "success" while producing zero output
+
+Already covered as the side-channel of F9, but called out separately because the same pattern likely hides in other long-running per-ticker jobs. **Pattern**: `for ticker: try: ... except: log_and_continue()` with no global error counter and no "errors == n" exit-1 trip.
+
+**Fix**: Audit every `scripts/run_*.py` for the swallow-and-continue pattern; ensure each has a job-level error-rate threshold.
 
 ## Summary table
 
@@ -116,7 +158,10 @@ Not investigated in detail in this audit; logged here for the issue-cleanup pass
 | F5 | `strat-engine` (NameError) | LOW | Image-older | Self-heals | None needed |
 | F6 | `backfill-daily-indicators` (ONON) | MEDIUM | Data-quality (granularity) | Typed-outcome classification | Follow-up PR |
 | F7 | `p7b-next-candle-classifier` | INFO | Deprecated scheduler | Disable scheduler | Follow-up |
-| F8 | magnitude-engine + 2 | INFO | Triage backlog | Per-issue investigation | Follow-up |
+| F8 | `fetch-av-options-historical-intraday` + `options-exec-backtest` | INFO | Triage backlog | Per-issue investigation | Follow-up |
+| **F9** | `historical-signals-watchlist` | HIGH | pandas 3.0 API removal | `.ffill(limit=N)` replaces `fillna(method='ffill', limit=N)` | ✅ Fixed in this branch |
+| **F10** | `magnitude-engine` | HIGH | Cloud SQL connector pool exhaustion | Share connector across tasks | Follow-up |
+| **F11** | `run_historical_signals` swallow-pattern | MEDIUM | Silent fallback | Job-level error-rate threshold | Follow-up |
 
 ## What this PR ships
 
