@@ -1672,6 +1672,44 @@ deploy_compute_earnings_reactions() {
         --quiet
 }
 
+
+# ── refresh-earnings-views (frontend data prep, 2026-06-02) ───────────────────
+# Two modes via --args="--mode=weekly" or --args="--mode=daily":
+#   weekly: REFRESH MATERIALIZED VIEW × 2 (earnings_event_outcomes,
+#           earnings_ticker_lean). Heavy join, ~2-5 min wall-clock.
+#   daily:  Rebuilds earnings_upcoming_with_history (next 14 days,
+#           decorated with lean stats + both recommendation modes).
+#           Light query work, ~30s typical.
+# Single Cloud Run Job + two Scheduler entries with different --args.
+#
+# Capacity (Rule 0): weekly mode is the bottleneck — REFRESH
+# MATERIALIZED VIEW CONCURRENTLY on 46k+47k rows takes ~3 min. memory
+# 1Gi is plenty (no row materialisation in our process). task-timeout
+# 1200s (20 min) = ~4x headroom over the measured 3 min.
+deploy_refresh_earnings_views() {
+    echo "Deploying refresh-earnings-views job..."
+    gcloud run jobs create refresh-earnings-views \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.refresh_earnings_views" \
+        --args="--mode=weekly" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update refresh-earnings-views \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1200 \
+        --command "python,-m,gcp.refresh_earnings_views" \
+        --args="--mode=weekly" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # Backtest pipeline (migrated off the .github/workflows/backtest-pipeline.yml
 # `report` job — that workload is data processing, not CI). Runs
 # scripts/run_pipeline.py: per ticker it simulates a base + strat backtest
@@ -2532,6 +2570,42 @@ _schedule() {
 # Plain Cloud Scheduler triggers don't propagate any context to the Job; the
 # job's persisted env is whatever was last set by a manual `gcloud run jobs
 # execute --update-env-vars=...`, which silently corrupts the run-kind label.
+# Variant of _schedule that lets a single Cloud Run Job be invoked by
+# multiple schedulers with DIFFERENT --args. Used for
+# refresh-earnings-views, which has a weekly mode (REFRESH MAT VIEW × 2)
+# and a daily mode (rebuild upcoming_with_history). The Cloud Scheduler
+# job posts containerOverrides.args[] to the Cloud Run Job :run endpoint,
+# replacing the spec's default --args for THAT execution.
+#
+# Args list is passed as a comma-separated string (e.g. "--mode=daily").
+_schedule_args() {
+    local NAME=$1 CRON=$2 JOB=$3 ARGS_CSV=$4
+    # Build args JSON array from CSV: "--mode=daily,--days=14" → ["--mode=daily","--days=14"]
+    local ARGS_JSON
+    ARGS_JSON=$(echo "${ARGS_CSV}" | python3 -c 'import sys,json; print(json.dumps([s for s in sys.stdin.read().strip().split(",") if s]))')
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --uri "$(_job_uri "${JOB}")" \
+            --message-body "${BODY}" \
+            --quiet
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet
+    fi
+}
+
+
 _schedule_brief() {
     local NAME=$1 CRON=$2 JOB=$3
     local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BRIEF_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
@@ -2806,6 +2880,40 @@ deploy_schedulers() {
     # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
     # Fires after the refresh chain so the data is current.
     _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
+    # Earnings frontend data prep (mat view refreshes + upcoming rebuild).
+    # Weekly: Sun 8:00 PM ET — REFRESH MATERIALIZED VIEW × 2 after the
+    #   refresh chain (7:00/7:15/7:30/7:45 PM) finishes its source-data
+    #   refresh.
+    # Daily: 7:30 AM ET weekdays — rebuilds earnings_upcoming_with_history
+    #   before the 8:30 AM morning brief.
+    _schedule "refresh-earnings-views-weekly"     "0 20 * * 0"   "refresh-earnings-views"
+    _schedule_args "refresh-earnings-views-daily" "30 7 * * 1-5" "refresh-earnings-views" "--mode=daily"
+
+    # Platform keep-warm — solo-user pattern (cheaper than min-instances=1
+    # at $0.01/month vs $3-5/month). Hits /api/earnings/health/ping every
+    # 5 min, 7:30 AM - 5:00 PM ET, weekdays. Cloud Run's 15-min idle
+    # timeout keeps resetting → instance stays alive all day. After
+    # hours: instance scales to 0, cold start returns. Acceptable for
+    # rare after-hours use.
+    local PLATFORM_URL
+    PLATFORM_URL=$(gcloud run services describe trading-platform \
+        --region "${REGION}" --format='value(status.url)' 2>/dev/null \
+        || echo "https://trading-platform-5sjtb3yl7a-ue.a.run.app")
+    if gcloud scheduler jobs describe "keep-platform-warm-business-hours" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
+        gcloud scheduler jobs update http "keep-platform-warm-business-hours" \
+            --location "${REGION}" \
+            --schedule "*/5 7-17 * * 1-5" \
+            --uri "${PLATFORM_URL}/api/earnings/health/ping" \
+            --quiet
+    else
+        gcloud scheduler jobs create http "keep-platform-warm-business-hours" \
+            --location "${REGION}" \
+            --schedule "*/5 7-17 * * 1-5" \
+            --time-zone "America/New_York" \
+            --uri "${PLATFORM_URL}/api/earnings/health/ping" \
+            --http-method GET \
+            --quiet
+    fi
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
@@ -3010,6 +3118,7 @@ case "${1:-help}" in
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
     earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
+    refresh-earnings-views) build_image && deploy_refresh_earnings_views ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
