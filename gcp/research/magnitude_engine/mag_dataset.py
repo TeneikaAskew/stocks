@@ -363,10 +363,22 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
 
     # Phase-specific feature additions. Phase-1 volatility-expansion features
     # now come from the spine (persisted in strat_features by add_all_indicators)
-    # — they are loaded automatically with the base frame, so there is nothing to
-    # compute here. Verify they're present rather than silently re-deriving.
-    if phase in ("phase1",):
+    # — they are loaded automatically with the base frame.
+    #
+    # CRITICAL phase-isolation: because these columns are now PERSISTED (vs the
+    # old inline path that only computed them when phase=='phase1'), every phase
+    # would otherwise train on them via load_strat_dataset's SELECT s.*,
+    # contaminating the baseline/other-phase comparisons. To keep each phase
+    # isolating only ITS additions (the spec contract), DROP the phase-1 spine
+    # columns whenever phase != 'phase1'. phase1 keeps + verifies them.
+    if phase == "phase1":
         _require_phase1_spine_features(df)
+    else:
+        _drop = [c for c in _PHASE1_SPINE_COLUMNS if c in df.columns]
+        if _drop:
+            df = df.drop(columns=_drop)
+            log.info("phase=%s: dropped %d persisted phase-1 spine columns to "
+                     "preserve phase isolation (%s)", phase, len(_drop), _drop)
     if phase in ("phase3",):
         df = _add_phase3_features(df, engine)
     if phase in ("phase2",):
