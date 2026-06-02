@@ -177,6 +177,23 @@ CHECKS: list[dict] = [
         "expected_lag_hours": 72,   # FRED publishes with 1-2 day lag
         "per_ticker": False,
     },
+    # historical_signals — written by historical-signals-watchlist daily at
+    # 05:00 UTC. Audit 2026-06-02 (F11 in
+    # docs/incidents/2026-06-01-pipeline-failures-audit.md) found this table
+    # going stale silently because the writer job's per-ticker exception
+    # handler swallowed errors and reported `success` even when ALL tickers
+    # crashed. Tracking it here means the next watchdog run after a silent
+    # zero-output day will flag it.
+    {
+        "name": "historical_signals",
+        "ts_column": "inserted_at",
+        "ts_is_date": False,
+        "expected_lag_hours": 36,           # daily cron at 05:00 UTC + 6h buffer
+        "per_ticker": False,
+        "writer_job": "historical-signals-watchlist",
+        "settle_hour_et": 1,                # 05:00 UTC ≈ 01:00 ET
+        "tolerate_holidays": True,
+    },
 ]
 
 
@@ -283,6 +300,13 @@ class FreshnessRow:
     expected_max_hours: float
     status: str  # ok | warn | stale | unknown
     row_count_recent: int = 0
+    # Optional: name of the Cloud Run Job whose successful execution should
+    # produce rows in this table. When set, a stale row points at the
+    # likely culprit job — the operator doesn't have to grep deploy.sh to
+    # know which fetcher to investigate. Surfaced via to_dict() / JSON
+    # output and the terminal `format_terminal` summary. Added 2026-06-02
+    # for the F11 silent-fallback follow-up.
+    writer_job: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -378,6 +402,7 @@ def _query_freshness_one(
             lag_hours=None,
             expected_max_hours=check["expected_lag_hours"],
             status="unknown",
+            writer_job=check.get("writer_job"),
         )
 
     if df.empty or df["last_row_at"].iloc[0] is None:
@@ -389,6 +414,7 @@ def _query_freshness_one(
             lag_hours=None,
             expected_max_hours=check["expected_lag_hours"],
             status="stale",
+            writer_job=check.get("writer_job"),
         )
 
     last_row_at = df["last_row_at"].iloc[0]
@@ -437,6 +463,7 @@ def _query_freshness_one(
         expected_max_hours=expected_max,
         status=status,
         row_count_recent=row_count_recent,
+        writer_job=check.get("writer_job"),
     )
 
 
@@ -533,6 +560,7 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
             lag_hours=None,
             expected_max_hours=0,
             status="stale",
+            writer_job=check.get("writer_job"),
             row_count_recent=len(expected_days) - len(missing),
         ))
     return rows
@@ -668,6 +696,10 @@ def format_terminal(report: FreshnessReport) -> str:
         lag = f"{r.lag_hours:.1f}" if r.lag_hours is not None else "—"
         lim = f"{r.expected_max_hours:.0f}"
         lines.append(f"  {r.table:<28} {ticker:<7} {last:<22} {lag:>10} {lim:>8}  {icon} {r.status}")
+        # Surface the responsible writer-job under stale/warn rows so the
+        # operator doesn't have to grep deploy.sh to know who to debug.
+        if r.writer_job and r.status in ("stale", "warn"):
+            lines.append(f"  {DIM}    └─ writer-job: {r.writer_job}{RESET}")
 
     lines.append("")
     overall_color = {"ok": GREEN, "warn": YELLOW, "stale": RED, "unknown": DIM}[report.overall_status]
