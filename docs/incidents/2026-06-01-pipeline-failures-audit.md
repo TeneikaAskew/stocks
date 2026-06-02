@@ -151,17 +151,17 @@ Already covered as the side-channel of F9, but called out separately because the
 
 | # | Job | Severity | Cause class | Fix | Status |
 |---|---|---|---|---|---|
-| F1 | `fetch-earnings-history` | HIGH | Image-drift | Re-deploy from workstation | Action needed |
-| F2 | `freshness-watchdog` | MEDIUM | Config (timeout) | Bump 900 → 3600s | ✅ Fixed in this branch |
-| F3 | `strat-engine` (OOM) | HIGH | Capacity (operator-mode) | Document `--rebuild` mem footprint | ✅ Doc'd in this branch |
+| F1 | `fetch-earnings-history` | HIGH | Image-drift | Re-pin image to current `:latest` | ✅ **Live-fixed** 2026-06-02 12:30 UTC (xtdd5 smoke-test: `AV sleep: 1.00s/call`, ETA 8 min) |
+| F2 | `freshness-watchdog` | MEDIUM | Config (timeout) | Bump 900 → 3600s | ✅ Live + deploy.sh |
+| F3 | `strat-engine` (OOM) | HIGH | Capacity (operator-mode) | Document `--rebuild` mem footprint | ✅ Doc'd in deploy.sh |
 | F4 | `strat-engine` (argparse) | LOW | User error | Runbook clarification | Doc only |
-| F5 | `strat-engine` (NameError) | LOW | Image-older | Self-heals | None needed |
-| F6 | `backfill-daily-indicators` (ONON) | MEDIUM | Data-quality (granularity) | Typed-outcome classification | Follow-up PR |
-| F7 | `p7b-next-candle-classifier` | INFO | Deprecated scheduler | Disable scheduler | Follow-up |
+| F5 | `strat-engine` (NameError) | LOW | Image-older | Self-heals via F1 fix | None needed |
+| F6 | `backfill-daily-indicators` (ONON) | MEDIUM | Data-quality (granularity) | 50% failure-rate threshold (was: any-error→exit 1) | ✅ **Fixed in this branch** + 6 regression-test cases |
+| F7 | `p7b-next-candle-classifier` | INFO | Stale failure issue | Scheduler already disabled; close stale issue | ✅ Issue #555 closed |
 | F8 | `fetch-av-options-historical-intraday` + `options-exec-backtest` | INFO | Triage backlog | Per-issue investigation | Follow-up |
-| **F9** | `historical-signals-watchlist` | HIGH | pandas 3.0 API removal | `.ffill(limit=N)` replaces `fillna(method='ffill', limit=N)` | ✅ Fixed in this branch |
-| **F10** | `magnitude-engine` | HIGH | Cloud SQL connector pool exhaustion | Share connector across tasks | Follow-up |
-| **F11** | `run_historical_signals` swallow-pattern | MEDIUM | Silent fallback | Job-level error-rate threshold | Follow-up |
+| F9 | `historical-signals-watchlist` (pandas 3.0) | HIGH | Dependency API removal | `.ffill(limit=N)` replaces `fillna(method='ffill', limit=N)` | ✅ Fixed in this branch + 3 regression tests |
+| F10 | `magnitude-engine` | HIGH | Cloud SQL connector pool (27 parallel tasks) | Share connector across tasks / lower parallelism | Follow-up (architectural) |
+| F11 | `run_historical_signals` swallow-pattern | MEDIUM | Silent fallback (CLAUDE.md §3.7) | 50% failure-rate threshold (was: always exit 0) | ✅ **Fixed in this branch** + 6 regression-test cases |
 
 ## What this PR ships
 
