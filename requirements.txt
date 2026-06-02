@@ -44,6 +44,10 @@ scipy>=1.11.4
 py_vollib>=1.0.1
 # Vectorized BSM IV solver — used by lib/options_greeks.py to compute Greeks
 # for SPX (AV does not provide Greeks for cash-settled index options).
+# numba 0.65 broke py_vollib_vectorized's recursive black() function
+# (numba.core.errors.TypingError: cannot type infer runaway recursion).
+# Pin <0.65 until py_vollib_vectorized ships a fix. See PR #579 CI.
+numba<0.65
 py_vollib_vectorized>=0.1.1
 
 # Date and time handling
