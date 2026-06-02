@@ -107,6 +107,121 @@ class TestRecommendedStructure:
 
 
 # ────────────────────────────────────────────────────────────
+# recommended_structure — long-only mode (2026-05-31)
+# User explicitly only BUYS premium ("I would always buy them sell" —
+# 2026-05-22 chat). Long-only mode flips IC recommendations to long
+# structures (LONG STRADDLE / LONG CALL / LONG PUT) and uses an
+# implied-move-size filter to SKIP events where premium is too rich.
+# ────────────────────────────────────────────────────────────
+
+class TestRecommendedStructureLongOnly:
+
+    def test_q5_over_priced_returns_long_archetype(self):
+        # User: bullish_trend archetype + Q5 + over-priced calibration.
+        # IC mode would return 'IC'. Long-only mode returns 'LONG CALL'
+        # (the directional long bet matching the archetype).
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL,
+            long_only=True) == 'LONG CALL'
+        assert recommended_structure(
+            'bearish_trend', 'Q5', _LIVE_CAL,
+            long_only=True) == 'LONG PUT'
+        assert recommended_structure(
+            'reversal_play', 'Q5', _LIVE_CAL,
+            long_only=True) == 'LONG STRDL'
+        assert recommended_structure(
+            'mixed', 'Q5', _LIVE_CAL,
+            long_only=True) == 'LONG STRDL'
+
+    def test_q5_over_priced_high_implied_returns_skip(self):
+        # When implied move > 15%, even the directional long loses on
+        # average. SKIP these events instead of recommending a known-
+        # negative-expectancy trade.
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL,
+            implied_move_pct=18.0, long_only=True) == 'SKIP'
+        assert recommended_structure(
+            'mixed', 'Q5', _LIVE_CAL,
+            implied_move_pct=20.0, long_only=True) == 'SKIP'
+
+    def test_q5_over_priced_low_implied_returns_long(self):
+        # Below 15% implied → the long-side has historical edge per
+        # the 2026-05-22 long-only-detail report. Recommend the long.
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL,
+            implied_move_pct=8.0, long_only=True) == 'LONG CALL'
+        assert recommended_structure(
+            'mixed', 'Q5', _LIVE_CAL,
+            implied_move_pct=10.0, long_only=True) == 'LONG STRDL'
+
+    def test_q5_borderline_implied_at_threshold(self):
+        # Exactly 15.0% → just below the > threshold, so NOT SKIP.
+        # User's interpretation of "above 15%" is strict-greater.
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL,
+            implied_move_pct=15.0, long_only=True) == 'LONG CALL'
+        # Just above → SKIP.
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL,
+            implied_move_pct=15.001, long_only=True) == 'SKIP'
+
+    def test_q4_long_only_returns_long_archetype(self):
+        # Below Q5 the calibration override doesn't fire — long-only
+        # still returns the long archetype, never IC (long-only NEVER
+        # returns IC regardless of quintile).
+        assert recommended_structure(
+            'bullish_trend', 'Q4', _LIVE_CAL,
+            long_only=True) == 'LONG CALL'
+        assert recommended_structure(
+            'reversal_play', 'Q4', _LIVE_CAL,
+            long_only=True) == 'LONG STRDL'
+
+    def test_q5_under_priced_returns_long_archetype(self):
+        # When calibration says options are UNDER-priced (long has
+        # natural edge), long-only just returns the archetype mapping
+        # — no IC override would have fired here in the first place.
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _FLAT_CAL,
+            long_only=True) == 'LONG CALL'
+
+    def test_env_var_default(self, monkeypatch):
+        # When long_only is not explicitly passed, fall back to the
+        # RECOMMEND_LONG_ONLY env var. Truthy values trigger long-only.
+        monkeypatch.setenv('RECOMMEND_LONG_ONLY', 'true')
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'LONG CALL'
+        monkeypatch.setenv('RECOMMEND_LONG_ONLY', '1')
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'LONG CALL'
+        monkeypatch.setenv('RECOMMEND_LONG_ONLY', 'on')
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'LONG CALL'
+        # Falsy values stay in IC mode.
+        monkeypatch.setenv('RECOMMEND_LONG_ONLY', 'false')
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'IC'
+        monkeypatch.setenv('RECOMMEND_LONG_ONLY', '')
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'IC'
+        monkeypatch.delenv('RECOMMEND_LONG_ONLY', raising=False)
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL) == 'IC'
+
+    def test_explicit_false_overrides_truthy_env(self, monkeypatch):
+        # long_only=False explicit beats env var.
+        monkeypatch.setenv('RECOMMEND_LONG_ONLY', 'true')
+        assert recommended_structure(
+            'bullish_trend', 'Q5', _LIVE_CAL,
+            long_only=False) == 'IC'
+
+    def test_unknown_archetype_long_only(self):
+        # Unknown archetype → None. Same as IC mode for unknown inputs.
+        assert recommended_structure(
+            'unknown_thing', 'Q5', _LIVE_CAL,
+            long_only=True) is None
+
+
+# ────────────────────────────────────────────────────────────
 # action_hint_for_archetype — Option A wording (locked-in 2026-05-01)
 # ────────────────────────────────────────────────────────────
 
