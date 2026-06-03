@@ -295,14 +295,15 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
 def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
                   calibration: str = DEFAULT_CALIBRATION,
-                  cv: int = DEFAULT_CV) -> dict:
+                  cv: int = DEFAULT_CV,
+                  label_mode: str = "body") -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     log.info("=" * 70)
-    log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d",
-             phase, ticker, tf, len(cutoffs))
+    log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
+             phase, ticker, tf, len(cutoffs), label_mode)
     log.info("=" * 70)
 
-    df = load_magnitude_dataset(engine, ticker, tf, phase)
+    df = load_magnitude_dataset(engine, ticker, tf, phase, label_mode=label_mode)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     log.info("loaded: %d rows  (%s..%s)",
              len(df), df["bar_date"].min(), df["bar_date"].max())
@@ -586,6 +587,10 @@ def main():
                    help="Comma-separated YYYY-MM-DD (default: regime-spanning)")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                    choices=["none", "isotonic", "sigmoid"])
+    p.add_argument("--label-mode", default="body", choices=["body", "excursion"],
+                   help="Magnitude target: 'body' = |next_close-next_open|/atr_20 "
+                        "(IV expected-move comparison); 'excursion' = "
+                        "(next_high-next_low)/atr_20 (intrabar range / gamma scalp).")
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
@@ -629,7 +634,8 @@ def main():
             "MAG_PLAN + CLOUD_RUN_TASK_INDEX env vars for task-parallel dispatch."
         )
     walk_forward(engine, args.phase, args.ticker, args.tf,
-                  cutoffs=cutoffs, calibration=args.calibration)
+                  cutoffs=cutoffs, calibration=args.calibration,
+                  label_mode=args.label_mode)
 
 
 if __name__ == "__main__":

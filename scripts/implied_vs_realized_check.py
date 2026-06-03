@@ -144,6 +144,10 @@ def main():
     p.add_argument("--tf", required=True, choices=list(TIMEFRAMES))
     p.add_argument("--run-id", required=True)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    p.add_argument("--label-mode", default="body", choices=["body", "excursion"],
+                   help="Must match the label the predictions were trained on. "
+                        "'body' realized move = |next_close-next_open|; 'excursion' "
+                        "= |next_high-next_low| (intrabar range a straddle harvests).")
     args = p.parse_args()
 
     # Load model predictions for EXPLOSIVE filtering
@@ -161,10 +165,16 @@ def main():
     engine = get_engine()
     print("loading magnitude dataset for spot + realized-move computation...",
           file=sys.stderr)
-    df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0")
+    df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0",
+                                label_mode=args.label_mode)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
-    df["realized_move_dollars"] = (df["next_open"] - df["next_close"]).abs()
+    # Realized move MUST match the label the model was trained/predicting on,
+    # else we'd compare an excursion prediction against a body realization.
+    if args.label_mode == "excursion":
+        df["realized_move_dollars"] = (df["next_high"] - df["next_low"]).abs()
+    else:
+        df["realized_move_dollars"] = (df["next_open"] - df["next_close"]).abs()
 
     # Join predictions ↔ dataset on ts to get realized_move + spot
     join = pe.merge(
