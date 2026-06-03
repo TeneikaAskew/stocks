@@ -388,7 +388,20 @@ def main() -> int:
              len(tickers), total_rows, len(errors))
     if errors:
         log.warning("Errors on: %s", ", ".join(errors[:20]))
-    return 0 if not errors else 1
+    # Job-level disposition: exit 1 only if more than half the tickers
+    # failed. A single ticker with a delisted symbol or a one-off AV
+    # 'Invalid API call' should NOT page on a job that processed 1,678/
+    # 1,679 successfully. Closes F6 (CLAUDE.md §3.7 — single-ticker errors
+    # are surfaced via the per-ticker WARNING log + the Errors-on summary,
+    # not the job-level exit code). The failure-notifier still opens an
+    # issue if the threshold trips. Pattern matches run_historical_signals.
+    n_failed = len(errors)
+    n_total = len(tickers)
+    if n_total and n_failed / n_total > 0.5:
+        log.error("TOO-MANY-FAILURES — %d/%d tickers (%.0f%%) failed",
+                  n_failed, n_total, 100 * n_failed / n_total)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

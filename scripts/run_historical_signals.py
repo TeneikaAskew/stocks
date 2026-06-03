@@ -438,8 +438,26 @@ def main() -> int:
             failures.append(tk)
 
     if failures:
-        log.warning('completed with %d ticker failure(s): %s', len(failures), failures)
-        return 0  # don't fail the whole batch on one ticker
+        n_failed = len(failures)
+        n_total = len(tickers)
+        rate = n_failed / n_total
+        # Job-level disposition: if MORE THAN HALF of the tickers crashed,
+        # exit non-zero so the failure-notifier opens an issue. Anything at
+        # or below half is a per-ticker AV / data-quality issue that
+        # doesn't warrant paging — log a warning and let the batch report
+        # success on what it did process. Closes F11 (CLAUDE.md §3.7 silent-
+        # fallback violation surfaced by historical-signals-watchlist-qjllq
+        # on 2026-06-02 — every ticker crashed but the job exited 0).
+        if rate > 0.5:
+            log.error(
+                'TOO-MANY-FAILURES — %d/%d tickers (%.0f%%) failed: %s',
+                n_failed, n_total, rate * 100, failures,
+            )
+            return 1
+        log.warning(
+            'completed with %d/%d ticker failure(s) (%.0f%% < 50%% threshold): %s',
+            n_failed, n_total, rate * 100, failures,
+        )
     return 0
 
 

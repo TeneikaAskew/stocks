@@ -862,6 +862,18 @@ build_research_image() {
 
 deploy_strat_engine() {
     echo "Deploying strat-engine job..."
+    # 8Gi memory is sized for the production cron path (incremental
+    # daily update on the per-bar feature tables). Operator-only mode
+    # `--rebuild --start-date=2016-01-01` loads ~1M 1-min SPY bars +
+    # the equivalent for IWM/QQQ into memory before featurizing and
+    # has tripped OOM at 8Gi (rrjlc, 2026-06-01 05:53 UTC — see
+    # docs/incidents/2026-06-01-pipeline-failures-audit.md F3). To run
+    # a full-history rebuild, dispatch with --memory 32Gi:
+    #   gcloud run jobs update strat-engine --memory 32Gi --region us-east1
+    #   gcloud run jobs execute strat-engine \
+    #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01" \
+    #       --region us-east1 --wait
+    #   gcloud run jobs update strat-engine --memory 8Gi --region us-east1
     local research_image="${IMAGE}:research"
 
     gcloud run jobs create strat-engine \
@@ -1298,7 +1310,14 @@ deploy_freshness_watchdog() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 900
+        # 3600s (1h) task-timeout: observed wall-clock floats 8m–14m9s
+        # across recent runs (variance >50%). The 900s budget had only
+        # 1.07x headroom and tripped a timeout on 2026-05-30 15:50
+        # (rndfd) and 2026-06-01 13:00 (nd4x2). Per CLAUDE.md Rule 0.5,
+        # task-timeout >= 4x wall-clock — 60 min is 4.3x the 14 min p100.
+        # Cloud Run charges runtime, not the cap. See
+        # docs/incidents/2026-06-01-pipeline-failures-audit.md F2.
+        --task-timeout 3600
         --service-account "${SA_EMAIL}"
         --command "python,scripts/audit_data_freshness.py"
         # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
@@ -1310,6 +1329,46 @@ deploy_freshness_watchdog() {
 
     gcloud run jobs create freshness-watchdog "${common_flags[@]}" 2>/dev/null || \
     gcloud run jobs update freshness-watchdog "${common_flags[@]}"
+}
+
+# ── Infra drift detector ─────────────────────────────────────────────────────
+# Daily check that surfaces production-impacting drift between deployed
+# GCP state and the repo's expected state. The 2026-06-01 audit
+# documented two patterns this catches:
+#
+#   * Image-pinning drift — Cloud Run pins the `:latest` digest at
+#     update-time, so a job can run an outdated image indefinitely while
+#     `:latest` advances. Direct cause of fetch-earnings-history-5t2hr
+#     running pre-PR-#580 code for ~12h after the fix merged.
+#   * Scheduler orphans — Cloud Scheduler entries pointing at deleted /
+#     renamed CR Jobs (stale issue #555 from p7b-next-candle-classifier).
+#
+# Posts findings to DISCORD_WEBHOOK_URL. Exits 0 always — Discord is
+# the output channel, not the exit code, so the failure-notifier
+# doesn't double-spam on every drift finding.
+deploy_audit_infra_drift() {
+    echo "Deploying audit-infra-drift job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # Drift detection is gcloud-API-bound (one `list jobs`, one
+        # `list schedulers`, one `describe image`, N `executions list`).
+        # ~50 gcloud calls × ~0.3s each = ~15s p100. 300s is 20x —
+        # the cap covers the tail when gcloud is throttled.
+        --task-timeout 300
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_infra_drift"
+        --set-secrets "DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-infra-drift "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-infra-drift "${common_flags[@]}"
 }
 
 # Per-factor walk-forward audit — CR-native replacement for the GHA
@@ -1839,6 +1898,7 @@ deploy_fetchers() {
     deploy_options_exec_backtest
     deploy_db_query
     deploy_freshness_watchdog
+    deploy_audit_infra_drift
     deploy_audit_walkforward
     deploy_audit_brief_bias
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
@@ -2639,6 +2699,11 @@ deploy_schedulers() {
     # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
     _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
     _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
+
+    # Infra-drift detector — daily at 12:30 UTC (08:30 ET), 30 min after
+    # the daily nightly fetcher chain has settled. Posts findings to
+    # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
+    _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
     # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
     _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
     # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)
@@ -3027,6 +3092,7 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     db-query)     build_image && deploy_db_query ;;
     freshness-watchdog) build_image && deploy_freshness_watchdog ;;
+    audit-infra-drift) build_image && deploy_audit_infra_drift ;;
     audit-walkforward) build_image && deploy_audit_walkforward ;;
     audit-brief-bias) build_image && deploy_audit_brief_bias ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;

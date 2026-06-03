@@ -649,10 +649,14 @@ class MarketAnalyzer:
         df['Order_Block_Mid'] = (df['Order_Block_High'] + df['Order_Block_Low']) / 2
 
         # Forward fill order blocks for next 30 bars (30 minutes)
-        # Order blocks remain relevant for longer on 1-minute data
-        df['Order_Block_High'] = df['Order_Block_High'].fillna(method='ffill', limit=30)
-        df['Order_Block_Low'] = df['Order_Block_Low'].fillna(method='ffill', limit=30)
-        df['Order_Block_Mid'] = df['Order_Block_Mid'].fillna(method='ffill', limit=30)
+        # Order blocks remain relevant for longer on 1-minute data.
+        # .ffill(limit=30) instead of the deprecated fillna(method='ffill', limit=30)
+        # — the `method` kwarg was removed in pandas 3.0 (NDFrame.fillna()
+        # raises TypeError). Caught 2026-06-02 by historical-signals-watchlist
+        # -qjllq tracebacking on every ticker.
+        df['Order_Block_High'] = df['Order_Block_High'].ffill(limit=30)
+        df['Order_Block_Low'] = df['Order_Block_Low'].ffill(limit=30)
+        df['Order_Block_Mid'] = df['Order_Block_Mid'].ffill(limit=30)
 
         # Price position relative to order block
         df['Order_Block_Position'] = 0  # 0 = within, 1 = above, -1 = below
