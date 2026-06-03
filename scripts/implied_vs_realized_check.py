@@ -66,17 +66,35 @@ from scripts._magnitude_analysis_helpers import load_predictions
 
 def load_atm_iv_per_date(engine, ticker: str,
                           min_date: pd.Timestamp,
-                          max_date: pd.Timestamp) -> pd.DataFrame:
+                          max_date: pd.Timestamp,
+                          only_dates: "set | None" = None) -> pd.DataFrame:
     """Pull EOD ATM IV per (ticker, date) from etf_options_snapshots.
 
     'EOD' = the LAST snapshot of the day for nearest-expiry, closest-to-
     spot contract. ATM = strike closest to spot at snapshot.
 
     Returns df with columns: date (datetime.date), atm_iv (float).
+
+    Performance: etf_options_snapshots is ~92M rows; a window-function over the
+    full min..max span (7 years × every contract per snapshot) cannot complete
+    within the Cloud Run task-timeout. gate 7 only needs IV on the handful of
+    dates the model predicted EXPLOSIVE (+ their T-1 anchors), so `only_dates`
+    scopes the scan to those dates via the existing (ticker, snapshot_date)
+    index — turning a full-table scan into a few-hundred-date lookup. The set
+    MUST include each bar's T-1..T-N candidate anchor dates (we widen by a small
+    calendar margin so weekends/holidays still resolve a backward IV anchor).
     """
-    print(f"querying etf_options_snapshots for ticker={ticker} "
-           f"{min_date.date()}..{max_date.date()}", file=sys.stderr)
-    sql = text("""
+    date_clause = ""
+    params = {"t": ticker, "lo": min_date.date(), "hi": max_date.date()}
+    if only_dates:
+        date_clause = "AND snapshot_date = ANY(:dates)"
+        params["dates"] = sorted(only_dates)
+        print(f"querying etf_options_snapshots for ticker={ticker} "
+              f"scoped to {len(only_dates)} dates", file=sys.stderr)
+    else:
+        print(f"querying etf_options_snapshots for ticker={ticker} "
+              f"{min_date.date()}..{max_date.date()} (FULL SPAN)", file=sys.stderr)
+    sql = text(f"""
         WITH last_snapshots AS (
             SELECT
                 ticker,
@@ -85,6 +103,7 @@ def load_atm_iv_per_date(engine, ticker: str,
               FROM etf_options_snapshots
              WHERE ticker = :t
                AND snapshot_date BETWEEN :lo AND :hi
+               {date_clause}
              GROUP BY ticker, snapshot_date
         ),
         eod_contracts AS (
@@ -111,9 +130,7 @@ def load_atm_iv_per_date(engine, ticker: str,
          ORDER BY snapshot_date
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={
-            "t": ticker, "lo": min_date.date(), "hi": max_date.date()
-        })
+        df = pd.read_sql(sql, conn, params=params)
     if df.empty:
         return df
     df["d"] = pd.to_datetime(df["d"]).dt.date
@@ -160,9 +177,18 @@ def main():
         print("ts join produced no rows — check that prediction CSV ts matches dataset ts.")
         return
 
-    # Pull ATM IV per date for this ticker
+    # Pull ATM IV ONLY for the dates we need: each EXPLOSIVE bar's date plus a
+    # backward calendar margin so the T-1 (strictly-prior) IV anchor still
+    # resolves across weekends/holidays. Scoping the 92M-row table to these
+    # ~hundreds of dates is what makes gate 7 finish within the task-timeout.
+    bar_dates = pd.to_datetime(join["bar_date"]).dt.normalize().unique()
+    needed = set()
+    for d in bar_dates:
+        for back in range(0, 6):  # D and up to 5 calendar days prior
+            needed.add((d - pd.Timedelta(days=back)).date())
     iv = load_atm_iv_per_date(engine, args.ticker,
-                                join["ts"].min(), join["ts"].max())
+                                join["ts"].min(), join["ts"].max(),
+                                only_dates=needed)
     print(f"IV coverage: {len(iv)} EOD snapshots between "
           f"{iv['d'].min() if not iv.empty else 'NONE'} and "
           f"{iv['d'].max() if not iv.empty else 'NONE'}", file=sys.stderr)
