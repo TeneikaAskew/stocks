@@ -98,6 +98,10 @@ def test_memory_preserved_low_d_vs_returns():
 # 3. Stationarity / find_min_d
 # --------------------------------------------------------------------------- #
 def test_find_min_d_random_walk():
+    # statsmodels (ADF test) is an optional dep — present in the research image
+    # but not the base CI test env. Skip gracefully rather than fail when absent;
+    # the pure-numpy fracdiff tests above still run.
+    pytest.importorskip("statsmodels")
     from statsmodels.tsa.stattools import adfuller
 
     s = _random_walk()
@@ -173,6 +177,9 @@ def test_session_aware_resets_each_bar_date():
 
 
 def test_add_fracdiff_d_none_infers_per_column():
+    # d=None calls find_min_d, which needs statsmodels (optional dep). Skip if
+    # absent (see test_find_min_d_random_walk).
+    pytest.importorskip("statsmodels")
     s = _random_walk(n=1500)
     df = pd.DataFrame({"price": s.to_numpy()})
     out = add_fracdiff_features(df, ["price"], d=None, thresh=1e-4)
