@@ -552,6 +552,15 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
             elif mag_cond == "big":
                 p_exp = _p(exp_idx, mask)
                 sel = (p_expl + p_exp) >= max(mag_thresh, 0.5)
+            elif mag_cond == "topq":
+                # Fold-relative: keep the top `mag_thresh` fraction of bars by
+                # predicted P(EXPLOSIVE) — the faithful "where a big move is
+                # MOST likely" conditioner that stays large enough to evaluate.
+                frac = mag_thresh if 0 < mag_thresh < 1 else 0.2
+                if len(p_expl) == 0:
+                    sel = p_expl.astype(bool)
+                else:
+                    sel = p_expl >= float(np.quantile(p_expl, 1 - frac))
             else:  # "explosive"
                 sel = p_expl >= mag_thresh if mag_thresh > 0 else \
                     (mag.predict(X_full[mask]) == expl_idx)
@@ -631,11 +640,13 @@ def main():
     p.add_argument("--barrier-atr", type=float, default=1.0,
                    help="E4: triple-barrier half-width in ATR-20 multiples")
     p.add_argument("--mag-cond", default="explosive",
-                   choices=["none", "explosive", "big"],
-                   help="E4: magnitude-model conditioner (predicted EXPLOSIVE, "
-                        "or EXPANDED+EXPLOSIVE='big', or none)")
+                   choices=["none", "explosive", "big", "topq"],
+                   help="E4: magnitude-model conditioner — predicted EXPLOSIVE, "
+                        "EXPANDED+EXPLOSIVE='big', fold-relative top-quantile of "
+                        "P(EXPLOSIVE)='topq', or none")
     p.add_argument("--mag-thresh", type=float, default=0.0,
-                   help="E4: predicted-prob cutoff; 0 ⇒ argmax==EXPLOSIVE")
+                   help="E4: explosive/big ⇒ prob cutoff (0 ⇒ argmax==EXPLOSIVE); "
+                        "topq ⇒ top fraction kept (default 0.2)")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
