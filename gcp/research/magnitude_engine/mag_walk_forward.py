@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from gcp.database import get_engine, execute_sql
 from gcp.research.magnitude_engine.mag_config import (
-    TICKERS, TIMEFRAMES, PHASES,
+    TICKERS, TIMEFRAMES, PHASES, LABEL_MODES, DEFAULT_LABEL_MODE,
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
     DEFAULT_CALIBRATION, DEFAULT_CV,
@@ -587,10 +587,12 @@ def main():
                    help="Comma-separated YYYY-MM-DD (default: regime-spanning)")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                    choices=["none", "isotonic", "sigmoid"])
-    p.add_argument("--label-mode", default="body", choices=["body", "excursion"],
-                   help="Magnitude target: 'body' = |next_close-next_open|/atr_20 "
-                        "(IV expected-move comparison); 'excursion' = "
-                        "(next_high-next_low)/atr_20 (intrabar range / gamma scalp).")
+    p.add_argument("--label-mode", default=DEFAULT_LABEL_MODE, choices=list(LABEL_MODES),
+                   help="Magnitude target: body=|next_close-next_open|/atr_20 "
+                        "(IV expected-move); excursion=(next_high-next_low)/atr_20 "
+                        "(range/straddle); call=(next_high-next_open) upside; "
+                        "put=(next_open-next_low) downside. Choices track "
+                        "mag_config.LABEL_MODES so CLI can't drift from the labels.")
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
