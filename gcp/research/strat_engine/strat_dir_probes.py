@@ -228,9 +228,20 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
         raise SystemExit(f"too few labeled rows ({len(df)}) for {experiment}")
 
     t0 = time.time()
-    X_df, feature_cols = featurize(df)
-    X_full = X_df.values.astype(np.float32, copy=False)
+    # Compute the label BEFORE featurizing, then featurize on a frame WITHOUT
+    # the label column. featurize()'s drop-list is by NAME, so it would happily
+    # admit our `_fwd_bps` label as a feature — a look-ahead leak that produces
+    # ~100% accuracy. Drop it explicitly.
     y_full = (df["_fwd_bps"] > 0).astype(np.int64).values
+    X_df, feature_cols = featurize(df.drop(columns=["_fwd_bps"]))
+    X_full = X_df.values.astype(np.float32, copy=False)
+
+    # Leakage guard (Rule 0): no forward-looking column may enter the matrix.
+    leak = [c for c in feature_cols
+            if c.startswith(("fwd_", "next_", "_fwd"))
+            or "fwd_ret" in c or "fwd_close" in c]
+    if leak:
+        raise SystemExit(f"LEAKAGE: forward-looking columns in feature matrix: {leak}")
     bar_dates = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
     strata_full = {
         "session_third": _session_third(df).astype("object"),
