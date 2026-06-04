@@ -896,6 +896,45 @@ deploy_strat_engine() {
         --quiet
 }
 
+# ── Direction Probe (Cloud Run Job, research image) ─────────────────────────
+# Phase 1 of the directionality research program. Runs the LABEL-reframe probes
+# in gcp/research/strat_engine/strat_dir_probes.py (e1_horizon, e2_trigger)
+# through the exact production walk-forward harness the failed baseline used.
+# Research only — NO production hooks, NO scheduler. Same image as strat-engine
+# (build with `build-research`). Dedicated job so the shared strat-engine daily
+# job is never disturbed.
+#
+# Per-run variation is via --args at execute time, e.g.:
+#   gcloud run jobs execute direction-probe --region us-east1 --wait \
+#     --args="-m,gcp.research.strat_engine.strat_dir_probes,\
+#             --experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=5"
+deploy_direction_probe() {
+    echo "Deploying direction-probe job (Phase 1 directionality probes)..."
+    local research_image="${IMAGE}:research"
+    # 4 CPU / 8Gi mirrors strat-engine: featurize-once over ~5-15 yr of
+    # intraday bars for one ticker/tf, then 8 LightGBM folds. max-retries 0
+    # (Rule 0: a stuck run fails loud). task-timeout 5400 is ≥4× the ~3-min
+    # wall estimate (Rule 0 sizing checklist).
+    gcloud run jobs create direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
 # Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
 # Walk-forward research only — NO production hooks. Same image as strat-engine.
@@ -3079,6 +3118,7 @@ case "${1:-help}" in
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
+    direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     magnitude-engine) deploy_magnitude_engine ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
