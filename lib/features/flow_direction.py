@@ -44,14 +44,18 @@ DEX (delta exposure) — customer-vs-dealer flip:
     A chain of only long customer CALLS (positive delta) therefore yields a
     NEGATIVE dealer dex_d1; a put-heavy chain yields a POSITIVE dealer dex_d1.
 
-VANNA / CHARM — dealer_sign aggregation (matches `lib.gamma`):
-    `lib/gamma.py` aggregates net greeks as "calls add, puts subtract"
-    (see gex_by_strike / net_gamma). We reuse that same dealer-perspective
-    sign for the second-order greeks:
+VANNA / CHARM — net DEALER exposure, SAME dealer model as DEX:
+    Dealers are the opposite side of the net-long customer book, so net
+    dealer greek = -(Σ_all greek_contract · OI) — the dealer is SHORT every
+    contract. This is the SAME negation as DEX (dex = -Σ delta·OI) and
+    matches `lib/gamma.py`'s `total_vex = -(call_vex + put_vex)` ("dealers
+    are SHORT both calls AND puts"). NOTE: this is NOT the calls-add/puts-
+    subtract convention `lib.gamma` uses for *net GAMMA* (a call-minus-put
+    balance); for a dealer-EXPOSURE feature the dealer-short negation is the
+    correct, internally-consistent choice (corrected per review H-1):
 
-        dealer_sign = +1 for calls, -1 for puts
-        vanna_d1 = Σ ( dealer_sign · vanna_contract · OI )
-        charm_d1 = Σ ( dealer_sign · charm_contract · OI )
+        vanna_d1 = -( Σ_all vanna_contract · OI )
+        charm_d1 = -( Σ_all charm_contract · OI )
 
     where the PER-CONTRACT greeks are the standard Black-Scholes-Merton
     closed forms (continuous dividend yield q):
@@ -305,12 +309,16 @@ def compute_chain_features(chain: pd.DataFrame,
             charm_c = bs_charm_per_day(S, K, tt, r, q, sig, is_call.values)
         vanna_c = np.where(bad, np.nan, vanna_c)
         charm_c = np.where(bad, np.nan, charm_c)
-        # dealer_sign: +1 calls, -1 puts (matches lib.gamma "calls add,
-        # puts subtract").
-        dealer_sign = np.where(is_call.values, 1.0, -1.0)
+        # Dealer = OPPOSITE side of the (net-long) customer book, the SAME
+        # model as DEX (dex = -Σ delta·OI). Customers are long; the dealer is
+        # short every contract, so net dealer greek = -(Σ_all greek·OI). This
+        # matches lib.gamma.total_vex = -(call_vex + put_vex) ("dealers are
+        # SHORT both calls AND puts"), and is internally consistent with the
+        # DEX negation. (An earlier draft used calls+/puts-, which is a
+        # call-minus-put SKEW, a different quantity — corrected per review H-1.)
         oi_v = oi.values
-        vanna_terms = dealer_sign * vanna_c * oi_v
-        charm_terms = dealer_sign * charm_c * oi_v
+        vanna_terms = -vanna_c * oi_v
+        charm_terms = -charm_c * oi_v
         vanna_net = (float(np.nansum(vanna_terms))
                      if np.isfinite(vanna_terms).any() else np.nan)
         charm_net = (float(np.nansum(charm_terms))
@@ -360,56 +368,102 @@ def compute_daily_features(chains: pd.DataFrame,
 # ============================================================================
 # (b) DB-BOUND LOADERS + JOINER. sqlalchemy is LAZY-imported here so the pure
 #     helpers above import with numpy+pandas+scipy only.
+#
+# CAPACITY (CLAUDE.md Rule 0) — corrected per review C-1. The EOD AV chain is
+# ~thousands of contracts/day (a ~14M-row table). We DO NOT pull every contract
+# to Python. Instead:
+#   * DEX (a LINEAR Σ delta·OI) is pushed fully into SQL — one GROUP BY
+#     snapshot_date returns ~one row/day (same discipline as
+#     options_derived._load_daily_pcr, ~2500 rows for the whole history).
+#   * vanna/charm genuinely need per-contract BS against a per-date spot, so
+#     they pull per-contract rows BUT restricted to the near-term, non-deep-
+#     wing band (dte 0-60, |delta| <= 0.95) that carries ~all the net
+#     vanna/charm. Deep-ITM/OTM and far-dated contracts contribute ~0 net
+#     vanna/charm yet dominate row count; restricting bounds the pull to
+#     ~hundreds of contracts/day instead of thousands.
 # ============================================================================
 
-def _load_directional_chain(engine, ticker: str, since: str,
-                             until: str) -> pd.DataFrame:
-    """Pull the per-contract rows needed for the directional greeks, chunked
-    by year to keep each pg8000 round-trip inside the timeout budget (same
-    discipline as options_derived._load_daily_pcr).
+# short-DTE cutoff for the 0-2DTE charm-pin DEX slice (matches
+# compute_chain_features' short_dte_max default).
+SHORT_DTE_MAX = 2
+# Near-term, non-deep-wing band for the per-contract vanna/charm pull.
+_VC_MAX_DTE = 60
+_VC_MAX_ABS_DELTA = 0.95
 
-    Unlike the magnitude PCR/IV loaders we cannot fully pre-aggregate in SQL
-    here: the dealer DEX is a signed Σ delta·OI we CAN push down, but vanna /
-    charm need per-contract BS evaluation against a per-date spot proxy that
-    Postgres doesn't have. So we pull the minimal per-contract columns
-    (option_type, strike, OI, IV, delta, expiration) per year and aggregate
-    in-memory on the per-date grid. The row count is bounded by one ticker's
-    EOD chain per day; we log per-year counts for observability.
 
-    DB errors are NOT swallowed — they propagate to the caller (per §3.7).
-    """
+def _load_dex_aggregates(engine, ticker: str, since: str,
+                         until: str) -> pd.DataFrame:
+    """SQL-side DEX aggregation: the linear Σ delta·OI is pushed down to
+    Postgres so the whole multi-year DEX series returns as ~one row per day,
+    not per-contract. Returns a frame indexed by snapshot_date with dex_d1,
+    total_oi, short_dte_dex_d1. DB errors propagate (no swallow, §3.7)."""
     from sqlalchemy import text  # lazy — keep pure helpers DB-free
     sql = text(
         """
-        SELECT
-          snapshot_date,
-          option_type,
-          strike,
-          open_interest,
-          implied_volatility,
-          delta,
-          expiration
+        SELECT snapshot_date,
+               -SUM(delta * open_interest)                              AS dex_d1,
+               SUM(open_interest)                                       AS total_oi,
+               -SUM(delta * open_interest)
+                   FILTER (WHERE (expiration - snapshot_date) <= :sdte) AS short_dte_dex_d1
         FROM etf_options_snapshots
         WHERE ticker = :tk
           AND market_session = 'EOD'
           AND data_source = 'alphavantage'
           AND snapshot_date >= :s AND snapshot_date <= :u
+        GROUP BY snapshot_date
         ORDER BY snapshot_date
         """
     )
-    s_year = int(since[:4])
-    u_year = int(until[:4])
+    s_year, u_year = int(since[:4]), int(until[:4])
     chunks: list[pd.DataFrame] = []
     with engine.connect() as conn:
         for y in range(s_year, u_year + 1):
-            y_since = max(since, f"{y}-01-01")
-            y_until = min(until, f"{y}-12-31")
+            y_s, y_u = max(since, f"{y}-01-01"), min(until, f"{y}-12-31")
             t0 = pd.Timestamp.utcnow()
-            df_y = pd.read_sql(sql, conn,
-                               params={"tk": ticker, "s": y_since, "u": y_until})
-            elapsed = (pd.Timestamp.utcnow() - t0).total_seconds()
-            log.info("flow-direction year=%d rows=%d elapsed=%.1fs",
-                     y, len(df_y), elapsed)
+            df_y = pd.read_sql(sql, conn, params={"tk": ticker, "s": y_s,
+                                                  "u": y_u, "sdte": SHORT_DTE_MAX})
+            log.info("flow-direction DEX year=%d rows=%d elapsed=%.1fs", y,
+                     len(df_y), (pd.Timestamp.utcnow() - t0).total_seconds())
+            if not df_y.empty:
+                chunks.append(df_y)
+    if not chunks:
+        return pd.DataFrame()
+    df = pd.concat(chunks, ignore_index=True)
+    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
+    return df.set_index("snapshot_date")
+
+
+def _load_vc_contracts(engine, ticker: str, since: str,
+                       until: str) -> pd.DataFrame:
+    """Restricted per-contract pull for vanna/charm (near-term, non-deep-wing).
+    Row count bounded by the dte/|delta| band; DB errors propagate."""
+    from sqlalchemy import text  # lazy
+    sql = text(
+        """
+        SELECT snapshot_date, option_type, strike, open_interest,
+               implied_volatility, delta, expiration
+        FROM etf_options_snapshots
+        WHERE ticker = :tk
+          AND market_session = 'EOD'
+          AND data_source = 'alphavantage'
+          AND snapshot_date >= :s AND snapshot_date <= :u
+          AND (expiration - snapshot_date) BETWEEN 0 AND :maxdte
+          AND delta IS NOT NULL AND ABS(delta) <= :maxd
+          AND implied_volatility IS NOT NULL AND implied_volatility > 0
+        ORDER BY snapshot_date
+        """
+    )
+    s_year, u_year = int(since[:4]), int(until[:4])
+    chunks: list[pd.DataFrame] = []
+    with engine.connect() as conn:
+        for y in range(s_year, u_year + 1):
+            y_s, y_u = max(since, f"{y}-01-01"), min(until, f"{y}-12-31")
+            t0 = pd.Timestamp.utcnow()
+            df_y = pd.read_sql(sql, conn, params={"tk": ticker, "s": y_s, "u": y_u,
+                                                  "maxdte": _VC_MAX_DTE,
+                                                  "maxd": _VC_MAX_ABS_DELTA})
+            log.info("flow-direction VC year=%d rows=%d elapsed=%.1fs", y,
+                     len(df_y), (pd.Timestamp.utcnow() - t0).total_seconds())
             if not df_y.empty:
                 chunks.append(df_y)
     if not chunks:
@@ -421,10 +475,11 @@ def _load_directional_chain(engine, ticker: str, since: str,
 
 def add_flow_features(df: pd.DataFrame, ticker: str, engine,
                       r: float = DEFAULT_R, q: float = DEFAULT_Q) -> pd.DataFrame:
-    """Joiner — attaches the directional dealer-positioning features to an
-    intraday bar dataset keyed by `bar_date`. Mirrors
-    options_derived.add_options_features: load → compute daily → shift(1)
-    for leak-safety → coverage log → attach as float32 columns.
+    """Joiner — attaches directional dealer-positioning features to an intraday
+    bar dataset keyed by `bar_date`. DEX is a cheap SQL aggregate over ALL
+    contracts; vanna/charm come from the restricted per-contract pull (Rule 0
+    capacity, see module §(b)). d-1 `.shift(1)` for leak-safety; missing →
+    NaN, never 0; float32 attach.
     """
     log.info("flow-direction: adding %d-row dataset for %s", len(df), ticker)
     if "bar_date" not in df.columns:
@@ -434,42 +489,53 @@ def add_flow_features(df: pd.DataFrame, ticker: str, engine,
     since = (pd.Timestamp(bar_dates.min()) - pd.Timedelta(days=60)).date().isoformat()
     until = pd.Timestamp(bar_dates.max()).date().isoformat()
 
-    chain = _load_directional_chain(engine, ticker, since, until)
-    if chain.empty:
+    # DEX: exact, all contracts, SQL-aggregated (cheap).
+    dex_daily = _load_dex_aggregates(engine, ticker, since, until)
+    if dex_daily.empty:
         raise RuntimeError(
-            f"flow-direction family INFEASIBLE: no EOD AV options for "
-            f"ticker={ticker} in [{since}, {until}]")
+            f"flow-direction INFEASIBLE: no EOD AV options for ticker={ticker} "
+            f"in [{since}, {until}]")
+    toi = dex_daily["total_oi"].replace(0, np.nan)  # zero/NaN denom -> NaN
+    dex_daily["dex_per_oi_d1"] = dex_daily["dex_d1"] / toi
 
-    daily = compute_daily_features(chain, r=r, q=q)
-    if daily.empty:
-        raise RuntimeError("flow-direction: per-day aggregation produced 0 rows")
+    # Vanna/charm: restricted per-contract pull -> reuse the pure compute, keep
+    # only the two greek columns (its DEX-on-restricted-set is discarded).
+    vc_contracts = _load_vc_contracts(engine, ticker, since, until)
+    if vc_contracts.empty:
+        log.warning("flow-direction: no near-term contracts for vanna/charm; "
+                    "those features will be NaN for %s", ticker)
+        vc_daily = pd.DataFrame(columns=["vanna_d1", "charm_d1"])
+    else:
+        vc_daily = compute_daily_features(vc_contracts, r=r, q=q)[["vanna_d1",
+                                                                   "charm_d1"]]
 
-    # Coverage logging per feature (honesty over silent fillna).
+    daily = dex_daily.join(vc_daily, how="left").sort_index()
+    # dex_chg_5d momentum on the SQL DEX series (row-based shift; zero/NaN
+    # prior -> NaN, never a fabricated ratio).
+    prior = daily["dex_d1"].shift(5).replace(0, np.nan)
+    daily["dex_chg_5d"] = daily["dex_d1"] / prior - 1.0
+    daily = daily[FEATURE_COLS]
+
     for col in FEATURE_COLS:
         cov = float(daily[col].notna().mean()) if len(daily) else 0.0
-        log.info("flow-direction feature=%s per-date coverage=%.1f%%",
-                 col, cov * 100)
-
-    feature_cols = list(daily.columns)
-    log.info("computed daily directional features for %d dates", len(daily))
+        log.info("flow-direction feature=%s per-date coverage=%.1f%%", col, cov * 100)
 
     # Shift by 1 day so bar_date D reads D-1's EOD snapshot (leak-safe).
     daily = daily.shift(1)
 
-    unique_bar_dates = sorted({d for d in bar_dates})
+    feature_cols = list(daily.columns)
+    unique_bar_dates = sorted(set(bar_dates))
     available = set(daily.index)
     matched = sum(1 for d in unique_bar_dates if d in available)
-    coverage = matched / max(1, len(unique_bar_dates))
     log.info("flow-direction date-coverage: %.1f%% (%d/%d unique bar dates)",
-             coverage * 100, matched, len(unique_bar_dates))
+             (matched / max(1, len(unique_bar_dates))) * 100, matched,
+             len(unique_bar_dates))
 
     lookup = {d: daily.loc[d].values for d in daily.index}
     nan_row = np.full(len(feature_cols), np.nan, dtype=np.float64)
     bar_date_arr = pd.to_datetime(df["bar_date"]).dt.date.values
-    attached = np.array(
-        [lookup.get(d, nan_row) for d in bar_date_arr],
-        dtype=np.float64,
-    )
+    attached = np.array([lookup.get(d, nan_row) for d in bar_date_arr],
+                        dtype=np.float64)
     out = df.reset_index(drop=True).copy()
     for i, c in enumerate(feature_cols):
         out[c] = attached[:, i].astype(np.float32)

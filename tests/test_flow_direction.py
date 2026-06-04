@@ -95,21 +95,41 @@ def test_charm_matches_finite_difference(is_call, K):
     d_next = float(fd.bs_delta(S, K, t - one_day, r, q, sigma, is_call))
     fd_charm = d_next - d_now  # d(delta)/d(calendar day)
     analytic = float(fd.bs_charm_per_day(S, K, t, r, q, sigma, is_call))
-    assert analytic == pytest.approx(fd_charm, abs=1e-5), \
+    # abs=3e-5: the one-sided one-calendar-day difference has O(h) truncation
+    # error (~7e-6 here); the analytic charm is the limit. Headroom avoids a
+    # flake on shorter-dated contracts (review M-1).
+    assert analytic == pytest.approx(fd_charm, abs=3e-5), \
         f"charm {analytic} vs FD {fd_charm} (K={K}, call={is_call})"
 
 
 def test_vanna_charm_net_dealer_sign():
-    # vanna_d1 / charm_d1 aggregate with dealer_sign +calls/-puts.
-    # A single call and an identical put (same |greek|) net to a value whose
-    # sign follows the dealer_sign convention.
-    call = _contract("calls", 100, 1000, 0.22, 0.50, 90)
-    feat = fd.compute_chain_features(pd.DataFrame([call]), SNAP, spot=100.0)
-    # single call: dealer_sign +1 -> vanna_d1 sign = sign(vanna_contract)
+    # Net dealer greek = -(Σ_all greek·OI) — dealer is SHORT the customer book,
+    # the SAME negation as DEX (review H-1). Exercise call, put, AND mixed so
+    # the put-branch aggregation sign is covered (review H-2).
     vanna_c = float(fd.bs_vanna(100.0, 100.0, 90 / 365.0, fd.DEFAULT_R,
-                                fd.DEFAULT_Q, 0.22))
-    assert np.sign(feat["vanna_d1"]) == np.sign(vanna_c * 1000)
-    assert feat["vanna_d1"] == pytest.approx(vanna_c * 1000, rel=1e-6)
+                                fd.DEFAULT_Q, 0.22))  # same for call & put
+    charm_call = float(fd.bs_charm_per_day(100.0, 100.0, 90 / 365.0, fd.DEFAULT_R,
+                                           fd.DEFAULT_Q, 0.22, True))
+    charm_put = float(fd.bs_charm_per_day(100.0, 100.0, 90 / 365.0, fd.DEFAULT_R,
+                                          fd.DEFAULT_Q, 0.22, False))
+
+    # Single CALL: dealer vanna/charm = -(greec·OI).
+    call = _contract("calls", 100, 1000, 0.22, 0.50, 90)
+    fc = fd.compute_chain_features(pd.DataFrame([call]), SNAP, spot=100.0)
+    assert fc["vanna_d1"] == pytest.approx(-vanna_c * 1000, rel=1e-6)
+    assert fc["charm_d1"] == pytest.approx(-charm_call * 1000, rel=1e-6)
+
+    # Single PUT (exercises the put branch of the dealer-short aggregation).
+    put = _contract("puts", 100, 800, 0.22, -0.50, 90)
+    fp = fd.compute_chain_features(pd.DataFrame([put]), SNAP, spot=100.0)
+    assert fp["vanna_d1"] == pytest.approx(-vanna_c * 800, rel=1e-6)
+    assert fp["charm_d1"] == pytest.approx(-charm_put * 800, rel=1e-6)
+
+    # Mixed call + put: dealer aggregate = -(call + put) for BOTH greeks.
+    fm = fd.compute_chain_features(pd.DataFrame([call, put]), SNAP, spot=100.0)
+    assert fm["vanna_d1"] == pytest.approx(-(vanna_c * 1000 + vanna_c * 800), rel=1e-6)
+    assert fm["charm_d1"] == pytest.approx(
+        -(charm_call * 1000 + charm_put * 800), rel=1e-6)
 
 
 # --------------------------------------------------------------------------
@@ -190,7 +210,7 @@ def test_no_sqlalchemy_at_import_time():
     mod = importlib.import_module("lib.features.flow_direction")
     src = mod.__file__
     with open(src) as f:
-        head = f.read().split("def _load_directional_chain")[0]
+        head = f.read().split("def _load_dex_aggregates")[0]
     assert "import sqlalchemy" not in head
     assert "from sqlalchemy" not in head
 
