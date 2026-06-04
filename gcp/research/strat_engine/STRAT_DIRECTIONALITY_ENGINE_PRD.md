@@ -94,6 +94,31 @@ without +5pp accuracy — killing it on accuracy would be a false negative).
 **Verdict: PASS.** Regime-stable across COVID, the 2022 bear, and the locked
 2026 OOS. This is the finalized deliverable.
 
+### Cross-ticker generalization (SPY, QQQ — verified 2026-06-04)
+
+SPY and QQQ were built (levels backfilled to match IWM's 143-col surface) and
+run through the **same** adaptive `mode=none` walk-forward. They replicate
+IWM almost exactly — the structure edge is not IWM-specific.
+
+| cell | log-loss beat>0 | beat median | acc median | ECE ≤ 0.05 | verdict |
+|---|---:|---:|---:|---:|---|
+| IWM 5m  | 8/8 | +0.193 | +19.0pp | 8/8 | PASS |
+| SPY 5m  | 8/8 | +0.204 | +18.1pp | 8/8 | PASS |
+| QQQ 5m  | 8/8 | +0.206 | +18.3pp | 8/8 | PASS |
+| IWM 15m | 8/8 | +0.179 | +17.7pp | 8/8 | PASS |
+| SPY 15m | 8/8 | +0.194 | +17.6pp | 8/8 | PASS |
+| QQQ 15m | 8/8 | +0.197 | +17.6pp | 8/8 | PASS |
+| IWM 30m | 8/8 | +0.160 | +15.4pp | 4/8 | PARTIAL |
+| SPY 30m | 8/8 | +0.155 | +15.6pp | 5/8 | PARTIAL |
+| QQQ 30m | 8/8 | +0.160 | +16.3pp | 5/8 | PARTIAL |
+
+**Reading:** 5m and 15m are clean PASS on all three tickers (log-loss beat
+*and* calibration). 30m is uniformly PARTIAL — every ticker beats base
+log-loss 8/8 but only ~half the folds hold ECE ≤ 0.05 (median ECE ~0.04–0.05,
+right at the ceiling). That is a **property of the 30m cell, not the ticker**:
+the coarser grid has fewer bars per fold, so the native softmax is mildly
+over-confident out-of-regime. SPY/QQQ track IWM cell-for-cell.
+
 ---
 
 ## 3. Model B — DIRECTION (`strat_dir_walk_forward`)  ❌ REJECTED
@@ -131,6 +156,21 @@ INFEASIBLE at production-data scale. See `DIRECTION_FEATURES_R&D.md`.
 any tested regime. Confidence does not discriminate direction even when the
 model is over-confident. **The engine cannot drive a call-vs-put decision
 today.**
+
+### Cross-ticker confirmation (SPY, QQQ — verified 2026-06-04)
+
+The DIRECTION FAIL is also not IWM-specific. All three tickers × 5m/15m/30m =
+9 cells, **0/8 positive log-loss beat in every cell**, decisive-call hit-rate
+at ≥0.70 confidence stuck at a coin flip:
+
+| cell | log-loss beat>0 | beat median | hit-rate @ ≥0.70 conf |
+|---|---:|---:|---:|
+| IWM 5m/15m/30m | 0/8, 0/8, 0/8 | −0.006 / −0.015 / −0.021 | 0.50 / 0.49 / 0.53 |
+| SPY 5m/15m/30m | 0/8, 0/8, 0/8 | −0.007 / −0.010 / −0.020 | 0.56 / 0.52 / 0.55 |
+| QQQ 5m/15m/30m | 0/8, 0/8, 0/8 | −0.005 / −0.009 / −0.017 | 0.52 / 0.50 / 0.55 |
+
+Direction fails identically across all three liquid index ETFs. This is an
+information-content failure of the feature surface, not a per-ticker quirk.
 
 To revive this leg the bar is *new evidence*: a new feature surface
 (microstructure / order-flow tick data), a new label, or a new dataset —
@@ -178,12 +218,13 @@ Artifacts land at
 
 These do not change the verdicts above but bound where they apply:
 
-1. **IWM only.** Despite "9 cells (IWM/SPY/QQQ × 5m/15m/30m)" appearing in
-   older docs, GCS holds **only `iwm_*` artifacts**. SPY and QQQ have no
-   trained model and no walk-forward. The `calibration="none"` decision is
-   explicitly scoped "IWM only; re-verify per-ticker"
-   (`strat_config.py`). Per-ticker raw-ECE must be re-checked before any
-   SPY/QQQ activation.
+1. **All 3 tickers now built & validated (2026-06-04).** IWM, SPY, and QQQ ×
+   5m/15m/30m all have walk-forward evidence and a trained `model.pkl`. The
+   `calibration="none"` decision, originally scoped "IWM only; re-verify
+   per-ticker" (`strat_config.py`), is now **confirmed cross-ticker**: raw
+   softmax holds ECE ≤ 0.05 on 5m/15m for SPY and QQQ exactly as for IWM
+   (and 30m is borderline for all three — a cell property). The 1m/60m/4h
+   cells remain out of scope per the locked FTFC config.
 2. **Live-ECE self-mute is a no-op.** The writer that populates
    `structure_brief_latest.json` is not implemented, so `live_ece` is always
    `null` and the ECE-breach mute never fires (`strat_pred_serve.py`). The

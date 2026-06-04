@@ -16,7 +16,7 @@ A multi-class LightGBM classifier that predicts the next bar's **strat candle ty
 | Algorithm | LightGBM `LGBMClassifier` (objective=`multiclass`, 4 classes) |
 | Calibration | **`none`** — raw native softmax (the 24-fold walk-forward proved sigmoid Platt scaling hurt calibration in 24/24 folds) |
 | Feature set | 143-column enriched feature set (technicals + ORB + historical levels + order blocks + gamma + VIX context) |
-| Deployed cells | **IWM only**, × 5m / 15m / 30m (3 cells). SPY and QQQ are *in scope* but **not yet built or validated** — GCS holds only `iwm_*` artifacts as of 2026-06-04. The `calibration="none"` decision is IWM-scoped; SPY/QQQ must re-verify raw ECE before activation. 1m and 60m excluded per the locked FTFC config. |
+| Deployed cells | **IWM, SPY, QQQ × 5m / 15m / 30m (9 cells)** — all built & validated 2026-06-04. Each has a trained `model.pkl` (calibration=none) and a walk-forward report. Single-split OOS gate: 9/9 PASS. Walk-forward: 5m/15m clean PASS on all three tickers; 30m PARTIAL on all three (ECE ~0.04–0.05, a cell property — see PRD §2). 1m and 60m excluded per the locked FTFC config. |
 | Training method | Anchored expanding walk-forward, 8 cutoffs (2019/2020/2021/2022/2023/2024/2025/2026), no recalibration between folds |
 
 The model is **frozen**. The configuration, hyperparameters, feature set, and calibration policy are not changed by routine operations. Retraining is allowed (and expected — see §5), but the configuration is fixed.
@@ -25,7 +25,7 @@ The model is **frozen**. The configuration, hyperparameters, feature set, and ca
 
 | Not validated | Evidence |
 |---|---|
-| Bar-body direction (close > open) | Track C R&D: 0/24 walk-forward folds had positive log-loss beat across news / cross-asset / vol-regime feature families. See [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md). |
+| Bar-body direction (close > open) | Track C R&D: 0/24 IWM walk-forward folds had positive log-loss beat across news / cross-asset / vol-regime families — **re-confirmed cross-ticker 2026-06-04: 0/8 beat in every one of IWM/SPY/QQQ × 5m/15m/30m (0/72 folds), decisive-call hit-rate stuck at a coin flip.** See [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md) + [`../gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md`](../gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md) §3. |
 | Net-P&L-after-friction edge under the strat execution playbook | Track B exec backtest: 0/8 walk-forward folds positive net expectancy, in all 3 cells, on 88k trades. Friction is structurally larger than the gross edge. See [`EXEC_BACKTEST_RESULTS.md`](EXEC_BACKTEST_RESULTS.md). |
 | Magnitude / how far the next bar travels | Out of scope; the model is a class predictor, not a regression. |
 | Earnings-window, gap-day, or pre-market edge | Not tested; the training window includes those bars but the model is not specialized. |
