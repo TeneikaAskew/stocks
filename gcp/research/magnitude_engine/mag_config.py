@@ -57,7 +57,15 @@ MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
 # (a bar that spikes 2 ATR and closes flat has ~0 body but a large excursion).
 # Run both: body answers "does it beat IV", excursion answers "is there a gamma
 # scalp", and they can diverge. Thresholds are reused (ATR multiples).
-LABEL_MODES: tuple[str, ...] = ("body", "excursion")
+#
+# Directional modes (2026-06-03) — a call/put bet needs SIZE + DIRECTION, and
+# the Strat direction predictor failed (24/24 folds), so the magnitude model
+# itself learns direction here. "call" = upside-only excursion
+# (next_high - next_open)/atr_20 → EXPLOSIVE-call means "big UP move"; "put" =
+# downside-only excursion (next_open - next_low)/atr_20 → EXPLOSIVE-put means
+# "big DOWN move". Same ATR thresholds; gate-7 compares each against the
+# matching option's IV (call IV for call, put IV for put).
+LABEL_MODES: tuple[str, ...] = ("body", "excursion", "call", "put")
 DEFAULT_LABEL_MODE = "body"
 
 

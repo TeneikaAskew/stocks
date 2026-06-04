@@ -351,6 +351,15 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
     if label_mode == "excursion":
         # Intrabar path/range — the gamma-scalp question.
         move = (df["next_high"] - df["next_low"]).abs()
+    elif label_mode == "call":
+        # Upside-only excursion: how far ABOVE the open the next bar reached.
+        # A down-bar has ~0 upside excursion → TIGHT, so EXPLOSIVE-call = big UP.
+        # clip(lower=0): next_high >= next_open always, but guard float noise.
+        move = (df["next_high"] - df["next_open"]).clip(lower=0)
+    elif label_mode == "put":
+        # Downside-only excursion: how far BELOW the open the next bar reached.
+        # An up-bar has ~0 downside excursion → TIGHT, so EXPLOSIVE-put = big DOWN.
+        move = (df["next_open"] - df["next_low"]).clip(lower=0)
     else:  # "body" — open→close, the IV expected-move comparison.
         move = (df["next_close"] - df["next_open"]).abs()
     df[LABEL_COL] = _bucket_magnitude(move, atr20)

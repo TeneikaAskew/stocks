@@ -67,11 +67,16 @@ from scripts._magnitude_analysis_helpers import load_predictions
 def load_atm_iv_per_date(engine, ticker: str,
                           min_date: pd.Timestamp,
                           max_date: pd.Timestamp,
-                          only_dates: "set | None" = None) -> pd.DataFrame:
+                          only_dates: "set | None" = None,
+                          option_type: str = "calls") -> pd.DataFrame:
     """Pull EOD ATM IV per (ticker, date) from etf_options_snapshots.
 
     'EOD' = the LAST snapshot of the day for nearest-expiry, closest-to-
     spot contract. ATM = strike closest to spot at snapshot.
+
+    option_type: 'calls' (ATM call, delta≈+0.5 — used for straddle & call) or
+    'puts' (ATM put, delta≈-0.5 — used for the put benchmark). The matching
+    leg's IV is the correct implied benchmark for a directional bet.
 
     Returns df with columns: date (datetime.date), atm_iv (float).
 
@@ -84,8 +89,14 @@ def load_atm_iv_per_date(engine, ticker: str,
     MUST include each bar's T-1..T-N candidate anchor dates (we widen by a small
     calendar margin so weekends/holidays still resolve a backward IV anchor).
     """
+    if option_type not in ("calls", "puts"):
+        raise ValueError(f"option_type must be 'calls' or 'puts', got {option_type!r}")
+    # ATM call delta ≈ +0.5; ATM put delta ≈ -0.5. Rank by distance to the
+    # matching ATM delta so we pick the at-the-money contract of that type.
+    delta_target = "0.5" if option_type == "calls" else "-0.5"
     date_clause = ""
-    params = {"t": ticker, "lo": min_date.date(), "hi": max_date.date()}
+    params = {"t": ticker, "lo": min_date.date(), "hi": max_date.date(),
+              "otype": option_type}
     if only_dates:
         date_clause = "AND snapshot_date = ANY(:dates)"
         params["dates"] = sorted(only_dates)
@@ -112,7 +123,7 @@ def load_atm_iv_per_date(engine, ticker: str,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.ticker, s.snapshot_date
                        ORDER BY
-                           ABS(s.delta - 0.5) ASC NULLS LAST,
+                           ABS(s.delta - ({delta_target})) ASC NULLS LAST,
                            s.expiration ASC NULLS LAST
                    ) AS rn
               FROM etf_options_snapshots s
@@ -122,7 +133,7 @@ def load_atm_iv_per_date(engine, ticker: str,
                AND s.snapshot_ts = l.last_ts
              WHERE s.implied_volatility IS NOT NULL
                AND s.implied_volatility > 0
-               AND s.option_type = 'calls'
+               AND s.option_type = :otype
         )
         SELECT snapshot_date AS d, implied_volatility AS atm_iv
           FROM eod_contracts
@@ -144,11 +155,15 @@ def main():
     p.add_argument("--tf", required=True, choices=list(TIMEFRAMES))
     p.add_argument("--run-id", required=True)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
-    p.add_argument("--label-mode", default="body", choices=["body", "excursion"],
+    p.add_argument("--label-mode", default="body",
+                   choices=["body", "excursion", "call", "put"],
                    help="Must match the label the predictions were trained on. "
-                        "'body' realized move = |next_close-next_open|; 'excursion' "
-                        "= |next_high-next_low| (intrabar range a straddle harvests).")
+                        "body=|next_close-next_open|; excursion=|next_high-next_low| "
+                        "(straddle range); call=(next_high-next_open) upside vs CALL "
+                        "IV; put=(next_open-next_low) downside vs PUT IV.")
     args = p.parse_args()
+    # Implied benchmark uses the matching option leg's IV.
+    iv_option_type = "puts" if args.label_mode == "put" else "calls"
 
     # Load model predictions for EXPLOSIVE filtering
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
@@ -170,10 +185,14 @@ def main():
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     # Realized move MUST match the label the model was trained/predicting on,
-    # else we'd compare an excursion prediction against a body realization.
+    # else we'd compare e.g. a call (upside) prediction against a body realization.
     if args.label_mode == "excursion":
         df["realized_move_dollars"] = (df["next_high"] - df["next_low"]).abs()
-    else:
+    elif args.label_mode == "call":
+        df["realized_move_dollars"] = (df["next_high"] - df["next_open"]).clip(lower=0)
+    elif args.label_mode == "put":
+        df["realized_move_dollars"] = (df["next_open"] - df["next_low"]).clip(lower=0)
+    else:  # body
         df["realized_move_dollars"] = (df["next_open"] - df["next_close"]).abs()
 
     # Join predictions ↔ dataset on ts to get realized_move + spot
@@ -198,7 +217,7 @@ def main():
             needed.add((d - pd.Timedelta(days=back)).date())
     iv = load_atm_iv_per_date(engine, args.ticker,
                                 join["ts"].min(), join["ts"].max(),
-                                only_dates=needed)
+                                only_dates=needed, option_type=iv_option_type)
     print(f"IV coverage: {len(iv)} EOD snapshots between "
           f"{iv['d'].min() if not iv.empty else 'NONE'} and "
           f"{iv['d'].max() if not iv.empty else 'NONE'}", file=sys.stderr)
