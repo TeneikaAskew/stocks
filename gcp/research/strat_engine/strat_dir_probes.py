@@ -182,7 +182,7 @@ def evaluate_fold(X_full, y_full, bar_dates, strata_full,
 
 
 def run_probe(engine, ticker: str, tf: str, experiment: str,
-              horizon: int, cutoffs=None) -> dict:
+              horizon: int, cutoffs=None, regime: str = "none") -> dict:
     from gcp.research.strat_engine.strat_config import (
         DEFAULT_ECE_CEILING, GCS_BUCKET_DEFAULT, gcs_model_prefix,
     )
@@ -195,8 +195,8 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     emb = embargo_days_for(tf, horizon)
     log.info("=" * 72)
-    log.info("DIR PROBE  exp=%s  %s %s  horizon=%dbars  embargo=%dd  folds=%d",
-             experiment, ticker, tf, horizon, emb, len(cutoffs))
+    log.info("DIR PROBE  exp=%s  %s %s  horizon=%dbars  embargo=%dd  regime=%s  folds=%d",
+             experiment, ticker, tf, horizon, emb, regime, len(cutoffs))
     log.info("=" * 72)
 
     df = load_labeled_dataset(engine, ticker, tf, include_next_bar_ohlc=False)
@@ -224,8 +224,31 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
     df = df[valid].reset_index(drop=True)
     log.info("dropped %d bars (no fwd label or flat); %d labeled rows (%s..%s)",
              n_drop, len(df), df["bar_date"].min(), df["bar_date"].max())
+
+    # E3: regime-restricted TRAINING+TEST. Faithfully tests the one directional
+    # effect the literature supports — intraday momentum concentrated in specific
+    # vol regimes / late session (Gao et al. 2018; Christoffersen-Diebold:
+    # sign predictability rides volatility dynamics). Unlike the stratified
+    # read-out (a global model sliced post-hoc), this trains a model dedicated
+    # to the regime so regime-specific structure can actually be learned.
+    if regime and regime != "none":
+        if regime in ("vix_low", "vix_high", "vix_mid"):
+            want = {"vix_low": "LOW", "vix_mid": "MID", "vix_high": "HIGH"}[regime]
+            mask = df.get("vix_tercile", pd.Series(index=df.index, dtype="object")) == want
+        elif regime in ("pos_gamma", "neg_gamma"):
+            want = {"pos_gamma": "positive_gamma", "neg_gamma": "negative_gamma"}[regime]
+            mask = df.get("gamma_regime", pd.Series(index=df.index, dtype="object")) == want
+        elif regime in ("early_session", "mid_session", "late_session"):
+            want = regime.split("_")[0]
+            mask = _session_third(df).astype("object") == want
+        else:
+            raise SystemExit(f"unknown --regime={regime}")
+        n_before = len(df)
+        df = df[mask.values].reset_index(drop=True)
+        log.info("regime=%s: restricted to %d/%d labeled rows", regime, len(df), n_before)
+
     if len(df) < MIN_TEST_BARS * 2:
-        raise SystemExit(f"too few labeled rows ({len(df)}) for {experiment}")
+        raise SystemExit(f"too few labeled rows ({len(df)}) for {experiment} regime={regime}")
 
     t0 = time.time()
     # Compute the label BEFORE featurizing, then featurize on a frame WITHOUT
@@ -302,14 +325,15 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
 
     summary = {
         "experiment": experiment, "ticker": ticker, "tf": tf,
-        "horizon_bars": horizon, "embargo_days": emb,
+        "horizon_bars": horizon, "embargo_days": emb, "regime": regime,
         "target": f"sign(session-aware fwd_ret over {horizon} bars)",
         "cutoffs": cutoffs, "calibration": "none",
         "min_test_bars": MIN_TEST_BARS, "n_features": len(feature_cols),
         "folds": folds, "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
     prefix = gcs_model_prefix(ticker, tf)
-    blob = f"{prefix}/dir_probe_{experiment}_h{horizon}_{int(time.time())}.json"
+    reg_tag = "" if regime == "none" else f"_{regime}"
+    blob = f"{prefix}/dir_probe_{experiment}_h{horizon}{reg_tag}_{int(time.time())}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved: gs://%s/%s", os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
     return summary
@@ -328,11 +352,17 @@ def main():
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
     p.add_argument("--horizon", type=int, default=15,
                    help="forward-return horizon in bars (session-aware)")
+    p.add_argument("--regime", default="none",
+                   choices=["none", "vix_low", "vix_mid", "vix_high",
+                            "pos_gamma", "neg_gamma",
+                            "early_session", "mid_session", "late_session"],
+                   help="E3: restrict train+test to a regime subset")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
-    run_probe(engine, args.ticker, args.tf, args.experiment, args.horizon, cutoffs)
+    run_probe(engine, args.ticker, args.tf, args.experiment, args.horizon,
+              cutoffs, regime=args.regime)
 
 
 if __name__ == "__main__":
