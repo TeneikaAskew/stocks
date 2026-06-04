@@ -27,7 +27,19 @@ from gcp.research.strat_engine.strat_dir_probes import (  # noqa: E402
     embargo_days_for,
     _session_third,
     _stratified_hit_rates,
+    triple_barrier_labels,
 )
+
+
+def _ohlc_session(day: str, bars: list[tuple[float, float, float]],
+                  start_min: int = 30) -> pd.DataFrame:
+    """Build one session of (high, low, close) bars."""
+    base = pd.Timestamp(f"{day} 09:30") + pd.Timedelta(minutes=start_min - 30)
+    rows = []
+    for i, (h, l, c) in enumerate(bars):
+        rows.append({"bar_date": day, "ts": base + pd.Timedelta(minutes=i),
+                     "high": float(h), "low": float(l), "close": float(c)})
+    return pd.DataFrame(rows)
 
 
 def _two_sessions(closes_by_day: dict[str, list[float]]) -> pd.DataFrame:
@@ -115,3 +127,68 @@ def test_stratified_hit_rates_none_when_no_decisive():
     out = _stratified_hit_rates(y_true, p_up, {"r": pd.Series(["x", "x"])})["r"]
     assert out["x"]["n"] == 0
     assert out["x"]["hit_rate"] is None
+
+
+# ── triple_barrier_labels ───────────────────────────────────────────────────
+# atr_20 needs 20 warm bars (min_periods=20). A flat bar (h=100.5,l=99.5,c=100)
+# has true-range 1.0, so atr20 → 1.0 once warm; with k=1.0 the barriers sit at
+# 101 / 99. We perturb a single forward bar to force a first-touch and assert
+# only on a fully-warm test bar whose atr20 window excludes the perturbation.
+
+_FLAT = (100.5, 99.5, 100.0)  # high, low, close → TR=1.0
+
+
+def test_triple_barrier_up_first_is_long():
+    bars = [_FLAT] * 40
+    bars[24] = (101.5, 99.5, 100.0)  # j=2 ahead of test bar 22: HIGH touches 101
+    tb = triple_barrier_labels(_ohlc_session("2026-01-02", bars), horizon=5, k_atr=1.0)
+    assert tb["atr20"].iloc[22] == pytest.approx(1.0)  # window [3..22] all flat
+    assert tb["y_long"].iloc[22] == 1
+    assert tb["y_short"].iloc[22] == 0
+    assert tb["touched"].iloc[22] == 1 and bool(tb["evaluable"].iloc[22])
+
+
+def test_triple_barrier_down_first_is_short():
+    bars = [_FLAT] * 40
+    bars[24] = (100.5, 98.5, 100.0)  # j=2: LOW touches 99
+    tb = triple_barrier_labels(_ohlc_session("2026-01-02", bars), horizon=5, k_atr=1.0)
+    assert tb["y_short"].iloc[22] == 1
+    assert tb["y_long"].iloc[22] == 0
+    assert tb["touched"].iloc[22] == 1
+
+
+def test_triple_barrier_no_touch_is_neutral_both_zero():
+    bars = [_FLAT] * 40  # never escapes ±1 ATR
+    tb = triple_barrier_labels(_ohlc_session("2026-01-02", bars), horizon=5, k_atr=1.0)
+    assert tb["y_long"].iloc[22] == 0 and tb["y_short"].iloc[22] == 0
+    assert tb["touched"].iloc[22] == 0
+    assert bool(tb["evaluable"].iloc[22])  # full forward window ⇒ genuine no-touch
+
+
+def test_triple_barrier_truncated_tail_not_evaluable():
+    bars = [_FLAT] * 40
+    tb = triple_barrier_labels(_ohlc_session("2026-01-02", bars), horizon=5, k_atr=1.0)
+    # last bar has 0 forward bars and no touch ⇒ not evaluable
+    assert not bool(tb["evaluable"].iloc[-1])
+    assert not bool(tb["evaluable"].iloc[-3])  # still inside the horizon tail
+
+
+def test_triple_barrier_warmup_atr_nan_not_evaluable():
+    bars = [_FLAT] * 40
+    tb = triple_barrier_labels(_ohlc_session("2026-01-02", bars), horizon=5, k_atr=1.0)
+    assert pd.isna(tb["atr20"].iloc[0])           # < 20 warm bars
+    assert not bool(tb["evaluable"].iloc[0])
+
+
+def test_triple_barrier_is_session_aware():
+    # Day 1 flat; Day 2 has a big up bar. A late day-1 bar must NOT borrow
+    # day-2's move across the overnight gap — its forward scan stops at the
+    # session boundary, so it stays no-touch (and, being truncated, drops).
+    day1 = [_FLAT] * 40
+    day2 = [(105.0, 99.5, 100.0)] + [_FLAT] * 39  # day2 bar0 spikes high
+    df = pd.concat([_ohlc_session("2026-01-02", day1),
+                    _ohlc_session("2026-01-05", day2)], ignore_index=True)
+    tb = triple_barrier_labels(df, horizon=5, k_atr=1.0)
+    # day1's final bar (index 39) would "see" day2's spike if the scan crossed;
+    # session-aware scan must report no long touch for it.
+    assert tb["y_long"].iloc[39] == 0

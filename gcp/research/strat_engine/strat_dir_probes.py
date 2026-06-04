@@ -85,6 +85,76 @@ def session_aware_fwd_ret_bps(df: pd.DataFrame, horizon: int) -> pd.Series:
     return (fwd_close - df["close"]) / df["close"] * 10000.0
 
 
+def triple_barrier_labels(df: pd.DataFrame, horizon: int,
+                          k_atr: float) -> pd.DataFrame:
+    """Session-aware TRIPLE-BARRIER directional labels (López de Prado).
+
+    For each bar t, scan forward j = 1..horizon WITHIN the same session and
+    record the first bar whose HIGH touches the up-barrier
+    (close[t] + k·atr20[t]) or whose LOW touches the down-barrier
+    (close[t] − k·atr20[t]). The side that is touched FIRST wins; if neither
+    is touched within the horizon the bar is a genuine *no-touch* (the
+    vertical barrier) — this is the neutral band that filters microstructure
+    noise a return-sign label is forced to label ±.
+
+    Returns a frame aligned to ``df.index`` with:
+      atr20      — t-known ATR-20 (reused from the magnitude engine; the
+                   stored ``atr_20`` is NaN in source, hence local compute).
+      y_long     — 1 iff the UP barrier is touched first within horizon.
+      y_short    — 1 iff the DOWN barrier is touched first within horizon.
+      touched    — y_long | y_short (at least one horizontal barrier hit).
+      evaluable  — atr20 valid AND (touched OR the full forward window exists).
+
+    ``y_long`` and ``y_short`` are deliberately NON-complementary: a no-touch
+    bar is 0 for BOTH. That asymmetry is the whole point — it lets a separate
+    long-vs-rest and short-vs-rest meta-model learn the different drivers of
+    up moves (opening-range position) vs down moves (vol expansion), instead
+    of a single symmetric sign model where P(short) ≡ 1 − P(long).
+
+    A same-bar tie (one bar's range straddles both barriers, so first-touch
+    order is unknowable from OHLC) is conservatively scored neutral (both 0).
+    """
+    # ATR-20 via continuous true-range rolling mean — byte-identical to
+    # magnitude_engine.mag_dataset._compute_atr20 (the stored atr_20 is NaN in
+    # source). Inlined, not imported, to keep this a pure numpy+pandas helper
+    # the hermetic tests can exercise without pulling sqlalchemy/loaders.
+    _h, _l, _c = df["high"], df["low"], df["close"]
+    _prev_c = _c.shift(1)
+    _tr = pd.concat([(_h - _l), (_h - _prev_c).abs(), (_l - _prev_c).abs()],
+                    axis=1).max(axis=1, skipna=True)
+    atr20 = _tr.rolling(20, min_periods=20).mean()
+    close = df["close"].to_numpy(dtype=float)
+    up_level = close + k_atr * atr20.to_numpy(dtype=float)
+    dn_level = close - k_atr * atr20.to_numpy(dtype=float)
+    g = df.groupby("bar_date")
+    n = len(df)
+    INF = horizon + 1
+    first_up = np.full(n, INF, dtype=float)
+    first_dn = np.full(n, INF, dtype=float)
+    for j in range(1, horizon + 1):
+        hi_j = g["high"].shift(-j).to_numpy(dtype=float)
+        lo_j = g["low"].shift(-j).to_numpy(dtype=float)
+        up_touch = (hi_j >= up_level) & (first_up == INF)
+        dn_touch = (lo_j <= dn_level) & (first_dn == INF)
+        first_up[up_touch] = j
+        first_dn[dn_touch] = j
+    long_out = (first_up < first_dn) & (first_up <= horizon)
+    short_out = (first_dn < first_up) & (first_dn <= horizon)
+    touched = long_out | short_out
+    # bars after t within the session; full window exists iff >= horizon
+    fwd_avail = g.cumcount(ascending=False).to_numpy()
+    atr_ok = atr20.notna().to_numpy() & (atr20.to_numpy(dtype=float) > 0)
+    evaluable = atr_ok & (touched | (fwd_avail >= horizon))
+    return pd.DataFrame({
+        "atr20": atr20.to_numpy(dtype=float),
+        "y_long": long_out.astype(np.int64),
+        "y_short": short_out.astype(np.int64),
+        "touched": touched.astype(np.int64),
+        "evaluable": evaluable,
+    }, index=df.index)
+
+
+
 def embargo_days_for(tf: str, horizon: int) -> int:
     """Days to purge before each test fold so a forward label window cannot
     overlap the test set. ceil(horizon / bars_per_day) + 1 day of slack."""
@@ -339,6 +409,207 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
     return summary
 
 
+def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
+               cond_tr, cond_te, evaluable, n_jobs, side) -> dict:
+    """One walk-forward fold for ONE side's meta-model (long-vs-rest or
+    short-vs-rest), conditioned on the magnitude model's predicted-EXPLOSIVE
+    mask. cond_tr is the IN-SAMPLE mag prediction (selects the train subset);
+    cond_te is the OOF mag prediction (mag model never saw the test fold)."""
+    from sklearn.metrics import log_loss
+    from gcp.research.strat_engine.strat_pred_train import expected_calibration_error
+    from gcp.research.strat_engine.strat_dir_walk_forward import (
+        make_direction_lgbm, base_rate_logloss_binary,
+    )
+    from gcp.research.strat_engine.strat_walk_forward import MIN_TEST_BARS
+
+    train_end_dt = np.datetime64(train_end)
+    test_end_dt = np.datetime64(test_end)
+    embargo_cut = train_end_dt - np.timedelta64(embargo_days, "D")
+    tr = (bar_dates < embargo_cut) & cond_tr & evaluable
+    te = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt) & cond_te & evaluable
+    n_tr, n_te = int(tr.sum()), int(te.sum())
+    out = {"side": side, "fold": f"{train_end}..{test_end}",
+           "n_train": n_tr, "n_test": n_te}
+    if n_te < MIN_TEST_BARS or n_tr < MIN_TEST_BARS:
+        out["status"] = "SKIP_THIN"
+        return out
+    y_tr, y_te = y[tr], y[te]
+    if y_tr.min() == y_tr.max():  # single-class train subset — undefined model
+        out["status"] = "SKIP_DEGEN"
+        return out
+    model = make_direction_lgbm(n_jobs=n_jobs)
+    model.fit(X_full[tr], y_tr)
+    proba = model.predict_proba(X_full[te])
+    p1 = proba[:, list(model.classes_).index(1)] if 1 in model.classes_ else np.zeros(n_te)
+    pred = (p1 >= 0.5).astype(int)
+    ll = float(log_loss(y_te, proba, labels=list(model.classes_)))
+    base_ll = base_rate_logloss_binary(y_tr, y_te)
+    ece, _ = expected_calibration_error(
+        y_te, np.column_stack([1 - p1, p1]), n_bins=10)
+    # Decisive-FIRE precision: of bars where this side's model fires ≥t, what
+    # fraction actually hit this side's barrier first? This is the tradeable
+    # number — a long fire is only useful if the up barrier really comes first.
+    fires = {}
+    for t in (0.55, 0.60, 0.65):
+        f = p1 >= t
+        nf = int(f.sum())
+        fires[t] = {"n": nf,
+                    "precision": float(y_te[f].mean()) if nf > 0 else None}
+    return {**out, "status": "OK", "base_rate": float(y_te.mean()),
+            "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
+            "ece": float(ece), "fires": fires}
+
+
+def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
+                             k_atr: float, mag_cond: str, mag_thresh: float,
+                             cutoffs=None) -> dict:
+    """E4 — the closing experiment. Triple-barrier first-touch directional
+    labels (neutral band) + SEPARATE long/short meta-models, conditioned on
+    the magnitude engine's PREDICTED-EXPLOSIVE flag (leak-free: in-sample for
+    train selection, OOF for the test fold). Addresses the three spec levers
+    the return-sign probes (E1–E3) only approximated: barrier target, neutral
+    band, magnitude-conditioning, and asymmetric model form."""
+    from gcp.research.strat_engine.strat_config import (
+        DEFAULT_ECE_CEILING, GCS_BUCKET_DEFAULT, gcs_model_prefix,
+    )
+    from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
+    from gcp.research.strat_engine.strat_pred_train import featurize
+    from gcp.research.strat_engine.strat_walk_forward import (
+        DEFAULT_CUTOFFS, MIN_TEST_BARS, _gcs_upload,
+    )
+    from gcp.research.magnitude_engine.mag_pred_train import make_lgbm
+    from gcp.research.magnitude_engine.mag_config import LABEL_CLASSES, LABEL_TO_IDX
+    from gcp.research.magnitude_engine.mag_dataset import _bucket_magnitude
+
+    cutoffs = cutoffs or DEFAULT_CUTOFFS
+    emb = embargo_days_for(tf, horizon)
+    expl_idx = LABEL_TO_IDX["EXPLOSIVE"]
+    exp_idx = LABEL_TO_IDX["EXPANDED"]
+    log.info("=" * 72)
+    log.info("DIR PROBE  exp=e4_triple_barrier  %s %s  horizon=%dbars  "
+             "k_atr=%.2f  mag_cond=%s(thresh=%.2f)  embargo=%dd",
+             ticker, tf, horizon, k_atr, mag_cond, mag_thresh, emb)
+    log.info("=" * 72)
+
+    # next_open/next_close needed for the magnitude target → load them, then
+    # drop before featurize (the leak guard also blocks next_* by name).
+    df = load_labeled_dataset(engine, ticker, tf, include_next_bar_ohlc=True)
+    df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
+    df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
+
+    tb = triple_barrier_labels(df, horizon, k_atr)
+    # Magnitude target (forward |next_close-next_open|/atr20 bucket) — used
+    # ONLY as the magnitude model's TRAINING label, never as a feature.
+    move = (df["next_close"] - df["next_open"]).abs()
+    mag_bucket = _bucket_magnitude(move, tb["atr20"])
+    mag_y = mag_bucket.map(lambda b: LABEL_TO_IDX.get(b) if pd.notna(b) else np.nan)
+    mag_ok = mag_y.notna().to_numpy()
+    mag_y_int = np.where(mag_ok, mag_y.fillna(0).to_numpy(), 0).astype(np.int64)
+
+    evaluable = tb["evaluable"].to_numpy()
+    log.info("triple-barrier: %d evaluable bars  touched=%.3f  "
+             "long=%.3f short=%.3f notouch=%.3f (of evaluable)",
+             int(evaluable.sum()), float(tb["touched"][evaluable].mean()),
+             float(tb["y_long"][evaluable].mean()),
+             float(tb["y_short"][evaluable].mean()),
+             float((tb["touched"][evaluable] == 0).mean()))
+
+    drop_cols = [c for c in ("y_long", "y_short", "atr20", "next_open",
+                 "next_close", "next_high", "next_low") if c in df.columns]
+    X_df, feature_cols = featurize(df.drop(columns=drop_cols, errors="ignore"))
+    X_full = X_df.values.astype(np.float32, copy=False)
+    leak = [c for c in feature_cols
+            if c.startswith(("fwd_", "next_", "_fwd")) or "fwd_ret" in c]
+    if leak:
+        raise SystemExit(f"LEAKAGE: forward-looking cols in matrix: {leak}")
+    bar_dates = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
+    y_long = tb["y_long"].to_numpy()
+    y_short = tb["y_short"].to_numpy()
+    n_jobs = max(1, os.cpu_count() or 1)
+
+    folds = {"long": [], "short": []}
+    for i, cut in enumerate(cutoffs):
+        test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else \
+            str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
+        cut_dt = np.datetime64(cut)
+        emb_cut = cut_dt - np.timedelta64(emb, "D")
+        tr_all = (bar_dates < emb_cut) & mag_ok
+        te_all = (bar_dates >= cut_dt) & (bar_dates < np.datetime64(test_end)) & mag_ok
+        if int(tr_all.sum()) < MIN_TEST_BARS or int(te_all.sum()) < MIN_TEST_BARS:
+            continue
+        # Magnitude model: train on fold-train, predict EXPLOSIVE prob.
+        mag = make_lgbm(n_jobs=n_jobs)
+        mag.fit(X_full[tr_all], mag_y_int[tr_all])
+        cols = list(mag.classes_)
+        def _p(idx, mask):
+            return mag.predict_proba(X_full[mask])[:, cols.index(idx)] \
+                if idx in cols else np.zeros(int(mask.sum()))
+        # Build full-length conditioner masks (default False off-fold).
+        def _cond(mask):
+            p_expl = _p(expl_idx, mask)
+            if mag_cond == "none":
+                sel = np.ones(int(mask.sum()), dtype=bool)
+            elif mag_cond == "big":
+                p_exp = _p(exp_idx, mask)
+                sel = (p_expl + p_exp) >= max(mag_thresh, 0.5)
+            else:  # "explosive"
+                sel = p_expl >= mag_thresh if mag_thresh > 0 else \
+                    (mag.predict(X_full[mask]) == expl_idx)
+            full = np.zeros(len(bar_dates), dtype=bool)
+            full[np.where(mask)[0]] = sel
+            return full
+        cond_tr = _cond(tr_all)
+        cond_te = _cond(te_all)
+        log.info("─" * 72)
+        log.info("fold %d/%d test=[%s..%s)  predicted-EXPLOSIVE: train=%d test=%d",
+                 i + 1, len(cutoffs), cut, test_end,
+                 int(cond_tr.sum()), int(cond_te.sum()))
+        for side, y in (("long", y_long), ("short", y_short)):
+            r = _side_fold(X_full, y, bar_dates, cut, test_end, emb,
+                           cond_tr, cond_te, evaluable, n_jobs, side)
+            folds[side].append(r)
+            if r["status"] == "OK":
+                f60 = r["fires"][0.60]
+                log.info("  %-5s n_tr=%d n_te=%d base=%.3f beat=%+.4f ECE=%.4f "
+                         "fire≥.60 n=%d prec=%s", side, r["n_train"], r["n_test"],
+                         r["base_rate"], r["beat"], r["ece"], f60["n"],
+                         f"{f60['precision']:.3f}" if f60["precision"] is not None else "—")
+            else:
+                log.info("  %-5s %s (n_te=%d)", side, r["status"], r["n_test"])
+
+    summary = {"experiment": "e4_triple_barrier", "ticker": ticker, "tf": tf,
+               "horizon_bars": horizon, "k_atr": k_atr, "mag_cond": mag_cond,
+               "mag_thresh": mag_thresh, "embargo_days": emb,
+               "target": f"first-touch sign of ±{k_atr}·ATR20 within {horizon} bars",
+               "n_features": len(feature_cols), "folds": folds,
+               "computed_at": pd.Timestamp.utcnow().isoformat()}
+    for side in ("long", "short"):
+        ok = [f for f in folds[side] if f.get("status") == "OK"]
+        log.info("=" * 72)
+        if ok:
+            beats = [f["beat"] for f in ok]
+            eces = [f["ece"] for f in ok]
+            precs = [f["fires"][0.60]["precision"] for f in ok
+                     if f["fires"][0.60]["precision"] is not None]
+            bases = [f["base_rate"] for f in ok]
+            log.info("SUMMARY %s: logloss beat median %+.4f  positive %d/%d  "
+                     "ECE median %.4f passes %d/%d", side,
+                     float(np.median(beats)), sum(b > 0 for b in beats), len(ok),
+                     float(np.median(eces)),
+                     sum(e <= DEFAULT_ECE_CEILING for e in eces), len(ok))
+            if precs:
+                log.info("         fire≥.60 precision median %.3f vs base median "
+                         "%.3f  (lift %+.3f)", float(np.median(precs)),
+                         float(np.median(bases)),
+                         float(np.median(precs)) - float(np.median(bases)))
+
+    prefix = gcs_model_prefix(ticker, tf)
+    blob = f"{prefix}/dir_probe_e4_tb_h{horizon}_k{k_atr}_{mag_cond}_{int(time.time())}.json"
+    _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
+    log.info("saved: gs://%s/%s", os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
+    return summary
+
+
 def main():
     from gcp.database import get_engine
     from gcp.research.strat_engine.strat_config import TICKERS, TIMEFRAMES
@@ -347,22 +618,35 @@ def main():
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--experiment", default="e1_horizon",
-                   choices=["e1_horizon", "e2_trigger"])
+                   choices=["e1_horizon", "e2_trigger", "e4_triple_barrier"])
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
     p.add_argument("--horizon", type=int, default=15,
-                   help="forward-return horizon in bars (session-aware)")
+                   help="forward-return / barrier horizon in bars (session-aware)")
     p.add_argument("--regime", default="none",
                    choices=["none", "vix_low", "vix_mid", "vix_high",
                             "pos_gamma", "neg_gamma",
                             "early_session", "mid_session", "late_session"],
                    help="E3: restrict train+test to a regime subset")
+    p.add_argument("--barrier-atr", type=float, default=1.0,
+                   help="E4: triple-barrier half-width in ATR-20 multiples")
+    p.add_argument("--mag-cond", default="explosive",
+                   choices=["none", "explosive", "big"],
+                   help="E4: magnitude-model conditioner (predicted EXPLOSIVE, "
+                        "or EXPANDED+EXPLOSIVE='big', or none)")
+    p.add_argument("--mag-thresh", type=float, default=0.0,
+                   help="E4: predicted-prob cutoff; 0 ⇒ argmax==EXPLOSIVE")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
-    run_probe(engine, args.ticker, args.tf, args.experiment, args.horizon,
-              cutoffs, regime=args.regime)
+    if args.experiment == "e4_triple_barrier":
+        run_triple_barrier_probe(engine, args.ticker, args.tf, args.horizon,
+                                 args.barrier_atr, args.mag_cond,
+                                 args.mag_thresh, cutoffs)
+    else:
+        run_probe(engine, args.ticker, args.tf, args.experiment, args.horizon,
+                  cutoffs, regime=args.regime)
 
 
 if __name__ == "__main__":
