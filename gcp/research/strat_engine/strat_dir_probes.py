@@ -460,6 +460,63 @@ def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
             "ece": float(ece), "fires": fires}
 
 
+def _symmetric_fold(X_full, y3, bar_dates, train_end, test_end, embargo_days,
+                    cond_tr, cond_te, evaluable, n_jobs) -> dict:
+    """One walk-forward fold for the SYMMETRIC 3-class first-touch primary
+    model (0=down, 1=neutral, 2=up). This is the canonical López-de-Prado
+    triple-barrier target: predict which barrier is touched first, with an
+    explicit neutral class for timeouts. Metrics: 3-class log-loss vs the
+    train-prior constant predictor (strong-form null), and the tradeable
+    DIRECTIONAL precision — of bars the model decisively calls up/down (not
+    neutral), how often that side's barrier really comes first."""
+    import lightgbm as lgb
+    from sklearn.metrics import log_loss
+    from gcp.research.strat_engine.strat_walk_forward import MIN_TEST_BARS
+
+    train_end_dt = np.datetime64(train_end)
+    test_end_dt = np.datetime64(test_end)
+    embargo_cut = train_end_dt - np.timedelta64(embargo_days, "D")
+    tr = (bar_dates < embargo_cut) & cond_tr & evaluable
+    te = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt) & cond_te & evaluable
+    n_tr, n_te = int(tr.sum()), int(te.sum())
+    out = {"side": "symmetric", "fold": f"{train_end}..{test_end}",
+           "n_train": n_tr, "n_test": n_te}
+    if n_te < MIN_TEST_BARS or n_tr < MIN_TEST_BARS:
+        out["status"] = "SKIP_THIN"
+        return out
+    y_tr, y_te = y3[tr], y3[te]
+    if len(np.unique(y_tr)) < 3:  # need all of down/neutral/up to train a 3-class
+        out["status"] = "SKIP_DEGEN"
+        return out
+    model = lgb.LGBMClassifier(
+        objective="multiclass", num_class=3, n_estimators=300,
+        learning_rate=0.05, max_depth=6, num_leaves=31, min_child_samples=100,
+        random_state=42, verbose=-1, n_jobs=n_jobs)
+    model.fit(X_full[tr], y_tr)
+    classes = list(model.classes_)
+    proba = model.predict_proba(X_full[te])
+    ll = float(log_loss(y_te, proba, labels=classes))
+    # Strong-form null: constant predictor = train class priors.
+    prior = np.array([(y_tr == c).mean() for c in classes])
+    base_ll = float(log_loss(y_te, np.tile(prior, (n_te, 1)), labels=classes))
+    pred = np.array(classes)[proba.argmax(1)]
+    pmax = proba.max(1)
+    down_i, up_i = classes.index(0) if 0 in classes else None, \
+        classes.index(2) if 2 in classes else None
+    dirn = {}
+    for t in (0.50, 0.55, 0.60):
+        # decisive directional call = argmax is up or down (not neutral) ≥ t
+        fire = (pred != 1) & (pmax >= t)
+        nf = int(fire.sum())
+        dirn[t] = {"n": nf,
+                   "precision": float((pred[fire] == y_te[fire]).mean())
+                   if nf > 0 else None}
+    return {**out, "status": "OK", "logloss": ll, "base_logloss": base_ll,
+            "beat": base_ll - ll,
+            "class_share_test": {int(c): float((y_te == c).mean()) for c in classes},
+            "directional": dirn}
+
+
 def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                              k_atr: float, mag_cond: str, mag_thresh: float,
                              cutoffs=None) -> dict:
@@ -525,9 +582,11 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
     bar_dates = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
     y_long = tb["y_long"].to_numpy()
     y_short = tb["y_short"].to_numpy()
+    # Symmetric 3-class first-touch label: 2=up, 0=down, 1=neutral (timeout).
+    y3 = np.where(y_long == 1, 2, np.where(y_short == 1, 0, 1)).astype(np.int64)
     n_jobs = max(1, os.cpu_count() or 1)
 
-    folds = {"long": [], "short": []}
+    folds = {"symmetric": [], "long": [], "short": []}
     for i, cut in enumerate(cutoffs):
         test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else \
             str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
@@ -573,6 +632,17 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
         log.info("fold %d/%d test=[%s..%s)  predicted-EXPLOSIVE: train=%d test=%d",
                  i + 1, len(cutoffs), cut, test_end,
                  int(cond_tr.sum()), int(cond_te.sum()))
+        rs = _symmetric_fold(X_full, y3, bar_dates, cut, test_end, emb,
+                             cond_tr, cond_te, evaluable, n_jobs)
+        folds["symmetric"].append(rs)
+        if rs["status"] == "OK":
+            d55 = rs["directional"][0.55]
+            log.info("  sym   n_tr=%d n_te=%d beat=%+.4f  shares=%s  "
+                     "dir≥.55 n=%d prec=%s", rs["n_train"], rs["n_test"],
+                     rs["beat"], {k: round(v, 2) for k, v in rs["class_share_test"].items()},
+                     d55["n"], f"{d55['precision']:.3f}" if d55["precision"] is not None else "—")
+        else:
+            log.info("  sym   %s (n_te=%d)", rs["status"], rs["n_test"])
         for side, y in (("long", y_long), ("short", y_short)):
             r = _side_fold(X_full, y, bar_dates, cut, test_end, emb,
                            cond_tr, cond_te, evaluable, n_jobs, side)
@@ -592,6 +662,22 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                "target": f"first-touch sign of ±{k_atr}·ATR20 within {horizon} bars",
                "n_features": len(feature_cols), "folds": folds,
                "computed_at": pd.Timestamp.utcnow().isoformat()}
+    sym_ok = [f for f in folds["symmetric"] if f.get("status") == "OK"]
+    log.info("=" * 72)
+    if sym_ok:
+        sbeats = [f["beat"] for f in sym_ok]
+        sprecs = [f["directional"][0.55]["precision"] for f in sym_ok
+                  if f["directional"][0.55]["precision"] is not None]
+        # directional base = P(correct side | a barrier touched) for a coin
+        # flip among non-neutral truth = share(up)+share(down) split → compare
+        # decisive precision against 0.5 (up-vs-down is the binary it resolves).
+        log.info("SUMMARY symmetric(3-class): logloss beat median %+.4f  "
+                 "positive %d/%d folds", float(np.median(sbeats)),
+                 sum(b > 0 for b in sbeats), len(sym_ok))
+        if sprecs:
+            log.info("         directional≥.55 precision median %.3f "
+                     "(coin=0.500, lift %+.3f)", float(np.median(sprecs)),
+                     float(np.median(sprecs)) - 0.5)
     for side in ("long", "short"):
         ok = [f for f in folds[side] if f.get("status") == "OK"]
         log.info("=" * 72)
