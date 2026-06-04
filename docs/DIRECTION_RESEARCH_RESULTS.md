@@ -1,17 +1,25 @@
 # Directionality Research — Verdict
 
-**VERDICT: DEAD-END as a standalone tradeable signal.** Intraday directional
-sign on liquid index ETFs is **not profitably exploitable** from
-price/volume/technical/regime features. Confirmed across every avenue the
-literature pointed to — longer horizons, trigger-conditioning, dedicated
-regime/time-of-day models, **and the literature's own triple-barrier first-touch
-target with separate long/short meta-models conditioned on the magnitude
-engine's EXPLOSIVE flag (E4)** — all under purged + embargoed walk-forward CV.
-The single sign of life is a magnitude-gated *long-only* lean whose ~1 bp gross
-edge is **eaten by ~1.5 bp friction (net ≈ −0.5 bp)** and which fails the
-calibration gate (ECE ≈ 0.10) — not tradeable as-is. The one genuinely
-predictable, calibrated quantity is **magnitude/volatility**, already
-productionized in the separate `magnitude_engine`. Direction is a coin flip.
+**VERDICT: no *generalizable* directional edge; one unresolved IWM-only
+candidate.** Intraday directional sign on liquid index ETFs is not predictable
+from price/volume/technical/regime features in any way that survives across
+tickers. Confirmed across every avenue the literature pointed to — longer
+horizons, trigger-conditioning, regime/time-of-day models, **and the
+literature's own triple-barrier first-touch target with separate long/short
+meta-models conditioned on the magnitude engine's EXPLOSIVE flag (E4)** — all
+under purged + embargoed walk-forward CV.
+
+Evaluated **cost-free** (the right lens for a combined size+direction signal),
+there is exactly **one** statistically-significant edge: a *long-only* tilt on
+magnitude-EXPLOSIVE bars, **z up to 4.2, sharpening with confidence, surviving
+the 2022 bear — but only on IWM.** It **does not replicate on SPY or QQQ**
+(z≈0), so it is an unresolved candidate (literature-plausible small-cap
+timeability vs. one-of-three multiple-comparisons luck), not a confirmed edge —
+and it is miscalibrated (ECE ≈ 0.10; trust ranking, not probabilities). The one
+genuinely predictable, calibrated, cross-ticker quantity is
+**magnitude/volatility**, already productionized in the separate
+`magnitude_engine`. Standalone direction is a coin flip everywhere except a
+narrow, unvalidated IWM pocket.
 
 > **Honesty note (post-review).** An earlier draft claimed "0-for-everything
 > across labels" and dismissed triple-barrier as a sizing rescale. That was
@@ -144,55 +152,87 @@ not where price sits at bar H. Run with all the levers the prior probes missed:
   test — leak-free, t-known), via a fold-relative top-quantile of P(EXPLOSIVE);
 - k ∈ {1.0, 1.5}, H=12 bars (15m), same 8 folds, same embargo, same gates.
 
-**Result — fails both pre-committed gates, with one honest flicker:**
+**Result.** Costs never enter the model, the labels, or the predictive metrics —
+only the final "tradeable?" judgment. So the result is reported two ways: the
+**signal-quality** view (cost-free; the right lens for a combined size+direction
+research signal) and the **tradeability** view (after friction).
 
-| arm | log-loss beat (gate 1) | decisive precision | EV vs friction (gate 2) |
-|---|---|---|---|
-| symmetric 3-class | **0/8** all variants | ≤ coin (0.43–0.49) | — |
-| short-vs-rest | **0/8** (one 1/8) | ≈ base (+0.01) | — |
-| **long-vs-rest, mag-gated** | **0/8** | 0.543 (k1.0) / 0.526 (k1.5) | **net −0.4 to −0.5 bps** |
+| arm | log-loss beat (calibration gate) | decisive precision (cost-free) |
+|---|---|---|
+| symmetric 3-class | **0/8** all variants | ≤ coin (0.43–0.49) |
+| short-vs-rest | **0/8** | ≈ base (+0.01) |
+| **long-vs-rest, mag-gated (IWM)** | **0/8** (ECE ≈ 0.10) | **0.547 / 0.499 — significant, see below** |
 
-The long-side, magnitude-gated arm is the **one genuine flicker** in the entire
-program: decisive-call precision beats base rate in **7 of 8 folds including the
-2022 bear** (so it is *not* pure bull-market drift), on a healthy ~82 (k1.0) /
-~48 (k1.5) fires per fold. But it does not clear the bar:
-1. **Calibration gate fails 0/8**, ECE ≈ 0.10 (2× the 0.05 ceiling) — the
-   probabilities are miscalibrated, so the confidence threshold can't be trusted
-   to size or select.
-2. **EV gate fails.** Gross EV ≈ k·(2p−1) ≈ **1.0–1.1 bps/trade** against
-   ~1.5 bps round-trip IWM friction ⇒ **net −0.4 to −0.5 bps** — below the
-   +1 bp ($0.02/sh) net bar. It loses money after costs.
-3. **Long-only** (short flat, symmetric negative) and it **weakens when the gate
-   tightens** (top-10% < top-20%) — the anti-signature of a real conditional
-   edge. Best read: a weak volatility-conditioned long / intraday-mean-reversion
-   lean, not tradeable directional alpha.
+**Cost-free signal-quality view (IWM).** The long-vs-rest arm on
+magnitude-EXPLOSIVE bars is a genuine, statistically-significant directional
+edge — *but only on IWM*:
+- pooled decisive (≥0.60) precision **0.547 vs 0.494 base, +5.3pp, z=2.85** (k1.0)
+  and **0.499 vs 0.412 base, +8.7pp, z=3.72** (k1.5); positive in **7/8 folds
+  including the 2022 bear** (not bull-drift);
+- **sharpens monotonically with model confidence** — k1.5 lift goes +5.9pp (≥.55)
+  → +8.7pp (≥.60) → **+13.4pp, z=4.21 (≥.65)** — the signature of real signal, not
+  noise. (The earlier "weakens when tightened" caveat was about the *magnitude*-gate
+  fraction, a different axis; on the *confidence* axis it strengthens.)
+- The **calibration gate still fails** (0/8, ECE ≈ 0.10): trust the *ranking*
+  (most-confident long calls hit up-first more often), not the probability
+  *values* — a fire-when-confident usage, with an empirically-set threshold.
+
+**Cross-ticker robustness — the decider — is a clean negative.** Re-run on the
+two more-liquid names, the IWM edge **does not replicate**:
+
+| ticker | k1.0 ≥.60 | k1.5 ≥.65 |
+|---|---|---|
+| **IWM** | +5.3pp (z=2.85) | +13.4pp (z=4.21) |
+| SPY | +0.1pp (z=0.05) | −1.7pp (z=−0.61) |
+| QQQ | −2.2pp (z=−1.35) | +1.9pp (z=1.00) |
+
+SPY and QQQ are flat-to-negative, coin-flip fold splits. Two readings, not yet
+separable: (a) a **literature-consistent small-cap effect** — IWM is the
+less-liquid Russell ETF, and Gao et al. / Barbon-Buraschi predict directional
+timeability concentrates in less-liquid names; the within-IWM coherence (two
+independent barrier widths, monotonic confidence-sharpening, bear-year survival)
+argues against pure noise; or (b) **one-of-three multiple-comparisons luck**,
+which is exactly where a disciplined reviewer demands replication. Resolving it
+needs IWM cross-timeframe (5m/30m) + a true locked holdout before the IWM tilt
+is trusted.
+
+**Tradeability view (after friction).** Even the IWM long edge is sub-friction:
+gross EV ≈ k·(2p−1) ≈ **1.0–1.1 bps/trade** vs ~1.5 bps round-trip IWM friction
+⇒ net ≈ **−0.5 bps**. (Reported for completeness; per the size+direction use case
+this gate is set aside — the signal-quality view above is the operative one.)
 
 ---
 
 ## Decision-rule application
 
-- **Log-loss gate (necessary condition):** FAILED in **0 of ~150** walk-forward
-  folds across every label family — baseline 0/72, feature R&D 0/8, E1 0/47,
-  E2 0/8, E3 0/29, SPY/QQQ 0/63, **and now the literature's own triple-barrier
-  first-touch target (E4) 0/8 on every arm and variant.**
-- **EV bar (binding constraint):** the only arm that reached it — E4
-  magnitude-gated long — comes in at **net −0.4 to −0.5 bps/trade after
-  friction**, below the +$0.02/sh bar. The earlier return-sign probes never
-  reached this gate because they failed log-loss with ECE 0.12–0.27 (trading
-  noise); E4 reaches it and still fails it.
+- **Log-loss / calibration gate (cost-free, necessary for trustworthy
+  probabilities):** FAILED in **0 of ~150** walk-forward folds across every label
+  family — baseline 0/72, feature R&D 0/8, E1 0/47, E2 0/8, E3 0/29, SPY/QQQ 0/63,
+  **and the triple-barrier first-touch target (E4) 0/8 on every arm and variant.**
+- **Cross-ticker robustness (cost-free):** the one significant cost-free edge —
+  E4 magnitude-gated long, IWM, z=2.85–4.21 — **does not replicate on SPY/QQQ**
+  (z≈0). No edge generalizes across the 3-ticker universe.
+- **EV bar (set aside for the size+direction use case):** even the IWM long edge
+  is net ≈ −0.5 bps/trade after friction. Reported for completeness; not the
+  operative gate when direction is consumed as a research signal alongside size.
 - **Triple-barrier as PRIMARY target (E4):** run, not moot (correcting the prior
-  draft). The neutral class and first-touch travel did **not** rescue direction:
-  symmetric and short arms are dead; the long arm flickers but is miscalibrated,
-  long-only, and sub-friction.
+  draft). The neutral class and first-touch travel did **not** rescue direction
+  broadly: symmetric and short arms are dead on every ticker; the long arm is a
+  real but **IWM-only**, miscalibrated edge.
 - **Meta-labeling (the *other* triple-barrier use):** still moot — it needs a
-  primary edge, and E2 + E4-symmetric show there isn't a calibrated one to filter.
+  primary edge, and E2 + E4-symmetric show there isn't a calibrated, generalizable
+  one to filter.
 
-**Verdict tier: DEAD-END as a standalone tradeable signal**, now tested with the
-literature's recommended target. Tightly-scoped PARTIAL footnote: *magnitude* is
-predictable and shipped (`magnitude_engine`); *direction's* only sign of life is
-a sub-friction, miscalibrated, long-only lean on magnitude-EXPLOSIVE bars —
-**not worth standalone spend**, revisit only if friction can be beaten (passive/
-maker entry) or probabilities can be calibrated (see below).
+**Verdict tier (cost-free, size+direction lens):**
+- **SPY / QQQ — DEAD.** No directional signal survives, cost-free, on any label
+  family. Treat direction as 50/50; lean entirely on `magnitude_engine` (size).
+- **IWM — UNRESOLVED CANDIDATE.** A real, significant (z up to 4.2),
+  confidence-sharpening, bear-surviving **long-only tilt on magnitude-EXPLOSIVE
+  bars**, but **unreplicated** on the other two names and **miscalibrated**
+  (use ranking, not probabilities). Literature-plausible (small-cap timeability)
+  but one-of-three is the multiple-comparisons danger zone. **Do not trust until
+  validated** on IWM 5m/30m + a locked holdout.
+- *Magnitude* remains the predictable, calibrated, shipped quantity.
 
 ---
 
