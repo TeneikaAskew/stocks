@@ -93,6 +93,21 @@ max over ~3 strata × 8 folds × 12 runs against a uniformly negative aggregate,
 this is exactly the multiple-comparisons artifact the literature warns about
 (trend-scanning / data-snooping), not a stable edge.
 
+### Cross-ticker confirmation (SPY + QQQ)
+To rule out an IWM-specific quirk, E1 (h=1/5/15) and E2 (h=5) were re-run on the
+two more-liquid index ETFs. The failure is **ticker-independent**:
+
+| ticker | h=1 | h=5 | h=15 | E2 trigger h=5 |
+|---|---|---|---|---|
+| SPY | 0/8 (−0.010) | 0/8 (−0.034) | 1/8 (−0.064) | 0/8 (−0.039) |
+| QQQ | 0/8 (−0.010) | 0/8 (−0.033) | 0/8 (−0.065) | 0/8 (−0.029) |
+
+(median log-loss beat in parens; the lone SPY h=15 positive fold sits against a
+−0.064 median and −5pp median accuracy — noise.) Same shape as IWM and as the
+baseline's 0/72 single-bar cross-ticker result: this is an information-content
+limit of the feature surface, not a per-instrument property. More-liquid names
+are *harder*, not easier, consistent with the literature.
+
 ---
 
 ## Decision-rule application
