@@ -10,6 +10,7 @@ import {
   type ChainSide,
   type ScannerBucket,
 } from '@/data/optionsFlowMock';
+import type { SelectedContract } from '@/components/options/ContractDrilldown';
 
 // FlowseekerTab — live-options-flow UI built entirely from clearly-labeled
 // mock placeholder data (src/data/optionsFlowMock.ts). There is NO backend
@@ -93,7 +94,12 @@ function applyFilter(rows: FlowRow[], filter: FlowFilter): FlowRow[] {
   }
 }
 
-export default function FlowseekerTab() {
+export default function FlowseekerTab({
+  onSelectContract,
+}: {
+  /** When provided, feed rows become clickable and drill into the contract. */
+  onSelectContract?: (c: SelectedContract) => void;
+}) {
   const [filter, setFilter] = useState<FlowFilter>('All');
   const rows = applyFilter(FLOW_FEED, filter);
 
@@ -133,7 +139,14 @@ export default function FlowseekerTab() {
           {/* Live feed */}
           <div className="overflow-hidden rounded-xl bg-[var(--surface-2)]">
             <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-              <h3 className="text-sm font-semibold text-[var(--on-surface)]">Live options feed</h3>
+              <h3 className="text-sm font-semibold text-[var(--on-surface)]">
+                Live options feed
+                {onSelectContract && (
+                  <span className="ml-2 text-[10px] font-normal text-[var(--on-surface-muted)]">
+                    click a row to drill in →
+                  </span>
+                )}
+              </h3>
               <div className="flex flex-wrap gap-1.5">
                 {FILTERS.map(f => (
                   <button
@@ -171,7 +184,24 @@ export default function FlowseekerTab() {
                 </thead>
                 <tbody>
                   {rows.map((f, i) => (
-                    <tr key={i} className="border-b border-[var(--outline-variant)]/50">
+                    <tr
+                      key={i}
+                      onClick={
+                        onSelectContract
+                          ? () =>
+                              onSelectContract({
+                                sym: f.sym,
+                                strike: f.strike,
+                                cp: f.cp,
+                                expiry: f.exp,
+                                dte: f.dte,
+                              })
+                          : undefined
+                      }
+                      className={`border-b border-[var(--outline-variant)]/50 ${
+                        onSelectContract ? 'cursor-pointer hover:bg-[var(--surface-3)]' : ''
+                      }`}
+                    >
                       <td className="px-2 py-1.5 font-mono text-[var(--on-surface-muted)]">{f.time}</td>
                       <td className="px-2 py-1.5">
                         <span className="flex items-center gap-1 font-semibold text-[var(--on-surface)]">

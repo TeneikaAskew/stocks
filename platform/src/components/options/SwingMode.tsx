@@ -33,21 +33,22 @@ function shortExp(iso: string): string {
   return `${m}/${d}`;
 }
 
-// Diverging color scale per the design: teal/cyan low → green positive
-// (call-dominant), red/magenta negative (put-dominant), yellow extreme.
+// Color semantics per Skylit's Heatseeker node system (docs.skylit.ai):
+//   positive exposure → "Pika" (yellow): dealer positioning SUPPRESSES vol →
+//     pinning / mean-reversion zones.
+//   negative exposure → "Barney" (purple): dealer positioning AMPLIFIES vol →
+//     acceleration / breakout zones.
+//   near-zero → muted teal/cyan base.
+// Intensity scales with |value|.
 function cellColor(value: number, maxAbs: number): { bg: string; fg: string } {
   const t = Math.max(0, Math.min(1, Math.abs(value) / maxAbs));
-  if (value === 0) return { bg: 'rgba(20,30,40,0.6)', fg: 'var(--on-surface-muted)' };
+  if (t < 0.04) return { bg: 'rgba(24,52,60,0.55)', fg: 'var(--on-surface-muted)' };
   if (value > 0) {
-    // teal → green → yellow (extreme)
-    if (t > 0.82) return { bg: `rgba(250,204,21,${0.30 + t * 0.45})`, fg: '#1a1a1a' };
-    const g = `rgba(34,${Math.round(140 + t * 90)},${Math.round(120 - t * 60)},${0.18 + t * 0.6})`;
-    return { bg: g, fg: t > 0.5 ? '#04140c' : 'var(--on-surface)' };
+    // Pika — yellow/gold
+    return { bg: `rgba(250,204,21,${0.16 + t * 0.72})`, fg: t > 0.4 ? '#191500' : 'var(--on-surface)' };
   }
-  // negative — purple → magenta → red (extreme)
-  if (t > 0.82) return { bg: `rgba(244,63,94,${0.30 + t * 0.5})`, fg: '#fff' };
-  const p = `rgba(${Math.round(120 + t * 80)},${Math.round(40 + t * 20)},${Math.round(150 - t * 40)},${0.18 + t * 0.6})`;
-  return { bg: p, fg: t > 0.5 ? '#fff' : 'var(--on-surface)' };
+  // Barney — purple
+  return { bg: `rgba(168,85,247,${0.16 + t * 0.72})`, fg: t > 0.4 ? '#ffffff' : 'var(--on-surface)' };
 }
 
 interface SwingModeProps {

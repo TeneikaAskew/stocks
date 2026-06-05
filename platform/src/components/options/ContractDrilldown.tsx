@@ -11,6 +11,15 @@ import {
 import { AlertTriangle } from 'lucide-react';
 import { CONTRACT_DRILLDOWN, type TimeBucket } from '@/data/contractDrilldownMock';
 
+/** Identity of a contract drilled into from the Live Feed. */
+export interface SelectedContract {
+  sym: string;
+  strike: number;
+  cp: 'CALL' | 'PUT';
+  expiry: string;
+  dte: number;
+}
+
 // ContractDrilldown — Flowseeker "Contract Drilldown": a contract header, a
 // stats strip, a Bid↔Ask chain-ratio bar, a volume-over-time chart (bars) with
 // an overlaid average-fill price line, and a per-time-bucket detail table.
@@ -65,10 +74,14 @@ function ChartTooltip({
   );
 }
 
-export default function ContractDrilldown() {
+export default function ContractDrilldown({ selected }: { selected?: SelectedContract }) {
   const { header, stats, chainRatio, buckets } = CONTRACT_DRILLDOWN;
+  // When drilled into from the Live Feed, the header reflects the clicked
+  // contract; the detail metrics below stay demo until a contract-tape endpoint
+  // exists.
+  const h = selected ?? header;
 
-  const contractId = `${header.sym} ${header.strike} ${header.cp} ${header.expiry}`;
+  const contractId = `${h.sym} ${h.strike} ${h.cp} ${h.expiry}`;
   const midPct = Math.max(0, 100 - chainRatio.bidPct - chainRatio.askPct);
 
   const statCells: { label: string; value: string }[] = [
@@ -103,20 +116,20 @@ export default function ContractDrilldown() {
 
       {/* Header row */}
       <div className="flex flex-wrap items-center gap-3 rounded-xl bg-[var(--surface-2)] px-4 py-3">
-        <span className="font-mono text-lg font-bold text-[var(--on-surface)]">{header.sym}</span>
-        <span className="font-mono text-lg font-semibold text-[var(--on-surface)]">${header.strike}</span>
+        <span className="font-mono text-lg font-bold text-[var(--on-surface)]">{h.sym}</span>
+        <span className="font-mono text-lg font-semibold text-[var(--on-surface)]">${h.strike}</span>
         <span
           className="rounded px-2 py-0.5 text-xs font-bold"
           style={{
-            background: header.cp === 'CALL' ? 'rgba(34,197,94,0.14)' : 'rgba(239,68,68,0.14)',
-            color: header.cp === 'CALL' ? 'var(--bull)' : 'var(--bear)',
+            background: h.cp === 'CALL' ? 'rgba(34,197,94,0.14)' : 'rgba(239,68,68,0.14)',
+            color: h.cp === 'CALL' ? 'var(--bull)' : 'var(--bear)',
           }}
         >
-          {header.cp}
+          {h.cp}
         </span>
-        <span className="font-mono text-sm text-[var(--on-surface-variant)]">{header.expiry}</span>
+        <span className="font-mono text-sm text-[var(--on-surface-variant)]">{h.expiry}</span>
         <span className="rounded bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[11px] text-[var(--on-surface-variant)]">
-          {header.dte} DTE
+          {h.dte} DTE
         </span>
         <span className="ml-auto font-mono text-[10px] text-[var(--on-surface-muted)]">{contractId}</span>
       </div>
