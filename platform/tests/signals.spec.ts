@@ -48,6 +48,24 @@ test.describe('Signal Explorer', () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
     await page.route('**/api/signals/IWM*', (r) => r.fulfill(M.ok(MOCK_SIGNALS)));
+    // 90-day backtest summary that backs the redesigned Performance P&L card.
+    await page.route('**/api/analytics/summary/IWM*', (r) =>
+      r.fulfill(M.ok({
+        totalTrades: 312, closedTrades: 300, activeTrades: 12,
+        winCount: 186, lossCount: 114, winRate: 0.62,
+        totalPnL: 41.8, avgPnL: 0.139, maxWin: 3.4, maxLoss: -1.9,
+        profitFactor: 1.74, callCount: 168, putCount: 132,
+      }))
+    );
+  });
+
+  test('shows the 90-day Performance P&L card', async ({ page }) => {
+    await page.goto('/signals');
+    await page.waitForLoadState('networkidle');
+    await expect(page.getByText(/performance · 90-day backtest/i)).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/win rate/i)).toBeVisible();
+    await expect(page.getByText(/profit factor/i)).toBeVisible();
+    await expect(page.getByText('1.74')).toBeVisible();
   });
 
   test('renders signal explorer heading', async ({ page }) => {

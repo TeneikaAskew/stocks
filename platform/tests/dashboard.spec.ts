@@ -7,13 +7,28 @@
 import { test, expect } from '@playwright/test';
 import { mockCommon, M } from './helpers/mocks';
 
+// Brief shape the redesigned Overview consumes (bias bullets + KPI close/RSI).
 const MOCK_BRIEF = {
   ticker: 'IWM',
-  as_of: '2026-04-25T20:00:00Z',
-  daily_bias: { direction: 'bullish', confidence: 0.7, reason: 'EMA stack + bullish MACD' },
-  reference_levels: { prior_high: 222.0, prior_low: 218.0, vwap: 220.5 },
-  stale_days: 0,
-  cloud_sql: true,
+  source: 'cloud_sql',
+  bias: 'bullish',
+  rsi: 58.4,
+  strat_candle: '2U',
+  strat_combo: 'Failed 2D → 2U',
+  ftfc_score: 0.72,
+  ftfc_direction: 'bullish',
+  signal_status: '0DTE call flow leading',
+  daily_indicators: {
+    date: '2026-04-25',
+    close: 220.5,
+    rsi_14: 58.4,
+    rvol: 1.4,
+    strat_candle: '2U',
+    strat_combo: 'Failed 2D → 2U',
+    ftfc_score: 0.72,
+    ftfc_direction: 'bullish',
+  },
+  live: { price: 220.45, session: 'closed' },
 };
 
 const MOCK_BACKTEST = {
@@ -102,17 +117,33 @@ test.describe('Dashboard', () => {
         })
       )
     );
+    // Intraday bars so the Overview chart card renders (candlestick default).
+    const bars = [10, 11, 12, 13, 14, 15].map((h) => {
+      const time = Date.UTC(2026, 3, 24, h, 0, 0) / 1000;
+      const p = 219 + h * 0.1;
+      return { time, open: p - 0.2, high: p + 0.3, low: p - 0.3, close: p };
+    });
     await page.route('**/api/market/data/IWM/*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, candlestick: [], volume: [] }))
+      r.fulfill(M.ok({
+        ticker: 'IWM', date: '2026-04', count: bars.length,
+        candlestick: bars,
+        volume: bars.map((b) => ({ time: b.time, value: 1_000_000 })),
+      }))
+    );
+    // Candlestick chart reads market-hours for its RTH window.
+    await page.route('**/api/config/market-hours', (r) =>
+      r.fulfill(M.ok({ regular: { open: '09:30', close: '16:00' }, premarket: { open: '04:00', close: '09:30' }, afterhours: { open: '16:00', close: '20:00' } }))
     );
   });
 
-  test('renders ticker heading and dashboard label', async ({ page }) => {
+  test('renders Overview heading + pre-market brief for the active ticker', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
-    // Dashboard renders the active ticker as a 4xl H1
-    await expect(page.locator('h1', { hasText: 'IWM' }).first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText(/dashboard/i).first()).toBeVisible();
+    // Redesigned Overview: "Overview" H1, the active ticker in the header
+    // micro-label + hero, and the pre-market brief panel.
+    await expect(page.locator('h1', { hasText: 'Overview' }).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/pre-market brief/i).first()).toBeVisible();
+    await expect(page.getByText('IWM').first()).toBeVisible();
   });
 
   test('shows daily bias card', async ({ page }) => {
@@ -121,11 +152,27 @@ test.describe('Dashboard', () => {
     await expect(page.getByText(/daily bias/i).first()).toBeVisible({ timeout: 10_000 });
   });
 
-  test('shows KPI grid (win rate / avg / return / pf)', async ({ page }) => {
+  test('shows the daily KPI tiles (prev close / latest close / 2-day change / RSI)', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
-    await expect(page.getByText(/win rate/i)).toBeVisible();
-    await expect(page.getByText(/profit factor/i)).toBeVisible();
+    // Redesigned KPI row, computed from brief.daily_indicators + reference.
+    await expect(page.getByText(/prev close/i)).toBeVisible();
+    await expect(page.getByText(/latest close/i)).toBeVisible();
+    await expect(page.getByText(/2-day change/i)).toBeVisible();
+    await expect(page.getByText(/RSI \(14\)/i)).toBeVisible();
+  });
+
+  test('intraday chart exposes the Candles / Area toggle and switches', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    await expect(page.getByText('IWM · intraday')).toBeVisible({ timeout: 10_000 });
+    const candles = page.getByRole('button', { name: 'Candles' });
+    const area = page.getByRole('button', { name: 'Area' });
+    await expect(candles).toBeVisible();
+    await expect(area).toBeVisible();
+    // Switching to Area renders the Recharts area surface without crashing.
+    await area.click();
+    await expect(page.locator('svg.recharts-surface').first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('renders within 7s perf budget', async ({ page }) => {
