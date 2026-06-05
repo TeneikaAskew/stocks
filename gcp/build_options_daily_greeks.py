@@ -47,6 +47,17 @@ log = logging.getLogger(__name__)
 TICKERS = ("IWM", "SPY", "QQQ")
 BACKFILL_SINCE = "2016-01-01"
 
+# Built out-of-band (not in schema.sql) because a transactional CREATE INDEX on
+# the ~14M-row table locks it and exceeds the statement timeout. CONCURRENTLY +
+# AUTOCOMMIT builds it without a long lock; IF NOT EXISTS makes it idempotent.
+_INDEX_DDL = """
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_etf_options_eod_agg
+    ON etf_options_snapshots (ticker, snapshot_date)
+    INCLUDE (delta, open_interest, expiration, implied_volatility,
+             option_type, strike)
+    WHERE market_session = 'EOD' AND data_source = 'alphavantage'
+"""
+
 _UPSERT_SQL = """
 INSERT INTO etf_options_daily_greeks
     (ticker, snapshot_date, dex, short_dte_dex, total_oi, vanna, charm,
@@ -101,6 +112,20 @@ def upsert_daily_greeks(engine, ticker: str, frame: pd.DataFrame) -> int:
     return len(rows)
 
 
+def build_index(engine) -> None:
+    """Create the EOD covering index CONCURRENTLY (no long lock, no transaction).
+    Idempotent via IF NOT EXISTS. CONCURRENTLY is illegal inside a transaction,
+    so we force an AUTOCOMMIT connection."""
+    log.info("build-index: CREATE INDEX CONCURRENTLY idx_etf_options_eod_agg "
+             "(this scans the EOD/alphavantage slice; may take many minutes)...")
+    raw = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    try:
+        raw.exec_driver_sql(_INDEX_DDL)
+        log.info("build-index: done (idx_etf_options_eod_agg present)")
+    finally:
+        raw.close()  # cleanup — original error already propagated
+
+
 def build(engine, tickers, since: str, until: str) -> dict:
     """Compute + upsert daily greeks for each ticker SEQUENTIALLY."""
     from lib.features.flow_direction import compute_daily_greeks_frame
@@ -131,6 +156,8 @@ def main():
                       help="recompute ALL history since " + BACKFILL_SINCE)
     mode.add_argument("--incremental", action="store_true",
                       help="recompute the last --days days")
+    mode.add_argument("--build-index", action="store_true",
+                      help="build the EOD covering index CONCURRENTLY (one-off)")
     p.add_argument("--days", type=int, default=7,
                    help="incremental lookback in days (default 7)")
     p.add_argument("--ticker", default=None, choices=list(TICKERS),
@@ -143,6 +170,9 @@ def main():
              else (date.today() - timedelta(days=args.days)).isoformat())
 
     engine = get_engine()
+    if args.build_index:
+        build_index(engine)
+        return
     build(engine, tickers, since, until)
 
 

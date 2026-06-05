@@ -294,15 +294,23 @@ CREATE TABLE IF NOT EXISTS etf_options_daily_greeks (
 );
 
 -- Partial COVERING index so the builder's EOD-AV aggregation is index-only and
--- never touches the REALTIME rows (the bulk of the table). Without this the
+-- never touches the REALTIME rows (the bulk of the table). Without it the
 -- planner walks every REALTIME contract for the ticker/date before applying the
--- EOD filter. Mirrors the existing idx_etf_options_realtime partial-index
--- approach (line ~197), inverted to the EOD/alphavantage slice.
-CREATE INDEX IF NOT EXISTS idx_etf_options_eod_agg
-    ON etf_options_snapshots (ticker, snapshot_date)
-    INCLUDE (delta, open_interest, expiration, implied_volatility,
-             option_type, strike)
-    WHERE market_session = 'EOD' AND data_source = 'alphavantage';
+-- EOD filter.
+--
+-- NOT created here: on this ~14M-row table a transactional CREATE INDEX locks
+-- the table and exceeds the statement timeout, and apply_schema.py runs every
+-- statement inside engine.begin() (a transaction) so CREATE INDEX CONCURRENTLY
+-- is illegal here too. It is therefore built OUT-OF-BAND, idempotently and
+-- without a long lock, via:
+--     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+--       --args="-m,gcp.build_options_daily_greeks,--build-index"
+-- which opens an AUTOCOMMIT connection and runs:
+--     CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_etf_options_eod_agg
+--         ON etf_options_snapshots (ticker, snapshot_date)
+--         INCLUDE (delta, open_interest, expiration, implied_volatility,
+--                  option_type, strike)
+--         WHERE market_session = 'EOD' AND data_source = 'alphavantage';
 
 
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
