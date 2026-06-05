@@ -7,7 +7,11 @@ tickers. Confirmed across every avenue the literature pointed to — longer
 horizons, trigger-conditioning, regime/time-of-day models, **and the
 literature's own triple-barrier first-touch target with separate long/short
 meta-models conditioned on the magnitude engine's EXPLOSIVE flag (E4)** — all
-under purged + embargoed walk-forward CV.
+under purged + embargoed walk-forward CV. **The "rethink" — bringing a genuinely
+orthogonal information class, daily EOD dealer-options flow (DEX/vanna/charm) — is
+also null (§E5): it adds no SPY/QQQ signal and *dilutes* the lone IWM edge. The
+one untested lever with a literature prior is live *intraday* flow, not the daily
+EOD positioning tested here.**
 
 Evaluated **cost-free** (the right lens for a combined size+direction signal),
 there is exactly **one** statistically-significant edge: a *long-only* tilt on
@@ -294,3 +298,69 @@ gcloud run jobs execute direction-probe --region us-east1 --async \
 ```
 Hermetic helper tests: `tests/test_strat_dir_probes.py` (19 passing, incl. 6 for
 `triple_barrier_labels`).
+
+## E5 — The "rethink": a genuinely NEW information class (dealer flow)
+
+Every avenue above re-expressed the **same** price/volume/technical/regime data.
+The rethink asked: bring an *orthogonal* information class the price series can't
+contain. Candidate: **dealer options positioning** — net dealer DEX (−Σ delta·OI),
+0-2DTE DEX, vanna, charm — computed daily from the EOD AlphaVantage chain,
+shifted **d-1** (leak-safe), joined to the 15m bars. Falsifiable prediction
+(pre-registered): flow should help **SPY/QQQ** (where price features are null,
+z≈0) *more* than IWM (which already has a price edge), because flow is
+information, not a re-representation.
+
+**Result — falsified. EOD daily dealer-flow features add no directional signal;
+on the one ticker with a real edge they dilute it.** Identical E4 config
+(k=1.0·ATR, topq-0.2 magnitude gate, h=12, expanding WF), the only change is +6
+flow columns (100 % per-date coverage — not a data gap). Long/short pooled
+precision at fire ≥ 0.60:
+
+| ticker | side | baseline lift / z | +flow lift / z |
+|---|---|---|---|
+| IWM | long | **+0.053 / +2.85** | −0.008 / **−0.49** |
+| IWM | short | +0.001 / +0.14 | −0.001 / −0.07 |
+| SPY | long | +0.001 / +0.05 | +0.001 / +0.07 |
+| SPY | short | +0.015 / +1.34 | +0.010 / +1.02 |
+| QQQ | long | −0.022 / −1.35 | +0.011 / +0.76 |
+| QQQ | short | +0.002 / +0.19 | +0.015 / +1.38 |
+
+No SPY/QQQ side reaches significance with flow (all |z| < 1.4; the QQQ nudges are
+within multiple-comparison noise across 6 ticker-sides). The only real edge in
+the whole study (IWM long, z=2.85) is **destroyed** by adding flow — the fire
+count rises (726→881) while precision falls, the signature of a model gaining
+spurious confidence from noise features and overfitting them in-sample.
+
+**Scope of the negative (important).** This tests *slow daily EOD* dealer
+positioning shifted d-1 against *intraday* bars. It does **not** test *intraday*
+flow (real-time order imbalance / 0DTE sweep flow), which is where the
+microstructure literature actually places the directional signal. The honest
+read: stale daily dealer positioning does not predict next-bar intraday
+direction; the live-intraday-flow question is untested and is the only
+remaining lever with a literature prior.
+
+**Also tested (null / no isolated signal):** fractional differentiation
+(`lib/features/fracdiff.py`, memory-preserving stationary price) and a rolling
+3-yr training window — combined with flow in an all-levers IWM run, also null
+(long z dropped from +2.85 to −0.58). These are re-representations / regime
+knobs, not new information, and behave accordingly.
+
+### Production-grade data path (Rule 0)
+Flow features read a **materialized** `etf_options_daily_greeks` table (one row
+per ticker × EOD day; `dex/short_dte_dex/total_oi/vanna/charm`), populated by the
+**`build-options-greeks`** Cloud Run Job (`gcp/build_options_daily_greeks.py`):
+scan the ~14M-row `etf_options_snapshots` **once** (backfill, one ticker at a
+time, idempotent upsert), append incrementally after each EOD fetch. The
+per-experiment loader never re-aggregates the snapshots table — this replaced a
+first cut that did, which starved the shared Cloud SQL under 5 concurrent runs
+(100-900 s/year-chunk). Reproduce:
+```bash
+# one-time backfill (per ticker, uncontended ~15 min each):
+gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+  --args="-m,gcp.build_options_daily_greeks,--backfill,--ticker,SPY"
+# flow experiment (reads the materialized table; ~3 min):
+gcloud run jobs execute direction-probe --region us-east1 --async \
+  --args="^|^-m|gcp.research.strat_engine.strat_dir_probes|--experiment=e4_triple_barrier|--ticker=SPY|--tf=15m|--horizon=12|--barrier-atr=1.0|--mag-cond=topq|--mag-thresh=0.2|--feature-blocks=flow|--window=expanding"
+```
+Hermetic helper tests: `tests/test_flow_direction.py` (22), `tests/test_fracdiff.py`
+(11), `tests/test_information_bars.py`.
