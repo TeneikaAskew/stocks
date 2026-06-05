@@ -57,6 +57,39 @@ log = logging.getLogger(__name__)
 
 MIN_EVENTS = 150  # per fold-side; below this the fold is reported but not scored
 
+# Round-trip breakout-chase slippage, as a fraction of ATR, swept to show how
+# much friction the gross edge can absorb. 0.0 = gross; 0.04 ≈ a couple cents on
+# SPY/QQQ; 0.10 = pessimistic. (1 R = sl_atr·ATR in price, so cost_R scales 1/sl.)
+FRICTION_LEVELS_ATR = [0.0, 0.02, 0.04, 0.06, 0.08, 0.10]
+
+
+def _friction_sweep(fold_takes: list, sl_atr: float, cost_bps: float,
+                    levels: list) -> list:
+    """For each slippage level, per fold compute NET expectancy of the taken
+    trades = mean(gross_R − cost_R), where per-trade
+    cost_price = entry·cost_bps/1e4 + slippage_atr·ATR  and  cost_R =
+    cost_price / (sl_atr·ATR). Returns one row per level with the count of
+    net-positive folds and the median net expectancy."""
+    out = []
+    for s_atr in levels:
+        net_exps, net_pos, scored = [], 0, 0
+        for ft in fold_takes:
+            atr = ft["atr"]; entry = ft["entry"]
+            cost_price = entry * cost_bps / 1e4 + s_atr * atr
+            cost_R = cost_price / (sl_atr * atr)
+            net = ft["rmult"] - cost_R
+            scored += 1
+            ne = float(net.mean()); net_exps.append(ne)
+            if ne > 0:
+                net_pos += 1
+        out.append({
+            "slippage_atr": s_atr,
+            "approx_cost_R": float(s_atr / sl_atr),   # ignores the tiny bps term
+            "scored_folds": scored, "net_positive_folds": net_pos,
+            "median_net_exp_R": float(np.median(net_exps)) if net_exps else None,
+        })
+    return out
+
 
 def _label_1min(side, entry, pt, sl, sl_atr, pt_atr, start_ns, end_ns, sess_date,
                 om_ts, om_high, om_low, om_date):
@@ -121,7 +154,7 @@ def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
     om_ts = om.get("ts_ns"); om_high = om.get("high")
     om_low = om.get("low"); om_date = om.get("date")
 
-    pos_idx, side_a, entry_a, label_a, rmult_a, src_a = [], [], [], [], [], []
+    pos_idx, side_a, entry_a, label_a, rmult_a, src_a, atr_a = [], [], [], [], [], [], []
 
     for t in range(n - 1):
         if not (np.isfinite(atr[t]) and atr[t] > 0):
@@ -166,10 +199,12 @@ def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
 
         pos_idx.append(t); side_a.append(side); entry_a.append(entry)
         label_a.append(res[0]); rmult_a.append(res[1]); src_a.append(src)
+        atr_a.append(float(atr[t]))
 
     ev = pd.DataFrame({
         "decision_pos": pos_idx, "side": side_a, "entry": entry_a,
         "label": label_a, "r_multiple": rmult_a, "label_source": src_a,
+        "atr_at_entry": atr_a,
     })
     ev["event_date"] = bar_date[ev["decision_pos"].values]
     return ev
@@ -199,7 +234,8 @@ _TF_MINUTES = {"5m": 5, "15m": 15, "30m": 30}
 
 
 def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
-                      cutoffs=None, barrier_tf="1m", take_thresh=0.55) -> dict:
+                      cutoffs=None, barrier_tf="1m", take_thresh=0.55,
+                      cost_bps=1.0) -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 72)
     log.info("BREAKOUT-META  %s %s  PT=%.2f SL=%.2f H=%d  barrier=%s take≥%.2f",
@@ -234,7 +270,11 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
     Xev = np.hstack([Xev, ev["side"].values.reshape(-1, 1).astype(np.float32)])
     y = ev["label"].values.astype(np.int64)
     rmult = ev["r_multiple"].values.astype(np.float64)
+    atr_ev = ev["atr_at_entry"].values.astype(np.float64)
+    entry_ev = ev["entry"].values.astype(np.float64)
     edates = pd.DatetimeIndex(ev["event_date"]).values.astype("datetime64[D]")
+    tt = round(take_thresh, 2)
+    fold_takes = []   # per-fold taken-trade arrays for the friction sweep
 
     folds = []
     for i, cut in enumerate(cutoffs):
@@ -256,7 +296,7 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
                "base_precision": float(y[te].mean()),
                "base_expectancy_R": base_exp, "base_profit_factor": base_pf,
                "by_threshold": {}, "status": "OK"}
-        for thr in sorted({0.50, 0.55, 0.60, round(take_thresh, 2)}):
+        for thr in sorted({0.50, 0.55, 0.60, tt}):
             take = p >= thr
             n_take = int(take.sum())
             if n_take < 20:
@@ -270,15 +310,44 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
                 "profit_factor": pf,
                 "precision_lift_pp": (prec - row["base_precision"]) * 100,
             }
+        # capture the take_thresh trades for the net-of-cost sweep
+        take_tt = p >= tt
+        if int(take_tt.sum()) >= 20:
+            sub = np.where(te)[0][take_tt]
+            fold_takes.append({"fold": row["fold"],
+                               "rmult": rmult[sub], "atr": atr_ev[sub], "entry": entry_ev[sub]})
         folds.append(row)
-        bt = row["by_threshold"].get(round(take_thresh, 2), {})
+        bt = row["by_threshold"].get(tt, {})
         log.info("  %s n_te=%d base[prec=%.3f exp=%+.3fR pf=%.2f] | take≥%.2f n=%s prec=%s exp=%s",
                  row["fold"], n_te, row["base_precision"], base_exp, base_pf, take_thresh,
                  bt.get("n"), _f(bt.get("precision")), _f(bt.get("expectancy_R"), "+.3f"))
 
-    # Verdict: meta-filter PASSES if take≥take_thresh lifts precision AND
-    # expectancy over base, with enough taken trades to count, in ≥5 OK folds.
-    tt = round(take_thresh, 2)
+    # ── NET-OF-COST gate: does the gross edge survive friction? ──────────────
+    # Per-trade round-trip cost = spread (bps of notional) + breakout-chase
+    # slippage (a fraction of ATR, since you cross the spread chasing the break).
+    # Converted to R via 1 R = sl_atr·ATR in price. We SWEEP the slippage to show
+    # how much friction the edge absorbs before dying.
+    med_atr = float(np.median(atr_ev)) if len(atr_ev) else float("nan")
+    med_entry = float(np.median(entry_ev)) if len(entry_ev) else float("nan")
+    sweep = _friction_sweep(fold_takes, sl_atr, cost_bps, FRICTION_LEVELS_ATR)
+    log.info("─" * 72)
+    log.info("NET-OF-COST SWEEP  (round-trip spread=%.1fbps + slippage·ATR; "
+             "median ATR=%.3f, median px=%.1f → 0.04·ATR≈%.1f¢ round-trip slip)",
+             cost_bps, med_atr, med_entry, 0.04 * med_atr * 100)
+    log.info("  %-10s %-10s %-12s %-10s", "slip_ATR", "≈cost_R", "net+folds", "med_net_R")
+    for s in sweep:
+        log.info("  %-10.3f %-10.3f %-12s %-10s",
+                 s["slippage_atr"], s["approx_cost_R"],
+                 f"{s['net_positive_folds']}/{s['scored_folds']}",
+                 _f(s["median_net_exp_R"], "+.3f"))
+    # net verdict at the realistic mid level (0.04 ATR round-trip slippage)
+    mid = next((s for s in sweep if abs(s["slippage_atr"] - 0.04) < 1e-9), sweep[len(sweep) // 2])
+    net_verdict = "NET_PASS" if (mid["scored_folds"] >= 4 and
+                                 mid["net_positive_folds"] >= 5) else "NET_FAIL"
+    log.info("NET verdict @ slip=%.3f ATR: %s (%d/%d folds net-positive)",
+             mid["slippage_atr"], net_verdict, mid["net_positive_folds"], mid["scored_folds"])
+
+    # ── GROSS verdict (unchanged) ──
     oks = [f for f in folds if f.get("status") == "OK"]
     lift_folds = sum(1 for f in oks
                      if f["by_threshold"].get(tt, {}).get("precision_lift_pp", -1) > 0
@@ -292,10 +361,14 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
     summary = {
         "ticker": ticker, "tf": tf, "model": "STRAT-BREAKOUT-META",
         "params": {"pt_atr": pt_atr, "sl_atr": sl_atr, "horizon": horizon,
-                   "barrier_tf": barrier_tf, "take_thresh": take_thresh},
+                   "barrier_tf": barrier_tf, "take_thresh": take_thresh,
+                   "cost_bps": cost_bps},
         "n_events": int(len(ev)), "overall_base_precision": base_precision,
         "label_source_counts": src_counts,
-        "verdict": verdict, "lift_folds": lift_folds, "folds": folds,
+        "gross_verdict": verdict, "lift_folds": lift_folds,
+        "net_verdict": net_verdict, "friction_sweep": sweep,
+        "median_atr": med_atr, "median_entry_px": med_entry,
+        "folds": folds,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
     blob = f"{gcs_model_prefix(ticker, tf)}/breakout_meta_wf_pt{pt_atr}_sl{sl_atr}_h{horizon}_{int(time.time())}.json"
@@ -328,12 +401,16 @@ def main():
     p.add_argument("--take-thresh", type=float, default=0.55,
                    help="meta-model confidence to 'take' a breakout (base rate "
                         "is low, so 0.60 is rarely reached — 0.55 default).")
+    p.add_argument("--cost-bps", type=float, default=1.0,
+                   help="round-trip spread/commission in bps of notional (the "
+                        "slippage·ATR term is swept on top of this).")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     walk_forward_meta(get_engine(), args.ticker, args.tf,
                       args.pt, args.sl, args.horizon, cutoffs=cutoffs,
-                      barrier_tf=args.barrier_tf, take_thresh=args.take_thresh)
+                      barrier_tf=args.barrier_tf, take_thresh=args.take_thresh,
+                      cost_bps=args.cost_bps)
 
 
 if __name__ == "__main__":
