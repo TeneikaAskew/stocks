@@ -24,6 +24,8 @@ import {
   TradePlanCard,
 } from '@/components/insights/ReportCards';
 import { WatchlistPanel } from '@/components/insights/WatchlistPanel';
+import { MicroLabel } from '@/components/primitives';
+import { TickerSelect } from '@/components/shared/TickerSelect';
 
 type Tab = 'report' | 'history' | 'chat' | 'watchlist';
 
@@ -106,11 +108,12 @@ export default function InsightsPage() {
   return (
     <div className="flex h-full flex-col gap-6" style={{ maxHeight: 'calc(100vh - 180px)' }}>
       {/* Page header */}
-      <div>
-        <h1 className="text-4xl font-bold tracking-tight text-[var(--color-brand)]">
-          {activeTicker}
-        </h1>
-        <p className="label-micro mt-2">AI Insights</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">AI Insights</h1>
+          <MicroLabel className="mt-1">{activeTicker} · multi-agent dossier</MicroLabel>
+        </div>
+        <TickerSelect />
       </div>
 
       {/* Tab bar */}
@@ -126,7 +129,7 @@ export default function InsightsPage() {
           }}
           icon={<FileText size={14} />}
         >
-          Report
+          Briefing
         </TabButton>
         <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
           History
