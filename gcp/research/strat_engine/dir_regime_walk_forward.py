@@ -97,7 +97,7 @@ def _naive_regime_follow_acc(prev_up: np.ndarray, regime: np.ndarray,
     return float((pred == y).mean()) if len(y) else float("nan")
 
 
-def _eval_regime_fold(X, y, prev_up, atr_norm, mask_tr, mask_te, regime_val):
+def _eval_regime_fold(X, y, prev_up, pnl_signed, mask_tr, mask_te, regime_val):
     n_tr, n_te = int(mask_tr.sum()), int(mask_te.sum())
     if n_te < MIN_REGIME_BARS or n_tr < MIN_REGIME_BARS:
         return {"regime": regime_val, "n_train": n_tr, "n_test": n_te,
@@ -111,32 +111,60 @@ def _eval_regime_fold(X, y, prev_up, atr_norm, mask_tr, mask_te, regime_val):
     base_ll = base_rate_logloss_binary(y[mask_tr], y[mask_te])
     acc = float((pred == y[mask_te]).mean())
     naive_acc = _naive_regime_follow_acc(prev_up[mask_te], np.array([regime_val] * n_te), y[mask_te])
-    # Per-trade expectancy on the UNDERLYING: take the model's side, P&L in ATR
-    # = signed next-bar move / atr. dir = +1 if pred up else -1.
+    # Per-trade expectancy on the UNDERLYING. CORRECTED: P&L = side × SIGNED
+    # move (the prior version multiplied side by |move|, which credits a long
+    # with +|move| regardless of the move's actual sign — a bug that made
+    # expectancy meaningless). side=+1 long / -1 short.
     side = np.where(pred == 1, 1.0, -1.0)
-    exp_atr = float(np.nanmean(side * atr_norm[mask_te]))
+    exp = float(np.nanmean(side * pnl_signed[mask_te]))
+    # also the model's edge over just-trade-with-the-regime (the honest control)
+    naive_side = np.where(np.array([regime_val] * n_te) == "neg",
+                          np.where(prev_up[mask_te] == 1, 1.0, -1.0),
+                          np.where(prev_up[mask_te] == 1, -1.0, 1.0))
+    naive_exp = float(np.nanmean(naive_side * pnl_signed[mask_te]))
     return {
         "regime": regime_val, "n_train": n_tr, "n_test": n_te,
         "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
         "accuracy": acc, "naive_regime_acc": naive_acc,
         "acc_minus_naive_pp": (acc - naive_acc) * 100,
-        "expectancy_atr": exp_atr,
+        "expectancy": exp, "naive_expectancy": naive_exp,
+        "exp_minus_naive": exp - naive_exp,
         "status": "OK",
     }
 
 
-def walk_forward_regime(engine, ticker: str, tf: str, cutoffs=None) -> dict:
+def walk_forward_regime(engine, ticker: str, tf: str, cutoffs=None,
+                         target: str = "fwd", horizon_bars: int = 5) -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 72)
-    log.info("DIR-REGIME WALK-FORWARD  %s %s", ticker, tf)
+    log.info("DIR-REGIME WALK-FORWARD  %s %s  target=%s H=%d", ticker, tf, target, horizon_bars)
     log.info("=" * 72)
 
     df = load_labeled_dataset(engine, ticker, tf, include_next_bar_ohlc=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
-    flat = df["next_close"] == df["next_open"]
-    if flat.any():
-        df = df[~flat].copy()
     df = df.reset_index(drop=True)
+
+    # TARGET (corrected). The regime hypothesis is about whether a MOVE
+    # continues or reverts — not the noisiest possible target (single-bar
+    # close>open). 'fwd' uses the persisted N-bar forward return so the move has
+    # room to develop; P&L is that SIGNED return (bps). 'body' keeps the old
+    # next_close>next_open for comparison.
+    if target == "fwd":
+        col = f"fwd_ret_{horizon_bars}bars_bps"
+        if col not in df.columns:
+            raise SystemExit(f"missing {col}; available fwd cols: "
+                             f"{[c for c in df.columns if c.startswith('fwd_ret')]}")
+        pnl_signed = df[col].astype(float).values        # signed, bps
+        valid = np.isfinite(pnl_signed) & (pnl_signed != 0)
+        df = df[valid].reset_index(drop=True)
+        pnl_signed = pnl_signed[valid]
+        y = (pnl_signed > 0).astype(np.int64)
+    else:  # body
+        flat = (df["next_close"] == df["next_open"]).values
+        df = df[~flat].reset_index(drop=True)
+        atr = df["atr_20"].replace(0, np.nan).values
+        pnl_signed = ((df["next_close"] - df["next_open"]).values) / atr  # signed, ATR
+        y = (df["next_close"] > df["next_open"]).astype(np.int64).values
 
     regime = assign_regime(df)
     cov = float(np.mean([r is not None for r in regime]))
@@ -150,11 +178,8 @@ def walk_forward_regime(engine, ticker: str, tf: str, cutoffs=None) -> dict:
 
     X_df, feat_cols = featurize(df)
     X = X_df.values.astype(np.float32, copy=False)
-    y = (df["next_close"] > df["next_open"]).astype(np.int64).values
     # prior-bar realized direction (for the naive control); session-naive ok.
     prev_up = (df["close"] > df["open"]).astype(np.int64).values
-    atr = df["atr_20"].replace(0, np.nan).values
-    atr_norm = ((df["next_close"] - df["next_open"]).abs().values) / atr
     bar_dates = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
 
     folds = []
@@ -170,38 +195,43 @@ def walk_forward_regime(engine, ticker: str, tf: str, cutoffs=None) -> dict:
         fold = {"fold": f"{cut}..{test_end}", "per_regime": {}}
         for rv in ("pos", "neg"):
             rmask = (regime == rv)
-            r = _eval_regime_fold(X, y, prev_up, atr_norm,
+            r = _eval_regime_fold(X, y, prev_up, pnl_signed,
                                   tr & rmask, te & rmask, rv)
             fold["per_regime"][rv] = r
             if r["status"] == "OK":
-                log.info("  %s  %s  n_te=%d beat=%+.4f acc=%.3f naive=%.3f Δ=%+.1fpp exp=%+.3fATR",
-                         fold["fold"], rv.upper(), r["n_test"], r["beat"],
-                         r["accuracy"], r["naive_regime_acc"],
-                         r["acc_minus_naive_pp"], r["expectancy_atr"])
+                log.info("  %s  %s  n_te=%d acc=%.3f beat_ll=%+.4f | model_exp=%+.3f "
+                         "naive_exp=%+.3f Δexp=%+.3f",
+                         fold["fold"], rv.upper(), r["n_test"], r["accuracy"], r["beat"],
+                         r["expectancy"], r["naive_expectancy"], r["exp_minus_naive"])
         folds.append(fold)
 
-    # Verdict: a regime PASSES if it beats base-rate log-loss AND beats the
-    # naive-regime control in ≥5 of its OK folds.
+    # Verdict (CORRECTED): the regime hypothesis is tradeable-direction, so the
+    # bar is EXPECTANCY, not log-loss. A regime PASSES if the model's per-trade
+    # expectancy is > 0 AND beats the naive-regime-follow expectancy in ≥5 OK
+    # folds. (Log-loss beat is still recorded, but it is NOT the gate — a
+    # positive-expectancy edge can coexist with no log-loss improvement on a
+    # near-50/50 sign.)
     summary_verdict = {}
     for rv in ("pos", "neg"):
         oks = [f["per_regime"][rv] for f in folds
                if f.get("per_regime", {}).get(rv, {}).get("status") == "OK"]
-        beat_folds = sum(1 for r in oks if r["beat"] > 0)
-        edge_folds = sum(1 for r in oks if r["acc_minus_naive_pp"] > 0)
-        verdict = "PASS" if (len(oks) >= 4 and beat_folds >= 5 and edge_folds >= 5) \
+        exp_pos = sum(1 for r in oks if r["expectancy"] > 0)
+        beat_naive = sum(1 for r in oks if r["exp_minus_naive"] > 0)
+        ll_beat = sum(1 for r in oks if r["beat"] > 0)
+        verdict = "PASS" if (len(oks) >= 4 and exp_pos >= 5 and beat_naive >= 5) \
             else ("INSUFFICIENT_DATA" if len(oks) < 4 else "FAIL")
         summary_verdict[rv] = {
-            "ok_folds": len(oks), "logloss_beat_folds": beat_folds,
-            "beat_naive_folds": edge_folds,
-            "median_expectancy_atr": float(np.median([r["expectancy_atr"] for r in oks])) if oks else None,
+            "ok_folds": len(oks), "expectancy_positive_folds": exp_pos,
+            "beat_naive_expectancy_folds": beat_naive, "logloss_beat_folds": ll_beat,
+            "median_expectancy": float(np.median([r["expectancy"] for r in oks])) if oks else None,
             "verdict": verdict,
         }
-        log.info("REGIME %s verdict: %s (beat base %d, beat naive %d, of %d OK folds)",
-                 rv.upper(), verdict, beat_folds, edge_folds, len(oks))
+        log.info("REGIME %s verdict: %s (exp>0 in %d, beat-naive-exp in %d, ll-beat in %d, of %d OK folds)",
+                 rv.upper(), verdict, exp_pos, beat_naive, ll_beat, len(oks))
 
     summary = {
         "ticker": ticker, "tf": tf, "model": "DIR-REGIME",
-        "target": "direction (next_close>next_open), split by gamma regime",
+        "target": f"{target} (H={horizon_bars}) move-direction, split by gamma regime, judged on expectancy",
         "gamma_coverage": cov, "cutoffs": cutoffs,
         "verdict": summary_verdict, "folds": folds,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
@@ -216,10 +246,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
+    p.add_argument("--target", default="fwd", choices=["fwd", "body"],
+                   help="fwd=sign of N-bar forward return (move continuation, "
+                        "the corrected target); body=next_close>next_open (old).")
+    p.add_argument("--horizon-bars", type=int, default=5)
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
-    walk_forward_regime(get_engine(), args.ticker, args.tf, cutoffs=cutoffs)
+    walk_forward_regime(get_engine(), args.ticker, args.tf, cutoffs=cutoffs,
+                        target=args.target, horizon_bars=args.horizon_bars)
 
 
 if __name__ == "__main__":

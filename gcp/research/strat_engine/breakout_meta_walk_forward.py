@@ -58,92 +58,173 @@ log = logging.getLogger(__name__)
 MIN_EVENTS = 150  # per fold-side; below this the fold is reported but not scored
 
 
+def _label_1min(side, entry, pt, sl, sl_atr, pt_atr, start_ns, end_ns, sess_date,
+                om_ts, om_high, om_low, om_date):
+    """Resolve the triple barrier on 1-MINUTE bars (corrected labeling).
+
+    Scans the 1-min bars in [start_ns, end_ns) within the same session and
+    returns (label, r_multiple) with TRUE intra-bar order — the same-tf path
+    mislabels any bar that spans both barriers as a stop, deflating the base
+    rate and corrupting labels. Returns None if no 1-min coverage (caller falls
+    back to the same-tf scan). Same-MINUTE double-touch is still resolved
+    conservatively as a stop (1-min granularity can't order within a minute).
+    """
+    lo = np.searchsorted(om_ts, start_ns, "left")
+    hi = np.searchsorted(om_ts, end_ns, "right")
+    if hi <= lo:
+        return None
+    H = om_high[lo:hi]; L = om_low[lo:hi]; D = om_date[lo:hi]
+    same = D == np.datetime64(sess_date, "D")   # coerce python date → datetime64[D]
+    if not same.any():
+        return None
+    H = H[same]; L = L[same]
+    if side == 1:
+        pt_hit = H >= pt; sl_hit = L <= sl
+    else:
+        pt_hit = L <= pt; sl_hit = H >= sl
+    i_pt = int(np.argmax(pt_hit)) if pt_hit.any() else len(H)
+    i_sl = int(np.argmax(sl_hit)) if sl_hit.any() else len(H)
+    if i_pt == len(H) and i_sl == len(H):
+        return (0, 0.0)                       # timeout, no barrier hit → flat-ish loss
+    if i_sl <= i_pt:                          # stop first (ties → conservative stop)
+        return (0, -sl_atr)
+    return (1, pt_atr)                        # profit target first
+
+
 def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
-                           horizon: int) -> pd.DataFrame:
+                           horizon: int, tf_minutes: int = 15,
+                           onemin: dict | None = None) -> pd.DataFrame:
     """Detect primary breakout events and triple-barrier label them.
 
-    df MUST be sorted by (bar_date, ts) and carry open/high/low/close + atr_20.
-    For each bar t (decision at close of t), the trigger levels for t+1 are
-    bar t's own high/low. A LONG event = high[t+1] > high[t]; SHORT = low[t+1]
-    < low[t]. Outside bars on t+1 (both broke) are ambiguous for entry order
-    and skipped. Barriers are scanned over t+1..t+horizon WITHIN the same
-    session (no overnight cross).
+    For each bar t (decision at close of t), the trigger levels for t+1 are bar
+    t's own high/low. LONG event = high[t+1] > high[t]; SHORT = low[t+1] <
+    low[t]. Outside bars on t+1 (both broke) are ambiguous and skipped.
 
-    Returns a per-event frame: row index = the DECISION bar t (so features at t
-    align), columns: side (+1/-1), entry, label (1=PT first, 0=SL-first/timeout),
-    r_multiple (realized, +pt or -sl or partial at timeout), event_date.
+    Labeling: if `onemin` is given (sorted arrays ts/high/low/date), barriers
+    are resolved on 1-MINUTE bars over [start of t+1, +horizon·tf_minutes) —
+    the corrected path. Otherwise (or where 1-min coverage is missing) it falls
+    back to the conservative same-tf forward scan.
+
+    Returns a per-event frame: decision_pos (= bar t, features align here),
+    side (+1/-1), entry, label (1=PT first, 0 otherwise), r_multiple,
+    label_source ('1min'|'same_tf'), event_date.
     """
     g = df.reset_index(drop=True)
     n = len(g)
     high = g["high"].values; low = g["low"].values
-    close = g["close"].values; openv = g["open"].values
+    close = g["close"].values
     atr = g["atr_20"].values
     bar_date = g["bar_date"].values
-    pos_idx, side_a, entry_a, label_a, rmult_a = [], [], [], [], []
+    ts_ns = pd.to_datetime(g["ts"], utc=True).values.astype("datetime64[ns]").astype(np.int64)
+    horizon_ns = int(horizon * tf_minutes * 60 * 1_000_000_000)
+    om = onemin or {}
+    om_ts = om.get("ts_ns"); om_high = om.get("high")
+    om_low = om.get("low"); om_date = om.get("date")
+
+    pos_idx, side_a, entry_a, label_a, rmult_a, src_a = [], [], [], [], [], []
 
     for t in range(n - 1):
         if not (np.isfinite(atr[t]) and atr[t] > 0):
             continue
         if bar_date[t + 1] != bar_date[t]:
-            continue  # next bar is a new session — no intraday trigger
+            continue
         up_break = high[t + 1] > high[t]
         dn_break = low[t + 1] < low[t]
         if up_break == dn_break:
-            continue  # neither, or both (outside bar) → ambiguous entry
+            continue
         side = 1 if up_break else -1
         entry = high[t] if side == 1 else low[t]
         pt = entry + side * pt_atr * atr[t]
         sl = entry - side * sl_atr * atr[t]
-        # scan forward within the session
-        label, rmult = 0, None
-        end = t + horizon
-        for j in range(t + 1, min(end, n - 1) + 1):
-            if bar_date[j] != bar_date[t]:
-                break
-            hi, lo = high[j], low[j]
-            hit_pt = (hi >= pt) if side == 1 else (lo <= pt)
-            hit_sl = (lo <= sl) if side == 1 else (hi >= sl)
-            if hit_pt and hit_sl:
-                label, rmult = 0, -sl_atr   # conservative: stop first
-                break
-            if hit_pt:
-                label, rmult = 1, pt_atr
-                break
-            if hit_sl:
-                label, rmult = 0, -sl_atr
-                break
-        if rmult is None:  # vertical barrier (timeout) — mark to last close
-            last = j
-            realized = side * (close[last] - entry) / atr[t]
-            rmult = float(realized)
-            label = 1 if realized >= pt_atr else 0
+
+        res, src = None, None
+        if om_ts is not None:
+            res = _label_1min(side, entry, pt, sl, sl_atr, pt_atr,
+                              ts_ns[t + 1], ts_ns[t + 1] + horizon_ns, bar_date[t],
+                              om_ts, om_high, om_low, om_date)
+            if res is not None:
+                src = "1min"
+        if res is None:  # fallback: conservative same-tf scan
+            src = "same_tf"
+            label, rmult = 0, None
+            for j in range(t + 1, min(t + horizon, n - 1) + 1):
+                if bar_date[j] != bar_date[t]:
+                    break
+                hi, lo = high[j], low[j]
+                hit_pt = (hi >= pt) if side == 1 else (lo <= pt)
+                hit_sl = (lo <= sl) if side == 1 else (hi >= sl)
+                if hit_sl and hit_pt:
+                    label, rmult = 0, -sl_atr; break
+                if hit_pt:
+                    label, rmult = 1, pt_atr; break
+                if hit_sl:
+                    label, rmult = 0, -sl_atr; break
+            if rmult is None:
+                realized = side * (close[j] - entry) / atr[t]
+                rmult = float(realized); label = 1 if realized >= pt_atr else 0
+            res = (label, rmult)
+
         pos_idx.append(t); side_a.append(side); entry_a.append(entry)
-        label_a.append(label); rmult_a.append(rmult)
+        label_a.append(res[0]); rmult_a.append(res[1]); src_a.append(src)
 
     ev = pd.DataFrame({
         "decision_pos": pos_idx, "side": side_a, "entry": entry_a,
-        "label": label_a, "r_multiple": rmult_a,
+        "label": label_a, "r_multiple": rmult_a, "label_source": src_a,
     })
     ev["event_date"] = bar_date[ev["decision_pos"].values]
     return ev
 
 
-def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon, cutoffs=None) -> dict:
+def _load_1min(engine, ticker: str) -> dict | None:
+    """Load all 1-min bars for the ticker as sorted numpy arrays for the barrier
+    resolver. Returns None if the table has no rows (→ same-tf fallback)."""
+    from sqlalchemy import text
+    sql = text("SELECT ts, high, low FROM market_data_intraday "
+               "WHERE ticker = :t AND interval = '1min' ORDER BY ts")
+    with engine.connect() as conn:
+        m = pd.read_sql(sql, conn, params={"t": ticker})
+    if m.empty:
+        return None
+    ts = pd.to_datetime(m["ts"], utc=True)
+    return {
+        "ts_ns": ts.values.astype("datetime64[ns]").astype(np.int64),
+        "high": m["high"].astype(float).values,
+        "low": m["low"].astype(float).values,
+        "date": ts.dt.tz_convert("America/New_York").dt.normalize().dt.tz_localize(None)
+                  .values.astype("datetime64[D]"),
+    }
+
+
+_TF_MINUTES = {"5m": 5, "15m": 15, "30m": 30}
+
+
+def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
+                      cutoffs=None, barrier_tf="1m", take_thresh=0.55) -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 72)
-    log.info("BREAKOUT-META  %s %s  PT=%.2f SL=%.2f H=%d", ticker, tf, pt_atr, sl_atr, horizon)
+    log.info("BREAKOUT-META  %s %s  PT=%.2f SL=%.2f H=%d  barrier=%s take≥%.2f",
+             ticker, tf, pt_atr, sl_atr, horizon, barrier_tf, take_thresh)
     log.info("=" * 72)
 
     df = load_labeled_dataset(engine, ticker, tf, include_next_bar_ohlc=False)
     df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
 
-    ev = build_breakout_events(df, pt_atr, sl_atr, horizon)
+    onemin = None
+    if barrier_tf == "1m":
+        onemin = _load_1min(engine, ticker)
+        log.info("1-min bars for barrier labeling: %s",
+                 "loaded" if onemin else "NONE — falling back to same-tf scan")
+
+    ev = build_breakout_events(df, pt_atr, sl_atr, horizon,
+                               tf_minutes=_TF_MINUTES.get(tf, 15), onemin=onemin)
     if ev.empty:
         log.warning("no breakout events — aborting"); return {"status": "NO_EVENTS"}
     base_precision = float(ev["label"].mean())
-    log.info("primary breakouts: %d  (base follow-through rate=%.3f, long=%d short=%d)",
-             len(ev), base_precision, int((ev.side == 1).sum()), int((ev.side == -1).sum()))
+    src_counts = ev["label_source"].value_counts().to_dict()
+    log.info("primary breakouts: %d  (base follow-through rate=%.3f, long=%d short=%d) "
+             "label_source=%s", len(ev), base_precision,
+             int((ev.side == 1).sum()), int((ev.side == -1).sum()), src_counts)
 
     # Features at the DECISION bar (align by integer position).
     X_df, feat_cols = featurize(df)
@@ -175,7 +256,7 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon, cutoffs=None)
                "base_precision": float(y[te].mean()),
                "base_expectancy_R": base_exp, "base_profit_factor": base_pf,
                "by_threshold": {}, "status": "OK"}
-        for thr in (0.50, 0.55, 0.60, 0.65):
+        for thr in sorted({0.50, 0.55, 0.60, round(take_thresh, 2)}):
             take = p >= thr
             n_take = int(take.sum())
             if n_take < 20:
@@ -190,27 +271,30 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon, cutoffs=None)
                 "precision_lift_pp": (prec - row["base_precision"]) * 100,
             }
         folds.append(row)
-        b60 = row["by_threshold"].get(0.60, {})
-        log.info("  %s n_te=%d base[prec=%.3f exp=%+.3fR pf=%.2f] | take≥0.60 n=%s prec=%s exp=%s",
-                 row["fold"], n_te, row["base_precision"], base_exp, base_pf,
-                 b60.get("n"), _f(b60.get("precision")), _f(b60.get("expectancy_R"), "+.3f"))
+        bt = row["by_threshold"].get(round(take_thresh, 2), {})
+        log.info("  %s n_te=%d base[prec=%.3f exp=%+.3fR pf=%.2f] | take≥%.2f n=%s prec=%s exp=%s",
+                 row["fold"], n_te, row["base_precision"], base_exp, base_pf, take_thresh,
+                 bt.get("n"), _f(bt.get("precision")), _f(bt.get("expectancy_R"), "+.3f"))
 
-    # Verdict: meta-filter PASSES if take≥0.60 lifts precision AND expectancy
-    # over base in ≥5 OK folds.
+    # Verdict: meta-filter PASSES if take≥take_thresh lifts precision AND
+    # expectancy over base, with enough taken trades to count, in ≥5 OK folds.
+    tt = round(take_thresh, 2)
     oks = [f for f in folds if f.get("status") == "OK"]
     lift_folds = sum(1 for f in oks
-                     if f["by_threshold"].get(0.60, {}).get("precision_lift_pp", -1) > 0
-                     and f["by_threshold"].get(0.60, {}).get("expectancy_R", -9) >
+                     if f["by_threshold"].get(tt, {}).get("precision_lift_pp", -1) > 0
+                     and f["by_threshold"].get(tt, {}).get("expectancy_R", -9) >
                          f["base_expectancy_R"])
     verdict = "PASS" if (len(oks) >= 4 and lift_folds >= 5) else (
         "INSUFFICIENT_DATA" if len(oks) < 4 else "FAIL")
-    log.info("META verdict: %s (take≥0.60 beat base in %d of %d OK folds)",
-             verdict, lift_folds, len(oks))
+    log.info("META verdict: %s (take≥%.2f beat base in %d of %d OK folds)",
+             verdict, take_thresh, lift_folds, len(oks))
 
     summary = {
         "ticker": ticker, "tf": tf, "model": "STRAT-BREAKOUT-META",
-        "params": {"pt_atr": pt_atr, "sl_atr": sl_atr, "horizon": horizon},
+        "params": {"pt_atr": pt_atr, "sl_atr": sl_atr, "horizon": horizon,
+                   "barrier_tf": barrier_tf, "take_thresh": take_thresh},
         "n_events": int(len(ev)), "overall_base_precision": base_precision,
+        "label_source_counts": src_counts,
         "verdict": verdict, "lift_folds": lift_folds, "folds": folds,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
@@ -238,11 +322,18 @@ def main():
     p.add_argument("--pt", type=float, default=1.0, help="profit target in ATR")
     p.add_argument("--sl", type=float, default=0.5, help="stop in ATR")
     p.add_argument("--horizon", type=int, default=12, help="vertical barrier in bars")
+    p.add_argument("--barrier-tf", default="1m", choices=["1m", "same"],
+                   help="1m=resolve triple barrier on 1-min bars (corrected, "
+                        "true intra-bar order); same=conservative same-tf scan.")
+    p.add_argument("--take-thresh", type=float, default=0.55,
+                   help="meta-model confidence to 'take' a breakout (base rate "
+                        "is low, so 0.60 is rarely reached — 0.55 default).")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     walk_forward_meta(get_engine(), args.ticker, args.tf,
-                      args.pt, args.sl, args.horizon, cutoffs=cutoffs)
+                      args.pt, args.sl, args.horizon, cutoffs=cutoffs,
+                      barrier_tf=args.barrier_tf, take_thresh=args.take_thresh)
 
 
 if __name__ == "__main__":
