@@ -200,6 +200,33 @@ after costs; the +0.2–0.36 R folds have room. Next step: a friction model on
 BREAKOUT-META + a PT/SL sweep. Until then it is a validated *gross* edge, not a
 shippable strategy.
 
+#### NET-OF-COST gate (2026-06-05) — the gross edge is REAL but MARGINAL
+
+Added a per-trade friction model: round-trip cost = spread (bps of notional) +
+breakout-chase slippage (fraction of ATR), converted to R via 1 R = sl_atr·ATR,
+swept over slippage 0→0.10 ATR. Conservative 1bp spread.
+
+| ticker | 5m | 15m | 30m |
+|---|---|---|---|
+| SPY | NET_FAIL (1/8) | **NET_PASS (5/8)** | NET_FAIL (2/7) |
+| IWM | NET_FAIL (3/8) | NET_FAIL (2/6) | NET_FAIL (2/6) |
+| QQQ | NET_FAIL (2/8) | mixed | NET_FAIL (2/5) |
+
+**Diagnosis:** at 5m the 0.5-ATR stop risks only ~$0.18 on SPY, so 1 R ≈ $0.18 and
+a 1bp spread ($0.035) alone eats ~0.19 R — bigger than the ~+0.2 R gross edge.
+Small-stop intraday scalping killed by costs. Going up in TF enlarges the dollar
+risk (cost shrinks as a fraction of R) BUT the gross edge per trade also shrinks;
+they race. **15m SPY is the sweet spot** (gross ≈+0.19 R, cost ≈0.10 R → net
+positive through realistic slippage); 30m gives the margin back (gross thins
+faster than cost); IWM/QQQ stay marginal-to-negative.
+
+**Verdict:** a real, out-of-sample, VRP-immune edge that nets out to a **marginal
+SPY-15m strategy** under conservative costs (and a comfortable one under SPY's
+true ~0.6bp spread). NOT a robust multi-ticker money-printer. Correct altitude:
+a genuine but marginal edge on the most liquid instrument at the timeframe where
+ATR clears the spread — pursue only with execution-quality focus (limit/stop-
+limit entry to cut slippage, SPY-first, 15m).
+
 ### Meta-lesson
 Of three "failures," one was structural (mine), not the market — and it was the
 flagship. A first-pass null is a hypothesis about the *test* as much as the
