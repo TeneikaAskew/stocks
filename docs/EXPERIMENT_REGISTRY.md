@@ -118,9 +118,11 @@ LightGBM, not HAR (open gap, §G6).
 
 ## G6. Open items & reproducibility gaps
 
-- **B5b / E5b (intraday OFI):** backfill in progress at write time (per-row upsert
-  is slow — ~530k INSERT round-trips; a `COPY`/`executemany` rewrite is the fix);
-  3 experiments queued. **Results row below is a placeholder.**
+- **B5b / E5b (intraday OFI): RESOLVED 2026-06-05** — ❌ no robust edge (destroys
+  the IWM long flicker, surfaces an unvalidated SPY-long one; see B5b). Builder
+  backfill (full 2015→2026) completed; the slow per-row upsert was replaced with
+  the COPY path and made resumable (commit 6323cfd). The **SPY-long z=2.97** and
+  **IWM E4 long z=2.85** flickers are the two standing replicate-or-reject items.
 - **No HAR / GARCH baseline** was run for magnitude (used LightGBM only) — a
   classical vol baseline would strengthen the "priced" conclusion.
 - **No SVM / sequence model** (C4 LSTM/CNN/path-signatures) run; staged only.
@@ -245,16 +247,25 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Also tested:** fracdiff (C5) + rolling-window (C6) all-levers on IWM → null (long z +2.85→−0.58).
 - **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq_flow_*.json`; `lib/features/flow_direction.py`; `gcp/build_options_daily_greeks.py`; commit `46f4058`.
 
-### B5b (E5b) — Intraday order-flow imbalance (OFI)  🚧 IN PROGRESS
-- **Status:** in-progress (backfill running at write time). **Question:** does *intraday* order-flow (vs slow daily flow) add direction?
-- **Target:** E4 long/short triple-barrier; +3 OFI cols (`ofi_norm`=signed_vol/tot_vol, `ofi_3bar`, `cvd_intraday`), **contemporaneous (no shift)**, merged on 15m `ts`.
+### B5b (E5b) — Intraday order-flow imbalance (OFI)
+- **Status:** failed (no robust edge; reshuffles the flicker). **Dates:** dispatched + resolved 2026-06-05 (6 direction-probe execs). **Question:** does *intraday* order-flow (vs slow daily flow) add direction?
+- **Target:** E4 long/short triple-barrier (k=1.0·ATR20, h=12, mag-cond=topq-0.2, tf=15m); +3 OFI cols (`ofi_norm`=signed_vol/tot_vol, `ofi_3bar`, `cvd_intraday`), **contemporaneous (no shift)**, merged on 15m `ts`. nfeat 248→251 (IWM), 227→230 (SPY), 224→227 (QQQ).
 - **Features/why:** tick-rule signed volume from 1-min bars within each 15m bar — microstructure (Cont-Kukanov-Stoikov), the one remaining lever with a real prior. §3.7: zero/missing vol→NaN.
-- **Structure:** materialized `intraday_flow_15m` (scan-once builder, Rule 0); SQL signed-Σ push-down; 8 hermetic tests pass.
-- **Results:** **PENDING** — IWM/SPY/QQQ × {baseline vs +intraflow} long/short z. To be filled when poller completes.
+- **Structure:** materialized `intraday_flow_15m` (scan-once builder, Rule 0; full 2015→2026 backfill = 169,150 IWM / 183,246 SPY / 177,524 QQQ buckets); 8 anchored folds; baselines reproduced the documented E4 topq numbers exactly.
+- **Results — pooled precision at fire ≥0.60 (baseline → +intraflow):**
+  | ticker | side | baseline prec/base/z (n) | +intraflow prec/base/z (n) | Δz |
+  |---|---|---|---|---|
+  | IWM | long | 0.547/0.494/**+2.85** (726) | 0.502/0.497/**+0.30** (1054) | **−2.56** |
+  | IWM | short | 0.492/0.490/+0.14 (2687) | 0.506/0.497/+0.86 (2283) | +0.72 |
+  | SPY | long | 0.484/0.483/+0.05 (907) | 0.538/0.480/**+2.97** (658) | **+2.93** |
+  | SPY | short | 0.508/0.493/+1.34 (2074) | 0.516/0.501/+1.59 (2589) | +0.25 |
+  | QQQ | long | 0.470/0.492/−1.35 (920) | 0.510/0.487/**+1.52** (1070) | +2.87 |
+  | QQQ | short | 0.497/0.495/+0.19 (2330) | 0.503/0.492/+1.04 (2273) | +0.85 |
 - **Approach/why:** E5 tested *slow daily* positioning; OFI tests *fast contemporaneous* flow at the same 15m alignment that worked for baseline RSI.
-- **Verdict:** TBD.
-- **Open/known gap:** builder per-row upsert is slow (~530k round-trips) — COPY/executemany rewrite pending.
-- **Artifacts:** `lib/features/intraday_flow.py`; `gcp/build_intraday_flow.py`; `tests/test_intraday_flow.py`; commits e60a114 (feature), this branch.
+- **Worked/not:** OFI **destroys** the lone IWM long edge (z 2.85→0.30; fires 726→1054 while precision falls — identical overfit-dilution signature to E5 flow) and **surfaces a NEW unvalidated SPY-long flicker** (z 2.97, +5.8pp cost-free, n=658) plus a marginal QQQ-long (z 1.52). It does not augment or replicate cross-ticker — it **moves** which single ticker is significant (IWM→SPY).
+- **Verdict:** ❌ falsified as a robust directional edge. Swapping the significant ticker rather than adding/replicating signal is the multiple-comparisons signature (one of 6 tests crossing z≈3 while the prior winner vanishes). Cost-free only; E4-family miscalibration (ECE≈0.10); net-untradeable like the rest of the E-series.
+- **Open items:** the **SPY-long intraflow flicker (z 2.97)** is now the standing E4-style candidate alongside the IWM E4 long flicker — both need replicate-or-reject (more names / OOS window) before any belief; neither is deployable today.
+- **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq{,_intraflow}_178067926x.json` per ticker; `lib/features/intraday_flow.py`; `gcp/build_intraday_flow.py`; `tests/test_intraday_flow.py`; commits e60a114 (feature), 6323cfd (resumable builder).
 
 ## C — Feature-family R&D (all on `next_close>next_open`, IWM 5m/15m/30m, 0/8 each)
 

@@ -55,7 +55,8 @@ The program is a funnel, each stage motivated by the previous stage's result:
 5. **Maybe direction needs new INFORMATION, not new targets** → the "rethink":
    bring orthogonal data the price series can't contain. Daily dealer-options
    flow (E5) — null, and it *dilutes* the lone IWM edge. Intraday order-flow
-   (E5b) — *in flight* (§5.4).
+   (E5b) — also null: it *reshuffles* the flicker (kills IWM-long, surfaces an
+   unvalidated SPY-long) rather than adding signal (§5.4).
 6. **Separately, is MAGNITUDE the thing that's actually predictable?** (§5.2):
    yes statistically (5m gates pass 100% bootstrap) — but the implied-vs-realized
    gate fails at 0.83–0.92, so the market has it priced. Not tradeable.
@@ -99,7 +100,7 @@ Three families. **A** = validated/production-grade; **B** = direction probes
 | **B3 (E3)** | direction within vix/gamma/session regime | direction | ❌ 0/29 |
 | **B4 (E4)** | triple-barrier first-touch ±k·ATR, mag-gated | direction | ❌ 0/8 calib; IWM-only long flicker z≤4.2, no replication |
 | **C1 (E5)** | Flow-Direction (daily EOD dealer greeks) | direction | ❌ null; dilutes IWM edge |
-| **C1b (E5b)** | Intraday order-flow imbalance (OFI) | direction | 🚧 in flight (§5.4) |
+| **C1b (E5b)** | Intraday order-flow imbalance (OFI) | direction | ❌ null — reshuffles flicker (§5.4) |
 | **C5** | Fractional differentiation | any | tested w/ E5 all-levers — null |
 | **C6** | Rolling/recency-weighted window | any | tested w/ E5 all-levers — null |
 | **C3** | Information-driven bars (volume/dollar) | any | ready, not run |
@@ -243,13 +244,28 @@ No SPY/QQQ side reaches significance; flow **destroys** the lone IWM edge
 overfitting. **Scope caveat:** this tests *slow daily* positioning, not *live
 intraday* flow.
 
-**E5b — intraday order-flow imbalance (C1b) 🚧 in flight.** Tick-rule signed
-volume / within-day CVD / 3-bar persistence computed from the 1-min bars *within*
-each 15m bar (contemporaneous, no shift). This is the one remaining lever with a
-real microstructure prior (Cont/Kukanov/Stoikov OFI). **Results pending** — to be
-filled when the backfill + 3 experiments complete. *(Builder:
-`gcp/build_intraday_flow.py` → `intraday_flow_15m`; loader
-`lib/features/intraday_flow.py`; 8 hermetic tests pass.)*
+**E5b — intraday order-flow imbalance (C1b) ❌ falsified (resolved 2026-06-05).**
+Tick-rule signed volume / within-day CVD / 3-bar persistence from the 1-min bars
+*within* each 15m bar (contemporaneous, no shift) — the one lever with a real
+microstructure prior (Cont/Kukanov/Stoikov OFI). Full 2015→2026 backfill (~530k
+buckets), identical E4 config, +3 OFI columns; baselines reproduced exactly.
+Long/short pooled precision at fire ≥0.60 (baseline → +intraflow):
+
+| ticker | side | baseline lift / z | +intraflow lift / z |
+|---|---|---|---|
+| IWM | long | **+0.053 / +2.85** | +0.005 / **+0.30** |
+| SPY | long | +0.001 / +0.05 | **+0.058 / +2.97** |
+| QQQ | long | −0.022 / −1.35 | +0.023 / +1.52 |
+| (shorts, all tickers) | short | |z| ≤ 1.34 | |z| ≤ 1.59 |
+
+Same outcome family as E5: OFI **destroys** the IWM long edge (z 2.85→0.30, fires
+726→1054 while precision falls — overfit-dilution) and **surfaces a new,
+unvalidated SPY-long flicker** (z 2.97, +5.8pp) plus a marginal QQQ-long (z 1.52).
+It **reshuffles** which single ticker is significant (IWM→SPY) rather than adding
+or replicating signal — the multiple-comparisons signature, not a deployable edge.
+Cost-free only, miscalibrated (ECE≈0.10), net-untradeable. *(Builder:
+`gcp/build_intraday_flow.py` → `intraday_flow_15m`, now COPY-based + resumable;
+loader `lib/features/intraday_flow.py`; 8 hermetic tests pass.)*
 
 **Production-grade architecture note (Rule 0):** E5/E5b both scan their large
 source table (`etf_options_snapshots` ~14M rows; `market_data_intraday` ~2M/ticker)
@@ -359,23 +375,30 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
 
 **Established (high confidence):**
 - Structure (TYPE) is predictable & calibrated, cross-ticker. ✅
-- Direction is not, across 6 framings + 2 new information classes (E5b pending). ❌
+- Direction is not, across 6 framings + 2 new information classes (E5 daily flow,
+  E5b intraday OFI — both null). ❌
 - Magnitude is predictable @5m but **priced** (realized/implied 0.83–0.92). ⚠️
 - The TYPE edge is **non-tradeable** after friction; options don't rescue it. ❌
 - Correlation lenses agree: structure/magnitude yes, sign no.
 
 **Open / unresolved:**
-- **IWM E4 long flicker** (z≤4.2, mag-gated) — replicate-or-reject (needs more
-  small-cap names or an out-of-sample IWM window; currently 1-of-3 = possible luck).
-- **E5b intraday OFI** — *in flight*; the last lever with a literature prior.
+- **Two single-cell long flickers, both replicate-or-reject:** the **IWM E4 long**
+  (z≤4.2, price-only, mag-gated) and the new **SPY-long +intraday-OFI** (z 2.97,
+  +5.8pp). Each is 1-of-N, cost-free, miscalibrated — possible multiple-comparisons
+  luck. Neither deployable; need more names / OOS windows to confirm or kill.
+- **E5b intraday OFI is resolved (null)** — it was the last lever with a strong
+  literature prior; it reshuffled rather than added signal.
 - **C3 information bars**, **C4 path/LSTM**, **C7 HMM**, **C2 cross-asset relative**
   — staged, lower prior given the consistent null.
 
 **The standing recommendation:** productionize **magnitude/volatility** as the
 forecastable quantity (sizing, not sign), keep TYPE as a structural context
-feature, and stop treating standalone direction as extractable until a genuinely
-new, *fast* information class (intraday flow / microstructure) demonstrates
-cross-ticker significance.
+feature, and treat standalone direction as **not extractable from any data class
+tested so far** — including the microstructure lever (E5b OFI) that carried the
+strongest prior and still failed. The remaining hope is *genuinely* new data we
+do **not** yet have history for (e.g. real-time tick-level trade/quote or
+intraday dealer-DEX capture, accumulated forward from today), not another
+re-representation of the OHLCV+EOD-options we already hold.
 
 ---
 
