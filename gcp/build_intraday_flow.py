@@ -12,18 +12,26 @@ created after the 2026-06-05 shared-DB-starvation incident).
 Design (per CLAUDE.md Rule 0):
   * ONE ticker at a time (no concurrent full scans of the shared DB).
   * Aggregation pushed into SQL + chunked by year inside compute_intraflow_frame.
-  * Idempotent: ON CONFLICT (ticker, ts) DO UPDATE — re-run converges.
+  * Idempotent + RESUMABLE: ON CONFLICT (ticker, ts) DO UPDATE, and `--backfill`
+    resumes from the gap after the last materialized bucket per ticker, so a run
+    cut short by a timeout/crash continues instead of restarting from 2015. The
+    durable materialized rows ARE the checkpoint; no separate state to manage.
+  * Fast upsert: the whole per-ticker frame is written via one COPY → temp →
+    INSERT…ON CONFLICT (`gcp.database.bulk_copy_upsert`), not a per-row loop —
+    10-30× faster, which is what makes a full re-run cheap.
   * Observable: per-ticker upsert counts + per-year scan timings.
   * Bounded memory: each ticker's bucket frame is ~83k rows; written per ticker.
 
 Modes:
-  --backfill                 recompute ALL history (since 2015-01-01).
+  --backfill [--restart]     resume the full-history build (since 2015-01-01)
+                             from the gap; --restart forces a clean recompute.
   --incremental [--days N]   recompute the last N days (default 7) — run on a
                              scheduler AFTER the intraday bars land.
   --ticker T                 restrict to one ticker (default: IWM,SPY,QQQ).
 
 Examples:
-  python -m gcp.build_intraday_flow --backfill --ticker SPY
+  python -m gcp.build_intraday_flow --backfill            # resume from the gap
+  python -m gcp.build_intraday_flow --backfill --restart  # full recompute
   python -m gcp.build_intraday_flow --incremental --days 7
 """
 from __future__ import annotations
@@ -34,7 +42,6 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -44,72 +51,71 @@ log = logging.getLogger(__name__)
 TICKERS = ("IWM", "SPY", "QQQ")
 BACKFILL_SINCE = "2015-01-01"
 
-_UPSERT_SQL = """
-INSERT INTO intraday_flow_15m
-    (ticker, ts, signed_vol, tot_vol, up_vol, dn_vol, n_min, computed_at)
-VALUES
-    (:ticker, :ts, :signed_vol, :tot_vol, :up_vol, :dn_vol, :n_min, NOW())
-ON CONFLICT (ticker, ts) DO UPDATE SET
-    signed_vol  = EXCLUDED.signed_vol,
-    tot_vol     = EXCLUDED.tot_vol,
-    up_vol      = EXCLUDED.up_vol,
-    dn_vol      = EXCLUDED.dn_vol,
-    n_min       = EXCLUDED.n_min,
-    computed_at = NOW()
-"""
-
-
-def _none(v):
-    """NaN -> None so the driver binds SQL NULL (no fabricated 0)."""
-    if v is None:
-        return None
-    if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
-        return None
-    return v
-
 
 def upsert_intraflow(engine, ticker: str, frame: pd.DataFrame) -> int:
-    """Idempotent per-bucket upsert. frame is indexed by ts with the raw
-    aggregate columns. Returns rows written."""
-    from sqlalchemy import text
+    """Idempotent per-bucket upsert via the COPY → temp → INSERT…ON CONFLICT fast
+    path (`gcp.database.bulk_copy_upsert`). frame is indexed by ts with the raw
+    aggregate columns; returns rows written.
+
+    Why not a per-row loop: the previous implementation looped
+    `conn.execute(sql, row)` once per bucket (~530k INSERT round-trips for a full
+    backfill, ~70 min). `bulk_copy_upsert` streams the whole frame in one COPY
+    (its docstring: 10-30× faster) and falls back to a multi-row INSERT if the
+    COPY path errors. NaN stays NULL via CSV `\\N` (no fabricated 0, §3.7);
+    `computed_at` falls to its schema DEFAULT NOW().
+    """
+    import gcp.database as db
     if frame is None or frame.empty:
         return 0
-    rows = []
-    for ts, r in frame.iterrows():
-        rows.append({
-            "ticker": ticker,
-            "ts": ts.to_pydatetime(),
-            "signed_vol": _none(float(r["signed_vol"])
-                                if pd.notna(r["signed_vol"]) else np.nan),
-            "tot_vol": _none(float(r["tot_vol"])
-                             if pd.notna(r["tot_vol"]) else np.nan),
-            "up_vol": _none(float(r["up_vol"]) if pd.notna(r["up_vol"]) else np.nan),
-            "dn_vol": _none(float(r["dn_vol"]) if pd.notna(r["dn_vol"]) else np.nan),
-            "n_min": int(r["n_min"]) if pd.notna(r["n_min"]) else 0,
-        })
-    sql = text(_UPSERT_SQL)
-    # Chunked transactions (bounded memory / observable progress on a big
-    # backfill); each chunk is atomic and idempotent.
-    written = 0
-    CHUNK = 5000
-    for i in range(0, len(rows), CHUNK):
-        batch = rows[i:i + CHUNK]
-        with engine.begin() as conn:
-            for row in batch:
-                conn.execute(sql, row)
-        written += len(batch)
-        log.info("  upsert %s progress=%d/%d", ticker, written, len(rows))
-    return written
+    out = frame.reset_index()                    # ts index -> column
+    out.insert(0, "ticker", ticker)
+    return db.bulk_copy_upsert(
+        out, "intraday_flow_15m",
+        conflict_cols=["ticker", "ts"],
+        update_cols=["signed_vol", "tot_vol", "up_vol", "dn_vol", "n_min"],
+    )
 
 
-def build(engine, tickers, since: str, until: str) -> dict:
-    """Compute + upsert intraday OFI buckets for each ticker SEQUENTIALLY."""
+def _resume_since(engine, ticker: str, default_since: str) -> str:
+    """Return the date to (re)start the scan from so a re-run does NOT recompute
+    buckets already durably written — it picks up at the gap.
+
+    Strategy: the day of the last materialized bucket for `ticker`, minus one
+    day. Backing up a day re-fills any partially-written final day AND restores
+    the tick-rule `lag(close)` context at the scan boundary; the upsert is
+    idempotent (ON CONFLICT) so the one-day overlap is harmless. Returns
+    `default_since` when the table has no rows for this ticker yet (fresh start).
+    """
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        last = conn.execute(
+            text("SELECT max(ts) FROM intraday_flow_15m WHERE ticker = :tk"),
+            {"tk": ticker},
+        ).scalar()
+    if last is None:
+        return default_since
+    resume = (pd.Timestamp(last).date() - timedelta(days=1)).isoformat()
+    return max(default_since, resume)
+
+
+def build(engine, tickers, since: str, until: str, resume: bool = False) -> dict:
+    """Compute + upsert intraday OFI buckets for each ticker SEQUENTIALLY.
+
+    When `resume` is True, each ticker's scan starts at the gap after the last
+    already-materialized bucket (see `_resume_since`) instead of `since`, so a
+    re-run after a timeout/crash does not recompute completed history. The
+    upsert is idempotent, so resume is always safe to enable.
+    """
     from lib.features.intraday_flow import compute_intraflow_frame
     written = {}
     for tk in tickers:
+        tk_since = _resume_since(engine, tk, since) if resume else since
         log.info("=" * 70)
-        log.info("build-intraday-flow ticker=%s window=[%s..%s]", tk, since, until)
-        frame = compute_intraflow_frame(engine, tk, since, until)
+        if resume and tk_since != since:
+            log.info("RESUME ticker=%s: completed history present; scanning gap "
+                     "from %s (skipping %s..%s)", tk, tk_since, since, tk_since)
+        log.info("build-intraday-flow ticker=%s window=[%s..%s]", tk, tk_since, until)
+        frame = compute_intraflow_frame(engine, tk, tk_since, until)
         n = upsert_intraflow(engine, tk, frame)
         written[tk] = n
         log.info("build-intraday-flow ticker=%s upserted=%d buckets "
@@ -135,6 +141,10 @@ def main():
                    help="incremental lookback in days (default 7)")
     p.add_argument("--ticker", default=None, choices=list(TICKERS),
                    help="restrict to one ticker (default: all)")
+    p.add_argument("--restart", action="store_true",
+                   help="(backfill only) ignore already-written rows and "
+                        "recompute ALL history from scratch; the default is to "
+                        "RESUME from the gap after the last materialized bucket")
     args = p.parse_args()
 
     tickers = (args.ticker,) if args.ticker else TICKERS
@@ -142,8 +152,13 @@ def main():
     since = (BACKFILL_SINCE if args.backfill
              else (date.today() - timedelta(days=args.days)).isoformat())
 
+    # Resume is the default for --backfill (a re-run picks up where a prior run
+    # stopped); --restart forces a full recompute. --incremental already bounds
+    # its own window via --days, so it scans that window verbatim.
+    resume = bool(args.backfill) and not args.restart
+
     engine = get_engine()
-    build(engine, tickers, since, until)
+    build(engine, tickers, since, until, resume=resume)
 
 
 if __name__ == "__main__":

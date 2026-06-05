@@ -95,3 +95,61 @@ def test_index_is_ts_and_sorted():
     out = compute_derived(b)
     assert out.index.name == "ts"
     assert list(out.index) == sorted(out.index)
+
+
+# ---------------------------------------------------------------------------
+# Resume logic for the backfill Job (gcp.build_intraday_flow._resume_since).
+# Hermetic: a tiny fake engine returns a canned `max(ts)` scalar so we pin the
+# gap arithmetic without a DB. Resume = (last bucket day − 1 day), floored at
+# default_since; None (fresh table) = default_since.
+# ---------------------------------------------------------------------------
+import datetime as _dt
+from gcp.build_intraday_flow import _resume_since
+
+
+class _FakeConn:
+    def __init__(self, scalar):
+        self._scalar = scalar
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **k):
+        class _R:
+            def __init__(s, v):
+                s._v = v
+
+            def scalar(s):
+                return s._v
+        return _R(self._scalar)
+
+
+class _FakeEngine:
+    def __init__(self, scalar):
+        self._scalar = scalar
+
+    def connect(self):
+        return _FakeConn(self._scalar)
+
+
+def test_resume_fresh_table_uses_default():
+    pytest.importorskip("sqlalchemy")  # prod path needs it; pure OFI tests do not
+    # No rows yet -> start at the configured floor.
+    assert _resume_since(_FakeEngine(None), "SPY", "2015-01-01") == "2015-01-01"
+
+
+def test_resume_backs_up_one_day_from_last_bucket():
+    pytest.importorskip("sqlalchemy")  # prod path needs it; pure OFI tests do not
+    last = _dt.datetime(2026, 4, 18, 19, 45, tzinfo=_dt.timezone.utc)
+    # Gap restart = 2026-04-18 minus one day = 2026-04-17 (idempotent overlap).
+    assert _resume_since(_FakeEngine(last), "QQQ", "2015-01-01") == "2026-04-17"
+
+
+def test_resume_never_precedes_default_floor():
+    pytest.importorskip("sqlalchemy")  # prod path needs it; pure OFI tests do not
+    last = _dt.datetime(2015, 1, 1, 14, 30, tzinfo=_dt.timezone.utc)
+    # last-1day = 2014-12-31 < floor -> clamp to floor.
+    assert _resume_since(_FakeEngine(last), "IWM", "2015-01-01") == "2015-01-01"
