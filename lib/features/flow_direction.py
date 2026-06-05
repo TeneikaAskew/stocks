@@ -473,13 +473,65 @@ def _load_vc_contracts(engine, ticker: str, since: str,
     return df
 
 
+def compute_daily_greeks_frame(engine, ticker: str, since: str, until: str,
+                               r: float = DEFAULT_R,
+                               q: float = DEFAULT_Q) -> pd.DataFrame:
+    """Compute the RAW daily directional-greek aggregates (table schema:
+    dex, short_dte_dex, total_oi, vanna, charm, n_contracts), indexed by
+    snapshot_date.
+
+    RULE 0: this scans etf_options_snapshots and is EXPENSIVE — it is called
+    ONLY by the build-options-greeks backfill/incremental Job, never per
+    experiment. Experiments read the materialized etf_options_daily_greeks
+    table via add_flow_features().
+    """
+    dex = _load_dex_aggregates(engine, ticker, since, until)
+    if dex.empty:
+        return pd.DataFrame()
+    dex = dex.rename(columns={"dex_d1": "dex", "short_dte_dex_d1": "short_dte_dex"})
+    vc = _load_vc_contracts(engine, ticker, since, until)
+    if vc.empty:
+        log.warning("compute_daily_greeks_frame: no near-term contracts for "
+                    "vanna/charm (%s); those stay NaN", ticker)
+        dex["vanna"] = np.nan
+        dex["charm"] = np.nan
+        dex["n_contracts"] = 0
+    else:
+        vcd = compute_daily_features(vc, r=r, q=q)[["vanna_d1", "charm_d1"]]
+        vcd = vcd.rename(columns={"vanna_d1": "vanna", "charm_d1": "charm"})
+        ncon = vc.groupby("snapshot_date").size().rename("n_contracts")
+        dex = dex.join(vcd, how="left").join(ncon, how="left")
+        dex["n_contracts"] = dex["n_contracts"].fillna(0).astype(int)
+    return dex[["dex", "short_dte_dex", "total_oi", "vanna", "charm", "n_contracts"]]
+
+
+def _load_daily_greeks_table(engine, ticker: str, since: str,
+                             until: str) -> pd.DataFrame:
+    """Read the MATERIALIZED daily aggregates (~250 rows/yr) — the per-experiment
+    path. NO scan of etf_options_snapshots. Indexed by snapshot_date."""
+    from sqlalchemy import text  # lazy
+    sql = text(
+        """
+        SELECT snapshot_date, dex, short_dte_dex, total_oi, vanna, charm
+        FROM etf_options_daily_greeks
+        WHERE ticker = :tk AND snapshot_date >= :s AND snapshot_date <= :u
+        ORDER BY snapshot_date
+        """
+    )
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
+    if df.empty:
+        return df
+    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"]).dt.date
+    return df.set_index("snapshot_date")
+
+
 def add_flow_features(df: pd.DataFrame, ticker: str, engine,
                       r: float = DEFAULT_R, q: float = DEFAULT_Q) -> pd.DataFrame:
-    """Joiner — attaches directional dealer-positioning features to an intraday
-    bar dataset keyed by `bar_date`. DEX is a cheap SQL aggregate over ALL
-    contracts; vanna/charm come from the restricted per-contract pull (Rule 0
-    capacity, see module §(b)). d-1 `.shift(1)` for leak-safety; missing →
-    NaN, never 0; float32 attach.
+    """Joiner — reads the MATERIALIZED etf_options_daily_greeks table (Rule 0:
+    NO per-run scan of etf_options_snapshots), maps the raw aggregates to d-1
+    leak-safe feature columns, and joins to the intraday bar dataset by
+    bar_date. Missing → NaN (never 0); float32 attach.
     """
     log.info("flow-direction: adding %d-row dataset for %s", len(df), ticker)
     if "bar_date" not in df.columns:
@@ -489,38 +541,29 @@ def add_flow_features(df: pd.DataFrame, ticker: str, engine,
     since = (pd.Timestamp(bar_dates.min()) - pd.Timedelta(days=60)).date().isoformat()
     until = pd.Timestamp(bar_dates.max()).date().isoformat()
 
-    # DEX: exact, all contracts, SQL-aggregated (cheap).
-    dex_daily = _load_dex_aggregates(engine, ticker, since, until)
-    if dex_daily.empty:
+    g = _load_daily_greeks_table(engine, ticker, since, until)
+    if g.empty:
         raise RuntimeError(
-            f"flow-direction INFEASIBLE: no EOD AV options for ticker={ticker} "
-            f"in [{since}, {until}]")
-    toi = dex_daily["total_oi"].replace(0, np.nan)  # zero/NaN denom -> NaN
-    dex_daily["dex_per_oi_d1"] = dex_daily["dex_d1"] / toi
+            f"flow-direction INFEASIBLE: etf_options_daily_greeks empty for "
+            f"ticker={ticker} in [{since}, {until}]. Run the build-options-greeks "
+            f"Job (--backfill) before using --feature-blocks=flow.")
+    g = g.sort_index()
 
-    # Vanna/charm: restricted per-contract pull -> reuse the pure compute, keep
-    # only the two greek columns (its DEX-on-restricted-set is discarded).
-    vc_contracts = _load_vc_contracts(engine, ticker, since, until)
-    if vc_contracts.empty:
-        log.warning("flow-direction: no near-term contracts for vanna/charm; "
-                    "those features will be NaN for %s", ticker)
-        vc_daily = pd.DataFrame(columns=["vanna_d1", "charm_d1"])
-    else:
-        vc_daily = compute_daily_features(vc_contracts, r=r, q=q)[["vanna_d1",
-                                                                   "charm_d1"]]
-
-    daily = dex_daily.join(vc_daily, how="left").sort_index()
-    # dex_chg_5d momentum on the SQL DEX series (row-based shift; zero/NaN
-    # prior -> NaN, never a fabricated ratio).
-    prior = daily["dex_d1"].shift(5).replace(0, np.nan)
-    daily["dex_chg_5d"] = daily["dex_d1"] / prior - 1.0
+    # Map raw aggregates -> d-1 feature columns (the d-1 shift happens below).
+    daily = pd.DataFrame(index=g.index)
+    daily["dex_d1"] = g["dex"]
+    daily["dex_per_oi_d1"] = g["dex"] / g["total_oi"].replace(0, np.nan)
+    daily["dex_chg_5d"] = g["dex"] / g["dex"].shift(5).replace(0, np.nan) - 1.0
+    daily["vanna_d1"] = g["vanna"]
+    daily["charm_d1"] = g["charm"]
+    daily["short_dte_dex_d1"] = g["short_dte_dex"]
     daily = daily[FEATURE_COLS]
 
     for col in FEATURE_COLS:
         cov = float(daily[col].notna().mean()) if len(daily) else 0.0
         log.info("flow-direction feature=%s per-date coverage=%.1f%%", col, cov * 100)
 
-    # Shift by 1 day so bar_date D reads D-1's EOD snapshot (leak-safe).
+    # Shift by 1 day so bar_date D reads D-1's EOD aggregate (leak-safe).
     daily = daily.shift(1)
 
     feature_cols = list(daily.columns)

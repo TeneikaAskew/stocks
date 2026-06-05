@@ -264,6 +264,47 @@ WHERE data_source = 'alphavantage'
 GROUP BY ticker, snapshot_ts, snapshot_date, market_session, expiration, strike;
 
 
+-- Materialized DAILY directional-greek aggregates (one row per ticker × EOD
+-- day). RULE 0 (NON-NEGOTIABLE): the per-experiment flow-direction feature
+-- loader MUST NOT re-aggregate the ~14M-row etf_options_snapshots table — doing
+-- so re-scans millions of REALTIME rows per run and starves the shared DB (the
+-- 2026-06-05 incident: 5 concurrent runs, 100-900s/year-chunk). This table is
+-- computed ONCE by the build-options-greeks Cloud Run Job (backfill) and
+-- appended incrementally after each EOD options fetch, so experiments read
+-- ~250 rows/yr/ticker instantly.
+--
+-- Dealer sign convention (matches lib/features/flow_direction.py, consistent
+-- with lib.gamma total_vex = -(call+put)): dealer = OPPOSITE of net-long
+-- customer book, so every aggregate is negated:
+--   dex           = -SUM(delta·OI)                       (all contracts)
+--   short_dte_dex = -SUM(delta·OI) WHERE dte<=2          (0-2DTE charm-pin slice)
+--   vanna/charm    = -SUM(greek_contract·OI)             (near-term band only;
+--                    dte 0-60, |delta|<=0.95 — deep wings carry ~0 net 2nd-order)
+CREATE TABLE IF NOT EXISTS etf_options_daily_greeks (
+    ticker          VARCHAR(10)      NOT NULL,
+    snapshot_date   DATE             NOT NULL,
+    dex             DOUBLE PRECISION,   -- dealer delta exposure, all contracts
+    short_dte_dex   DOUBLE PRECISION,   -- dex restricted to 0-2DTE
+    total_oi        DOUBLE PRECISION,   -- SUM(OI), scale-free normaliser
+    vanna           DOUBLE PRECISION,   -- net dealer vanna (near-term band)
+    charm           DOUBLE PRECISION,   -- net dealer charm (near-term band)
+    n_contracts     INTEGER,            -- contracts in the vanna/charm band
+    computed_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, snapshot_date)
+);
+
+-- Partial COVERING index so the builder's EOD-AV aggregation is index-only and
+-- never touches the REALTIME rows (the bulk of the table). Without this the
+-- planner walks every REALTIME contract for the ticker/date before applying the
+-- EOD filter. Mirrors the existing idx_etf_options_realtime partial-index
+-- approach (line ~197), inverted to the EOD/alphavantage slice.
+CREATE INDEX IF NOT EXISTS idx_etf_options_eod_agg
+    ON etf_options_snapshots (ticker, snapshot_date)
+    INCLUDE (delta, open_interest, expiration, implied_volatility,
+             option_type, strike)
+    WHERE market_session = 'EOD' AND data_source = 'alphavantage';
+
+
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     symbol              VARCHAR(10)  NOT NULL,

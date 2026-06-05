@@ -935,6 +935,40 @@ deploy_direction_probe() {
         --quiet
 }
 
+# ── Build Options Daily Greeks (Cloud Run Job, research image) ──────────────
+# Materializes etf_options_daily_greeks (daily DEX/vanna/charm per ticker) so
+# the flow-direction feature loader never re-scans the ~14M-row
+# etf_options_snapshots table per experiment (Rule 0). Backfill once, then run
+# incrementally after the EOD options fetch.
+#   Backfill (one-off, per ticker, sequential — avoid concurrent full scans):
+#     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+#       --args="-m,gcp.build_options_daily_greeks,--backfill,--ticker,IWM"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU: the per-ticker daily frame is tiny; headroom is for the SPY
+# near-term contract pull. max-retries 0 (fail loud). 3600s task-timeout.
+deploy_build_options_greeks() {
+    echo "Deploying build-options-greeks job (materialized daily greeks)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        --task-timeout 3600 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
 # Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
 # Walk-forward research only — NO production hooks. Same image as strat-engine.
@@ -3119,6 +3153,7 @@ case "${1:-help}" in
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
+    build-options-greeks) deploy_build_options_greeks ;;  # research image
     magnitude-engine) deploy_magnitude_engine ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
