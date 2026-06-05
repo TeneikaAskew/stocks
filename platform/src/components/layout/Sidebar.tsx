@@ -2,11 +2,9 @@ import { NavLink } from 'react-router-dom';
 import { Search, PanelLeft } from 'lucide-react';
 import { Button, Kbd } from '@heroui/react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useTickerStore } from '@/stores/tickerStore';
 import { useUser } from '@/hooks/useUser';
 import { Brand } from './Brand';
 import { NAV_GROUPS } from './navConfig';
-import type { Ticker } from '@/types';
 
 interface SidebarProps {
   onOpenSearch: () => void;
@@ -14,7 +12,6 @@ interface SidebarProps {
 
 export function Sidebar({ onOpenSearch }: SidebarProps) {
   const { sidebarCollapsed, toggleSidebar } = useSettingsStore();
-  const { activeTicker, setTicker, availableTickers } = useTickerStore();
   const { isAdmin } = useUser();
 
   return (
@@ -48,25 +45,6 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
           <span>Search</span>
           <Kbd>⌘K</Kbd>
         </Button>
-      )}
-
-      {/* Ticker selector */}
-      {!sidebarCollapsed && (
-        <div className="flex gap-1 px-3 pb-2">
-          {availableTickers.map((t: Ticker) => (
-            <button
-              key={t}
-              onClick={() => setTicker(t)}
-              className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
-                activeTicker === t
-                  ? 'bg-[var(--brand)] text-[var(--on-brand)]'
-                  : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)] hover:text-[var(--on-surface)]'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
       )}
 
       {/* Grouped nav */}
