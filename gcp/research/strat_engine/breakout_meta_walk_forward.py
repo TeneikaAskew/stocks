@@ -63,28 +63,66 @@ MIN_EVENTS = 150  # per fold-side; below this the fold is reported but not score
 FRICTION_LEVELS_ATR = [0.0, 0.02, 0.04, 0.06, 0.08, 0.10]
 
 
+def add_ofi_proxies(df: pd.DataFrame) -> list[str]:
+    """Order-flow PROXY features from OHLCV (we have NO true order-flow/L2/tick
+    data — AlphaVantage gives bars only). These are weak substitutes for OFI:
+
+      clv         close-location-value ((C-L)-(H-C))/(H-L) ∈ [-1,1] — where in
+                  the bar's range did it close (buying vs selling pressure proxy)
+      body_frac   (C-O)/(H-L) signed body as a fraction of range
+      upper_wick  rejection from the highs ; lower_wick  rejection from the lows
+      signed_vol_z  tick-rule signed volume (clv·volume) z-scored over 20 bars
+                  (rolling, session-naive — known at bar close)
+      clv_sum5    5-bar rolling sum of clv (order-flow momentum proxy)
+
+    Adds the columns in place and returns their names. NaNs/inf → 0 handled by
+    featurize. Honest tag: these are PROXIES, not OFI; if they move the needle
+    that justifies sourcing real quote/trade data, not a claim we have it.
+    """
+    o, h, l, c, v = (df["open"], df["high"], df["low"], df["close"], df["volume"])
+    rng = (h - l).replace(0, np.nan)
+    df["clv"] = ((c - l) - (h - c)) / rng
+    df["body_frac"] = (c - o) / rng
+    df["upper_wick"] = (h - np.maximum(o, c)) / rng
+    df["lower_wick"] = (np.minimum(o, c) - l) / rng
+    sv = df["clv"].fillna(0) * v
+    mu = sv.rolling(20, min_periods=5).mean()
+    sd = sv.rolling(20, min_periods=5).std().replace(0, np.nan)
+    df["signed_vol_z"] = ((sv - mu) / sd)
+    df["clv_sum5"] = df["clv"].fillna(0).rolling(5, min_periods=1).sum()
+    return ["clv", "body_frac", "upper_wick", "lower_wick", "signed_vol_z", "clv_sum5"]
+
+
 def _friction_sweep(fold_takes: list, sl_atr: float, cost_bps: float,
-                    levels: list) -> list:
-    """For each slippage level, per fold compute NET expectancy of the taken
-    trades = mean(gross_R − cost_R), where per-trade
-    cost_price = entry·cost_bps/1e4 + slippage_atr·ATR  and  cost_R =
-    cost_price / (sl_atr·ATR). Returns one row per level with the count of
-    net-positive folds and the median net expectancy."""
+                    levels: list, entry_mode: str = "market") -> list:
+    """For each ONE-WAY slippage level, per fold compute NET expectancy of the
+    taken trades = mean(gross_R − cost_R).
+
+    Realistic stop-limit modelling of which legs actually pay slippage:
+      - entry: 'market' (stop order chasing the break) pays one-way slippage;
+        'limit' (resting limit/stop-limit at the trigger) pays ZERO entry slip.
+      - exit: a winner exits at the profit-target = a LIMIT fill → no slip;
+        a loser exits at the stop = a STOP fill → pays one-way slip.
+    So per trade: slip_legs = (entry_mode=='market') + (gross_R < 0).
+    cost_price = entry·cost_bps/1e4 + slip_legs·oneway_atr·ATR;
+    cost_R = cost_price / (sl_atr·ATR).
+    """
+    entry_legs = 1.0 if entry_mode == "market" else 0.0
     out = []
-    for s_atr in levels:
+    for oneway in levels:
         net_exps, net_pos, scored = [], 0, 0
         for ft in fold_takes:
-            atr = ft["atr"]; entry = ft["entry"]
-            cost_price = entry * cost_bps / 1e4 + s_atr * atr
+            atr = ft["atr"]; entry = ft["entry"]; r = ft["rmult"]
+            slip_legs = entry_legs + (r < 0).astype(float)   # +1 on losers (stop)
+            cost_price = entry * cost_bps / 1e4 + slip_legs * oneway * atr
             cost_R = cost_price / (sl_atr * atr)
-            net = ft["rmult"] - cost_R
+            net = r - cost_R
             scored += 1
             ne = float(net.mean()); net_exps.append(ne)
             if ne > 0:
                 net_pos += 1
         out.append({
-            "slippage_atr": s_atr,
-            "approx_cost_R": float(s_atr / sl_atr),   # ignores the tiny bps term
+            "oneway_slip_atr": oneway, "entry_mode": entry_mode,
             "scored_folds": scored, "net_positive_folds": net_pos,
             "median_net_exp_R": float(np.median(net_exps)) if net_exps else None,
         })
@@ -235,7 +273,7 @@ _TF_MINUTES = {"5m": 5, "15m": 15, "30m": 30}
 
 def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
                       cutoffs=None, barrier_tf="1m", take_thresh=0.55,
-                      cost_bps=1.0) -> dict:
+                      cost_bps=1.0, entry_mode="market", ofi_proxies=False) -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 72)
     log.info("BREAKOUT-META  %s %s  PT=%.2f SL=%.2f H=%d  barrier=%s take≥%.2f",
@@ -245,6 +283,10 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
     df = load_labeled_dataset(engine, ticker, tf, include_next_bar_ohlc=False)
     df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
+
+    if ofi_proxies:
+        added = add_ofi_proxies(df)
+        log.info("OFI proxies added (OHLCV-derived, NOT true order flow): %s", added)
 
     onemin = None
     if barrier_tf == "1m":
@@ -329,23 +371,24 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
     # how much friction the edge absorbs before dying.
     med_atr = float(np.median(atr_ev)) if len(atr_ev) else float("nan")
     med_entry = float(np.median(entry_ev)) if len(entry_ev) else float("nan")
-    sweep = _friction_sweep(fold_takes, sl_atr, cost_bps, FRICTION_LEVELS_ATR)
+    sweep = _friction_sweep(fold_takes, sl_atr, cost_bps, FRICTION_LEVELS_ATR, entry_mode)
     log.info("─" * 72)
-    log.info("NET-OF-COST SWEEP  (round-trip spread=%.1fbps + slippage·ATR; "
-             "median ATR=%.3f, median px=%.1f → 0.04·ATR≈%.1f¢ round-trip slip)",
-             cost_bps, med_atr, med_entry, 0.04 * med_atr * 100)
-    log.info("  %-10s %-10s %-12s %-10s", "slip_ATR", "≈cost_R", "net+folds", "med_net_R")
+    log.info("NET-OF-COST SWEEP  entry=%s  (spread=%.1fbps + ONE-WAY slippage·ATR; "
+             "median ATR=%.3f, median px=%.1f → 0.04·ATR≈%.1f¢)",
+             entry_mode, cost_bps, med_atr, med_entry, 0.04 * med_atr * 100)
+    log.info("  %-12s %-12s %-10s", "oneway_slip", "net+folds", "med_net_R")
     for s in sweep:
-        log.info("  %-10.3f %-10.3f %-12s %-10s",
-                 s["slippage_atr"], s["approx_cost_R"],
+        log.info("  %-12.3f %-12s %-10s",
+                 s["oneway_slip_atr"],
                  f"{s['net_positive_folds']}/{s['scored_folds']}",
                  _f(s["median_net_exp_R"], "+.3f"))
-    # net verdict at the realistic mid level (0.04 ATR round-trip slippage)
-    mid = next((s for s in sweep if abs(s["slippage_atr"] - 0.04) < 1e-9), sweep[len(sweep) // 2])
+    # net verdict at the realistic mid level (0.02 ATR ONE-WAY slippage ≈ 1-1.5¢)
+    mid = next((s for s in sweep if abs(s["oneway_slip_atr"] - 0.02) < 1e-9), sweep[len(sweep) // 2])
     net_verdict = "NET_PASS" if (mid["scored_folds"] >= 4 and
                                  mid["net_positive_folds"] >= 5) else "NET_FAIL"
-    log.info("NET verdict @ slip=%.3f ATR: %s (%d/%d folds net-positive)",
-             mid["slippage_atr"], net_verdict, mid["net_positive_folds"], mid["scored_folds"])
+    log.info("NET verdict @ oneway_slip=%.3f ATR, entry=%s: %s (%d/%d folds net-positive)",
+             mid["oneway_slip_atr"], entry_mode, net_verdict,
+             mid["net_positive_folds"], mid["scored_folds"])
 
     # ── GROSS verdict (unchanged) ──
     oks = [f for f in folds if f.get("status") == "OK"]
@@ -362,7 +405,7 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
         "ticker": ticker, "tf": tf, "model": "STRAT-BREAKOUT-META",
         "params": {"pt_atr": pt_atr, "sl_atr": sl_atr, "horizon": horizon,
                    "barrier_tf": barrier_tf, "take_thresh": take_thresh,
-                   "cost_bps": cost_bps},
+                   "cost_bps": cost_bps, "entry_mode": entry_mode},
         "n_events": int(len(ev)), "overall_base_precision": base_precision,
         "label_source_counts": src_counts,
         "gross_verdict": verdict, "lift_folds": lift_folds,
@@ -403,14 +446,23 @@ def main():
                         "is low, so 0.60 is rarely reached — 0.55 default).")
     p.add_argument("--cost-bps", type=float, default=1.0,
                    help="round-trip spread/commission in bps of notional (the "
-                        "slippage·ATR term is swept on top of this).")
+                        "one-way slippage·ATR term is added per slipping leg).")
+    p.add_argument("--entry-mode", default="market", choices=["market", "limit"],
+                   help="market=stop order chasing the break (pays entry slip); "
+                        "limit=resting stop-limit at the trigger (no entry slip). "
+                        "Profit-target exits are limit fills either way; only "
+                        "stop-out exits pay slippage.")
+    p.add_argument("--ofi-proxies", action="store_true",
+                   help="add OHLCV-derived order-flow PROXY features (CLV, signed "
+                        "volume z, wicks). NOT true OFI — we have no L2/tick data.")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     walk_forward_meta(get_engine(), args.ticker, args.tf,
                       args.pt, args.sl, args.horizon, cutoffs=cutoffs,
                       barrier_tf=args.barrier_tf, take_thresh=args.take_thresh,
-                      cost_bps=args.cost_bps)
+                      cost_bps=args.cost_bps, entry_mode=args.entry_mode,
+                      ofi_proxies=args.ofi_proxies)
 
 
 if __name__ == "__main__":
