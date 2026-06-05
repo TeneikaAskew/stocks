@@ -313,6 +313,26 @@ CREATE TABLE IF NOT EXISTS etf_options_daily_greeks (
 --         WHERE market_session = 'EOD' AND data_source = 'alphavantage';
 
 
+-- Materialized per-15m-bucket intraday order-flow imbalance (OFI). Built ONCE
+-- per ticker by the build-intraday-flow Job from the ~2M-row/ticker 1-min
+-- market_data_intraday; experiments read this (~6.5k rows/yr) via
+-- lib.features.intraday_flow.add_intraflow_features (Rule 0). The raw signed-
+-- volume aggregates are stored; the joiner derives ofi_norm / ofi_3bar /
+-- cvd_intraday. ts is the UTC bar-OPEN timestamp, aligned to the strat_features
+-- 15m grid (a 15-min floor of the 1-min ts).
+CREATE TABLE IF NOT EXISTS intraday_flow_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    signed_vol  DOUBLE PRECISION,        -- Σ tick-rule sign · 1-min volume
+    tot_vol     DOUBLE PRECISION,        -- Σ 1-min volume in the bucket
+    up_vol      DOUBLE PRECISION,        -- Σ volume on up-tick minutes
+    dn_vol      DOUBLE PRECISION,        -- Σ volume on down-tick minutes
+    n_min       INTEGER,                 -- # 1-min bars in the bucket
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     symbol              VARCHAR(10)  NOT NULL,

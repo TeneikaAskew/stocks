@@ -576,6 +576,13 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
         # statsmodels search in the hot path; session-aware via bar_date.
         df = add_fracdiff_features(df, ["close"], d=0.4, prefix="fd_")
         log.info("feature-block fracdiff: added fd_close (d=0.4)")
+    if "intraflow" in blocks:
+        from lib.features.intraday_flow import add_intraflow_features
+        # Intraday order-flow imbalance from the 1-min bars within each 15m bar.
+        # CONTEMPORANEOUS (no shift): current bar's OFI is realized at its close,
+        # same alignment as the baseline RSI/etc.; predicts the NEXT bar.
+        df = add_intraflow_features(df, ticker, engine)
+        log.info("feature-block intraflow: added intraday OFI columns")
 
     tb = triple_barrier_labels(df, horizon, k_atr)
     # Magnitude target (forward |next_close-next_open|/atr20 bucket) — used
@@ -767,7 +774,8 @@ def main():
                         "topq ⇒ top fraction kept (default 0.2)")
     p.add_argument("--feature-blocks", default="",
                    help="E4: comma list of NEW feature blocks to inject "
-                        "(flow, fracdiff). Empty = price-history surface only.")
+                        "(flow, fracdiff, intraflow). Empty = price-history "
+                        "surface only.")
     p.add_argument("--window", default="expanding",
                    choices=["expanding", "rolling"],
                    help="E4: training window — anchored expanding or rolling.")
