@@ -112,8 +112,10 @@ research notes.
 
 ## A6. Open items & reproducibility gaps
 
-- **BREAKOUT-META net:** marginal (SPY-15m only under conservative 1bp). Not yet
-  tested with stop-limit entry, a PT/SL sweep, or true ~0.6bp SPY spread.
+- **BREAKOUT-META net:** RESOLVED (E-24) — net-positive SPY/IWM/QQQ @5m + SPY @15m
+  under a realistic 1-min fill model at true 0.6bp spread. Remaining: decision-
+  latency model, ~10% same-tf-fallback labels, real L2/tick order-flow vendor,
+  IWM/QQQ 15m weak.
 - **No formal purge/embargo** around fold boundaries (mitigated by t+1 label).
 - **No cutoff-shift perturbation** robustness test (only bootstrap-on-test-bars;
   seed-replication is a no-op on deterministic LightGBM).
