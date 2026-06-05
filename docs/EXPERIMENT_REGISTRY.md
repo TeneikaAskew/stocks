@@ -337,7 +337,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   - **Self-audit fix:** first pass FAILED due to same-tf "both-barriers-in-one-bar=stop" labeling deflating base to 0.28 + corrupting labels; 1-min labeling raised base to 0.33 and flipped to 24/24.
   - **NET-of-cost (1bp spread + slippage sweep):** SPY 5m FAIL, **SPY 15m NET_PASS 5/8**, SPY 30m FAIL; IWM all FAIL; QQQ all FAIL. Diagnosis: 5m 0.5-ATR stop ≈ $0.18 so 1bp spread eats ~0.19 R > gross edge; 15m SPY is the sweet spot.
 - **Approach/why:** meta-labeling reframe — the only path that's VRP-immune (trades the underlying).
-- **Verdict:** ⚠️ **real but marginal** — net-positive on SPY-15m under conservative costs; not a robust multi-ticker strategy.
+- **Verdict:** ✅ **real edge** — gross 24/24; net-positive on SPY/IWM/QQQ @5m + SPY @15m under realistic fill at true spreads (see E-24). PRIMARY (trigger break) is the deterministic `STRAT-RULES`; only the take/skip filter is learned.
 - **Gaps:** stop-limit entry, PT/SL sweep, true ~0.6bp SPY spread untested; would change the verdict.
 - **Artifacts:** `breakout_meta_walk_forward.py`; `gs://.../<ticker>_<tf>/breakout_meta_wf_pt1.0_sl0.5_h12_*.json`; `MODEL_RETHINK_PLANS.md` §RESULTS.
 

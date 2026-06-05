@@ -17,6 +17,7 @@ phase pass is attributable to *features*, not tuning).
 
 | # | Model | Family | Predicts | Verdict | Where it died / lived |
 |---|---|---|---|---|---|
+| 0 | **STRAT-RULES** | rules (deterministic) | candle 1/2U/2D/3, combos, FTFC, trigger levels | ✅ production | `lib/strat.py` — no ML; the PRIMARY in #6 + feature source for all |
 | 1 | **STRAT-TYPE** | structure | next candle shape 1/2U/2D/3 | ✅ **WORKS** | beats base rate +0.11–0.16 logloss; the production structure signal |
 | 2 | STRAT-DIR | direction | next_close>next_open | ❌ FAIL 24/24 | wrong target (body sign ≈ coin flip) |
 | 2b | DIR feature R&D | direction | same, + 4 new feature families | ❌ FAIL/INFEASIBLE | news, cross-asset, vol-regime all 0/8; options infeasible |
@@ -26,7 +27,7 @@ phase pass is attributable to *features*, not tuning).
 | 3d | MAG-SIZE `call`/`put` | directional size | one-sided excursion vs matching IV | ❌ FAIL/INSUFF | one-sided move ≤ matching-leg IV (VRP) |
 | 4 | INTRADAY-MOM | direction | last-30min from first-30min | ❌ true null | anomaly decayed post-2013; negative β in 2016–26, even conditional |
 | 5 | DIR-REGIME | direction | move-continuation \| gamma regime | ❌ true null | no consistent expectancy even with fixed target+metric |
-| 6 | **STRAT-BREAKOUT-META** | meta | will a Strat trigger-break follow through | ⚠️ **real but marginal** | gross 24/24; net survives only SPY-15m under conservative costs |
+| 6 | **STRAT-BREAKOUT-META** | meta (deterministic primary + learned filter) | will a Strat trigger-break follow through | ✅ **real edge** | gross 24/24; NET-positive SPY/IWM/QQQ @5m + SPY @15m under realistic fill (2026-06-05) |
 
 **The throughline:** *structure* and *size* are predictable; *direction* is not
 (from the data we have). Anything that tries to beat the option's own implied
