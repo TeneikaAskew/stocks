@@ -410,11 +410,12 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
 
 
 def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
-               cond_tr, cond_te, evaluable, n_jobs, side) -> dict:
+               cond_tr, cond_te, evaluable, n_jobs, side, train_lower=None) -> dict:
     """One walk-forward fold for ONE side's meta-model (long-vs-rest or
     short-vs-rest), conditioned on the magnitude model's predicted-EXPLOSIVE
     mask. cond_tr is the IN-SAMPLE mag prediction (selects the train subset);
-    cond_te is the OOF mag prediction (mag model never saw the test fold)."""
+    cond_te is the OOF mag prediction (mag model never saw the test fold).
+    train_lower (optional) caps how far back training reaches (rolling window)."""
     from sklearn.metrics import log_loss
     from gcp.research.strat_engine.strat_pred_train import expected_calibration_error
     from gcp.research.strat_engine.strat_dir_walk_forward import (
@@ -426,6 +427,8 @@ def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
     test_end_dt = np.datetime64(test_end)
     embargo_cut = train_end_dt - np.timedelta64(embargo_days, "D")
     tr = (bar_dates < embargo_cut) & cond_tr & evaluable
+    if train_lower is not None:
+        tr &= (bar_dates >= train_lower)
     te = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt) & cond_te & evaluable
     n_tr, n_te = int(tr.sum()), int(te.sum())
     out = {"side": side, "fold": f"{train_end}..{test_end}",
@@ -461,7 +464,7 @@ def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
 
 
 def _symmetric_fold(X_full, y3, bar_dates, train_end, test_end, embargo_days,
-                    cond_tr, cond_te, evaluable, n_jobs) -> dict:
+                    cond_tr, cond_te, evaluable, n_jobs, train_lower=None) -> dict:
     """One walk-forward fold for the SYMMETRIC 3-class first-touch primary
     model (0=down, 1=neutral, 2=up). This is the canonical López-de-Prado
     triple-barrier target: predict which barrier is touched first, with an
@@ -477,6 +480,8 @@ def _symmetric_fold(X_full, y3, bar_dates, train_end, test_end, embargo_days,
     test_end_dt = np.datetime64(test_end)
     embargo_cut = train_end_dt - np.timedelta64(embargo_days, "D")
     tr = (bar_dates < embargo_cut) & cond_tr & evaluable
+    if train_lower is not None:
+        tr &= (bar_dates >= train_lower)
     te = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt) & cond_te & evaluable
     n_tr, n_te = int(tr.sum()), int(te.sum())
     out = {"side": "symmetric", "fold": f"{train_end}..{test_end}",
@@ -519,7 +524,9 @@ def _symmetric_fold(X_full, y3, bar_dates, train_end, test_end, embargo_days,
 
 def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                              k_atr: float, mag_cond: str, mag_thresh: float,
-                             cutoffs=None) -> dict:
+                             cutoffs=None, feature_blocks: str = "",
+                             window: str = "expanding",
+                             rolling_years: int = 3) -> dict:
     """E4 — the closing experiment. Triple-barrier first-touch directional
     labels (neutral band) + SEPARATE long/short meta-models, conditioned on
     the magnitude engine's PREDICTED-EXPLOSIVE flag (leak-free: in-sample for
@@ -553,6 +560,22 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
     df = load_labeled_dataset(engine, ticker, tf, include_next_bar_ohlc=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
+
+    # NEW-INFORMATION-CLASS feature blocks (the "rethink"). Injected BEFORE
+    # featurize so featurize() auto-selects the new numeric columns; all are
+    # d-1 leak-safe (flow) or session-aware stationary (fracdiff) and carry no
+    # fwd_/next_ name, so the leak guard passes.
+    blocks = [b.strip() for b in feature_blocks.split(",") if b.strip()]
+    if "flow" in blocks:
+        from lib.features.flow_direction import add_flow_features
+        df = add_flow_features(df, ticker, engine)
+        log.info("feature-block flow: added dealer-positioning columns")
+    if "fracdiff" in blocks:
+        from lib.features.fracdiff import add_fracdiff_features
+        # fixed d=0.4 (memory-preserving, ~stationary) — avoids the ADF/
+        # statsmodels search in the hot path; session-aware via bar_date.
+        df = add_fracdiff_features(df, ["close"], d=0.4, prefix="fd_")
+        log.info("feature-block fracdiff: added fd_close (d=0.4)")
 
     tb = triple_barrier_labels(df, horizon, k_atr)
     # Magnitude target (forward |next_close-next_open|/atr20 bucket) — used
@@ -592,7 +615,13 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
             str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
         cut_dt = np.datetime64(cut)
         emb_cut = cut_dt - np.timedelta64(emb, "D")
+        # Rolling window (C6): cap training to the last `rolling_years` before
+        # the cutoff, so a stale 2019 regime can't dilute a 2025 prediction.
+        train_lower = (cut_dt - np.timedelta64(int(rolling_years * 365), "D")
+                       if window == "rolling" else None)
         tr_all = (bar_dates < emb_cut) & mag_ok
+        if train_lower is not None:
+            tr_all &= (bar_dates >= train_lower)
         te_all = (bar_dates >= cut_dt) & (bar_dates < np.datetime64(test_end)) & mag_ok
         if int(tr_all.sum()) < MIN_TEST_BARS or int(te_all.sum()) < MIN_TEST_BARS:
             continue
@@ -633,7 +662,7 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                  i + 1, len(cutoffs), cut, test_end,
                  int(cond_tr.sum()), int(cond_te.sum()))
         rs = _symmetric_fold(X_full, y3, bar_dates, cut, test_end, emb,
-                             cond_tr, cond_te, evaluable, n_jobs)
+                             cond_tr, cond_te, evaluable, n_jobs, train_lower)
         folds["symmetric"].append(rs)
         if rs["status"] == "OK":
             d55 = rs["directional"][0.55]
@@ -645,7 +674,7 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
             log.info("  sym   %s (n_te=%d)", rs["status"], rs["n_test"])
         for side, y in (("long", y_long), ("short", y_short)):
             r = _side_fold(X_full, y, bar_dates, cut, test_end, emb,
-                           cond_tr, cond_te, evaluable, n_jobs, side)
+                           cond_tr, cond_te, evaluable, n_jobs, side, train_lower)
             folds[side].append(r)
             if r["status"] == "OK":
                 f60 = r["fires"][0.60]
@@ -659,6 +688,8 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
     summary = {"experiment": "e4_triple_barrier", "ticker": ticker, "tf": tf,
                "horizon_bars": horizon, "k_atr": k_atr, "mag_cond": mag_cond,
                "mag_thresh": mag_thresh, "embargo_days": emb,
+               "feature_blocks": blocks, "window": window,
+               "rolling_years": rolling_years if window == "rolling" else None,
                "target": f"first-touch sign of ±{k_atr}·ATR20 within {horizon} bars",
                "n_features": len(feature_cols), "folds": folds,
                "computed_at": pd.Timestamp.utcnow().isoformat()}
@@ -699,7 +730,8 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                          float(np.median(precs)) - float(np.median(bases)))
 
     prefix = gcs_model_prefix(ticker, tf)
-    blob = f"{prefix}/dir_probe_e4_tb_h{horizon}_k{k_atr}_{mag_cond}_{int(time.time())}.json"
+    vtag = ("_" + "_".join(blocks) if blocks else "") + ("_roll" if window == "rolling" else "")
+    blob = f"{prefix}/dir_probe_e4_tb_h{horizon}_k{k_atr}_{mag_cond}{vtag}_{int(time.time())}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved: gs://%s/%s", os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
     return summary
@@ -733,6 +765,14 @@ def main():
     p.add_argument("--mag-thresh", type=float, default=0.0,
                    help="E4: explosive/big ⇒ prob cutoff (0 ⇒ argmax==EXPLOSIVE); "
                         "topq ⇒ top fraction kept (default 0.2)")
+    p.add_argument("--feature-blocks", default="",
+                   help="E4: comma list of NEW feature blocks to inject "
+                        "(flow, fracdiff). Empty = price-history surface only.")
+    p.add_argument("--window", default="expanding",
+                   choices=["expanding", "rolling"],
+                   help="E4: training window — anchored expanding or rolling.")
+    p.add_argument("--rolling-years", type=float, default=3.0,
+                   help="E4: rolling-window lookback in years (window=rolling).")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
@@ -740,7 +780,10 @@ def main():
     if args.experiment == "e4_triple_barrier":
         run_triple_barrier_probe(engine, args.ticker, args.tf, args.horizon,
                                  args.barrier_atr, args.mag_cond,
-                                 args.mag_thresh, cutoffs)
+                                 args.mag_thresh, cutoffs,
+                                 feature_blocks=args.feature_blocks,
+                                 window=args.window,
+                                 rolling_years=args.rolling_years)
     else:
         run_probe(engine, args.ticker, args.tf, args.experiment, args.horizon,
                   cutoffs, regime=args.regime)
