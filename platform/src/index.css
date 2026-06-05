@@ -462,3 +462,34 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   font-variant-numeric: tabular-nums;
   border-right: 1px solid var(--outline-variant);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Global responsive safety net — applies to EVERY route (REDESIGN.md §5).
+
+   The redesign shipped without per-page media queries, so these app-wide rules
+   are the floor that guarantees no page can force a horizontal scrollbar,
+   regardless of content width. Pages still layer their own `lg:grid-cols-*`
+   on top — this only prevents the failure mode, it doesn't dictate layout.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* The #1 overflow trap: grid & flex items default to `min-width: auto` and
+   refuse to shrink below their intrinsic content width, so a single wide child
+   (a table, a long unbroken token, a fixed-width chart) drags the whole layout
+   past the viewport. Let content-bearing items shrink. Items that must keep
+   their size opt out with Tailwind `shrink-0` (flex-shrink: 0), which these
+   selectors deliberately leave alone. */
+[class*="grid-cols"] > *,
+.flex > :not(.shrink-0) {
+  min-width: 0;
+}
+
+/* Markdown report blocks scroll inside their own box; long unbroken strings
+   wrap instead of widening the column past the viewport. */
+.prose-report { overflow-x: auto; }
+.prose-report pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Recharts/visx responsive wrappers must be allowed to shrink to 0 width inside
+   a flex/grid cell, otherwise they latch onto their first (wider) measured size
+   and never shrink on resize. */
+.recharts-responsive-container,
+.recharts-wrapper { min-width: 0 !important; }
