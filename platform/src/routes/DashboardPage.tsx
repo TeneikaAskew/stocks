@@ -23,9 +23,10 @@ import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useInsightReport } from '@/hooks/useInsights';
 import {
-  Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader,
+  Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
+import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
 import { fmtPrice, fmtPct, fmtNum, NA } from '@/lib/format';
 import type { Tone } from '@/components/primitives';
 
@@ -52,6 +53,15 @@ interface SignalEntry {
   conditions_met: string; return_pct: number;
 }
 interface SignalsResponse { ticker: string; count: number; signals: SignalEntry[] }
+
+interface ReferenceResponse {
+  ticker: string; date: string; close: number; high: number; low: number;
+  week?: { high: number; low: number; avg_close?: number } | null;
+}
+interface MarketDataResponse {
+  candlestick: Array<{ time: number; open: number; high: number; low: number; close: number }>;
+  volume: Array<{ time: number; value: number }>;
+}
 
 interface CatalystEvent {
   date: string; ticker: string; title?: string; event?: string;
@@ -166,6 +176,80 @@ export default function DashboardPage() {
     `/api/catalysts/events?date_from=${todayISO()}&date_to=${isoPlusDays(7)}`,
   );
   const { data: insight } = useInsightReport(activeTicker);
+
+  // Daily reference (prev close + week range) and intraday bars for the chart.
+  // Use the brief's latest daily date as the anchor when available, else today.
+  const anchorDate = (brief?.daily_indicators?.date ?? todayISO()).replace(/-/g, '');
+  const monthCode = anchorDate.slice(0, 6);
+  const { data: reference } = useFetch<ReferenceResponse>(
+    ['reference', activeTicker, anchorDate],
+    `/api/market/reference/${activeTicker}/${anchorDate}`,
+  );
+  const { data: hourly } = useFetch<MarketDataResponse>(
+    ['hourly', activeTicker, monthCode],
+    `/api/market/data/${activeTicker}/${monthCode}?timeframe=60`,
+    !!brief,
+  );
+
+  // 4 daily KPIs (prev close · latest close · 2-day change · RSI).
+  const kpiCards = useMemo(() => {
+    const prevClose = reference?.close;
+    const latestClose = brief?.daily_indicators?.close;
+    const rsi = brief?.rsi ?? brief?.daily_indicators?.rsi_14;
+    if (prevClose == null || latestClose == null) return null;
+    const changeAbs = latestClose - prevClose;
+    return { prevClose, latestClose, changeAbs, changePct: (changeAbs / prevClose) * 100, rsi };
+  }, [reference, brief]);
+
+  // Intraday close points — AlphaVantage stores ET bars with UTC-labeled unix
+  // seconds, so UTC getters give the ET wall-clock. Keep the last 2 RTH+pre
+  // sessions (04:00–16:00 ET).
+  const pricePoints = useMemo<PricePoint[]>(() => {
+    const bars = hourly?.candlestick ?? [];
+    if (!bars.length) return [];
+    const dayKey = (t: number) => {
+      const d = new Date(t * 1000);
+      return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+    };
+    const inSession = bars.filter((b) => {
+      const h = new Date(b.time * 1000).getUTCHours();
+      return h >= 4 && h <= 16;
+    });
+    const days: string[] = [];
+    for (let i = inSession.length - 1; i >= 0 && days.length < 2; i--) {
+      const k = dayKey(inSession[i].time);
+      if (!days.includes(k)) days.push(k);
+    }
+    return inSession
+      .filter((b) => days.includes(dayKey(b.time)))
+      .map((b) => {
+        const d = new Date(b.time * 1000);
+        const p = (n: number) => String(n).padStart(2, '0');
+        return {
+          time: b.time,
+          price: b.close,
+          label: `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`,
+        };
+      });
+  }, [hourly]);
+
+  const sessionBoundary = useMemo(() => {
+    if (pricePoints.length < 2) return null;
+    const dayKey = (t: number) => {
+      const d = new Date(t * 1000);
+      return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+    };
+    const lastKey = dayKey(pricePoints[pricePoints.length - 1].time);
+    const boundary = pricePoints.find((p) => dayKey(p.time) === lastKey);
+    if (!boundary || boundary.time === pricePoints[0].time) return null;
+    const d = new Date(boundary.time * 1000);
+    return {
+      time: boundary.time,
+      label: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', timeZone: 'UTC',
+      }),
+    };
+  }, [pricePoints]);
 
   // Top setup — best card matching the brief bias (mirrors the old dashboard logic).
   const topCard = useMemo(() => {
@@ -328,6 +412,39 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Daily KPIs ──────────────────────────────────────────────────── */}
+      {kpiCards && (
+        <div className="grid grid-cols-2 gap-[14px] lg:grid-cols-4">
+          <KpiTile label="Prev close" value={fmtPrice(kpiCards.prevClose)} />
+          <KpiTile label="Latest close" value={fmtPrice(kpiCards.latestClose)} />
+          <KpiTile
+            label="2-day change"
+            value={fmtPct(kpiCards.changePct)}
+            tone={kpiCards.changePct >= 0 ? 'bull' : 'bear'}
+            sub={`${kpiCards.changeAbs >= 0 ? '+' : '-'}${fmtPrice(Math.abs(kpiCards.changeAbs))}/sh`}
+          />
+          <KpiTile
+            label="RSI (14)"
+            value={fmtNum(kpiCards.rsi, 1)}
+            tone={kpiCards.rsi == null ? 'default' : kpiCards.rsi > 70 ? 'bear' : kpiCards.rsi < 30 ? 'bull' : 'warn'}
+            sub={kpiCards.rsi == null ? undefined : rsiZone(kpiCards.rsi).label}
+          />
+        </div>
+      )}
+
+      {/* ── Intraday price ──────────────────────────────────────────────── */}
+      {pricePoints.length > 0 && (
+        <Card>
+          <CardHeader title={<>{activeTicker} · intraday</>} meta="60-min bars · last 2 sessions" />
+          <PriceAreaChart
+            data={pricePoints}
+            seriesLabel={`${activeTicker} close`}
+            sessionBoundary={sessionBoundary}
+            height={260}
+          />
+        </Card>
+      )}
 
       {/* ── 2. Live signals · Today's catalysts ─────────────────────────── */}
       <div className="grid grid-cols-1 gap-[14px] lg:grid-cols-[1.4fr_1fr]">
