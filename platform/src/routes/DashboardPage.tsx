@@ -25,6 +25,7 @@ import { useInsightReport } from '@/hooks/useInsights';
 import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader,
 } from '@/components/primitives';
+import { TickerSelect } from '@/components/shared/TickerSelect';
 import { fmtPrice, fmtPct, fmtNum, NA } from '@/lib/format';
 import type { Tone } from '@/components/primitives';
 
@@ -221,12 +222,15 @@ export default function DashboardPage() {
             {status?.current_time_et && ` · ${status.current_time_et} ET`}
           </MicroLabel>
         </div>
-        <button
-          onClick={() => window.location.reload()}
-          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--outline-variant)] bg-[var(--surface-2)] px-3 py-1.5 text-[12px] font-semibold text-[var(--on-surface)] transition-colors hover:border-[var(--outline)] hover:bg-[var(--surface-3)]"
-        >
-          <RefreshCw size={13} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <TickerSelect />
+          <button
+            onClick={() => window.location.reload()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--outline-variant)] bg-[var(--surface-2)] px-3 py-1.5 text-[12px] font-semibold text-[var(--on-surface)] transition-colors hover:border-[var(--outline)] hover:bg-[var(--surface-3)]"
+          >
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── 1. Briefing strip ───────────────────────────────────────────── */}
