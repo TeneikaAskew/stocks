@@ -52,12 +52,12 @@ BACKFILL_SINCE = "2016-01-01"   # AV EOD options history starts ~2016
 def _load_eod_chains(engine, ticker: str, since: str, until: str) -> pd.DataFrame:
     """All T-1 EOD chain rows in [since, until). Uses the EOD covering index
     predicate (market_session='EOD' AND data_source='alphavantage'). DB errors
-    propagate (§3.7)."""
+    propagate (§3.7). NOTE: the chain's own underlying_price is NULL for these
+    rows, so S_eod comes from market_data_daily.close (see _load_daily_close)."""
     from sqlalchemy import text
     sql = text(
         """
-        SELECT snapshot_date, option_type, strike, open_interest,
-               delta, gamma, underlying_price
+        SELECT snapshot_date, option_type, strike, open_interest, delta, gamma
         FROM etf_options_snapshots
         WHERE ticker = :tk AND market_session = 'EOD'
           AND data_source = 'alphavantage'
@@ -67,6 +67,25 @@ def _load_eod_chains(engine, ticker: str, since: str, until: str) -> pd.DataFram
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
     return df
+
+
+def _load_daily_close(engine, ticker: str, since: str, until: str) -> dict:
+    """{trading date -> EOD close} from market_data_daily. This is the S_eod the
+    delta-gamma re-curve anchors on (the option chain's own underlying_price is
+    NULL for EOD rows). DB errors propagate (§3.7)."""
+    from sqlalchemy import text
+    sql = text(
+        """
+        SELECT date, close FROM market_data_daily
+        WHERE ticker = :tk AND date >= :s AND date < :u AND close IS NOT NULL
+        """
+    )
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
+    if df.empty:
+        return {}
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return dict(zip(df["date"], df["close"].astype(float)))
 
 
 def _load_intraday_spots(engine, ticker: str, since: str, until: str) -> pd.DataFrame:
@@ -115,16 +134,15 @@ def compute_intragex_frame(engine, ticker: str, since: str,
         chain_s = (pd.Timestamp(y_s) - pd.Timedelta(days=10)).date().isoformat()
         chains = _load_eod_chains(engine, ticker, chain_s, y_u)
         spots = _load_intraday_spots(engine, ticker, y_s, y_u)
-        if chains.empty or spots.empty:
-            log.info("intraday-gex year=%d chains=%d spots=%d (skip)", y,
-                     len(chains), len(spots))
+        dclose = _load_daily_close(engine, ticker, chain_s, y_u)
+        if chains.empty or spots.empty or not dclose:
+            log.info("intraday-gex year=%d chains=%d spots=%d dclose=%d (skip)", y,
+                     len(chains), len(spots), len(dclose))
             continue
 
         chains["snapshot_date"] = pd.to_datetime(chains["snapshot_date"]).dt.date
-        # S_eod per EOD date = median underlying_price of that chain (robust).
-        s_eod_by_date = (chains.groupby("snapshot_date")["underlying_price"]
-                         .median())
-        eod_dates = np.array(sorted(s_eod_by_date.index))
+        # S_eod anchors on market_data_daily.close (chain underlying_price is NULL).
+        eod_dates = np.array(sorted(chains["snapshot_date"].unique()))
 
         spots = spots.copy()
         spots["et_date"] = (spots["ts"].dt.tz_convert("America/New_York").dt.date)
@@ -136,8 +154,10 @@ def compute_intragex_frame(engine, ticker: str, since: str,
             if idx < 0:
                 continue  # no prior chain — skip (no fabricated rows, §3.7)
             prior = eod_dates[idx]
+            s_eod = dclose.get(prior, float("nan"))
+            if not (s_eod and s_eod > 0):
+                continue  # no EOD close for the prior day — skip (no NaN rows)
             chain_d = chains[chains["snapshot_date"] == prior]
-            s_eod = float(s_eod_by_date.loc[prior])
             fr = reconstruct_day(chain_d, s_eod, day_spots[["ts", "spot"]])
             if not fr.empty:
                 frames.append(fr)
