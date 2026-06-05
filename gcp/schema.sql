@@ -333,6 +333,27 @@ CREATE TABLE IF NOT EXISTS intraday_flow_15m (
 );
 
 
+-- Materialized per-15m-bucket RECONSTRUCTED intraday dealer GEX/DEX. Built per
+-- ticker by the build-intraday-gex Job by walking the prior-day (T-1) EOD option
+-- chain forward to each intraday spot (delta-gamma re-curve; see
+-- lib/features/intraday_gex.py for the math + frozen-OI/IV assumptions).
+-- Experiments read this (~6.5k rows/yr) via add_intragex_features (Rule 0: no
+-- per-run scan of the ~14M-row etf_options_snapshots). ts is the UTC 15m bar-open
+-- aligned to the strat_features grid. Raw aggregates stored; the joiner derives
+-- dist_to_flip_pct / gex_per_oi / dex_per_oi (all scale-free).
+CREATE TABLE IF NOT EXISTS intraday_gex_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    total_gex   DOUBLE PRECISION,        -- NetΓ · spot² · GEX_MULTIPLIER
+    total_dex   DOUBLE PRECISION,        -- (A + B·(spot−S_eod)) · spot  (re-curved)
+    total_oi    DOUBLE PRECISION,        -- Σ open interest in the T-1 chain
+    gamma_flip  DOUBLE PRECISION,        -- cumulative-GEX zero-cross (per-day)
+    spot        DOUBLE PRECISION,        -- 15m bucket underlying close
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     symbol              VARCHAR(10)  NOT NULL,

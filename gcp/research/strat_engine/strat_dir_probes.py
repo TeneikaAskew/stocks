@@ -583,6 +583,13 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
         # same alignment as the baseline RSI/etc.; predicts the NEXT bar.
         df = add_intraflow_features(df, ticker, engine)
         log.info("feature-block intraflow: added intraday OFI columns")
+    if "intragex" in blocks:
+        from lib.features.intraday_gex import add_intragex_features
+        # Reconstructed intraday dealer GEX/DEX: the T-1 EOD chain walked forward
+        # to each bar's spot (delta-gamma re-curve). CONTEMPORANEOUS (no shift) —
+        # uses the current bar's spot against the frozen prior-day chain.
+        df = add_intragex_features(df, ticker, engine)
+        log.info("feature-block intragex: added reconstructed GEX/DEX columns")
 
     tb = triple_barrier_labels(df, horizon, k_atr)
     # Magnitude target (forward |next_close-next_open|/atr20 bucket) — used
@@ -774,8 +781,8 @@ def main():
                         "topq ⇒ top fraction kept (default 0.2)")
     p.add_argument("--feature-blocks", default="",
                    help="E4: comma list of NEW feature blocks to inject "
-                        "(flow, fracdiff, intraflow). Empty = price-history "
-                        "surface only.")
+                        "(flow, fracdiff, intraflow, intragex). Empty = "
+                        "price-history surface only.")
     p.add_argument("--window", default="expanding",
                    choices=["expanding", "rolling"],
                    help="E4: training window — anchored expanding or rolling.")
