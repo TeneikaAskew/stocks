@@ -5,6 +5,7 @@ import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useThemeStore } from '@/stores/themeStore';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { DateSelector } from '@/components/shared/DateSelector';
+import { SettingsMenu } from './SettingsMenu';
 
 /** Routes where the global historical DateSelector is functional. */
 const REVIEW_AWARE_ROUTES = ['/', '/live', '/charts', '/signals'];
@@ -51,6 +52,7 @@ export function Header() {
         >
           {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
         </button>
+        <SettingsMenu />
       </div>
     </header>
   );

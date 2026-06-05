@@ -1,5 +1,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap');
-@import "tailwindcss";
+/* HeroUI v3 styles — this also pulls in Tailwind CSS v4 (`@import "tailwindcss"`)
+   plus tw-animate-css and HeroUI's default theme. The Obsidian Analyst token
+   overrides below intentionally win by source order. */
+@import "@heroui/styles";
 
 /* ─────────────────────────────────────────────────────────────────────────
    Obsidian Analyst Design System — see docs/DESIGN_SYSTEM.md
@@ -267,6 +270,74 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 }
 .prose-report > *:first-child { margin-top: 0; }
 .prose-report > *:last-child { margin-bottom: 0; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Shell chrome — density · accent · brand · top-tabs · command palette
+   (Redesign Phase 1. Mirrors the Obsidian Analyst prototype shell.)
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Density variants — set on <body class="density-*">. Consumed by the page
+   container and any component that reads --card-pad / --gap / --metric-size. */
+.density-comfy   { --row-pad-y: 10px; --row-pad-x: 12px; --card-pad: 18px; --gap: 16px; --metric-size: 30px; }
+.density-default { --row-pad-y: 8px;  --row-pad-x: 10px; --card-pad: 14px; --gap: 24px; --metric-size: 28px; }
+.density-dense   { --row-pad-y: 5px;  --row-pad-x: 8px;  --card-pad: 10px; --gap: 12px; --metric-size: 22px; }
+
+/* Alt accent palettes — set on <body class="accent-*">. `accent-blue` is the
+   default brand and needs no overrides. Greens/reds are reserved for bull/bear,
+   so they are intentionally excluded. */
+.accent-amber   { --brand: #ffb86b; --brand-glow: #ffd28a; --outline: rgba(255,184,107,0.22); }
+.accent-violet  { --brand: #b58bff; --brand-glow: #d2b3ff; --outline: rgba(181,139,255,0.22); }
+.accent-cyan    { --brand: #5ee3e1; --brand-glow: #88efed; --outline: rgba(94,227,225,0.22); }
+.accent-teal    { --brand: #14b8a6; --brand-glow: #5eead4; --outline: rgba(20,184,166,0.22); }
+.accent-pink    { --brand: #ff7eb9; --brand-glow: #ffa5cf; --outline: rgba(255,126,185,0.22); }
+.accent-magenta { --brand: #e879f9; --brand-glow: #f0a8fb; --outline: rgba(232,121,249,0.22); }
+.accent-orange  { --brand: #fb923c; --brand-glow: #fdba74; --outline: rgba(251,146,60,0.22); }
+.accent-yellow  { --brand: #facc15; --brand-glow: #fde047; --outline: rgba(250,204,21,0.22); }
+.accent-indigo  { --brand: #818cf8; --brand-glow: #a5b4fc; --outline: rgba(129,140,248,0.22); }
+.accent-rose    { --brand: #f472b6; --brand-glow: #f9a8d4; --outline: rgba(244,114,182,0.22); }
+
+/* Brand mark — ascending dot-row + wordmark */
+.brand-mark { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -0.01em; color: var(--on-surface); white-space: nowrap; }
+.brand-mark .dot-row { display: flex; gap: 2px; align-items: flex-end; }
+.brand-mark .dot-row i { display: block; width: 3px; background: var(--brand); border-radius: 1px; }
+.brand-mark .dot-row i:nth-child(1) { height: 7px; }
+.brand-mark .dot-row i:nth-child(2) { height: 11px; }
+.brand-mark .dot-row i:nth-child(3) { height: 15px; }
+.brand-mark small { color: var(--on-surface-muted); font-weight: 500; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* Sidebar nav group label + count badge */
+.nav-group-label { padding: 12px 8px 4px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--on-surface-label); }
+.nav-badge { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 9999px; background: var(--surface-2); color: var(--on-surface-variant); font-variant-numeric: tabular-nums; font-weight: 600; }
+.nav-badge.live { background: rgba(34,197,94,0.15); color: var(--bull); }
+
+/* Top-tabs nav pattern */
+.top-tabs { display: flex; align-items: center; gap: 4px; padding: 0 16px; height: 48px; background: var(--surface-1); overflow-x: auto; }
+.top-tabs::-webkit-scrollbar { display: none; }
+.top-tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 12.5px; font-weight: 500; color: var(--on-surface-variant); cursor: pointer; white-space: nowrap; text-decoration: none; }
+.top-tab:hover { color: var(--on-surface); background: var(--surface-2); }
+.top-tab.active { color: var(--brand); background: rgba(139,206,255,0.08); box-shadow: inset 0 0 0 1px var(--outline); }
+
+/* Search trigger pill (sidebar + top bar) */
+.search-trigger { display: flex; align-items: center; gap: 8px; background: var(--surface-lowest); border: 1px solid var(--outline-variant); border-radius: 6px; padding: 6px 10px; color: var(--on-surface-muted); font-size: 12px; cursor: pointer; transition: border-color 180ms ease, color 180ms ease; }
+.search-trigger:hover { border-color: var(--outline); color: var(--on-surface-variant); }
+.search-trigger kbd { margin-left: auto; font-family: 'Montserrat', sans-serif; font-size: 10px; background: var(--surface-2); padding: 1px 5px; border-radius: 3px; color: var(--on-surface-muted); }
+
+/* Command palette (⌘K) */
+.cmdk-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); z-index: 100; display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; }
+.cmdk { width: 580px; max-width: 92vw; background: var(--surface-1); border: 1px solid var(--outline); border-radius: 12px; box-shadow: 0 24px 48px rgba(0,0,0,0.5); overflow: hidden; }
+.cmdk-input { width: 100%; box-sizing: border-box; padding: 14px 18px; background: var(--surface-1); border: 0; color: var(--on-surface); font-family: inherit; font-size: 15px; outline: 0; border-bottom: 1px solid var(--outline-variant); }
+.cmdk-input::placeholder { color: var(--on-surface-muted); }
+.cmdk-list { max-height: 50vh; overflow-y: auto; padding: 6px; }
+.cmdk-group { padding: 8px 12px 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--on-surface-label); }
+.cmdk-item { display: flex; align-items: center; gap: 11px; padding: 8px 12px; border-radius: 6px; font-size: 13px; color: var(--on-surface-variant); cursor: pointer; }
+.cmdk-item:hover, .cmdk-item.sel { background: var(--surface-3); color: var(--on-surface); }
+.cmdk-item .kbd-mini { margin-left: auto; font-size: 10px; color: var(--on-surface-muted); border: 1px solid var(--outline-variant); padding: 1px 5px; border-radius: 3px; }
+
+/* Segmented control — settings popover (theme / density / nav / accent) */
+.segctrl { display: inline-flex; background: var(--surface-2); border: 1px solid var(--outline-variant); border-radius: 8px; padding: 2px; gap: 2px; }
+.segctrl button { background: transparent; border: 0; color: var(--on-surface-muted); font-family: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 11px; border-radius: 5px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.segctrl button.active { background: var(--surface-3); color: var(--on-surface); box-shadow: inset 0 0 0 1px var(--outline); }
+.segctrl button:hover:not(.active) { color: var(--on-surface); }
 
 /* ─────────────────────────────────────────────────────────────────────────
    Obsidian Analyst typography utilities
