@@ -14,6 +14,7 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { Button } from '@heroui/react';
 import {
   Bell, Calendar, Sparkles, Newspaper, Grid3x3, Check,
   AlertTriangle, RefreshCw,
@@ -308,12 +309,14 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-2">
           <TickerSelect />
-          <button
-            onClick={() => window.location.reload()}
+          <Button
+            variant="ghost"
+            size="sm"
+            onPress={() => window.location.reload()}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--outline-variant)] bg-[var(--surface-2)] px-3 py-1.5 text-[12px] font-semibold text-[var(--on-surface)] transition-colors hover:border-[var(--outline)] hover:bg-[var(--surface-3)]"
           >
             <RefreshCw size={13} /> Refresh
-          </button>
+          </Button>
         </div>
       </div>
 
