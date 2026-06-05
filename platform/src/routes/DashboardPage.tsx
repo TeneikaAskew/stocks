@@ -213,8 +213,8 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-[14px]">
       {/* ── Page header ─────────────────────────────────────────────────── */}
-      <div className="flex items-end justify-between">
-        <div>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Overview</h1>
           <MicroLabel className="mt-1">
             {activeTicker} · {dateLabel}
@@ -237,10 +237,10 @@ export default function DashboardPage() {
           border: '1px solid var(--outline-variant)',
         }}
       >
-        <div className="grid items-stretch gap-4 lg:grid-cols-[1.3fr_1fr]">
+        <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-[1.3fr_1fr]">
           {/* Left: header + hero + bullets */}
-          <div>
-            <div className="mb-3 flex items-baseline gap-3">
+          <div className="min-w-0">
+            <div className="mb-3 flex flex-wrap items-baseline gap-3">
               <div>
                 <MicroLabel>Today · {dateLabel}</MicroLabel>
                 <div className="mt-1 text-[19px] font-bold tracking-[-0.02em]">Pre-market brief</div>
@@ -267,7 +267,7 @@ export default function DashboardPage() {
                           b.tone === 'bull' ? 'var(--bull)' : b.tone === 'bear' ? 'var(--bear)' : b.tone === 'warn' ? 'var(--warn)' : 'var(--brand)',
                       }}
                     />
-                    <div className="text-[13px] leading-[1.45] text-[var(--on-surface-variant)]">{b.text}</div>
+                    <div className="min-w-0 flex-1 text-[13px] leading-[1.45] text-[var(--on-surface-variant)]">{b.text}</div>
                   </div>
                 ))
               ) : (
@@ -278,7 +278,7 @@ export default function DashboardPage() {
 
           {/* Right: Top setup */}
           <div
-            className="flex flex-col gap-4 self-stretch rounded-xl p-[var(--card-pad,14px)]"
+            className="flex min-w-0 flex-col gap-4 self-stretch rounded-xl p-[var(--card-pad,14px)]"
             style={{ background: 'rgba(139,206,255,0.05)', border: '1px solid var(--outline)' }}
           >
             {topCard ? (
@@ -326,9 +326,9 @@ export default function DashboardPage() {
       </div>
 
       {/* ── 2. Live signals · Today's catalysts ─────────────────────────── */}
-      <div className="grid gap-[14px] lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid grid-cols-1 gap-[14px] lg:grid-cols-[1.4fr_1fr]">
         {/* Live signals */}
-        <Card interactive onClick={() => navigate('/signals')}>
+        <Card interactive onClick={() => navigate('/signals')} className="min-w-0">
           <CardHeader
             title={<><Bell size={13} className="mr-1.5 inline align-middle" />Live signals</>}
             meta={`${activeTicker} · ${signalsResp?.count?.toLocaleString() ?? 0}`}
@@ -336,7 +336,8 @@ export default function DashboardPage() {
           {recentSignals.length === 0 ? (
             <Unavailable msg="No signals yet for this ticker." />
           ) : (
-            <table className="w-full text-[12px]">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[320px] text-[12px]">
               <thead>
                 <tr className="text-left text-[10px] uppercase tracking-wider text-[var(--on-surface-label)]">
                   <th className="pb-1 font-semibold">Time</th>
@@ -358,11 +359,12 @@ export default function DashboardPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </Card>
 
         {/* Today's catalysts */}
-        <Card interactive onClick={() => navigate('/catalysts')}>
+        <Card interactive onClick={() => navigate('/catalysts')} className="min-w-0">
           <CardHeader
             title={<><Calendar size={13} className="mr-1.5 inline align-middle" />Catalysts</>}
             meta={`${catalystFeed.length} upcoming`}
@@ -387,15 +389,15 @@ export default function DashboardPage() {
       </div>
 
       {/* ── 3. Sector rotation · AI take · News ──────────────────────────── */}
-      <div className="grid gap-[14px] lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-[14px] md:grid-cols-2 lg:grid-cols-3">
         {/* Sector rotation — no data source yet (see REDESIGN.md §1) */}
-        <Card>
+        <Card className="min-w-0">
           <CardHeader title={<><Grid3x3 size={13} className="mr-1.5 inline align-middle" />Sector rotation</>} meta="SPDRs · 1D" />
           <Unavailable msg="Sector rotation unavailable — needs AV SECTOR_PERFORMANCE (not yet fetched)." />
         </Card>
 
         {/* AI take */}
-        <Card interactive onClick={() => navigate('/insights')}>
+        <Card interactive onClick={() => navigate('/insights')} className="min-w-0">
           <CardHeader
             title={<><Sparkles size={13} className="mr-1.5 inline align-middle" />AI take</>}
             meta={rep ? `conf ${fmtNum(rep.confidence_score * 100, 0)}%` : undefined}
@@ -414,7 +416,7 @@ export default function DashboardPage() {
         </Card>
 
         {/* News feed (from catalysts carrying sentiment) */}
-        <Card interactive onClick={() => navigate('/catalysts')}>
+        <Card interactive onClick={() => navigate('/catalysts')} className="min-w-0">
           <CardHeader title={<><Newspaper size={13} className="mr-1.5 inline align-middle" />News</>} meta={`${newsFeed.length} fresh`} />
           {newsFeed.length === 0 ? (
             <Unavailable msg="No tagged news right now." />

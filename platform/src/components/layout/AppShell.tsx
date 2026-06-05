@@ -28,10 +28,10 @@ export function AppShell() {
   return (
     <div className={`flex h-screen overflow-hidden bg-[var(--surface-0)] ${isSidebar ? 'flex-row' : 'flex-col'}`}>
       {isSidebar ? <Sidebar onOpenSearch={openSearch} /> : <TopTabs onOpenSearch={openSearch} />}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header />
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-[1600px] px-8 py-8">
+          <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-8 sm:py-8">
             <Outlet />
           </div>
         </main>
