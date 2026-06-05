@@ -143,3 +143,64 @@ walk-forward ML + report.
 
 Deferred (you didn't prioritize): `FLOW-OFI` (needs order-flow data), `HONEST-GATE7`
 (only matters if we revisit an options vehicle).
+
+---
+
+## RESULTS (2026-06-05)
+
+All three built and run on SPY/IWM/QQQ, 8 anchored walk-forward folds (2019→2026).
+First pass produced 0/3; a self-audit found two of the three tests were
+structurally incapable of detecting their signal, so all three were corrected
+and re-run.
+
+### Corrected scorecard
+
+| model | first pass | corrected | verdict |
+|---|---|---|---|
+| INTRADAY-MOM | FAIL | FAIL | **true null** |
+| DIR-REGIME | FAIL | FAIL | **true null** |
+| STRAT-BREAKOUT-META | FAIL | **PASS 24/24** | **false failure → real signal (gross)** |
+
+### INTRADAY-MOM — true null
+Pooled OLS β negative (SPY −0.049 t=−2.39, IWM −0.019, QQQ −0.014). The
+corrected test added the CONDITIONAL subsets (high-VIX, big-open) the paper says
+the effect lives in — β stays **negative & insignificant** there too. The
+1993–2013 intraday-momentum anomaly is gone (mild mean-reversion now) in
+2016–2026. Genuinely dead; not a scaffolding artifact.
+
+### DIR-REGIME — true null
+Corrected target (sign of N-bar **forward return** = move continuation, replacing
+the unlearnable next_close>next_open) + verdict on **expectancy** vs a
+naive-regime-follow control (replacing log-loss). Still FAIL: positive expectancy
+in only 3–4/8 folds, rarely beats the naive control, log-loss beat 0/8. Gamma
+coverage 22–63% (IWM low). Regime-split direction is not tradeable at 15m.
+
+### STRAT-BREAKOUT-META — false failure, now the strongest signal (GROSS)
+The first-pass FAIL was **my labeling artifact**: same-tf conservative-stop
+labeling mislabels any bar spanning both barriers as a stop, deflating base
+follow-through to 0.28 and corrupting labels. **Corrected to 1-min barrier
+labeling** (true intra-bar PT/SL order), run on 5m for more events:
+
+- base follow-through **0.28 → 0.33** (the artifact, quantified).
+- taking every breakout ≈ breakeven-to-negative (base exp −0.05 to −0.09 R).
+- meta-model at **take≥0.55** lifts precision to **0.40–0.57** and expectancy to
+  **+0.1 to +0.36 R** in **24 of 24** ticker-folds (8/8 × SPY/IWM/QQQ),
+  every year 2019→2026.
+- No leakage: features = bar-t close + breakout side (both known when the
+  breakout fires); 1-min bars are only the label.
+
+Meta-labeling thesis (reframings #2/#7) **validated**: don't predict direction
+(the Strat rule gives it), predict follow-through — that IS learnable. It is
+also the only candidate that sidesteps the variance-risk-premium wall, because
+it trades the underlying breakout, not an option.
+
+**Open gate — NET tradability.** The 24/24 is GROSS (no slippage/spread/
+commission; mildly optimistic fills). The +0.1 R folds would likely go negative
+after costs; the +0.2–0.36 R folds have room. Next step: a friction model on
+BREAKOUT-META + a PT/SL sweep. Until then it is a validated *gross* edge, not a
+shippable strategy.
+
+### Meta-lesson
+Of three "failures," one was structural (mine), not the market — and it was the
+flagship. A first-pass null is a hypothesis about the *test* as much as the
+signal; corrected tests are mandatory before "fail" is earned.

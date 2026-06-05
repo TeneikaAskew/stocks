@@ -40,10 +40,12 @@ target / features / training data / status. Naming convention:
 
 ## B. Proposed (endorsed 2026-06-04) — see MODEL_RETHINK_PLANS.md
 
-| Name | Family | Predicts | New data? |
-|---|---|---|---|
-| `STRAT-BREAKOUT-META` | META | will a Strat trigger-break follow through | no (uses intraday bars) |
-| `DIR-REGIME` | DIRECTION | direction \| gamma regime | no |
-| `INTRADAY-MOM` | DIRECTION | last-30-min move from first-30-min | no |
-| `FLOW-OFI` (deferred) | FLOW | short-horizon direction | **yes — order flow** |
-| `HONEST-GATE7` (eval, deferred) | — | re-tests excursion vs time-of-day IV | no |
+| Name | Family | Predicts | New data? | Status (2026-06-05) |
+|---|---|---|---|---|
+| `STRAT-BREAKOUT-META` | META | will a Strat trigger-break follow through | no (uses 1-min bars) | **PASS 24/24 GROSS** — net-of-cost gate open |
+| `DIR-REGIME` | DIRECTION | move-continuation \| gamma regime | no | true null (corrected) |
+| `INTRADAY-MOM` | DIRECTION | last-30-min move from first-30-min | no | true null (anomaly decayed) |
+| `FLOW-OFI` (deferred) | FLOW | short-horizon direction | **yes — order flow** | not built |
+| `HONEST-GATE7` (eval, deferred) | — | re-tests excursion vs time-of-day IV | no | not built |
+
+Full results + the self-audit story: `MODEL_RETHINK_PLANS.md` §RESULTS.
