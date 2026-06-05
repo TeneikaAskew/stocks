@@ -15,6 +15,12 @@ dist-ssr
 # Playwright IAP cookie store (interactive auth output)
 tests/.auth/
 
+# Frontend source under src/data/ is application code, not pipeline data —
+# re-include it despite the repo-root `data/` ignore (which targets GCS-backed
+# parquet/CSV datasets, not TypeScript modules).
+!src/data/
+!src/data/**
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

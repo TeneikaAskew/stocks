@@ -439,3 +439,26 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   font-size: 11px;
   color: var(--on-surface-variant);
 }
+
+/* ── Options Flow (Phase 2) — scoped helpers for gamma ladders/profiles ── */
+.of-tabnum {
+  font-variant-numeric: tabular-nums;
+}
+.of-gex-profile {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Heatseeker Swing Mode — 2D strikes×expirations exposure heatmap ── */
+.hs-swing-grid table {
+  border-spacing: 0;
+}
+.hs-swing-cell {
+  min-width: 56px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+}
+.hs-swing-strike {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--outline-variant);
+}
