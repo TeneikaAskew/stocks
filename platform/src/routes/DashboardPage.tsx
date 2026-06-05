@@ -11,7 +11,7 @@
  * and AI take); catalysts/news are market-wide. Per CLAUDE.md Rule 3.7 a
  * missing value renders an explicit "unavailable" state — never a fabricated 0.
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@heroui/react';
@@ -28,6 +28,7 @@ import {
 } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
+import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { fmtPrice, fmtPct, fmtNum, NA } from '@/lib/format';
 import type { Tone } from '@/components/primitives';
 
@@ -159,6 +160,16 @@ function Unavailable({ msg }: { msg: string }) {
 export default function DashboardPage() {
   const { activeTicker } = useTickerStore();
   const navigate = useNavigate();
+
+  // Intraday chart style — candlestick is the default; user-switchable on the
+  // card and persisted (density/theme live in the global Settings store).
+  const [chartStyle, setChartStyle] = useState<'candle' | 'area'>(
+    () => (typeof localStorage !== 'undefined' && localStorage.getItem('overview-chart') === 'area' ? 'area' : 'candle'),
+  );
+  const pickChart = (s: 'candle' | 'area') => {
+    setChartStyle(s);
+    try { localStorage.setItem('overview-chart', s); } catch { /* storage unavailable — non-fatal */ }
+  };
 
   const { data: status } = useLiveStatus();
   const { data: quote } = useLiveQuote(activeTicker, true);
@@ -436,16 +447,36 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── Intraday price ──────────────────────────────────────────────── */}
-      {pricePoints.length > 0 && (
+      {/* ── Intraday price (candlestick default · area toggle) ──────────────── */}
+      {(hourly?.candlestick?.length ?? 0) > 0 && (
         <Card>
-          <CardHeader title={<>{activeTicker} · intraday</>} meta="60-min bars · last 2 sessions" />
-          <PriceAreaChart
-            data={pricePoints}
-            seriesLabel={`${activeTicker} close`}
-            sessionBoundary={sessionBoundary}
-            height={260}
-          />
+          <div className="mb-2.5 flex items-center justify-between gap-3">
+            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--on-surface)]">{activeTicker} · intraday</h3>
+            <div className="flex items-center gap-3">
+              <span className="hidden text-[11px] text-[var(--on-surface-muted)] sm:inline">60-min bars · last 2 sessions</span>
+              <div className="segctrl">
+                <button className={chartStyle === 'candle' ? 'active' : ''} onClick={() => pickChart('candle')}>Candles</button>
+                <button className={chartStyle === 'area' ? 'active' : ''} onClick={() => pickChart('area')}>Area</button>
+              </div>
+            </div>
+          </div>
+          {chartStyle === 'candle' ? (
+            <div style={{ height: 260 }}>
+              <CandlestickChart
+                candlestick={hourly?.candlestick ?? []}
+                volume={(hourly?.volume ?? []).map((v) => ({ ...v, color: 'rgba(139,206,255,0.3)' }))}
+                rthOnly={false}
+                showVolume={false}
+              />
+            </div>
+          ) : (
+            <PriceAreaChart
+              data={pricePoints}
+              seriesLabel={`${activeTicker} close`}
+              sessionBoundary={sessionBoundary}
+              height={260}
+            />
+          )}
         </Card>
       )}
 

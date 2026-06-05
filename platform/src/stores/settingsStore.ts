@@ -38,7 +38,9 @@ interface Persisted {
   accent: Accent;
 }
 
-const DEFAULTS: Persisted = { navPattern: 'top-tabs', density: 'default', accent: 'blue' };
+// Dense is the product default (Bloomberg-terminal information density); users
+// can switch to default/comfy in Settings, which persists over this.
+const DEFAULTS: Persisted = { navPattern: 'top-tabs', density: 'dense', accent: 'blue' };
 
 function loadPersisted(): Persisted {
   if (typeof window === 'undefined') return DEFAULTS;
