@@ -253,6 +253,48 @@ between the market-entry floor (≈breakeven) and this limit-entry ceiling
 (+0.1 R), so the edge most likely survives but at less than +0.1 R. IWM/QQQ not
 yet confirmed at the optimal 1.0/0.5 config.
 
+#### Realistic fill model + labeling fix (2026-06-05, live-session follow-up)
+
+Two upgrades: (1) a **labeling-accuracy fix** — the triple barrier now scans
+from the breakout *cross* bar, not the window start, so a pre-entry dip can't be
+mislabeled a stop. Base follow-through rose **0.33 → ~0.41** (the true rate; with
+PT/SL 1.0/0.5 the breakeven is 0.333, so even taking *every* breakout is now
+~slightly gross-positive). (2) **`--entry-mode realistic`** measures the ACTUAL
+entry slippage = the gap of the breakout minute's open past the trigger from
+1-min bars — the honest fill model between the market floor and limit ceiling.
+
+Net-of-cost at SPY's true 0.6bp spread, **realistic entry**, @ 0.02-ATR one-way
+exit slip:
+
+| | 5m | 15m |
+|---|---|---|
+| **SPY** | **NET_PASS 5/8, +0.081 R** | **NET_PASS 6/7, +0.038 R** |
+| **IWM** | **NET_PASS 6/7, +0.096 R** | NET_FAIL 3/6 (marginal +0.011) |
+| **QQQ** | **NET_PASS 5/7, +0.068 R** | NET_FAIL 4/7 (marginal +0.001) |
+
+**Upgraded verdict:** under a realistic 1-min-measured fill model at true spreads,
+BREAKOUT-META is **net-positive across ALL THREE tickers at 5m** (huge samples:
+130–147k breakouts) **and on SPY at 15m** — materially stronger and broader than
+the earlier "marginal SPY-15m only." IWM/QQQ 15m stay marginal-negative.
+~10% of events fall back to same-tf labeling (sparse early-year 1-min coverage);
+no decision-latency modelled.
+
+#### Extra feature families do NOT help (both A/B-tested)
+
+- **OFI proxies** (CLV / signed-vol z / wicks): slightly worse.
+- **IV-flow** (ATM put-call skew, IV level/changes from EOD options, D-1 shifted;
+  query feasible at 99.8% coverage): **worse** (NET_FAIL where the clean run
+  passes). Confirms the direction-R&D lesson — these surfaces re-encode
+  vol-regime info already in the spine and add overfitting, not signal. The edge
+  is self-contained in the structural breakout features.
+
+#### Live real-time options (2026-06-05, market open)
+
+Pulled live SPY `REALTIME_OPTIONS` (14,556 contracts): ATM IV ~15%, ATM option
+spreads ~0.3% of mid. SPY the **ETF** is penny-wide (~$0.01 on $757 ≈ 0.13bp
+one-way / ~0.26bp round-trip) → the **0.6bp cost used above is conservative**, so
+the net edge has *more* margin than modelled.
+
 #### FLOW-OFI & HONEST-GATE7 — DATA-BLOCKED (AlphaVantage can't supply it)
 
 - **FLOW-OFI:** true order-flow imbalance needs L2/quote/tick data. AlphaVantage

@@ -383,8 +383,11 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   - **PT/SL sweep:** 1.0/0.5 optimal; 1.5/0.5 FAIL (hit rate falls below the lift); 1.5/0.75 marginal.
   - **OFI proxies** (CLV, signed-vol z, wicks): **do NOT help** (5/8 vs 6/8, lower median) — OHLCV proxies aren't a substitute for real order flow.
 - **Data availability (answer to "get it from AlphaVantage?"):** **NO** for both — AV intraday is OHLCV-only (no L2/quote/tick → no true OFI); `etf_options_snapshots` is EOD-only (1 snap/day 2019→2026) and AV HISTORICAL_OPTIONS is EOD-only → no time-of-day IV for HONEST-GATE7. True OFI needs Polygon/Databento/IEX.
-- **Verdict:** ✅ improved — net-positive on SPY 5m & 15m under stop-limit execution (caveat: model ignores limit fill-risk on fast breakouts → true net between market floor ≈breakeven and limit ceiling +0.1 R). FLOW-OFI proxy = null; HONEST-GATE7 = data-blocked.
-- **Gaps:** fill-risk modelling; IWM/QQQ at the optimal 1.0/0.5 config; real order-flow vendor.
+- **Realistic fill + labeling fix (2026-06-05):** scan barriers from the cross bar (not window start) → base follow-through 0.33→0.41 (more accurate); `--entry-mode realistic` = actual 1-min gap past trigger. Net @ realistic entry, 0.6bp: **net-positive across ALL 3 tickers at 5m** (SPY +0.081 5/8, IWM +0.096 6/7, QQQ +0.068 5/7) and **SPY 15m** (+0.038 6/7); IWM/QQQ 15m marginal-negative.
+- **IV-flow family** (ATM put-call skew, IV level/changes from EOD options, D-1 shifted, 99.8% coverage): **worse** (NET_FAIL where clean passes) — like OFI proxies, re-encodes spine vol-regime info.
+- **Live real-time options (market open):** SPY ATM IV ~15%, ETF penny-wide → ~0.26bp round-trip, so 0.6bp cost is conservative.
+- **Verdict:** ✅ upgraded — **net-positive across SPY/IWM/QQQ at 5m and SPY at 15m under a realistic fill model at true spreads.** Extra feature families (OFI, IV-flow) don't help; edge is self-contained in structural breakout features. FLOW-OFI(true) data-blocked; HONEST-GATE7 data-blocked.
+- **Gaps:** decision-latency model; ~10% same-tf-fallback labeling (sparse early 1-min); real L2/tick order-flow vendor; IWM/QQQ 15m weak.
 - **Artifacts:** `breakout_meta_walk_forward.py` (`--entry-mode`, `--ofi-proxies`); `gs://.../<ticker>_<tf>/breakout_meta_wf_*.json`; `MODEL_RETHINK_PLANS.md` §execution-quality.
 
 ## E-23 · Cost / EV / friction analysis
