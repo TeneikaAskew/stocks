@@ -227,6 +227,45 @@ a genuine but marginal edge on the most liquid instrument at the timeframe where
 ATR clears the spread — pursue only with execution-quality focus (limit/stop-
 limit entry to cut slippage, SPY-first, 15m).
 
+#### Execution-quality follow-up (2026-06-05) — limit entry rescues it
+
+Modelled a realistic **stop-limit entry**: a limit/stop-limit resting at the
+trigger pays ZERO entry slippage, and a profit-target exit is a limit fill too,
+so only stop-out exits pay slippage (`slip_legs = (entry==market) + (loss)`).
+Re-ran at SPY's true **0.6bp** spread, sweeping one-way slippage.
+
+| config (limit entry, 0.6bp) | gross | NET @ 0.02-ATR one-way slip |
+|---|---|---|
+| **SPY 15m pt1.0/sl0.5** | 8/8 | **NET_PASS 6/8, +0.108 R median** |
+| **SPY 5m pt1.0/sl0.5** | 8/8 | **NET_PASS 6/8, +0.092 R median** (142k trades) |
+| SPY 15m pt1.5/sl0.5 | 2/8 | NET_FAIL — wider PT lowers hit rate below the lift |
+| SPY 15m pt1.5/sl0.75 | 6/8 | NET_FAIL 4/6 (marginal) |
+| SPY 15m pt1.0/sl0.5 **+OFI proxies** | 8/8 | NET_PASS 5/8, +0.042 R — **OFI proxies make it WORSE** |
+| IWM/QQQ 15m pt1.5/sl0.5 +OFI | FAIL | NET_FAIL (bad PT config; best config untested) |
+
+**Updated verdict:** with realistic **stop-limit execution**, BREAKOUT-META is
+**net-positive on SPY at BOTH 5m and 15m, robustly across the whole slippage
+sweep** (still positive even at 0.08-ATR slip) — a materially stronger result
+than the market-entry "marginal SPY-15m." The original **1.0/0.5 R:R is optimal**
+(widening PT hurts). **Honest caveat:** the limit-entry model ignores *fill risk*
+on fast breakouts (a limit at the trigger won't always fill); the true net sits
+between the market-entry floor (≈breakeven) and this limit-entry ceiling
+(+0.1 R), so the edge most likely survives but at less than +0.1 R. IWM/QQQ not
+yet confirmed at the optimal 1.0/0.5 config.
+
+#### FLOW-OFI & HONEST-GATE7 — DATA-BLOCKED (AlphaVantage can't supply it)
+
+- **FLOW-OFI:** true order-flow imbalance needs L2/quote/tick data. AlphaVantage
+  intraday = **OHLCV bars only** (`fetch_alphavantage_intraday.py:145`). Built
+  OHLCV-derived **proxies** (CLV, signed-volume z, wick fractions) and A/B-tested
+  them in BREAKOUT-META → **they don't help (slightly worse)**. Real OFI needs a
+  new vendor (Polygon / Databento / IEX DEEP); not pursued.
+- **HONEST-GATE7 (time-of-day IV):** `etf_options_snapshots` is **EOD-only —
+  1 snapshot/day confirmed for every year 2019→2026** — and AlphaVantage's
+  `HISTORICAL_OPTIONS` is EOD-only too. No intraday IV surface exists to build a
+  time-of-day expected move. **Data-blocked**; the like-for-like close-to-close
+  part already ran as the original body gate-7 (priced in).
+
 ### Meta-lesson
 Of three "failures," one was structural (mine), not the market — and it was the
 flagship. A first-pass null is a hypothesis about the *test* as much as the

@@ -374,6 +374,19 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Verdict:** mixed/superseded; foundational for the engines.
 - **Artifacts:** `docs/research/2026-05-23/RESEARCH_PLAN.md` + dated deliverables; `scripts/analysis/*`.
 
+## E-24 · BREAKOUT-META execution-quality + OFI-proxy follow-up
+- **Engine/area:** strat/meta + flow · **Status:** validated (improved net) · **Date:** 2026-06-05.
+- **Question:** does realistic stop-limit entry rescue the net edge; do order-flow proxies help; can AlphaVantage supply order-flow / time-of-day IV?
+- **Target/data:** same as E-18; SPY/IWM/QQQ; 5m+15m; 1-min barriers; realistic 0.6bp spread.
+- **Variants/results (verified this session):**
+  - **Limit/stop-limit entry** (entry slip = 0; only stop-out exits pay slip): **SPY 15m pt1.0/sl0.5 → NET_PASS 6/8, +0.108 R**; **SPY 5m → NET_PASS 6/8, +0.092 R** (142k trades). Robust across the full one-way-slippage sweep.
+  - **PT/SL sweep:** 1.0/0.5 optimal; 1.5/0.5 FAIL (hit rate falls below the lift); 1.5/0.75 marginal.
+  - **OFI proxies** (CLV, signed-vol z, wicks): **do NOT help** (5/8 vs 6/8, lower median) — OHLCV proxies aren't a substitute for real order flow.
+- **Data availability (answer to "get it from AlphaVantage?"):** **NO** for both — AV intraday is OHLCV-only (no L2/quote/tick → no true OFI); `etf_options_snapshots` is EOD-only (1 snap/day 2019→2026) and AV HISTORICAL_OPTIONS is EOD-only → no time-of-day IV for HONEST-GATE7. True OFI needs Polygon/Databento/IEX.
+- **Verdict:** ✅ improved — net-positive on SPY 5m & 15m under stop-limit execution (caveat: model ignores limit fill-risk on fast breakouts → true net between market floor ≈breakeven and limit ceiling +0.1 R). FLOW-OFI proxy = null; HONEST-GATE7 = data-blocked.
+- **Gaps:** fill-risk modelling; IWM/QQQ at the optimal 1.0/0.5 config; real order-flow vendor.
+- **Artifacts:** `breakout_meta_walk_forward.py` (`--entry-mode`, `--ofi-proxies`); `gs://.../<ticker>_<tf>/breakout_meta_wf_*.json`; `MODEL_RETHINK_PLANS.md` §execution-quality.
+
 ## E-23 · Cost / EV / friction analysis
 - **Engine/area:** cross-cutting (tradeability) · **Status:** partial · **Date:** ongoing.
 - **Question:** what frictions must an edge clear; do ours?
