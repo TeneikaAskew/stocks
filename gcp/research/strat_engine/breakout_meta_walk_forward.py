@@ -93,6 +93,68 @@ def add_ofi_proxies(df: pd.DataFrame) -> list[str]:
     return ["clv", "body_frac", "upper_wick", "lower_wick", "signed_vol_z", "clv_sum5"]
 
 
+def add_iv_flow(engine, ticker: str, df: pd.DataFrame) -> list[str]:
+    """Options-IV 'flow'/positioning features from the EOD chain we already have
+    (etf_options_snapshots, 1 snapshot/day). The historical-options surface is
+    EOD-only (no intraday IV), so these are DAILY features broadcast to intraday
+    bars using the PRIOR day's EOD value (bar date D reads D-1 EOD → no lookahead):
+
+      iv_skew      put_ATM_IV − call_ATM_IV  (demand for downside protection /
+                   dealer positioning — a slow 'flow' signal)
+      iv_atm       (call+put)/2 ATM IV level
+      iv_chg_1d    day-over-day ΔATM_IV (vol being bid/offered)
+      iv_skew_chg  day-over-day Δskew
+
+    Scoped to near-ATM contracts (|Δ∓0.5|<0.12) + nearest expiry so the window
+    query over the 92M-row table is feasible inside the job (the old unscoped
+    options_derived family timed out on pg8000). Fails loud on empty (no silent
+    fallback on a financial field — Rule 3.7).
+    """
+    from sqlalchemy import text
+    sql = text("""
+        WITH last AS (
+          SELECT ticker, snapshot_date, MAX(snapshot_ts) AS last_ts
+            FROM etf_options_snapshots WHERE ticker = :t GROUP BY 1, 2),
+        atm AS (
+          SELECT s.snapshot_date AS d, s.option_type, s.implied_volatility AS iv,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY s.snapshot_date, s.option_type
+                   ORDER BY ABS(s.delta - CASE WHEN s.option_type='calls' THEN 0.5 ELSE -0.5 END)
+                            ASC NULLS LAST, s.expiration ASC NULLS LAST) AS rn
+            FROM etf_options_snapshots s
+            JOIN last l ON s.ticker=l.ticker AND s.snapshot_date=l.snapshot_date
+                       AND s.snapshot_ts=l.last_ts
+           WHERE s.implied_volatility > 0
+             AND ((s.option_type='calls' AND ABS(s.delta-0.5) < 0.12)
+               OR (s.option_type='puts'  AND ABS(s.delta+0.5) < 0.12)))
+        SELECT d,
+               MAX(iv) FILTER (WHERE option_type='calls' AND rn=1) AS call_iv,
+               MAX(iv) FILTER (WHERE option_type='puts'  AND rn=1) AS put_iv
+          FROM atm GROUP BY d ORDER BY d
+    """)
+    with engine.connect() as conn:
+        iv = pd.read_sql(sql, conn, params={"t": ticker})
+    iv = iv.dropna(subset=["call_iv", "put_iv"])
+    if iv.empty:
+        raise SystemExit(f"add_iv_flow: no ATM IV rows for {ticker} — cannot build IV-flow features")
+    iv["d"] = pd.to_datetime(iv["d"]).dt.date
+    iv["iv_skew"] = iv["put_iv"] - iv["call_iv"]
+    iv["iv_atm"] = (iv["put_iv"] + iv["call_iv"]) / 2
+    iv["iv_chg_1d"] = iv["iv_atm"].diff()
+    iv["iv_skew_chg"] = iv["iv_skew"].diff()
+    # shift one trading day → bar date D uses D-1 EOD (strictly prior info)
+    feats = ["iv_skew", "iv_atm", "iv_chg_1d", "iv_skew_chg"]
+    iv_prior = iv[["d"] + feats].copy()
+    iv_prior["join_date"] = iv_prior["d"].shift(-1)   # this row's values apply to the NEXT trading day
+    m = iv_prior.dropna(subset=["join_date"]).set_index("join_date")[feats]
+    for f in feats:
+        df[f] = df["bar_date"].map(m[f])
+    cov = float(df[feats[0]].notna().mean())
+    log.info("IV-flow features added (EOD options, D-1 shifted): %s  coverage=%.1f%%",
+             feats, 100 * cov)
+    return feats
+
+
 def _friction_sweep(fold_takes: list, sl_atr: float, cost_bps: float,
                     levels: list, entry_mode: str = "market") -> list:
     """For each ONE-WAY slippage level, per fold compute NET expectancy of the
@@ -113,8 +175,15 @@ def _friction_sweep(fold_takes: list, sl_atr: float, cost_bps: float,
         net_exps, net_pos, scored = [], 0, 0
         for ft in fold_takes:
             atr = ft["atr"]; entry = ft["entry"]; r = ft["rmult"]
-            slip_legs = entry_legs + (r < 0).astype(float)   # +1 on losers (stop)
-            cost_price = entry * cost_bps / 1e4 + slip_legs * oneway * atr
+            exit_slip_atr = (r < 0).astype(float) * oneway        # only stop-outs pay
+            if entry_mode == "realistic":
+                # entry slip is the ACTUAL gap past the trigger (1-min measured),
+                # not a swept assumption; exits still use the swept one-way.
+                entry_slip_atr = ft["entry_slip"]
+            else:
+                entry_slip_atr = entry_legs * oneway              # market=1·oneway, limit=0
+            slip_atr = entry_slip_atr + exit_slip_atr
+            cost_price = entry * cost_bps / 1e4 + slip_atr * atr
             cost_R = cost_price / (sl_atr * atr)
             net = r - cost_R
             scored += 1
@@ -129,37 +198,51 @@ def _friction_sweep(fold_takes: list, sl_atr: float, cost_bps: float,
     return out
 
 
-def _label_1min(side, entry, pt, sl, sl_atr, pt_atr, start_ns, end_ns, sess_date,
-                om_ts, om_high, om_low, om_date):
-    """Resolve the triple barrier on 1-MINUTE bars (corrected labeling).
+def _label_1min(side, entry, pt, sl, sl_atr, pt_atr, atr_t, start_ns, end_ns, sess_date,
+                om_ts, om_open, om_high, om_low, om_date):
+    """Resolve the triple barrier on 1-MINUTE bars + compute the REALISTIC entry
+    slippage (the actual gap past the trigger on the breakout minute).
 
-    Scans the 1-min bars in [start_ns, end_ns) within the same session and
-    returns (label, r_multiple) with TRUE intra-bar order — the same-tf path
-    mislabels any bar that spans both barriers as a stop, deflating the base
-    rate and corrupting labels. Returns None if no 1-min coverage (caller falls
-    back to the same-tf scan). Same-MINUTE double-touch is still resolved
-    conservatively as a stop (1-min granularity can't order within a minute).
+    Returns (label, r_multiple, entry_slip_atr):
+      - finds the breakout minute = first 1-min bar that crosses the trigger
+        (long: high≥entry; short: low≤entry);
+      - entry_slip_atr = how far the breakout bar OPENED beyond the trigger,
+        in ATR (0 if it opened at/inside the trigger — a resting limit fills with
+        no slip; >0 if it gapped through — even a limit pays that gap);
+      - scans PT/SL from the cross bar onward (true intra-bar order); same-minute
+        double-touch → conservative stop. None if no 1-min coverage / no cross
+        (caller falls back to the same-tf scan).
     """
     lo = np.searchsorted(om_ts, start_ns, "left")
     hi = np.searchsorted(om_ts, end_ns, "right")
     if hi <= lo:
         return None
-    H = om_high[lo:hi]; L = om_low[lo:hi]; D = om_date[lo:hi]
-    same = D == np.datetime64(sess_date, "D")   # coerce python date → datetime64[D]
+    same = om_date[lo:hi] == np.datetime64(sess_date, "D")
     if not same.any():
         return None
-    H = H[same]; L = L[same]
+    O = om_open[lo:hi][same]; H = om_high[lo:hi][same]; L = om_low[lo:hi][same]
+    cross = (H >= entry) if side == 1 else (L <= entry)
+    if not cross.any():
+        return None                                   # never crossed → no entry
+    ci = int(np.argmax(cross))                        # breakout minute
+    # realistic entry slippage = gap of the breakout bar's open past the trigger
     if side == 1:
-        pt_hit = H >= pt; sl_hit = L <= sl
+        entry_slip = max(0.0, float(O[ci] - entry))
     else:
-        pt_hit = L <= pt; sl_hit = H >= sl
-    i_pt = int(np.argmax(pt_hit)) if pt_hit.any() else len(H)
-    i_sl = int(np.argmax(sl_hit)) if sl_hit.any() else len(H)
-    if i_pt == len(H) and i_sl == len(H):
-        return (0, 0.0)                       # timeout, no barrier hit → flat-ish loss
-    if i_sl <= i_pt:                          # stop first (ties → conservative stop)
-        return (0, -sl_atr)
-    return (1, pt_atr)                        # profit target first
+        entry_slip = max(0.0, float(entry - O[ci]))
+    entry_slip_atr = entry_slip / atr_t if atr_t > 0 else 0.0
+    Hc = H[ci:]; Lc = L[ci:]
+    if side == 1:
+        pt_hit = Hc >= pt; sl_hit = Lc <= sl
+    else:
+        pt_hit = Lc <= pt; sl_hit = Hc >= sl
+    i_pt = int(np.argmax(pt_hit)) if pt_hit.any() else len(Hc)
+    i_sl = int(np.argmax(sl_hit)) if sl_hit.any() else len(Hc)
+    if i_pt == len(Hc) and i_sl == len(Hc):
+        return (0, 0.0, entry_slip_atr)               # timeout
+    if i_sl <= i_pt:
+        return (0, -sl_atr, entry_slip_atr)           # stop first (ties→stop)
+    return (1, pt_atr, entry_slip_atr)                # profit target first
 
 
 def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
@@ -189,10 +272,11 @@ def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
     ts_ns = pd.to_datetime(g["ts"], utc=True).values.astype("datetime64[ns]").astype(np.int64)
     horizon_ns = int(horizon * tf_minutes * 60 * 1_000_000_000)
     om = onemin or {}
-    om_ts = om.get("ts_ns"); om_high = om.get("high")
+    om_ts = om.get("ts_ns"); om_open = om.get("open"); om_high = om.get("high")
     om_low = om.get("low"); om_date = om.get("date")
 
-    pos_idx, side_a, entry_a, label_a, rmult_a, src_a, atr_a = [], [], [], [], [], [], []
+    pos_idx, side_a, entry_a, label_a, rmult_a, src_a, atr_a, slip_a = \
+        [], [], [], [], [], [], [], []
 
     for t in range(n - 1):
         if not (np.isfinite(atr[t]) and atr[t] > 0):
@@ -208,13 +292,13 @@ def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
         pt = entry + side * pt_atr * atr[t]
         sl = entry - side * sl_atr * atr[t]
 
-        res, src = None, None
+        res, src, eslip = None, None, 0.0
         if om_ts is not None:
-            res = _label_1min(side, entry, pt, sl, sl_atr, pt_atr,
+            res = _label_1min(side, entry, pt, sl, sl_atr, pt_atr, atr[t],
                               ts_ns[t + 1], ts_ns[t + 1] + horizon_ns, bar_date[t],
-                              om_ts, om_high, om_low, om_date)
+                              om_ts, om_open, om_high, om_low, om_date)
             if res is not None:
-                src = "1min"
+                src = "1min"; eslip = res[2]
         if res is None:  # fallback: conservative same-tf scan
             src = "same_tf"
             label, rmult = 0, None
@@ -233,16 +317,16 @@ def build_breakout_events(df: pd.DataFrame, pt_atr: float, sl_atr: float,
             if rmult is None:
                 realized = side * (close[j] - entry) / atr[t]
                 rmult = float(realized); label = 1 if realized >= pt_atr else 0
-            res = (label, rmult)
+            res = (label, rmult, 0.0)
 
         pos_idx.append(t); side_a.append(side); entry_a.append(entry)
         label_a.append(res[0]); rmult_a.append(res[1]); src_a.append(src)
-        atr_a.append(float(atr[t]))
+        atr_a.append(float(atr[t])); slip_a.append(float(eslip))
 
     ev = pd.DataFrame({
         "decision_pos": pos_idx, "side": side_a, "entry": entry_a,
         "label": label_a, "r_multiple": rmult_a, "label_source": src_a,
-        "atr_at_entry": atr_a,
+        "atr_at_entry": atr_a, "entry_slip_atr": slip_a,
     })
     ev["event_date"] = bar_date[ev["decision_pos"].values]
     return ev
@@ -252,7 +336,7 @@ def _load_1min(engine, ticker: str) -> dict | None:
     """Load all 1-min bars for the ticker as sorted numpy arrays for the barrier
     resolver. Returns None if the table has no rows (→ same-tf fallback)."""
     from sqlalchemy import text
-    sql = text("SELECT ts, high, low FROM market_data_intraday "
+    sql = text("SELECT ts, open, high, low FROM market_data_intraday "
                "WHERE ticker = :t AND interval = '1min' ORDER BY ts")
     with engine.connect() as conn:
         m = pd.read_sql(sql, conn, params={"t": ticker})
@@ -261,6 +345,7 @@ def _load_1min(engine, ticker: str) -> dict | None:
     ts = pd.to_datetime(m["ts"], utc=True)
     return {
         "ts_ns": ts.values.astype("datetime64[ns]").astype(np.int64),
+        "open": m["open"].astype(float).values,
         "high": m["high"].astype(float).values,
         "low": m["low"].astype(float).values,
         "date": ts.dt.tz_convert("America/New_York").dt.normalize().dt.tz_localize(None)
@@ -273,7 +358,8 @@ _TF_MINUTES = {"5m": 5, "15m": 15, "30m": 30}
 
 def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
                       cutoffs=None, barrier_tf="1m", take_thresh=0.55,
-                      cost_bps=1.0, entry_mode="market", ofi_proxies=False) -> dict:
+                      cost_bps=1.0, entry_mode="market", ofi_proxies=False,
+                      iv_flow=False) -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 72)
     log.info("BREAKOUT-META  %s %s  PT=%.2f SL=%.2f H=%d  barrier=%s take≥%.2f",
@@ -287,6 +373,8 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
     if ofi_proxies:
         added = add_ofi_proxies(df)
         log.info("OFI proxies added (OHLCV-derived, NOT true order flow): %s", added)
+    if iv_flow:
+        add_iv_flow(engine, ticker, df)
 
     onemin = None
     if barrier_tf == "1m":
@@ -314,6 +402,7 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
     rmult = ev["r_multiple"].values.astype(np.float64)
     atr_ev = ev["atr_at_entry"].values.astype(np.float64)
     entry_ev = ev["entry"].values.astype(np.float64)
+    eslip_ev = ev["entry_slip_atr"].values.astype(np.float64)
     edates = pd.DatetimeIndex(ev["event_date"]).values.astype("datetime64[D]")
     tt = round(take_thresh, 2)
     fold_takes = []   # per-fold taken-trade arrays for the friction sweep
@@ -356,8 +445,9 @@ def walk_forward_meta(engine, ticker, tf, pt_atr, sl_atr, horizon,
         take_tt = p >= tt
         if int(take_tt.sum()) >= 20:
             sub = np.where(te)[0][take_tt]
-            fold_takes.append({"fold": row["fold"],
-                               "rmult": rmult[sub], "atr": atr_ev[sub], "entry": entry_ev[sub]})
+            fold_takes.append({"fold": row["fold"], "rmult": rmult[sub],
+                               "atr": atr_ev[sub], "entry": entry_ev[sub],
+                               "entry_slip": eslip_ev[sub]})
         folds.append(row)
         bt = row["by_threshold"].get(tt, {})
         log.info("  %s n_te=%d base[prec=%.3f exp=%+.3fR pf=%.2f] | take≥%.2f n=%s prec=%s exp=%s",
@@ -447,14 +537,19 @@ def main():
     p.add_argument("--cost-bps", type=float, default=1.0,
                    help="round-trip spread/commission in bps of notional (the "
                         "one-way slippage·ATR term is added per slipping leg).")
-    p.add_argument("--entry-mode", default="market", choices=["market", "limit"],
-                   help="market=stop order chasing the break (pays entry slip); "
-                        "limit=resting stop-limit at the trigger (no entry slip). "
-                        "Profit-target exits are limit fills either way; only "
-                        "stop-out exits pay slippage.")
+    p.add_argument("--entry-mode", default="market",
+                   choices=["market", "limit", "realistic"],
+                   help="market=stop chasing the break (pays full one-way entry "
+                        "slip); limit=resting stop-limit (zero entry slip); "
+                        "realistic=ACTUAL gap past the trigger on the breakout "
+                        "minute, measured from 1-min bars (the honest fill model "
+                        "between market and limit). Stop-out exits always pay slip.")
     p.add_argument("--ofi-proxies", action="store_true",
                    help="add OHLCV-derived order-flow PROXY features (CLV, signed "
                         "volume z, wicks). NOT true OFI — we have no L2/tick data.")
+    p.add_argument("--iv-flow", action="store_true",
+                   help="add options-IV positioning/flow features (ATM put-call "
+                        "skew, IV level/changes) from the EOD chain, D-1 shifted.")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
@@ -462,7 +557,7 @@ def main():
                       args.pt, args.sl, args.horizon, cutoffs=cutoffs,
                       barrier_tf=args.barrier_tf, take_thresh=args.take_thresh,
                       cost_bps=args.cost_bps, entry_mode=args.entry_mode,
-                      ofi_proxies=args.ofi_proxies)
+                      ofi_proxies=args.ofi_proxies, iv_flow=args.iv_flow)
 
 
 if __name__ == "__main__":
