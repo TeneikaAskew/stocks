@@ -8,10 +8,11 @@
  *   - the configured per-agent provider/model roster comes from `model_routing`
  *     via `/api/admin/routes` (admin-gated; editing lives on the Admin page).
  */
-import { Network, Coins } from 'lucide-react';
+import { Network, Coins, Clock } from 'lucide-react';
 import { useAdminRoutes } from '@/hooks/useAdmin';
+import { useInsightHistory } from '@/hooks/useInsights';
 import type { InsightReportEnvelope } from '@/types/insights';
-import { Card, CardHeader, KpiTile, Pill } from '@/components/primitives';
+import { Card, CardHeader, KpiTile, Pill, DirTag } from '@/components/primitives';
 
 const fmtUsd = (v?: number | null) =>
   typeof v === 'number' && Number.isFinite(v) ? `$${v.toFixed(v < 1 ? 4 : 2)}` : '—';
@@ -19,9 +20,11 @@ const fmtSecs = (ms?: number | null) =>
   typeof ms === 'number' && Number.isFinite(ms) ? `${(ms / 1000).toFixed(1)}s` : '—';
 const titleCase = (s: string) => s.replace(/[_:]/g, ' ');
 
-export function AgentsPanel({ envelope }: { envelope: InsightReportEnvelope | null }) {
+export function AgentsPanel({ envelope, ticker }: { envelope: InsightReportEnvelope | null; ticker: string }) {
   const routesQ = useAdminRoutes(true);
   const routes = routesQ.data?.routes ?? [];
+  const historyQ = useInsightHistory(ticker, 8);
+  const runs = historyQ.data?.reports ?? [];
 
   const rep = envelope?.report;
   const perRole = rep?.per_role_cost ?? {};
@@ -101,6 +104,40 @@ export function AgentsPanel({ envelope }: { envelope: InsightReportEnvelope | nu
                     <td className="py-1.5 font-semibold capitalize text-[var(--on-surface)]">{titleCase(r.role)}</td>
                     <td className="py-1.5"><Pill tone="brand">{r.provider}</Pill></td>
                     <td className="py-1.5 tabular-nums text-[var(--on-surface-variant)]">{r.model}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Recent runs (insight_reports history — each report is one pipeline run) */}
+      <Card>
+        <CardHeader
+          title={<><Clock size={13} className="mr-1.5 inline align-middle" />Recent runs</>}
+          meta={historyQ.data ? `${runs.length} of ${historyQ.data.count}` : undefined}
+        />
+        {runs.length === 0 ? (
+          <div className="py-4 text-[12px] text-[var(--on-surface-muted)]">No prior runs for {ticker}.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[360px] text-[12px]">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wider text-[var(--on-surface-label)]">
+                  <th className="pb-1 font-semibold">As of</th>
+                  <th className="pb-1 font-semibold">Direction</th>
+                  <th className="pb-1 font-semibold">Conviction</th>
+                  <th className="pb-1 text-right font-semibold">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => (
+                  <tr key={r.id} className="border-t border-[var(--outline-variant)]">
+                    <td className="py-1.5 tabular-nums text-[var(--on-surface-muted)]">{r.as_of?.slice(0, 16).replace('T', ' ')}</td>
+                    <td className="py-1.5"><DirTag dir={r.direction === 'long' ? 'bull' : r.direction === 'short' ? 'bear' : 'neut'} /></td>
+                    <td className="py-1.5 capitalize text-[var(--on-surface-variant)]">{r.conviction}</td>
+                    <td className="py-1.5 text-right tabular-nums text-[var(--on-surface-variant)]">{fmtUsd(r.cost_usd)}</td>
                   </tr>
                 ))}
               </tbody>

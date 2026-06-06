@@ -227,6 +227,7 @@ export default function InsightsPage() {
         ) : tab === 'agents' ? (
           <AgentsPanel
             envelope={viewingHistoricalId ? historicalQuery.data ?? null : reportQuery.data ?? null}
+            ticker={activeTicker}
           />
         ) : tab === 'watchlist' ? (
           <WatchlistPanel
