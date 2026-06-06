@@ -143,7 +143,15 @@ def indicator_columns(df: pd.DataFrame, min_valid: int = _MIN_VALID) -> List[str
 
 
 def correlate(df: pd.DataFrame, ind_cols: List[str], horizons: List[int]) -> pd.DataFrame:
-    """Tidy rows: indicator, horizon_min, pearson, rank_ic, abs_rank_ic, n."""
+    """Tidy rows: indicator, horizon_min, pearson, rank_ic, abs_rank_ic, n.
+
+    READER WARNING — the SIGN matters. The top forward_return drivers
+    (Price_vs_VWAP, Price_vs_VWAP_ATR, the ORB-percent features) come in with
+    rank_ic ~ -0.25 at the 30-min horizon: that is NEGATIVE — i.e. MEAN
+    REVERSION (price extended above VWAP tends to give back), not momentum. When
+    promoting any forward_return indicator, carry its sign; abs_rank_ic alone
+    hides whether the edge is reversion or continuation.
+    """
     rows = []
     for h in horizons:
         ret_col = f"{_RETURN_PREFIX}{h}"
@@ -339,6 +347,19 @@ def _label_strat_next(enriched: pd.DataFrame) -> pd.Series:
     each bar, then leads it by one bar WITHIN each session so the label is the
     NEXT bar's type without crossing the overnight gap. Returns a Series aligned
     to `enriched`, NaN on each session's last bar (no next bar).
+
+    READER WARNING — interpreting the strat-target rank_ic. The strongest single
+    predictor of next-bar 2U/2D here is ``Close_vs_Range`` (rank_ic ~ +0.45 for
+    2U / -0.45 for 2D, cross-ticker). This is the MECHANICAL next-open poke, NOT
+    a directional forecast: the next bar opens at this bar's close, so a bar
+    closing near its high starts just under the prior high and any uptick prints
+    2U. It is non-tradeable (a 2U can nick the high by a tick and reverse) and
+    does NOT convert to the "real move" direction — confirmed by the `regime`
+    target's UP/DOWN classes collapsing to ~1.3x lift. Do NOT promote
+    Close_vs_Range as a directional signal off the strat 2U/2D rank_ic. (To get
+    one honest direction number, score against an ATR-scaled "took out the prior
+    high by >= k*ATR and closed beyond it" target instead — see
+    docs/STRAT_ENGINE_AND_COMBO_PIPELINE.md.)
     """
     from lib.strat import StratClassifier
 

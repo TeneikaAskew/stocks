@@ -50,6 +50,12 @@ class IndicatorConfig:
     realized_vol_window: int = 20      # Realized_Vol_Short rolling std of logret
     bb_squeeze_window: int = 20        # BB_Squeeze = BB_Width / rolling median
     ema_slope_lookback: int = 5        # EMA9_Slope = n-bar EMA9 change / ATR
+    # Magnitude-engine volatility-expansion features (migrated from the inline
+    # mag_dataset._add_phase1_features 2026-06-01). Windows match the values the
+    # magnitude engine validated against.
+    mag_rv_window: int = 15              # Realized_Vol_Z: std of logret over N bars
+    mag_rv_z_window: int = 60            # Realized_Vol_Z: rolling mean/std for z-score
+    mag_range_expansion_window: int = 5  # Range_Expansion_Ratio: prior-N mean range
     orb_windows: List[Dict] = field(default_factory=lambda: [
         {'minutes': 5, 'label': '5m'},
         {'minutes': 15, 'label': '15m'},

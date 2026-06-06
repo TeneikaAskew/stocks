@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from gcp.database import get_engine
 from gcp.research.magnitude_engine.mag_config import TICKERS, TIMEFRAMES
 from gcp.research.magnitude_engine.mag_dataset import (
-    load_magnitude_dataset, _add_phase1_features,
+    load_magnitude_dataset, _PHASE1_SPINE_COLUMNS,
 )
 from gcp.research.magnitude_engine.mag_pred_train import featurize
 from lib.logging_config import setup_logging
@@ -63,18 +63,21 @@ def audit_target_no_future_in_features(engine, ticker: str, tf: str) -> dict:
 
 
 def audit_atr20_is_t_known(engine, ticker: str, tf: str, n_sample: int = 50) -> dict:
-    """Audit 2: atr_20_computed (the locally-derived target denominator)
-    is t-known — varies bar-to-bar within a session.
+    """Audit 2: the magnitude target denominator atr_20 is t-known — it
+    varies bar-to-bar within a session.
 
-    Originally tested the stored atr_20; that column is NaN everywhere
-    (upstream pipeline bug, see commit 9751c0e), so we test the
-    locally-computed value instead. If atr_20_computed at adjacent
-    same-day bars were identical across MANY pairs, the rolling
-    aggregation is suspect (windowing bug, ffill leak, etc.).
+    As of 2026-06-01 atr_20 comes from the single indicator spine
+    (lib.indicators.add_all_indicators → strat_features_<tf>.atr_20), NOT a
+    local recompute. If atr_20 at adjacent same-day bars were identical across
+    MANY pairs, the rolling aggregation is suspect (windowing bug, ffill leak).
+    A fully-NaN atr_20 means the spine rebuild hasn't run — surfaced as a hard
+    status, not silently passed.
     """
     df = load_magnitude_dataset(engine, ticker, tf, phase="phase0", since="2026-01-01")
-    if "atr_20_computed" not in df.columns:
+    if "atr_20" not in df.columns:
         return {"status": "MISSING_COLUMN"}
+    if not (df["atr_20"].notna() & (df["atr_20"] > 0)).any():
+        return {"status": "⚠️ ATR20_ALL_NAN — spine rebuild not run"}
     if len(df) < n_sample + 5:
         return {"status": "NOT_ENOUGH_BARS"}
     sample = df.sample(n_sample, random_state=42).sort_values("ts")
@@ -82,51 +85,47 @@ def audit_atr20_is_t_known(engine, ticker: str, tf: str, n_sample: int = 50) -> 
     for ts in sample["ts"]:
         idx = df.index[df["ts"] == ts][0]
         if idx + 1 < len(df) and df.loc[idx + 1, "bar_date"] == df.loc[idx, "bar_date"]:
-            a_now = df.loc[idx, "atr_20_computed"]
-            a_next = df.loc[idx + 1, "atr_20_computed"]
+            a_now = df.loc[idx, "atr_20"]
+            a_next = df.loc[idx + 1, "atr_20"]
             if pd.notna(a_now) and pd.notna(a_next) and abs(a_now - a_next) < 1e-12:
                 issues += 1
     rate = issues / n_sample
     status = "CLEAN" if rate < 0.2 else f"⚠️ SUSPECT_FLAT (rate={rate:.2f})"
-    log.info("audit-2: %d/%d adjacent same-day atr_20_computed pairs identical  →  %s",
+    log.info("audit-2: %d/%d adjacent same-day atr_20 pairs identical  →  %s",
              issues, n_sample, status)
     return {"ticker": ticker, "tf": tf, "sample_n": n_sample,
             "flat_adjacent_pairs": issues, "flat_rate": rate, "status": status}
 
 
 def audit_phase1_no_future_oolook(engine, ticker: str, tf: str) -> dict:
-    """Audit 3: a phase-1 feature value at time T must not change when
-    OHLCV at times > T is perturbed.
+    """Audit 3: the Phase-1 volatility features must be t-known.
 
-    Concrete test: load a small slice, compute phase-1 features twice:
-    once on the full slice, once on the slice with bars after the
-    midpoint zero-replaced. Compare feature values at all bars at or
-    before the midpoint — they must be identical.
+    As of 2026-06-01 these are produced by the indicator spine
+    (lib.indicators.add_all_indicators._add_magnitude) and PERSISTED in
+    strat_features_<tf>, so they arrive with the loaded frame rather than being
+    recomputed here. Leakage of these features is therefore covered by the
+    strat_engine enrichment audit (which audits add_all_indicators directly).
+
+    This audit now confirms (a) the spine columns are present from the load and
+    (b) they are not constant within a session (a degenerate all-NaN/flat column
+    would indicate the rebuild persisted nothing). The old perturbation test
+    against a local recompute no longer applies — there is no local recompute.
     """
-    df = load_magnitude_dataset(engine, ticker, tf, phase="phase0", since="2026-04-01")
+    df = load_magnitude_dataset(engine, ticker, tf, phase="phase1", since="2026-04-01")
     if len(df) < 200:
         return {"status": "NOT_ENOUGH_BARS"}
-    mid = len(df) // 2
-    df_full = _add_phase1_features(df.copy())
-    df_perturbed = df.copy()
-    # Zero-out future OHLCV beyond midpoint
-    for c in ("open", "high", "low", "close", "volume"):
-        df_perturbed.loc[mid:, c] = 0
-    df_pertb = _add_phase1_features(df_perturbed)
-    phase1_cols = [
-        "atr5_atr20_ratio", "bb20_bandwidth", "realized_vol_z15",
-        "range_expansion_ratio", "intraday_range_vs_prior_day",
-    ]
-    leaked = []
-    for c in phase1_cols:
-        a = df_full[c].iloc[:mid].fillna(-999).values
-        b = df_pertb[c].iloc[:mid].fillna(-999).values
-        if not np.allclose(a, b, equal_nan=True):
-            leaked.append(c)
-    status = "CLEAN" if not leaked else f"⚠️ LEAK: {leaked}"
-    log.info("audit-3: phase-1 leaked columns = %s", leaked or "{}")
-    return {"ticker": ticker, "tf": tf, "phase1_cols_tested": len(phase1_cols),
-            "leaked": leaked, "status": status}
+    missing = [c for c in _PHASE1_SPINE_COLUMNS if c not in df.columns]
+    if missing:
+        return {"ticker": ticker, "tf": tf,
+                "status": f"⚠️ MISSING_SPINE_COLUMNS: {missing}"}
+    flat = [c for c in _PHASE1_SPINE_COLUMNS
+            if df[c].notna().sum() > 0 and df[c].nunique(dropna=True) <= 1]
+    status = "CLEAN" if not flat else f"⚠️ DEGENERATE_FLAT: {flat}"
+    log.info("audit-3: phase-1 spine cols present=%d, degenerate-flat=%s",
+             len(_PHASE1_SPINE_COLUMNS), flat or "{}")
+    return {"ticker": ticker, "tf": tf,
+            "phase1_cols_checked": len(_PHASE1_SPINE_COLUMNS),
+            "degenerate_flat": flat, "status": status}
 
 
 def main():
