@@ -22,9 +22,10 @@ predictable but already priced.** The Strat **TYPE** model (which of 1/2U/2D/3
 prints next) passes every hard gate on 8/8 walk-forward folds across IWM/SPY/QQQ
 at 5m/15m. **Direction** (call-vs-put) fails in every framing tried — longer
 horizons, trigger-conditioning, regime models, the literature's triple-barrier
-target, and two genuinely-new information classes (daily dealer-options flow;
-intraday order-flow) — with exactly one unresolved IWM-only flicker that does not
-replicate. **Magnitude** (TIGHT/NORMAL/EXPANDED/EXPLOSIVE) is statistically
+target, and three genuinely-new information classes (daily dealer-options flow;
+intraday order-flow; reconstructed intraday dealer GEX/DEX — the last with its DEX
+reconstruction validated 100%-sign-faithful against the live options feed) — with
+exactly one unresolved IWM-only flicker that does not replicate. **Magnitude** (TIGHT/NORMAL/EXPANDED/EXPLOSIVE) is statistically
 learnable at 5m but the **realized/implied ratio is 0.83–0.92**, i.e. the option
 market has already priced the calendar × vol-clustering structure, so it is not
 tradeably extractable. Execution backtests confirm the consequence: the TYPE
@@ -55,8 +56,10 @@ The program is a funnel, each stage motivated by the previous stage's result:
 5. **Maybe direction needs new INFORMATION, not new targets** → the "rethink":
    bring orthogonal data the price series can't contain. Daily dealer-options
    flow (E5) — null, and it *dilutes* the lone IWM edge. Intraday order-flow
-   (E5b) — also null: it *reshuffles* the flicker (kills IWM-long, surfaces an
-   unvalidated SPY-long) rather than adding signal (§5.4).
+   (E5b) — also null: it *reshuffles* the flicker. Reconstructed intraday dealer
+   GEX/DEX (E5c) — also null, and notably its DEX reconstruction was *validated
+   100%-sign-faithful* against the live options feed, so the null is real, not a
+   data-quality artifact (§5.4).
 6. **Separately, is MAGNITUDE the thing that's actually predictable?** (§5.2):
    yes statistically (5m gates pass 100% bootstrap) — but the implied-vs-realized
    gate fails at 0.83–0.92, so the market has it priced. Not tradeable.
@@ -101,6 +104,7 @@ Three families. **A** = validated/production-grade; **B** = direction probes
 | **B4 (E4)** | triple-barrier first-touch ±k·ATR, mag-gated | direction | ❌ 0/8 calib; IWM-only long flicker z≤4.2, no replication |
 | **C1 (E5)** | Flow-Direction (daily EOD dealer greeks) | direction | ❌ null; dilutes IWM edge |
 | **C1b (E5b)** | Intraday order-flow imbalance (OFI) | direction | ❌ null — reshuffles flicker (§5.4) |
+| **C1c (E5c)** | Reconstructed intraday dealer GEX/DEX (intragex) | direction | ❌ null — DEX recon validated faithful, still dilutes IWM (§5.4) |
 | **C5** | Fractional differentiation | any | tested w/ E5 all-levers — null |
 | **C6** | Rolling/recency-weighted window | any | tested w/ E5 all-levers — null |
 | **C3** | Information-driven bars (volume/dollar) | any | ready, not run |
@@ -267,7 +271,31 @@ Cost-free only, miscalibrated (ECE≈0.10), net-untradeable. *(Builder:
 `gcp/build_intraday_flow.py` → `intraday_flow_15m`, now COPY-based + resumable;
 loader `lib/features/intraday_flow.py`; 8 hermetic tests pass.)*
 
-**Production-grade architecture note (Rule 0):** E5/E5b both scan their large
+**E5c — reconstructed intraday dealer GEX/DEX (C1c) ❌ null (resolved 2026-06-06).**
+The "reverse-engineer what dealer positioning was at 11:30am" idea, done rigorously:
+walk the T-1 EOD chain forward to each 15m spot via the delta-gamma re-curve
+`δ(S)=δ_eod+γ_eod·(S−S_eod)` (→ `total_gex=NetΓ·S²·mult`, `total_dex=(A+B·(S−S_eod))·S`),
+materialized over 2016→2026. Features: `dex_per_oi`, `gex_per_oi`, `dist_to_flip_pct`.
+
+*Validated against the live feed:* the platform captures **real** intraday options
+(`market_session='REALTIME'`, every 5 min, since 2026-05-23). Comparing the
+reconstruction to the real intraday greeks at matched spot (n=84 bars/ticker):
+**DEX sign-agreement = 100%** on IWM/SPY/QQQ (corr_dex 0.55–0.82) — the re-curve is
+a faithful proxy for DEX *direction*; GEX is unreliable (corr_gex IWM −0.79) so
+`gex_per_oi`/`dist_to_flip_pct` are noisy. So the result below is a real
+DEX-direction null, not a reconstruction artifact.
+
+Probe (baseline → +intragex, z at fire ≥0.60): IWM long **+2.85→+0.60** (diluted,
+fires 726→874), SPY long +0.05→−0.06, QQQ short +0.19→+1.69; nothing reaches
+significance. **Third dealer-positioning class to fail identically** — dilutes the
+IWM flicker, no replicating edge. A bug (s_eod from NULL EOD `underlying_price` →
+NaN dex/flip) was caught *by the validation step* and fixed (s_eod from
+`market_data_daily.close`). *(Builder `gcp/build_intraday_gex.py` → `intraday_gex_15m`,
+resumable+COPY; `lib/features/intraday_gex.py`; 8 hermetic tests.)* Real-intraday
+standalone direction test deferred — only ~10 trading days of REALTIME exist
+(underpowered); revisit once ≥6 months accrue.
+
+**Production-grade architecture note (Rule 0):** E5/E5b/E5c each scan their large
 source table (`etf_options_snapshots` ~14M rows; `market_data_intraday` ~2M/ticker)
 **once** in a dedicated builder job into a small materialized table; experiments
 read the materialized table. This replaced a first cut that re-aggregated per
@@ -375,8 +403,8 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
 
 **Established (high confidence):**
 - Structure (TYPE) is predictable & calibrated, cross-ticker. ✅
-- Direction is not, across 6 framings + 2 new information classes (E5 daily flow,
-  E5b intraday OFI — both null). ❌
+- Direction is not, across 6 framings + 3 new information classes (E5 daily flow,
+  E5b intraday OFI, E5c reconstructed intraday GEX/DEX — all null). ❌
 - Magnitude is predictable @5m but **priced** (realized/implied 0.83–0.92). ⚠️
 - The TYPE edge is **non-tradeable** after friction; options don't rescue it. ❌
 - Correlation lenses agree: structure/magnitude yes, sign no.
@@ -386,19 +414,26 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
   (z≤4.2, price-only, mag-gated) and the new **SPY-long +intraday-OFI** (z 2.97,
   +5.8pp). Each is 1-of-N, cost-free, miscalibrated — possible multiple-comparisons
   luck. Neither deployable; need more names / OOS windows to confirm or kill.
-- **E5b intraday OFI is resolved (null)** — it was the last lever with a strong
-  literature prior; it reshuffled rather than added signal.
+- **E5b OFI and E5c reconstructed GEX/DEX are resolved (null)** — the two strongest
+  remaining microstructure/positioning levers; both reshuffled/diluted rather than
+  added signal. E5c's DEX reconstruction was validated 100%-sign-faithful vs the
+  live feed, so its null is not a data-quality artifact.
+- **Real-intraday (REALTIME) direction test** — deferred: only ~10 trading days of
+  live options exist (since 2026-05-23); underpowered for an 8-fold verdict.
+  Becomes viable ~2026-11 once ≥6 months accrue. The live feed has already proven
+  its worth as the *validation* ground-truth for reconstructions.
 - **C3 information bars**, **C4 path/LSTM**, **C7 HMM**, **C2 cross-asset relative**
   — staged, lower prior given the consistent null.
 
 **The standing recommendation:** productionize **magnitude/volatility** as the
 forecastable quantity (sizing, not sign), keep TYPE as a structural context
 feature, and treat standalone direction as **not extractable from any data class
-tested so far** — including the microstructure lever (E5b OFI) that carried the
-strongest prior and still failed. The remaining hope is *genuinely* new data we
-do **not** yet have history for (e.g. real-time tick-level trade/quote or
-intraday dealer-DEX capture, accumulated forward from today), not another
-re-representation of the OHLCV+EOD-options we already hold.
+tested so far** — including the microstructure levers (E5b OFI, E5c reconstructed
+intraday DEX) that carried the strongest priors and still failed, the latter even
+with its reconstruction validated faithful against live data. The remaining hope is
+*genuinely* new data accumulated **forward** (the live REALTIME options feed, going
+since 2026-05-23 — usable for a real-intraday-greeks verdict once ≥6 months
+accrue), not another re-representation of the OHLCV+EOD-options we already hold.
 
 ---
 
@@ -413,6 +448,9 @@ re-representation of the OHLCV+EOD-options we already hold.
   → `etf_options_daily_greeks`.
 - **Intraday OFI (E5b):** `lib/features/intraday_flow.py` +
   `gcp/build_intraday_flow.py` → `intraday_flow_15m`.
+- **Reconstructed intraday GEX/DEX (E5c):** `lib/features/intraday_gex.py` +
+  `gcp/build_intraday_gex.py` → `intraday_gex_15m`. Validated against the live
+  `etf_options_snapshots` `market_session='REALTIME'` feed (real intraday greeks).
 - **Correlation pipelines:** `lib/combo_mining.py`; jobs `regime-combo-weekly`,
   `indicator-correlation`; tables `regime_combo_results`, `indicator_correlation`.
 - **Hermetic tests:** `tests/test_strat_dir_probes.py` (19), `test_flow_direction.py`

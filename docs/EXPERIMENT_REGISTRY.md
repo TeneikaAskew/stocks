@@ -51,7 +51,9 @@ LightGBM, not HAR (open gap, §G6).
 | `market_data_intraday` | 1-min OHLCV (RTH+ext) | IWM 1.93M / SPY 2.36M / QQQ 2.20M; 2015→2026 | exec backtests, E5b OFI |
 | `etf_options_snapshots` | gamma/options (EOD AV) | ~14M; 2016→2026 | C1 flow, A2 phase5(def), gate-7, C3 features |
 | `etf_options_daily_greeks` (materialized) | options/flow (dex/vanna/charm) | ~7.5k; built once | B5/E5 flow probe |
-| `intraday_flow_15m` (materialized) | order-flow (OFI/CVD) | ~6.5k/yr/ticker | B5b/E5b (in progress) |
+| `intraday_flow_15m` (materialized) | order-flow (OFI/CVD) | ~6.5k/yr/ticker | B5b/E5b |
+| `intraday_gex_15m` (materialized) | reconstructed dealer GEX/DEX (delta-gamma re-curve of T-1 EOD chain) | IWM 157k / SPY 167k / QQQ 163k; 2016→2026 | B5c/E5c |
+| `etf_options_snapshots` `market_session='REALTIME'` | **real** intraday greeks (5-min) | ~1.2M rows/ticker/day; since 2026-05-23 | E5c validation; future real-intraday verdict |
 | `gamma_events` | gamma-alert outcomes | 8,119 alerts; 2016→2026 | P2, P5 |
 | `news_sentiment` | news/text | ~70k mkt-wide (sparse pre-2025) | C-news |
 | `historical_signals` / `signal_alerts` | live voter fires | — | P7-T2/T3, L-series |
@@ -123,6 +125,13 @@ LightGBM, not HAR (open gap, §G6).
   backfill (full 2015→2026) completed; the slow per-row upsert was replaced with
   the COPY path and made resumable (commit 6323cfd). The **SPY-long z=2.97** and
   **IWM E4 long z=2.85** flickers are the two standing replicate-or-reject items.
+- **B5c / E5c (reconstructed intraday GEX/DEX): RESOLVED 2026-06-06** — ❌ null
+  (third dealer-positioning class to dilute the IWM flicker; see B5c). Notably the
+  **live REALTIME options feed** (`market_session='REALTIME'`, since 2026-05-23) was
+  used to validate the reconstruction: DEX sign-agreement 100% / corr 0.55–0.82, so
+  the null is real, not a reconstruction artifact (GEX recon is noisy, corr_gex IWM
+  −0.79). A **real-intraday-greeks** direction verdict is deferred until ≥6 months
+  of REALTIME accrue (~2026-11); today only ~10 trading days exist.
 - **No HAR / GARCH baseline** was run for magnitude (used LightGBM only) — a
   classical vol baseline would strengthen the "priced" conclusion.
 - **No SVM / sequence model** (C4 LSTM/CNN/path-signatures) run; staged only.
@@ -266,6 +275,25 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Verdict:** ❌ falsified as a robust directional edge. Swapping the significant ticker rather than adding/replicating signal is the multiple-comparisons signature (one of 6 tests crossing z≈3 while the prior winner vanishes). Cost-free only; E4-family miscalibration (ECE≈0.10); net-untradeable like the rest of the E-series.
 - **Open items:** the **SPY-long intraflow flicker (z 2.97)** is now the standing E4-style candidate alongside the IWM E4 long flicker — both need replicate-or-reject (more names / OOS window) before any belief; neither is deployable today.
 - **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq{,_intraflow}_178067926x.json` per ticker; `lib/features/intraday_flow.py`; `gcp/build_intraday_flow.py`; `tests/test_intraday_flow.py`; commits e60a114 (feature), 6323cfd (resumable builder).
+
+### B5c (E5c) — Reconstructed intraday dealer GEX/DEX (intragex)
+- **Status:** failed (null; dilutes the IWM flicker). **Dates:** 2026-06-05/06. **Question:** does *reconstructed intraday dealer positioning* (the "reverse-engineer what GEX/DEX was at 11:30am" idea) add direction?
+- **Target:** E4 long/short triple-barrier (k1.0, h12, topq-0.2, tf15m); +3 cols `dist_to_flip_pct`, `gex_per_oi`, `dex_per_oi` from `intraday_gex_15m`. nfeat 248→251 / 227→230 / 224→227.
+- **Reconstruction:** walk the T-1 EOD chain forward to each 15m spot via the delta-gamma re-curve `δ(S)=δ_eod+γ_eod·(S−S_eod)` → per-day scalars + vectorized per-bar (`total_gex=NetΓ·S²·mult`, `total_dex=(A+B·(S−S_eod))·S`, flip once/day). S_eod from `market_data_daily.close` (EOD chain `underlying_price` is NULL — a bug caught & fixed mid-build, see below). Full 2016→2026 backfill (IWM 157k / SPY 167k / QQQ 163k buckets).
+- **VALIDATION against REAL intraday greeks** (the live `REALTIME` AV chain, 2026-06-02→06, n=84 bars/ticker, at matched spot): **DEX sign-agreement = 100% on all 3 tickers**, corr_dex 0.55–0.82 → the re-curve is a *faithful proxy for DEX direction*. GEX is unreliable (corr_gex IWM **−0.79**, SPY 0.51, QQQ 0.67; SPY sign 66%) → `gex_per_oi`/`dist_to_flip_pct` are noisy proxies; `dex_per_oi` is the trustworthy one. This means the null below is a REAL DEX-direction null, not a reconstruction artifact.
+- **Results — pooled precision at fire ≥0.60 (baseline → +intragex):**
+  | ticker | side | baseline z (n) | +intragex z (n) | Δz |
+  |---|---|---|---|---|
+  | IWM | long | **+2.85** (726) | **+0.60** (874) | **−2.26** |
+  | IWM | short | +0.14 | +0.20 | +0.06 |
+  | SPY | long | +0.05 | −0.06 | −0.11 |
+  | SPY | short | +1.34 | −0.34 | −1.68 |
+  | QQQ | long | −1.35 | −0.71 | +0.64 |
+  | QQQ | short | +0.19 | +1.69 | +1.50 |
+- **Verdict:** ❌ null. Same outcome family as E5/E5b: dilutes the IWM long flicker (z 2.85→0.60, fires↑ precision↓), no arm reaches significance (|z|<1.7). With a *validated-faithful* DEX reconstruction, dealer delta positioning still carries no tradeable cross-ticker direction.
+- **Leaks/bugs:** first backfill wrote `total_dex`/`gamma_flip` as NaN (s_eod from NULL EOD `underlying_price`); GEX survived (no s_eod dep). Fixed → s_eod from `market_data_daily.close`; --restart recompute. Caught by the validation step.
+- **Open items:** real-intraday (REALTIME) direction test deferred — only ~10 trading days exist (since 2026-05-23); underpowered for an 8-fold verdict. Revisit once ≥6 months accrue.
+- **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq_intragex_178070441x.json`; `lib/features/intraday_gex.py`; `gcp/build_intraday_gex.py`; `intraday_gex_15m`; `tests/test_intraday_gex.py`; commits 2e36c50 (feature), c8265ff (s_eod fix).
 
 ## C — Feature-family R&D (all on `next_close>next_open`, IWM 5m/15m/30m, 0/8 each)
 
