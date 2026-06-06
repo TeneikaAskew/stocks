@@ -130,8 +130,11 @@ LightGBM, not HAR (open gap, §G6).
   **live REALTIME options feed** (`market_session='REALTIME'`, since 2026-05-23) was
   used to validate the reconstruction: DEX sign-agreement 100% / corr 0.55–0.82, so
   the null is real, not a reconstruction artifact (GEX recon is noisy, corr_gex IWM
-  −0.79). A **real-intraday-greeks** direction verdict is deferred until ≥6 months
-  of REALTIME accrue (~2026-11); today only ~10 trading days exist.
+  −0.79). An exploratory read of the real DEX surfaced the **one live LEAD** —
+  first cross-ticker-positive IC (DEX→1h: SPY +0.14 / IWM +0.11 / QQQ +0.23), but
+  in-sample/9-day/underpowered; a real-intraday-greeks *verdict* is deferred until
+  ≥6 months of REALTIME accrue (~2026-11). Recommended: scheduled real-intraday
+  DEX/GEX builder so the walk-forward is ready when the window lengthens.
 - **No HAR / GARCH baseline** was run for magnitude (used LightGBM only) — a
   classical vol baseline would strengthen the "priced" conclusion.
 - **No SVM / sequence model** (C4 LSTM/CNN/path-signatures) run; staged only.
@@ -292,7 +295,8 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
   | QQQ | short | +0.19 | +1.69 | +1.50 |
 - **Verdict:** ❌ null. Same outcome family as E5/E5b: dilutes the IWM long flicker (z 2.85→0.60, fires↑ precision↓), no arm reaches significance (|z|<1.7). With a *validated-faithful* DEX reconstruction, dealer delta positioning still carries no tradeable cross-ticker direction.
 - **Leaks/bugs:** first backfill wrote `total_dex`/`gamma_flip` as NaN (s_eod from NULL EOD `underlying_price`); GEX survived (no s_eod dep). Fixed → s_eod from `market_data_daily.close`; --restart recompute. Caught by the validation step.
-- **Open items:** real-intraday (REALTIME) direction test deferred — only ~10 trading days exist (since 2026-05-23); underpowered for an 8-fold verdict. Revisit once ≥6 months accrue.
+- **Exploratory LEAD (real-intraday DEX, 2026-06-06):** IC of the **real** (not reconstructed) intraday DEX/GEX vs forward returns on the 9-day REALTIME window (RTH 15m, n=225/ticker) — the program's first cross-ticker-consistent positive: IC(DEX→15m) SPY +0.089 / IWM +0.054 / QQQ +0.117; IC(DEX→1h) +0.137 / +0.111 / **+0.229**; all positive, strengthening at 1h. The EOD re-curve missed it (noisy DEX magnitude). **LEAD not result** — 9 days, in-sample, autocorrelated, no folds/costs; same profile as the flickers that die under walk-forward. Confirmable only after ≥6 months REALTIME (~2026-11).
+- **Open items:** real-intraday standalone direction *verdict* deferred (window too short); recommended next step = a scheduled builder materializing real-intraday DEX/GEX daily so the walk-forward is ready when the window lengthens. `av-options-realtime` feed healthy (ENABLED, 5-min, succeeding).
 - **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq_intragex_178070441x.json`; `lib/features/intraday_gex.py`; `gcp/build_intraday_gex.py`; `intraday_gex_15m`; `tests/test_intraday_gex.py`; commits 2e36c50 (feature), c8265ff (s_eod fix).
 
 ## C — Feature-family R&D (all on `next_close>next_open`, IWM 5m/15m/30m, 0/8 each)
