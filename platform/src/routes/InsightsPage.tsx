@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send, ListChecks } from 'lucide-react';
+import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send, ListChecks, Network } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
 import {
   useBriefDirection,
@@ -24,10 +24,11 @@ import {
   TradePlanCard,
 } from '@/components/insights/ReportCards';
 import { WatchlistPanel } from '@/components/insights/WatchlistPanel';
+import { AgentsPanel } from '@/components/insights/AgentsPanel';
 import { MicroLabel } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
 
-type Tab = 'report' | 'history' | 'chat' | 'watchlist';
+type Tab = 'report' | 'agents' | 'history' | 'chat' | 'watchlist';
 
 export default function InsightsPage() {
   const { activeTicker, setTicker } = useTickerStore();
@@ -131,6 +132,9 @@ export default function InsightsPage() {
         >
           Briefing
         </TabButton>
+        <TabButton active={tab === 'agents'} onClick={() => setTab('agents')} icon={<Network size={14} />}>
+          Agents
+        </TabButton>
         <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
           History
         </TabButton>
@@ -219,6 +223,10 @@ export default function InsightsPage() {
               setViewingHistoricalId(id);
               setTab('report');
             }}
+          />
+        ) : tab === 'agents' ? (
+          <AgentsPanel
+            envelope={viewingHistoricalId ? historicalQuery.data ?? null : reportQuery.data ?? null}
           />
         ) : tab === 'watchlist' ? (
           <WatchlistPanel
