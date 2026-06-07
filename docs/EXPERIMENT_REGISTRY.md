@@ -130,11 +130,13 @@ LightGBM, not HAR (open gap, §G6).
   **live REALTIME options feed** (`market_session='REALTIME'`, since 2026-05-23) was
   used to validate the reconstruction: DEX sign-agreement 100% / corr 0.55–0.82, so
   the null is real, not a reconstruction artifact (GEX recon is noisy, corr_gex IWM
-  −0.79). An exploratory read of the real DEX surfaced the **one live LEAD** —
-  first cross-ticker-positive IC (DEX→1h: SPY +0.14 / IWM +0.11 / QQQ +0.23), but
-  in-sample/9-day/underpowered; a real-intraday-greeks *verdict* is deferred until
-  ≥6 months of REALTIME accrue (~2026-11). Recommended: scheduled real-intraday
-  DEX/GEX builder so the walk-forward is ready when the window lengthens.
+  −0.79). An exploratory **pooled** IC of real DEX first looked cross-ticker-positive
+  (DEX→1h +0.11..+0.23) but a per-day check **killed it**: Simpson's paradox
+  (within-day IC −0.58..−0.63, 8/9 days negative) + `dex_per_oi` is a mechanical
+  spot-level proxy (corr 0.66–0.93 with spot). No independent signal. The
+  `realtime_gex_15m` table + `realtime-gex-daily` scheduler (5 PM ET weekdays) are
+  LIVE and retained for validation + properly controlled future tests (within-day,
+  level-residualized — never pooled).
 - **No HAR / GARCH baseline** was run for magnitude (used LightGBM only) — a
   classical vol baseline would strengthen the "priced" conclusion.
 - **No SVM / sequence model** (C4 LSTM/CNN/path-signatures) run; staged only.
@@ -295,8 +297,24 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
   | QQQ | short | +0.19 | +1.69 | +1.50 |
 - **Verdict:** ❌ null. Same outcome family as E5/E5b: dilutes the IWM long flicker (z 2.85→0.60, fires↑ precision↓), no arm reaches significance (|z|<1.7). With a *validated-faithful* DEX reconstruction, dealer delta positioning still carries no tradeable cross-ticker direction.
 - **Leaks/bugs:** first backfill wrote `total_dex`/`gamma_flip` as NaN (s_eod from NULL EOD `underlying_price`); GEX survived (no s_eod dep). Fixed → s_eod from `market_data_daily.close`; --restart recompute. Caught by the validation step.
-- **Exploratory LEAD (real-intraday DEX, 2026-06-06):** IC of the **real** (not reconstructed) intraday DEX/GEX vs forward returns on the 9-day REALTIME window (RTH 15m, n=225/ticker) — the program's first cross-ticker-consistent positive: IC(DEX→15m) SPY +0.089 / IWM +0.054 / QQQ +0.117; IC(DEX→1h) +0.137 / +0.111 / **+0.229**; all positive, strengthening at 1h. The EOD re-curve missed it (noisy DEX magnitude). **LEAD not result** — 9 days, in-sample, autocorrelated, no folds/costs; same profile as the flickers that die under walk-forward. Confirmable only after ≥6 months REALTIME (~2026-11).
-- **Open items:** real-intraday standalone direction *verdict* deferred (window too short); recommended next step = a scheduled builder materializing real-intraday DEX/GEX daily so the walk-forward is ready when the window lengthens. `av-options-realtime` feed healthy (ENABLED, 5-min, succeeding).
+- **Exploratory real-intraday DEX read — RAISED then KILLED (2026-06-06→07):** a
+  **pooled** IC of real DEX vs forward returns first looked like the program's first
+  cross-ticker-positive (pooled IC(DEX→1h) SPY +0.137 / IWM +0.111 / QQQ +0.229).
+  A per-day check (cheap once `realtime_gex_15m` was materialized) **overturned it**:
+  within-day IC is **−0.58 to −0.63, negative on 8/9 days for all 3 tickers**; the
+  positive pooled IC was **Simpson's paradox** (between-day level shifts). Root cause:
+  `dex_per_oi` correlates **0.66–0.93 with spot level** (option delta is monotonic in
+  moneyness), so it's a mechanical spot-level proxy, not dealer-positioning alpha —
+  the within-day relationship is ordinary intraday price-level mean-reversion. **No
+  independent directional signal.** Strengthens the direction-null: even exact real
+  intraday greeks add nothing once you control for the day.
+- **Infra retained (LIVE):** `build-realtime-gex` job + `realtime-gex-daily` scheduler
+  (5 PM ET weekdays) + `realtime_gex_15m` (282 buckets/ticker, 252 finite DEX,
+  2026-05-23→06-05). Kept as validation ground-truth and for **properly controlled**
+  future real-intraday tests (within-day, spot-level-residualized — never pooled).
+- **Lesson:** an IC must be evaluated within-day (the tradeable frame); pooled IC on
+  intraday data is Simpson-paradox-prone. Any option-greek feature monotonic in
+  moneyness must be residualized against spot before it can claim directional signal.
 - **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq_intragex_178070441x.json`; `lib/features/intraday_gex.py`; `gcp/build_intraday_gex.py`; `intraday_gex_15m`; `tests/test_intraday_gex.py`; commits 2e36c50 (feature), c8265ff (s_eod fix).
 
 ## C — Feature-family R&D (all on `next_close>next_open`, IWM 5m/15m/30m, 0/8 each)

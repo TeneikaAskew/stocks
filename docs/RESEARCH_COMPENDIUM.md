@@ -293,31 +293,31 @@ NaN dex/flip) was caught *by the validation step* and fixed (s_eod from
 `market_data_daily.close`). *(Builder `gcp/build_intraday_gex.py` → `intraday_gex_15m`,
 resumable+COPY; `lib/features/intraday_gex.py`; 8 hermetic tests.)*
 
-**E5c addendum — the one promising LEAD (real-intraday DEX exploratory read,
-2026-06-06).** Pushed to use the live data directly rather than wait, an
-exploratory IC of the **real** (not reconstructed) intraday DEX/GEX vs forward
-returns on the 9-day REALTIME window (RTH 15m bars, n=225/ticker) is the **first
-cross-ticker-consistent positive directional association in the whole program**:
+**E5c addendum — a real-intraday-DEX "lead" that was raised AND killed (2026-06-06→07).**
+Pushed to use the live data directly, an exploratory **pooled** IC of real intraday
+DEX vs forward returns on the 9-day REALTIME window first looked like the program's
+first cross-ticker-positive (pooled IC(DEX→1h): SPY +0.137 / IWM +0.111 / QQQ +0.229).
+A per-day check — made cheap by materializing `realtime_gex_15m` — **demolished it**:
 
-| | IC(DEX→15m) | IC(DEX→1h) | IC(GEX→15m) |
-|---|---|---|---|
-| SPY | +0.089 | +0.137 | +0.100 |
-| IWM | +0.054 | +0.111 | +0.051 |
-| QQQ | +0.117 | +0.229 | +0.087 |
+| ticker | within-day IC (mean) | days negative | pooled IC | corr(dex, spot) |
+|---|---|---|---|---|
+| IWM | **−0.63** | **8/9** | +0.259 | **+0.93** |
+| SPY | **−0.58** | 8/9 | +0.434 | +0.69 |
+| QQQ | **−0.63** | 8/9 | +0.454 | +0.66 |
 
-All positive, all three tickers, both horizons, **strengthening at 1h** — unlike
-the E5/E5b/E5c walk-forward nulls. The EOD re-curve (E5c) missed it because its
-DEX *magnitude* is noisy (corr 0.55–0.82); the signal appears to live in the
-magnitude that reconstruction blurs. **But this is a LEAD, not a result:** 9 days,
-in-sample, autocorrelated (overlapping 1h windows ⇒ effective-n ≪ 225), no
-folds/embargo/costs — exactly the profile of the in-sample flickers (IWM E4 z=4.2,
-SPY OFI z=2.97) that the program has repeatedly watched die under walk-forward. It
-is **not confirmable** until ≥6 months of REALTIME accrue (~2026-11). The
-`av-options-realtime` feed is healthy (ENABLED, 5-min, succeeding) so the clock is
-running; the recommended next step is a scheduled builder that materializes
-real-intraday DEX/GEX daily so the walk-forward is ready the moment the window is
-long enough. Standalone direction verdict therefore **deferred, with one live lead
-flagged to pursue**, not dismissed.
+Two killers: (1) **Simpson's paradox** — the positive *pooled* IC was driven by
+*between-day* level shifts; *within* each day (the only tradeable frame) the IC is
+strongly **negative and consistent** (8/9 days, all tickers). (2) **It's mechanical,
+not informational** — `dex_per_oi` correlates **0.66–0.93 with spot level** because
+option delta is monotonic in moneyness, so "DEX" is just a proxy for *where spot
+sits in the day's range*; the within-day relationship is ordinary intraday
+mean-reversion of price level, not dealer-positioning alpha. **Verdict: no
+independent directional signal** — the apparent lead was a pooled-correlation
+artifact. This makes the direction-null *stronger*: even the real, exact intraday
+greeks add nothing once you control for the day. The episode is the program's
+discipline working — and the `realtime_gex_15m` table + `realtime-gex-daily`
+scheduler still earn their keep as validation ground-truth and as the substrate for
+*properly controlled* (within-day, level-residualized) real-intraday tests later.
 
 **Production-grade architecture note (Rule 0):** E5/E5b/E5c each scan their large
 source table (`etf_options_snapshots` ~14M rows; `market_data_intraday` ~2M/ticker)
@@ -442,15 +442,15 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
   remaining microstructure/positioning levers; both reshuffled/diluted rather than
   added signal. E5c's DEX reconstruction was validated 100%-sign-faithful vs the
   live feed, so its null is not a data-quality artifact.
-- **Real-intraday DEX — the one live LEAD (§5.4 E5c addendum):** real intraday DEX
-  shows the program's first *cross-ticker-consistent* positive IC vs forward returns
-  (0.05–0.23, all 3 tickers, strengthening at 1h) on the 9-day REALTIME window. It's
-  in-sample/underpowered (a lead, not a result), but it's the first thing that
-  didn't reshuffle or dilute. Confirmable only once ≥6 months of REALTIME accrue
-  (~2026-11); feed is healthy. **Recommended:** a scheduled builder materializing
-  real-intraday DEX/GEX daily so the walk-forward is ready when the window is long
-  enough. The live feed has already paid off twice — as validation ground-truth for
-  the E5c reconstruction, and now as the source of this lead.
+- **Real-intraday DEX lead — RAISED then KILLED (§5.4 E5c addendum):** a pooled IC
+  first looked cross-ticker-positive, but a per-day check showed it was Simpson's
+  paradox (within-day IC −0.58 to −0.63, 8/9 days negative) and that `dex_per_oi`
+  is mechanically a spot-level proxy (corr 0.66–0.93 with spot). **No independent
+  signal.** Now-resolved, not open. The `realtime_gex_15m` table + `realtime-gex-daily`
+  scheduler are LIVE and retained — as validation ground-truth and for properly
+  controlled (within-day, level-residualized) real-intraday tests as data accrues.
+  Any future real-intraday direction test must residualize the spot-level proxy and
+  evaluate within-day, never pooled.
 - **C3 information bars**, **C4 path/LSTM**, **C7 HMM**, **C2 cross-asset relative**
   — staged, lower prior given the consistent null.
 
