@@ -90,7 +90,11 @@ def build_daily(ticker: str, days: int):
     f["dow"] = df.index.dayofweek
     # FTFC: prior-completed weekly + monthly direction (causal)
     f["ftfc"] = _ftfc_per_bar(df)
+    # market_data_daily may already carry some indicator columns; let our freshly
+    # computed features win and avoid duplicate-named columns (→ 2-D selection).
+    df = df.drop(columns=[c for c in f.columns if c in df.columns])
     df = pd.concat([df, f], axis=1)
+    df = df.loc[:, ~df.columns.duplicated()]
     return df
 
 
