@@ -622,7 +622,8 @@ def _upcoming_setup(tf_df: pd.DataFrame, labels: pd.Series,
     }
 
 
-def _bar_record(idx, row, candle: str, combo: str) -> Dict[str, Any]:
+def _bar_record(idx, row, candle: str, combo: str,
+                trigger_high=None, trigger_low=None) -> Dict[str, Any]:
     flags = _derive_strat_flags(combo, candle)
     try:
         period = str(idx.date()) if hasattr(idx, 'date') else str(idx)
@@ -636,6 +637,10 @@ def _bar_record(idx, row, candle: str, combo: str) -> Dict[str, Any]:
         "close": float(row['Close']) if pd.notna(row.get('Close')) else None,
         "candle": candle,
         "combo": combo,
+        # Strat trigger lines = the PRIOR bar's high/low (the levels this bar's
+        # break of confirmed its 2U/2D/3 classification).
+        "trigger_high": float(trigger_high) if pd.notna(trigger_high) else None,
+        "trigger_low": float(trigger_low) if pd.notna(trigger_low) else None,
         **flags,
     }
 
@@ -696,7 +701,9 @@ def compute_strat_history(
         combos = strat.detect_combos(tf_df, labels)
         records = [
             _bar_record(idx, tf_df.loc[idx], str(labels.loc[idx]),
-                        str(combos['strat_combo'].loc[idx]))
+                        str(combos['strat_combo'].loc[idx]),
+                        combos['trigger_high'].loc[idx],
+                        combos['trigger_low'].loc[idx])
             for idx in tf_df.index
         ]
         history = records[-lookback:]
