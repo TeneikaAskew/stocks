@@ -12,6 +12,7 @@ const OptionsFlowPage = lazy(() => import('@/routes/OptionsFlowPage'));
 const PlaybookPage = lazy(() => import('@/routes/PlaybookPage'));
 const ReportsPage = lazy(() => import('@/routes/ReportsPage'));
 const SignalsPage = lazy(() => import('@/routes/SignalsPage'));
+const StratHistoryPage = lazy(() => import('@/routes/StratHistoryPage'));
 const JournalPage = lazy(() => import('@/routes/JournalPage'));
 const InsightsPage = lazy(() => import('@/routes/InsightsPage'));
 const CatalystsPage = lazy(() => import('@/routes/CatalystsPage'));
@@ -51,6 +52,7 @@ const router = createBrowserRouter([
       { path: '/playbook', errorElement, element: <Suspense fallback={<PageLoader />}><PlaybookPage /></Suspense> },
       { path: '/reports', errorElement, element: <Suspense fallback={<PageLoader />}><ReportsPage /></Suspense> },
       { path: '/signals', errorElement, element: <Suspense fallback={<PageLoader />}><SignalsPage /></Suspense> },
+      { path: '/strat', errorElement, element: <Suspense fallback={<PageLoader />}><StratHistoryPage /></Suspense> },
       { path: '/journal', errorElement, element: <Suspense fallback={<PageLoader />}><JournalPage /></Suspense> },
       { path: '/insights', errorElement, element: <Suspense fallback={<PageLoader />}><InsightsPage /></Suspense> },
       { path: '/catalysts', errorElement, element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },

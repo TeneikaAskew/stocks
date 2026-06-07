@@ -52,6 +52,7 @@ RESAMPLE_RULES = {
     '1d':  '1D',
     '1w':  'W-FRI',
     '1mo': 'ME',
+    '1q':  'QE',
 }
 
 
