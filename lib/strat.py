@@ -249,6 +249,14 @@ class StratClassifier:
         result.loc[mask_22_bull & none(), 'strat_combo'] = '22_bull_continuation'
         result.loc[mask_22_bear & none(), 'strat_combo'] = '22_bear_continuation'
 
+        # ── Priority 8.5: 1-3-1 coil → expansion → coil ───────────────────
+        # Inside (1) → outside (3) → inside (1). A pending, highly-actionable
+        # compression after a volatility expansion — the break of THIS inside
+        # bar's high/low is the trade (the "12hr-detector" 1-3-1 signal). The
+        # latest bar is a '1', so strat_setup also flips True below.
+        mask_131 = (prev2 == '1') & (prev1 == '3') & (labels == '1')
+        result.loc[mask_131 & none(), 'strat_combo'] = '131_setup'
+
         # ── Priority 9-10: multi-inside compression ────────────────────────
         mask_111 = (prev2 == '1') & (prev1 == '1') & (labels == '1')
         mask_11 = (prev1 == '1') & (labels == '1')
@@ -537,3 +545,145 @@ def compute_strat_status(
         "trigger_high": trig_high,
         "trigger_low": trig_low,
     }
+
+
+# ---------------------------------------------------------------------------
+# Historical Strat tape + upcoming setup, per higher timeframe.
+#
+# Powers "given all the bars, classify every completed bar and describe the
+# in-progress (upcoming) period's break setup" across daily/weekly/monthly/
+# quarterly. Pure pandas — deterministic, hermetically testable.
+# ---------------------------------------------------------------------------
+
+STRAT_HISTORY_TIMEFRAMES: list[str] = ['1d', '1w', '1mo', '1q']
+
+
+def _derive_strat_flags(combo: str, candle: str) -> Dict[str, bool]:
+    """Continuation/reversal/inside/setup flags from a combo label + candle."""
+    c = combo or 'none'
+    return {
+        "is_continuation": "continuation" in c,
+        "is_reversal": "reversal" in c,
+        "is_inside": candle == '1',
+        "is_setup": candle == '1',
+    }
+
+
+def _last_directional(labels: pd.Series) -> Optional[str]:
+    """Most recent '2U'/'2D' label scanning backward; None if none found."""
+    for lab in reversed(list(labels)):
+        if lab in ('2U', '2D'):
+            return lab
+    return None
+
+
+def _upcoming_setup(tf_df: pd.DataFrame, labels: pd.Series,
+                    combos: pd.DataFrame) -> Dict[str, Any]:
+    """Describe the break setup for the NEXT bar of this timeframe.
+
+    Trigger lines = latest completed bar's High/Low. Break above → '2U', below
+    → '2D'; continuation vs reversal read against the most recent directional
+    bar. The 50% line mirrors the detector's "50% Trigger".
+    """
+    last = tf_df.iloc[-1]
+    last_candle = str(labels.iloc[-1])
+    last_combo = str(combos['strat_combo'].iloc[-1])
+    th = float(last['High']) if pd.notna(last['High']) else None
+    tl = float(last['Low']) if pd.notna(last['Low']) else None
+    mid = (th + tl) / 2 if (th is not None and tl is not None) else None
+
+    prior_dir = _last_directional(labels)
+    if prior_dir == '2U':
+        break_up, break_down = '2U continuation', '2D reversal'
+    elif prior_dir == '2D':
+        break_up, break_down = '2U reversal', '2D continuation'
+    else:
+        break_up, break_down = '2U', '2D'
+
+    return {
+        "basis_candle": last_candle,
+        "basis_combo": last_combo,
+        "is_inside_setup": last_candle == '1',
+        "trigger_high": th,
+        "trigger_low": tl,
+        "mid_trigger": mid,
+        "break_up": break_up,
+        "break_down": break_down,
+    }
+
+
+def _bar_record(idx, row, candle: str, combo: str,
+                trigger_high=None, trigger_low=None) -> Dict[str, Any]:
+    flags = _derive_strat_flags(combo, candle)
+    try:
+        period = str(idx.date()) if hasattr(idx, 'date') else str(idx)
+    except Exception:
+        period = str(idx)
+    return {
+        "period": period,
+        "open": float(row['Open']) if pd.notna(row.get('Open')) else None,
+        "high": float(row['High']) if pd.notna(row.get('High')) else None,
+        "low": float(row['Low']) if pd.notna(row.get('Low')) else None,
+        "close": float(row['Close']) if pd.notna(row.get('Close')) else None,
+        "candle": candle,
+        "combo": combo,
+        # Strat trigger lines = the PRIOR bar's high/low.
+        "trigger_high": float(trigger_high) if pd.notna(trigger_high) else None,
+        "trigger_low": float(trigger_low) if pd.notna(trigger_low) else None,
+        **flags,
+    }
+
+
+def compute_strat_history(
+    ticker: str,
+    df: Optional[pd.DataFrame] = None,
+    timeframes: Optional[list[str]] = None,
+    lookback: int = 20,
+    strat_config: Optional[StratConfig] = None,
+) -> Dict[str, Any]:
+    """Historical Strat classification per timeframe + the upcoming setup.
+
+    Resamples daily bars up to each requested timeframe (daily/weekly/monthly/
+    quarterly), classifies every completed bar (candle + combo), and returns the
+    last ``lookback`` bars plus the in-progress period's break setup. Pure given
+    ``df``; loads daily bars via DataLoader when ``df`` is None. Fails loud on
+    insufficient data (Rule 3.7 — no synthetic fallback).
+    """
+    from lib.data_loader import DataLoader
+
+    timeframes = timeframes or STRAT_HISTORY_TIMEFRAMES
+    loader = DataLoader()
+    if df is None:
+        df = loader.load_daily(ticker)
+    if df is None or df.empty or len(df) < 2:
+        return {"available": False, "ticker": ticker.upper(),
+                "reason": f"insufficient daily bars for {ticker}"}
+
+    strat = StratClassifier(strat_config=strat_config)
+    out: Dict[str, Any] = {"available": True, "ticker": ticker.upper(), "timeframes": {}}
+
+    for tf in timeframes:
+        tf_df = df if tf == '1d' else loader.aggregate_to_timeframe(df, tf)
+        tf_df = tf_df.dropna(subset=['High', 'Low', 'Close'])
+        if tf_df.empty or len(tf_df) < 2:
+            out["timeframes"][tf] = {"available": False,
+                                     "reason": f"insufficient {tf} bars"}
+            continue
+        labels = strat.classify_series(tf_df)
+        combos = strat.detect_combos(tf_df, labels)
+        records = [
+            _bar_record(idx, tf_df.loc[idx], str(labels.loc[idx]),
+                        str(combos['strat_combo'].loc[idx]),
+                        combos['trigger_high'].loc[idx],
+                        combos['trigger_low'].loc[idx])
+            for idx in tf_df.index
+        ]
+        history = records[-lookback:]
+        out["timeframes"][tf] = {
+            "available": True,
+            "history": history,
+            "current": history[-1],
+            "upcoming": _upcoming_setup(tf_df, labels, combos),
+        }
+
+    return out
