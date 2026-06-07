@@ -290,7 +290,7 @@ export default function PlaybookPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-[var(--color-text-primary)]">
+          <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">
             {activeTicker} Playbook
           </h1>
           <p className="text-xs text-[var(--color-text-muted)]">

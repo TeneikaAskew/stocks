@@ -207,7 +207,7 @@ export default function HelpPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Help & Glossary</h1>
+        <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Help & Glossary</h1>
         <p className="text-xs text-[var(--color-text-muted)] mt-1">
           Quick reference for every term, indicator, and metric used in the platform.
         </p>
