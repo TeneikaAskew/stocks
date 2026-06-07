@@ -204,16 +204,22 @@ is" — and the program had buried it (it lived in A2 but was gated as "priced")
 **Caveat:** it's the same VRP-priced quantity, so it's valuable for *sizing /
 strategy selection / risk*, not for cheaply buying the straddle.
 
-Two corrections fell out: **(bug)** the `regime` *text* label in `gamma_levels_eod`
-(and `lib/gamma.py:747`, spot-vs-flip) is **inverted vs the vol regime** —
-`'negative_gamma'` rows have `total_gex>0` in 2,765/2,767 cases; `sign(total_gex)`
-tracks vol correctly, the flip-based label does not. The downstream `dealer_regime`
-feature inherits this and should be fixed. **(direction)** the regime-conditional
-*direction* hypothesis (neg-gamma→momentum) is **null over 11 years** (within-day
-30m autocorr ≈0 in both regimes; the 9-day blip was small-sample noise) — so gamma
-still doesn't give raw call-vs-put, but that null is now well-powered and
-correctly-framed, not the old pooled-classifier version. See registry **B6**.
-Still untested: **volume-at-price / POC** ("where volume sits").
+Two corrections fell out: **(bug — NOW FIXED 2026-06-07)** the `regime` label in
+`gamma_levels_eod` (and `lib/gamma.py`, formerly spot-vs-flip) was **inverted vs the
+vol regime** — `'negative_gamma'` rows had `total_gex>0` in 2,765/2,767 cases
+because `compute_gamma_flip` returns None on ~half the days (the neg-gamma ones) and
+otherwise a flip far from spot. Fixed: regime now ← **sign(total_gex)** (commit
+7b9e873); `:latest` rebuilt, `premarket-brief` redeployed, `gamma_levels_eod`
+rebuilt + verified (regime↔sign, 0 mismatches). `strat_features.gamma_regime`
+rebuild still pending (heavy). **(direction)** the regime-conditional *direction*
+hypothesis (neg-gamma→momentum) is **null over 11 years** (within-day 30m autocorr
+≈0 in both regimes; the 9-day blip was small-sample noise). See registry **B6**.
+
+**Volume-at-price (POC) — same shape as gamma (registry B7).** Prior-day Point of
+Control: **not a magnet** (close nearer POC than open only ~30% of days), **no
+direction** (open-vs-POC return ≈0), but **distance-from-POC → volatility is real**
+(SPY: open far from POC → ~2× day range, monotonic near 1.03% / mid 1.35% / far
+2.01%). So "where volume sits," like gamma, forecasts **vol/sizing, not sign.**
 
 ### 5.3 A3 / B — Direction ❌ (the exhaustive null)
 
@@ -455,15 +461,18 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
 - Magnitude is predictable @5m but **priced** (realized/implied 0.83–0.92). ⚠️
 - **Gamma → volatility is real & robust (11yr): neg-gamma → 1.34–1.87× larger moves,
   all tickers** (§5.2b). Usable for sizing/risk, not for arbing the straddle (priced).
+- **Volume-at-price (POC) → volatility is real too** (§5.2b/B7): open far from prior
+  POC → ~2× day range. Like gamma: vol/sizing yes, direction no.
 - The TYPE edge is **non-tradeable** after friction; options don't rescue it. ❌
 - Correlation lenses agree: structure/magnitude/vol yes, sign no.
 
 **Open / unresolved:**
-- **BUG (production): `regime` label inverted vs vol regime** (§5.2b) — fix
-  `dealer_regime` to use `sign(total_gex)` (or audit the flip computation); audit
-  whether gamma alerts / the 143-col surface inherited the wrong sign.
-- **Volume-at-price / POC untested** — "where volume sits" as a level source; the
-  one practitioner gamma-adjacent lever never tried.
+- ✅ **Regime-label bug FIXED + shipped** (§5.2b; commit 7b9e873) — `lib.gamma` uses
+  `sign(total_gex)`, `gamma_levels_eod` rebuilt+verified, brief redeployed. **Still
+  pending:** rebuild `strat_features.gamma_regime` (heavy; implies model re-touch).
+- **Productionize the vol signal** — gamma regime + POC-distance as a position-sizing
+  / strategy-gating input (the real, confirmed edge); de-confound POC-vol from
+  gap/vol-clustering and confirm cross-ticker.
 - **Two single-cell long flickers, both replicate-or-reject:** the **IWM E4 long**
   (z≤4.2, price-only, mag-gated) and the new **SPY-long +intraday-OFI** (z 2.97,
   +5.8pp). Each is 1-of-N, cost-free, miscalibrated — possible multiple-comparisons

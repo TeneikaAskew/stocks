@@ -324,8 +324,29 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Finding 2 — production BUG: the `regime` text label is inverted vs `total_gex` sign.** In `gamma_levels_eod`, `regime='negative_gamma'` has `total_gex>0` in **2,765 of 2,767** rows. `lib/gamma.py:747` sets `regime = 'positive_gamma' if spot>flip else 'negative_gamma'` (standard rule) — but the *flip-based* label does NOT track the vol regime (it gives the inverted/weaker vol split), whereas **sign(total_gex) does** (Finding 1). ⇒ the spot-vs-flip `regime` / downstream `dealer_regime` feature mislabels the vol regime. NEEDS FIX (affects the 143-col surface, gamma alerts P2, dealer_regime). My first 11-yr run was fooled by this label and got the backwards answer until I switched to the numeric sign.
 - **Finding 3 — Gamma → DIRECTION (regime-conditional momentum): NULL, 11 years.** Hypothesis: neg-gamma→intraday momentum, pos-gamma→mean-reversion. Powered test (1,177 neg vs 438 pos days): within-day 30m return autocorr ≈ **0 in both** (−0.012 vs −0.020), mom-hit 0.489/0.496. The 9-day real-intraday blip (neg-gamma autocorr +0.10..+0.56) was small-sample noise (per-day check: QQQ's +0.56 was 2 days). Correctly-framed, spot-invariant, powered — and still null.
 - **Verdict:** gamma's value is **volatility/regime/sizing (real, confirmed)**, not raw call-vs-put direction. The original blanket null mis-framed it (pooled classifier; conflated vol/direction; a label bug masked the vol effect). Vindicates the vol intuition; direction-null now far better supported (11yr, right frame).
-- **Open / next:** (1) FIX the regime label (use sign(total_gex), or audit flip computation) + rebuild `dealer_regime`; (2) productionize vol-regime for position sizing / strategy selection; (3) **volume-at-price / POC still untested** ("where volume sits"); (4) conditional level-event tests (wall rejection/breakout) need the accruing real feed.
-- **Artifacts:** queries via `db_query_cr` over `gamma_levels_eod` + `strat_features_30m` + `realtime_gex_15m`; `lib/gamma.py:747,935` (label logic).
+- **BUG FIX SHIPPED (2026-06-07):** `lib/gamma.py` build_summary + grid now derive
+  regime from **sign(total_gex)** (commit 7b9e873; 48 gamma + 75 consumer tests
+  green). `:latest` image rebuilt; **`premarket-brief` redeployed** (live regime
+  display fixed); **`gamma_levels_eod` rebuilt + VERIFIED** — `negative_gamma`↔neg
+  4,940 / `positive_gamma`↔pos 3,136, **0 mismatches, 0 'unknown'** (was 2,765/2,767
+  inverted). Root cause confirmed: `compute_gamma_flip` returns None on ~half the
+  days (the neg-gamma ones → dumped to 'unknown') and otherwise returns a flip far
+  from spot (avg 217 vs spot 337). **flip itself is still unreliable** as a level
+  (separate fix tracked). **STILL PENDING (heavy):** rebuild `strat_features.gamma_regime`
+  (sourced from `gamma_levels_eod`) → implies re-touching models that use it.
+- **Open / next:** (1) ✅ regime fix shipped; ⏳ strat_features.gamma_regime rebuild;
+  (2) productionize vol-regime for position sizing / strategy selection.
+- **Artifacts:** `lib/gamma.py:743-762,933-952`; commit 7b9e873; gamma_levels_eod (rebuilt p2-build-gamma-levels-z5hdc).
+
+### B7 (volume-at-price / POC) — VOL signal real, magnet/direction null (2026-06-07)
+- **Status:** done (first cut). **Question:** does volume profile (Point of Control = the prior-day price level with the most traded volume) act as a level / predict direction or vol? ("where volume sits")
+- **Method:** prior-day POC via 1-min volume histogram (price binned to $0.5 / IWM $0.2), leak-safe (D-1 for day D), from `market_data_intraday`. Tests over 2016→2026 (magnet/direction) and 2022→2026 (vol, single-ticker scan to beat the 600s timeout).
+- **Finding 1 — POC magnet: NULL.** Day close lands nearer the prior-day POC than the open did only **~30% of days** (IWM 0.294 / QQQ 0.316; n=2,600+); mean close-distance > open-distance. POC is not a magnet — *caveat:* the metric is partly confounded by intraday time-dispersion (close is later ⇒ naturally farther).
+- **Finding 2 — position vs POC → direction: ≈0.** Open-above vs open-below prior POC → negligible forward-return difference (e.g. QQQ +0.0004 vs +0.0001). No directional edge.
+- **Finding 3 — distance-from-POC → VOLATILITY: REAL.** SPY 2022→2026, day range by open-distance-from-prior-POC: near(<0.3%) **1.03%** / mid **1.35%** / far(>1.2%) **2.01%** (monotonic, ~2× near→far; n=478/508/92). Opening far from the high-volume node ⇒ ~2× bigger day. *Caveat:* partly vol-clustering / gap-mechanical (a far-open often follows a big move).
+- **Verdict:** volume-at-price, **like gamma, is a VOLATILITY signal, not a direction one.** Coherent with B6: dealer-positioning AND volume-structure both forecast vol/regime/sizing robustly; neither gives clean direction. Direction null stands.
+- **Open / next:** confirm Finding 3 cross-ticker (per-ticker scans to fit the timeout) and de-confound the gap/vol-clustering component; combine POC-distance with gamma regime as a sizing input.
+- **Artifacts:** `db_query_cr` over `market_data_intraday` (POC histogram); execs db-query-fg7cv (magnet/dir), -8ggcg/b1gsew0vt (vol).
 
 ## C — Feature-family R&D (all on `next_close>next_open`, IWM 5m/15m/30m, 0/8 each)
 
