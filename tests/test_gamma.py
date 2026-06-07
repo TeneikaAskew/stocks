@@ -269,33 +269,46 @@ class TestClassifyLevels:
 
 
 class TestBuildSummary:
-    def test_regime_negative_when_spot_below_flip(self):
-        """Heavy puts below, heavy calls above, spot below the flip price."""
+    def test_regime_negative_when_net_gamma_negative(self):
+        """Regime follows the SIGN of net dealer gamma (total GEX), NOT spot-vs-flip
+        (fixed 2026-06-07, registry B6). Put gamma·OI dominates ⇒ total_gex < 0 ⇒
+        negative_gamma, regardless of where spot sits relative to the (unreliable)
+        flip."""
         opts = [
-            {"type": "put",  "strike": 95,  "open_interest": 1000, "gamma": 0.05,
+            {"type": "put",  "strike": 95,  "open_interest": 2000, "gamma": 0.05,
              "expiration": "2025-01-01"},
-            {"type": "call", "strike": 100, "open_interest": 600,  "gamma": 0.05,
-             "expiration": "2025-01-01"},
-            {"type": "call", "strike": 105, "open_interest": 1000, "gamma": 0.05,
+            {"type": "call", "strike": 105, "open_interest": 500,  "gamma": 0.05,
              "expiration": "2025-01-01"},
         ]
-        s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=98)
-        assert s.flip is not None
-        assert s.flip > 98  # flip is above 98
+        s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=100)
+        assert s.total_gex < 0
         assert s.regime == "negative_gamma"
 
-    def test_regime_positive_when_spot_above_flip(self):
+    def test_regime_positive_when_net_gamma_positive(self):
+        """Call gamma·OI dominates ⇒ total_gex > 0 ⇒ positive_gamma."""
         opts = [
-            {"type": "put",  "strike": 95,  "open_interest": 1000, "gamma": 0.05,
+            {"type": "put",  "strike": 95,  "open_interest": 500,  "gamma": 0.05,
              "expiration": "2025-01-01"},
-            {"type": "call", "strike": 100, "open_interest": 600,  "gamma": 0.05,
-             "expiration": "2025-01-01"},
-            {"type": "call", "strike": 105, "open_interest": 1000, "gamma": 0.05,
+            {"type": "call", "strike": 105, "open_interest": 2000, "gamma": 0.05,
              "expiration": "2025-01-01"},
         ]
-        s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=110)
-        assert s.flip is not None
+        s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=100)
+        assert s.total_gex > 0
         assert s.regime == "positive_gamma"
+
+    def test_regime_matches_total_gex_sign(self):
+        """Contract: regime is a pure function of sign(total_gex)."""
+        for oi_put, oi_call, expect in [(2000, 500, "negative_gamma"),
+                                        (500, 2000, "positive_gamma")]:
+            opts = [
+                {"type": "put",  "strike": 95,  "open_interest": oi_put,  "gamma": 0.05,
+                 "expiration": "2025-01-01"},
+                {"type": "call", "strike": 105, "open_interest": oi_call, "gamma": 0.05,
+                 "expiration": "2025-01-01"},
+            ]
+            s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=100)
+            assert s.regime == expect
+            assert (s.total_gex < 0) == (s.regime == "negative_gamma")
 
     def test_warnings_surfaced_for_median_fallback(self):
         # No quotes, no deltas — only strikes

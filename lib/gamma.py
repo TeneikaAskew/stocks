@@ -742,9 +742,22 @@ def build_summary(
 
     strikes = aggregate_by_strike(chain)
     gex_strikes = gex_by_strike(strikes, spot.price)
+    total = total_gex_from_strikes(gex_strikes)
     flip = compute_gamma_flip(strikes, spot.price) if strikes else None
-    if flip is not None:
-        regime = "positive_gamma" if spot.price > flip else "negative_gamma"
+    # Regime from the SIGN of net dealer gamma (total GEX) — the vol-defining
+    # convention: total_gex < 0 ⇒ dealers short gamma ⇒ amplified realized vol
+    # (negative-gamma regime). This REPLACES the prior `spot > flip` rule, which
+    # mislabeled the regime (see docs/EXPERIMENT_REGISTRY.md B6, 2026-06-07):
+    # compute_gamma_flip returns None on ~half of days — disproportionately the
+    # negative-gamma days, which were dumped into 'unknown' — and otherwise often
+    # returns a flip far from spot, so `spot > flip` ANTI-correlated with the
+    # actual vol regime. Validated: total_gex<0 → 1.34–1.87× larger intraday moves
+    # over 11y (IWM/SPY/QQQ). The flip is retained only as a price LEVEL (it is
+    # itself unreliable — separate fix tracked).
+    if total > 0:
+        regime = "positive_gamma"
+    elif total < 0:
+        regime = "negative_gamma"
     else:
         regime = "unknown"
 
@@ -753,7 +766,6 @@ def build_summary(
     kings = [lv for lv in levels if "king" in lv.tags]
     gates = [lv for lv in levels if "gate" in lv.tags]
     flip_levels = [lv for lv in levels if "flip" in lv.tags]
-    total = total_gex_from_strikes(gex_strikes)
 
     return GammaSummary(
         ticker=ticker.upper(),
@@ -931,14 +943,22 @@ def build_grid_summary(
     # `build_summary` uses so the two views can never disagree.
     strikes_1d = aggregate_by_strike(chain)
     flip = compute_gamma_flip(strikes_1d, spot.price) if strikes_1d else None
-    if flip is not None:
-        regime = "positive_gamma" if spot.price > flip else "negative_gamma"
-    else:
-        regime = "unknown"
 
     # ── Totals (consistent with 1-D summary by construction) ───────────────
     total_gex = sum(c.gex for c in cells)
     total_vex = sum(c.vex for c in cells)
+
+    # Regime from net dealer-gamma SIGN over the FULL chain (matches
+    # build_summary; see B6). Uses the full-chain GEX (not the windowed display
+    # total) so the two views agree, and replaces the unreliable spot-vs-flip rule.
+    _full_gex = (total_gex_from_strikes(gex_by_strike(strikes_1d, spot.price))
+                 if strikes_1d else 0.0)
+    if _full_gex > 0:
+        regime = "positive_gamma"
+    elif _full_gex < 0:
+        regime = "negative_gamma"
+    else:
+        regime = "unknown"
 
     # ── Header arrays for the UI (column / row labels) ─────────────────────
     expirations = sorted({c.expiration for c in cells})
