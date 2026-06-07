@@ -73,6 +73,13 @@ target / features / training data / status. Naming convention:
 - **Target:** last-30-min return from first-30-min. **Data:** per-day from `strat_features_30m`.
 - **Status:** ❌ **true null** — 1993–2013 anomaly decayed; negative β in 2016–26 even conditional on high-vol.
 
+### A8 · `STRAT-NEXTBAR` — historical tape + next-bar directional forward-walk ✅ (validated OOS)
+- **Family:** DIRECTION (next-candle) · **Algorithm:** deterministic transition table + fixed FTFC+CLV+momentum vote rule (no params) + held-out logistic.
+- **Target:** next daily/weekly/monthly Strat candle; directional call = next ∈ {2U,2D}.
+- **Features:** **close-location-value (CLV, the workhorse)** + 1–3-bar momentum + RSI/EMA-dist/streaks + **FTFC** (prior-completed weekly+monthly). Data: `market_data_daily` resampled to 1d/1w/1mo/1q.
+- **Status:** ✅ **real held-out edge** — stacking FTFC+CLV lifts P(next=2U) ~58%→74–81%; **daily logistic ~70% OOS vs ~57% base, weekly ~75–80% vs ~62%** (+12–18pp, positive log-loss beat nearly every year 2017→2026). Monthly inconclusive (thin). **Caveats:** CLV partly mechanical; predicts *which trigger breaks*, not close-to-close P&L. (E-25)
+- **Lives in:** `lib/strat.py:compute_strat_history` (+1-3-1 detection, per-bar triggers) + `scripts/strat_{history_report,backtest,next_candle_analysis,forward_walk,forward_walk_oos,oos_multi_tf}.py`. Runs vs Cloud SQL as the `magnitude-engine` job.
+
 ### Deterministic baselines (rule-based nulls, no ML)
 Naive DoW×30-min calendar lookup (MAG gate-6), "follow the gamma regime" (DIR-REGIME control), "take every breakout" (BREAKOUT-META base), train-prior class baseline (all log-loss gates).
 

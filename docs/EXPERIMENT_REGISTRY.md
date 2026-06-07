@@ -399,6 +399,22 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Verdict:** ⚠️ partial — BREAKOUT-META net done (marginal); broader EV model open.
 - **Artifacts:** `COST_ANALYSIS.md`; E-12/E-18 artifacts.
 
+## E-25 · STRAT-NEXTBAR — historical tape + next-bar directional forward-walk
+- **Engine/area:** strat (direction / next-candle) · **Status:** validated OOS (daily+weekly) · **Date:** 2026-06-07 · **PRs:** #592, #593, this branch.
+- **Question:** given all bars so far, what's the next candle (continue / reverse / stay / expand), how often, and is it forecastable out-of-sample?
+- **Target:** next daily/weekly/monthly Strat candle (2U/2D/1/3); directional call = next ∈ {2U,2D}.
+- **Data:** `market_data_daily` resampled to 1d/1w/1mo/1q; SPY/QQQ/IWM/AAPL/NVDA; 2016→2026.
+- **Features:** close-location-value (CLV), 1–3-bar momentum, RSI, EMA-distance, streaks, **FTFC** (prior-completed weekly+monthly direction). Stacked "UP-votes" = CLV>0 + mom>0 + FTFC>0.
+- **Structure:** deterministic transition table + fixed-vote rule (no params) + held-out logistic (fit strictly before each test year). 100%-match to production `strat_candle` (classification correctness).
+- **Results (held-out OOS):**
+  - **Single-candle alone is weak** (~coin-flip continuation); **stacking FTFC+CLV sharpens P(next=2U) ~58%→74–81%** (CLV is the workhorse; FTFC alone ≈ +1pp; momentum a small add).
+  - **Daily logistic ~70–72% OOS vs ~54–60% base** (+12–16pp), positive log-loss beat nearly every fold 2017→2026.
+  - **Weekly even stronger: logistic ~75–80% OOS vs ~57–67% base** (+13–18pp), large LL beats.
+  - **Monthly inconclusive** (~100 bars total; lift over base small/noisy).
+- **Correlation analysis:** mutual-information rank #1 = **CLV** across all tickers (corr→2U ≈ +0.4); then momentum/streaks; the candle *type* itself ranks low.
+- **Verdict:** ✅ real, held-out edge on the directional next-bar at daily & weekly. **Caveats:** CLV is **partly mechanical** (strong close → next-open near high → higher-high easier); predicts **which trigger breaks (2U/2D), not close-to-close P&L**.
+- **Artifacts:** `lib/strat.py:compute_strat_history` (+1-3-1, triggers), `lib/data_loader.py` (1q); `scripts/strat_history_report.py`, `strat_backtest.py`, `strat_next_candle_analysis.py`, `strat_forward_walk.py`, `strat_forward_walk_oos.py`, `strat_oos_multi_tf.py`; `tests/test_strat_history.py`. Runs as the `magnitude-engine` Cloud Run Job vs Cloud SQL.
+
 ---
 
 *End of registry. Additions: append a new `E-NN` entry using the template in
