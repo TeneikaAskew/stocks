@@ -969,6 +969,36 @@ deploy_build_options_greeks() {
         --quiet
 }
 
+# ── build-realtime-gex (Cloud Run Job, research image) ──────────────────────
+# Materializes REAL intraday dealer GEX/DEX from the av-options-realtime feed
+# into realtime_gex_15m (gcp/build_realtime_gex.py). Default = incremental last
+# 3 days (the scheduled daily path; scheduler `realtime-gex-daily` at 17:00 ET
+# weekdays, after close + the day's intraday bars land). Backfill the live
+# window with --args="-m,gcp.build_realtime_gex,--backfill". Exists so the
+# real-intraday-DEX LEAD accrues in a query-cheap table for a future walk-forward.
+deploy_build_realtime_gex() {
+    echo "Deploying build-realtime-gex job (real intraday GEX/DEX)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        --task-timeout 1800 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
 # Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
 # Walk-forward research only — NO production hooks. Same image as strat-engine.
@@ -2886,6 +2916,11 @@ deploy_schedulers() {
     # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
     _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
 
+    # Materialize REAL intraday GEX/DEX after close (5 PM ET weekdays — after the
+    # realtime feed stops ~15:55 ET and the day's 1-min bars land). Feeds the
+    # real-intraday-DEX lead's eventual walk-forward (build-realtime-gex).
+    _schedule "realtime-gex-daily" "0 17 * * 1-5"  "build-realtime-gex"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
@@ -3154,6 +3189,7 @@ case "${1:-help}" in
     strat-engine) deploy_strat_engine ;;
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
+    build-realtime-gex) deploy_build_realtime_gex ;;      # research image
     magnitude-engine) deploy_magnitude_engine ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
