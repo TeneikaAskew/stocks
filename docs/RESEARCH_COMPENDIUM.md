@@ -467,9 +467,11 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
 - Correlation lenses agree: structure/magnitude/vol yes, sign no.
 
 **Open / unresolved:**
-- ✅ **Regime-label bug FIXED + shipped** (§5.2b; commit 7b9e873) — `lib.gamma` uses
-  `sign(total_gex)`, `gamma_levels_eod` rebuilt+verified, brief redeployed. **Still
-  pending:** rebuild `strat_features.gamma_regime` (heavy; implies model re-touch).
+- ✅ **Regime-label bug FIXED end-to-end** (§5.2b; commit 7b9e873) — `lib.gamma` uses
+  `sign(total_gex)`, `gamma_levels_eod` rebuilt+verified, brief redeployed, AND
+  `strat_features.gamma_regime` surgically corrected across all 6 tables (in-row
+  `= sign(total_gex)`, 0 mismatches; no re-derivation). A full column audit for
+  OTHER bugs of this class is in progress.
 - **Productionize the vol signal** — gamma regime + POC-distance as a position-sizing
   / strategy-gating input (the real, confirmed edge); de-confound POC-vol from
   gap/vol-clustering and confirm cross-ticker.

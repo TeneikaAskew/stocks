@@ -332,10 +332,16 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
   inverted). Root cause confirmed: `compute_gamma_flip` returns None on ~half the
   days (the neg-gamma ones → dumped to 'unknown') and otherwise returns a flip far
   from spot (avg 217 vs spot 337). **flip itself is still unreliable** as a level
-  (separate fix tracked). **STILL PENDING (heavy):** rebuild `strat_features.gamma_regime`
-  (sourced from `gamma_levels_eod`) → implies re-touching models that use it.
-- **Open / next:** (1) ✅ regime fix shipped; ⏳ strat_features.gamma_regime rebuild;
-  (2) productionize vol-regime for position sizing / strategy selection.
+  (separate fix tracked). **`strat_features.gamma_regime` DATA FIX DONE (2026-06-07):**
+  surgically corrected via in-row `UPDATE gamma_regime = sign(total_gex)` across all
+  6 tables (1m 2.87M rows chunked by ticker, 5m 602k, 15m 201k, 30m 100k, 60m 54k,
+  4h 18k) — **0 mismatches verified**. Not a workaround: `gamma_regime` is a cached
+  copy of the (now-fixed) source, and `total_gex` (unchanged by the fix) is already
+  in-row, so `sign(total_gex)` is the exact corrected value with no re-derivation /
+  no drift; the builder produces the same on future runs automatically.
+- **Open / next:** (1) ✅ regime fix shipped + data corrected end-to-end;
+  (2) productionize vol-regime for position sizing / strategy selection;
+  (3) ⏳ full column audit of strat_features for OTHER bugs of this class (in progress).
 - **Artifacts:** `lib/gamma.py:743-762,933-952`; commit 7b9e873; gamma_levels_eod (rebuilt p2-build-gamma-levels-z5hdc).
 
 ### B7 (volume-at-price / POC) — VOL signal real, magnet/direction null (2026-06-07)
