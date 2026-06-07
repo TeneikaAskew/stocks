@@ -354,6 +354,25 @@ CREATE TABLE IF NOT EXISTS intraday_gex_15m (
 );
 
 
+-- Materialized per-15m-bucket REAL intraday dealer GEX/DEX from the
+-- av-options-realtime feed (actual intraday greeks; market_session='REALTIME',
+-- live since 2026-05-23). Same shape/conventions as intraday_gex_15m but the
+-- source is real captured greeks, not the EOD re-curve — short history, exact.
+-- Built daily by the build-realtime-gex Job so the real-intraday-DEX lead can be
+-- walk-forward tested as the window lengthens. Read via add_realgex_features.
+CREATE TABLE IF NOT EXISTS realtime_gex_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    total_gex   DOUBLE PRECISION,        -- NetΓ(real) · spot² · GEX_MULTIPLIER
+    total_dex   DOUBLE PRECISION,        -- Σ(δ·OI)(real) · 100 · spot
+    total_oi    DOUBLE PRECISION,        -- Σ open interest (real intraday)
+    gamma_flip  DOUBLE PRECISION,        -- cumulative-GEX zero-cross
+    spot        DOUBLE PRECISION,        -- 15m bucket underlying close
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     symbol              VARCHAR(10)  NOT NULL,

@@ -590,6 +590,14 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
         # uses the current bar's spot against the frozen prior-day chain.
         df = add_intragex_features(df, ticker, engine)
         log.info("feature-block intragex: added reconstructed GEX/DEX columns")
+    if "realgex" in blocks:
+        from lib.features.intraday_gex import add_realgex_features
+        # REAL intraday dealer GEX/DEX from the av-options-realtime feed (actual
+        # intraday greeks, not the EOD re-curve). Only covers dates since the feed
+        # went live (2026-05-23) — for the recent-window real-intraday test once
+        # enough history accrues. CONTEMPORANEOUS (no shift).
+        df = add_realgex_features(df, ticker, engine)
+        log.info("feature-block realgex: added REAL intraday GEX/DEX columns")
 
     tb = triple_barrier_labels(df, horizon, k_atr)
     # Magnitude target (forward |next_close-next_open|/atr20 bucket) — used
@@ -781,7 +789,7 @@ def main():
                         "topq ⇒ top fraction kept (default 0.2)")
     p.add_argument("--feature-blocks", default="",
                    help="E4: comma list of NEW feature blocks to inject "
-                        "(flow, fracdiff, intraflow, intragex). Empty = "
+                        "(flow, fracdiff, intraflow, intragex, realgex). Empty = "
                         "price-history surface only.")
     p.add_argument("--window", default="expanding",
                    choices=["expanding", "rolling"],

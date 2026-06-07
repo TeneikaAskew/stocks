@@ -103,3 +103,45 @@ def test_zero_spot_yields_nan():
     ]))
     assert np.isnan(out["dist_to_flip_pct"].iloc[0])
     assert np.isnan(out["dex_per_oi"].iloc[0])
+
+
+# ---------------------------------------------------------------------------
+# aggregate_realtime_buckets — REAL-greeks per-bucket aggregation (build_realtime_gex).
+# ---------------------------------------------------------------------------
+from lib.features.intraday_gex import aggregate_realtime_buckets
+
+
+def _chain_rt(rows):
+    """rows: (ts, strike, call_g, put_g, dxoi, oi)."""
+    return pd.DataFrame([{"ts": r[0], "strike": r[1], "call_g": r[2],
+                          "put_g": r[3], "dxoi": r[4], "oi": r[5]} for r in rows])
+
+
+def test_rt_empty_returns_cols():
+    out = aggregate_realtime_buckets(_chain_rt([]), _spots([]))
+    assert list(out.columns) == RAW_COLS
+    assert out.empty
+
+
+def test_rt_dex_and_gex_formula():
+    # one bucket, two strikes; net γ·OI = (call_g-put_g) summed; Σδ·OI summed.
+    ch = _chain_rt([
+        ("2026-06-02 14:30:00+00:00", 100.0, 50.0, 10.0, 800.0, 1000.0),
+        ("2026-06-02 14:30:00+00:00", 105.0, 20.0, 30.0, -200.0, 500.0),
+    ])
+    sp = _spots([("2026-06-02 14:30:00+00:00", 100.0)])
+    out = aggregate_realtime_buckets(ch, sp)
+    # net_gamma = (50-10)+(20-30) = 30 ; total_gex = 30*100^2*0.01 = 3000
+    assert out["total_gex"].iloc[0] == pytest.approx(30 * 100.0 * 100.0 * 0.01)
+    # net_delta_oi = 800 + (-200) = 600 ; total_dex = 600*100*100 = 6,000,000
+    assert out["total_dex"].iloc[0] == pytest.approx(600 * 100.0 * 100.0)
+    assert out["total_oi"].iloc[0] == pytest.approx(1500.0)
+
+
+def test_rt_missing_spot_yields_nan_not_zero():
+    ch = _chain_rt([("2026-06-02 14:30:00+00:00", 100.0, 50.0, 10.0, 800.0, 1000.0)])
+    sp = _spots([("2026-06-02 14:30:00+00:00", 0.0)])  # bad spot
+    out = aggregate_realtime_buckets(ch, sp)
+    assert np.isnan(out["total_gex"].iloc[0])
+    assert np.isnan(out["total_dex"].iloc[0])
+    assert out["total_oi"].iloc[0] == pytest.approx(1000.0)  # OI still known

@@ -162,17 +162,73 @@ def compute_derived(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================================
+# (a2) REAL-GREEKS AGGREGATION — for the `realtime_gex_15m` builder. Pure given
+#      the per-(bucket,strike) REAL greek sums + the per-bucket spot. Unlike
+#      reconstruct_day (which re-curves a frozen T-1 chain), this consumes the
+#      ACTUAL intraday greeks captured by the av-options-realtime feed.
+# ============================================================================
+
+def aggregate_realtime_buckets(chain: pd.DataFrame,
+                               spots: pd.DataFrame) -> pd.DataFrame:
+    """PURE: collapse per-(ts, strike) REAL greek sums into per-15m-bucket
+    GEX/DEX/OI + flip, joined to the bucket spot. Returns a frame indexed by ts
+    with columns RAW_COLS.
+
+    `chain` columns: ts (15m bucket, UTC), strike, call_g (Σ call γ·OI),
+    put_g (Σ put γ·OI), dxoi (Σ δ·OI over all contracts), oi (Σ OI).
+    `spots` columns: ts, spot. Buckets with no spot / zero OI → NaN greeks
+    (never 0), per §3.7. GEX/flip use the same lib.gamma convention as
+    reconstruct_day so the two tables are directly comparable.
+    """
+    from lib.gamma import compute_gamma_flip, GEX_MULTIPLIER, SPOT_MULTIPLIER
+    if chain is None or chain.empty or spots is None or spots.empty:
+        return pd.DataFrame(columns=RAW_COLS, index=pd.DatetimeIndex([], name="ts"))
+    c = chain.copy()
+    c["ts"] = pd.to_datetime(c["ts"], utc=True)
+    for col in ("call_g", "put_g", "dxoi", "oi"):
+        c[col] = pd.to_numeric(c[col], errors="coerce")
+    c["net_g"] = c["call_g"].fillna(0.0) - c["put_g"].fillna(0.0)
+    sp = spots.copy()
+    sp["ts"] = pd.to_datetime(sp["ts"], utc=True)
+    spot_by_ts = dict(zip(sp["ts"], pd.to_numeric(sp["spot"], errors="coerce")))
+
+    rows = []
+    for ts_bucket, grp in c.groupby("ts"):
+        spot = spot_by_ts.get(ts_bucket, np.nan)
+        net_gamma_sum = float(grp["net_g"].sum())
+        net_delta_oi = float(grp["dxoi"].sum(skipna=True))
+        total_oi = float(grp["oi"].sum(skipna=True))
+        if not (spot and spot > 0):
+            rows.append((ts_bucket, np.nan, np.nan, total_oi, np.nan, np.nan))
+            continue
+        # per-strike list for the flip (same shape compute_gamma_flip expects).
+        strikes = [{"strike": float(k), "net_gamma": float(g)}
+                   for k, g in zip(grp["strike"], grp["net_g"])]
+        flip = compute_gamma_flip(strikes, spot)
+        total_gex = net_gamma_sum * spot * spot * GEX_MULTIPLIER
+        total_dex = net_delta_oi * SPOT_MULTIPLIER * spot
+        rows.append((ts_bucket, total_gex, total_dex, total_oi,
+                     float(flip) if flip is not None else np.nan, spot))
+    out = pd.DataFrame(rows, columns=["ts"] + RAW_COLS).set_index("ts").sort_index()
+    return out
+
+
+# ============================================================================
 # (b) DB-BOUND JOINER — the per-experiment path (reads the materialized table).
 # ============================================================================
 
-def _load_intragex_table(engine, ticker: str, since: str,
-                         until: str) -> pd.DataFrame:
-    """Read the MATERIALIZED per-bar reconstructed greeks. NO chain scan."""
+def _load_gex_table(engine, ticker: str, since: str, until: str,
+                    table: str = "intraday_gex_15m") -> pd.DataFrame:
+    """Read a MATERIALIZED per-bar GEX/DEX table (intraday_gex_15m reconstructed,
+    or realtime_gex_15m real). NO chain scan. `table` is validated against an
+    allow-list (not interpolated from user input)."""
     from sqlalchemy import text  # lazy
+    if table not in ("intraday_gex_15m", "realtime_gex_15m"):
+        raise ValueError(f"unknown gex table: {table}")
     sql = text(
-        """
+        f"""
         SELECT ts, total_gex, total_dex, total_oi, gamma_flip, spot
-        FROM intraday_gex_15m
+        FROM {table}
         WHERE ticker = :tk AND ts >= :s AND ts < :u
         ORDER BY ts
         """
@@ -186,37 +242,29 @@ def _load_intragex_table(engine, ticker: str, since: str,
     return df
 
 
-def add_intragex_features(df: pd.DataFrame, ticker: str, engine) -> pd.DataFrame:
-    """Joiner — reads the MATERIALIZED intraday_gex_15m (Rule 0: NO per-run
-    chain scan), computes the derived features, merges to the bar dataset on the
-    15m bar `ts`. Contemporaneous (NO shift — the reconstruction uses the T-1
-    chain re-priced at the CURRENT bar's spot, which is known at the bar; the
-    triple-barrier label looks at later bars). Missing → NaN (never 0); float32.
-    """
-    log.info("intraday-gex: adding to %d-row dataset for %s", len(df), ticker)
+def _add_gex_block(df: pd.DataFrame, ticker: str, engine, *, table: str,
+                   block: str, build_job: str) -> pd.DataFrame:
+    """Shared joiner for the reconstructed (intragex) and real (realgex) blocks.
+    Reads `table`, derives the scale-free features, merges contemporaneously on
+    the 15m bar `ts` (NO shift — the bar's positioning is known at its close).
+    Missing → NaN (never 0); float32."""
+    log.info("%s: adding to %d-row dataset for %s", block, len(df), ticker)
     if "ts" not in df.columns:
-        raise RuntimeError("intraday-gex joiner requires 'ts' column")
-
+        raise RuntimeError(f"{block} joiner requires 'ts' column")
     ts = pd.to_datetime(df["ts"], utc=True)
-    since = ts.min().date().isoformat()
-    until = ts.max().date().isoformat()
-
-    raw = _load_intragex_table(engine, ticker, since, until)
+    raw = _load_gex_table(engine, ticker, ts.min().date().isoformat(),
+                          ts.max().date().isoformat(), table=table)
     if raw.empty:
         raise RuntimeError(
-            f"intraday-gex INFEASIBLE: intraday_gex_15m empty for ticker={ticker} "
-            f"in [{since}, {until}]. Run the build-intraday-gex Job (--backfill) "
-            f"before using --feature-blocks=intragex.")
-
+            f"{block} INFEASIBLE: {table} empty for ticker={ticker}. Run the "
+            f"{build_job} Job before using --feature-blocks={block}.")
     derived = compute_derived(raw)
     for col in FEATURE_COLS:
         cov = float(derived[col].notna().mean()) if len(derived) else 0.0
-        log.info("intraday-gex feature=%s coverage=%.1f%%", col, cov * 100)
-
+        log.info("%s feature=%s coverage=%.1f%%", block, col, cov * 100)
     matched = int(ts.isin(set(derived.index)).sum())
-    log.info("intraday-gex ts-coverage: %.1f%% (%d/%d bars)",
+    log.info("%s ts-coverage: %.1f%% (%d/%d bars)", block,
              (matched / max(1, len(ts))) * 100, matched, len(ts))
-
     lookup = {t: derived.loc[t].values for t in derived.index}
     nan_row = np.full(len(FEATURE_COLS), np.nan, dtype=np.float64)
     attached = np.array([lookup.get(t, nan_row) for t in ts], dtype=np.float64)
@@ -224,5 +272,21 @@ def add_intragex_features(df: pd.DataFrame, ticker: str, engine) -> pd.DataFrame
     for i, col in enumerate(FEATURE_COLS):
         out[col] = attached[:, i].astype(np.float32)
     out = out.replace([np.inf, -np.inf], np.nan)
-    log.info("intraday-gex done: added %d feature columns", len(FEATURE_COLS))
+    log.info("%s done: added %d feature columns", block, len(FEATURE_COLS))
     return out
+
+
+def add_intragex_features(df: pd.DataFrame, ticker: str, engine) -> pd.DataFrame:
+    """RECONSTRUCTED intraday GEX/DEX (T-1 chain re-curved) — reads
+    intraday_gex_15m."""
+    return _add_gex_block(df, ticker, engine, table="intraday_gex_15m",
+                          block="intragex", build_job="build-intraday-gex")
+
+
+def add_realgex_features(df: pd.DataFrame, ticker: str, engine) -> pd.DataFrame:
+    """REAL intraday GEX/DEX (actual REALTIME greeks) — reads realtime_gex_15m.
+    Same derived features as intragex; the difference is the source is the
+    av-options-realtime feed, not the EOD re-curve. Only covers dates since the
+    feed went live (2026-05-23)."""
+    return _add_gex_block(df, ticker, engine, table="realtime_gex_15m",
+                          block="realgex", build_job="build-realtime-gex")
