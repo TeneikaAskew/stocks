@@ -192,6 +192,29 @@ differences (CLAUDE.md "one source of truth").
   structure. **Closed 2026-05-29; no investment recommended.** P4/P5 cancelled
   (same gate-7 wall).
 
+#### 5.2b Gamma reassessment (2026-06-07) — vol value confirmed, + a regime-label bug
+
+A step-back review (prompted by domain pushback that gamma should be valuable)
+**confirmed gamma's volatility value robustly and corrected an under-report.**
+Over 11 years (daily gamma regime from D-1 EOD `gamma_levels_eod`, by
+**sign(total_gex)**, × within-day 30m moves), **negative gamma → larger moves on
+all three tickers: IWM 1.34× / QQQ 1.66× / SPY 1.87×** (n=14k–25k/cell,
+literature-consistent). This is the real, usable gamma edge — "where volatility
+is" — and the program had buried it (it lived in A2 but was gated as "priced").
+**Caveat:** it's the same VRP-priced quantity, so it's valuable for *sizing /
+strategy selection / risk*, not for cheaply buying the straddle.
+
+Two corrections fell out: **(bug)** the `regime` *text* label in `gamma_levels_eod`
+(and `lib/gamma.py:747`, spot-vs-flip) is **inverted vs the vol regime** —
+`'negative_gamma'` rows have `total_gex>0` in 2,765/2,767 cases; `sign(total_gex)`
+tracks vol correctly, the flip-based label does not. The downstream `dealer_regime`
+feature inherits this and should be fixed. **(direction)** the regime-conditional
+*direction* hypothesis (neg-gamma→momentum) is **null over 11 years** (within-day
+30m autocorr ≈0 in both regimes; the 9-day blip was small-sample noise) — so gamma
+still doesn't give raw call-vs-put, but that null is now well-powered and
+correctly-framed, not the old pooled-classifier version. See registry **B6**.
+Still untested: **volume-at-price / POC** ("where volume sits").
+
 ### 5.3 A3 / B — Direction ❌ (the exhaustive null)
 
 Baseline **A3** (binary next_close>next_open on the shared surface): **0/72 folds**.
@@ -430,10 +453,17 @@ RSI bands are per-ticker Tier-A calibrated (IWM 36.2/50.2/63.7, etc.).
 - Direction is not, across 6 framings + 3 new information classes (E5 daily flow,
   E5b intraday OFI, E5c reconstructed intraday GEX/DEX — all null). ❌
 - Magnitude is predictable @5m but **priced** (realized/implied 0.83–0.92). ⚠️
+- **Gamma → volatility is real & robust (11yr): neg-gamma → 1.34–1.87× larger moves,
+  all tickers** (§5.2b). Usable for sizing/risk, not for arbing the straddle (priced).
 - The TYPE edge is **non-tradeable** after friction; options don't rescue it. ❌
-- Correlation lenses agree: structure/magnitude yes, sign no.
+- Correlation lenses agree: structure/magnitude/vol yes, sign no.
 
 **Open / unresolved:**
+- **BUG (production): `regime` label inverted vs vol regime** (§5.2b) — fix
+  `dealer_regime` to use `sign(total_gex)` (or audit the flip computation); audit
+  whether gamma alerts / the 143-col surface inherited the wrong sign.
+- **Volume-at-price / POC untested** — "where volume sits" as a level source; the
+  one practitioner gamma-adjacent lever never tried.
 - **Two single-cell long flickers, both replicate-or-reject:** the **IWM E4 long**
   (z≤4.2, price-only, mag-gated) and the new **SPY-long +intraday-OFI** (z 2.97,
   +5.8pp). Each is 1-of-N, cost-free, miscalibrated — possible multiple-comparisons
