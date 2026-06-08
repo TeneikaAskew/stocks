@@ -289,6 +289,26 @@ After removing fixed-but-open noise, the substantive remaining work is:
   genuinely-open code fixes.
 - **Process**: notifier close-on-fix + dedup; close duplicate PR #577/#578.
 
+### 10.5 §9-G pg8000 writer audit — resolved
+Enumerated every DB write site outside `gcp/database.py`:
+
+| Site | Mechanism | Safe? |
+|---|---|---|
+| `strat_engine/strat_data_builder.py:685` | `bulk_copy_upsert(...)` → `database.py` pg8000-native COPY wrapper (falls back to `upsert_dataframe`) | ✅ safe — this is the path that the old #559/#557 `copy_from` AttributeError predates (the wrapper now handles pg8000) |
+| `research/p7_build_multi_tf_features.py:528` | same `bulk_copy_upsert` path | ✅ safe |
+| `magnitude_engine/mag_walk_forward.py:237` | **`df.to_sql(..., method="multi")`** — direct, bypasses `_coerce_int_columns` | ⚠️ **latent 22P02** if any INTEGER column in `magnitude_walk_forward_results` ever carries NaN. Research-only table, low blast radius, but it is the concrete example of the §10.2.1 residual — route through `bulk_insert_dataframe` or add a local int-coerce |
+| all other writers | `upsert_dataframe` / `bulk_insert_dataframe` | ✅ safe (covered by #518) |
+
+**Doc-rot flag**: the comments at `strat_data_builder.py:684` and
+`p7_build_multi_tf_features.py:527` still say "uses psycopg2 COPY FROM STDIN".
+The underlying `bulk_copy_upsert` routes through pg8000's *native* COPY (see
+`database.py:411-427`), not psycopg2. Misleading comment, not a bug — update
+when next touched.
+
+**Verdict**: the driver-mismatch family (§3.1) is well-contained by the #518
+coercion + the pg8000 COPY wrapper. The single residual is the one `.to_sql`
+bypass above. §9-G is closed.
+
 ### 10.4 pandas-3 migration — cleared
 Full sweep of `lib/ gcp/ scripts/` found **no** `DataFrame.append`,
 `.iteritems`, `.ix`, `is_categorical`, `.mad`, or `pd.np` usage. The only
