@@ -2,6 +2,7 @@ import { Moon, Sun } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useThemeStore } from '@/stores/themeStore';
 import { DateSelector } from '@/components/shared/DateSelector';
+import { GuestBadge } from '@/components/auth/GuestBadge';
 import { SettingsMenu } from './SettingsMenu';
 
 /** Routes where the global historical DateSelector is functional. */
@@ -19,6 +20,7 @@ export function Header() {
 
   return (
     <header className="flex h-12 items-center justify-end gap-3 bg-[var(--surface-1)] px-5">
+      <GuestBadge />
       {showDateSelector && <DateSelector />}
       <button
         type="button"

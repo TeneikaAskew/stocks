@@ -21,6 +21,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid
+from api.auth_bypass import (
+    router as auth_router,
+    staging_auth_middleware,
+    bypass_enabled,
+    has_valid_bypass_cookie,
+    GUEST_EMAIL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Staging passcode gate — no-op unless ALLOW_AUTH_BYPASS=1 (set only on the
+# public, no-IAP `trading-platform-staging` service). Prod stays behind IAP
+# and is untouched. See api/auth_bypass.py.
+app.middleware("http")(staging_auth_middleware)
+
 # ── Router includes ──────────────────────────────────────────────────────────
 app.include_router(live.router, prefix="")
 # `grid` MUST mount before `options` — `options` has a greedy
@@ -64,6 +76,7 @@ app.include_router(analytics.router, prefix="")
 app.include_router(config_router.router, prefix="")
 app.include_router(health.router, prefix="")
 app.include_router(glossary.router, prefix="")
+app.include_router(auth_router)
 
 data_loader = DataLoader()
 
@@ -131,13 +144,20 @@ async def health_check():
 
 @app.get("/api/me")
 async def get_current_user(request: Request):
-    """Return the current user's email from IAP headers.
+    """Return the current user's identity + whether staging bypass is allowed.
 
-    In production (behind IAP), returns the authenticated email.
-    In local dev (no IAP), returns None.
+    - Production (behind IAP): `email` is the authenticated Google email.
+    - Staging (ALLOW_AUTH_BYPASS=1): `email` is the guest identity once a valid
+      passcode cookie is present, else None; `auth_bypass_allowed` is True so
+      the frontend renders the sign-in screen.
+    - Local dev (no IAP, no bypass): `email` is None, `auth_bypass_allowed`
+      False — the frontend renders the app directly, as before.
     """
     email = _iap_user_email(request)
-    return {"email": email}
+    allowed = bypass_enabled()
+    if email is None and allowed and has_valid_bypass_cookie(request):
+        email = GUEST_EMAIL
+    return {"email": email, "auth_bypass_allowed": allowed}
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
