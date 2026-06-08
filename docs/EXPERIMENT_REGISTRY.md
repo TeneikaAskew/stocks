@@ -412,8 +412,9 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   - **Weekly even stronger: logistic ~75–80% OOS vs ~57–67% base** (+13–18pp), large LL beats.
   - **Monthly inconclusive** (~100 bars total; lift over base small/noisy).
 - **Correlation analysis:** mutual-information rank #1 = **CLV** across all tickers (corr→2U ≈ +0.4); then momentum/streaks; the candle *type* itself ranks low.
-- **Verdict:** ✅ real, held-out edge on the directional next-bar at daily & weekly. **Caveats:** CLV is **partly mechanical** (strong close → next-open near high → higher-high easier); predicts **which trigger breaks (2U/2D), not close-to-close P&L**.
-- **Artifacts:** `lib/strat.py:compute_strat_history` (+1-3-1, triggers), `lib/data_loader.py` (1q); `scripts/strat_history_report.py`, `strat_backtest.py`, `strat_next_candle_analysis.py`, `strat_forward_walk.py`, `strat_forward_walk_oos.py`, `strat_oos_multi_tf.py`; `tests/test_strat_history.py`. Runs as the `magnitude-engine` Cloud Run Job vs Cloud SQL.
+- **CLV ablation (held-out, `strat_oos_clv_ablation.py`):** **CLV alone ≈ the FULL edge** (CLV_ONLY within ±1–3pp of FULL, often ≥ it — the other 10 features add ~nothing on top). Removing CLV costs ~5–7pp daily / ~3–7pp weekly but leaves a **real residual** (NO_CLV / STRUCT_ONLY = momentum+FTFC ≈ 64–66% daily / 70–75% weekly, still +6–15pp over base). So the headline edge is **mostly close-location (partly mechanical)**; the genuinely structural momentum+FTFC signal is real but smaller.
+- **Verdict:** ✅ real, held-out edge on the directional next-bar at daily & weekly. **Caveats:** the edge is **dominated by CLV, which is partly mechanical** (strong close → next-open near high → higher-high easier — essentially "closed strong → bet it breaks the high"); predicts **which trigger breaks (2U/2D), not close-to-close P&L**. Non-mechanical (momentum+FTFC) residual ≈ +6–10pp over base.
+- **Artifacts:** `lib/strat.py:compute_strat_history` (+1-3-1, triggers), `lib/data_loader.py` (1q); `scripts/strat_history_report.py`, `strat_backtest.py`, `strat_next_candle_analysis.py`, `strat_forward_walk.py`, `strat_forward_walk_oos.py`, `strat_oos_multi_tf.py`, `strat_oos_clv_ablation.py`; `tests/test_strat_history.py`. Runs as the `magnitude-engine` Cloud Run Job vs Cloud SQL.
 
 ---
 
