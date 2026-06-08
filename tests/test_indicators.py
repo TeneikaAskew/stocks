@@ -509,3 +509,29 @@ class TestHistoricalLevels:
         ts = pd.to_datetime(times)
         is_q1 = ts.dt.to_period('Q') == ts.dt.to_period('Q').iloc[0]
         assert result.loc[is_q1.values, 'Prev_Quarter_High'].isna().all()
+
+
+# ── EMA200 config wiring (2026-06-07 column audit, family C) ─────────────────
+# The strat_features builder lists `ema_200` in NUMERIC_FEATURES but called
+# add_all_indicators with the default IndicatorConfig (ema_periods=[9,20,50]),
+# so EMA200 was never produced → the column was 100% NaN (dead feature). The
+# builder now passes a config including 200. These pin both halves of that.
+class TestEMA200ConfigWiring:
+    def test_ema200_absent_under_default_config(self):
+        """Documents the bug: default config does NOT produce EMA200."""
+        from lib.indicators import add_all_indicators
+        out = add_all_indicators(_two_session_ohlcv(n_per=150))
+        assert "EMA200" not in out.columns
+
+    def test_ema200_produced_when_200_in_periods(self):
+        """The builder's fix: ema_periods including 200 → EMA200 computed + finite."""
+        from lib.indicators import add_all_indicators
+        from lib.config import IndicatorConfig
+        cfg = IndicatorConfig()
+        cfg.ema_periods = [9, 20, 50, 200]
+        out = add_all_indicators(_two_session_ohlcv(n_per=150),
+                                 indicator_config=cfg)
+        assert "EMA200" in out.columns
+        assert pd.notna(out["EMA200"].iloc[-1])
+        # fast/mid unchanged (so Price_vs_EMA9/20 etc. are unaffected)
+        assert "EMA9" in out.columns and "EMA20" in out.columns

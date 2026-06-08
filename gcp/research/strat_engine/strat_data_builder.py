@@ -371,8 +371,16 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
         is_one = (strat_df["strat_candle"] == "1").astype(int)
         strat_df["consecutive_1s"] = is_one.groupby((is_one == 0).cumsum()).cumsum().astype("int16")
 
-    # Indicators
-    ind_df = add_all_indicators(df_tf, close_col="Close")
+    # Indicators. Pass a config that includes EMA200 — the default
+    # IndicatorConfig.ema_periods is [9,20,50], so EMA200 was never produced and
+    # `out["ema_200"]` (listed in strat_config.NUMERIC_FEATURES) was 100% NaN —
+    # a dead model feature (2026-06-07 column audit, family C). Builder-local
+    # config only; the global default is unchanged. fast/mid EMAs stay 9/20.
+    from lib.config import IndicatorConfig
+    _ind_cfg = IndicatorConfig()
+    if 200 not in _ind_cfg.ema_periods:
+        _ind_cfg.ema_periods = list(_ind_cfg.ema_periods) + [200]
+    ind_df = add_all_indicators(df_tf, close_col="Close", indicator_config=_ind_cfg)
     # ind_df has columns: ATR14, RSI14, RSI9, EMA9, EMA20, EMA50, SMA5/10/20/50/200,
     #   VWAP, RVOL, OBV, StochRSI_K/D, BB_Upper/Lower/Middle/Width/Pct,
     #   MACD, MACD_Signal, MACD_Histogram, Consecutive_Up/Down, Price_vs_EMA9/20,

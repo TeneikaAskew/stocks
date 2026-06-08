@@ -258,6 +258,27 @@ def _coerce_int_columns(df: pd.DataFrame, tbl) -> pd.DataFrame:
     return df
 
 
+def _na_to_none_records(records: list[dict]) -> list[dict]:
+    """Coerce pandas NA scalars (NaN / NaT) in row dicts to None so they bind as
+    SQL NULL — NOT a float8 'NaN' literal. A NaN written into a float8 column is a
+    valid, non-NULL value that silently breaks `WHERE col IS NULL` checks
+    downstream (CLAUDE.md §3.7 — the same class of bug as the 2026-06-07 audit
+    found in flip_price / distance_to_king_pct / distance_to_gate_pct, 56.7% of
+    flip_price rows stored as NaN instead of NULL).
+
+    Complements `_coerce_int_columns` (which already maps NaN→None for INT-family
+    columns) by covering FLOAT / other columns, for ALL `upsert_dataframe`
+    callers. The COPY fast path (`bulk_copy_upsert`) already renders NaN as the
+    CSV NULL token; this closes the pg8000 bind fallback path.
+    """
+    def _fix(v):
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v  # non-scalar (list/array) — leave as-is
+    return [{k: _fix(v) for k, v in r.items()} for r in records]
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -317,7 +338,8 @@ def upsert_dataframe(
         update_cols = [c for c in df.columns if c not in conflict_cols]
 
     total = 0
-    records = df.to_dict(orient='records')
+    # NaN/NaT → None so they bind as SQL NULL, not a float8 'NaN' (§3.7).
+    records = _na_to_none_records(df.to_dict(orient='records'))
     effective_chunksize = _max_safe_chunksize(len(df.columns), chunksize)
     if effective_chunksize < chunksize:
         logger.info(

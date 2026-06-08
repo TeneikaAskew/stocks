@@ -120,3 +120,29 @@ def test_negative_and_numpy_scalar_values():
     out = _coerce_int_columns(df, tbl)
     assert list(out["n"]) == [-1, 0]
     assert all(isinstance(v, int) for v in out["n"])
+
+
+# ── _na_to_none_records: NaN/NaT → None so writes bind SQL NULL, not float8 NaN
+#    (2026-06-07 audit family B — flip_price etc. stored NaN, breaking IS NULL).
+from gcp.database import _na_to_none_records
+
+
+class TestNaToNoneRecords:
+    def test_float_nan_becomes_none(self):
+        recs = _na_to_none_records([{"flip": float("nan"), "x": 1.5, "lbl": "a"}])
+        assert recs[0]["flip"] is None
+        assert recs[0]["x"] == 1.5
+        assert recs[0]["lbl"] == "a"
+
+    def test_nat_and_none_become_none(self):
+        recs = _na_to_none_records([{"ts": pd.NaT, "v": None, "ok": 3}])
+        assert recs[0]["ts"] is None and recs[0]["v"] is None and recs[0]["ok"] == 3
+
+    def test_zero_and_string_nan_preserved(self):
+        # §3.7: 0.0 is a real value (must NOT become None); the STRING 'nan' is not NA.
+        recs = _na_to_none_records([{"z": 0.0, "neg": -1, "s": "nan"}])
+        assert recs[0]["z"] == 0.0 and recs[0]["neg"] == -1 and recs[0]["s"] == "nan"
+
+    def test_non_scalar_left_as_is(self):
+        recs = _na_to_none_records([{"arr": [1, 2], "ok": 1}])
+        assert recs[0]["arr"] == [1, 2] and recs[0]["ok"] == 1
