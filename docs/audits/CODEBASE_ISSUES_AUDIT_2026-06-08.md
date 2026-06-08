@@ -228,3 +228,71 @@ This is iteration 1. Subsequent loop passes should close these:
   chunking strategy.
 - **9-G · pg8000 writer audit**: enumerate every `.to_sql` / raw-COPY /
   `execute(text(...))` write site and confirm dtype coercion + param binding.
+
+---
+
+## 10. Iteration 2 — fix-state reconciliation (2026-06-08)
+
+Mining merged PRs + `git log -S` against each open issue's symptom shows that
+**most of the 56 "open" issues are already fixed** — the failure notifier
+opens issues but never closes them when the fixing commit lands. Verified
+fix-states:
+
+| Issue(s) | Symptom | Fix | Fix date | Issue created | Verdict |
+|---|---|---|---|---|---|
+| #584/#583 | `fillna(method=)` | `397041e` → `.ffill(limit=30)` | 2026-06-02 | 2026-06-02 | **FIXED-but-open** |
+| #517/#516 | `22P02` int/float | **#518** `_coerce_int_columns` in `upsert_dataframe`+`bulk_insert_dataframe` (b481d74) — "kill the 22P02 bug class" | 2026-05-17 | 2026-05-17 | **FIXED-but-open** (bug *class* killed) |
+| #487/#486 | `22001` varchar(10) | schema widened to `VARCHAR(20)` in #514 (dfd2395) | 2026-05-17 | 2026-05-14 | **FIXED-but-open** |
+| #484/#485 | `ModuleNotFoundError: tabulate` | `tabulate>=0.9.0` added to `requirements-gcp.txt` (8f6bb22) | 2026-05-30 | 2026-05-14 | **FIXED-but-open** |
+| #572 | `ModuleNotFoundError: lightgbm` | job uses `:research` image; `lightgbm>=4.1.0` in `requirements-research.txt` | (pre-existing) | 2026-05-27 | **FIXED or image-drift** — verify pinned digest |
+| #571/#569/#570 | magnitude `:` `42601` | `mag_dataset.py` uses `:t` params; magnitude touched by #586/#575 | ~2026-06 | 2026-05-27 | **Likely fixed** — verify + close |
+| #563…#557 | strat-engine null-ticker / `copy_from` | touched by #580/#581/#586; COPY wrapper in `database.py:413` | ~2026-05/06 | 2026-05-26 | **Likely fixed** — verify + close |
+
+### 10.1 The headline finding
+**Stale-issue noise dominates the open-issue list.** At least 7 distinct bug
+*classes* (≈24 of the 56 open issues) are already remediated on `main`; they
+remain "open" only because the notifier has no close-on-fix step. The true
+backlog is far smaller than "56 open issues" suggests. **Action**: a reconcile
+pass that closes fixed issues, and a notifier enhancement to auto-close (or
+at least de-duplicate) — see §6.4 / §8.
+
+### 10.2 Residual risks behind the "fixed" label (real, narrow)
+1. **INT-coercion only guards two write paths.** `_coerce_int_columns` runs
+   inside `upsert_dataframe` and `bulk_insert_dataframe`. Any writer using raw
+   `COPY`, `.to_sql`, or a hand-rolled `execute(text(...))` INSERT **bypasses
+   it** and can resurrect the 22P02 class. This is exactly the §9-G writer
+   audit — still open and now higher priority.
+2. **`VARCHAR(20)` is a bigger bucket, not an unbounded one.** A sentiment
+   source emitting a >20-char label re-triggers 22001. Prefer `TEXT` for
+   free-form vendor labels, or validate-and-truncate-with-warning at the
+   writer.
+3. **#572/#590-class "fixed" depends on the deployed digest.** Because Cloud
+   Run pins digests at job-update time (§3.4), a dep present in
+   `requirements-*.txt` is only *actually* available if the job was
+   re-deployed after the requirement landed. The dep-in-requirements check is
+   necessary but not sufficient — pair it with a digest-freshness check.
+
+### 10.3 What is genuinely still open (the real backlog)
+After removing fixed-but-open noise, the substantive remaining work is:
+
+- **Capacity / Rule-0 timeout class** (the largest real category):
+  intraday-bulk-backfill (#524–#531), param-sweep (#520),
+  backfill-daily-indicators (#574), build-options-greeks (#590), and the
+  strat-engine `--rebuild` OOM. These need *architecture* (chunk-by-partition,
+  bounded memory), not another timeout bump. Several have already been
+  whack-a-moled with timeout bumps in history (premarket-brief #552, AV
+  intraday → 8h, freshness-watchdog → 15min) — bumps buy time but don't fix
+  the load-all-then-process shape.
+- **§9-G pg8000 writer audit** — the one structural gap that keeps the
+  driver-mismatch family (§3.1) alive despite the #518 systemic fix.
+- **#573 tz double-localize**, **#554 train-before-infer ordering** — small,
+  genuinely-open code fixes.
+- **Process**: notifier close-on-fix + dedup; close duplicate PR #577/#578.
+
+### 10.4 pandas-3 migration — cleared
+Full sweep of `lib/ gcp/ scripts/` found **no** `DataFrame.append`,
+`.iteritems`, `.ix`, `is_categorical`, `.mad`, or `pd.np` usage. The only
+pandas-3 break was the now-fixed `fillna(method=)`. `inplace=True` usage is
+minimal (`trading_analysis.py` ×3, `backfill_signals.py` ×2) and not a
+correctness risk. **§9-B is closed: pandas-3 migration is effectively clean.**
+
