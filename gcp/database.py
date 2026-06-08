@@ -338,8 +338,7 @@ def upsert_dataframe(
         update_cols = [c for c in df.columns if c not in conflict_cols]
 
     total = 0
-    # NaN/NaT → None so they bind as SQL NULL, not a float8 'NaN' (§3.7).
-    records = _na_to_none_records(df.to_dict(orient='records'))
+    records = df.to_dict(orient='records')
     effective_chunksize = _max_safe_chunksize(len(df.columns), chunksize)
     if effective_chunksize < chunksize:
         logger.info(
@@ -358,7 +357,11 @@ def upsert_dataframe(
     # is actually preferable — partial progress is durable on crash.
     # Cost: ~5 ms per checkout × N chunks.
     for i in range(0, len(records), effective_chunksize):
-        batch = records[i: i + effective_chunksize]
+        # NaN/NaT → None PER CHUNK so they bind as SQL NULL, not a float8 'NaN'
+        # (§3.7). Done per-chunk (not on the whole frame up front) so a large
+        # table — e.g. strat_features_1m at ~1M rows — doesn't double its memory
+        # and OOM (the bug that killed the 2026-06-08 SPY rebuild).
+        batch = _na_to_none_records(records[i: i + effective_chunksize])
         stmt = pg_insert(tbl).values(batch)
 
         if update_cols:
@@ -445,12 +448,17 @@ def bulk_copy_upsert(
         import uuid, io
         temp_name = f"tmp_upsert_{table}_{uuid.uuid4().hex[:8]}"
 
-        # NOTE pg8000 needs CSV with \\N for NULL. Tab separator is safest.
+        # CSV with \\N for NULL (so genuinely-missing values land as SQL NULL,
+        # not a float8 'NaN' — §3.7), tab-delimited. CSV format (not text) so
+        # pandas' quoting of fields with delimiters round-trips correctly.
         sio = io.StringIO()
         df.to_csv(sio, index=False, header=False, sep='\t', na_rep='\\N')
         sio.seek(0)
 
-        # pg8000's cursor doesn't support context manager protocol — use plain assignment
+        # pg8000's cursor does NOT have copy_from (that is psycopg2's API — the
+        # prior code silently failed every call and fell back to the slow
+        # upsert_dataframe, defeating this fast path and reintroducing the
+        # float8-NaN write bug). pg8000 does COPY via execute(..., stream=...).
         cur = raw_conn.cursor()
         try:
             cur.execute(
@@ -458,11 +466,14 @@ def bulk_copy_upsert(
                 f"ON COMMIT DROP"
             )
 
-            # pg8000 cursor exposes copy_from(stream, table, sep, null, columns)
-            cur.copy_from(sio, temp_name, sep='\t', null='\\N', columns=cols)
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            cur.execute(
+                f"COPY {temp_name} ({col_list}) FROM STDIN WITH "
+                f"(FORMAT csv, DELIMITER E'\\t', NULL '\\N')",
+                stream=sio,
+            )
             copied = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(df)
 
-            col_list = ", ".join(f'"{c}"' for c in cols)
             conflict_clause = ", ".join(f'"{c}"' for c in conflict_cols)
             update_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
             cur.execute(
