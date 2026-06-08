@@ -30,6 +30,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError, OperationalError
 
+from lib.indicators import realized_vol_zscore
+
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, MAGNITUDE_THRESHOLDS, PHASE_FEATURES,
     NEW_INDICATORS_TABLE, NEW_CROSS_ASSET_TABLE,
@@ -131,16 +133,10 @@ def _add_phase1_features(df: pd.DataFrame) -> pd.DataFrame:
         (df["bb_upper"] - df["bb_lower"]) / df["close"], np.nan,
     )
 
-    # 15-bar realized volatility z-score. Realized vol = stddev of log returns
-    # over 15 bars; z = (current - rolling_mean_60) / rolling_std_60.
-    logret = np.log(c / prev_c)
-    rv15 = logret.groupby(df["bar_date"]).rolling(15).std().reset_index(level=0, drop=True)
-    rv_mu = rv15.groupby(df["bar_date"]).rolling(60).mean().reset_index(level=0, drop=True)
-    rv_sd = rv15.groupby(df["bar_date"]).rolling(60).std().reset_index(level=0, drop=True)
-    df["realized_vol_z15"] = np.where(
-        rv_sd.notna() & (rv_sd > 0),
-        (rv15 - rv_mu) / rv_sd, np.nan,
-    )
+    # 15-bar realized-vol z-score — shared one-source-of-truth helper (identical
+    # within-day formula; previously inlined here, now also used by
+    # strat_features.realized_vol_z). See lib.indicators.realized_vol_zscore.
+    df["realized_vol_z15"] = realized_vol_zscore(df["close"], df["bar_date"]).values
 
     # range_expansion_ratio = current bar range / avg of prior 5 bars' range
     rng = h - l

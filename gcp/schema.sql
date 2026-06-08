@@ -3070,6 +3070,7 @@ DECLARE
     tf   text;
     cols text := '
         ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS realized_vol_z      DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,

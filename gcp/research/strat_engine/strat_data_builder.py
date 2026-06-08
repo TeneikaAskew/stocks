@@ -70,6 +70,7 @@ from lib.indicators import (
     calculate_current_period_levels,
     calculate_order_blocks,
     calculate_atr,
+    realized_vol_zscore,
 )
 from lib.gamma import total_vex
 from lib.logging_config import setup_logging
@@ -478,6 +479,11 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["ema9_slope"] = _safe("EMA9_Slope")
     out["bb_squeeze"] = _safe("BB_Squeeze")
     out["rsi_divergence"] = _safe("RSI_Divergence")
+    # realized_vol_z: 15-bar within-day realized-vol z-score. Previously had NO
+    # computation (100% NULL — column audit 2026-06-07, family A); now wired via
+    # the shared one-source-of-truth helper (same formula as magnitude's
+    # realized_vol_z15). Uses out["close"]/out["bar_date"] (both set above).
+    out["realized_vol_z"] = realized_vol_zscore(out["close"], out["bar_date"]).values
     out["intraday_return"] = (closes - df_tf["Open"]) / df_tf["Open"] * 100
     out["high_low_spread_pct"] = (df_tf["High"] - df_tf["Low"]) / closes * 100
 

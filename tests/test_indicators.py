@@ -535,3 +535,35 @@ class TestEMA200ConfigWiring:
         assert pd.notna(out["EMA200"].iloc[-1])
         # fast/mid unchanged (so Price_vs_EMA9/20 etc. are unaffected)
         assert "EMA9" in out.columns and "EMA20" in out.columns
+
+
+# ── realized_vol_zscore: shared one-source-of-truth helper (wired 2026-06-08) ──
+class TestRealizedVolZScore:
+    def test_within_day_reset_and_warmup(self):
+        from lib.indicators import realized_vol_zscore
+        df = _two_session_ohlcv(n_per=120)
+        bar_date = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bar_date)
+        assert len(z) == len(df)
+        day1 = df.index.date == df.index.date[0]
+        # first bar of the day has no within-day prior return -> NaN (warmup)
+        assert pd.isna(z[day1].iloc[0])
+        # finite values appear after the rv(15)+z(60) warmup, within each day
+        assert z.notna().sum() > 0
+        assert z[day1].notna().sum() > 0
+
+    def test_matches_inline_formula(self):
+        """Pins equivalence to the magnitude engine's prior inline formula."""
+        from lib.indicators import realized_vol_zscore
+        df = _two_session_ohlcv(n_per=120)
+        bd = pd.Series(df.index.date, index=df.index)
+        c = df["Close"]
+        prev_c = c.groupby(bd).shift(1)
+        lr = np.log(c / prev_c)
+        rv = lr.groupby(bd).rolling(15).std().reset_index(level=0, drop=True)
+        mu = rv.groupby(bd).rolling(60).mean().reset_index(level=0, drop=True)
+        sd = rv.groupby(bd).rolling(60).std().reset_index(level=0, drop=True)
+        expected = pd.Series(np.where(sd.notna() & (sd > 0), (rv - mu) / sd, np.nan),
+                             index=c.index)
+        got = realized_vol_zscore(c, bd)
+        pd.testing.assert_series_equal(got, expected, check_names=False)

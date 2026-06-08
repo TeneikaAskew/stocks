@@ -259,6 +259,29 @@ def calculate_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return vol_direction.cumsum()
 
 
+def realized_vol_zscore(close: pd.Series, bar_date: pd.Series,
+                        rv_window: int = 15, z_window: int = 60) -> pd.Series:
+    """Within-day realized-volatility z-score (ONE source of truth).
+
+    realized vol = rolling std of within-day log returns over `rv_window` bars;
+    z = (rv − rolling_mean_{z_window}) / rolling_std_{z_window}, all grouped by
+    `bar_date` so nothing crosses the overnight gap. Returns NaN where the
+    z-window std is 0/undefined (warmup). Canonical definition for BOTH
+    `strat_features.realized_vol_z` (wired 2026-06-08) and the magnitude engine's
+    `realized_vol_z15` — previously the formula lived inline only in
+    `mag_dataset.py`, and `strat_features.realized_vol_z` had no computation at
+    all (100% NULL; column audit 2026-06-07, family A).
+    """
+    c = pd.to_numeric(close, errors="coerce")
+    prev_c = c.groupby(bar_date).shift(1)
+    logret = np.log(c / prev_c)
+    rv = logret.groupby(bar_date).rolling(rv_window).std().reset_index(level=0, drop=True)
+    mu = rv.groupby(bar_date).rolling(z_window).mean().reset_index(level=0, drop=True)
+    sd = rv.groupby(bar_date).rolling(z_window).std().reset_index(level=0, drop=True)
+    return pd.Series(np.where(sd.notna() & (sd > 0), (rv - mu) / sd, np.nan),
+                     index=c.index)
+
+
 # ---------------------------------------------------------------------------
 # Pattern / consecutive-move detection
 # ---------------------------------------------------------------------------
