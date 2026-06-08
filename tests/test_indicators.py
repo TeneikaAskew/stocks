@@ -538,32 +538,44 @@ class TestEMA200ConfigWiring:
 
 
 # ── realized_vol_zscore: shared one-source-of-truth helper (wired 2026-06-08) ──
-class TestRealizedVolZScore:
-    def test_within_day_reset_and_warmup(self):
-        from lib.indicators import realized_vol_zscore
-        df = _two_session_ohlcv(n_per=120)
-        bar_date = pd.Series(df.index.date, index=df.index)
-        z = realized_vol_zscore(df["Close"], bar_date)
-        assert len(z) == len(df)
-        day1 = df.index.date == df.index.date[0]
-        # first bar of the day has no within-day prior return -> NaN (warmup)
-        assert pd.isna(z[day1].iloc[0])
-        # finite values appear after the rv(15)+z(60) warmup, within each day
-        assert z.notna().sum() > 0
-        assert z[day1].notna().sum() > 0
+def _multiday_ohlcv(n_days=12, bars_per_day=26, seed=7):
+    """N days of `bars_per_day` bars (default 26 ≈ a 15m RTH session)."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    base = pd.Timestamp('2024-01-02 09:30')
+    for d in range(n_days):
+        day = (base + pd.Timedelta(days=d)).normalize() + pd.Timedelta(hours=9, minutes=30)
+        steps = rng.normal(0, 0.001, bars_per_day)
+        close = 200.0 * np.exp(np.cumsum(steps))
+        times = pd.date_range(day, periods=bars_per_day, freq='15min')
+        frames.append(pd.DataFrame({'Close': close}, index=times))
+    df = pd.concat(frames)
+    return df
 
-    def test_matches_inline_formula(self):
-        """Pins equivalence to the magnitude engine's prior inline formula."""
+
+class TestRealizedVolZScore:
+    def test_within_day_rv_warmup(self):
         from lib.indicators import realized_vol_zscore
-        df = _two_session_ohlcv(n_per=120)
+        df = _multiday_ohlcv()
         bd = pd.Series(df.index.date, index=df.index)
-        c = df["Close"]
-        prev_c = c.groupby(bd).shift(1)
-        lr = np.log(c / prev_c)
-        rv = lr.groupby(bd).rolling(15).std().reset_index(level=0, drop=True)
-        mu = rv.groupby(bd).rolling(60).mean().reset_index(level=0, drop=True)
-        sd = rv.groupby(bd).rolling(60).std().reset_index(level=0, drop=True)
-        expected = pd.Series(np.where(sd.notna() & (sd > 0), (rv - mu) / sd, np.nan),
-                             index=c.index)
-        got = realized_vol_zscore(c, bd)
-        pd.testing.assert_series_equal(got, expected, check_names=False)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert len(z) == len(df)
+        # first bar of each day has no within-day prior return -> NaN
+        assert pd.isna(z.iloc[0])
+
+    def test_populated_on_low_bars_per_day_tf(self):
+        """The 2026-06-08 fix: ~26 bars/day (15m-like) must NOT be all-NaN.
+        The old within-day z-window(60) could never fill on <60 bars/day."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=26)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() > 0  # would be 0 under the old within-day formula
+
+    def test_coarse_tf_below_rv_window_is_all_nan(self):
+        """rv needs >= rv_window bars/day; e.g. 8 bars/day < 15 -> genuinely NULL."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=8)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() == 0  # genuine missingness (not a bug)
