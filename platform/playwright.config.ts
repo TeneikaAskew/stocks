@@ -33,6 +33,11 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         baseURL: 'http://localhost:5173',
         headless: true,
+        // The headless shell lacks system root CAs, so the Montserrat
+        // Google-Fonts CDN load throws ERR_CERT and trips the "no console
+        // errors" assertions. Accept certs in this mocked local project
+        // (does not affect the cloud project, which uses real IAP).
+        ignoreHTTPSErrors: true,
       },
     },
     // Interactive: open a real browser, complete Google sign-in, save cookies.
