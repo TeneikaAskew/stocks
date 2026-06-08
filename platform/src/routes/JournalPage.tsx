@@ -12,6 +12,10 @@ import {
   HardDrive,
   AlertCircle,
 } from 'lucide-react';
+import { KpiTile, Card, CardHeader } from '@/components/primitives';
+import { TickerSelect } from '@/components/shared/TickerSelect';
+import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
+import { fmtPct, NA } from '@/lib/format';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -166,6 +170,19 @@ export default function JournalPage() {
   const wins = returns.filter(r => r > 0);
   const winRate = returns.length > 0 ? (wins.length / returns.length) * 100 : null;
   const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : null;
+  const totalReturn = returns.reduce((a, b) => a + b, 0);
+  const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + b, 0) / wins.length : null;
+  // Equity curve: cumulative return % across closed trades, oldest → newest.
+  const equityPoints: PricePoint[] = [...entries]
+    .sort((a, b) => (a.exit_ts || a.entry_ts).localeCompare(b.exit_ts || b.entry_ts))
+    .reduce<{ pts: PricePoint[]; cum: number }>(
+      (acc, e, i) => {
+        acc.cum += e.return_pct ?? 0;
+        acc.pts.push({ time: i, price: acc.cum, label: (e.exit_ts || e.entry_ts).slice(0, 10) });
+        return acc;
+      },
+      { pts: [], cum: 0 },
+    ).pts;
 
   const handleAdd = () => {
     const ep = parseFloat(String(form.entryPrice));
@@ -220,7 +237,7 @@ export default function JournalPage() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-bold text-[var(--color-text-primary)]">
+          <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">
             {activeTicker} Trade Journal
           </h1>
           <div className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
@@ -230,7 +247,8 @@ export default function JournalPage() {
             }
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <TickerSelect />
           {entries.length > 0 && (
             <>
               <button
@@ -268,21 +286,23 @@ export default function JournalPage() {
         </div>
       )}
 
-      {/* Summary stats */}
+      {/* Summary KPIs */}
       {entries.length > 0 && (
-        <div className="grid grid-cols-4 gap-2">
-          {[
-            { label: 'Trades', value: String(entries.length) },
-            { label: 'Win Rate', value: winRate !== null ? `${winRate.toFixed(0)}%` : '--' },
-            { label: 'Avg Return', value: avgReturn !== null ? `${avgReturn >= 0 ? '+' : ''}${avgReturn.toFixed(2)}%` : '--' },
-            { label: 'Avg Win', value: wins.length > 0 ? `+${(wins.reduce((a, b) => a + b, 0) / wins.length).toFixed(2)}%` : '--' },
-          ].map(({ label, value }) => (
-            <div key={label} className="rounded-xl bg-[var(--surface-2)] p-3">
-              <div className="text-xs text-[var(--color-text-muted)]">{label}</div>
-              <div className="mt-0.5 text-lg font-bold text-[var(--color-text-primary)]">{value}</div>
-            </div>
-          ))}
+        <div className="grid grid-cols-2 gap-[14px] md:grid-cols-3 lg:grid-cols-5">
+          <KpiTile label="Trades" value={String(entries.length)} sub={`${wins.length}W / ${entries.length - wins.length}L`} />
+          <KpiTile label="Win rate" value={winRate !== null ? `${winRate.toFixed(0)}%` : NA} tone={(winRate ?? 0) >= 50 ? 'bull' : 'bear'} />
+          <KpiTile label="Total P&L" value={fmtPct(totalReturn)} tone={totalReturn >= 0 ? 'bull' : 'bear'} />
+          <KpiTile label="Avg / trade" value={fmtPct(avgReturn)} tone={(avgReturn ?? 0) >= 0 ? 'bull' : 'bear'} />
+          <KpiTile label="Avg win" value={fmtPct(avgWin)} tone="bull" />
         </div>
+      )}
+
+      {/* Equity curve — cumulative P&L across closed trades */}
+      {equityPoints.length > 1 && (
+        <Card>
+          <CardHeader title={`${activeTicker} equity curve`} meta="cumulative P&L %" />
+          <PriceAreaChart data={equityPoints} seriesLabel="Cumulative P&L" height={240} />
+        </Card>
       )}
 
       {/* Add Trade Form */}
