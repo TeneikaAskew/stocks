@@ -19,6 +19,11 @@ yfinance>=1.3.0
 
 # Options Greeks calculation (used in gcp/fetchers/fetch_etf_options.py and fetch_earnings_options.py)
 py_vollib>=1.0.1
+# scipy: BSM IV solve/Greeks in lib/options_greeks.py AND the Black-Scholes
+# gamma-flip recurve (lib.gamma.compute_gamma_flip_bs / bs_gamma) which
+# build_summary calls on every gamma read. Required on the slim :latest image
+# (premarket brief / signal monitor / API) or gamma_flip silently stays NULL.
+scipy>=1.11
 # Vectorized BSM IV solver — used by lib/options_greeks.py to compute Greeks
 # for SPX (AV does not provide Greeks for cash-settled index options).
 # numba 0.65 broke py_vollib_vectorized's recursive black() function

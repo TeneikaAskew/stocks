@@ -46,7 +46,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from typing import Iterable, Sequence
+import logging
 import math
+
+log = logging.getLogger(__name__)
 
 # ── Constants (mirror options-heatseeker config) ───────────────────────────
 SPOT_MULTIPLIER = 100             # one option contract represents 100 shares
@@ -642,7 +645,17 @@ def compute_gamma_flip_bs(
     if len(Ks) < min_contracts:
         return None
 
-    from lib.options_greeks import bs_gamma
+    # bs_gamma needs scipy. On slim images that don't ship scipy the true flip
+    # simply can't be computed here — return None (gamma_flip "unavailable"),
+    # logged once, rather than crashing every build_summary caller. This is an
+    # INTERNAL capability gap, not a fabricated value (§3.7): the column stays
+    # NULL and is populated by the build job on an image that has scipy.
+    try:
+        from lib.options_greeks import bs_gamma
+        import scipy.stats  # noqa: F401 — probe so the failure is here, not mid-vectorize
+    except Exception:
+        log.warning("compute_gamma_flip_bs: scipy unavailable — gamma_flip not computed")
+        return None
     K = np.asarray(Ks); T = np.asarray(Ts); sig = np.asarray(sigs)
     sgn = np.asarray(signs); oi = np.asarray(ois)
 
