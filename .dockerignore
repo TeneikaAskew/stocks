@@ -3,6 +3,9 @@
 
 # Large market data
 data/
+# ...but keep the frontend's src/data/ — app code (mock modules), not pipeline data.
+!platform/src/data/
+!platform/src/data/**
 
 # Web apps
 chart-viewer/

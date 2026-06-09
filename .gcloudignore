@@ -4,6 +4,12 @@
 
 # Large market data — migrated to Cloud SQL/GCS via gcp/migrate_to_gcp.py
 data/
+# ...but the frontend's src/data/ is TypeScript app code — mock modules the
+# options components import at build time — NOT pipeline data. The unanchored
+# `data/` above (gitignore semantics) would otherwise drop it from the Cloud
+# Build upload and break `npm run build` in the image. Mirrors platform/.gitignore.
+!platform/src/data/
+!platform/src/data/**
 
 # Web apps — deployed separately (GitHub Pages / Firebase)
 chart-viewer/
