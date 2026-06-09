@@ -146,7 +146,7 @@ class TestEstimateSpot:
 # ── Gamma flip detection ───────────────────────────────────────────────────
 
 
-class TestComputeGammaFlip:
+class TestComputeGammaBalance:
     def test_no_crossing_returns_none(self):
         """All-positive cumulative GEX → no flip."""
         opts = [
@@ -155,7 +155,7 @@ class TestComputeGammaFlip:
             {"type": "call", "strike": 105, "open_interest": 100, "gamma": 0.04},
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        assert gamma.compute_gamma_flip(strikes, 100) is None
+        assert gamma.compute_gamma_balance(strikes, 100) is None
 
     def test_simple_single_crossing_with_definitive_sign_change(self):
         """Heavy puts → heavy calls → heavy puts: cumulative crosses zero strictly."""
@@ -166,7 +166,7 @@ class TestComputeGammaFlip:
             # cum after 100: -50 + 100 = +50  (strict crossing here)
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        flip = gamma.compute_gamma_flip(strikes, 97)
+        flip = gamma.compute_gamma_balance(strikes, 97)
         assert flip is not None
         # Crossing interpolated between 95 (cum=-50) and 100 (cum=+50): midpoint 97.5
         assert flip == pytest.approx(97.5, abs=0.1)
@@ -185,7 +185,7 @@ class TestComputeGammaFlip:
             # flip = 100 + 0.4 * 5 = 102.0
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        flip = gamma.compute_gamma_flip(strikes, 100)
+        flip = gamma.compute_gamma_balance(strikes, 100)
         assert flip == pytest.approx(102.0, abs=0.1)
 
     def test_picks_crossing_nearest_spot(self):
@@ -203,9 +203,9 @@ class TestComputeGammaFlip:
         ]
         strikes = gamma.aggregate_by_strike(opts)
         # Spot at 91 → should pick first crossing (~91)
-        flip_91 = gamma.compute_gamma_flip(strikes, 91)
+        flip_91 = gamma.compute_gamma_balance(strikes, 91)
         # Spot at 100 → equidistant from both. Just check it returns a number.
-        flip_100 = gamma.compute_gamma_flip(strikes, 100)
+        flip_100 = gamma.compute_gamma_balance(strikes, 100)
         assert flip_91 is not None and 90 < flip_91 < 92
         assert flip_100 is not None
 
@@ -243,8 +243,8 @@ class TestClassifyLevels:
         ]
         strikes = gamma.aggregate_by_strike(opts)
         gex = gamma.gex_by_strike(strikes, 100)
-        levels = gamma.classify_levels(strikes, gex, 100, flip=102.5, window_pct=10)
-        flip_strikes = [lv.strike for lv in levels if "flip" in lv.tags]
+        levels = gamma.classify_levels(strikes, gex, 100, gamma_balance=102.5, window_pct=10)
+        flip_strikes = [lv.strike for lv in levels if "gamma_balance" in lv.tags]
         # Should tag 100 (below) and 105 (above)
         assert 100 in flip_strikes
         assert 105 in flip_strikes
@@ -746,3 +746,87 @@ class TestBuildGridSummary:
         assert summary.expirations == []
         assert summary.strikes == []
         assert summary.regime == "unknown"
+
+
+# ── True Black-Scholes-recurved gamma flip ──────────────────────────────────
+
+
+class TestComputeGammaFlipBS:
+    """The true zero-gamma level (compute_gamma_flip_bs) re-prices each
+    contract's BSM gamma across candidate spots and finds where dealer GEX(S)=0.
+    Distinct from compute_gamma_balance (cumulative-net-gamma balance)."""
+
+    def _chain(self, spot=100.0):
+        opts = []
+        for K in range(80, 121):
+            for typ in ("call", "put"):
+                oi = (200 - (K - 100) * 5) if typ == "call" else (200 + (K - 100) * 5)
+                opts.append({"type": typ, "strike": float(K),
+                             "expiration": "2026-07-17",
+                             "open_interest": float(max(oi, 10)),
+                             "implied_volatility": 0.20})
+        return opts
+
+    def test_returns_crossing_near_spot(self):
+        opts = self._chain()
+        flip = gamma.compute_gamma_flip_bs(
+            opts, 100.0, risk_free=0.045, dividend_yield=0.013,
+            snapshot_date="2026-06-09")
+        assert flip is not None
+        assert 90.0 < flip < 110.0
+
+    def test_crossing_is_a_true_gex_zero(self):
+        """At the returned S*, net Σ sign·γ_BS·OI is ~0 and flips sign across it."""
+        import numpy as np
+        from lib.options_greeks import bs_gamma
+        opts = self._chain()
+        flip = gamma.compute_gamma_flip_bs(
+            opts, 100.0, risk_free=0.045, dividend_yield=0.013,
+            snapshot_date="2026-06-09")
+        assert flip is not None
+
+        def gex_at(S):
+            tot = 0.0
+            for o in opts:
+                sgn = 1.0 if o["type"] == "call" else -1.0
+                g = bs_gamma(S, o["strike"], (
+                    (np.datetime64("2026-07-17") - np.datetime64("2026-06-09"))
+                    / np.timedelta64(1, "D")) / 365.0, 0.045, 0.013,
+                    o["implied_volatility"])
+                tot += sgn * float(g) * o["open_interest"]
+            return tot
+        assert abs(gex_at(flip)) < abs(gex_at(flip - 2.0))
+        assert gex_at(flip - 1.0) * gex_at(flip + 1.0) < 0
+
+    def test_none_when_no_sign_change(self):
+        """All-call chain → dealer gamma never crosses zero → None (never 0)."""
+        opts = [o for o in self._chain() if o["type"] == "call"]
+        assert gamma.compute_gamma_flip_bs(
+            opts, 100.0, risk_free=0.045, dividend_yield=0.013,
+            snapshot_date="2026-06-09") is None
+
+    def test_none_when_thin_chain(self):
+        opts = self._chain()[:4]
+        assert gamma.compute_gamma_flip_bs(
+            opts, 100.0, risk_free=0.045, dividend_yield=0.013,
+            snapshot_date="2026-06-09") is None
+
+    def test_units_guard_iv_as_pct_returns_none(self):
+        """IV passed as a percent (20.0 not 0.20) flattens gamma → no crossing."""
+        opts = [{**o, "implied_volatility": 20.0} for o in self._chain()]
+        assert gamma.compute_gamma_flip_bs(
+            opts, 100.0, risk_free=0.045, dividend_yield=0.013,
+            snapshot_date="2026-06-09") is None
+
+    def test_differs_from_gamma_balance(self):
+        """The BS flip and the cumulative-balance price are different quantities."""
+        opts = self._chain()
+        strikes = gamma.aggregate_by_strike(opts)
+        bal = gamma.compute_gamma_balance(strikes, 100.0)
+        flip = gamma.compute_gamma_flip_bs(
+            opts, 100.0, risk_free=0.045, dividend_yield=0.013,
+            snapshot_date="2026-06-09")
+        assert flip is not None
+        # They need not both exist, but when both do they should not be identical.
+        if bal is not None:
+            assert abs(bal - flip) > 1e-6

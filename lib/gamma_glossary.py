@@ -212,6 +212,8 @@ GAMMA_TERMS: dict[str, GammaTerm] = {
         aliases={
             "stratalyst":     "Gamma Balance",
             "heatseeker":     "Balance",
+            "squeezemetrics": "Cumulative Gamma Balance",
+            "spotgamma":      "Gamma Balance",
             "plain_english":  "Balance point",
         },
     ),
