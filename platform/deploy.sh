@@ -108,6 +108,10 @@ if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
 fi
 
 # 3. Deploy
+# --memory 2Gi: /api/options/{ticker}/{date}/levels loads the full options
+# chain (all expiries) and computes GEX across it; for the latest/largest
+# snapshot this peaks just over 1 GiB. At 1Gi the instance OOM-killed mid-request
+# (503 + cascading connection errors on co-located requests). 2Gi gives headroom.
 echo ">> deploying to Cloud Run"
 gcloud run deploy "${SERVICE}" \
   --image "${IMAGE}" \
@@ -117,7 +121,7 @@ gcloud run deploy "${SERVICE}" \
   --service-account "${RUN_SA:-trading-platform-svc@${PROJECT_ID}.iam.gserviceaccount.com}" \
   --set-env-vars "${ENV_VARS}" \
   --set-secrets "${SECRETS}" \
-  --memory 1Gi \
+  --memory 2Gi \
   --cpu 1 \
   --cpu-throttling \
   --timeout 300 \
