@@ -23,11 +23,11 @@ archived pipelines, and GCS artifact conventions listed in §"Source artifacts."
 | Architecture | Used by | Predicts | Lives in | Status |
 |---|---|---|---|---|
 | **LightGBM multiclass (4-class)** | STRAT-TYPE, MAG-SIZE | next candle / next-bar size bucket | `strat_pred_train.py`, `mag_pred_train.py` | TYPE works; SIZE fail (gate 7) |
-| **LightGBM binary** | STRAT-DIR, DIR-REGIME, BREAKOUT-META meta-model | direction / follow-through | `strat_dir_walk_forward.py`, `dir_regime_walk_forward.py`, `breakout_meta_walk_forward.py` | DIR fail; META gross-pass/net-marginal |
+| **LightGBM binary** | STRAT-DIR, DIR-REGIME, BREAKOUT-META meta-model | direction / follow-through | `strat_dir_walk_forward.py`, `dir_regime_walk_forward.py`, `breakout_meta_walk_forward.py` | DIR fail; META gross-PASS all cells / net-positive only IWM 5m on extended data (2026-06-09 reconfirm) |
 | **OLS / linregress** | INTRADAY-MOM replication | last-30m ~ first-30m | `intraday_momentum.py` | null |
 | **LogisticRegression (sklearn)** | INTRADAY-MOM walk-forward | sign of last-30m | `intraday_momentum.py` | null |
 | **Rule-based primary (no ML)** | BREAKOUT-META primary, Strat classifier | trigger break / candle class | `lib/strat.py`, `breakout_meta_walk_forward.py` | deterministic |
-| **Transition table + fixed vote-rule + held-out logistic** | STRAT-NEXTBAR (E-25) | next daily/weekly candle 2U/2D | `lib/strat.py:compute_strat_history`, `scripts/strat_oos_*` | ✅ held-out OOS edge (CLV-dominated, partly mechanical) |
+| **Transition table + fixed vote-rule + held-out logistic** | STRAT-NEXTBAR (E-25) | next daily/weekly candle 2U/2D | `lib/strat.py:compute_strat_history`, `scripts/strat_oos_*`, `strat_clv_demech.py`, `strat_struct_backtest.py` | ✅ held-out OOS edge, but **gap-mechanical** (de-mech 2026-06-09: CLV_LAG1≈0, gap-neutral collapses to base) — trigger-break read, NOT standalone-tradeable |
 | **CalibratedClassifierCV (sigmoid/isotonic)** | calibration diagnostic only | — | sklearn wrapper, optional `--calibration` | tested, NOT used (hurt ECE) |
 | **Stacked regression + voter overlay (LightGBM→Ridge/Lasso)** | archived P7 pipeline | fwd return / next candle | `gcp/research/_archive/p7c,p7f,p7g_*.py` | ARCHIVED — net-negative |
 | XGBoost / SVM / HAR / torch / statsmodels-sequence | — | — | — | **NOT IMPLEMENTED** (searched; none present) |
@@ -113,10 +113,15 @@ research notes.
 
 ## A6. Open items & reproducibility gaps
 
-- **BREAKOUT-META net:** RESOLVED (E-24) — net-positive SPY/IWM/QQQ @5m + SPY @15m
-  under a realistic 1-min fill model at true 0.6bp spread. Remaining: decision-
-  latency model, ~10% same-tf-fallback labels, real L2/tick order-flow vendor,
-  IWM/QQQ 15m weak.
+- **BREAKOUT-META net:** ⚠️ **PARTIAL / fragile** (E-24 + 2026-06-09 reconfirmation).
+  META (gross) reproduces PASS on all cells, but on data extended to 2026-06 the
+  NET edge at realistic fill is **only a clean net-positive on IWM 5m (+0.110 R,
+  8/8)** — SPY 5m, QQQ 5m, SPY 15m all NET_FAIL (4/8–4/7, median R ≈ 0). The
+  2026-06-05 "net-positive across all 3 tickers" did NOT robustly survive. The
+  stop-limit/realistic-entry execution model is confirmed correct; net edge is
+  marginal and ticker-specific — not yet shippable multi-ticker. Remaining:
+  decision-latency model, ~10% same-tf-fallback labels, real L2/tick order-flow
+  vendor, IWM/QQQ 15m weak.
 - **No formal purge/embargo** around fold boundaries (mitigated by t+1 label).
 - **No cutoff-shift perturbation** robustness test (only bootstrap-on-test-bars;
   seed-replication is a no-op on deterministic LightGBM).
@@ -389,8 +394,16 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Realistic fill + labeling fix (2026-06-05):** scan barriers from the cross bar (not window start) → base follow-through 0.33→0.41 (more accurate); `--entry-mode realistic` = actual 1-min gap past trigger. Net @ realistic entry, 0.6bp: **net-positive across ALL 3 tickers at 5m** (SPY +0.081 5/8, IWM +0.096 6/7, QQQ +0.068 5/7) and **SPY 15m** (+0.038 6/7); IWM/QQQ 15m marginal-negative.
 - **IV-flow family** (ATM put-call skew, IV level/changes from EOD options, D-1 shifted, 99.8% coverage): **worse** (NET_FAIL where clean passes) — like OFI proxies, re-encodes spine vol-regime info.
 - **Live real-time options (market open):** SPY ATM IV ~15%, ETF penny-wide → ~0.26bp round-trip, so 0.6bp cost is conservative.
-- **Verdict:** ✅ upgraded — **net-positive across SPY/IWM/QQQ at 5m and SPY at 15m under a realistic fill model at true spreads.** Extra feature families (OFI, IV-flow) don't help; edge is self-contained in structural breakout features. FLOW-OFI(true) data-blocked; HONEST-GATE7 data-blocked.
-- **Gaps:** decision-latency model; ~10% same-tf-fallback labeling (sparse early 1-min); real L2/tick order-flow vendor; IWM/QQQ 15m weak.
+- **Verdict:** ✅ upgraded — **net-positive across SPY/IWM/QQQ at 5m and SPY at 15m under a realistic fill model at true spreads** *(as of 2026-06-05; see reconfirmation below — this did NOT robustly survive extended data).* Extra feature families (OFI, IV-flow) don't help; edge is self-contained in structural breakout features. FLOW-OFI(true) data-blocked; HONEST-GATE7 data-blocked.
+- **RECONFIRMATION (2026-06-09, data extended to 2026-06-06, `--entry-mode realistic --cost-bps 0.6`, NET judged at 0.02-ATR one-way slip):** the **META layer (gross follow-through prediction) reproduces robustly — PASS on all four cells** (SPY 5m 8/8, IWM 5m 8/8, QQQ 5m 8/8, SPY 15m 6/8). **But the NET tradeable edge did NOT survive the 2025–26 data on most cells:**
+  | cell | META | NET @ 0.02 ATR realistic | vs 2026-06-05 |
+  |---|---|---|---|
+  | **IWM 5m** | PASS 8/8 | **NET_PASS 8/8, +0.110 R** | reproduces (stronger; was +0.096) |
+  | SPY 5m | PASS 8/8 | NET_FAIL 4/8, +0.042 R | was +0.081 5/8 → now marginal |
+  | QQQ 5m | PASS 8/8 | NET_FAIL 4/8, −0.027 R | was +0.068 5/7 → now negative |
+  | SPY 15m | PASS 6/8 | NET_FAIL 4/7, +0.022 R | was +0.038 6/7 → now marginal |
+  Executions `magnitude-engine-{49mzz,bh97m,jvfbn,sbjbh}`. The 5m cells OOM at the job's 8Gi default (142k breakouts × 1-min barriers) — re-run at `--memory 16Gi`, reverted after. **Read: the realistic stop-limit execution model is CONFIRMED as the correct framework and the META edge is robust, but the NET edge is marginal and ticker-specific — only IWM 5m is a clean net-positive on current data. NOT shippable as a multi-ticker strategy without further work.**
+- **Gaps:** decision-latency model; ~10% same-tf-fallback labeling (sparse early 1-min); real L2/tick order-flow vendor; net edge fragile/ticker-specific over time (only IWM 5m clean on extended data); IWM/QQQ 15m weak.
 - **Artifacts:** `breakout_meta_walk_forward.py` (`--entry-mode`, `--ofi-proxies`); `gs://.../<ticker>_<tf>/breakout_meta_wf_*.json`; `MODEL_RETHINK_PLANS.md` §execution-quality.
 
 ## E-23 · Cost / EV / friction analysis
@@ -401,7 +414,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Artifacts:** `COST_ANALYSIS.md`; E-12/E-18 artifacts.
 
 ## E-25 · STRAT-NEXTBAR — historical tape + next-bar directional forward-walk
-- **Engine/area:** strat (direction / next-candle) · **Status:** ✅ validated OOS (daily + weekly) · **Dates:** 2026-06-07 → 06-08 · **PRs (all merged to main):** #592 (backend), #593 (daily held-out OOS), #594 (multi-TF OOS + this registry entry), #595 (CLV ablation).
+- **Engine/area:** strat (direction / next-candle) · **Status:** ✅ validated OOS (daily + weekly); edge proven **gap-mechanical, not standalone-tradeable** (de-mech 2026-06-09) · **Dates:** 2026-06-07 → 06-09 · **PRs (all merged to main):** #592 (backend), #593 (daily held-out OOS), #594 (multi-TF OOS + this registry entry), #595 (CLV ablation), #596 (registry self-contained), + CLV de-mechanization & costed structural backtest (this PR).
 - **Question:** given all bars so far, what is the next candle (continue / reverse / stay-inside / expand-outside), how often, and is it forecastable **out-of-sample**? And how much of any edge is genuine vs mechanical?
 - **Target:** next Strat candle ∈ {2U, 2D, 1, 3} at daily / weekly / monthly / quarterly. The tradeable "directional call" = next ∈ {2U, 2D} (which trigger breaks).
 - **Data:** `market_data_daily` (Cloud SQL) resampled to 1d/1w/1mo/1q via `lib.data_loader` (added `'1q'`=QE). Tickers SPY/QQQ/IWM/AAPL/NVDA; ~2016→2026 (~2,000 daily bars/ticker). Classification cross-checked 100% vs persisted `market_data_daily.strat_candle` (production).
@@ -420,7 +433,9 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   | `scripts/strat_forward_walk_oos.py` | **daily held-out** (train<Y / test=Y) fixed-rule + logistic |
   | `scripts/strat_oos_multi_tf.py` | **multi-TF held-out** (daily/weekly/monthly); defines `build_bars()`, `FEATS` |
   | `scripts/strat_oos_clv_ablation.py` | **CLV ablation** held-out (FULL / NO_CLV / CLV_ONLY / STRUCT_ONLY); imports `build_bars` read-only |
-  | `tests/test_strat_history.py` | hermetic tests (1-3-1, D/W/M/Q tape, upcoming setup, quarterly) — 8 pass |
+  | `scripts/strat_clv_demech.py` | **CLV de-mechanization** — 2 targets (gap-aided `next_up` vs gap-neutral `next_intrabar`) × 5 sets incl. `CLV_LAG1`; imports `build_bars`+`FEATS` read-only |
+  | `scripts/strat_struct_backtest.py` | **costed underlying backtest** of the STRUCT (momentum+FTFC) residual — held-out per-year, 2bps/side, `oc`/`cc` holds, vs buy-hold; imports `build_bars`+`FEATS` read-only |
+  | `tests/test_strat_history.py` · `tests/test_strat_clv_demech.py` · `tests/test_strat_struct_backtest.py` | hermetic tests (history+1-3-1; demech wiring/mechanical-signature; backtest cost/band monotonicity) — 8 + 7 + 6 pass |
 
 - **Results — descriptive (full-sample, SPY representative):**
   - Single current-candle is a **weak** predictor: after 2U → next 2U ~47–57% (continuation) vs 2D ~23–33%; after 2D ≈ coin-flip; inside(1) rarely stays inside, ~14–26% expand to a 3; the candle *type* itself ranks LOW in mutual information.
@@ -442,17 +457,37 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   | NO_CLV (all−clv) | ~64–66% | ~72–74% | −5–7pp daily; still > base |
   | STRUCT_ONLY (mom+FTFC) | ~65–66% | ~70–75% | the genuine non-mechanical residual (+6–13pp over base) |
 
-- **Verdict:** ✅ a **real, held-out** edge on the directional next-bar at daily & weekly. **But the edge is dominated by close-location (CLV), which is PARTLY MECHANICAL** — a strong close puts the next open near the high, making a higher-high (2U) mechanically easier; effectively *"closed strong → bet it breaks the high tomorrow."* The genuinely structural momentum+FTFC residual is real but smaller (~+6–10pp over base). It predicts **which trigger breaks (2U/2D), NOT close-to-close P&L** — exits still need managing. Monthly/quarterly are too thin to validate.
+- **Results — CLV DE-MECHANIZATION (held-out, all 5 tickers, `strat_clv_demech.py`, run 2026-06-09 `magnitude-engine-t2n8q`):** two de-mechanizing levers — a **gap-neutral target** (`next_close>next_open`, measured inside the next bar so the open-gap gives no free advantage) and **prior-bar CLV** (`clv.shift(1)`, which cannot set the next open). Both are decisive and consistent across SPY/QQQ/IWM/AAPL/NVDA:
+  | lever | result | read |
+  |---|---|---|
+  | `CLV_NOW` on gap-aided `next_up` | lift **+10 to +20pp** (reproduces headline) | the inflated edge |
+  | **`CLV_LAG1`** (prior-bar CLV) on `next_up` | lift **≈ 0 everywhere** (−1.5 to +0.0pp, LLbeat ≈ 0) | close-location has NO predictive persistence once a full bar separates it from the open — the CLV edge is **entirely the contemporaneous open-gap mechanism** |
+  | **all sets** (incl. FULL/CLV_NOW/STRUCT) on **gap-neutral** `next_intrabar` | lift **≈ base** (−7 to +0.5pp, LLbeat ≈ 0) | the whole next-bar edge **vanishes** when the open-gap advantage is removed — *nothing* predicts the next bar's own (open→close) direction |
+  - **Conclusion:** the ~70/75–80% next-bar accuracy is a **gap-aided trigger-break** phenomenon, not directional foresight. CLV's contribution is mechanical (CLV_LAG1 = 0, gap-neutral = 0); even the STRUCT_ONLY residual predicts *which trigger breaks*, not the bar's own direction.
+
+- **Results — STRUCTURAL-RESIDUAL COSTED UNDERLYING BACKTEST (held-out per-year, 2 bps/side, `strat_struct_backtest.py`, runs `magnitude-engine-6qmsf` `oc` / `6px6b` `cc`):** trades the underlying on P(next_up) for STRUCT/FULL/CLV_ONLY; `oc`=next_open→next_close (gap NOT capturable, honest), `cc`=cur_close→next_close (captures the overnight gap).
+  | frequency / mode | STRUCT net (per-trade) | tradeable? |
+  |---|---|---|
+  | **Daily `oc`** (honest) | ≈ 0 bps (SPY −0.5, QQQ −1.2, IWM −3.2, AAPL +5.9, NVDA +1.0), Sharpe ≈ 0 | **NO** — dies after 2bps/side |
+  | **Daily `cc`** (gap-captured) | +3–15 bps, beats `oc` by ~3–4 bps/trade everywhere | edge lives in the **overnight gap** (matches de-mech); Sharpe still <0.5 |
+  | **Weekly `oc`/`cc`** | positive net but **buy-and-hold the same bars is comparable or HIGHER** (SPY 1w STRUCT +7.0 net vs bench +51.1 → underperforms B&H) | **NO alpha** — weekly "profit" is market beta; thin (6 yrs) |
+  - **Conclusion:** the structural residual is **not independently tradeable on the underlying** at daily frequency (net ≈ 0 honest); the small edge that exists is the overnight gap (needs close-execution) and the weekly apparent profit is beta. Confirms with hard P&L that the model predicts *trigger breaks*, not close-to-close return.
+
+- **Verdict:** ✅ a **real, held-out** edge on the directional next-bar at daily & weekly — **but de-mechanization (2026-06-09) proves it is a gap-aided trigger-break, not directional foresight.** `CLV_LAG1`≈0 and the gap-neutral target collapses every set to base; the costed underlying backtest nets ≈0 (daily, honest `oc`) and shows weekly "profit" is beta. The model answers *which trigger (2U/2D) the next bar pokes* — useful as a **structural/regime read and as the PRIMARY-side directional input to a barrier strategy (BREAKOUT-META)** — but is **NOT a standalone tradeable close-to-close signal.** Monthly/quarterly remain too thin.
 - **Leaks/bugs caught:** (a) `aggregate_to_timeframe` requires `Volume` — `_ftfc` initially passed OHLC-only → all-zero FTFC, fixed; (b) `load_daily` can carry persisted indicator columns → duplicate-name 2-D selection in correlation, fixed by drop-then-concat dedup. FTFC uses strictly-before `merge_asof` (no in-progress-bar lookahead); all features known at bar-T close.
 - **Reproduce (Cloud Run Job `magnitude-engine`, research image, vs Cloud SQL):**
   ```
   gcloud run jobs execute magnitude-engine --region us-east1 \
     --args="-m,scripts.strat_oos_multi_tf,--tickers=SPY,QQQ,IWM,AAPL,NVDA,--timeframes=1d,1w,1mo"
-  gcloud run jobs execute magnitude-engine --region us-east1 \
-    --args="-m,scripts.strat_oos_clv_ablation,--tickers=SPY,QQQ,IWM,AAPL,NVDA,--timeframes=1d,1w"
+  gcloud run jobs execute magnitude-engine --region us-east1 --tasks 1 \
+    --args="^|^-m|scripts.strat_oos_clv_ablation|--tickers=SPY,QQQ,IWM,AAPL,NVDA|--timeframes=1d,1w"
+  gcloud run jobs execute magnitude-engine --region us-east1 --tasks 1 \
+    --args="^|^-m|scripts.strat_clv_demech|--tickers=SPY,QQQ,IWM,AAPL,NVDA|--timeframes=1d,1w"
+  gcloud run jobs execute magnitude-engine --region us-east1 --tasks 1 \
+    --args="^|^-m|scripts.strat_struct_backtest|--tickers=SPY,QQQ,IWM,AAPL,NVDA|--timeframes=1d,1w|--hold=oc|--slippage-bps=2|--band=0.05"
   ```
-  Output → Cloud Logging for the execution. (Build with `./gcp/deploy.sh build-research`; SHA-fingerprint-verify scripts in the image before each run.)
-- **Open items:** de-mechanize CLV (gap-adjusted next-bar def or prior-bar CLV) to isolate the non-mechanical close-location edge; take the momentum+FTFC structural residual to a costed underlying-trade backtest.
+  Output → Cloud Logging for the execution. Use `--tasks 1` (the job defaults to 27 parallel tasks) and the `^|^` arg delimiter (so comma-separated ticker lists survive). Build with `./gcp/deploy.sh build-research`; SHA-fingerprint-verify scripts in the image before each run (verified 2026-06-09: all four `strat_*` scripts matched local `sha256sum`).
+- **Open items:** ✅ **CLOSED 2026-06-09** — de-mechanize CLV (done: `strat_clv_demech.py` → edge is gap-mechanical, CLV_LAG1≈0); costed underlying backtest of the structural residual (done: `strat_struct_backtest.py` → not tradeable daily, weekly is beta). Remaining: the directional read is best used as the PRIMARY side of a barrier strategy — see BREAKOUT-META (E-18/E-24), the only net-tradeable path in this family.
 
 ---
 
