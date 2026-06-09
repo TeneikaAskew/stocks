@@ -6,9 +6,15 @@
 #   ./platform/deploy.sh                  prod deploy (trading-platform, behind IAP)
 #   STAGING=1 ./platform/deploy.sh        prod service, new revision tagged `staging`,
 #                                         no traffic — shares prod's IAP (see note below)
-#   STAGING_SERVICE=1 ./platform/deploy.sh  SEPARATE public staging service
-#                                         (trading-platform-staging) with NO IAP +
-#                                         the app-level passcode gate. Prod untouched.
+#   STAGING_SERVICE=1 ./platform/deploy.sh  SEPARATE staging service
+#                                         (trading-platform-staging). PRIVATE by
+#                                         default (Cloud Run IAM; reach via
+#                                         `gcloud run services proxy`). Add
+#                                         STAGING_PUBLIC=1 for the public,
+#                                         passcode-gated variant. Prod untouched.
+#                                         Point it at a read-only DB role with:
+#                                           DB_USER=staging_readonly \
+#                                           DB_PASS_SECRET=staging-db-readonly-pass
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-adept-mountain-474619-d4}"
@@ -25,28 +31,39 @@ DB_NAME="${DB_NAME:?set DB_NAME (e.g. export DB_NAME=trading)}"
 DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 STAGING_PASSCODE_SECRET="${STAGING_PASSCODE_SECRET:-staging-passcode}"
 
-# ── Separate public staging service ────────────────────────────────────────
-# trading-platform-staging runs WITHOUT IAP (--allow-unauthenticated) because
-# IAP on Cloud Run is service-level and can't be dropped per-revision. The
-# app-level passcode gate (ALLOW_AUTH_BYPASS=1 + STAGING_PASSCODE) re-protects
-# the API so the service isn't wide-open. Prod (trading-platform) is untouched
-# and stays behind IAP.
+# ── Separate staging service ────────────────────────────────────────────────
+# trading-platform-staging is a SEPARATE service so prod (trading-platform)'s
+# IAP is untouched (IAP is service-level and can't be dropped per-revision).
 #
-# One-time prerequisites (run by an operator with run.admin — NOT the CI SA):
-#   1. Create the passcode secret:
-#        printf '%s' 'YOUR_PASSCODE' | gcloud secrets create staging-passcode \
-#          --data-file=- --project=${PROJECT_ID}
-#   2. Let the runtime SA read it:
-#        gcloud secrets add-iam-policy-binding staging-passcode \
-#          --member="serviceAccount:trading-platform-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-#          --role=roles/secretmanager.secretAccessor --project=${PROJECT_ID}
-#   3. --allow-unauthenticated needs run.services.setIamPolicy; deploying as a
-#      run.admin principal grants allUsers invoker automatically. (If org policy
-#      DRS blocks allUsers, the public service can't be created — escalate.)
+# Two variants:
+#   * PRIVATE (default): --no-allow-unauthenticated. Cloud Run IAM gates it, so
+#     it's reachable from the sandbox via `gcloud run services proxy` (which
+#     `claude-web@`/editor can do — no run.services.setIamPolicy needed). The
+#     app-level passcode gate is left OFF because IAM already gates every call.
+#   * PUBLIC (STAGING_PUBLIC=1): --allow-unauthenticated + the passcode gate
+#     (ALLOW_AUTH_BYPASS=1 + STAGING_PASSCODE) re-protects the now-internet-
+#     facing API. Needs run.admin for --allow-unauthenticated and may be
+#     blocked by the DRS org policy (iam.allowedPolicyMemberDomains).
+#
+# Either way, point staging at a READ-ONLY DB role (DB_USER/DB_PASS_SECRET) so a
+# stray write spec can't mutate prod data — the connection is to the same
+# trading-db instance.
+#
+# Public-variant one-time prerequisite (operator with run.admin):
+#   printf '%s' 'YOUR_PASSCODE' | gcloud secrets create staging-passcode \
+#     --data-file=- --project=${PROJECT_ID}
+#   gcloud secrets add-iam-policy-binding staging-passcode \
+#     --member="serviceAccount:trading-platform-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+#     --role=roles/secretmanager.secretAccessor --project=${PROJECT_ID}
 if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
   SERVICE="trading-platform-staging"
-  PUBLIC=1   # public ingress; the passcode gate is the access control
-  echo ">> STAGING_SERVICE mode: deploying public ${SERVICE} (no IAP, passcode-gated)"
+  if [[ "${STAGING_PUBLIC:-0}" == "1" ]]; then
+    PUBLIC=1   # internet-facing; the passcode gate is the access control
+    BYPASS=1   # enable ALLOW_AUTH_BYPASS + mount the passcode secret
+    echo ">> STAGING_SERVICE mode: PUBLIC ${SERVICE} (no IAP, passcode-gated)"
+  else
+    echo ">> STAGING_SERVICE mode: PRIVATE ${SERVICE} (Cloud Run IAM; reach via 'gcloud run services proxy')"
+  fi
 fi
 
 # Auth: PUBLIC=1 ./deploy.sh skips the IAM gate (then put IAP or app-level auth in front).
@@ -76,7 +93,7 @@ fi
 ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com"
 SECRETS="DB_PASS=${DB_PASS_SECRET}:latest,AV_API_KEY=av-api-key:latest,ALPHA_VANTAGE_API_KEY=av-api-key:latest"
 
-if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
+if [[ "${BYPASS:-0}" == "1" ]]; then
   ENV_VARS="${ENV_VARS},ALLOW_AUTH_BYPASS=1"
   SECRETS="${SECRETS},STAGING_PASSCODE=${STAGING_PASSCODE_SECRET}:latest"
 fi
@@ -98,8 +115,8 @@ if ! gcloud secrets describe "${DB_PASS_SECRET}" >/dev/null 2>&1; then
   exit 1
 fi
 
-# 2b. Staging service requires the passcode secret to exist
-if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
+# 2b. Public staging variant requires the passcode secret to exist
+if [[ "${BYPASS:-0}" == "1" ]]; then
   if ! gcloud secrets describe "${STAGING_PASSCODE_SECRET}" >/dev/null 2>&1; then
     echo ">> secret '${STAGING_PASSCODE_SECRET}' not found — create it with:"
     echo "   printf '%s' 'YOUR_STAGING_PASSCODE' | gcloud secrets create ${STAGING_PASSCODE_SECRET} --data-file=- --project=${PROJECT_ID}"
