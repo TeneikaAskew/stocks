@@ -78,7 +78,8 @@ target / features / training data / status. Naming convention:
 - **Target:** next daily/weekly/monthly Strat candle; directional call = next ∈ {2U,2D}.
 - **Features:** **close-location-value (CLV, the workhorse)** + 1–3-bar momentum + RSI/EMA-dist/streaks + **FTFC** (prior-completed weekly+monthly). Data: `market_data_daily` resampled to 1d/1w/1mo/1q.
 - **Status:** ✅ **real held-out edge** — stacking FTFC+CLV lifts P(next=2U) ~58%→74–81%; **daily logistic ~70% OOS vs ~57% base, weekly ~75–80% vs ~62%** (+12–18pp, positive log-loss beat nearly every year 2017→2026). Monthly inconclusive (thin). **Caveats:** CLV partly mechanical; predicts *which trigger breaks*, not close-to-close P&L. (E-25)
-- **Lives in:** `lib/strat.py:compute_strat_history` (+1-3-1 detection, per-bar triggers) + `scripts/strat_{history_report,backtest,next_candle_analysis,forward_walk,forward_walk_oos,oos_multi_tf}.py`. Runs vs Cloud SQL as the `magnitude-engine` job.
+- **CLV ablation (held-out):** CLV_ONLY ≈ FULL edge (other features add ~nothing); NO_CLV / STRUCT_ONLY (momentum+FTFC) ≈ 64–66% daily / 70–75% weekly, still +6–13pp over base. So the headline is **mostly close-location (partly mechanical)**; structural residual real but small.
+- **Lives in:** `lib/strat.py:compute_strat_history` (+1-3-1 detection, per-bar triggers), `lib/data_loader.py` (`'1q'`) + `scripts/strat_{history_report,backtest,next_candle_analysis,forward_walk,forward_walk_oos,oos_multi_tf,oos_clv_ablation}.py`, `tests/test_strat_history.py`. PRs #592–#595 (all merged). Full detail + per-script roles + reproduce commands: **`EXPERIMENT_REGISTRY.md` §E-25**. Runs vs Cloud SQL as the `magnitude-engine` job.
 
 ### Deterministic baselines (rule-based nulls, no ML)
 Naive DoW×30-min calendar lookup (MAG gate-6), "follow the gamma regime" (DIR-REGIME control), "take every breakout" (BREAKOUT-META base), train-prior class baseline (all log-loss gates).
