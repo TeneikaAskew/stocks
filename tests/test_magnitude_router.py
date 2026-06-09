@@ -11,10 +11,20 @@ present so a future refactor can't silently drop the consumer warning.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
+
+# Match the import path the production app uses: platform/api/main.py
+# does `sys.path.insert(PROJECT_ROOT)` and then `from api.routers
+# import …`, not `from platform.api.routers import …`. Python's stdlib
+# `platform` module shadows the directory name, so a top-level
+# `import platform.api` raises 'platform is not a package'. CI caught
+# this on PR #597 first push of the router tests.
+_REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO / "platform"))
 
 # router imports gcp.database.query_to_dataframe which itself imports
 # the Cloud SQL connector. Only stub when the real package is missing
@@ -48,7 +58,7 @@ except ModuleNotFoundError:
 
 def _app_with_router():
     from fastapi import FastAPI
-    from platform.api.routers import magnitude as mag_router
+    from api.routers import magnitude as mag_router  # noqa: E402
     app = FastAPI()
     app.include_router(mag_router.router)
     return app, mag_router
@@ -169,7 +179,7 @@ def test_no_silent_uniform_fallback_in_module_constants():
     """Regression guard: the module must NOT define a uniform-distribution
     fallback. A future 'helpful' refactor that adds e.g.
     `_UNIFORM_FALLBACK = (0.25,)*4` is exactly what §3.7 forbids."""
-    from platform.api.routers import magnitude as mod
+    from api.routers import magnitude as mod
     import inspect
     src = inspect.getsource(mod)
     # No literal uniform distribution in the source.
@@ -185,7 +195,7 @@ def test_latest_uses_computed_at_tiebreaker():
     (ts DESC, computed_at DESC) so a fresher inference row beats a stale
     walk_forward backfill at the same ts. Without the tiebreaker
     Postgres returns an arbitrary row from the tie."""
-    from platform.api.routers import magnitude as mod
+    from api.routers import magnitude as mod
     import inspect
     src = inspect.getsource(mod.get_latest_prediction)
     # The ORDER BY must include computed_at DESC as a tiebreaker.
