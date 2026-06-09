@@ -942,6 +942,45 @@ deploy_magnitude_engine() {
         --quiet
 }
 
+# ── Magnitude live-inference job ──────────────────────────────────────────────
+# Phase B of magnitude productionization. Daily cron at 09:25 ET scores
+# the most-recent settled bars from strat_features_<tf> using the
+# canonical production model (gs://${PROJECT_ID}-trading-data/
+# magnitude-models/production/{ticker}/{tf}/model.joblib) and upserts
+# results to magnitude_per_bar_predictions with source='inference'.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 3 cells × ~78 bars/24h = ~234 INSERT-target rows/day.
+#   Velocity: 1 SELECT per cell + 1 model.predict_proba + 1 INSERT.
+#   Wall-clock: < 30s for the whole job. 300s task-timeout is 10× p100.
+#
+# Cost: ~$0.0005/run × 252 sessions/yr ≈ $0.13/yr. Effectively free.
+#
+# Failure handling: half-or-more cell failures -> exit 1
+# (failure-notifier opens issue). Under-half -> WARN. Matches the F11
+# threshold pattern from 2026-06-01-pipeline-failures-audit F6/F11.
+deploy_magnitude_inference() {
+    echo "Deploying magnitude-inference job..."
+    local research_image="${IMAGE}:research"
+
+    gcloud run jobs create magnitude-inference \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-inference \
+        --image "${research_image}" --region "${REGION}" \
+        --task-timeout 300 \
+        --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
 # Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
 # Cloud Run Job itself stays around briefly so any in-flight references
@@ -2704,6 +2743,12 @@ deploy_schedulers() {
     # the daily nightly fetcher chain has settled. Posts findings to
     # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
     _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
+
+    # Magnitude-inference — daily Mon-Fri at 13:25 UTC (09:25 ET), 5 min
+    # before market open. Scores most-recent settled bars from
+    # strat_features_5m and writes to magnitude_per_bar_predictions.
+    # See gcp/research/magnitude_engine/mag_inference.py.
+    _schedule "magnitude-inference-daily" "25 13 * * 1-5" "magnitude-inference"
     # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
     _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
     # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)
@@ -3080,6 +3125,7 @@ case "${1:-help}" in
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
     magnitude-engine) deploy_magnitude_engine ;;
+    magnitude-inference) build_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
