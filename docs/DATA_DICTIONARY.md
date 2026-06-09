@@ -1,6 +1,6 @@
 # Data Dictionary — Cloud SQL `trading` dataset
 
-Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 columns). Type + nullability for every column; category, producing code, grain, and per-column formula notes for the analytical tables. NULL semantics: per CLAUDE.md §3.7, financial fields use NULL (not 0, not NaN) for missing — see `docs/audits/NAN_AUDIT_2026-06-09.md` for columns with residual float8-NaN to remediate.
+Generated 2026-06-09 (post gamma-rename migration) from live `information_schema.columns` (81 tables, 2,745 columns). Type + nullability for every column; category, producing code, grain, and per-column formula notes for the analytical tables. NULL semantics: per CLAUDE.md §3.7, financial fields use NULL (not 0, not NaN) for missing — see `docs/audits/NAN_AUDIT_2026-06-09.md` for columns with residual float8-NaN to remediate. The gamma `flip_price`→`gamma_balance_price` rename + true BS `gamma_flip` addition is live here.
 
 
 ## Raw market
@@ -216,7 +216,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 |--:|---|---|:--:|---|
 | 1 | `ticker` | character varying | N |  |
 | 2 | `snapshot_date` | date | N |  |
-| 3 | `level_kind` | character varying | N |  |
+| 3 | `level_kind` | character varying | N | 'king' | 'gate' | 'gamma_balance' (renamed from 'flip' 2026-06-09) |
 | 4 | `level_strike` | numeric | N |  |
 | 5 | `gex` | double precision | Y |  |
 | 6 | `net_gamma` | double precision | Y |  |
@@ -224,16 +224,17 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 8 | `tags` | text | Y |  |
 | 9 | `regime` | character varying | Y |  |
 | 10 | `total_gex` | double precision | Y | Σ(call−put) netΓ·spot²·0.01 (GEX_MULTIPLIER) |
-| 11 | `flip_price` | double precision | Y |  |
+| 11 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 12 | `spot_estimate` | double precision | Y |  |
 | 13 | `spot_method` | character varying | Y |  |
 | 14 | `n_strikes_in_window` | integer | Y |  |
 | 15 | `computed_at` | timestamp with time zone | Y |  |
+| 16 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
 
 
 ### `intraday_gex_15m`
 
-*Producer:* `lib/features/intraday_gex.py` · *Grain:* ticker×ts; re-curved EOD dealer GEX/DEX. NOTE: gamma_flip col holds cumulative-balance (legacy name)
+*Producer:* `lib/features/intraday_gex.py` · *Grain:* ticker×ts; re-curved EOD dealer GEX/DEX. NOTE: gamma_flip col holds cumulative-BALANCE (legacy name; the value is compute_gamma_balance, not the true BS flip)
 
 
 | # | column | type | null | notes |
@@ -243,14 +244,14 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 3 | `total_gex` | double precision | Y | Σ(call−put) netΓ·spot²·0.01 (GEX_MULTIPLIER) |
 | 4 | `total_dex` | double precision | Y |  |
 | 5 | `total_oi` | double precision | Y |  |
-| 6 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join |
+| 6 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
 | 7 | `spot` | double precision | Y |  |
 | 8 | `computed_at` | timestamp with time zone | N |  |
 
 
 ### `realtime_gex_15m`
 
-*Producer:* `gcp/build_realtime_gex.py` · *Grain:* ticker×ts; real intraday greeks
+*Producer:* `gcp/build_realtime_gex.py` · *Grain:* ticker×ts; real intraday greeks. NOTE: gamma_flip col holds cumulative-balance (legacy name)
 
 
 | # | column | type | null | notes |
@@ -260,7 +261,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 3 | `total_gex` | double precision | Y | Σ(call−put) netΓ·spot²·0.01 (GEX_MULTIPLIER) |
 | 4 | `total_dex` | double precision | Y |  |
 | 5 | `total_oi` | double precision | Y |  |
-| 6 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join |
+| 6 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
 | 7 | `spot` | double precision | Y |  |
 | 8 | `computed_at` | timestamp with time zone | N |  |
 
@@ -340,7 +341,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 63 | `vex_tercile` | character varying | Y |  |
 | 64 | `dealer_regime` | character varying | Y |  |
 | 65 | `gamma_regime` | character varying | Y | sign(total_gex): positive_gamma | negative_gamma | unknown |
-| 66 | `flip_price` | double precision | Y |  |
+| 66 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 67 | `distance_to_king_pct` | double precision | Y | (close − min_king_strike)/close·100 |
 | 68 | `distance_to_gate_pct` | double precision | Y | (close − min_gate_strike)/close·100 |
 | 69 | `computed_at` | timestamp with time zone | Y |  |
@@ -358,6 +359,8 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 81 | `range_expansion_ratio` | double precision | Y |  |
 | 82 | `intraday_range_vs_prevday` | double precision | Y |  |
 | 83 | `atr_expansion` | double precision | Y |  |
+| 84 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
+| 85 | `dist_to_gamma_flip_pct` | double precision | Y | (close − gamma_flip)/close·100; signed % distance to the true flip. Added 2026-06-09 |
 
 
 ### `strat_features_1m`
@@ -432,7 +435,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 63 | `vex_tercile` | character varying | Y |  |
 | 64 | `dealer_regime` | character varying | Y |  |
 | 65 | `gamma_regime` | character varying | Y | sign(total_gex): positive_gamma | negative_gamma | unknown |
-| 66 | `flip_price` | double precision | Y |  |
+| 66 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 67 | `distance_to_king_pct` | double precision | Y | (close − min_king_strike)/close·100 |
 | 68 | `distance_to_gate_pct` | double precision | Y | (close − min_gate_strike)/close·100 |
 | 69 | `computed_at` | timestamp with time zone | Y |  |
@@ -450,6 +453,8 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 81 | `range_expansion_ratio` | double precision | Y |  |
 | 82 | `intraday_range_vs_prevday` | double precision | Y |  |
 | 83 | `atr_expansion` | double precision | Y |  |
+| 84 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
+| 85 | `dist_to_gamma_flip_pct` | double precision | Y | (close − gamma_flip)/close·100; signed % distance to the true flip. Added 2026-06-09 |
 
 
 ### `strat_features_30m`
@@ -524,7 +529,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 63 | `vex_tercile` | character varying | Y |  |
 | 64 | `dealer_regime` | character varying | Y |  |
 | 65 | `gamma_regime` | character varying | Y | sign(total_gex): positive_gamma | negative_gamma | unknown |
-| 66 | `flip_price` | double precision | Y |  |
+| 66 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 67 | `distance_to_king_pct` | double precision | Y | (close − min_king_strike)/close·100 |
 | 68 | `distance_to_gate_pct` | double precision | Y | (close − min_gate_strike)/close·100 |
 | 69 | `computed_at` | timestamp with time zone | Y |  |
@@ -542,6 +547,8 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 81 | `range_expansion_ratio` | double precision | Y |  |
 | 82 | `intraday_range_vs_prevday` | double precision | Y |  |
 | 83 | `atr_expansion` | double precision | Y |  |
+| 84 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
+| 85 | `dist_to_gamma_flip_pct` | double precision | Y | (close − gamma_flip)/close·100; signed % distance to the true flip. Added 2026-06-09 |
 
 
 ### `strat_features_4h`
@@ -616,7 +623,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 63 | `vex_tercile` | character varying | Y |  |
 | 64 | `dealer_regime` | character varying | Y |  |
 | 65 | `gamma_regime` | character varying | Y | sign(total_gex): positive_gamma | negative_gamma | unknown |
-| 66 | `flip_price` | double precision | Y |  |
+| 66 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 67 | `distance_to_king_pct` | double precision | Y | (close − min_king_strike)/close·100 |
 | 68 | `distance_to_gate_pct` | double precision | Y | (close − min_gate_strike)/close·100 |
 | 69 | `computed_at` | timestamp with time zone | Y |  |
@@ -634,6 +641,8 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 81 | `range_expansion_ratio` | double precision | Y |  |
 | 82 | `intraday_range_vs_prevday` | double precision | Y |  |
 | 83 | `atr_expansion` | double precision | Y |  |
+| 84 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
+| 85 | `dist_to_gamma_flip_pct` | double precision | Y | (close − gamma_flip)/close·100; signed % distance to the true flip. Added 2026-06-09 |
 
 
 ### `strat_features_5m`
@@ -708,7 +717,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 63 | `vex_tercile` | character varying | Y |  |
 | 64 | `dealer_regime` | character varying | Y |  |
 | 65 | `gamma_regime` | character varying | Y | sign(total_gex): positive_gamma | negative_gamma | unknown |
-| 66 | `flip_price` | double precision | Y |  |
+| 66 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 67 | `distance_to_king_pct` | double precision | Y | (close − min_king_strike)/close·100 |
 | 68 | `distance_to_gate_pct` | double precision | Y | (close − min_gate_strike)/close·100 |
 | 69 | `computed_at` | timestamp with time zone | Y |  |
@@ -726,6 +735,8 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 81 | `range_expansion_ratio` | double precision | Y |  |
 | 82 | `intraday_range_vs_prevday` | double precision | Y |  |
 | 83 | `atr_expansion` | double precision | Y |  |
+| 84 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
+| 85 | `dist_to_gamma_flip_pct` | double precision | Y | (close − gamma_flip)/close·100; signed % distance to the true flip. Added 2026-06-09 |
 
 
 ### `strat_features_60m`
@@ -800,7 +811,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 63 | `vex_tercile` | character varying | Y |  |
 | 64 | `dealer_regime` | character varying | Y |  |
 | 65 | `gamma_regime` | character varying | Y | sign(total_gex): positive_gamma | negative_gamma | unknown |
-| 66 | `flip_price` | double precision | Y |  |
+| 66 | `gamma_balance_price` | double precision | Y | cumulative-net-gamma balance price (lib.gamma.compute_gamma_balance), prior-day join. Renamed from flip_price 2026-06-09 |
 | 67 | `distance_to_king_pct` | double precision | Y | (close − min_king_strike)/close·100 |
 | 68 | `distance_to_gate_pct` | double precision | Y | (close − min_gate_strike)/close·100 |
 | 69 | `computed_at` | timestamp with time zone | Y |  |
@@ -818,6 +829,8 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 81 | `range_expansion_ratio` | double precision | Y |  |
 | 82 | `intraday_range_vs_prevday` | double precision | Y |  |
 | 83 | `atr_expansion` | double precision | Y |  |
+| 84 | `gamma_flip` | double precision | Y | TRUE Black-Scholes-recurved zero-gamma level (lib.gamma.compute_gamma_flip_bs), prior-day join. Added 2026-06-09 |
+| 85 | `dist_to_gamma_flip_pct` | double precision | Y | (close − gamma_flip)/close·100; signed % distance to the true flip. Added 2026-06-09 |
 
 
 ## Derived levels
@@ -1947,7 +1960,7 @@ Generated 2026-06-09 from live `information_schema.columns` (81 tables, 2,732 co
 | 3 | `alert_date` | date | N |  |
 | 4 | `alert_kind` | character varying | N |  |
 | 5 | `alert_direction` | character varying | N |  |
-| 6 | `level_kind` | character varying | N |  |
+| 6 | `level_kind` | character varying | N | 'king' | 'gate' | 'gamma_balance' (renamed from 'flip' 2026-06-09) |
 | 7 | `level_strike` | numeric | N |  |
 | 8 | `distance_pct` | double precision | Y |  |
 | 9 | `regime` | character varying | Y |  |
