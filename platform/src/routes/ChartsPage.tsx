@@ -298,13 +298,22 @@ export default function ChartsPage() {
           lineStyle: 2, // Dotted
         });
       }
-      if (gammaLevels.flip !== null) {
+      if (gammaLevels.gamma_flip !== null) {
         lines.push({
-          price: gammaLevels.flip,
+          price: gammaLevels.gamma_flip,
           color: '#a78bfa',
-          title: `⇅ Flip ${gammaLevels.flip.toFixed(2)}`,
+          title: `⇅ Gamma Flip ${gammaLevels.gamma_flip.toFixed(2)}`,
           lineStyle: 1, // Dashed
           lineWidth: 2 as LineWidth,
+        });
+      }
+      if (gammaLevels.gamma_balance !== null) {
+        lines.push({
+          price: gammaLevels.gamma_balance,
+          color: '#c4b5fd',
+          title: `≈ Gamma Balance ${gammaLevels.gamma_balance.toFixed(2)}`,
+          lineStyle: 2, // Dotted
+          lineWidth: 1 as LineWidth,
         });
       }
     }
