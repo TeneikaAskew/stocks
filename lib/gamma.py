@@ -33,11 +33,14 @@ Taxonomy
 KING  : highest |GEX| node (≥ NODE_KING_PCT of max |GEX| in window)
 GATE  : secondary high-gamma node (≥ NODE_GATE_PCT of max)
 SPOT  : strikes within SPOT_PROXIMITY_PCT of estimated spot
-FLIP  : the two strikes adjacent to the gamma flip price
+GAMMA_BALANCE : the two strikes adjacent to the cumulative-net-gamma balance
+        price (compute_gamma_balance) — a balance point, NOT the true flip.
+GAMMA_FLIP : the true Black-Scholes-recurved zero-gamma spot level
+        (compute_gamma_flip_bs) — the price where re-priced dealer GEX(S)=0.
 
-Regime:
-  positive_gamma — spot is above the flip (call-dominated; pinning, low vol)
-  negative_gamma — spot is below the flip (put-dominated; trending, high vol)
+Regime (sign of total dealer GEX — equivalently, spot's side of gamma_flip):
+  positive_gamma — total_gex > 0 (call-dominated; pinning, low realized vol)
+  negative_gamma — total_gex < 0 (put-dominated; trending, amplified vol)
 """
 from __future__ import annotations
 
@@ -89,7 +92,7 @@ class Level:
     put_oi: int
     distance_pct: float       # signed: positive = above spot
     score: float              # 0..1 composite ranking score
-    kind: str                 # primary tag: "king" | "gate" | "spot" | "flip" | "none"
+    kind: str                 # primary tag: "king" | "gate" | "spot" | "gamma_balance" | "none"
     tags: list[str] = field(default_factory=list)  # may include multiple
 
 
@@ -98,13 +101,19 @@ class GammaSummary:
     ticker: str
     snapshot_date: str
     spot: SpotEstimate
-    flip: float | None
+    # gamma_balance = cumulative-net-gamma zero-crossing nearest spot (a price
+    # "balance point" — NOT a true dealer-gamma regime flip; see compute_gamma_balance).
+    gamma_balance: float | None
+    # gamma_flip = TRUE Black-Scholes-recurved zero-gamma level: the spot price
+    # where re-priced dealer GEX(S) crosses 0 (see compute_gamma_flip_bs). This
+    # is the real regime divider; `regime` (sign(total_gex)) is its sign at spot.
+    gamma_flip: float | None
     regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
     total_gex: float
     levels: list[Level]
     kings: list[Level]
     gates: list[Level]
-    flip_levels: list[Level]
+    gamma_balance_levels: list[Level]
     window_pct: float
     warnings: list[str] = field(default_factory=list)
 
@@ -168,7 +177,8 @@ class GammaGridSummary:
     snapshot_ts: str | None   # ISO timestamp of the underlying snapshot
     data_source: str          # 'realtime'|'eod_fallback'|'stale_fallback'|'unavailable'
     spot: SpotEstimate
-    flip: float | None
+    gamma_balance: float | None   # cumulative-net-gamma balance price (not a true flip)
+    gamma_flip: float | None      # true BS-recurved zero-gamma level
     regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
     total_gex: float
     total_vex: float
@@ -494,7 +504,7 @@ def zero_gamma(strikes: Sequence[dict]) -> float | None:
 
     Walks adjacent strikes and returns the first sign change of net_gamma,
     linearly interpolated. Useful for the existing /api/options/greeks
-    response shape but coarse — see compute_gamma_flip for the spot-aware
+    response shape but coarse — see compute_gamma_balance for the spot-aware
     cumulative version.
     """
     rows = list(strikes)
@@ -508,12 +518,19 @@ def zero_gamma(strikes: Sequence[dict]) -> float | None:
     return None
 
 
-def compute_gamma_flip(strikes: Sequence[dict], spot: float) -> float | None:
-    """Find the cumulative-GEX zero-crossing nearest spot.
+def compute_gamma_balance(strikes: Sequence[dict], spot: float) -> float | None:
+    """Cumulative-net-gamma "balance" price — the cumulative-net-gamma
+    zero-crossing nearest spot.
 
     Walks strikes ascending, accumulates per-strike net_gamma, finds every
-    crossing of cumulative net_gamma and returns the one closest to spot.
-    Linearly interpolated.
+    crossing of the *cumulative* net_gamma and returns the one closest to spot
+    (linearly interpolated). This is a balance point in OI-weighted gamma space;
+    it is NOT the true dealer-gamma regime flip (the dollar GEX = net_gamma·S²·k
+    is monotonic in S for a fixed chain, so there is no zero of GEX in this
+    formulation). For the real zero-gamma level use :func:`compute_gamma_flip_bs`.
+
+    Renamed 2026-06-09 from ``compute_gamma_flip`` — the old name implied a
+    regime flip it never computed (see docs/EXPERIMENT_REGISTRY.md DQ1).
     """
     rows = list(strikes)
     if not rows:
@@ -535,6 +552,120 @@ def compute_gamma_flip(strikes: Sequence[dict], spot: float) -> float | None:
         return None
     crossings.sort(key=lambda x: x[1])
     return crossings[0][0]
+
+
+def compute_gamma_flip_bs(
+    options: Sequence[dict],
+    spot: float,
+    *,
+    risk_free: float,
+    dividend_yield: float,
+    snapshot_date: str,
+    search_pct: float = 0.10,
+    grid_points: int = 401,
+    min_contracts: int = 10,
+) -> float | None:
+    """TRUE dealer-gamma flip: the Black-Scholes-recurved zero-gamma spot level.
+
+    Unlike :func:`compute_gamma_balance` (which works off the STORED chain
+    gamma, giving a GEX that is monotonic in spot and therefore has no true
+    zero), this *re-prices* every contract's BSM gamma at each candidate spot S
+    and finds the S where net dealer gamma exposure crosses zero — the real
+    regime divider used by the desk literature ("zero gamma" / "gamma flip").
+
+    Method
+    ------
+    For a grid of candidate spots ``S`` spanning ``spot·(1 ± search_pct)``:
+      ``G(S) = Σ_j  sign_j · bs_gamma(S, K_j, T_j, r, q, σ_j) · OI_j``
+    where ``sign_j = +1`` for calls and ``−1`` for puts (matching the
+    ``net_gamma = call − put`` convention in :func:`aggregate_by_strike`), and
+    ``σ_j`` is the per-contract implied vol, ``T_j`` years to expiry. The
+    constant ``S²·GEX_MULTIPLIER·SPOT_MULTIPLIER`` scaling is **omitted** because
+    it is strictly positive and cancels for the zero-crossing — only the
+    sign-weighted gamma·OI sum determines where G(S)=0. Returns the crossing
+    **nearest the actual spot**, linearly interpolated.
+
+    Inputs: RAW options dicts (NOT the collapsed per-strike aggregate — the
+    recurve needs each contract's own K/T/σ). Required keys per contract:
+    ``type`` ('call'|'put'), ``strike``, ``expiration`` (ISO), ``open_interest``,
+    ``implied_volatility`` (DECIMAL, e.g. 0.18 not 18.0). ``r``/``q`` are the
+    same-day risk-free / dividend-yield (no look-ahead).
+
+    NO SILENT FALLBACK (§3.7): returns ``None`` — never a fabricated 0 — when
+    fewer than ``min_contracts`` valid contracts survive, when no IV is usable,
+    or when ``G(S)`` does not change sign anywhere on the ±search_pct grid (a
+    no-flip chain is legitimate signal, not an error). The grid is NOT silently
+    widened.
+    """
+    import numpy as np
+    from datetime import date as _date
+
+    if spot is None or spot <= 0:
+        return None
+
+    def _to_date(v):
+        """Parse an ISO date / datetime string (or date) to a date; None on fail."""
+        if isinstance(v, _date):
+            return v
+        try:
+            return _date.fromisoformat(str(v)[:10])
+        except (TypeError, ValueError):
+            return None
+
+    snap = _to_date(snapshot_date)
+    if snap is None:
+        return None
+    Ks, Ts, sigs, signs, ois = [], [], [], [], []
+    for o in options:
+        typ = str(o.get("type", "")).lower()
+        if typ in ("call", "calls", "c"):
+            sgn = 1.0
+        elif typ in ("put", "puts", "p"):
+            sgn = -1.0
+        else:
+            continue
+        exp = _to_date(o.get("expiration"))
+        if exp is None:
+            continue
+        try:
+            K = float(o["strike"])
+            iv = float(o["implied_volatility"])
+            oi = float(o.get("open_interest") or 0.0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (K > 0) or not (iv > 0) or not np.isfinite(iv):
+            continue
+        t_years = max((exp - snap).days / 365.0, 1.0 / 365.0)
+        Ks.append(K); Ts.append(t_years); sigs.append(iv)
+        signs.append(sgn); ois.append(oi)
+
+    if len(Ks) < min_contracts:
+        return None
+
+    from lib.options_greeks import bs_gamma
+    K = np.asarray(Ks); T = np.asarray(Ts); sig = np.asarray(sigs)
+    sgn = np.asarray(signs); oi = np.asarray(ois)
+
+    S_grid = np.linspace(spot * (1 - search_pct), spot * (1 + search_pct), grid_points)
+    # G(S_i) = Σ_j sign_j · gamma_BS(S_i, K_j, T_j, r, q, σ_j) · OI_j
+    # Vectorize the [grid_points × n_contracts] outer product (Rule 0: numpy, not loops).
+    Sg = S_grid[:, None]                       # (M, 1)
+    gam = bs_gamma(Sg, K[None, :], T[None, :], risk_free, dividend_yield, sig[None, :])
+    gam = np.where(np.isfinite(gam), gam, 0.0)  # deep OTM/ITM gamma → 0 contribution
+    G = (gam * (sgn * oi)[None, :]).sum(axis=1)  # (M,)
+
+    # Find sign changes; linearly interpolate each crossing; pick nearest spot.
+    crossings: list[float] = []
+    for i in range(len(S_grid) - 1):
+        g1, g2 = G[i], G[i + 1]
+        if g1 == 0.0:
+            crossings.append(float(S_grid[i]))
+        elif g1 * g2 < 0:
+            frac = -g1 / (g2 - g1)
+            crossings.append(float(S_grid[i] + frac * (S_grid[i + 1] - S_grid[i])))
+    if not crossings:
+        return None
+    return min(crossings, key=lambda p: abs(p - spot))
 
 
 # ── Max pain / implied move ─────────────────────────────────────────────────
@@ -635,13 +766,13 @@ def classify_levels(
     strikes: Sequence[dict],
     gex_strikes: Sequence[dict],
     spot: float,
-    flip: float | None,
+    gamma_balance: float | None,
     *,
     window_pct: float = 8.0,
     king_pct: float = NODE_KING_PCT,
     gate_pct: float = NODE_GATE_PCT,
 ) -> list[Level]:
-    """Tag each in-window strike with King/Gate/Spot/Flip + composite score.
+    """Tag each in-window strike with King/Gate/Spot/GammaBalance + composite score.
 
     `strikes` carries the OI columns; `gex_strikes` carries the dollar GEX.
     Both are returned by aggregate_by_strike + gex_by_strike, paired by strike.
@@ -684,18 +815,18 @@ def classify_levels(
             tags=tags,
         ))
 
-    # Mark the strikes adjacent to the flip
-    if flip is not None and levels:
-        below = [lv for lv in levels if lv.strike <= flip]
-        above = [lv for lv in levels if lv.strike >= flip]
+    # Mark the strikes adjacent to the gamma-balance price
+    if gamma_balance is not None and levels:
+        below = [lv for lv in levels if lv.strike <= gamma_balance]
+        above = [lv for lv in levels if lv.strike >= gamma_balance]
         if below and above:
             nearest_below = max(below, key=lambda l: l.strike)
             nearest_above = min(above, key=lambda l: l.strike)
             for lv in (nearest_below, nearest_above):
-                if "flip" not in lv.tags:
-                    lv.tags.append("flip")
+                if "gamma_balance" not in lv.tags:
+                    lv.tags.append("gamma_balance")
                     if lv.kind == "none":
-                        lv.kind = "flip"
+                        lv.kind = "gamma_balance"
     return levels
 
 
@@ -735,25 +866,35 @@ def build_summary(
     if spot.price <= 0:
         return GammaSummary(
             ticker=ticker.upper(), snapshot_date=snapshot_date, spot=spot,
-            flip=None, regime="unknown", total_gex=0.0,
-            levels=[], kings=[], gates=[], flip_levels=[],
+            gamma_balance=None, gamma_flip=None, regime="unknown", total_gex=0.0,
+            levels=[], kings=[], gates=[], gamma_balance_levels=[],
             window_pct=window_pct, warnings=warnings,
         )
 
     strikes = aggregate_by_strike(chain)
     gex_strikes = gex_by_strike(strikes, spot.price)
     total = total_gex_from_strikes(gex_strikes)
-    flip = compute_gamma_flip(strikes, spot.price) if strikes else None
+    gamma_balance = compute_gamma_balance(strikes, spot.price) if strikes else None
+    # True BS-recurved zero-gamma level (the real regime divider). Uses the RAW
+    # chain (per-contract K/T/σ). r/q via the same-day daily_rates lookup (its own
+    # fallback keeps this from raising when the table is absent). None on a thin /
+    # no-crossing chain (§3.7 — never a fabricated 0).
+    from lib.options_greeks import get_rate_and_yield
+    _r, _q = get_rate_and_yield(snapshot_date)
+    gamma_flip = compute_gamma_flip_bs(
+        chain, spot.price, risk_free=_r, dividend_yield=_q,
+        snapshot_date=snapshot_date,
+    ) if chain else None
     # Regime from the SIGN of net dealer gamma (total GEX) — the vol-defining
     # convention: total_gex < 0 ⇒ dealers short gamma ⇒ amplified realized vol
-    # (negative-gamma regime). This REPLACES the prior `spot > flip` rule, which
-    # mislabeled the regime (see docs/EXPERIMENT_REGISTRY.md B6, 2026-06-07):
-    # compute_gamma_flip returns None on ~half of days — disproportionately the
+    # (negative-gamma regime). This REPLACES the prior `spot > gamma_balance`
+    # rule, which mislabeled the regime (see docs/EXPERIMENT_REGISTRY.md B6/DQ1):
+    # compute_gamma_balance returns None on ~half of days — disproportionately the
     # negative-gamma days, which were dumped into 'unknown' — and otherwise often
-    # returns a flip far from spot, so `spot > flip` ANTI-correlated with the
-    # actual vol regime. Validated: total_gex<0 → 1.34–1.87× larger intraday moves
-    # over 11y (IWM/SPY/QQQ). The flip is retained only as a price LEVEL (it is
-    # itself unreliable — separate fix tracked).
+    # returns a balance price far from spot, so `spot > balance` ANTI-correlated
+    # with the actual vol regime. Validated: total_gex<0 → 1.34–1.87× larger
+    # intraday moves over 11y (IWM/SPY/QQQ). The true regime divider is now the
+    # BS-recurved gamma_flip (sign(total_gex) == spot's side of gamma_flip).
     if total > 0:
         regime = "positive_gamma"
     elif total < 0:
@@ -761,23 +902,24 @@ def build_summary(
     else:
         regime = "unknown"
 
-    levels = classify_levels(strikes, gex_strikes, spot.price, flip,
+    levels = classify_levels(strikes, gex_strikes, spot.price, gamma_balance,
                              window_pct=window_pct)
     kings = [lv for lv in levels if "king" in lv.tags]
     gates = [lv for lv in levels if "gate" in lv.tags]
-    flip_levels = [lv for lv in levels if "flip" in lv.tags]
+    gamma_balance_levels = [lv for lv in levels if "gamma_balance" in lv.tags]
 
     return GammaSummary(
         ticker=ticker.upper(),
         snapshot_date=snapshot_date,
         spot=spot,
-        flip=flip,
+        gamma_balance=gamma_balance,
+        gamma_flip=gamma_flip,
         regime=regime,
         total_gex=total,
         levels=levels,
         kings=kings,
         gates=gates,
-        flip_levels=flip_levels,
+        gamma_balance_levels=gamma_balance_levels,
         window_pct=window_pct,
         warnings=warnings,
     )
@@ -882,7 +1024,8 @@ def build_grid_summary(
             snapshot_ts=snapshot_ts,
             data_source=data_source,
             spot=spot,
-            flip=None,
+            gamma_balance=None,
+            gamma_flip=None,
             regime="unknown",
             total_gex=0.0,
             total_vex=0.0,
@@ -937,12 +1080,18 @@ def build_grid_summary(
     hi = spot.price * (1 + window_pct / 100)
     cells = [c for c in cells if lo <= c.strike <= hi]
 
-    # ── Flip + regime: derived from the 1-D collapsed view ─────────────────
-    # The flip is a per-snapshot concept (regime divider in price space),
-    # not per-expiration. We compute it from the same aggregate
-    # `build_summary` uses so the two views can never disagree.
+    # ── Gamma balance + flip + regime: derived from the 1-D collapsed view ──
+    # These are per-snapshot concepts (price-space dividers), not per-expiration.
+    # Computed from the same aggregate / raw chain `build_summary` uses so the
+    # two views can never disagree.
     strikes_1d = aggregate_by_strike(chain)
-    flip = compute_gamma_flip(strikes_1d, spot.price) if strikes_1d else None
+    gamma_balance = compute_gamma_balance(strikes_1d, spot.price) if strikes_1d else None
+    from lib.options_greeks import get_rate_and_yield
+    _r, _q = get_rate_and_yield(snapshot_date)
+    gamma_flip = compute_gamma_flip_bs(
+        chain, spot.price, risk_free=_r, dividend_yield=_q,
+        snapshot_date=snapshot_date,
+    ) if chain else None
 
     # ── Totals (consistent with 1-D summary by construction) ───────────────
     total_gex = sum(c.gex for c in cells)
@@ -970,7 +1119,8 @@ def build_grid_summary(
         snapshot_ts=snapshot_ts,
         data_source=data_source,
         spot=spot,
-        flip=flip,
+        gamma_balance=gamma_balance,
+        gamma_flip=gamma_flip,
         regime=regime,
         total_gex=total_gex,
         total_vex=total_vex,
