@@ -84,7 +84,7 @@ def reconstruct_day(chain: pd.DataFrame, s_eod: float,
     Returns a frame indexed by ts with columns RAW_COLS. Empty chain / bad
     s_eod ⇒ all-NaN reconstructed greeks (never 0), per §3.7.
     """
-    from lib.gamma import (aggregate_by_strike, compute_gamma_flip,
+    from lib.gamma import (aggregate_by_strike, compute_gamma_balance,
                            GEX_MULTIPLIER, SPOT_MULTIPLIER)
 
     out = spots.copy()
@@ -122,7 +122,7 @@ def reconstruct_day(chain: pd.DataFrame, s_eod: float,
     ]
     strikes = aggregate_by_strike(records)
     net_gamma_sum = float(sum(st["net_gamma"] for st in strikes))
-    flip = compute_gamma_flip(strikes, s_eod)  # intraday-invariant under S² rescale
+    flip = compute_gamma_balance(strikes, s_eod)  # cumulative balance; stored in legacy `gamma_flip` col
 
     out["total_gex"] = net_gamma_sum * (s * s) * GEX_MULTIPLIER
     out["total_dex"] = (A + B * (s - s_eod)) * s
@@ -180,7 +180,7 @@ def aggregate_realtime_buckets(chain: pd.DataFrame,
     (never 0), per §3.7. GEX/flip use the same lib.gamma convention as
     reconstruct_day so the two tables are directly comparable.
     """
-    from lib.gamma import compute_gamma_flip, GEX_MULTIPLIER, SPOT_MULTIPLIER
+    from lib.gamma import compute_gamma_balance, GEX_MULTIPLIER, SPOT_MULTIPLIER
     if chain is None or chain.empty or spots is None or spots.empty:
         return pd.DataFrame(columns=RAW_COLS, index=pd.DatetimeIndex([], name="ts"))
     c = chain.copy()
@@ -201,10 +201,10 @@ def aggregate_realtime_buckets(chain: pd.DataFrame,
         if not (spot and spot > 0):
             rows.append((ts_bucket, np.nan, np.nan, total_oi, np.nan, np.nan))
             continue
-        # per-strike list for the flip (same shape compute_gamma_flip expects).
+        # per-strike list for the balance (same shape compute_gamma_balance expects).
         strikes = [{"strike": float(k), "net_gamma": float(g)}
                    for k, g in zip(grp["strike"], grp["net_g"])]
-        flip = compute_gamma_flip(strikes, spot)
+        flip = compute_gamma_balance(strikes, spot)
         total_gex = net_gamma_sum * spot * spot * GEX_MULTIPLIER
         total_dex = net_delta_oi * SPOT_MULTIPLIER * spot
         rows.append((ts_bucket, total_gex, total_dex, total_oi,
