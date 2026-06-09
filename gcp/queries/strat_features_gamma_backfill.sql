@@ -11,7 +11,7 @@ WITH gday AS MATERIALIZED (
            max(gamma_flip) AS gf, max(gamma_balance_price) AS gbp
     FROM gamma_levels_eod GROUP BY ticker, snapshot_date
 ),
-mapped AS (
+mapped AS MATERIALIZED (
     SELECT d.ticker, d.bar_date, g.gf, g.gbp
     FROM (SELECT DISTINCT ticker, bar_date FROM strat_features_{TF}) d
     JOIN LATERAL (
