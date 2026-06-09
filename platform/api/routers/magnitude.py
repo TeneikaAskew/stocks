@@ -124,13 +124,19 @@ def get_latest_prediction(
     distribution — CLAUDE.md §3.7 explicit fail-loud envelope.
     """
     ticker = ticker.upper()
+    # PRIMARY KEY (ticker, tf, ts, model_version) intentionally allows
+    # multiple model versions per (ticker, tf, ts). Order by ts DESC
+    # gets the latest bar; computed_at DESC is the model-version
+    # tiebreaker so a fresher inference row beats a stale walk_forward
+    # backfill for the same timestamp. Without this tiebreaker,
+    # Postgres can return any row among the tie — Codex P2 on PR #597.
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, "
         "p_explosive, pred_bucket, max_proba, model_version, source, "
         "computed_at "
         "FROM magnitude_per_bar_predictions "
         f"WHERE ticker = '{ticker}' AND tf = '{tf}' "
-        "ORDER BY ts DESC LIMIT 1"
+        "ORDER BY ts DESC, computed_at DESC LIMIT 1"
     )
     df = query_to_dataframe(sql)
     if df.empty:

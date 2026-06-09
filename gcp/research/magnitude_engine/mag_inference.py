@@ -312,6 +312,20 @@ def main() -> int:
     log.info("mag_inference done — %d total predictions, %d cell failure(s)",
              total_written, len(failures))
 
+    # Zero-output is itself a silent-failure mode (Codex P1 on PR #597):
+    # if every cell quietly produces 0 scorable rows (empty features
+    # window, all-NaN, or some other data outage that doesn't raise),
+    # the cell loop finishes with no `failures` entries and we'd exit 0
+    # — making a data outage look like a healthy run. Treat
+    # total_written == 0 as a hard failure independent of the
+    # per-cell exception count. This is the same CLAUDE.md §3.7
+    # silent-fallback class that F11 surfaced for historical-signals-
+    # watchlist (qjllq 2026-06-02): "exit 0 while writing nothing".
+    if total_written == 0:
+        log.error("ZERO-OUTPUT — no predictions written across any cell; "
+                  "treating as failure (data outage or universal NaN filter)")
+        return 1
+
     # No silent fallback: any cell failure is a real production issue.
     # Half-or-more failures -> exit 1 so failure-notifier opens an issue.
     # Matches the F11 pattern from

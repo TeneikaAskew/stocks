@@ -2744,11 +2744,15 @@ deploy_schedulers() {
     # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
     _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
 
-    # Magnitude-inference — daily Mon-Fri at 13:25 UTC (09:25 ET), 5 min
-    # before market open. Scores most-recent settled bars from
-    # strat_features_5m and writes to magnitude_per_bar_predictions.
-    # See gcp/research/magnitude_engine/mag_inference.py.
-    _schedule "magnitude-inference-daily" "25 13 * * 1-5" "magnitude-inference"
+    # Magnitude-inference — daily Mon-Fri at 09:25 ET, 5 min before
+    # market open. _schedule passes --time-zone America/New_York, so
+    # the cron expression is in ET, not UTC. (Codex P2 on PR #597:
+    # the original "25 13 * * 1-5" would have fired at 13:25 ET = 1:25
+    # PM, well after open, defeating the whole point.) Scores
+    # most-recent settled bars from strat_features_5m and writes to
+    # magnitude_per_bar_predictions. See
+    # gcp/research/magnitude_engine/mag_inference.py.
+    _schedule "magnitude-inference-daily" "25 9 * * 1-5" "magnitude-inference"
     # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
     _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
     # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)

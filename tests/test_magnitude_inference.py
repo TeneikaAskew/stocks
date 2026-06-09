@@ -19,16 +19,33 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Same lightweight import stubs as Phase A — sklearn/lightgbm/GCS are
-# in requirements.txt but not in this sandbox.
-for _mod in (
-    "google", "google.cloud", "google.cloud.storage",
-    "sklearn", "sklearn.calibration", "sklearn.metrics",
-    "lightgbm", "joblib",
-):
-    sys.modules.setdefault(_mod, MagicMock())
-sys.modules["sklearn.metrics"].log_loss = lambda *a, **k: 0.5
-sys.modules["sklearn.calibration"].CalibratedClassifierCV = MagicMock
+# Same lightweight stubs as Phase A. Only insert when the real package
+# is unavailable; setdefault() poisons sys.modules for sibling tests
+# (caught 2026-06-09 in PR #597 CI). See test_magnitude_predictions_
+# persistence.py for the full rationale.
+def _stub_missing_modules(mods: list[str]) -> None:
+    for m in mods:
+        try:
+            __import__(m)
+        except ImportError:
+            parts = m.split(".")
+            for i in range(1, len(parts) + 1):
+                key = ".".join(parts[:i])
+                if key not in sys.modules:
+                    sys.modules[key] = MagicMock()
+
+
+_stub_missing_modules([
+    "google.cloud.storage",
+    "sklearn.calibration",
+    "sklearn.metrics",
+    "lightgbm",
+    "joblib",
+])
+if isinstance(sys.modules.get("sklearn.metrics"), MagicMock):
+    sys.modules["sklearn.metrics"].log_loss = lambda *a, **k: 0.5
+if isinstance(sys.modules.get("sklearn.calibration"), MagicMock):
+    sys.modules["sklearn.calibration"].CalibratedClassifierCV = MagicMock
 
 
 # ──────────────────── _parse_cells ────────────────────
@@ -153,3 +170,69 @@ def test_score_and_persist_zero_after_nan_filter(fake_features):
                             model, ["rsi_14"], "v1", fake_features)
     assert n == 0
     model.predict_proba.assert_not_called()
+
+
+# ──────────────────── main() exit-disposition contract ────────────────────
+#
+# Codex P1 on PR #597: when every cell quietly returns 0 (data outage,
+# universal NaN filter), the cell loop has no failures but
+# total_written == 0. That was making a real outage look like a healthy
+# scheduled run. main() must exit 1 in that case.
+
+def test_main_exits_1_when_total_written_is_zero(monkeypatch):
+    """Zero-output across all cells -> exit 1 (regression guard for
+    Codex P1 finding on PR #597)."""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    # Every cell returns 0 from _score_and_persist (e.g. empty features
+    # window). No exceptions raised -> failures stays []. Pre-fix this
+    # path returned 0; we now require exit 1.
+    fake_engine = MagicMock()
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=fake_engine), \
+         patch.object(mod, "_load_model_and_version",
+                       return_value=(MagicMock(), ["rsi_14"], "v1")), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=0):
+        rc = mod.main()
+    assert rc == 1, "zero predictions across all cells must exit 1"
+
+
+def test_main_exits_0_when_some_predictions_written(monkeypatch):
+    """Happy path: at least one cell produced predictions -> exit 0."""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version",
+                       return_value=(MagicMock(), ["rsi_14"], "v1")), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", side_effect=[5, 7]):
+        rc = mod.main()
+    assert rc == 0
+
+
+def test_main_exits_1_when_majority_cells_fail(monkeypatch):
+    """Existing 50% threshold preserved — operator gets paged when most
+    cells raise."""
+    monkeypatch.setenv("INFERENCE_CELLS", "IWM:5m,SPY:5m,QQQ:5m")
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    def fake_load(ticker, tf):
+        if ticker in ("IWM", "SPY"):
+            raise FileNotFoundError(f"missing model for {ticker}:{tf}")
+        return (MagicMock(), ["rsi_14"], "v1")
+
+    with patch("sys.argv", ["mag_inference"]), \
+         patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_load_model_and_version", side_effect=fake_load), \
+         patch.object(mod, "_load_recent_features",
+                       return_value=pd.DataFrame()), \
+         patch.object(mod, "_score_and_persist", return_value=5):
+        rc = mod.main()
+    # 2/3 cells failed -> >50% threshold -> exit 1
+    assert rc == 1

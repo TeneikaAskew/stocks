@@ -17,13 +17,25 @@ import pandas as pd
 import pytest
 
 # router imports gcp.database.query_to_dataframe which itself imports
-# the Cloud SQL connector. Stub heavy deps before first import.
-for _mod in (
-    "google", "google.cloud", "google.cloud.storage",
-    "google.cloud.sql", "google.cloud.sql.connector",
-    "pg8000", "pg8000.dbapi",
-):
-    sys.modules.setdefault(_mod, MagicMock())
+# the Cloud SQL connector. Only stub when the real package is missing
+# (setdefault would poison sys.modules for sibling tests).
+def _stub_missing_modules(mods: list[str]) -> None:
+    for m in mods:
+        try:
+            __import__(m)
+        except ImportError:
+            parts = m.split(".")
+            for i in range(1, len(parts) + 1):
+                key = ".".join(parts[:i])
+                if key not in sys.modules:
+                    sys.modules[key] = MagicMock()
+
+
+_stub_missing_modules([
+    "google.cloud.storage",
+    "google.cloud.sql.connector",
+    "pg8000.dbapi",
+])
 
 
 # Skip the whole module if fastapi isn't installed (sandbox parity with
@@ -165,3 +177,19 @@ def test_no_silent_uniform_fallback_in_module_constants():
     # The 'usage_guidance' constant must mention gate-7 / non-directional
     # to keep the consumer warning intact.
     assert "non-directional" in src.lower()
+
+
+def test_latest_uses_computed_at_tiebreaker():
+    """Codex P2 regression guard on PR #597: PRIMARY KEY allows multiple
+    model_version rows per (ticker, tf, ts). /latest must order by
+    (ts DESC, computed_at DESC) so a fresher inference row beats a stale
+    walk_forward backfill at the same ts. Without the tiebreaker
+    Postgres returns an arbitrary row from the tie."""
+    from platform.api.routers import magnitude as mod
+    import inspect
+    src = inspect.getsource(mod.get_latest_prediction)
+    # The ORDER BY must include computed_at DESC as a tiebreaker.
+    assert "computed_at DESC" in src, (
+        "/latest must tie-break by computed_at; otherwise stale "
+        "walk_forward rows can beat fresh inference rows"
+    )

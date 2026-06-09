@@ -16,16 +16,37 @@ import pytest
 
 # mag_walk_forward imports google-cloud-storage, sklearn, lightgbm at
 # module load. All three are in requirements.txt (CI installs them) but
-# not in the offline sandbox. Stub before the first import.
-for _mod in (
-    "google", "google.cloud", "google.cloud.storage",
-    "sklearn", "sklearn.calibration", "sklearn.metrics",
+# not in the offline sandbox. We only stub when the real package is
+# unavailable — using setdefault() at module load poisons the shared
+# sys.modules cache for sibling tests (e.g. test_combo_mining does
+# `from sklearn.ensemble import RandomForestClassifier`, which fails
+# with "'sklearn' is not a package" if our MagicMock was inserted
+# first). Caught 2026-06-09 by the CI failure on PR #597.
+def _stub_missing_modules(mods: list[str]) -> None:
+    for m in mods:
+        try:
+            __import__(m)
+        except ImportError:
+            # Walk parents so child stubs find non-package parents.
+            parts = m.split(".")
+            for i in range(1, len(parts) + 1):
+                key = ".".join(parts[:i])
+                if key not in sys.modules:
+                    sys.modules[key] = MagicMock()
+
+
+_stub_missing_modules([
+    "google.cloud.storage",
+    "sklearn.calibration",
+    "sklearn.metrics",
     "lightgbm",
-):
-    sys.modules.setdefault(_mod, MagicMock())
-# sklearn.metrics.log_loss is callable; CalibratedClassifierCV is too.
-sys.modules["sklearn.metrics"].log_loss = lambda *a, **k: 0.5
-sys.modules["sklearn.calibration"].CalibratedClassifierCV = MagicMock
+])
+# If we just stubbed sklearn.metrics, give it a callable log_loss so
+# mag_walk_forward's `from sklearn.metrics import log_loss` succeeds.
+if isinstance(sys.modules.get("sklearn.metrics"), MagicMock):
+    sys.modules["sklearn.metrics"].log_loss = lambda *a, **k: 0.5
+if isinstance(sys.modules.get("sklearn.calibration"), MagicMock):
+    sys.modules["sklearn.calibration"].CalibratedClassifierCV = MagicMock
 
 
 @pytest.fixture
