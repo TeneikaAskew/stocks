@@ -354,6 +354,13 @@ async def get_options(ticker: str, date_str: str):
     if cached is not None:
         return {**cached, "cached": True}
 
+    # etf_options_snapshots stores multiple intraday snapshots per day (one row
+    # per contract per snapshot_ts — ~80 for an active day). Restrict to the
+    # latest snapshot_ts so we return a single chain (~5K contracts) rather than
+    # every snapshot stacked (~430K rows). Loading all of them OOM-killed the
+    # 1 GiB container, took ~60 s, AND inflated GEX ~80x by summing open interest
+    # across duplicate snapshots. max(snapshot_ts) matches the existing "as of"
+    # marker computed below.
     sql = """
         SELECT contract_symbol, expiration, strike, option_type,
                bid, ask, mark, last_price, volume, open_interest,
@@ -363,6 +370,13 @@ async def get_options(ticker: str, date_str: str):
         WHERE  ticker = :ticker
           AND  snapshot_date = :snap_date
           AND  data_source = 'alphavantage'
+          AND  snapshot_ts = (
+                 SELECT MAX(snapshot_ts)
+                 FROM   etf_options_snapshots
+                 WHERE  ticker = :ticker
+                   AND  snapshot_date = :snap_date
+                   AND  data_source = 'alphavantage'
+               )
         ORDER  BY expiration, strike, option_type
     """
     df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
