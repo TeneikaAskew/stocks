@@ -27,6 +27,7 @@ archived pipelines, and GCS artifact conventions listed in §"Source artifacts."
 | **OLS / linregress** | INTRADAY-MOM replication | last-30m ~ first-30m | `intraday_momentum.py` | null |
 | **LogisticRegression (sklearn)** | INTRADAY-MOM walk-forward | sign of last-30m | `intraday_momentum.py` | null |
 | **Rule-based primary (no ML)** | BREAKOUT-META primary, Strat classifier | trigger break / candle class | `lib/strat.py`, `breakout_meta_walk_forward.py` | deterministic |
+| **Transition table + fixed vote-rule + held-out logistic** | STRAT-NEXTBAR (E-25) | next daily/weekly candle 2U/2D | `lib/strat.py:compute_strat_history`, `scripts/strat_oos_*` | ✅ held-out OOS edge (CLV-dominated, partly mechanical) |
 | **CalibratedClassifierCV (sigmoid/isotonic)** | calibration diagnostic only | — | sklearn wrapper, optional `--calibration` | tested, NOT used (hurt ECE) |
 | **Stacked regression + voter overlay (LightGBM→Ridge/Lasso)** | archived P7 pipeline | fwd return / next candle | `gcp/research/_archive/p7c,p7f,p7g_*.py` | ARCHIVED — net-negative |
 | XGBoost / SVM / HAR / torch / statsmodels-sequence | — | — | — | **NOT IMPLEMENTED** (searched; none present) |
@@ -400,21 +401,58 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Artifacts:** `COST_ANALYSIS.md`; E-12/E-18 artifacts.
 
 ## E-25 · STRAT-NEXTBAR — historical tape + next-bar directional forward-walk
-- **Engine/area:** strat (direction / next-candle) · **Status:** validated OOS (daily+weekly) · **Date:** 2026-06-07 · **PRs:** #592, #593, this branch.
-- **Question:** given all bars so far, what's the next candle (continue / reverse / stay / expand), how often, and is it forecastable out-of-sample?
-- **Target:** next daily/weekly/monthly Strat candle (2U/2D/1/3); directional call = next ∈ {2U,2D}.
-- **Data:** `market_data_daily` resampled to 1d/1w/1mo/1q; SPY/QQQ/IWM/AAPL/NVDA; 2016→2026.
-- **Features:** close-location-value (CLV), 1–3-bar momentum, RSI, EMA-distance, streaks, **FTFC** (prior-completed weekly+monthly direction). Stacked "UP-votes" = CLV>0 + mom>0 + FTFC>0.
-- **Structure:** deterministic transition table + fixed-vote rule (no params) + held-out logistic (fit strictly before each test year). 100%-match to production `strat_candle` (classification correctness).
-- **Results (held-out OOS):**
-  - **Single-candle alone is weak** (~coin-flip continuation); **stacking FTFC+CLV sharpens P(next=2U) ~58%→74–81%** (CLV is the workhorse; FTFC alone ≈ +1pp; momentum a small add).
-  - **Daily logistic ~70–72% OOS vs ~54–60% base** (+12–16pp), positive log-loss beat nearly every fold 2017→2026.
-  - **Weekly even stronger: logistic ~75–80% OOS vs ~57–67% base** (+13–18pp), large LL beats.
-  - **Monthly inconclusive** (~100 bars total; lift over base small/noisy).
-- **Correlation analysis:** mutual-information rank #1 = **CLV** across all tickers (corr→2U ≈ +0.4); then momentum/streaks; the candle *type* itself ranks low.
-- **CLV ablation (held-out, `strat_oos_clv_ablation.py`):** **CLV alone ≈ the FULL edge** (CLV_ONLY within ±1–3pp of FULL, often ≥ it — the other 10 features add ~nothing on top). Removing CLV costs ~5–7pp daily / ~3–7pp weekly but leaves a **real residual** (NO_CLV / STRUCT_ONLY = momentum+FTFC ≈ 64–66% daily / 70–75% weekly, still +6–15pp over base). So the headline edge is **mostly close-location (partly mechanical)**; the genuinely structural momentum+FTFC signal is real but smaller.
-- **Verdict:** ✅ real, held-out edge on the directional next-bar at daily & weekly. **Caveats:** the edge is **dominated by CLV, which is partly mechanical** (strong close → next-open near high → higher-high easier — essentially "closed strong → bet it breaks the high"); predicts **which trigger breaks (2U/2D), not close-to-close P&L**. Non-mechanical (momentum+FTFC) residual ≈ +6–10pp over base.
-- **Artifacts:** `lib/strat.py:compute_strat_history` (+1-3-1, triggers), `lib/data_loader.py` (1q); `scripts/strat_history_report.py`, `strat_backtest.py`, `strat_next_candle_analysis.py`, `strat_forward_walk.py`, `strat_forward_walk_oos.py`, `strat_oos_multi_tf.py`, `strat_oos_clv_ablation.py`; `tests/test_strat_history.py`. Runs as the `magnitude-engine` Cloud Run Job vs Cloud SQL.
+- **Engine/area:** strat (direction / next-candle) · **Status:** ✅ validated OOS (daily + weekly) · **Dates:** 2026-06-07 → 06-08 · **PRs (all merged to main):** #592 (backend), #593 (daily held-out OOS), #594 (multi-TF OOS + this registry entry), #595 (CLV ablation).
+- **Question:** given all bars so far, what is the next candle (continue / reverse / stay-inside / expand-outside), how often, and is it forecastable **out-of-sample**? And how much of any edge is genuine vs mechanical?
+- **Target:** next Strat candle ∈ {2U, 2D, 1, 3} at daily / weekly / monthly / quarterly. The tradeable "directional call" = next ∈ {2U, 2D} (which trigger breaks).
+- **Data:** `market_data_daily` (Cloud SQL) resampled to 1d/1w/1mo/1q via `lib.data_loader` (added `'1q'`=QE). Tickers SPY/QQQ/IWM/AAPL/NVDA; ~2016→2026 (~2,000 daily bars/ticker). Classification cross-checked 100% vs persisted `market_data_daily.strat_candle` (production).
+- **Features (all causal, known at bar T close):** close-location-value `clv=((C-L)-(H-C))/(H-L)`; 1/2/3-bar returns (momentum); RSI-14; EMA-distance (10/20/50/200); MACD-hist; Bollinger %b; volume-z; gap; range%; up/down streaks; current-candle one-hots; **FTFC** = prior-COMPLETED weekly+monthly Strat direction (strictly-before `merge_asof`, no lookahead). Stacked "UP-votes" = (clv>0) + (ret3d>0) + (FTFC>0).
+- **Structure:** (1) deterministic transition table P(next|current); (2) fixed vote-rule ≥2 UP-votes→UP (no fitted params); (3) held-out logistic fit strictly before each test year; (4) CLV ablation across FULL / NO_CLV / CLV_ONLY / STRUCT_ONLY feature sets. LightGBM 4-class also used for the daily next_bar_type model-vs-base check.
+
+- **Scripts & roles (repo paths):**
+  | Path | Role |
+  |---|---|
+  | `lib/strat.py` → `compute_strat_history()` | D/W/M/Q tape + upcoming setup + per-bar triggers; **1-3-1 (`131_setup`) detection** added to `detect_combos` |
+  | `lib/data_loader.py` | `'1q'` (QE) quarterly resample rule |
+  | `scripts/strat_history_report.py` | past-week daily tape + causal forward-walk + W/M/Q + upcoming setup (the "what's the Tuesday call" log) |
+  | `scripts/strat_backtest.py` | PART1 classification-vs-production (100%), PART2 combo follow-through, PART3 next-bar transition distribution |
+  | `scripts/strat_next_candle_analysis.py` | FTFC-conditioned transition + daily next-candle model-vs-base-rate + feature mutual-information; defines `build_daily()` |
+  | `scripts/strat_forward_walk.py` | stacks FTFC+CLV+momentum; PART1 sharpening, PART2 hit-count, PART3 day-to-day call log + live next-session call |
+  | `scripts/strat_forward_walk_oos.py` | **daily held-out** (train<Y / test=Y) fixed-rule + logistic |
+  | `scripts/strat_oos_multi_tf.py` | **multi-TF held-out** (daily/weekly/monthly); defines `build_bars()`, `FEATS` |
+  | `scripts/strat_oos_clv_ablation.py` | **CLV ablation** held-out (FULL / NO_CLV / CLV_ONLY / STRUCT_ONLY); imports `build_bars` read-only |
+  | `tests/test_strat_history.py` | hermetic tests (1-3-1, D/W/M/Q tape, upcoming setup, quarterly) — 8 pass |
+
+- **Results — descriptive (full-sample, SPY representative):**
+  - Single current-candle is a **weak** predictor: after 2U → next 2U ~47–57% (continuation) vs 2D ~23–33%; after 2D ≈ coin-flip; inside(1) rarely stays inside, ~14–26% expand to a 3; the candle *type* itself ranks LOW in mutual information.
+  - **Stacking sharpens P(next=2U):** FTFC alone ≈ +1pp → **FTFC+CLV ≈ 74–81%** → +momentum ~flat. CLV is the workhorse (MI rank #1 every ticker, corr→2U ≈ +0.4).
+  - Fixed-rule forward-walk: ~65–68% overall / ~72–76% on unanimous (3/3 or 0/3) days, over ~1,600 predictions/ticker.
+
+- **Results — HELD-OUT OOS (train strictly before each test year):**
+  | TF | logistic OOS | base | lift | log-loss beat |
+  |---|---|---|---|---|
+  | **Daily** | ~70–72% | ~54–60% | +12–16pp | positive nearly every year 2017→2026 |
+  | **Weekly** | ~75–80% | ~57–67% | +13–18pp | large (+0.1 to +0.3) |
+  | Monthly | ~70–73% | ~65–71% | small | **inconclusive (~100 bars total)** |
+
+- **Results — CLV ABLATION (held-out, per feature set):**
+  | set | daily OOS | weekly OOS | read |
+  |---|---|---|---|
+  | FULL (all) | ~70–72% | ~77–80% | reference |
+  | **CLV_ONLY** | ~71–73% | ~78–83% | **≈ FULL — CLV carries the whole edge** |
+  | NO_CLV (all−clv) | ~64–66% | ~72–74% | −5–7pp daily; still > base |
+  | STRUCT_ONLY (mom+FTFC) | ~65–66% | ~70–75% | the genuine non-mechanical residual (+6–13pp over base) |
+
+- **Verdict:** ✅ a **real, held-out** edge on the directional next-bar at daily & weekly. **But the edge is dominated by close-location (CLV), which is PARTLY MECHANICAL** — a strong close puts the next open near the high, making a higher-high (2U) mechanically easier; effectively *"closed strong → bet it breaks the high tomorrow."* The genuinely structural momentum+FTFC residual is real but smaller (~+6–10pp over base). It predicts **which trigger breaks (2U/2D), NOT close-to-close P&L** — exits still need managing. Monthly/quarterly are too thin to validate.
+- **Leaks/bugs caught:** (a) `aggregate_to_timeframe` requires `Volume` — `_ftfc` initially passed OHLC-only → all-zero FTFC, fixed; (b) `load_daily` can carry persisted indicator columns → duplicate-name 2-D selection in correlation, fixed by drop-then-concat dedup. FTFC uses strictly-before `merge_asof` (no in-progress-bar lookahead); all features known at bar-T close.
+- **Reproduce (Cloud Run Job `magnitude-engine`, research image, vs Cloud SQL):**
+  ```
+  gcloud run jobs execute magnitude-engine --region us-east1 \
+    --args="-m,scripts.strat_oos_multi_tf,--tickers=SPY,QQQ,IWM,AAPL,NVDA,--timeframes=1d,1w,1mo"
+  gcloud run jobs execute magnitude-engine --region us-east1 \
+    --args="-m,scripts.strat_oos_clv_ablation,--tickers=SPY,QQQ,IWM,AAPL,NVDA,--timeframes=1d,1w"
+  ```
+  Output → Cloud Logging for the execution. (Build with `./gcp/deploy.sh build-research`; SHA-fingerprint-verify scripts in the image before each run.)
+- **Open items:** de-mechanize CLV (gap-adjusted next-bar def or prior-bar CLV) to isolate the non-mechanical close-location edge; take the momentum+FTFC structural residual to a costed underlying-trade backtest.
 
 ---
 
