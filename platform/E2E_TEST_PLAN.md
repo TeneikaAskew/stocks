@@ -104,37 +104,72 @@ Known prod caveats validated there: AV-on-request endpoints require the
 
 ---
 
-## 6. Staging without IAP (passcode gate)
+## 6. Staging service — test a real deployment without Google IAP
 
 Prod is locked behind IAP, so live E2E against it needs the interactive Google
-sign-in (`npm run e2e:cloud:auth`). To test against a deployed app **without**
-that, deploy the separate public staging service and use the shared passcode.
+sign-in (`npm run e2e:cloud:auth`). The separate `trading-platform-staging`
+service avoids that. It comes in two variants (IAP is service-level and can't
+be dropped per-revision, so staging is its own service either way). Prod is
+untouched in both.
 
-**Architecture:** IAP on Cloud Run is service-level and can't be dropped per
-revision, so staging is its own service (`trading-platform-staging`) deployed
-`--allow-unauthenticated`. An app-level passcode gate re-protects the API:
-- `api/auth_bypass.py` — middleware + `POST /api/auth/bypass` + `/api/auth/logout`. Inert unless `ALLOW_AUTH_BYPASS=1` (set only on the staging service), so prod/local are untouched.
-- `/api/me` returns `auth_bypass_allowed: true` on staging → the React `<AuthGate>` shows the sign-in screen (`src/components/auth/`). A correct passcode sets an HttpOnly cookie and the app renders as a guest.
+**Both variants point staging at a read-only DB role** (`DB_USER=staging_readonly`,
+`DB_PASS_SECRET=trading-db-pass`) so a stray write spec cannot mutate prod:
+`staging_readonly` has SELECT-only grants + `default_transaction_read_only=on`.
+Note the app's journal/admin write endpoints **silently fall back to ephemeral
+local storage** when the DB rejects a write (`{"source":"local"}`) — the write
+looks like a 200 but never reaches prod and vanishes on the next cold start.
 
-**Deploy it (operator, run.admin):**
+### 6a. Private (DEPLOYED — default `STAGING_SERVICE=1`)
+
+`--no-allow-unauthenticated`; Cloud Run IAM gates it. `claude-web@`/editor can
+deploy and invoke it without `run.services.setIamPolicy`, so it works fully from
+the sandbox. The app-level passcode gate is OFF (IAM already gates every call),
+so `/api/me` returns `auth_bypass_allowed:false` and the app renders open once
+you're past IAM.
+
 ```bash
-# 1. Create the passcode secret + let the runtime SA read it (one-time)
+# Deploy (idempotent; reuses prod's image build under a separate image name)
+IMAGE_NAME=trading-platform-staging DB_USER=staging_readonly DB_NAME=trading \
+  DB_PASS_SECRET=trading-db-pass STAGING_SERVICE=1 ./platform/deploy.sh
+```
+Live URL: `https://trading-platform-staging-28960574877.us-east1.run.app`
+
+Reach it with an identity token (no Google sign-in, no proxy component needed):
+```bash
+URL="https://trading-platform-staging-28960574877.us-east1.run.app"
+TOK=$(gcloud auth print-identity-token --audiences="$URL")
+curl -s -H "Authorization: Bearer $TOK" "$URL/api/health"      # cloud_sql:true
+curl -s -H "Authorization: Bearer $TOK" "$URL/api/market/dates/SPY"
+```
+Run Playwright against it by injecting the bearer token as a header
+(`playwright.config.ts` `cloud` project → `use.extraHTTPHeaders`), e.g.:
+```bash
+URL="https://trading-platform-staging-28960574877.us-east1.run.app"
+STAGING_BEARER="$(gcloud auth print-identity-token --audiences="$URL")" \
+  CLOUD_RUN_URL="$URL" npm run e2e:cloud
+```
+(The token lasts ~1h; re-mint for a longer run.)
+
+### 6b. Public + passcode (opt-in `STAGING_PUBLIC=1`, needs run.admin)
+
+`--allow-unauthenticated` + the app-level passcode gate (`api/auth_bypass.py`:
+middleware + `POST /api/auth/bypass` + `/api/auth/logout`, inert unless
+`ALLOW_AUTH_BYPASS=1`). `/api/me` returns `auth_bypass_allowed:true` → the React
+`<AuthGate>` shows the passcode screen; a correct passcode sets an HttpOnly
+cookie and the app renders as a guest. Needs `run.services.setIamPolicy` for
+`--allow-unauthenticated` (the sandbox SA lacks it) and may be blocked by the
+DRS org policy.
+```bash
+# One-time (operator with run.admin):
 printf '%s' 'YOUR_PASSCODE' | gcloud secrets create staging-passcode \
   --data-file=- --project=adept-mountain-474619-d4
 gcloud secrets add-iam-policy-binding staging-passcode \
   --member="serviceAccount:trading-platform-svc@adept-mountain-474619-d4.iam.gserviceaccount.com" \
   --role=roles/secretmanager.secretAccessor --project=adept-mountain-474619-d4
-# 2. Deploy the public, passcode-gated staging service (prod untouched)
-DB_USER=trading_user DB_NAME=trading STAGING_SERVICE=1 ./platform/deploy.sh
-```
-
-**Test against it (no Google sign-in):** point Playwright's `cloud` project at
-the staging URL and mint the bypass cookie via the passcode instead of IAP:
-```bash
-STAGING_URL="https://trading-platform-staging-….run.app"
-# Grab the HttpOnly bypass cookie with one POST, save it as Playwright storage state:
+# Deploy:
+IMAGE_NAME=trading-platform-staging DB_USER=staging_readonly DB_NAME=trading \
+  DB_PASS_SECRET=trading-db-pass STAGING_SERVICE=1 STAGING_PUBLIC=1 ./platform/deploy.sh
+# Test without Google sign-in (mint the bypass cookie via the passcode):
 curl -sS -c - -X POST "$STAGING_URL/api/auth/bypass" \
   -H 'Content-Type: application/json' -d '{"passcode":"YOUR_PASSCODE"}' >/dev/null
-CLOUD_RUN_URL="$STAGING_URL" npm run e2e:cloud   # specs run as the staging guest
 ```
-(or just open `$STAGING_URL` in a browser and type the passcode once.)
