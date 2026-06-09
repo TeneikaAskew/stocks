@@ -101,7 +101,7 @@ class GammaAlert:
     are fully resolved here so downstream consumers don't recompute."""
     kind: Literal["gamma_king_approach", "gamma_gate_break", "gamma_flip_cross"]
     direction: Literal["CALL", "PUT"]
-    level_kind: Literal["king", "gate", "flip"]
+    level_kind: Literal["king", "gate", "gamma_flip"]
     level_strike: float
     distance_pct: float       # signed: positive = price above level
     regime: Literal["positive_gamma", "negative_gamma", "unknown"]
@@ -213,18 +213,23 @@ def evaluate_flip_cross(
     *,
     prev_day_dir: PrevDayDir = None,
 ) -> list[GammaAlert]:
-    """Return at most one alert when `close` crosses through `summary.flip`
+    """Return at most one alert when `close` crosses through the TRUE
+    Black-Scholes-recurved `summary.gamma_flip` (the real zero-gamma level)
     AND the cross direction aligns with `prev_day_dir`.
 
     Crossing UP (negative→positive gamma) = entering pinning regime = CALL.
     Crossing DOWN (positive→negative gamma) = entering trending regime = PUT.
 
+    Repointed 2026-06-09 from the cumulative-balance level (`summary.flip`,
+    now `summary.gamma_balance`) to the true BS `gamma_flip` — historical
+    `gamma_flip_cross` backtests pre-date this and aren't directly comparable.
+
     `prev_day_dir` enforces the FTFC alignment rule. Pass None to disable.
     """
-    if (not summary or summary.flip is None
+    if (not summary or summary.gamma_flip is None
             or prev_close is None or close <= 0):
         return []
-    flip = float(summary.flip)
+    flip = float(summary.gamma_flip)
     if flip <= 0:
         return []
     crossed_up = prev_close <= flip < close
@@ -243,7 +248,7 @@ def evaluate_flip_cross(
     return [GammaAlert(
         kind="gamma_flip_cross",
         direction=direction,
-        level_kind="flip",
+        level_kind="gamma_flip",
         level_strike=flip,
         distance_pct=signed_dist_pct,
         regime=new_regime,
