@@ -1,5 +1,10 @@
 """
-Journal router — Cloud SQL-backed trade journal with local fallback.
+Journal router — Cloud SQL-backed trade journal.
+
+When Cloud SQL is configured, it is the source of truth: a DB failure fails
+loud (HTTP 500) rather than silently diverting to local storage (CLAUDE.md
+Rule 3.7). The local JSON store is used ONLY when Cloud SQL is not configured
+at all (local dev without a DB).
 
 Endpoints:
   GET    /api/journal/trades/{ticker}  — list all journal entries for a ticker
@@ -9,14 +14,17 @@ Endpoints:
 """
 import csv
 import json
+import logging
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -124,10 +132,13 @@ async def get_trades(ticker: str):
                         df[col] = df[col].astype(str)
                 trades = df.to_dict(orient="records")
             return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
-        except Exception:
-            pass  # fall through to local on any DB error
+        except Exception as e:
+            # Cloud SQL is configured → a failure is a real error, not a cue to
+            # silently serve local/stale data (CLAUDE.md Rule 3.7). Fail loud.
+            logger.exception("journal read failed against Cloud SQL for %s", ticker_upper)
+            raise HTTPException(status_code=500, detail=f"journal read failed: {e}") from e
 
-    # Local fallback
+    # Local mode — only when Cloud SQL is NOT configured (local dev).
     entries = _load_local(ticker_upper)
     entries.sort(key=lambda e: e.get("entry_ts", ""), reverse=True)
     return {"ticker": ticker_upper, "source": "local", "count": len(entries), "trades": entries}
@@ -174,10 +185,13 @@ async def create_trade(trade: JournalTradeCreate):
             )
             new_id = str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
             return {"source": "cloud_sql", "id": new_id, "return_pct": round(ret_pct, 4)}
-        except Exception:
-            pass  # fall through to local
+        except Exception as e:
+            # Cloud SQL configured → a write failure must surface, not divert to
+            # ephemeral local storage that looks like success (Rule 3.7).
+            logger.exception("journal write failed against Cloud SQL for %s", ticker_upper)
+            raise HTTPException(status_code=500, detail=f"journal write failed: {e}") from e
 
-    # Local fallback
+    # Local mode — only when Cloud SQL is NOT configured (local dev).
     entries = _load_local(ticker_upper)
     new_id = str(uuid.uuid4())
     entries.insert(0, {
@@ -206,10 +220,12 @@ async def delete_trade(trade_id: str, ticker: str = ""):
                 {"id": trade_id},
             )
             return {"source": "cloud_sql", "deleted": trade_id}
-        except Exception:
-            pass
+        except Exception as e:
+            # Cloud SQL configured → surface the failure (Rule 3.7).
+            logger.exception("journal delete failed against Cloud SQL for %s", trade_id)
+            raise HTTPException(status_code=500, detail=f"journal delete failed: {e}") from e
 
-    # Local fallback
+    # Local mode — only when Cloud SQL is NOT configured (local dev).
     if ticker:
         entries = _load_local(ticker.upper())
         updated = [e for e in entries if e.get("id") != trade_id]
