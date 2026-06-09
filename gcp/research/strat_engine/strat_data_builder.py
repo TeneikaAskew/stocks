@@ -134,7 +134,9 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     total_gex DOUBLE PRECISION, gex_tercile VARCHAR(8),
     total_vex DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime VARCHAR(32), gamma_regime VARCHAR(32),
-    flip_price DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
     computed_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (ticker, ts)
@@ -201,11 +203,11 @@ def _load_vix_per_date(engine) -> pd.DataFrame:
 
 def _load_gamma_levels(engine, ticker: str) -> pd.DataFrame:
     """Load gamma_levels_eod per-date for the ticker. Each date has multiple
-    level rows; pivot to one row per date with total_gex, flip_price, regime,
-    and pre-computed min distances to king / gate."""
+    level rows; pivot to one row per date with total_gex, gamma_balance_price,
+    gamma_flip, regime, and pre-computed min distances to king / gate."""
     sql = text("""
         SELECT snapshot_date, level_kind, level_strike, gex, score, regime,
-               flip_price, total_gex, spot_estimate
+               gamma_balance_price, gamma_flip, total_gex, spot_estimate
         FROM gamma_levels_eod
         WHERE ticker = :ticker
     """)
@@ -221,7 +223,8 @@ def _load_gamma_levels(engine, ticker: str) -> pd.DataFrame:
         rows.append({
             "snapshot_date": d,
             "total_gex": float(first["total_gex"] or 0.0),
-            "flip_price": float(first["flip_price"]) if pd.notna(first["flip_price"]) else None,
+            "gamma_balance_price": float(first["gamma_balance_price"]) if pd.notna(first["gamma_balance_price"]) else None,
+            "gamma_flip": float(first["gamma_flip"]) if pd.notna(first["gamma_flip"]) else None,
             "regime": str(first["regime"] or "unknown"),
             "spot": float(spot) if pd.notna(spot) else None,
             "min_king_strike": float(kings["level_strike"].iloc[0]) if not kings.empty else None,
@@ -558,7 +561,13 @@ def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
 
     # Gamma context — join via prior-date lookup
     out["total_gex"] = bd.map(prior_gamma["total_gex"].to_dict())
-    out["flip_price"] = bd.map(prior_gamma["flip_price"].to_dict())
+    out["gamma_balance_price"] = bd.map(prior_gamma["gamma_balance_price"].to_dict())
+    out["gamma_flip"] = bd.map(prior_gamma["gamma_flip"].to_dict())
+    # Distance from current close to the true BS gamma flip (signed %, the
+    # directly tradable quantity — mirrors distance_to_king/gate_pct). NaN
+    # propagates where gamma_flip is missing (§3.7 — no fabricated 0).
+    out["dist_to_gamma_flip_pct"] = (out["close"] - bd.map(prior_gamma["gamma_flip"].to_dict())) \
+        / out["close"] * 100
     out["gamma_regime"] = bd.map(prior_gamma["regime"].to_dict()).fillna("unknown")
     out["distance_to_king_pct"] = (out["close"] - bd.map(prior_gamma["min_king_strike"].to_dict())) \
         / out["close"] * 100
