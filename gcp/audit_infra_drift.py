@@ -147,15 +147,17 @@ def latest_execution_image(job_name: str) -> str:
     client = run_v2.ExecutionsClient()
     parent = f"projects/{PROJECT}/locations/{REGION}/jobs/{job_name}"
     # Pull just the first page; we only need the most-recent execution.
+    # page_size=1 makes the iterator stop after one element naturally.
+    # NOTE: do NOT add a `finally: return ""` to "stop early" — `return`
+    # in a `finally` block in Python silently overrides the surrounding
+    # try-block's return value, which would make this function always
+    # blank. Codex caught exactly that bug on PR #601.
     request = run_v2.ListExecutionsRequest(parent=parent, page_size=1)
-    page = client.list_executions(request=request)
-    for exe in page:
+    for exe in client.list_executions(request=request):
         try:
             return exe.template.containers[0].image
         except (AttributeError, IndexError):
             return ""
-        finally:
-            return ""  # only inspect first
     return ""
 
 

@@ -10,7 +10,8 @@ The gcloud calls themselves are mocked — we test the pure decision logic.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -187,3 +188,94 @@ def test_discord_post_truncates_long_message(monkeypatch):
 
     assert len(captured["body"]) < 2000
     assert "truncated" in captured["body"]
+
+
+# ──────────────────── latest_execution_image SDK contract ────────────────────
+#
+# Codex P1 on PR #601: an earlier draft of latest_execution_image had a
+# `finally: return ""` that silently overrode the successful return,
+# making the function always blank. The Codex review correctly noted
+# that mocking latest_execution_image() in the image-drift tests above
+# couldn't catch that bug. These tests mock the underlying SDK instead,
+# exercising the real function body.
+
+
+def test_latest_execution_image_returns_image_when_execution_exists():
+    """If the job has at least one execution, return its image string."""
+    from gcp import audit_infra_drift as mod
+
+    fake_image = "us-east1-docker.pkg.dev/p/r/trading-system@sha256:abcd"
+    # The SDK call yields execution objects; we need .template.containers[0].image.
+    fake_exec = MagicMock()
+    fake_exec.template.containers = [MagicMock(image=fake_image)]
+
+    fake_client = MagicMock()
+    fake_client.list_executions.return_value = iter([fake_exec])
+
+    # Patch the import inside the function (it's a local import).
+    fake_run_v2 = MagicMock()
+    fake_run_v2.ExecutionsClient.return_value = fake_client
+    fake_run_v2.ListExecutionsRequest = MagicMock()
+
+    fake_google_cloud = MagicMock(run_v2=fake_run_v2)
+    with patch.dict("sys.modules", {
+        "google": MagicMock(cloud=fake_google_cloud),
+        "google.cloud": fake_google_cloud,
+        "google.cloud.run_v2": fake_run_v2,
+    }):
+        got = mod.latest_execution_image("fetch-earnings-history")
+
+    assert got == fake_image, (
+        f"latest_execution_image should return the execution's image; "
+        f"got {got!r}. A `return` in a `finally` block on this function "
+        f"would silently override the success return — Codex P1 #601."
+    )
+
+
+def test_latest_execution_image_returns_empty_when_no_executions():
+    """If the job has zero executions, return empty string (not None)."""
+    from gcp import audit_infra_drift as mod
+
+    fake_client = MagicMock()
+    fake_client.list_executions.return_value = iter([])  # empty page
+
+    fake_run_v2 = MagicMock()
+    fake_run_v2.ExecutionsClient.return_value = fake_client
+    fake_run_v2.ListExecutionsRequest = MagicMock()
+
+    fake_google_cloud = MagicMock(run_v2=fake_run_v2)
+    with patch.dict("sys.modules", {
+        "google": MagicMock(cloud=fake_google_cloud),
+        "google.cloud": fake_google_cloud,
+        "google.cloud.run_v2": fake_run_v2,
+    }):
+        got = mod.latest_execution_image("never-executed-job")
+
+    assert got == ""
+
+
+def test_latest_execution_image_handles_malformed_template():
+    """If exe.template.containers is missing/empty, return empty
+    string (don't raise)."""
+    from gcp import audit_infra_drift as mod
+
+    fake_exec = MagicMock()
+    # Simulate AttributeError on .containers[0]
+    fake_exec.template.containers = []
+
+    fake_client = MagicMock()
+    fake_client.list_executions.return_value = iter([fake_exec])
+
+    fake_run_v2 = MagicMock()
+    fake_run_v2.ExecutionsClient.return_value = fake_client
+    fake_run_v2.ListExecutionsRequest = MagicMock()
+
+    fake_google_cloud = MagicMock(run_v2=fake_run_v2)
+    with patch.dict("sys.modules", {
+        "google": MagicMock(cloud=fake_google_cloud),
+        "google.cloud": fake_google_cloud,
+        "google.cloud.run_v2": fake_run_v2,
+    }):
+        got = mod.latest_execution_image("malformed-job")
+
+    assert got == ""
