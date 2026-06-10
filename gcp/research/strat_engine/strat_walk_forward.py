@@ -14,11 +14,13 @@ Design (per reviewer 2026-05-26):
   2. Track BOTH log-loss beat AND ECE per fold. Calibration can degrade
      out-of-regime even while log-loss holds. Overconfident-in-new-regime
      is a worse failure than just-noisier.
-  3. Full retrain AND recalibrate per fold. The CalibratedClassifierCV
-     `model.fit()` inside the loop refits the base LGBM 3x and learns a
-     fresh sigmoid on each held-out fold. NEVER reuse the calibration map
-     from one walk-forward fold in another. That's the classic harness
-     leak.
+  3. Full retrain per fold. Default calibration="none" (production config
+     since 2026-05-27) fits a bare LightGBM and reports its native softmax —
+     no post-hoc calibrator, because the 24-fold study proved the sigmoid
+     wrapper HURT ECE in every fold. The diagnostic calibration="sigmoid"/
+     "isotonic" path refits the base LGBM 3x AND learns a fresh calibrator on
+     each held-out fold. When a calibrator IS fit, NEVER reuse the map from
+     one walk-forward fold in another — that's the classic harness leak.
   4. Run on 15m, 30m, AND 5m. 4h and 60m have too few bars per fold to
      trust. 1m is dropped (FTFC_WEIGHTS=0; pathological probs).
 
@@ -117,15 +119,33 @@ def base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float:
 def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                              bar_dates: np.ndarray,
                              train_end: str, test_end: str,
-                             lgbm_n_jobs: int) -> dict:
-    """ONE fold of walk-forward. Full retrain + recalibrate from scratch.
+                             lgbm_n_jobs: int,
+                             calibration: str = DEFAULT_CALIBRATION) -> dict:
+    """ONE fold of walk-forward. Full retrain (+ optional recalibrate) from scratch.
 
     Inputs are pre-featurized arrays + a bar_date array for slicing — the
     featurize() call has been hoisted out of the loop to avoid 16 redundant
     one-hot rebuilds across 8 folds. Per-fold work is now O(numpy slice +
     LGBM fit), not O(featurize + pandas concat + column align).
 
-    Critical: the CalibratedClassifierCV is constructed FRESH inside this
+    `calibration`:
+      - "none" (production default since 2026-05-27): fit a bare LightGBM and
+        use its native softmax — NO post-hoc calibration. The 24-fold study
+        proved the sigmoid wrapper HURT ECE in every fold, so the shipped
+        model carries no calibrator. This branch mirrors
+        strat_pred_train.run_train's calibration=="none" path so the
+        walk-forward validates the EXACT artifact production serves.
+        Reviewer-flagged 2026-06-04: previously this function unconditionally
+        wrapped in CalibratedClassifierCV(method=DEFAULT_CALIBRATION); once
+        DEFAULT_CALIBRATION flipped to "none", sklearn rejected
+        method="none" and the canonical walk-forward crashed (no
+        walk_forward_<epoch>.json artifact was ever produced — the only
+        surviving evidence came from the adaptive harness's mode=none path).
+      - "sigmoid"/"isotonic" (diagnostic): refit base + calibrator from
+        scratch per fold via CalibratedClassifierCV. Kept so the
+        sigmoid-hurts comparison stays reproducible.
+
+    Critical: when a calibrator IS fit, it is constructed FRESH inside this
     function. NEVER reuse a calibrator from a different fold — that leaks
     future data into past test windows.
     """
@@ -145,17 +165,24 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     y_tr = y_full[train_mask]
     y_te = y_full[test_mask]
 
-    # FRESH calibrated classifier — refit base + sigmoid from scratch.
-    # Untangled parallelism: CalibratedClassifierCV(n_jobs=cv) parallelizes
-    # the cv inner folds; each LGBM is given n_jobs = cores // cv so total
-    # threads ≤ core count. Previous nested -1 created 24 threads on 8 cores.
-    calibrated = CalibratedClassifierCV(
-        estimator=make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs),
-        method=DEFAULT_CALIBRATION, cv=DEFAULT_CV, n_jobs=DEFAULT_CV,
-    )
-    calibrated.fit(X_tr, y_tr)
-
-    proba = calibrated.predict_proba(X_te)
+    if calibration == "none":
+        # PRODUCTION CONFIG — bare LightGBM, raw native softmax, no wrapper.
+        # No CV, so the base LGBM gets all the threads the caller granted.
+        model = make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs)
+        model.fit(X_tr, y_tr)
+        proba = model.predict_proba(X_te)
+    else:
+        # DIAGNOSTIC — FRESH calibrated classifier; refit base + calibrator
+        # from scratch. Untangled parallelism: CalibratedClassifierCV(n_jobs=cv)
+        # parallelizes the cv inner folds; each LGBM is given n_jobs =
+        # cores // cv so total threads ≤ core count. Previous nested -1
+        # created 24 threads on 8 cores.
+        calibrated = CalibratedClassifierCV(
+            estimator=make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs),
+            method=calibration, cv=DEFAULT_CV, n_jobs=DEFAULT_CV,
+        )
+        calibrated.fit(X_tr, y_tr)
+        proba = calibrated.predict_proba(X_te)
     ll = float(log_loss(y_te, proba, labels=list(range(len(LABEL_CLASSES)))))
     base_ll = base_rate_logloss(y_tr, y_te)
     pred = np.argmax(proba, axis=1)
@@ -180,10 +207,12 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
 
 
 def walk_forward(engine, ticker: str, tf: str,
-                 cutoffs: list[str] = None) -> dict:
+                 cutoffs: list[str] = None,
+                 calibration: str = DEFAULT_CALIBRATION) -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 70)
-    log.info("WALK-FORWARD  %s %s  %d cutoffs", ticker, tf, len(cutoffs))
+    log.info("WALK-FORWARD  %s %s  %d cutoffs  calibration=%s",
+             ticker, tf, len(cutoffs), calibration)
     log.info("=" * 70)
     log.info("cutoffs: %s", " | ".join(cutoffs))
 
@@ -206,13 +235,20 @@ def walk_forward(engine, ticker: str, tf: str,
     log.info("featurize-once: %d rows × %d cols in %.1fs",
              X_full.shape[0], X_full.shape[1], time.time() - t0)
 
-    # Untangle nested parallelism. With cv=3 on 8 cores: outer parallelizes
-    # the 3 CV folds; each LGBM gets ⌊8/3⌋ = 2 threads. Total = 6 threads,
-    # under the core count. Previous nested n_jobs=-1 created 24 threads.
+    # Threading. Under calibration="none" there is no CV, so the bare LGBM
+    # takes all cores. Under the diagnostic calibrated path, untangle nested
+    # parallelism: with cv=3 on 8 cores the outer parallelizes the 3 CV folds
+    # and each LGBM gets ⌊8/3⌋ = 2 threads (total 6, under the core count).
+    # Previous nested n_jobs=-1 created 24 threads on 8 cores.
     cores = max(1, os.cpu_count() or 1)
-    lgbm_n_jobs = max(1, cores // DEFAULT_CV)
-    log.info("threading: cores=%d, calibrated_cv n_jobs=%d, lgbm n_jobs=%d",
-             cores, DEFAULT_CV, lgbm_n_jobs)
+    if calibration == "none":
+        lgbm_n_jobs = cores
+        log.info("threading: cores=%d, lgbm n_jobs=%d (no CV — calibration=none)",
+                 cores, lgbm_n_jobs)
+    else:
+        lgbm_n_jobs = max(1, cores // DEFAULT_CV)
+        log.info("threading: cores=%d, calibrated_cv n_jobs=%d, lgbm n_jobs=%d",
+                 cores, DEFAULT_CV, lgbm_n_jobs)
 
     folds = []
     for i, cut in enumerate(cutoffs):
@@ -228,7 +264,8 @@ def walk_forward(engine, ticker: str, tf: str,
         try:
             fold_t0 = time.time()
             r = train_and_evaluate_fold(
-                X_full, y_full, bar_dates_arr, cut, test_end, lgbm_n_jobs)
+                X_full, y_full, bar_dates_arr, cut, test_end, lgbm_n_jobs,
+                calibration=calibration)
             r["fold_seconds"] = round(time.time() - fold_t0, 1)
             folds.append(r)
             if r["status"] == "OK":
@@ -279,17 +316,21 @@ def walk_forward(engine, ticker: str, tf: str,
         else:
             log.info("✅ Every fold beats base log-loss by >= +0.05.")
 
-    # Persist to GCS — one consolidated walk-forward report per (ticker, tf)
+    # Persist to GCS — one consolidated walk-forward report per (ticker, tf).
+    # cv only applies on the diagnostic calibrated path; under "none" there
+    # is no CV. The artifact name carries the calibration mode so a diagnostic
+    # sigmoid run never overwrites the production "none" report.
     summary = {
         "ticker": ticker, "tf": tf,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
-        "calibration": DEFAULT_CALIBRATION, "cv": DEFAULT_CV,
+        "calibration": calibration,
+        "cv": DEFAULT_CV if calibration != "none" else None,
         "folds": folds,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
     prefix = gcs_model_prefix(ticker, tf)
-    blob = f"{prefix}/walk_forward_{int(time.time())}.json"
+    blob = f"{prefix}/walk_forward_{calibration}_{int(time.time())}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved: gs://%s/%s",
              os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
@@ -302,10 +343,16 @@ def main():
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD cutoffs (default: regime-spanning)")
+    p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
+                   choices=["none", "sigmoid", "isotonic"],
+                   help="none=production raw-softmax (default); sigmoid/isotonic "
+                        "are diagnostic-only (the 24-fold study proved sigmoid "
+                        "hurts ECE).")
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
-    walk_forward(engine, args.ticker, args.tf, cutoffs=cutoffs)
+    walk_forward(engine, args.ticker, args.tf, cutoffs=cutoffs,
+                 calibration=args.calibration)
 
 
 if __name__ == "__main__":

@@ -264,6 +264,115 @@ WHERE data_source = 'alphavantage'
 GROUP BY ticker, snapshot_ts, snapshot_date, market_session, expiration, strike;
 
 
+-- Materialized DAILY directional-greek aggregates (one row per ticker × EOD
+-- day). RULE 0 (NON-NEGOTIABLE): the per-experiment flow-direction feature
+-- loader MUST NOT re-aggregate the ~14M-row etf_options_snapshots table — doing
+-- so re-scans millions of REALTIME rows per run and starves the shared DB (the
+-- 2026-06-05 incident: 5 concurrent runs, 100-900s/year-chunk). This table is
+-- computed ONCE by the build-options-greeks Cloud Run Job (backfill) and
+-- appended incrementally after each EOD options fetch, so experiments read
+-- ~250 rows/yr/ticker instantly.
+--
+-- Dealer sign convention (matches lib/features/flow_direction.py, consistent
+-- with lib.gamma total_vex = -(call+put)): dealer = OPPOSITE of net-long
+-- customer book, so every aggregate is negated:
+--   dex           = -SUM(delta·OI)                       (all contracts)
+--   short_dte_dex = -SUM(delta·OI) WHERE dte<=2          (0-2DTE charm-pin slice)
+--   vanna/charm    = -SUM(greek_contract·OI)             (near-term band only;
+--                    dte 0-60, |delta|<=0.95 — deep wings carry ~0 net 2nd-order)
+CREATE TABLE IF NOT EXISTS etf_options_daily_greeks (
+    ticker          VARCHAR(10)      NOT NULL,
+    snapshot_date   DATE             NOT NULL,
+    dex             DOUBLE PRECISION,   -- dealer delta exposure, all contracts
+    short_dte_dex   DOUBLE PRECISION,   -- dex restricted to 0-2DTE
+    total_oi        DOUBLE PRECISION,   -- SUM(OI), scale-free normaliser
+    vanna           DOUBLE PRECISION,   -- net dealer vanna (near-term band)
+    charm           DOUBLE PRECISION,   -- net dealer charm (near-term band)
+    n_contracts     INTEGER,            -- contracts in the vanna/charm band
+    computed_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, snapshot_date)
+);
+
+-- Partial COVERING index so the builder's EOD-AV aggregation is index-only and
+-- never touches the REALTIME rows (the bulk of the table). Without it the
+-- planner walks every REALTIME contract for the ticker/date before applying the
+-- EOD filter.
+--
+-- NOT created here: on this ~14M-row table a transactional CREATE INDEX locks
+-- the table and exceeds the statement timeout, and apply_schema.py runs every
+-- statement inside engine.begin() (a transaction) so CREATE INDEX CONCURRENTLY
+-- is illegal here too. It is therefore built OUT-OF-BAND, idempotently and
+-- without a long lock, via:
+--     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+--       --args="-m,gcp.build_options_daily_greeks,--build-index"
+-- which opens an AUTOCOMMIT connection and runs:
+--     CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_etf_options_eod_agg
+--         ON etf_options_snapshots (ticker, snapshot_date)
+--         INCLUDE (delta, open_interest, expiration, implied_volatility,
+--                  option_type, strike)
+--         WHERE market_session = 'EOD' AND data_source = 'alphavantage';
+
+
+-- Materialized per-15m-bucket intraday order-flow imbalance (OFI). Built ONCE
+-- per ticker by the build-intraday-flow Job from the ~2M-row/ticker 1-min
+-- market_data_intraday; experiments read this (~6.5k rows/yr) via
+-- lib.features.intraday_flow.add_intraflow_features (Rule 0). The raw signed-
+-- volume aggregates are stored; the joiner derives ofi_norm / ofi_3bar /
+-- cvd_intraday. ts is the UTC bar-OPEN timestamp, aligned to the strat_features
+-- 15m grid (a 15-min floor of the 1-min ts).
+CREATE TABLE IF NOT EXISTS intraday_flow_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    signed_vol  DOUBLE PRECISION,        -- Σ tick-rule sign · 1-min volume
+    tot_vol     DOUBLE PRECISION,        -- Σ 1-min volume in the bucket
+    up_vol      DOUBLE PRECISION,        -- Σ volume on up-tick minutes
+    dn_vol      DOUBLE PRECISION,        -- Σ volume on down-tick minutes
+    n_min       INTEGER,                 -- # 1-min bars in the bucket
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
+-- Materialized per-15m-bucket RECONSTRUCTED intraday dealer GEX/DEX. Built per
+-- ticker by the build-intraday-gex Job by walking the prior-day (T-1) EOD option
+-- chain forward to each intraday spot (delta-gamma re-curve; see
+-- lib/features/intraday_gex.py for the math + frozen-OI/IV assumptions).
+-- Experiments read this (~6.5k rows/yr) via add_intragex_features (Rule 0: no
+-- per-run scan of the ~14M-row etf_options_snapshots). ts is the UTC 15m bar-open
+-- aligned to the strat_features grid. Raw aggregates stored; the joiner derives
+-- dist_to_flip_pct / gex_per_oi / dex_per_oi (all scale-free).
+CREATE TABLE IF NOT EXISTS intraday_gex_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    total_gex   DOUBLE PRECISION,        -- NetΓ · spot² · GEX_MULTIPLIER
+    total_dex   DOUBLE PRECISION,        -- (A + B·(spot−S_eod)) · spot  (re-curved)
+    total_oi    DOUBLE PRECISION,        -- Σ open interest in the T-1 chain
+    gamma_flip  DOUBLE PRECISION,        -- cumulative-GEX zero-cross (per-day)
+    spot        DOUBLE PRECISION,        -- 15m bucket underlying close
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
+-- Materialized per-15m-bucket REAL intraday dealer GEX/DEX from the
+-- av-options-realtime feed (actual intraday greeks; market_session='REALTIME',
+-- live since 2026-05-23). Same shape/conventions as intraday_gex_15m but the
+-- source is real captured greeks, not the EOD re-curve — short history, exact.
+-- Built daily by the build-realtime-gex Job so the real-intraday-DEX lead can be
+-- walk-forward tested as the window lengthens. Read via add_realgex_features.
+CREATE TABLE IF NOT EXISTS realtime_gex_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    total_gex   DOUBLE PRECISION,        -- NetΓ(real) · spot² · GEX_MULTIPLIER
+    total_dex   DOUBLE PRECISION,        -- Σ(δ·OI)(real) · 100 · spot
+    total_oi    DOUBLE PRECISION,        -- Σ open interest (real intraday)
+    gamma_flip  DOUBLE PRECISION,        -- cumulative-GEX zero-cross
+    spot        DOUBLE PRECISION,        -- 15m bucket underlying close
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     symbol              VARCHAR(10)  NOT NULL,
@@ -2961,6 +3070,7 @@ DECLARE
     tf   text;
     cols text := '
         ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS realized_vol_z      DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
         ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,

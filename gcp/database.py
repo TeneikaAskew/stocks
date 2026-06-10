@@ -258,6 +258,27 @@ def _coerce_int_columns(df: pd.DataFrame, tbl) -> pd.DataFrame:
     return df
 
 
+def _na_to_none_records(records: list[dict]) -> list[dict]:
+    """Coerce pandas NA scalars (NaN / NaT) in row dicts to None so they bind as
+    SQL NULL — NOT a float8 'NaN' literal. A NaN written into a float8 column is a
+    valid, non-NULL value that silently breaks `WHERE col IS NULL` checks
+    downstream (CLAUDE.md §3.7 — the same class of bug as the 2026-06-07 audit
+    found in flip_price / distance_to_king_pct / distance_to_gate_pct, 56.7% of
+    flip_price rows stored as NaN instead of NULL).
+
+    Complements `_coerce_int_columns` (which already maps NaN→None for INT-family
+    columns) by covering FLOAT / other columns, for ALL `upsert_dataframe`
+    callers. The COPY fast path (`bulk_copy_upsert`) already renders NaN as the
+    CSV NULL token; this closes the pg8000 bind fallback path.
+    """
+    def _fix(v):
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v  # non-scalar (list/array) — leave as-is
+    return [{k: _fix(v) for k, v in r.items()} for r in records]
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -336,7 +357,11 @@ def upsert_dataframe(
     # is actually preferable — partial progress is durable on crash.
     # Cost: ~5 ms per checkout × N chunks.
     for i in range(0, len(records), effective_chunksize):
-        batch = records[i: i + effective_chunksize]
+        # NaN/NaT → None PER CHUNK so they bind as SQL NULL, not a float8 'NaN'
+        # (§3.7). Done per-chunk (not on the whole frame up front) so a large
+        # table — e.g. strat_features_1m at ~1M rows — doesn't double its memory
+        # and OOM (the bug that killed the 2026-06-08 SPY rebuild).
+        batch = _na_to_none_records(records[i: i + effective_chunksize])
         stmt = pg_insert(tbl).values(batch)
 
         if update_cols:
@@ -431,7 +456,10 @@ def bulk_copy_upsert(
         df.to_csv(sio, index=False, header=False, na_rep='\\N')
         sio.seek(0)
 
-        # pg8000's cursor doesn't support context manager protocol — use plain assignment
+        # pg8000's cursor does NOT have copy_from (that is psycopg2's API — the
+        # prior code silently failed every call and fell back to the slow
+        # upsert_dataframe, defeating this fast path and reintroducing the
+        # float8-NaN write bug). pg8000 does COPY via execute(..., stream=...).
         cur = raw_conn.cursor()
         try:
             cur.execute(
@@ -446,8 +474,8 @@ def bulk_copy_upsert(
                 stream=sio,
             )
             copied = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(df)
-
             col_list = ", ".join(f'"{c}"' for c in cols)
+
             conflict_clause = ", ".join(f'"{c}"' for c in conflict_cols)
             update_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
             cur.execute(

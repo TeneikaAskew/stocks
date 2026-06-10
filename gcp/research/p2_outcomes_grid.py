@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS gamma_events (
     alert_date        DATE        NOT NULL,
     alert_kind        VARCHAR(32) NOT NULL,
     alert_direction   VARCHAR(8)  NOT NULL,   -- 'CALL' | 'PUT'
-    level_kind        VARCHAR(8)  NOT NULL,
+    level_kind        VARCHAR(20) NOT NULL,   -- 'king' | 'gate' | 'gamma_flip'
     level_strike      NUMERIC(12,4) NOT NULL,
     distance_pct      DOUBLE PRECISION,
     regime            VARCHAR(20),
@@ -126,7 +126,7 @@ def _load_levels_for_prior_day(engine, ticker: str) -> pd.DataFrame:
     from sqlalchemy import text
     sql = text("""
     SELECT snapshot_date, level_kind, level_strike, gex, score, tags,
-           regime, flip_price, total_gex, spot_estimate
+           regime, gamma_balance_price, gamma_flip, total_gex, spot_estimate
     FROM gamma_levels_eod
     WHERE ticker = :ticker
     ORDER BY snapshot_date, level_kind, level_strike
@@ -202,8 +202,10 @@ def _build_summary_from_levels(ticker: str, snap_date: _date,
         return None
 
     spot_price = float(day_levels["spot_estimate"].iloc[0] or 0.0)
-    flip = day_levels.loc[day_levels["level_kind"] == "flip", "level_strike"]
-    flip_val = float(flip.iloc[0]) if not flip.empty else None
+    _gb = day_levels["gamma_balance_price"].iloc[0]
+    gamma_balance_val = float(_gb) if pd.notna(_gb) else None
+    _gf = day_levels["gamma_flip"].iloc[0]
+    gamma_flip_val = float(_gf) if pd.notna(_gf) else None
     regime = day_levels["regime"].iloc[0] or "unknown"
     total_gex = float(day_levels["total_gex"].iloc[0] or 0.0)
 
@@ -228,13 +230,14 @@ def _build_summary_from_levels(ticker: str, snap_date: _date,
         ticker=ticker,
         snapshot_date=str(snap_date),
         spot=SpotEstimate(price=spot_price, method="from_levels_eod"),
-        flip=flip_val,
+        gamma_balance=gamma_balance_val,
+        gamma_flip=gamma_flip_val,
         regime=regime,
         total_gex=total_gex,
         levels=kings + gates,
         kings=kings,
         gates=gates,
-        flip_levels=[],
+        gamma_balance_levels=[],
         window_pct=8.0,
     )
 

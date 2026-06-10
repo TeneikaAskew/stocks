@@ -896,6 +896,109 @@ deploy_strat_engine() {
         --quiet
 }
 
+# ── Direction Probe (Cloud Run Job, research image) ─────────────────────────
+# Phase 1 of the directionality research program. Runs the LABEL-reframe probes
+# in gcp/research/strat_engine/strat_dir_probes.py (e1_horizon, e2_trigger)
+# through the exact production walk-forward harness the failed baseline used.
+# Research only — NO production hooks, NO scheduler. Same image as strat-engine
+# (build with `build-research`). Dedicated job so the shared strat-engine daily
+# job is never disturbed.
+#
+# Per-run variation is via --args at execute time, e.g.:
+#   gcloud run jobs execute direction-probe --region us-east1 --wait \
+#     --args="-m,gcp.research.strat_engine.strat_dir_probes,\
+#             --experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=5"
+deploy_direction_probe() {
+    echo "Deploying direction-probe job (Phase 1 directionality probes)..."
+    local research_image="${IMAGE}:research"
+    # 4 CPU / 8Gi mirrors strat-engine: featurize-once over ~5-15 yr of
+    # intraday bars for one ticker/tf, then 8 LightGBM folds. max-retries 0
+    # (Rule 0: a stuck run fails loud). task-timeout 5400 is ≥4× the ~3-min
+    # wall estimate (Rule 0 sizing checklist).
+    gcloud run jobs create direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Build Options Daily Greeks (Cloud Run Job, research image) ──────────────
+# Materializes etf_options_daily_greeks (daily DEX/vanna/charm per ticker) so
+# the flow-direction feature loader never re-scans the ~14M-row
+# etf_options_snapshots table per experiment (Rule 0). Backfill once, then run
+# incrementally after the EOD options fetch.
+#   Backfill (one-off, per ticker, sequential — avoid concurrent full scans):
+#     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+#       --args="-m,gcp.build_options_daily_greeks,--backfill,--ticker,IWM"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU: the per-ticker daily frame is tiny; headroom is for the SPY
+# near-term contract pull. max-retries 0 (fail loud). 3600s task-timeout.
+deploy_build_options_greeks() {
+    echo "Deploying build-options-greeks job (materialized daily greeks)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        --task-timeout 3600 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── build-realtime-gex (Cloud Run Job, research image) ──────────────────────
+# Materializes REAL intraday dealer GEX/DEX from the av-options-realtime feed
+# into realtime_gex_15m (gcp/build_realtime_gex.py). Default = incremental last
+# 3 days (the scheduled daily path; scheduler `realtime-gex-daily` at 17:00 ET
+# weekdays, after close + the day's intraday bars land). Backfill the live
+# window with --args="-m,gcp.build_realtime_gex,--backfill". Exists so the
+# real-intraday-DEX LEAD accrues in a query-cheap table for a future walk-forward.
+deploy_build_realtime_gex() {
+    echo "Deploying build-realtime-gex job (real intraday GEX/DEX)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        --task-timeout 1800 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
 # Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
 # Walk-forward research only — NO production hooks. Same image as strat-engine.
@@ -2862,6 +2965,11 @@ deploy_schedulers() {
     # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
     _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
 
+    # Materialize REAL intraday GEX/DEX after close (5 PM ET weekdays — after the
+    # realtime feed stops ~15:55 ET and the day's 1-min bars land). Feeds the
+    # real-intraday-DEX lead's eventual walk-forward (build-realtime-gex).
+    _schedule "realtime-gex-daily" "0 17 * * 1-5"  "build-realtime-gex"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
@@ -3128,6 +3236,9 @@ case "${1:-help}" in
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     strat-engine) deploy_strat_engine ;;
+    direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
+    build-options-greeks) deploy_build_options_greeks ;;  # research image
+    build-realtime-gex) deploy_build_realtime_gex ;;      # research image
     magnitude-engine) deploy_magnitude_engine ;;
     magnitude-inference) build_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;

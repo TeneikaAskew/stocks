@@ -259,6 +259,36 @@ def calculate_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return vol_direction.cumsum()
 
 
+def realized_vol_zscore(close: pd.Series, bar_date: pd.Series,
+                        rv_window: int = 15, z_window: int = 60) -> pd.Series:
+    """Realized-volatility z-score (ONE source of truth).
+
+    realized vol (`rv`) = WITHIN-day rolling std of log returns over `rv_window`
+    bars (intraday vol, never crosses the overnight gap). The z-normalization
+    mean/std then run over a trailing `z_window` of `rv` values ACROSS days
+    (with `min_periods`), z = (rv − mean)/std.
+
+    The cross-day z-window is the fix for the 2026-06-08 bug: a WITHIN-day
+    z-window can never reach `z_window` on TFs with fewer than `z_window`
+    bars/day (e.g. 15m ≈ 26 bars/day), so it returned 100% NaN — which is why
+    `strat_features.realized_vol_z` AND the magnitude engine's `realized_vol_z15`
+    (which shared this inline formula) were dead for those TFs. `rv` itself still
+    needs ≥ `rv_window` bars/day, so the feature is legitimately NULL on coarse
+    TFs (30m/60m/4h have < 15 bars/day) — that is genuine missingness, not a bug.
+    """
+    c = pd.to_numeric(close, errors="coerce")
+    prev_c = c.groupby(bar_date).shift(1)
+    logret = np.log(c / prev_c)
+    rv = logret.groupby(bar_date).rolling(rv_window).std().reset_index(level=0, drop=True)
+    # mean/std over the trailing z_window of rv ACROSS days (chronological index);
+    # min_periods lets it warm up gracefully and tolerates the daily NaN gaps in rv.
+    mp = max(rv_window, z_window // 3)
+    mu = rv.rolling(z_window, min_periods=mp).mean()
+    sd = rv.rolling(z_window, min_periods=mp).std()
+    return pd.Series(np.where(sd.notna() & (sd > 0), (rv - mu) / sd, np.nan),
+                     index=c.index)
+
+
 # ---------------------------------------------------------------------------
 # Pattern / consecutive-move detection
 # ---------------------------------------------------------------------------

@@ -990,9 +990,14 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
         _ds = gamma.get("data_source")
         _gsfx = "" if _ds == "realtime" else " (EOD)"
 
-        flip = gamma.get("flip")
+        # True BS-recurved zero-gamma level = the real "Gamma Flip".
+        flip = gamma.get("gamma_flip")
         if isinstance(flip, (int, float)):
             levels[f"Gamma Flip{_gsfx}"] = float(flip)
+        # Cumulative-net-gamma balance price (formerly mislabeled "flip").
+        balance = gamma.get("gamma_balance")
+        if isinstance(balance, (int, float)):
+            levels[f"Gamma Balance{_gsfx}"] = float(balance)
         # Kings — `summary.kings` preserves classify_levels()/strike order,
         # not nearest-to-spot order, so `kings[0]` could surface the
         # lowest king while the gamma analyst is prompted to call out the

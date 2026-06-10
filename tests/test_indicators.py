@@ -558,3 +558,73 @@ class TestHistoricalLevels:
         ts = pd.to_datetime(times)
         is_q1 = ts.dt.to_period('Q') == ts.dt.to_period('Q').iloc[0]
         assert result.loc[is_q1.values, 'Prev_Quarter_High'].isna().all()
+
+
+# ── EMA200 config wiring (2026-06-07 column audit, family C) ─────────────────
+# The strat_features builder lists `ema_200` in NUMERIC_FEATURES but called
+# add_all_indicators with the default IndicatorConfig (ema_periods=[9,20,50]),
+# so EMA200 was never produced → the column was 100% NaN (dead feature). The
+# builder now passes a config including 200. These pin both halves of that.
+class TestEMA200ConfigWiring:
+    def test_ema200_absent_under_default_config(self):
+        """Documents the bug: default config does NOT produce EMA200."""
+        from lib.indicators import add_all_indicators
+        out = add_all_indicators(_two_session_ohlcv(n_per=150))
+        assert "EMA200" not in out.columns
+
+    def test_ema200_produced_when_200_in_periods(self):
+        """The builder's fix: ema_periods including 200 → EMA200 computed + finite."""
+        from lib.indicators import add_all_indicators
+        from lib.config import IndicatorConfig
+        cfg = IndicatorConfig()
+        cfg.ema_periods = [9, 20, 50, 200]
+        out = add_all_indicators(_two_session_ohlcv(n_per=150),
+                                 indicator_config=cfg)
+        assert "EMA200" in out.columns
+        assert pd.notna(out["EMA200"].iloc[-1])
+        # fast/mid unchanged (so Price_vs_EMA9/20 etc. are unaffected)
+        assert "EMA9" in out.columns and "EMA20" in out.columns
+
+
+# ── realized_vol_zscore: shared one-source-of-truth helper (wired 2026-06-08) ──
+def _multiday_ohlcv(n_days=12, bars_per_day=26, seed=7):
+    """N days of `bars_per_day` bars (default 26 ≈ a 15m RTH session)."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    base = pd.Timestamp('2024-01-02 09:30')
+    for d in range(n_days):
+        day = (base + pd.Timedelta(days=d)).normalize() + pd.Timedelta(hours=9, minutes=30)
+        steps = rng.normal(0, 0.001, bars_per_day)
+        close = 200.0 * np.exp(np.cumsum(steps))
+        times = pd.date_range(day, periods=bars_per_day, freq='15min')
+        frames.append(pd.DataFrame({'Close': close}, index=times))
+    df = pd.concat(frames)
+    return df
+
+
+class TestRealizedVolZScore:
+    def test_within_day_rv_warmup(self):
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv()
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert len(z) == len(df)
+        # first bar of each day has no within-day prior return -> NaN
+        assert pd.isna(z.iloc[0])
+
+    def test_populated_on_low_bars_per_day_tf(self):
+        """The 2026-06-08 fix: ~26 bars/day (15m-like) must NOT be all-NaN.
+        The old within-day z-window(60) could never fill on <60 bars/day."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=26)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() > 0  # would be 0 under the old within-day formula
+
+    def test_coarse_tf_below_rv_window_is_all_nan(self):
+        """rv needs >= rv_window bars/day; e.g. 8 bars/day < 15 -> genuinely NULL."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=8)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() == 0  # genuine missingness (not a bug)

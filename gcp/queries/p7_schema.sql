@@ -65,7 +65,9 @@
 --   vex_tercile            VARCHAR(8)        -- per-ticker 10yr distribution
 --   dealer_regime          VARCHAR(24)       -- '{GEX_X}_{VEX_Y}' — 9 values
 --   gamma_regime           VARCHAR(20)       -- positive_gamma | negative_gamma | unknown
---   flip_price             DOUBLE PRECISION
+--   gamma_balance_price    DOUBLE PRECISION
+--   gamma_flip             DOUBLE PRECISION
+--   dist_to_gamma_flip_pct DOUBLE PRECISION
 --   distance_to_king_pct   DOUBLE PRECISION
 --   distance_to_gate_pct   DOUBLE PRECISION
 --
@@ -120,7 +122,9 @@ CREATE TABLE IF NOT EXISTS strat_features_1m (
     total_vex         DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime     VARCHAR(24),
     gamma_regime      VARCHAR(20),
-    flip_price        DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip        DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION,
     distance_to_gate_pct DOUBLE PRECISION,
     computed_at       TIMESTAMPTZ DEFAULT now(),
@@ -174,7 +178,9 @@ CREATE TABLE IF NOT EXISTS strat_features_5m (
     total_vex         DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime     VARCHAR(24),
     gamma_regime      VARCHAR(20),
-    flip_price        DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip        DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION,
     distance_to_gate_pct DOUBLE PRECISION,
     computed_at       TIMESTAMPTZ DEFAULT now(),
@@ -225,7 +231,9 @@ CREATE TABLE IF NOT EXISTS strat_features_15m (
     total_gex         DOUBLE PRECISION, gex_tercile VARCHAR(8),
     total_vex         DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime     VARCHAR(24), gamma_regime VARCHAR(20),
-    flip_price        DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip        DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
     computed_at       TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (ticker, ts)
@@ -275,7 +283,9 @@ CREATE TABLE IF NOT EXISTS strat_features_30m (
     total_gex         DOUBLE PRECISION, gex_tercile VARCHAR(8),
     total_vex         DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime     VARCHAR(24), gamma_regime VARCHAR(20),
-    flip_price        DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip        DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
     computed_at       TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (ticker, ts)
@@ -325,7 +335,9 @@ CREATE TABLE IF NOT EXISTS strat_features_60m (
     total_gex         DOUBLE PRECISION, gex_tercile VARCHAR(8),
     total_vex         DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime     VARCHAR(24), gamma_regime VARCHAR(20),
-    flip_price        DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip        DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
     computed_at       TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (ticker, ts)

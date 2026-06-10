@@ -106,7 +106,7 @@ def test_canonical_taxonomy_terms_present():
     """The plan's design depends on these specific keys existing — the
     UI references them by name. Missing one is a breaking change."""
     required = {
-        "king", "gate", "spot", "flip", "midpoint",
+        "king", "gate", "spot", "gamma_flip", "gamma_balance", "midpoint",
         "hedge_node", "opex_node",
         "gex", "vex",
         "positive_gamma_regime", "negative_gamma_regime",
@@ -207,7 +207,7 @@ def test_king_aliases_match_design_doc():
 
 
 def test_flip_aliases_match_design_doc():
-    flip = GAMMA_TERMS["flip"]
+    flip = GAMMA_TERMS["gamma_flip"]
     assert flip.aliases["stratalyst"] == "Regime Pivot"
     assert flip.aliases["squeezemetrics"] == "Gamma Flip"
     assert flip.aliases["spotgamma"] == "Zero Gamma"

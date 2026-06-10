@@ -70,6 +70,7 @@ from lib.indicators import (
     calculate_current_period_levels,
     calculate_order_blocks,
     calculate_atr,
+    realized_vol_zscore,
 )
 from lib.gamma import total_vex
 from lib.logging_config import setup_logging
@@ -136,7 +137,9 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     total_gex DOUBLE PRECISION, gex_tercile VARCHAR(8),
     total_vex DOUBLE PRECISION, vex_tercile VARCHAR(8),
     dealer_regime VARCHAR(32), gamma_regime VARCHAR(32),
-    flip_price DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip DOUBLE PRECISION,
+    dist_to_gamma_flip_pct DOUBLE PRECISION,
     distance_to_king_pct DOUBLE PRECISION, distance_to_gate_pct DOUBLE PRECISION,
     computed_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (ticker, ts)
@@ -203,11 +206,11 @@ def _load_vix_per_date(engine) -> pd.DataFrame:
 
 def _load_gamma_levels(engine, ticker: str) -> pd.DataFrame:
     """Load gamma_levels_eod per-date for the ticker. Each date has multiple
-    level rows; pivot to one row per date with total_gex, flip_price, regime,
-    and pre-computed min distances to king / gate."""
+    level rows; pivot to one row per date with total_gex, gamma_balance_price,
+    gamma_flip, regime, and pre-computed min distances to king / gate."""
     sql = text("""
         SELECT snapshot_date, level_kind, level_strike, gex, score, regime,
-               flip_price, total_gex, spot_estimate
+               gamma_balance_price, gamma_flip, total_gex, spot_estimate
         FROM gamma_levels_eod
         WHERE ticker = :ticker
     """)
@@ -223,7 +226,8 @@ def _load_gamma_levels(engine, ticker: str) -> pd.DataFrame:
         rows.append({
             "snapshot_date": d,
             "total_gex": float(first["total_gex"] or 0.0),
-            "flip_price": float(first["flip_price"]) if pd.notna(first["flip_price"]) else None,
+            "gamma_balance_price": float(first["gamma_balance_price"]) if pd.notna(first["gamma_balance_price"]) else None,
+            "gamma_flip": float(first["gamma_flip"]) if pd.notna(first["gamma_flip"]) else None,
             "regime": str(first["regime"] or "unknown"),
             "spot": float(spot) if pd.notna(spot) else None,
             "min_king_strike": float(kings["level_strike"].iloc[0]) if not kings.empty else None,
@@ -374,8 +378,16 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
         is_one = (strat_df["strat_candle"] == "1").astype(int)
         strat_df["consecutive_1s"] = is_one.groupby((is_one == 0).cumsum()).cumsum().astype("int16")
 
-    # Indicators
-    ind_df = add_all_indicators(df_tf, close_col="Close")
+    # Indicators. Pass a config that includes EMA200 — the default
+    # IndicatorConfig.ema_periods is [9,20,50], so EMA200 was never produced and
+    # `out["ema_200"]` (listed in strat_config.NUMERIC_FEATURES) was 100% NaN —
+    # a dead model feature (2026-06-07 column audit, family C). Builder-local
+    # config only; the global default is unchanged. fast/mid EMAs stay 9/20.
+    from lib.config import IndicatorConfig
+    _ind_cfg = IndicatorConfig()
+    if 200 not in _ind_cfg.ema_periods:
+        _ind_cfg.ema_periods = list(_ind_cfg.ema_periods) + [200]
+    ind_df = add_all_indicators(df_tf, close_col="Close", indicator_config=_ind_cfg)
     # ind_df has columns: ATR14, RSI14, RSI9, EMA9, EMA20, EMA50, SMA5/10/20/50/200,
     #   VWAP, RVOL, OBV, StochRSI_K/D, BB_Upper/Lower/Middle/Width/Pct,
     #   MACD, MACD_Signal, MACD_Histogram, Consecutive_Up/Down, Price_vs_EMA9/20,
@@ -477,7 +489,11 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     # add_all_indicators._add_magnitude). Persisted so the magnitude engine reads
     # them from the spine instead of recomputing inline.
     out["bb20_bandwidth"] = _safe("BB20_Bandwidth")
-    out["realized_vol_z"] = _safe("Realized_Vol_Z")
+    # realized_vol_z OVERRIDE: _add_magnitude's Realized_Vol_Z uses a WITHIN-day
+    # z-window which is all-NaN on TFs with <z_window bars/day (the 2026-06-08
+    # bug). Recompute via the shared cross-day helper here so strat_features
+    # carries the fixed value (one source of truth: lib.indicators.realized_vol_zscore).
+    out["realized_vol_z"] = realized_vol_zscore(out["close"], out["bar_date"]).values
     out["range_expansion_ratio"] = _safe("Range_Expansion_Ratio")
     out["intraday_range_vs_prevday"] = _safe("Intraday_Range_vs_PrevDay")
     out["atr_expansion"] = _safe("ATR_Expansion")  # ATR5/ATR20, Wilder (single source)
@@ -555,7 +571,13 @@ def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
 
     # Gamma context — join via prior-date lookup
     out["total_gex"] = bd.map(prior_gamma["total_gex"].to_dict())
-    out["flip_price"] = bd.map(prior_gamma["flip_price"].to_dict())
+    out["gamma_balance_price"] = bd.map(prior_gamma["gamma_balance_price"].to_dict())
+    out["gamma_flip"] = bd.map(prior_gamma["gamma_flip"].to_dict())
+    # Distance from current close to the true BS gamma flip (signed %, the
+    # directly tradable quantity — mirrors distance_to_king/gate_pct). NaN
+    # propagates where gamma_flip is missing (§3.7 — no fabricated 0).
+    out["dist_to_gamma_flip_pct"] = (out["close"] - bd.map(prior_gamma["gamma_flip"].to_dict())) \
+        / out["close"] * 100
     out["gamma_regime"] = bd.map(prior_gamma["regime"].to_dict()).fillna("unknown")
     out["distance_to_king_pct"] = (out["close"] - bd.map(prior_gamma["min_king_strike"].to_dict())) \
         / out["close"] * 100

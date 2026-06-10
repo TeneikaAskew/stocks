@@ -70,6 +70,35 @@ COMPUTED_COLS = (
 )
 
 
+# ── shared BSM gamma (single public source) ──────────────────────────────────
+
+def bs_gamma(S, K, t, r, q, sigma):
+    """Black-Scholes-Merton per-share gamma, vectorized (numpy-broadcast).
+
+    ``gamma = exp(-q·t)·φ(d1) / (S·σ·√t)``,
+    ``d1 = (ln(S/K) + (r − q + 0.5σ²)t) / (σ√t)``.
+
+    All args may be scalars or numpy arrays; they broadcast. This is the SAME
+    formula used inside :func:`compute_greeks_from_prices` (`_bsm_greeks_vec`,
+    line ~368) — factored out so other callers (e.g. ``lib.gamma``'s
+    Black-Scholes gamma-flip recurve) use one source instead of re-deriving it.
+    Non-finite / non-positive ``sigma`` or ``t`` carry NaN through (np.errstate
+    guarded) rather than raising — the caller decides how to treat NaN.
+    """
+    from scipy.stats import norm  # lazy: keep module import light + scipy-optional
+    S = np.asarray(S, dtype="float64")
+    K = np.asarray(K, dtype="float64")
+    t = np.asarray(t, dtype="float64")
+    r = np.asarray(r, dtype="float64")
+    q = np.asarray(q, dtype="float64")
+    sigma = np.asarray(sigma, dtype="float64")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sqrt_t = np.sqrt(t)
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma * sigma) * t) / (sigma * sqrt_t)
+        gamma = np.exp(-q * t) * norm.pdf(d1) / (S * sigma * sqrt_t)
+    return gamma
+
+
 # ── rate / yield lookup ──────────────────────────────────────────────────────
 
 @lru_cache(maxsize=10000)

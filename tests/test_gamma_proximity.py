@@ -47,13 +47,16 @@ def _summary(
         ticker="SPY",
         snapshot_date="2026-05-22",
         spot=SpotEstimate(price=spot_price, method="parity"),
-        flip=flip,
+        # The `flip` kwarg drives the true gamma_flip (what evaluate_flip_cross
+        # now reads); also mirror onto gamma_balance for completeness.
+        gamma_balance=flip,
+        gamma_flip=flip,
         regime=regime,
         total_gex=0.0,
         levels=(kings or []) + (gates or []),
         kings=kings or [],
         gates=gates or [],
-        flip_levels=[],
+        gamma_balance_levels=[],
         window_pct=8.0,
     )
 
@@ -201,7 +204,7 @@ class TestFlipCross:
         a = alerts[0]
         assert a.kind == "gamma_flip_cross"
         assert a.direction == "CALL"
-        assert a.level_kind == "flip"
+        assert a.level_kind == "gamma_flip"
         assert a.level_strike == 578.0
         # New regime, not the snapshot's stale regime
         assert a.regime == "positive_gamma"
