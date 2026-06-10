@@ -97,6 +97,42 @@ CREATE INDEX IF NOT EXISTS ix_mwfr_cell ON
     magnitude_walk_forward_results (phase, ticker, tf, computed_at DESC)
 """
 
+# Per-bar predictions table — added 2026-06-02 to operationalize the
+# research artifact. Walk-forward already produces (ticker, tf, ts,
+# p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE, pred_bucket, max_proba)
+# per scored bar; this DDL gives them a queryable home so the live
+# inference job (mag_inference.py) and the FastAPI consumer route can
+# read them.
+#
+# Gate-7 caveat: predictions are a SIZING / FILTERING / STRIKE-SELECTION
+# signal, not a standalone non-directional trade signal. See
+# docs/MAGNITUDE_ENGINE_RESULTS.md for the verdict context.
+PREDICTIONS_DDL_CREATE = """
+CREATE TABLE IF NOT EXISTS magnitude_per_bar_predictions (
+    ticker        VARCHAR(10)      NOT NULL,
+    tf            VARCHAR(5)       NOT NULL,
+    ts            TIMESTAMPTZ      NOT NULL,
+    -- The 4 bucket probabilities. Sum should be ~1.0 within float epsilon.
+    p_tight       DOUBLE PRECISION NOT NULL,
+    p_normal      DOUBLE PRECISION NOT NULL,
+    p_expanded    DOUBLE PRECISION NOT NULL,
+    p_explosive   DOUBLE PRECISION NOT NULL,
+    -- Predicted bucket = argmax(probabilities). 0=TIGHT 1=NORMAL 2=EXPANDED 3=EXPLOSIVE.
+    pred_bucket   SMALLINT         NOT NULL,
+    max_proba     DOUBLE PRECISION NOT NULL,
+    -- Provenance for reproducibility + drift detection.
+    model_version VARCHAR(64)      NOT NULL,
+    fold_label    VARCHAR(32),     -- NULL for live-inference rows
+    source        VARCHAR(16)      NOT NULL,  -- 'walk_forward' | 'inference'
+    computed_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, tf, ts, model_version)
+)
+"""
+PREDICTIONS_DDL_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_mpbp_ticker_tf_ts ON
+    magnitude_per_bar_predictions (ticker, tf, ts DESC)
+"""
+
 
 def _gcs_upload(content: bytes, blob_path: str, ctype: str = "application/json"):
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
@@ -237,6 +273,62 @@ def _persist_results_table(engine, phase: str, ticker: str, tf: str,
         df.to_sql("magnitude_walk_forward_results", conn,
                    if_exists="append", index=False, method="multi")
     log.info("persisted %d folds to magnitude_walk_forward_results", len(df))
+
+
+def _persist_predictions_table(engine, ticker: str, tf: str,
+                                folds: list[dict], run_id: str) -> None:
+    """Flush per-bar predictions from all folds into
+    magnitude_per_bar_predictions.
+
+    The fold dicts carry `_predictions` rows shaped as:
+        (fold_label, ts_str, true_bucket_idx, pred_bucket_idx,
+         max_proba, p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
+
+    We drop `true_bucket_idx` (the table is for inference; ground-truth
+    lives in the source bars) and shape into the table schema.
+
+    `model_version = run_id` ties every row to the specific
+    walk-forward execution that produced it. The PRIMARY KEY
+    (ticker, tf, ts, model_version) lets a later run from a different
+    model coexist with the original for A/B comparison.
+
+    Idempotent on re-run because the run_id changes; the same
+    walk-forward dispatch re-using the same run_id would conflict, which
+    is the intended safety net (operator must bump run_id to overwrite).
+    """
+    rows: list[dict] = []
+    for f in folds:
+        fold_label = f.get("fold", "?")
+        for r in (f.get("_predictions") or []):
+            # Unpack: (fold_label_x, ts, _true_idx, pred_idx, max_proba,
+            #          p_TIGHT, p_NORMAL, p_EXPANDED, p_EXPLOSIVE)
+            _fl, ts_str, _true_idx, pred_idx, max_p, p_t, p_n, p_e, p_x = r
+            rows.append({
+                "ticker": ticker, "tf": tf,
+                "ts": ts_str,
+                "p_tight": p_t, "p_normal": p_n,
+                "p_expanded": p_e, "p_explosive": p_x,
+                "pred_bucket": int(pred_idx),
+                "max_proba": float(max_p),
+                "model_version": run_id,
+                "fold_label": fold_label,
+                "source": "walk_forward",
+            })
+
+    if not rows:
+        log.info("no per-bar predictions to persist (folds=%d)", len(folds))
+        return
+
+    df = pd.DataFrame(rows)
+    # Chunk size matters: pg8000's bind-param limit is 65535. With 13
+    # columns/row, max-safe chunk is ~5000. We use 2000 for headroom and
+    # to keep per-INSERT wall-clock under 5s.
+    with engine.begin() as conn:
+        df.to_sql("magnitude_per_bar_predictions", conn,
+                  if_exists="append", index=False,
+                  method="multi", chunksize=2000)
+    log.info("persisted %d per-bar predictions to magnitude_per_bar_predictions",
+             len(df))
 
 
 def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
@@ -432,12 +524,21 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     try:
         execute_sql(RESULTS_DDL_CREATE)
         execute_sql(RESULTS_DDL_INDEX)
+        execute_sql(PREDICTIONS_DDL_CREATE)
+        execute_sql(PREDICTIONS_DDL_INDEX)
     except Exception as e:
         # Race on CREATE/INDEX — fine, table will already exist by the
         # time we try to insert.
         log.info("DDL race or no-op (%s): %s", type(e).__name__, e)
     try:
         _persist_results_table(engine, phase, ticker, tf, folds, run_id)
+        # Per-bar predictions go here BEFORE the pop loop below drops
+        # `_predictions` from each fold dict. Skipped on phase != 'phase0'
+        # to avoid duplicating identical rows across phases (phases share
+        # the same backbone features in our config; only phase0's per-bar
+        # output is canonical for live consumers).
+        if phase == "phase0":
+            _persist_predictions_table(engine, ticker, tf, folds, run_id)
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
