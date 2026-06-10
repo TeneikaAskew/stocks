@@ -36,6 +36,7 @@ from lib.agents.model_routing import (  # noqa: E402
     set_route,
 )
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
+from api.auth import current_user_email  # noqa: E402
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -48,21 +49,15 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 _ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").lower()
 
 
-def _iap_user_email(request: Request) -> Optional[str]:
-    """Extract email from the IAP-injected header."""
-    raw = request.headers.get("x-goog-authenticated-user-email")
-    if not raw:
-        return None
-    return raw.split(":", 1)[-1].strip().lower()
-
-
 def _require_admin(
     request: Request,
     x_admin_token: Optional[str],
 ) -> None:
-    # Allow the admin email through without a token (IAP-authenticated)
-    iap_email = _iap_user_email(request)
-    if iap_email and iap_email == _ADMIN_EMAIL:
+    # Allow the admin email through without a token. The email is the
+    # server-verified identity (Firebase token in firebase mode, IAP header in
+    # iap mode) — see api/auth.current_user_email.
+    email = current_user_email(request)
+    if email and email == _ADMIN_EMAIL:
         return
 
     expected = os.environ.get("ADMIN_TOKEN", "").strip()

@@ -14,6 +14,7 @@ GET /api/config/market-hours
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import time
 from pathlib import Path
@@ -33,6 +34,29 @@ from api.routers.live import (  # noqa: E402
 from lib.config import load_config  # noqa: E402
 
 router = APIRouter()
+
+
+@router.get("/api/config/firebase")
+def get_firebase_config() -> dict:
+    """Public runtime auth config for the frontend bootstrap.
+
+    Returns the active AUTH_MODE and, only in firebase mode, the Firebase web
+    config (apiKey/authDomain/projectId/appId — these are identifiers, safe to
+    expose; access is enforced by Firebase + authorized domains + server-side
+    token verification). Served from env so one image works in every
+    environment. Must stay reachable pre-auth (see api/auth._OPEN_API_PREFIXES).
+    """
+    mode = os.environ.get("AUTH_MODE", "open").strip().lower()
+    api_key = os.environ.get("FIREBASE_API_KEY", "").strip()
+    firebase = None
+    if mode == "firebase" and api_key:
+        firebase = {
+            "apiKey": api_key,
+            "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN", "").strip(),
+            "projectId": os.environ.get("FIREBASE_PROJECT_ID", "").strip(),
+            "appId": os.environ.get("FIREBASE_APP_ID", "").strip(),
+        }
+    return {"authMode": mode, "firebase": firebase}
 
 
 def _time_to_str(t: time) -> str:

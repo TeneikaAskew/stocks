@@ -61,7 +61,7 @@ test.describe('Admin — IAP email bypass', () => {
 
   test('admin email skips token gate and sees routing panel directly', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
     await mockAdminApi(page);
 
@@ -78,7 +78,7 @@ test.describe('Admin — IAP email bypass', () => {
 
   test('admin email does not see the logout button', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
     await mockAdminApi(page);
 
@@ -91,7 +91,7 @@ test.describe('Admin — IAP email bypass', () => {
 
   test('admin email can edit a route without providing a token', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
     await mockAdminApi(page);
 
@@ -138,7 +138,7 @@ test.describe('Admin — non-admin users', () => {
 
   test('anonymous user sees token gate', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: null }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: null, is_admin: false }) }),
     );
 
     await page.goto('/admin');
@@ -150,7 +150,7 @@ test.describe('Admin — non-admin users', () => {
 
   test('non-admin email sees token gate', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: 'someone@example.com' }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: 'someone@example.com', is_admin: false }) }),
     );
 
     await page.goto('/admin');
@@ -162,7 +162,7 @@ test.describe('Admin — non-admin users', () => {
 
   test('non-admin with valid token sees logout button', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: 'someone@example.com' }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: 'someone@example.com', is_admin: false }) }),
     );
     await page.route('**/api/admin/routes', (route) => {
       const token = route.request().headers()['x-admin-token'];
@@ -207,7 +207,7 @@ test.describe('Admin — non-admin users', () => {
 test.describe('Sidebar — Admin link visibility', () => {
   test('admin email sees Admin link in sidebar', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
@@ -218,7 +218,7 @@ test.describe('Sidebar — Admin link visibility', () => {
 
   test('anonymous user does not see Admin link in sidebar', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: null }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: null, is_admin: false }) }),
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
@@ -231,7 +231,7 @@ test.describe('Sidebar — Admin link visibility', () => {
 
   test('non-admin email does not see Admin link in sidebar', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: 'user@other.org' }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: 'user@other.org', is_admin: false }) }),
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
@@ -243,7 +243,7 @@ test.describe('Sidebar — Admin link visibility', () => {
 
   test('admin email can navigate to admin page via sidebar link', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
     await mockAdminApi(page);
 
@@ -260,7 +260,7 @@ test.describe('Sidebar — Admin link visibility', () => {
 
   test('sidebar nav count is 11 for non-admin (no Admin link)', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: null }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: null, is_admin: false }) }),
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
@@ -273,7 +273,7 @@ test.describe('Sidebar — Admin link visibility', () => {
 
   test('sidebar nav count is 12 for admin (includes Admin link)', async ({ page }) => {
     await page.route('**/api/me', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
+      route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
