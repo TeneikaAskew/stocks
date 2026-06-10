@@ -49,6 +49,25 @@ LABEL_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(LABEL_CLASSES)}
 # move >= 1.5    → EXPLOSIVE (3)
 MAGNITUDE_THRESHOLDS: tuple[float, ...] = (0.5, 1.0, 1.5)
 
+# Label modes (reviewer 2026-06-01). The default "body" target,
+# |next_close - next_open| / atr_20, matches the IV expected-move comparison at
+# the bar-close horizon (a straddle prices the open→close move) — the right
+# target for gate 7. The "excursion" target, (next_high - next_low) / atr_20,
+# captures intrabar path/range — what a 0DTE long-gamma scalp actually harvests
+# (a bar that spikes 2 ATR and closes flat has ~0 body but a large excursion).
+# Run both: body answers "does it beat IV", excursion answers "is there a gamma
+# scalp", and they can diverge. Thresholds are reused (ATR multiples).
+#
+# Directional modes (2026-06-03) — a call/put bet needs SIZE + DIRECTION, and
+# the Strat direction predictor failed (24/24 folds), so the magnitude model
+# itself learns direction here. "call" = upside-only excursion
+# (next_high - next_open)/atr_20 → EXPLOSIVE-call means "big UP move"; "put" =
+# downside-only excursion (next_open - next_low)/atr_20 → EXPLOSIVE-put means
+# "big DOWN move". Same ATR thresholds; gate-7 compares each against the
+# matching option's IV (call IV for call, put IV for put).
+LABEL_MODES: tuple[str, ...] = ("body", "excursion", "call", "put")
+DEFAULT_LABEL_MODE = "body"
+
 
 # ─────────────────────── Phases ───────────────────────
 # Each phase is an additive feature set tested ONCE through walk-forward.
@@ -66,11 +85,15 @@ PHASES: tuple[str, ...] = ("phase0", "phase1", "phase2", "phase3", "phase4",
 PHASE_FEATURES: dict[str, tuple[str, ...]] = {
     "phase0": (),  # baseline 143-col only
     "phase1": (
-        "atr5_atr20_ratio",        # short-term vol expansion
+        # Migrated 2026-06-01 into lib.indicators.add_all_indicators (one source
+        # of truth) and persisted in strat_features_<tf>. Loaded with the base
+        # frame — NOT recomputed in mag_dataset. ATR_Expansion (ATR5/ATR20,
+        # Wilder) is the single-source replacement for the old atr5_atr20_ratio.
+        "atr_expansion",           # was atr5_atr20_ratio — now the spine column
         "bb20_bandwidth",          # rolling vol envelope width
-        "realized_vol_z15",        # 15-bar realized-vol z-score
+        "realized_vol_z",          # 15-bar realized-vol z-score (was realized_vol_z15)
         "range_expansion_ratio",   # cur range / avg prior-5-bar range
-        "intraday_range_vs_prior_day",
+        "intraday_range_vs_prevday",
     ),
     "phase2": (
         # AlphaVantage-sourced. Backfilled into market_data_indicators.

@@ -60,11 +60,25 @@ from scripts._magnitude_analysis_helpers import calendar_keys
 def naive_lookup_predict(y_tr: np.ndarray, ts_tr: pd.Series,
                           ts_te: pd.Series,
                           n_classes: int = 4,
-                          bucket_minutes: int = 30) -> np.ndarray:
-    """Build a (DoW, time_bucket) → class-dist lookup from training data and
-    apply it to test data. Returns probability matrix of shape (n_test, n_classes)."""
+                          bucket_minutes: int = 30,
+                          clock_only: bool = False) -> np.ndarray:
+    """Build a calendar → class-dist lookup from training data and apply it to
+    test data. Returns probability matrix of shape (n_test, n_classes).
+
+    clock_only=False → (DoW, time_bucket) cells (the calendar baseline).
+    clock_only=True  → time-of-session bucket ONLY, dropping day-of-week. This
+    isolates the intraday volatility smile (`Mins_Since_Open`) — the single
+    pattern options IV already prices. Per the reviewer's screen: if the full
+    magnitude model's EXPLOSIVE lift barely exceeds this clock-only lift, the
+    model is rediscovering the smile and gate 7 (implied-vs-realized) will fail.
+    The tradeable residual is whatever survives conditioning on the clock.
+    """
     dow_tr, bucket_tr = calendar_keys(ts_tr, bucket_minutes)
     dow_te, bucket_te = calendar_keys(ts_te, bucket_minutes)
+    if clock_only:
+        # Collapse the DoW dimension — key on time-of-session bucket alone.
+        dow_tr = np.zeros_like(dow_tr)
+        dow_te = np.zeros_like(dow_te)
 
     counts = collections.defaultdict(lambda: np.zeros(n_classes, dtype=np.float64))
     for i in range(len(y_tr)):
@@ -129,6 +143,10 @@ def main():
     p.add_argument("--tf", required=True, choices=list(TIMEFRAMES))
     p.add_argument("--bucket-minutes", type=int, default=30,
                    help="Time-bucket granularity (30 = 13 RTH buckets per day)")
+    p.add_argument("--clock-only", action="store_true",
+                   help="Drop day-of-week; key on time-of-session bucket ALONE "
+                        "to isolate the intraday vol smile (reviewer's gate-7 "
+                        "pre-screen). Compare the model's EXPLOSIVE lift vs this.")
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
     args = p.parse_args()
 
@@ -164,7 +182,8 @@ def main():
         ts_tr = ts_all[train_mask]; ts_te = ts_all[test_mask]
 
         proba_te, fallback_n = naive_lookup_predict(y_tr, ts_tr, ts_te,
-                                                     bucket_minutes=args.bucket_minutes)
+                                                     bucket_minutes=args.bucket_minutes,
+                                                     clock_only=args.clock_only)
         r = evaluate_fold(y_tr, y_te, proba_te, args.tf)
         r["fold"] = f"{cut}..{test_end}"
         r["n_train"] = int(len(y_tr))
@@ -176,8 +195,9 @@ def main():
     # Tabulate
     print()
     print("=" * 100)
-    print(f"NAIVE CALENDAR-LOOKUP BASELINE  ticker={args.ticker} tf={args.tf}  "
-           f"bucket={args.bucket_minutes}min")
+    print(f"NAIVE {'CLOCK-ONLY' if args.clock_only else 'CALENDAR-LOOKUP'} BASELINE  "
+           f"ticker={args.ticker} tf={args.tf}  bucket={args.bucket_minutes}min"
+           f"{'  (DoW dropped — vol-smile only)' if args.clock_only else ''}")
     print("=" * 100)
     print(f"\n{'fold':25} {'n_tr':>7} {'n_te':>7} {'beat':>8} "
            f"{'ece':>6} {'ece_p':>5} {'mono':>5} {'lift':>7}")

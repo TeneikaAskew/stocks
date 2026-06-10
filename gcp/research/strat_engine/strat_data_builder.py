@@ -60,7 +60,7 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert
+from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert, bulk_copy_update
 from lib.data_loader import DataLoader
 from lib.strat import StratClassifier
 from lib.indicators import (
@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS strat_features_4h (
     price_vs_ema9_atr DOUBLE PRECISION, price_vs_ema20_atr DOUBLE PRECISION,
     price_vs_vwap_atr DOUBLE PRECISION, ema_spread_atr DOUBLE PRECISION,
     ema9_slope DOUBLE PRECISION, bb_squeeze DOUBLE PRECISION, rsi_divergence DOUBLE PRECISION,
+    bb20_bandwidth DOUBLE PRECISION, realized_vol_z DOUBLE PRECISION,
+    range_expansion_ratio DOUBLE PRECISION, intraday_range_vs_prevday DOUBLE PRECISION,
+    atr_expansion DOUBLE PRECISION,
     intraday_return DOUBLE PRECISION, high_low_spread_pct DOUBLE PRECISION,
     fwd_close_5bars DOUBLE PRECISION, fwd_close_15bars DOUBLE PRECISION,
     fwd_close_30bars DOUBLE PRECISION, fwd_close_60bars DOUBLE PRECISION,
@@ -482,11 +485,18 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     out["ema9_slope"] = _safe("EMA9_Slope")
     out["bb_squeeze"] = _safe("BB_Squeeze")
     out["rsi_divergence"] = _safe("RSI_Divergence")
-    # realized_vol_z: 15-bar within-day realized-vol z-score. Previously had NO
-    # computation (100% NULL — column audit 2026-06-07, family A); now wired via
-    # the shared one-source-of-truth helper (same formula as magnitude's
-    # realized_vol_z15). Uses out["close"]/out["bar_date"] (both set above).
+    # Magnitude-engine volatility-expansion features (migrated 2026-06-01 into
+    # add_all_indicators._add_magnitude). Persisted so the magnitude engine reads
+    # them from the spine instead of recomputing inline.
+    out["bb20_bandwidth"] = _safe("BB20_Bandwidth")
+    # realized_vol_z OVERRIDE: _add_magnitude's Realized_Vol_Z uses a WITHIN-day
+    # z-window which is all-NaN on TFs with <z_window bars/day (the 2026-06-08
+    # bug). Recompute via the shared cross-day helper here so strat_features
+    # carries the fixed value (one source of truth: lib.indicators.realized_vol_zscore).
     out["realized_vol_z"] = realized_vol_zscore(out["close"], out["bar_date"]).values
+    out["range_expansion_ratio"] = _safe("Range_Expansion_Ratio")
+    out["intraday_range_vs_prevday"] = _safe("Intraday_Range_vs_PrevDay")
+    out["atr_expansion"] = _safe("ATR_Expansion")  # ATR5/ATR20, Wilder (single source)
     out["intraday_return"] = (closes - df_tf["Open"]) / df_tf["Open"] * 100
     out["high_low_spread_pct"] = (df_tf["High"] - df_tf["Low"]) / closes * 100
 
@@ -708,7 +718,78 @@ def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame,
     return results
 
 
+# ──────────────────── Targeted column recompute (memory-bounded) ────────────────────
+# Columns the targeted recompute can fix, mapped to the add_all_indicators
+# output name → strat_features snake_case column. These derive ONLY from the
+# already-stored OHLCV (+ Bollinger from close), so we re-run just the relevant
+# spine blocks on a ~12-column frame instead of the full ~95-column featurize.
+# Peak memory is a small multiple of (rows × 12 floats) — no OOM even on the
+# ~1M-row 1m table, and no re-aggregation / ORB / gamma / strat work.
+_RECOMPUTE_COL_MAP = {
+    "atr_20": "ATR20",
+    "bb20_bandwidth": "BB20_Bandwidth",
+    "realized_vol_z": "Realized_Vol_Z",
+    "range_expansion_ratio": "Range_Expansion_Ratio",
+    "intraday_range_vs_prevday": "Intraday_Range_vs_PrevDay",
+    "atr_expansion": "ATR_Expansion",
+}
+
+
+def _recompute_columns_for_ticker(engine, ticker: str, tf_label: str,
+                                  cols: list[str]) -> int:
+    """Recompute a SUBSET of indicator columns in-place for one (ticker, tf).
+
+    Reads the stored OHLCV (ordered by ts), runs add_all_indicators ONCE over
+    the full ordered series so Wilder-smoothed ATR20 and the session-aware
+    magnitude block match production exactly, then UPDATEs only `cols` by
+    (ticker, ts). Idempotent; never deletes or rewrites other columns. This is
+    the targeted alternative to a full --rebuild: same spine math, ~8x less
+    memory, no re-aggregation.
+    """
+    table = f"strat_features_{tf_label}"
+    src = _RECOMPUTE_COL_MAP
+    bad = [c for c in cols if c not in src]
+    if bad:
+        raise ValueError(f"unsupported recompute columns {bad}; known: {sorted(src)}")
+
+    t0 = time.time()
+    # One read, ordered — ATR/Bollinger/magnitude are path-dependent.
+    q = text(f"SELECT ts, open, high, low, close, volume FROM {table} "
+             f"WHERE ticker = :tk ORDER BY ts")
+    with engine.connect() as conn:
+        raw = pd.read_sql(q, conn, params={"tk": ticker})
+    if raw.empty:
+        log.info("%s %s: no rows to recompute", ticker, tf_label)
+        return 0
+
+    # Shape for add_all_indicators (capitalised OHLCV + Time for session/VWAP).
+    df = pd.DataFrame({
+        "Open": raw["open"].astype(float),
+        "High": raw["high"].astype(float),
+        "Low": raw["low"].astype(float),
+        "Close": raw["close"].astype(float),
+        "Volume": raw["volume"].astype(float),
+        "Time": pd.to_datetime(raw["ts"]),
+    })
+    enriched = add_all_indicators(df, close_col="Close")
+
+    out = pd.DataFrame({"ticker": ticker, "ts": pd.to_datetime(raw["ts"]).values})
+    for snake in cols:
+        cap = src[snake]
+        out[snake] = enriched[cap].to_numpy() if cap in enriched.columns else np.nan
+    # UPDATE-only (not upsert): every (ticker,ts) already exists, and the table
+    # has NOT-NULL columns (e.g. tf) we deliberately don't touch — an
+    # INSERT...ON CONFLICT would still validate NOT-NULL on the insert attempt
+    # and fail. bulk_copy_update touches ONLY the recomputed columns.
+    n = bulk_copy_update(out, table, key_cols=["ticker", "ts"], update_cols=cols)
+    nn = {c: int(out[c].notna().sum()) for c in cols}
+    log.info("%s %s: recomputed %d rows; non-null %s (%.1fs)",
+             ticker, tf_label, n, nn, time.time() - t0)
+    return n
+
+
 def main():
+    global TF_LIST
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tickers", default=",".join(TICKERS_DEFAULT))
     parser.add_argument("--start-date", default="2016-01-01")
@@ -720,6 +801,13 @@ def main():
                              "history from --start-date, upserting (ON CONFLICT DO UPDATE) "
                              "over existing rows. Use to backfill newly-added feature "
                              "columns into historical bars. Non-destructive.")
+    parser.add_argument("--recompute-cols", default=None,
+                        help="Targeted, memory-bounded backfill: comma list of "
+                             "strat_features columns to recompute IN PLACE from stored "
+                             "OHLCV via the indicator spine, instead of a full "
+                             "--rebuild. Known: " + ",".join(sorted(_RECOMPUTE_COL_MAP)) +
+                             ". UPDATEs only those columns by (ticker, ts); ~8x less "
+                             "memory than --rebuild (no re-aggregation / ORB / gamma).")
     args = parser.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
@@ -727,12 +815,29 @@ def main():
              tickers, args.start_date)
 
     engine = get_engine()
+
+    # Targeted column recompute — short-circuits the full featurize pipeline.
+    if args.recompute_cols:
+        cols = [c.strip() for c in args.recompute_cols.split(",") if c.strip()]
+        tf_filter = [args.tf_only] if args.tf_only else [lbl for lbl, _ in TF_LIST]
+        log.info("TARGETED RECOMPUTE — cols=%s tfs=%s tickers=%s",
+                 cols, tf_filter, tickers)
+        total = 0
+        for ticker in tickers:
+            for tf_label in tf_filter:
+                try:
+                    total += _recompute_columns_for_ticker(engine, ticker, tf_label, cols)
+                except Exception as e:
+                    log.exception("recompute %s %s failed: %s", ticker, tf_label, e)
+        log.info("Targeted recompute done — %d rows updated across %d tickers × %d TFs",
+                 total, len(tickers), len(tf_filter))
+        return
+
     vix_df = _load_vix_per_date(engine)
     log.info("VIX loaded: %d dates", len(vix_df))
 
     if args.tf_only:
         # Filter the TF_LIST globally for this run
-        global TF_LIST
         TF_LIST = [(lbl, arg) for (lbl, arg) in TF_LIST if lbl == args.tf_only]
         log.info("TF filter: only %s", args.tf_only)
 

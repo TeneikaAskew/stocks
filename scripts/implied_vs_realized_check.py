@@ -66,17 +66,46 @@ from scripts._magnitude_analysis_helpers import load_predictions
 
 def load_atm_iv_per_date(engine, ticker: str,
                           min_date: pd.Timestamp,
-                          max_date: pd.Timestamp) -> pd.DataFrame:
+                          max_date: pd.Timestamp,
+                          only_dates: "set | None" = None,
+                          option_type: str = "calls") -> pd.DataFrame:
     """Pull EOD ATM IV per (ticker, date) from etf_options_snapshots.
 
     'EOD' = the LAST snapshot of the day for nearest-expiry, closest-to-
     spot contract. ATM = strike closest to spot at snapshot.
 
+    option_type: 'calls' (ATM call, delta≈+0.5 — used for straddle & call) or
+    'puts' (ATM put, delta≈-0.5 — used for the put benchmark). The matching
+    leg's IV is the correct implied benchmark for a directional bet.
+
     Returns df with columns: date (datetime.date), atm_iv (float).
+
+    Performance: etf_options_snapshots is ~92M rows; a window-function over the
+    full min..max span (7 years × every contract per snapshot) cannot complete
+    within the Cloud Run task-timeout. gate 7 only needs IV on the handful of
+    dates the model predicted EXPLOSIVE (+ their T-1 anchors), so `only_dates`
+    scopes the scan to those dates via the existing (ticker, snapshot_date)
+    index — turning a full-table scan into a few-hundred-date lookup. The set
+    MUST include each bar's T-1..T-N candidate anchor dates (we widen by a small
+    calendar margin so weekends/holidays still resolve a backward IV anchor).
     """
-    print(f"querying etf_options_snapshots for ticker={ticker} "
-           f"{min_date.date()}..{max_date.date()}", file=sys.stderr)
-    sql = text("""
+    if option_type not in ("calls", "puts"):
+        raise ValueError(f"option_type must be 'calls' or 'puts', got {option_type!r}")
+    # ATM call delta ≈ +0.5; ATM put delta ≈ -0.5. Rank by distance to the
+    # matching ATM delta so we pick the at-the-money contract of that type.
+    delta_target = "0.5" if option_type == "calls" else "-0.5"
+    date_clause = ""
+    params = {"t": ticker, "lo": min_date.date(), "hi": max_date.date(),
+              "otype": option_type}
+    if only_dates:
+        date_clause = "AND snapshot_date = ANY(:dates)"
+        params["dates"] = sorted(only_dates)
+        print(f"querying etf_options_snapshots for ticker={ticker} "
+              f"scoped to {len(only_dates)} dates", file=sys.stderr)
+    else:
+        print(f"querying etf_options_snapshots for ticker={ticker} "
+              f"{min_date.date()}..{max_date.date()} (FULL SPAN)", file=sys.stderr)
+    sql = text(f"""
         WITH last_snapshots AS (
             SELECT
                 ticker,
@@ -85,6 +114,7 @@ def load_atm_iv_per_date(engine, ticker: str,
               FROM etf_options_snapshots
              WHERE ticker = :t
                AND snapshot_date BETWEEN :lo AND :hi
+               {date_clause}
              GROUP BY ticker, snapshot_date
         ),
         eod_contracts AS (
@@ -93,7 +123,7 @@ def load_atm_iv_per_date(engine, ticker: str,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.ticker, s.snapshot_date
                        ORDER BY
-                           ABS(s.delta - 0.5) ASC NULLS LAST,
+                           ABS(s.delta - ({delta_target})) ASC NULLS LAST,
                            s.expiration ASC NULLS LAST
                    ) AS rn
               FROM etf_options_snapshots s
@@ -103,7 +133,7 @@ def load_atm_iv_per_date(engine, ticker: str,
                AND s.snapshot_ts = l.last_ts
              WHERE s.implied_volatility IS NOT NULL
                AND s.implied_volatility > 0
-               AND s.option_type = 'calls'
+               AND s.option_type = :otype
         )
         SELECT snapshot_date AS d, implied_volatility AS atm_iv
           FROM eod_contracts
@@ -111,9 +141,7 @@ def load_atm_iv_per_date(engine, ticker: str,
          ORDER BY snapshot_date
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={
-            "t": ticker, "lo": min_date.date(), "hi": max_date.date()
-        })
+        df = pd.read_sql(sql, conn, params=params)
     if df.empty:
         return df
     df["d"] = pd.to_datetime(df["d"]).dt.date
@@ -127,7 +155,15 @@ def main():
     p.add_argument("--tf", required=True, choices=list(TIMEFRAMES))
     p.add_argument("--run-id", required=True)
     p.add_argument("--bucket", default=GCS_BUCKET_DEFAULT)
+    p.add_argument("--label-mode", default="body",
+                   choices=["body", "excursion", "call", "put"],
+                   help="Must match the label the predictions were trained on. "
+                        "body=|next_close-next_open|; excursion=|next_high-next_low| "
+                        "(straddle range); call=(next_high-next_open) upside vs CALL "
+                        "IV; put=(next_open-next_low) downside vs PUT IV.")
     args = p.parse_args()
+    # Implied benchmark uses the matching option leg's IV.
+    iv_option_type = "puts" if args.label_mode == "put" else "calls"
 
     # Load model predictions for EXPLOSIVE filtering
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id)
@@ -144,10 +180,20 @@ def main():
     engine = get_engine()
     print("loading magnitude dataset for spot + realized-move computation...",
           file=sys.stderr)
-    df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0")
+    df = load_magnitude_dataset(engine, args.ticker, args.tf, phase="phase0",
+                                label_mode=args.label_mode)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
-    df["realized_move_dollars"] = (df["next_open"] - df["next_close"]).abs()
+    # Realized move MUST match the label the model was trained/predicting on,
+    # else we'd compare e.g. a call (upside) prediction against a body realization.
+    if args.label_mode == "excursion":
+        df["realized_move_dollars"] = (df["next_high"] - df["next_low"]).abs()
+    elif args.label_mode == "call":
+        df["realized_move_dollars"] = (df["next_high"] - df["next_open"]).clip(lower=0)
+    elif args.label_mode == "put":
+        df["realized_move_dollars"] = (df["next_open"] - df["next_low"]).clip(lower=0)
+    else:  # body
+        df["realized_move_dollars"] = (df["next_open"] - df["next_close"]).abs()
 
     # Join predictions ↔ dataset on ts to get realized_move + spot
     join = pe.merge(
@@ -160,9 +206,18 @@ def main():
         print("ts join produced no rows — check that prediction CSV ts matches dataset ts.")
         return
 
-    # Pull ATM IV per date for this ticker
+    # Pull ATM IV ONLY for the dates we need: each EXPLOSIVE bar's date plus a
+    # backward calendar margin so the T-1 (strictly-prior) IV anchor still
+    # resolves across weekends/holidays. Scoping the 92M-row table to these
+    # ~hundreds of dates is what makes gate 7 finish within the task-timeout.
+    bar_dates = pd.to_datetime(join["bar_date"]).dt.normalize().unique()
+    needed = set()
+    for d in bar_dates:
+        for back in range(0, 6):  # D and up to 5 calendar days prior
+            needed.add((d - pd.Timedelta(days=back)).date())
     iv = load_atm_iv_per_date(engine, args.ticker,
-                                join["ts"].min(), join["ts"].max())
+                                join["ts"].min(), join["ts"].max(),
+                                only_dates=needed, option_type=iv_option_type)
     print(f"IV coverage: {len(iv)} EOD snapshots between "
           f"{iv['d'].min() if not iv.empty else 'NONE'} and "
           f"{iv['d'].max() if not iv.empty else 'NONE'}", file=sys.stderr)

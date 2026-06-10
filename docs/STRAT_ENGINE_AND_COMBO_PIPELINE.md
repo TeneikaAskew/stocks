@@ -255,7 +255,16 @@ top lift is naturally lower):
 **Max OOS lift per class** (latest run): FLAT **2.04×**, BIG **1.48×**, DOWN
 **1.39×**, UP **1.32×**. FLAT carries by far the strongest lift because the
 direction/magnitude classes (BIG/UP/DOWN) have much higher base rates (~0.49 for
-BIG), leaving less headroom over random.
+BIG), leaving less headroom over random. **This ranking — magnitude/chop
+predictable, direction the weak tail — independently corroborates the
+forward-selection-AUC and walk-forward findings.**
+
+> ⚠️ **The headline 2.04× is a MAX over 576 mined combos** — it carries
+> selection inflation by construction (the best of 576 draws beats the best of
+> 1). The single-run peak is not the evidence; **persistence across runs is.**
+> The week-over-week drift query in §2.5 is the right antidote — a combo whose
+> lift holds across `computed_date`s is real; one that only spikes on a single
+> run is noise. Treat any single-run lift as an upper bound until it repeats.
 
 **How to read row 1:** for SPY, when short-horizon realized vol is below its
 median AND it's early in the session (`Mins_Since_Open≤med`) AND price is holding
@@ -316,6 +325,13 @@ t+1) — no bar-iteration logic is re-implemented (Rule 3.6).
 | `2U` | directional up (took out prior high only) |
 | `2D` | directional down (took out prior low only) |
 | `3` | outside bar (took out both — expansion) |
+
+> ⚠️ **2U/2D are a "touched the level" event, not a sustained move.** Because
+> the next bar opens at this bar's close, the dominant 2U/2D predictor
+> (`Close_vs_Range`) reflects the mechanical next-open poke, which is
+> non-tradeable (see §4.3). For a tradeable directional read, use an ATR-scaled
+> variant ("took out the prior high by ≥ k·ATR and closed beyond it"). Plain
+> 2U/2D lift will always overstate directional edge.
 
 ### 3.2 Running it
 
@@ -433,16 +449,33 @@ counts per target, pulled via `db_query_cr.sh`:
 | strat | 1 | QQQ | `Daily_Range_Pct` | 0.024 | 1.29 | +0.183 |
 | strat | 3 | QQQ | `Daily_Range` | 0.012 | 0.64 | −0.163 |
 
-**How to read it:** `Close_vs_Range` (where a bar closes within its high-low
-range) is the strongest single predictor of the next Strat candle's direction —
-**rank_ic +0.465 for 2U and −0.466 for 2D**, a clean symmetric pair: a bar
-closing near its high makes the next bar more likely directional-up, near its low
-more likely directional-down. For the price *regime*, range/volatility features
+**How to read it:** `Close_vs_Range` shows the strongest single rank_ic against
+next-bar 2U/2D (**+0.465 / −0.466**, symmetric, cross-ticker — IWM +0.347/−0.333,
+SPY +0.447/−0.448). For the price *regime*, range/volatility features
 (`Daily_Range`, `Daily_Range_Pct`, `ATR14`) lead — high range predicts BIG
 (rank_ic +0.286), low range predicts FLAT (−0.217), matching the regime-combo
 findings in §2.4. Top `forward_return` (regression) drivers were `Price_vs_VWAP`
 / `Price_vs_VWAP_ATR` / the ORB-percent features at the 30-min horizon (rank_ic
 ≈ −0.25).
+
+> ⚠️ **Do NOT read `Close_vs_Range` as a directional signal.** Its strong
+> 2U/2D rank_ic is the **mechanical next-open poke**, not a forecast: the next
+> bar opens at this bar's close, so a bar closing near its high starts just
+> under the prior high and any small uptick takes it out and prints 2U. It is
+> trend-persistence of *touching a level*, and it is **non-tradeable** — a 2U
+> can nick the prior high by a tick and immediately reverse. The proof is in
+> the same table: when direction is scaled to a *real* move (the `regime`
+> UP/DOWN classes) the lift collapses to ~1.3×. So the strat-2U/2D "direction"
+> and the regime UP/DOWN "direction" are not the same quantity. To bridge them,
+> score against an **ATR-scaled strat target** — "took out the prior high by
+> ≥ k·ATR and closed beyond it" — which filters the mechanical pokes and should
+> make the strat-direction lift converge toward the (honest) regime-direction
+> lift.
+>
+> ⚠️ **`forward_return` drivers are MEAN REVERSION, not momentum.** The
+> `Price_vs_VWAP` / ORB-percent rank_ic of ≈ **−0.25** is *negative* — price
+> extended above VWAP tends to give back over the next 30 min. Carry the sign
+> when promoting; `abs_rank_ic` alone hides reversion-vs-continuation.
 
 > ⚠️ **The job runs on the RESEARCH image, not the main image.** The per-class
 > `mutual_info` is computed with sklearn's `mutual_info_classif`, and sklearn +
