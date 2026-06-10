@@ -75,11 +75,19 @@ jobs:
 
       - name: Pull postgres image (with retry)
         run: |
+          pulled=false
           for attempt in 1 2 3 4 5; do
-            docker pull pgvector/pgvector:pg15 && break
-            echo "Pull attempt $attempt failed; retrying in $((attempt * 10))s..."
+            if docker pull pgvector/pgvector:pg15; then
+              pulled=true
+              break
+            fi
+            echo "Pull attempt $attempt/5 failed; retrying in $((attempt * 10))s..."
             sleep $((attempt * 10))
           done
+          if [ "$pulled" != "true" ]; then
+            echo "All 5 pull attempts failed — giving up" >&2
+            exit 1
+          fi
 
       - name: Start postgres container
         run: |
