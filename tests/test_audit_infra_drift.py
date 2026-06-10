@@ -57,8 +57,8 @@ def test_image_drift_flags_outdated_pinned_digest(monkeypatch):
          patch.object(mod, "list_run_jobs",
                       return_value=[{"name": "fetch-earnings-history",
                                      "image": "..../trading-system:latest"}]), \
-         patch.object(mod, "_gcloud",
-                      return_value=f"..../trading-system@{outdated}\n"):
+         patch.object(mod, "latest_execution_image",
+                      return_value=f"..../trading-system@{outdated}"):
         r = mod.Report()
         mod.check_image_drift(r)
 
@@ -79,8 +79,8 @@ def test_image_drift_silent_when_pinned_matches_latest(monkeypatch):
          patch.object(mod, "list_run_jobs",
                       return_value=[{"name": "j1",
                                      "image": "..../trading-system:latest"}]), \
-         patch.object(mod, "_gcloud",
-                      return_value=f"..../trading-system@{digest}\n"):
+         patch.object(mod, "latest_execution_image",
+                      return_value=f"..../trading-system@{digest}"):
         r = mod.Report()
         mod.check_image_drift(r)
 
@@ -98,9 +98,9 @@ def test_image_drift_skips_non_trading_system_image(monkeypatch):
                       return_value=[{"name": "strat-engine",
                                      "image": "..../trading-system:research"}]):
         r = mod.Report()
-        # Note: trading-system:research is FILTERED IN by the substring
-        # check. Verify it's still skipped because exec_image is empty.
-        with patch.object(mod, "_gcloud", return_value=""):
+        # trading-system:research IS picked up by the substring check —
+        # then skipped at the inner if-not-exec_image branch.
+        with patch.object(mod, "latest_execution_image", return_value=""):
             mod.check_image_drift(r)
 
     assert r.findings == []
@@ -116,7 +116,7 @@ def test_image_drift_skips_never_executed_jobs(monkeypatch):
          patch.object(mod, "list_run_jobs",
                       return_value=[{"name": "j-new",
                                      "image": "..../trading-system:latest"}]), \
-         patch.object(mod, "_gcloud", return_value=""):
+         patch.object(mod, "latest_execution_image", return_value=""):
         r = mod.Report()
         mod.check_image_drift(r)
 

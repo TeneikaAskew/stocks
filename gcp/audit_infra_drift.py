@@ -28,11 +28,9 @@ Add new checks here as new incident families arise.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Iterable
@@ -80,68 +78,85 @@ class Report:
         return "\n".join(lines)
 
 
-def _gcloud(*args: str, **kw) -> str:
-    """Run a gcloud command and return stdout. Raises on failure."""
-    cmd = ["gcloud"] + list(args)
-    log.debug("gcloud %s", " ".join(args))
-    out = subprocess.check_output(cmd, stderr=subprocess.PIPE,
-                                  text=True, timeout=kw.get("timeout", 60))
-    return out
-
-
 def latest_image_digest() -> str:
     """Resolve the `trading-system:latest` tag to its current digest.
 
+    Hits the Artifact Registry control-plane API via the Python SDK
+    (gcloud CLI is not in the trading-system Docker image).
+
     Returns the bare sha256:... portion (no registry prefix)."""
-    out = _gcloud(
-        "artifacts", "docker", "images", "describe", IMAGE_TAG,
-        f"--project={PROJECT}",
-        "--format=value(image_summary.digest)",
-    )
-    digest = out.strip()
-    if not digest.startswith("sha256:"):
-        raise RuntimeError(f"unexpected digest format: {digest!r}")
-    return digest
+    from google.cloud import artifactregistry_v1
+    client = artifactregistry_v1.ArtifactRegistryClient()
+    # parent: projects/<project>/locations/<region>/repositories/<repo>/packages/<package>
+    parent = (f"projects/{PROJECT}/locations/{REGION}/"
+              f"repositories/trading/packages/trading-system")
+    # List tags; find the one named 'latest' and follow its .version.
+    for tag in client.list_tags(parent=parent):
+        if tag.name.rsplit("/", 1)[-1] == "latest":
+            # tag.version is the FULL resource path; the last segment is the digest.
+            digest = tag.version.rsplit("/", 1)[-1]
+            if not digest.startswith("sha256:"):
+                raise RuntimeError(f"unexpected digest format: {digest!r}")
+            return digest
+    raise RuntimeError(f"no 'latest' tag found at {parent}")
 
 
 def list_run_jobs() -> list[dict]:
-    """Return [{name, image}] for every Cloud Run Job in REGION."""
-    out = _gcloud(
-        "run", "jobs", "list",
-        f"--region={REGION}", f"--project={PROJECT}",
-        "--format=json",
-    )
-    raw = json.loads(out)
+    """Return [{name, image}] for every Cloud Run Job in REGION via the
+    google-cloud-run Python SDK."""
+    from google.cloud import run_v2
+    client = run_v2.JobsClient()
+    parent = f"projects/{PROJECT}/locations/{REGION}"
     rows: list[dict] = []
-    for j in raw:
-        name = j.get("metadata", {}).get("name", "?")
-        # Image is in spec.template.spec.template.spec.containers[0].image
+    for job in client.list_jobs(parent=parent):
+        name = job.name.rsplit("/", 1)[-1]
+        # job.template.template.containers[0].image is the configured image.
+        image = ""
         try:
-            image = j["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"]
-        except (KeyError, IndexError):
-            image = ""
+            image = job.template.template.containers[0].image
+        except (AttributeError, IndexError):
+            pass
         rows.append({"name": name, "image": image})
     return rows
 
 
 def list_schedulers() -> list[dict]:
-    """Return [{name, target_job_name}] for every Cloud Scheduler entry."""
-    out = _gcloud(
-        "scheduler", "jobs", "list",
-        f"--location={REGION}", f"--project={PROJECT}",
-        "--format=json",
-    )
-    raw = json.loads(out)
+    """Return [{name, target_job, uri}] for every Cloud Scheduler entry
+    in REGION via the google-cloud-scheduler Python SDK."""
+    from google.cloud import scheduler_v1
+    client = scheduler_v1.CloudSchedulerClient()
+    parent = f"projects/{PROJECT}/locations/{REGION}"
     rows: list[dict] = []
-    for s in raw:
-        name = s.get("name", "").rsplit("/", 1)[-1]
-        # Schedulers that drive CR Jobs typically target the job's
-        # `run.googleapis.com/v2/.../jobs/<job-name>:run` endpoint.
-        uri = (s.get("httpTarget") or {}).get("uri", "")
+    for s in client.list_jobs(parent=parent):
+        name = s.name.rsplit("/", 1)[-1]
+        # CR-Job-firing schedulers target run.googleapis.com/v2/.../jobs/<job-name>:run
+        uri = ""
+        if s.http_target:
+            uri = s.http_target.uri or ""
         m = re.search(r"/jobs/([^:/]+)", uri)
         target_job = m.group(1) if m else ""
         rows.append({"name": name, "target_job": target_job, "uri": uri})
     return rows
+
+
+def latest_execution_image(job_name: str) -> str:
+    """Return the resolved image (typically a digest reference) for the
+    most-recent execution of `job_name`. Empty string if the job has
+    never executed."""
+    from google.cloud import run_v2
+    client = run_v2.ExecutionsClient()
+    parent = f"projects/{PROJECT}/locations/{REGION}/jobs/{job_name}"
+    # Pull just the first page; we only need the most-recent execution.
+    request = run_v2.ListExecutionsRequest(parent=parent, page_size=1)
+    page = client.list_executions(request=request)
+    for exe in page:
+        try:
+            return exe.template.containers[0].image
+        except (AttributeError, IndexError):
+            return ""
+        finally:
+            return ""  # only inspect first
+    return ""
 
 
 def check_image_drift(report: Report) -> None:
@@ -171,15 +186,10 @@ def check_image_drift(report: Report) -> None:
             # Image doesn't share the trading-system base — skip.
             continue
         try:
-            out = _gcloud(
-                "run", "jobs", "executions", "list",
-                f"--job={j['name']}", f"--region={REGION}", f"--project={PROJECT}",
-                "--limit=1", "--format=value(spec.template.spec.containers[0].image)",
-            )
-        except subprocess.CalledProcessError as e:
-            report.errors.append(f"executions list {j['name']}: {e.stderr.strip()[:120]}")
+            exec_image = latest_execution_image(j["name"])
+        except Exception as e:
+            report.errors.append(f"executions list {j['name']}: {e!s}"[:160])
             continue
-        exec_image = out.strip()
         if not exec_image:
             continue  # job has never executed
         # exec_image is either a tag (rare) or `...@sha256:...`
