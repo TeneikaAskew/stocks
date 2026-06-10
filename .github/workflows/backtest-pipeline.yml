@@ -56,20 +56,12 @@ jobs:
     # that the hermetic mocked tests in the `test` job are blind to.
     # The image is pgvector/pgvector:pg15 — schema.sql does
     # `CREATE EXTENSION vector`, which the stock postgres:15 image lacks.
-    services:
-      postgres:
-        image: pgvector/pgvector:pg15
-        env:
-          POSTGRES_USER: trading_user
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: trading
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+    #
+    # NOTE: We start Postgres manually (not as a service container) so
+    # we can retry the `docker pull` on Docker Hub rate-limit / transient
+    # network failures. Service containers pull before any steps run and
+    # only retry 3 times with fixed backoff, which is insufficient when a
+    # runner's IP is briefly rate-limited by Docker Hub.
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +72,37 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Pull postgres image (with retry)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull pgvector/pgvector:pg15 && break
+            echo "Pull attempt $attempt failed; retrying in $((attempt * 10))s..."
+            sleep $((attempt * 10))
+          done
+
+      - name: Start postgres container
+        run: |
+          docker run -d \
+            --name test-postgres \
+            -e POSTGRES_USER=trading_user \
+            -e POSTGRES_PASSWORD=testpass \
+            -e POSTGRES_DB=trading \
+            -p 5432:5432 \
+            pgvector/pgvector:pg15
+
+      - name: Wait for postgres to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U trading_user 2>/dev/null; then
+              echo "Postgres is ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Postgres did not become ready in 30s" >&2
+          docker logs test-postgres >&2
+          exit 1
 
       - name: Apply schema to the ephemeral Postgres
         env:
