@@ -583,6 +583,13 @@ def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
     """Hardcoded cross-table sanity checks on recent rows. Returns only
     FAILING rows; silent when everything is within range.
     """
+    # Scope the options scan to the tracked tickers AND end-of-day snapshots so
+    # it uses the idx_etf_options_eod_agg (ticker, snapshot_date) partial index
+    # and examines ~1 snapshot/day instead of all intraday snapshots. Without
+    # both predicates the snapshot_date range matches no index and the audit
+    # full-scans the large etf_options_snapshots table (>120s); with them ~4s.
+    # EOD is the canonical daily snapshot; TICKERS is the set this audit tracks.
+    tkr_array = "ARRAY[" + ", ".join(f"'{t}'" for t in TICKERS) + "]"
     checks: list[tuple[str, str, str]] = [
         # (label, SQL returning count of bad rows, description)
         (
@@ -602,8 +609,10 @@ def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
         ),
         (
             "etf_options_snapshots [sanity]",
-            """SELECT COUNT(*) AS bad FROM etf_options_snapshots
-               WHERE snapshot_date >= CURRENT_DATE - INTERVAL '7 days'
+            f"""SELECT COUNT(*) AS bad FROM etf_options_snapshots
+               WHERE ticker = ANY({tkr_array})
+                 AND market_session = 'EOD'
+                 AND snapshot_date >= CURRENT_DATE - INTERVAL '7 days'
                  AND data_source = 'alphavantage'
                  AND (strike <= 0 OR mark < 0)""",
             "non-positive strike or negative mark",
