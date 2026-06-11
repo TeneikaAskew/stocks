@@ -124,9 +124,16 @@ def process_ticker(ticker: str, fetch_date: str, api_key: str,
     """Fetch AV options for one ticker/date → Cloud SQL."""
     if skip_existing and is_cloud_sql_configured():
         from gcp.database import query_to_dataframe
+        # market_session = 'EOD' is load-bearing. The av-options-realtime
+        # fetcher (Track 0, 2026-05-22) writes data_source='alphavantage'
+        # rows every 5 min during RTH. Without this filter the existence
+        # check matches a REALTIME row, declares EOD "already ingested",
+        # and silently freezes EOD for SPY/IWM/QQQ — exactly what happened
+        # 2026-05-22 → 2026-06-11 (SPX, not in the realtime set, kept working).
         hit = query_to_dataframe(
             "SELECT 1 FROM etf_options_snapshots "
-            "WHERE ticker = :t AND snapshot_date = :d AND data_source = 'alphavantage' LIMIT 1",
+            "WHERE ticker = :t AND snapshot_date = :d AND data_source = 'alphavantage' "
+            "AND market_session = 'EOD' LIMIT 1",
             {"t": ticker, "d": fetch_date},
         )
         if not hit.empty:
@@ -201,10 +208,16 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
 
     placeholders = ",".join(f":t{i}" for i in range(len(tickers)))
     params = {f"t{i}": t for i, t in enumerate(tickers)}
+    # market_session = 'EOD' is load-bearing — see process_ticker(). The MAX
+    # watermark must reflect the latest EOD snapshot, NOT the latest REALTIME
+    # one. Without this filter SPY/IWM/QQQ watermarks track their daily
+    # REALTIME rows, so --from-latest starts at today and never sweeps the
+    # missing EOD tail (the 2026-05-22 → 2026-06-11 freeze).
     df = query_to_dataframe(
         f"SELECT ticker, MAX(snapshot_date) AS d FROM etf_options_snapshots "
         f"WHERE ticker IN ({placeholders}) "
         f"AND data_source = 'alphavantage' "
+        f"AND market_session = 'EOD' "
         f"GROUP BY ticker",
         params,
     )

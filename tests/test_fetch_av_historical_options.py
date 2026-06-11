@@ -253,6 +253,31 @@ def test_process_ticker_skip_existing_short_circuits(monkeypatch):
     )
 
 
+def test_skip_existing_query_filters_eod_session(monkeypatch):
+    """Regression (2026-06-11): the skip-existing existence check MUST filter
+    market_session='EOD'. The av-options-realtime fetcher writes
+    data_source='alphavantage' rows every 5 min; without the EOD filter the
+    check matches a REALTIME row, declares EOD 'already ingested', and
+    silently freezes EOD ingestion (SPY/IWM/QQQ were frozen at 2026-05-22
+    for 3 weeks; SPX, not in the realtime set, kept working)."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    captured = {}
+
+    def _capture(sql, params=None, *a, **k):
+        captured["sql"] = sql
+        return pd.DataFrame([{"1": 1}])  # pretend a row exists → short-circuit
+
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr("gcp.database.query_to_dataframe", _capture)
+    monkeypatch.setattr(
+        mod.requests, "get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    mod.process_ticker("SPY", "2026-04-25", api_key="k", skip_existing=True)
+    assert "market_session = 'EOD'" in captured["sql"]
+
+
 def test_process_ticker_skips_when_av_returns_empty(monkeypatch):
     """No data from AV → no upsert, no crash."""
     from gcp.fetchers import fetch_av_historical_options as mod
@@ -352,6 +377,27 @@ def test_resolve_start_from_latest_uses_min_of_per_ticker_max(monkeypatch):
     )
     out = mod._resolve_start_from_latest(["SPY", "IWM", "SPX", "QQQ"])
     assert out == date(2026, 4, 17)
+
+
+def test_resolve_start_from_latest_query_filters_eod_session(monkeypatch):
+    """Regression (2026-06-11): the watermark MUST filter market_session='EOD'
+    so the daily REALTIME rows don't drag the per-ticker MAX to 'today' and
+    make --from-latest skip the missing EOD tail. With the filter, a ticker
+    whose latest EOD is 2026-05-22 resumes from 2026-05-23 even though it has
+    REALTIME rows dated today."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    captured = {}
+
+    def _capture(sql, params=None, *a, **k):
+        captured["sql"] = sql
+        # Simulate the DB AFTER the EOD filter is applied: latest EOD = 05-22.
+        return pd.DataFrame([{"ticker": "SPY", "d": pd.Timestamp("2026-05-22")}])
+
+    monkeypatch.setattr("gcp.database.query_to_dataframe", _capture)
+    out = mod._resolve_start_from_latest(["SPY"])
+    assert "market_session = 'EOD'" in captured["sql"]
+    assert out == date(2026, 5, 23)  # watermark + 1, proving it resumed from EOD
 
 
 def test_resolve_start_from_latest_newly_added_ticker_excluded(monkeypatch):
