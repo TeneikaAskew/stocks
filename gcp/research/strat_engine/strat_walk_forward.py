@@ -145,17 +145,25 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     y_tr = y_full[train_mask]
     y_te = y_full[test_mask]
 
-    # FRESH calibrated classifier — refit base + sigmoid from scratch.
-    # Untangled parallelism: CalibratedClassifierCV(n_jobs=cv) parallelizes
-    # the cv inner folds; each LGBM is given n_jobs = cores // cv so total
-    # threads ≤ core count. Previous nested -1 created 24 threads on 8 cores.
-    calibrated = CalibratedClassifierCV(
-        estimator=make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs),
-        method=DEFAULT_CALIBRATION, cv=DEFAULT_CV, n_jobs=DEFAULT_CV,
-    )
-    calibrated.fit(X_tr, y_tr)
-
-    proba = calibrated.predict_proba(X_te)
+    # FRESH model per fold — never reuse a calibrator across folds (leaks).
+    # DEFAULT_CALIBRATION is "none" since the E-20 calibration lock (sigmoid
+    # hurt ECE); sklearn's CalibratedClassifierCV rejects method="none", so we
+    # use the raw LightGBM softmax in that case — mirrors the guard in
+    # mag_walk_forward.py:138 and strat_pred_train.py:188.
+    if DEFAULT_CALIBRATION == "none":
+        model = make_lgbm(class_weight=None, n_jobs=-1)
+        model.fit(X_tr, y_tr)
+        proba = model.predict_proba(X_te)
+    else:
+        # Untangled parallelism: CalibratedClassifierCV(n_jobs=cv) parallelizes
+        # the cv inner folds; each LGBM is given n_jobs = cores // cv so total
+        # threads ≤ core count. Previous nested -1 created 24 threads on 8 cores.
+        calibrated = CalibratedClassifierCV(
+            estimator=make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs),
+            method=DEFAULT_CALIBRATION, cv=DEFAULT_CV, n_jobs=DEFAULT_CV,
+        )
+        calibrated.fit(X_tr, y_tr)
+        proba = calibrated.predict_proba(X_te)
     ll = float(log_loss(y_te, proba, labels=list(range(len(LABEL_CLASSES)))))
     base_ll = base_rate_logloss(y_tr, y_te)
     pred = np.argmax(proba, axis=1)
