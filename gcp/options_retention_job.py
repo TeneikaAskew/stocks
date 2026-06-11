@@ -75,17 +75,21 @@ def main() -> int:
 
     engine = get_engine()
 
-    with engine.connect() as conn:
-        # count(*) always returns exactly one row, so .scalar() is a non-None int.
-        eligible = conn.execute(_COUNT_SQL, {"days": days}).scalar()
-    log.info("retention: window=%dd eligible_realtime_rows=%s dry_run=%s",
-             days, f"{eligible:,}", dry_run)
-
-    if dry_run or eligible == 0:
-        log.info("retention: no deletions performed (dry_run=%s eligible=%d)",
-                 dry_run, eligible)
+    if dry_run:
+        # Only dry-run pays for the up-front count(*) — it's the whole point
+        # (report what WOULD be deleted). count(*) always returns one row.
+        with engine.connect() as conn:
+            eligible = conn.execute(_COUNT_SQL, {"days": days}).scalar()
+        log.info("retention: DRY RUN window=%dd would_delete=%s rows (no deletes)",
+                 days, f"{eligible:,}")
         return 0
 
+    # Normal mode: batched delete loop with NO up-front count. count(*) is
+    # expensive on this 50M+ row table (empirically 100s+), and on a backlog it
+    # would burn the task-timeout budget before a single row is freed. The
+    # loop's first zero-rowcount batch IS the no-op signal, so a quiet day costs
+    # exactly one empty index probe. Per-batch cumulative logging is the
+    # observability (CLAUDE.md Rule 0); progress is durable batch-by-batch.
     total = 0
     while True:
         with engine.begin() as conn:
@@ -94,8 +98,7 @@ def main() -> int:
         if not deleted:
             break
         total += deleted
-        log.info("retention: deleted batch=%d cumulative=%d/%d",
-                 deleted, total, eligible)
+        log.info("retention: deleted batch=%d cumulative=%d", deleted, total)
 
     log.info("retention: DONE deleted_total=%d window=%dd (EOD untouched)",
              total, days)

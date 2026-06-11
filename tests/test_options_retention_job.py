@@ -84,11 +84,13 @@ def test_floor_guard_refuses_short_window_without_touching_db(monkeypatch):
 
 
 def test_nothing_eligible_is_a_noop(monkeypatch):
-    eng = _FakeEngine(count_val=0)
+    # Normal mode skips the up-front count: a quiet day is a single empty
+    # DELETE batch (rowcount 0) that breaks the loop. No count(*) at all.
+    eng = _FakeEngine(delete_rowcounts=[0])
     _patch_engine(monkeypatch, eng)
     assert job.main() == 0
-    assert eng.conn.count_calls == 1
-    assert eng.conn.delete_calls == 0                # no DELETE when eligible=0
+    assert eng.conn.count_calls == 0                 # no count in normal mode
+    assert eng.conn.delete_calls == 1                # one empty probe, then stop
 
 
 def test_dry_run_counts_but_never_deletes(monkeypatch):
