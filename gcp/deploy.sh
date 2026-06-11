@@ -1181,16 +1181,20 @@ deploy_options_retention() {
     non_secret_env="${non_secret_env},RETENTION_DAYS=30"
 
     # Sizing per CLAUDE.md Rule 0:
-    #   Steady state ~2.6M eligible rows/day ÷ 50k batch = ~52 DELETE round-trips
-    #   ≈ 1-2 min wall-clock; --task-timeout=900 gives >4x headroom (and the
-    #   batched, idempotent loop makes a timeout non-fatal — the next run
-    #   continues). --memory=512Mi: the job holds at most one 50k-ctid batch in
-    #   flight. --max-retries=0 is the Rule 0 default; a missed day is recovered
-    #   by the next run because every run deletes ALL currently-eligible rows.
+    #   Steady state deletes ~2.6M rows/day in hourly snapshot_ts windows per
+    #   ticker. Row-delete + 3-index maintenance measured ~175k rows / ~52s, so
+    #   a full day's prune is ~13 min wall-clock; --task-timeout=3600 gives
+    #   ~4.6x headroom and covers a few-day backlog. A timeout mid-run is
+    #   non-fatal: each window commits and the next run resumes from min(ts).
+    #   --memory=512Mi (the job streams windows, holds none in memory).
+    #   --max-retries=0 (Rule 0 default); a missed day is recovered next run.
+    #   NB: DELETE reuses freed space (caps growth, ~flat at steady state) — it
+    #   does NOT shrink the 51 GB to disk; a one-time VACUUM FULL / pg_repack
+    #   after the first large prune (post ~2026-06-22) reclaims that.
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 900
+        --task-timeout 3600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.options_retention_job"
         --set-secrets=DB_PASS=db-trading-pass:latest
