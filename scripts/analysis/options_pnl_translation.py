@@ -23,19 +23,31 @@ Estimation method (Greeks approximation):
   3. At entry, mark price M = (bid + ask) / 2
   4. Estimated option P&L:
        delta_pnl   = delta × (entry_price × underlying_return)      [$ gain from underlying move]
-       theta_cost  = |theta| × (hold_min / 1440)                    [$ lost to time decay]
+       theta_cost  = |theta| × (390/1440) × [g(exit) − g(entry)]    [time decay, intraday-shaped]
        net_pnl_$   = delta_pnl − theta_cost
        net_pnl_pct = net_pnl_$ / M                                  [return on premium paid]
   5. Transaction cost: half-spread at entry = (ask − bid) / (2 × M) subtracted
 
+Theta time-distribution (intraday shape) — calibrated 2026-06:
+  - The decay over a hold is |theta| × (390/1440) × [g(exit_tod) − g(entry_tod)],
+    where g(t) is the empirically-measured cumulative 0DTE time-value decay
+    (lib.options_intraday.cumulative_theta_decay). This replaces the prior naive
+    linear hold_min/1440 assumption and preserves the full-day magnitude while
+    redistributing it realistically: morning decays faster than linear (open IV
+    crush), a midday LULL (g below linear ~12:00–15:00), then a terminal expiry
+    CLIFF in the last minutes. NB: this corrects the earlier belief that theta
+    "accelerates exponentially through the day / is understated in the afternoon"
+    — the data shows the afternoon (pre-cliff) is actually a lull.
+
 Limitations (IMPORTANT — read before interpreting results):
-  - Options data is EOD snapshots, not intraday. Delta/theta values are end-of-day,
-    which for 0DTE options have very little time value left. At the time signals fire
-    (9:30–12:00 AM), delta is similar to EOD but theta is much higher (0DTE theta
-    accelerates exponentially through the day). This means theta_cost is UNDERESTIMATED
-    here — actual options P&L is likely WORSE than reported.
+  - MAGNITUDE residual: the |theta| anchor is still an EOD Greek, not the option's
+    intraday-repriced value, so the absolute theta budget can be off even though the
+    intraday SHAPE is now calibrated. A fully correct magnitude requires repricing the
+    option at entry/exit (lib.options_intraday.reprice_intraday_option) rather than
+    scaling an EOD Greek — tracked as the recommended follow-up.
   - Results should be interpreted as an UPPER BOUND on options profitability.
-  - The true test requires intraday options data (not available in this dataset).
+  - When entry/exit time-of-day is unavailable the code falls back to the prior
+    linear hold_min/1440 distribution.
 
 Coverage:
   - IWM options: 2016-02-22 to 2026-02-20
@@ -71,6 +83,9 @@ from scripts.analysis.shared_utils import (
 from lib.config import load_config
 from lib.indicators import add_all_indicators
 from lib.backtest import BacktestEngine
+from lib.options_intraday import (
+    minutes_from_rth_open, intraday_theta_decay_fraction,
+)
 
 BAR_MINUTES = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60}
 
@@ -438,10 +453,21 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:
     elif trade['direction'] == 'PUT' and underlying_chg > 0:
         delta_pnl = -delta_pnl
 
-    # Theta cost for hold period (theta is $/day)
-    # NOTE: This underestimates theta for 0DTE — see module docstring
+    # Theta cost for the hold. theta is $/calendar-day; a full RTH session is
+    # 390/1440 of a calendar day. The intraday DISTRIBUTION of that decay is not
+    # linear — empirical g(t) (lib.options_intraday) is morning-heavy with a
+    # midday lull and a terminal expiry cliff. Keep the prior full-day magnitude
+    # (390/1440 of daily theta) and redistribute it across the session via
+    # g(exit) − g(entry). Fall back to the linear model when time-of-day is
+    # unavailable.
     theta_daily = abs(theta)
-    theta_cost  = theta_daily * (trade['hold_min'] / 1440.0)
+    entry_mfo = minutes_from_rth_open(trade.get('entry_time'))
+    exit_mfo  = minutes_from_rth_open(trade.get('exit_time'))
+    if entry_mfo is not None and exit_mfo is not None and exit_mfo > entry_mfo:
+        decay_frac = intraday_theta_decay_fraction(entry_mfo, exit_mfo)
+        theta_cost = theta_daily * (390.0 / 1440.0) * decay_frac   # 390 = RTH min
+    else:
+        theta_cost = theta_daily * (trade['hold_min'] / 1440.0)    # linear fallback
 
     # Transaction cost (half-spread at entry)
     spread_cost_dollar = (ask - bid) / 2.0 if not pd.isna(bid) and not pd.isna(ask) else mark * 0.02
@@ -604,7 +630,10 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         ['Period', 'Trades', 'Options WR', 'Underlying WR', 'Avg Theta Cost', 'Expectancy'],
         tod_rows,
     ) + '\n'
-    out += '_Note: afternoon theta cost is understated — EOD Greeks do not capture 0DTE acceleration after 14:00._\n\n'
+    out += ('_Note: theta cost uses the empirical intraday 0DTE decay curve '
+            '(lib.options_intraday) — morning-heavy, midday lull, terminal expiry '
+            'cliff. Absolute magnitude still scales an EOD theta Greek; see module '
+            'docstring._\n\n')
 
     # Underlying WR vs options WR mismatch analysis
     same_dir   = (df['underlying_win'] == df['option_win']).mean()
