@@ -62,3 +62,23 @@ def test_default_model_is_empirical(monkeypatch):
     default = estimate_options_pnl(_trade('12:30', '13:30'), _ATM)['theta_cost']
     linear = _theta_cost(_trade('12:30', '13:30'), 'linear', monkeypatch)
     assert default != pytest.approx(linear)
+
+
+def test_load_options_chain_requests_eod_only(monkeypatch):
+    # Since 2026-05-22 a date carries both EOD and ~84 intraday REALTIME rows
+    # per contract with data_source='alphavantage'. The loader must request
+    # market_session='EOD' so find_atm_option() can't pick an intraday row and
+    # apply the EOD-calibrated theta model to intraday Greeks.
+    import gcp.database as gdb
+    from scripts.analysis import options_pnl_translation as opt
+
+    captured = {}
+
+    def _fake_query(sql, params=None):
+        captured['sql'] = sql
+        return pd.DataFrame()          # empty -> loader returns empty, no parquet
+
+    monkeypatch.setenv('CLOUD_SQL_CONNECTION_NAME', 'test:conn:name')
+    monkeypatch.setattr(gdb, 'query_to_dataframe', _fake_query)
+    opt.load_options_chain('SPY', '2026-06-05')
+    assert "market_session = 'EOD'" in captured['sql']

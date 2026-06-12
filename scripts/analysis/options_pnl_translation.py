@@ -217,6 +217,13 @@ def load_options_chain(ticker: str, date) -> pd.DataFrame:
                 WHERE ticker = :ticker
                   AND snapshot_date = :snap_date
                   AND data_source = 'alphavantage'
+                  -- EOD only: since 2026-05-22 the av-options-realtime fetcher
+                  -- writes ~84 intraday REALTIME rows/contract/day with the same
+                  -- data_source. Without this filter find_atm_option() could pick
+                  -- an intraday row, so the EOD-calibrated theta model would be
+                  -- applied to intraday Greeks → unstable P&L. (Same EOD/REALTIME
+                  -- confusion fixed in the fetcher watermark/skip-existing.)
+                  AND market_session = 'EOD'
                 ORDER BY expiration, strike, option_type
             """
             df = query_to_dataframe(sql, {'ticker': ticker.upper(), 'snap_date': str(d)})
