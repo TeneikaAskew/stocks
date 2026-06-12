@@ -124,9 +124,16 @@ def process_ticker(ticker: str, fetch_date: str, api_key: str,
     """Fetch AV options for one ticker/date → Cloud SQL."""
     if skip_existing and is_cloud_sql_configured():
         from gcp.database import query_to_dataframe
+        # market_session = 'EOD' is load-bearing. The av-options-realtime
+        # fetcher (Track 0, 2026-05-22) writes data_source='alphavantage'
+        # rows every 5 min during RTH. Without this filter the existence
+        # check matches a REALTIME row, declares EOD "already ingested",
+        # and silently freezes EOD for SPY/IWM/QQQ — exactly what happened
+        # 2026-05-22 → 2026-06-11 (SPX, not in the realtime set, kept working).
         hit = query_to_dataframe(
             "SELECT 1 FROM etf_options_snapshots "
-            "WHERE ticker = :t AND snapshot_date = :d AND data_source = 'alphavantage' LIMIT 1",
+            "WHERE ticker = :t AND snapshot_date = :d AND data_source = 'alphavantage' "
+            "AND market_session = 'EOD' LIMIT 1",
             {"t": ticker, "d": fetch_date},
         )
         if not hit.empty:
@@ -156,15 +163,30 @@ def process_ticker(ticker: str, fetch_date: str, api_key: str,
         log.info("    ✓ upserted to Cloud SQL")
 
 
-def _weekday_range(start: date, end: date) -> list[str]:
-    """Return YYYY-MM-DD strings for all weekdays in [start, end] inclusive."""
-    out = []
-    cur = start
-    while cur <= end:
-        if cur.weekday() < 5:  # Mon-Fri
-            out.append(cur.strftime('%Y-%m-%d'))
-        cur += timedelta(days=1)
-    return out
+def _trading_days(start: date, end: date) -> list[str]:
+    """Return YYYY-MM-DD strings for every NYSE TRADING day in [start, end].
+
+    Uses pandas_market_calendars so weekends AND market holidays (e.g. Memorial
+    Day) are skipped — otherwise the backfill wastes an AV call fetching a chain
+    that doesn't exist for that date. Falls back to a plain Mon-Fri filter if the
+    calendar package is unavailable; that just restores the prior behaviour (a
+    holiday returns an empty chain and is skipped a step later).
+    """
+    try:
+        import pandas_market_calendars as mcal
+    except ImportError:
+        log.warning("pandas_market_calendars unavailable — backfill will include "
+                    "market holidays (they return empty chains and are skipped)")
+        out = []
+        cur = start
+        while cur <= end:
+            if cur.weekday() < 5:  # Mon-Fri
+                out.append(cur.strftime('%Y-%m-%d'))
+            cur += timedelta(days=1)
+        return out
+
+    days = mcal.get_calendar('NYSE').valid_days(start_date=start, end_date=end)
+    return [d.strftime('%Y-%m-%d') for d in days]
 
 
 def _resolve_start_from_latest(tickers: list[str]) -> date:
@@ -201,10 +223,16 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
 
     placeholders = ",".join(f":t{i}" for i in range(len(tickers)))
     params = {f"t{i}": t for i, t in enumerate(tickers)}
+    # market_session = 'EOD' is load-bearing — see process_ticker(). The MAX
+    # watermark must reflect the latest EOD snapshot, NOT the latest REALTIME
+    # one. Without this filter SPY/IWM/QQQ watermarks track their daily
+    # REALTIME rows, so --from-latest starts at today and never sweeps the
+    # missing EOD tail (the 2026-05-22 → 2026-06-11 freeze).
     df = query_to_dataframe(
         f"SELECT ticker, MAX(snapshot_date) AS d FROM etf_options_snapshots "
         f"WHERE ticker IN ({placeholders}) "
         f"AND data_source = 'alphavantage' "
+        f"AND market_session = 'EOD' "
         f"GROUP BY ticker",
         params,
     )
@@ -289,8 +317,8 @@ def main():
             log.info("start_date %s > end_date %s — nothing to fetch (already current)",
                      start, end)
             sys.exit(0)
-        fetch_dates = _weekday_range(start, end)
-        log.info("Backfill range: %s → %s (%d weekdays)", start, end, len(fetch_dates))
+        fetch_dates = _trading_days(start, end)
+        log.info("Backfill range: %s → %s (%d trading days)", start, end, len(fetch_dates))
     else:
         fetch_dates = [args.date or date.today().strftime('%Y-%m-%d')]
 

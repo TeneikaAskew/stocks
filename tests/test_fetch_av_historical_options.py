@@ -6,7 +6,7 @@ Production fetcher that writes to two source-of-truth stores
     - `_normalize_av_response` schema coercion + column rename
     - `process_ticker` dedup before upsert (AV occasionally returns
       duplicate contracts — same conflict_cols would crash UPSERT)
-    - `_weekday_range` skipping weekends in backfill mode
+    - `_trading_days` skipping weekends + market holidays in backfill mode
 
 No live AV API, no live Cloud SQL/GCS — every external call is patched.
 """
@@ -253,6 +253,31 @@ def test_process_ticker_skip_existing_short_circuits(monkeypatch):
     )
 
 
+def test_skip_existing_query_filters_eod_session(monkeypatch):
+    """Regression (2026-06-11): the skip-existing existence check MUST filter
+    market_session='EOD'. The av-options-realtime fetcher writes
+    data_source='alphavantage' rows every 5 min; without the EOD filter the
+    check matches a REALTIME row, declares EOD 'already ingested', and
+    silently freezes EOD ingestion (SPY/IWM/QQQ were frozen at 2026-05-22
+    for 3 weeks; SPX, not in the realtime set, kept working)."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    captured = {}
+
+    def _capture(sql, params=None, *a, **k):
+        captured["sql"] = sql
+        return pd.DataFrame([{"1": 1}])  # pretend a row exists → short-circuit
+
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr("gcp.database.query_to_dataframe", _capture)
+    monkeypatch.setattr(
+        mod.requests, "get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    mod.process_ticker("SPY", "2026-04-25", api_key="k", skip_existing=True)
+    assert "market_session = 'EOD'" in captured["sql"]
+
+
 def test_process_ticker_skips_when_av_returns_empty(monkeypatch):
     """No data from AV → no upsert, no crash."""
     from gcp.fetchers import fetch_av_historical_options as mod
@@ -275,16 +300,16 @@ def test_process_ticker_skips_when_av_returns_empty(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# _weekday_range — backfill mode
+# _trading_days — backfill mode
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_weekday_range_skips_weekends():
-    """Mon-Sun spans should drop Sat+Sun."""
-    from gcp.fetchers.fetch_av_historical_options import _weekday_range
+def test_trading_days_skips_weekends():
+    """Mon-Sun spans should drop Sat+Sun (holiday-free week → same as weekdays)."""
+    from gcp.fetchers.fetch_av_historical_options import _trading_days
 
-    # Mon 2026-04-20 → Sun 2026-04-26 (7 days)
-    out = _weekday_range(date(2026, 4, 20), date(2026, 4, 26))
+    # Mon 2026-04-20 → Sun 2026-04-26 (7 days, no market holidays)
+    out = _trading_days(date(2026, 4, 20), date(2026, 4, 26))
     assert out == [
         "2026-04-20",  # Mon
         "2026-04-21",  # Tue
@@ -295,20 +320,30 @@ def test_weekday_range_skips_weekends():
     ]
 
 
-def test_weekday_range_all_weekend_returns_empty():
-    """Sat → Sun → 0 weekdays."""
-    from gcp.fetchers.fetch_av_historical_options import _weekday_range
+def test_trading_days_all_weekend_returns_empty():
+    """Sat → Sun → 0 trading days."""
+    from gcp.fetchers.fetch_av_historical_options import _trading_days
 
-    out = _weekday_range(date(2026, 4, 25), date(2026, 4, 26))
+    out = _trading_days(date(2026, 4, 25), date(2026, 4, 26))
     assert out == []
 
 
-def test_weekday_range_single_day():
+def test_trading_days_single_day():
     """start == end on a weekday → 1 day."""
-    from gcp.fetchers.fetch_av_historical_options import _weekday_range
+    from gcp.fetchers.fetch_av_historical_options import _trading_days
 
-    out = _weekday_range(date(2026, 4, 22), date(2026, 4, 22))  # Wed
+    out = _trading_days(date(2026, 4, 22), date(2026, 4, 22))  # Wed
     assert out == ["2026-04-22"]
+
+
+def test_trading_days_skips_market_holiday():
+    """Memorial Day (Mon 2026-05-25) is a weekday but NOT a trading day."""
+    pytest.importorskip("pandas_market_calendars")
+    from gcp.fetchers.fetch_av_historical_options import _trading_days
+
+    out = _trading_days(date(2026, 5, 22), date(2026, 5, 27))
+    assert "2026-05-25" not in out                       # Memorial Day skipped
+    assert out == ["2026-05-22", "2026-05-26", "2026-05-27"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -352,6 +387,27 @@ def test_resolve_start_from_latest_uses_min_of_per_ticker_max(monkeypatch):
     )
     out = mod._resolve_start_from_latest(["SPY", "IWM", "SPX", "QQQ"])
     assert out == date(2026, 4, 17)
+
+
+def test_resolve_start_from_latest_query_filters_eod_session(monkeypatch):
+    """Regression (2026-06-11): the watermark MUST filter market_session='EOD'
+    so the daily REALTIME rows don't drag the per-ticker MAX to 'today' and
+    make --from-latest skip the missing EOD tail. With the filter, a ticker
+    whose latest EOD is 2026-05-22 resumes from 2026-05-23 even though it has
+    REALTIME rows dated today."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    captured = {}
+
+    def _capture(sql, params=None, *a, **k):
+        captured["sql"] = sql
+        # Simulate the DB AFTER the EOD filter is applied: latest EOD = 05-22.
+        return pd.DataFrame([{"ticker": "SPY", "d": pd.Timestamp("2026-05-22")}])
+
+    monkeypatch.setattr("gcp.database.query_to_dataframe", _capture)
+    out = mod._resolve_start_from_latest(["SPY"])
+    assert "market_session = 'EOD'" in captured["sql"]
+    assert out == date(2026, 5, 23)  # watermark + 1, proving it resumed from EOD
 
 
 def test_resolve_start_from_latest_newly_added_ticker_excluded(monkeypatch):
