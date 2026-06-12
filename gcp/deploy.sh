@@ -1188,9 +1188,12 @@ deploy_options_retention() {
     #   non-fatal: each window commits and the next run resumes from min(ts).
     #   --memory=512Mi (the job streams windows, holds none in memory).
     #   --max-retries=0 (Rule 0 default); a missed day is recovered next run.
-    #   NB: DELETE reuses freed space (caps growth, ~flat at steady state) — it
-    #   does NOT shrink the 51 GB to disk; a one-time VACUUM FULL / pg_repack
-    #   after the first large prune (post ~2026-06-22) reclaims that.
+    #   NB: the table is autovacuum-clean (0 dead tuples, autovacuum healthy).
+    #   Retention's daily deletes free space that autovacuum returns for REUSE
+    #   by the day's new inserts, so the physical file stays ~flat at live-data
+    #   size — no routine VACUUM FULL needed. VACUUM FULL only helps for a
+    #   one-time disk shrink after a large one-off delete (e.g. if the window is
+    #   ever cut below 30 days).
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0

@@ -8,10 +8,11 @@ Retention policy (decided 2026-06-11)
   REALTIME data only needs it recently — the premarket-brief gamma freshness
   probe (2 trading days), ``idx_etf_options_realtime`` ("last 15 days"), and the
   ~14-day intraday-theta calibration window — so 30 days preserves every use
-  with margin while bounding REALTIME at ~30 days (~78M rows). NB: DELETE frees
-  space for REUSE by new inserts (it caps unbounded growth — the table goes
-  ~flat at steady state) but does NOT return the existing 51 GB to disk; a
-  one-time VACUUM FULL / pg_repack after the first large prune reclaims that.
+  with margin while bounding REALTIME at ~30 days (~78M rows). The table is
+  autovacuum-clean (0 dead tuples); the daily deletes free space that autovacuum
+  returns for REUSE by new inserts, so the physical file stays ~flat at
+  live-data size — no routine VACUUM FULL needed (it would only help for a
+  one-time disk shrink after a large one-off delete).
 - ``market_session='EOD'`` (and anything else): NEVER deleted. The EOD-only
   models (gamma_levels_eod, options-derived direction, 0DTE theta calibration)
   depend on full history.
