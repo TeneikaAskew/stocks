@@ -969,6 +969,43 @@ deploy_build_options_greeks() {
         --quiet
 }
 
+# ── build-options-daily-features (Cloud Run Job, research image) ────────────
+# Materializes the daily options-flow features (PCR vol/OI, 25Δ IV skew, ATM IV)
+# into options_daily_features so the research harness reads ~2,600 rows/ticker
+# instead of re-scanning the ~52 GB etf_options_snapshots table on every
+# walk-forward run (the join dropped from ~9-20 min to ~0.8 s). Reuses the EXACT
+# live aggregation (lib/features/experimental/options_derived.build_materialized)
+# so stored values are byte-identical to recompute. Also the frontend-surfaceable
+# daily options-flow series.
+#   Backfill (one-off, per ticker — the 2026 REALTIME slice is slow, isolate it):
+#     gcloud run jobs execute build-options-daily-features --region us-east1 --wait \
+#       --task-timeout 10800 \
+#       --args="^|^-m|gcp.fetchers.build_options_daily_features|--tickers=IWM|--since=2016-01-01"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU mirrors build-options-greeks; the daily frame is tiny. max-retries 0.
+deploy_build_options_daily_features() {
+    echo "Deploying build-options-daily-features job (materialized options flow)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-options-daily-features \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-daily-features \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
+        --task-timeout 3600 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── build-realtime-gex (Cloud Run Job, research image) ──────────────────────
 # Materializes REAL intraday dealer GEX/DEX from the av-options-realtime feed
 # into realtime_gex_15m (gcp/build_realtime_gex.py). Default = incremental last
@@ -2970,6 +3007,12 @@ deploy_schedulers() {
     # real-intraday-DEX lead's eventual walk-forward (build-realtime-gex).
     _schedule "realtime-gex-daily" "0 17 * * 1-5"  "build-realtime-gex"
 
+    # Materialize daily options-flow features (PCR / IV-skew / ATM-IV) into
+    # options_daily_features at 10 PM ET weekdays — one hour after the EOD
+    # options fetch (av-options-daily, 21:00) lands. Keeps the research
+    # harness's fast join + the frontend options-flow series current.
+    _schedule "options-daily-features" "0 22 * * 1-5"  "build-options-daily-features"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
@@ -3239,6 +3282,7 @@ case "${1:-help}" in
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
     build-realtime-gex) deploy_build_realtime_gex ;;      # research image
+    build-options-daily-features) deploy_build_options_daily_features ;;  # research image
     magnitude-engine) deploy_magnitude_engine ;;
     magnitude-inference) build_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
