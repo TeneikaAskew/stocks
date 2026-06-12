@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { Search, Menu, X } from 'lucide-react';
 import { Button, Kbd } from '@heroui/react';
 import { Brand } from './Brand';
-import { FLAT_NAV } from './navConfig';
+import { FLAT_NAV, NAV_GROUPS } from './navConfig';
 import { useUser } from '@/hooks/useUser';
 
 interface TopTabsProps {
@@ -12,24 +13,27 @@ interface TopTabsProps {
 /**
  * Top-tabs navigation shell (default nav pattern).
  *
- * Layout contract: Brand and Search are pinned (shrink-0); only the tab list
- * scrolls. The tabs live in a `flex-1 min-w-0` region with its own horizontal
- * scroll, so a full nav can never push the Search button off the right edge.
- * (The prior single-flex layout with an `ml-auto` search cut the button off
- * once the 12 tabs exceeded the viewport.)
+ * Desktop (≥640px): Brand and Search are pinned (shrink-0); only the tab list
+ * scrolls in a `flex-1 min-w-0` region so a full nav can never push Search off
+ * the right edge.
+ *
+ * Mobile (<640px): the horizontal tab list is hidden and replaced by a
+ * hamburger that opens a grouped pop-up menu — a 12-tab horizontal scroller is
+ * unusable on a phone. The menu closes on selection or an outside tap.
  */
 export function TopTabs({ onOpenSearch }: TopTabsProps) {
   const { isAdmin } = useUser();
   const items = FLAT_NAV.filter((it) => !it.adminOnly || isAdmin);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <div className="top-tabs">
+    <div className="top-tabs relative">
       <div className="mr-2 shrink-0">
         <Brand />
       </div>
 
-      {/* Scrollable tab region — absorbs overflow so Brand + Search stay pinned. */}
-      <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {/* Desktop: scrollable tab region — absorbs overflow so Brand + Search stay pinned. */}
+      <nav className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] sm:flex [&::-webkit-scrollbar]:hidden">
         {items.map(({ path, label, icon: Icon, badge }) => (
           <NavLink
             key={path}
@@ -45,6 +49,9 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
         ))}
       </nav>
 
+      {/* Mobile: spacer pushes Search + hamburger to the right. */}
+      <div className="flex-1 sm:hidden" />
+
       <Button
         variant="ghost"
         size="sm"
@@ -56,6 +63,60 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
         <span className="hidden sm:inline">Search</span>
         <Kbd className="hidden sm:inline">⌘K</Kbd>
       </Button>
+
+      {/* Mobile: hamburger toggle. */}
+      <Button
+        isIconOnly
+        variant="ghost"
+        size="sm"
+        onPress={() => setMenuOpen((o) => !o)}
+        aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+        aria-expanded={menuOpen}
+        className="ml-1 shrink-0 sm:hidden"
+      >
+        {menuOpen ? <X size={18} /> : <Menu size={18} />}
+      </Button>
+
+      {/* Mobile: grouped pop-up menu. */}
+      {menuOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-40 sm:hidden"
+            aria-hidden="true"
+            onClick={() => setMenuOpen(false)}
+          />
+          <nav className="absolute right-2 top-full z-50 mt-1 max-h-[80vh] w-60 overflow-y-auto rounded-xl border border-[var(--surface-3)] bg-[var(--surface-1)] p-2 shadow-2xl sm:hidden">
+            {NAV_GROUPS.map((g) => {
+              const groupItems = g.items.filter((it) => !it.adminOnly || isAdmin);
+              if (groupItems.length === 0) return null;
+              return (
+                <div key={g.group} className="mb-1">
+                  <div className="nav-group-label">{g.group}</div>
+                  {groupItems.map(({ path, label, icon: Icon, badge }) => (
+                    <NavLink
+                      key={path}
+                      to={path}
+                      end={path === '/'}
+                      onClick={() => setMenuOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                          isActive
+                            ? 'bg-[var(--surface-2)] font-semibold text-[var(--brand)]'
+                            : 'text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)]'
+                        }`
+                      }
+                    >
+                      <Icon size={18} className="shrink-0" />
+                      <span className="flex-1">{label}</span>
+                      {badge && <span className={`nav-badge${badge.tone === 'live' ? ' live' : ''}`}>{badge.text}</span>}
+                    </NavLink>
+                  ))}
+                </div>
+              );
+            })}
+          </nav>
+        </>
+      )}
     </div>
   );
 }

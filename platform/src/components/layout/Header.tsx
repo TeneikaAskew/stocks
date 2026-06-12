@@ -3,15 +3,16 @@ import { useLocation } from 'react-router-dom';
 import { useThemeStore } from '@/stores/themeStore';
 import { DateSelector } from '@/components/shared/DateSelector';
 import { GuestBadge } from '@/components/auth/GuestBadge';
-import { SettingsMenu } from './SettingsMenu';
 
 /** Routes where the global historical DateSelector is functional. */
 const REVIEW_AWARE_ROUTES = ['/', '/live', '/charts', '/signals'];
 
 /**
- * Thin global utility bar: review-date control + theme + display settings.
- * The ticker is intentionally NOT shown here — symbol focus lives in a
- * per-page <TickerSelect> dropdown so no single ticker is omnipresent.
+ * Thin global utility bar: review-date control + a quick dark/light toggle.
+ * Full appearance config (theme, accent, density, nav pattern) lives on the
+ * dedicated Settings page (/settings) — not in this bar — so every page keeps
+ * a clean header. The ticker is intentionally NOT shown here — symbol focus
+ * lives in a per-page <TickerSelect> dropdown.
  */
 export function Header() {
   const { pathname } = useLocation();
@@ -31,7 +32,6 @@ export function Header() {
       >
         {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
       </button>
-      <SettingsMenu />
     </header>
   );
 }

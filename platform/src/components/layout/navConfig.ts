@@ -10,6 +10,7 @@ import {
   BrainCircuit,
   Zap,
   Settings,
+  SlidersHorizontal,
   HelpCircle,
   type LucideIcon,
 } from 'lucide-react';
@@ -62,6 +63,7 @@ export const NAV_GROUPS: NavGroup[] = [
     group: 'SYSTEM',
     items: [
       { path: '/admin', label: 'Admin', icon: Settings, adminOnly: true },
+      { path: '/settings', label: 'Settings', icon: SlidersHorizontal },
       { path: '/help', label: 'Help & Glossary', icon: HelpCircle },
     ],
   },

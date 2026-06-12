@@ -18,6 +18,7 @@ const InsightsPage = lazy(() => import('@/routes/InsightsPage'));
 const CatalystsPage = lazy(() => import('@/routes/CatalystsPage'));
 const AdminPage = lazy(() => import('@/routes/AdminPage'));
 const HelpPage = lazy(() => import('@/routes/HelpPage'));
+const SettingsPage = lazy(() => import('@/routes/SettingsPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,6 +58,7 @@ const router = createBrowserRouter([
       { path: '/catalysts', errorElement, element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },
       { path: '/admin', errorElement, element: <Suspense fallback={<PageLoader />}><AdminPage /></Suspense> },
       { path: '/help', errorElement, element: <Suspense fallback={<PageLoader />}><HelpPage /></Suspense> },
+      { path: '/settings', errorElement, element: <Suspense fallback={<PageLoader />}><SettingsPage /></Suspense> },
     ],
   },
 ]);
