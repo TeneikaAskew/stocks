@@ -13,7 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.analysis.phase6_playbook import compute_card_stats
+from scripts.analysis.phase6_playbook import (
+    compute_card_stats, generate_card, write_playbook_cards,
+)
 
 TARGET_BPS = 30.0   # +0.30%
 STOP_BPS = 15.0     # -0.15%
@@ -131,3 +133,86 @@ def test_overnight_gap_does_not_leak_into_trade():
     out = _stats(df, _mask(df, [0]), "CALL")
     assert out["resolved"] == 0
     assert out["skipped_insufficient_bars"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Structured-record path (playbook_cards table) — the typed source of truth
+# that replaces regex-scraping the markdown.
+# ---------------------------------------------------------------------------
+
+_GOOD_STATS = {
+    "count": 100, "resolved": 90, "win_rate": 0.48, "avg_return_bps": -0.10,
+    "confidence": "Moderate", "avg_mfe": 12.0, "avg_mae": -8.0,
+}
+
+
+def _card(stats, direction="CALL"):
+    return generate_card(
+        1, "Bullish Continuation (2U-2U-2U)", "IWM",
+        "  * Daily bar is 2U\n  * 15m bar is 2U\n  * 1m shows: 2U -> 2U -> 2U",
+        ["RSI between 40-65", "Price above VWAP"],
+        direction, stats, "+0.30%", "-0.15%", "10-15 min",
+        ["RSI > 75 -> take profit"], ["IWM mean-reverts more"],
+    )
+
+
+def test_generate_card_returns_markdown_and_record():
+    md, rec = _card(_GOOD_STATS)
+    assert isinstance(md, str) and "IWM CARD 1" in md           # markdown intact
+    assert rec["card_num"] == 1
+    assert rec["name"] == "IWM CARD 1: Bullish Continuation (2U-2U-2U)"
+    assert rec["direction"] == "CALL"
+    assert rec["win_rate"] == pytest.approx(0.48)               # fraction, not %
+    assert rec["avg_return_bps"] == pytest.approx(-0.10)
+    assert rec["sample_n"] == 90
+    assert rec["conditions"] == ["RSI between 40-65", "Price above VWAP"]
+    assert "Daily bar is 2U" in rec["description"]
+    assert rec["target_pct"] == "+0.30%" and rec["stop_pct"] == "-0.15%"
+
+
+def test_generate_card_record_keeps_missing_as_none_not_zero():
+    # Unresolved pattern -> NaN stats must surface as None, never 0 (3.7).
+    stats = {"count": 5, "resolved": 0, "win_rate": float("nan"),
+             "avg_return_bps": float("nan"), "confidence": "Low",
+             "avg_mfe": float("nan"), "avg_mae": float("nan")}
+    _md, rec = _card(stats, "PUT")
+    assert rec["win_rate"] is None
+    assert rec["avg_return_bps"] is None
+    assert rec["sample_n"] is None
+    assert rec["avg_mfe_bps"] is None and rec["avg_mae_bps"] is None
+
+
+def test_write_playbook_cards_upserts_typed_rows(monkeypatch):
+    import gcp.database as dbmod
+    captured = {}
+
+    def fake_upsert(df, table, conflict_cols, **kw):
+        captured["df"] = df
+        captured["table"] = table
+        captured["conflict"] = conflict_cols
+        return len(df)
+
+    monkeypatch.setattr(dbmod, "upsert_dataframe", fake_upsert)
+
+    _md, rec = _card(_GOOD_STATS)
+    n = write_playbook_cards("iwm", [rec])
+
+    assert n == 1
+    assert captured["table"] == "playbook_cards"
+    assert captured["conflict"] == ["ticker", "card_num"]
+    row = captured["df"].iloc[0]
+    assert row["ticker"] == "IWM"                      # upper-cased
+    assert row["card_num"] == 1
+    # conditions passed as a Python list so the reflected JSONB column
+    # serializes it exactly once (no double-encoding).
+    assert row["conditions"] == ["RSI between 40-65", "Price above VWAP"]
+    assert row["win_rate"] == pytest.approx(0.48)
+
+
+def test_write_playbook_cards_empty_is_noop(monkeypatch):
+    import gcp.database as dbmod
+    called = {"n": 0}
+    monkeypatch.setattr(dbmod, "upsert_dataframe",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    assert write_playbook_cards("IWM", []) == 0
+    assert called["n"] == 0                              # never touched the DB

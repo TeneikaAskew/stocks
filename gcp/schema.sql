@@ -1166,6 +1166,33 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     CONSTRAINT uq_premarket_analysis UNIQUE (analysis_date, ticker)
 );
 
+-- Structured playbook decision cards — the typed source of truth that
+-- /api/playbook reads, replacing the fragile regex-parse of the
+-- phase6_playbook_{ticker}.md prose (a label tweak used to silently null a
+-- card's avg_return). Written by scripts/analysis/phase6_playbook.py
+-- (run with --write-db / PHASE6_WRITE_DB=1). One row per (ticker, card_num).
+-- win_rate (fraction 0..1) and avg_return_bps are NULL — never 0 — when the
+-- pattern never resolved a same-session trade (CLAUDE.md §3.7).
+CREATE TABLE IF NOT EXISTS playbook_cards (
+    ticker           VARCHAR(10)      NOT NULL,
+    card_num         INTEGER          NOT NULL,
+    name             TEXT             NOT NULL,
+    direction        VARCHAR(8)       NOT NULL,   -- CALL | PUT | NEUTRAL
+    description      TEXT,
+    conditions       JSONB            NOT NULL DEFAULT '[]'::jsonb,
+    win_rate         DOUBLE PRECISION,            -- fraction in [0,1]; NULL = unresolved
+    avg_return_bps   DOUBLE PRECISION,            -- per-trade realised bps; NULL = unresolved
+    sample_n         INTEGER,                     -- resolved trades backing the stats
+    target_pct       VARCHAR(12),
+    stop_pct         VARCHAR(12),
+    avg_mfe_bps      DOUBLE PRECISION,
+    avg_mae_bps      DOUBLE PRECISION,
+    confidence       VARCHAR(16),                 -- Low | Moderate | Good | High
+    generated_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pk_playbook_cards PRIMARY KEY (ticker, card_num)
+);
+
 CREATE TABLE IF NOT EXISTS economic_events (
     id              BIGSERIAL PRIMARY KEY,
     event_date      DATE         NOT NULL,

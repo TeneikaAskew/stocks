@@ -461,3 +461,49 @@ def test_evaluate_validates_snapshot_shape(client):
         json={"snapshot": bad, "conditions": ["RSI > 50"]},
     )
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Structured playbook_cards source (_cards_from_db) — the typed path that
+# replaces regex-scraping the markdown. Verifies the fraction->percent and
+# bps->percent conversions and that NaN/NULL never become a fabricated 0.
+# ---------------------------------------------------------------------------
+
+def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
+    pb = evaluator
+    import numpy as np
+    import pandas as pd
+    import gcp.database as dbmod
+
+    rows = pd.DataFrame([
+        {"card_num": 1, "name": "IWM CARD 1: Bullish", "description": "two-up",
+         "direction": "CALL", "conditions": ["RSI 40-65", "Above VWAP"],
+         "win_rate": 0.48, "avg_return_bps": -10.0, "sample_n": 90},
+        {"card_num": 2, "name": "IWM CARD 2: Bearish", "description": None,
+         "direction": "PUT", "conditions": '["Below VWAP"]',   # JSON string form
+         "win_rate": np.nan, "avg_return_bps": np.nan, "sample_n": 0},
+    ])
+    monkeypatch.setattr(dbmod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(dbmod, "query_to_dataframe", lambda sql, params=None: rows)
+
+    cards = pb._cards_from_db("IWM")
+    assert cards is not None and len(cards) == 2
+
+    c1 = cards[0]
+    assert c1["win_rate"] == 48.0            # fraction -> percent
+    assert c1["avg_return"] == pytest.approx(-0.10)   # bps -> percent
+    assert c1["conditions"] == ["RSI 40-65", "Above VWAP"]
+    assert c1["direction"] == "CALL"
+
+    c2 = cards[1]
+    assert c2["win_rate"] is None            # NaN -> None, never 0 (3.7)
+    assert c2["avg_return"] is None
+    assert c2["conditions"] == ["Below VWAP"]   # JSON string parsed
+    assert c2["description"] == ""
+
+
+def test_cards_from_db_bridges_when_cloud_sql_off(monkeypatch, evaluator):
+    pb = evaluator
+    import gcp.database as dbmod
+    monkeypatch.setattr(dbmod, "is_cloud_sql_configured", lambda: False)
+    assert pb._cards_from_db("IWM") is None      # signals caller to use markdown

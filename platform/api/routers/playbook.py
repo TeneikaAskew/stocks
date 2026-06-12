@@ -18,6 +18,7 @@ gs://adept-mountain-474619-d4-trading-data/raw/reports/
 
 All three endpoints cache with a 24h TTL because markdown files change rarely.
 """
+import json
 import logging
 import re
 import sys
@@ -179,15 +180,89 @@ def _download_markdown(blob_path_relative: str) -> str:
         raise HTTPException(status_code=502, detail=f"Failed to download report from GCS: {exc}")
 
 
+def _cards_from_db(ticker_upper: str) -> list | None:
+    """Read structured cards from the playbook_cards table.
+
+    Returns the card list, or None when the structured source is unavailable
+    (Cloud SQL not configured, or no rows yet) so the caller can bridge to the
+    markdown parse. This is the typed path that replaces regex-scraping prose:
+    a formatting change in the markdown can no longer null a card's stats.
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    except Exception:
+        return None
+    if not is_cloud_sql_configured():
+        return None
+
+    df = query_to_dataframe(
+        "SELECT card_num, name, description, direction, conditions, "
+        "win_rate, avg_return_bps, sample_n FROM playbook_cards "
+        "WHERE ticker = :t ORDER BY card_num",
+        {"t": ticker_upper},
+    )
+    if df is None or df.empty:
+        return None
+
+    import math
+
+    def _pct(v, scale):
+        # NULL/NaN stays None — never coerced to 0 (CLAUDE.md §3.7).
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(f):
+            return None
+        return round(f * scale, 1 if scale == 100 else 2)
+
+    cards = []
+    for _, row in df.iterrows():
+        cond = row["conditions"]
+        if isinstance(cond, str):
+            try:
+                cond = json.loads(cond)
+            except (ValueError, TypeError):
+                cond = []
+        cards.append({
+            "id": f"card_{int(row['card_num'])}",
+            "name": row["name"],
+            "description": row["description"] or "",
+            "direction": row["direction"],
+            "conditions": list(cond) if cond is not None else [],
+            # win_rate stored as fraction → percent (48.0); bps → percent (-0.10),
+            # matching the historical markdown-parsed contract the frontend expects.
+            "win_rate": _pct(row["win_rate"], 100),
+            "avg_return": _pct(row["avg_return_bps"], 0.01),
+        })
+    return cards
+
+
 @router.get("/api/playbook/{ticker}")
 async def get_playbook(ticker: str):
-    """Read phase6_playbook_{ticker}.md from GCS and return structured setup cards."""
+    """Return structured setup cards for a ticker.
+
+    Primary source is the typed ``playbook_cards`` Cloud SQL table. Until that
+    table is populated (it is written by phase6 ``--write-db`` after deploy), we
+    bridge to parsing ``phase6_playbook_{ticker}.md`` from GCS so the UI keeps
+    working through the cutover.
+    """
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
     if ticker_upper in _PLAYBOOK_CACHE:
         return _PLAYBOOK_CACHE[ticker_upper]
 
+    db_cards = _cards_from_db(ticker_upper)
+    if db_cards:
+        result = {"ticker": ticker_upper, "cards": db_cards, "source": "cloud_sql"}
+        _PLAYBOOK_CACHE[ticker_upper] = result
+        return result
+
+    # Bridge: structured table not yet populated — parse the markdown.
+    log.info("playbook_cards empty for %s; bridging to markdown parse", ticker_upper)
     blob_path = f"{GCS_PREFIX}phase6_playbook_{ticker_lower}.md"
     content = _download_markdown(blob_path)
     if not content:
@@ -197,6 +272,7 @@ async def get_playbook(ticker: str):
         )
 
     result = _parse_playbook_markdown(content, ticker)
+    result["source"] = "markdown"
     _PLAYBOOK_CACHE[ticker_upper] = result
     return result
 

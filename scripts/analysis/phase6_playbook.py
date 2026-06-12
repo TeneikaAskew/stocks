@@ -9,6 +9,7 @@ Output: reports/phase6_playbook_{ticker}.md + reports/phase6_playbook_combined.m
 """
 
 import sys
+import os
 import argparse
 import pandas as pd
 import numpy as np
@@ -221,8 +222,15 @@ def generate_card(card_num: int, title: str, ticker: str,
                   direction: str, stats: Dict,
                   target_pct: str, stop_pct: str,
                   hold_time: str, warnings: List[str],
-                  ticker_notes: List[str]) -> str:
-    """Generate a single playbook card in markdown."""
+                  ticker_notes: List[str]) -> Tuple[str, Dict]:
+    """Generate a single playbook card.
+
+    Returns ``(markdown, record)`` — the human-readable markdown card AND a
+    structured record dict. The record is the source of truth the
+    ``playbook_cards`` table (and hence ``/api/playbook``) is built from, so the
+    UI reads typed columns instead of regex-scraping the prose. Both come from
+    the same inputs, so they cannot drift.
+    """
 
     card = f"\n---\n\n"
     card += md_header(f"{ticker} CARD {card_num}: {title}", 3)
@@ -268,12 +276,53 @@ def generate_card(card_num: int, title: str, ticker: str,
         card += f"  - {note}\n"
     card += "\n"
 
-    return card
+    # Structured record — mirrors what the markdown displays, but typed.
+    # win_rate is a fraction in [0, 1]; avg_return_bps is per-trade bps. Both
+    # are None (not 0) when the pattern never resolved a same-session trade —
+    # missing must never be confused with a real value (CLAUDE.md §3.7).
+    desc_bullets = [
+        ln.strip().lstrip('*').strip()
+        for ln in visual_setup.splitlines() if ln.strip()
+    ]
+
+    def _num(v):
+        return None if v is None or pd.isna(v) else float(v)
+
+    record = {
+        'card_num': card_num,
+        'name': f"{ticker} CARD {card_num}: {title}",
+        'direction': direction,
+        'description': '; '.join(desc_bullets[:3]),
+        'conditions': list(checklist),
+        'win_rate': _num(stats.get('win_rate')),
+        'avg_return_bps': _num(stats.get('avg_return_bps')),
+        'sample_n': int(stats.get('resolved') or 0) or None,
+        'target_pct': target_pct,
+        'stop_pct': stop_pct,
+        'avg_mfe_bps': _num(stats.get('avg_mfe')),
+        'avg_mae_bps': _num(stats.get('avg_mae')),
+        'confidence': stats.get('confidence'),
+    }
+
+    return card, record
 
 
-def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
-    """Build all 12 playbook cards for a ticker."""
+def build_all_cards(ticker: str, df: pd.DataFrame,
+                    labels: pd.Series) -> Tuple[str, List[Dict]]:
+    """Build all 12 playbook cards for a ticker.
+
+    Returns ``(markdown, records)`` — the concatenated markdown report and the
+    list of structured card records (one per card) for ``playbook_cards``.
+    """
     report = ""
+    card_records: List[Dict] = []
+
+    def card(*args, **kwargs):
+        """Collect each card's structured record while accumulating markdown."""
+        md, rec = generate_card(*args, **kwargs)
+        card_records.append(rec)
+        return md
+
     ind = IndicatorConfig()
     rsi_col = ind.rsi_col
     close = df['Close'] if 'Close' in df.columns else df['Last']
@@ -303,7 +352,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 1: Bullish Continuation (2U-2U-2U) ---
     mask = (prev2 == '2U') & (prev == '2U') & (labels == '2U')
     stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         1, "Bullish Continuation (2U-2U-2U)", ticker,
         "  * Daily bar is 2U (higher high, higher low)\n"
         "  * 15m bar is 2U\n"
@@ -328,7 +377,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 2: Bearish Continuation (2D-2D-2D) ---
     mask = (prev2 == '2D') & (prev == '2D') & (labels == '2D')
     stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
-    report += generate_card(
+    report += card(
         2, "Bearish Continuation (2D-2D-2D)", ticker,
         "  * Daily bar is 2D (lower high, lower low)\n"
         "  * 15m bar is 2D\n"
@@ -353,7 +402,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 3: Bullish Reversal 2-1-2 ---
     mask = (prev2 == '2D') & (prev == '1') & (labels == '2U')
     stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         3, "Bullish Reversal (2D-1-2U)", ticker,
         "  * Previous bars: 2D (bearish) -> 1 (inside bar compression)\n"
         "  * Current bar: Breaking above the inside bar's high (2U)",
@@ -375,7 +424,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 4: Bearish Reversal 2-1-2 ---
     mask = (prev2 == '2U') & (prev == '1') & (labels == '2D')
     stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
-    report += generate_card(
+    report += card(
         4, "Bearish Reversal (2U-1-2D)", ticker,
         "  * Previous bars: 2U (bullish) -> 1 (inside bar compression)\n"
         "  * Current bar: Breaking below the inside bar's low (2D)",
@@ -398,7 +447,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     mask = labels == '3'
     bullish_3 = mask & (close > close.shift(1))
     stats_bull = compute_card_stats(df, labels, bullish_3, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         5, "Outside Bar Breakout (Type 3 Bullish)", ticker,
         "  * Current bar is Type 3 (higher high AND lower low than prev bar)\n"
         "  * Close is above previous bar's close (bullish resolution)",
@@ -420,7 +469,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 6: ORB Breakout Bullish ---
     mask = (orb_trend == 1) & (labels.isin(['2U', '3']))
     stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         6, "ORB Breakout — Bullish", ticker,
         "  * Price has broken above 30m Opening Range High\n"
         "  * Current Strat bar confirms: 2U or 3",
@@ -443,7 +492,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 7: ORB Breakout Bearish ---
     mask = (orb_trend == -1) & (labels.isin(['2D', '3']))
     stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
-    report += generate_card(
+    report += card(
         7, "ORB Breakout — Bearish", ticker,
         "  * Price has broken below 30m Opening Range Low\n"
         "  * Current Strat bar confirms: 2D or 3",
@@ -473,7 +522,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = pd.Series(False, index=df.index)
     mr_target_bps = 20  # mean-reversion uses a tighter fixed target than the trend profile
     stats = compute_card_stats(df, labels, mask, 'PUT', mr_target_bps, ps_bps)
-    report += generate_card(
+    report += card(
         8, "ORB Failure / Mean Reversion", ticker,
         "  * Price broke above ORB high, then FAILED and returned inside range\n"
         "  * Current Strat shows 2D (confirming the failure)",
@@ -498,7 +547,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     else:
         mask = pd.Series(False, index=df.index)
     stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         9, "Support Bounce (at Historical Level)", ticker,
         "  * Price is at previous day's low (support level)\n"
         "  * Current bar is 2U (bouncing off support)",
@@ -523,7 +572,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     else:
         mask = pd.Series(False, index=df.index)
     stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
-    report += generate_card(
+    report += card(
         10, "Resistance Rejection (at Historical Level)", ticker,
         "  * Price is at previous day's high (resistance level)\n"
         "  * Current bar is 2D (rejecting off resistance)",
@@ -549,7 +598,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     else:
         mask = pd.Series(False, index=df.index)
     stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         11, "Order Block Test (Institutional Zone)", ticker,
         "  * Price is testing an identified order block zone\n"
         "  * Current bar is 2U (bouncing off the institutional zone)",
@@ -572,7 +621,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # All timeframes aligned (approximate: EMA cross + ORB trend + 2U or 2D)
     bull_ftfc = (ema_cross == 1) & (orb_trend == 1) & (labels == '2U') & (rsi.between(40, 65))
     stats = compute_card_stats(df, labels, bull_ftfc, 'CALL', ct_bps, cs_bps)
-    report += generate_card(
+    report += card(
         12, "FTFC Maximum Conviction (All Aligned)", ticker,
         "  * ALL timeframes showing the same direction\n"
         "  * EMAs bullish, ORB bullish, Strat 2U, RSI healthy\n"
@@ -595,7 +644,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         _get_ticker_notes(ticker, 'ftfc_conviction'),
     )
 
-    return report
+    return report, card_records
 
 
 def _get_ticker_notes(ticker: str, card_type: str) -> List[str]:
@@ -809,8 +858,56 @@ def generate_quick_reference() -> str:
 # Main Runner
 # ---------------------------------------------------------------------------
 
-def run_phase6(tickers: list = None):
-    """Run Phase 6 — generate all playbook cards."""
+def write_playbook_cards(ticker: str, records: List[Dict]) -> int:
+    """Upsert the structured playbook cards into Cloud SQL (``playbook_cards``).
+
+    This is the typed source of truth ``/api/playbook`` reads — it replaces the
+    fragile regex-scrape of the markdown. A DB/schema failure is INTERNAL (our
+    code), so it is raised, never swallowed into a fake success (CLAUDE.md §3.7).
+    """
+    if not records:
+        return 0
+
+    from gcp.database import upsert_dataframe
+
+    rows = []
+    for r in records:
+        rows.append({
+            'ticker': ticker.upper(),
+            'card_num': r['card_num'],
+            'name': r['name'],
+            'direction': r['direction'],
+            'description': r.get('description') or None,
+            # JSONB column — pass the Python list; upsert_dataframe builds a
+            # typed pg_insert against the reflected JSONB column, so SQLAlchemy
+            # serializes it exactly once (a pre-dumped string would double-encode).
+            'conditions': r.get('conditions') or [],
+            'win_rate': r.get('win_rate'),
+            'avg_return_bps': r.get('avg_return_bps'),
+            'sample_n': r.get('sample_n'),
+            'target_pct': r.get('target_pct'),
+            'stop_pct': r.get('stop_pct'),
+            'avg_mfe_bps': r.get('avg_mfe_bps'),
+            'avg_mae_bps': r.get('avg_mae_bps'),
+            'confidence': r.get('confidence'),
+        })
+
+    n = upsert_dataframe(
+        pd.DataFrame(rows), 'playbook_cards',
+        conflict_cols=['ticker', 'card_num'],
+    )
+    progress(f"Upserted {n} playbook_cards rows", ticker)
+    return n
+
+
+def run_phase6(tickers: list = None, write_db: bool = False):
+    """Run Phase 6 — generate all playbook cards.
+
+    When ``write_db`` is set (``--write-db`` / ``PHASE6_WRITE_DB=1``) the
+    structured card records are upserted into the ``playbook_cards`` Cloud SQL
+    table, which is the source of truth ``/api/playbook`` reads. Markdown is
+    still written for human consumption.
+    """
     if tickers is None:
         tickers = TICKERS
 
@@ -838,11 +935,14 @@ def run_phase6(tickers: list = None):
         report += f"Data: {df.index.min()} to {df.index.max()} ({len(df):,} bars)\n"
         report += "\n12 decision cards for real-time trading.\n"
 
-        cards = build_all_cards(ticker, df, labels)
+        cards, card_records = build_all_cards(ticker, df, labels)
         report += cards
 
         save_report(report, f'phase6_playbook_{ticker.lower()}.md')
         combined_report += f"\n---\n\n" + cards
+
+        if write_db:
+            write_playbook_cards(ticker, card_records)
 
         progress("Phase 6 complete!", ticker)
 
@@ -852,5 +952,10 @@ def run_phase6(tickers: list = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Phase 6: Playbook')
     parser.add_argument('--tickers', nargs='+', default=TICKERS)
+    parser.add_argument(
+        '--write-db', action='store_true',
+        default=os.environ.get('PHASE6_WRITE_DB') == '1',
+        help='Upsert structured cards into the playbook_cards Cloud SQL table',
+    )
     args = parser.parse_args()
-    run_phase6(tickers=args.tickers)
+    run_phase6(tickers=args.tickers, write_db=args.write_db)
