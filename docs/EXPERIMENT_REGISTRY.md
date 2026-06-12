@@ -163,13 +163,45 @@ research notes.
   seed-replication is a no-op on deterministic LightGBM).
 - **MAG Phase 4 (cross-asset) never executed** (backfill pending); **Phase 5
   (gamma) deferred** — both moot after gate-7.
-- **options_derived** direction family **INFEASIBLE** (pg8000 timeout) — needs a
-  pre-materialized `option_daily_features` table to test.
+- ~~**options_derived** direction family **INFEASIBLE** (pg8000 timeout)~~ —
+  **RESOLVED 2026-06-12** (§A6b): built the materialized `options_daily_features`
+  table (`gcp/fetchers/build_options_daily_features.py`); the family then ran
+  **with IV** (skew + ATM-IV) and **FAILS direction on all 6 cells** like the
+  other three families.
 - **HONEST-GATE7** (time-of-day IV / like-for-like / real gamma-scalp P&L) and
   **FLOW-OFI** (order-flow) proposed, **not built**.
 - **Calibration decision scoped to IWM**; per-ticker re-verify pending.
 - **FTFC weights** are a locked placeholder, not a walk-forward output yet.
 - Exact row counts for several tables: **unknown** (not recorded).
+
+## A6b. 2026-06 post-data-fix revalidation campaign
+
+After the NULL-population fixes landed (market_data_daily 5 indicator cols,
+strat_features `atr_expansion`/`tf`, daily_rates), every verdict was re-checked
+on the corrected data to separate "experiment was faulty" from "data was
+faulty." **Data epoch:** Cloud SQL as of 2026-06-11/12.
+
+**Phase 0 — null validation (all ✅):** market_data_daily 5 cols populated
+(warm-up only); strat_features `tf` 0 nulls + `atr_expansion` warm-up-only;
+daily_rates 0 nulls; the 4 direction feature-family sources all populated &
+null-clean — `news_sentiment` 101,939 rows (dense 2025+), `^VIX/^VIX3M/^VVIX`
+0 null closes, `etf_options_snapshots` IV/delta 0 nulls; mag phase-2
+`market_data_indicators` daily 2000→2026 (runnable); mag phase-4
+`market_data_cross_asset` **empty → phase-4 stays data-blocked**.
+
+**Revalidation verdicts:**
+| exp | prior | re-run (clean data) | result |
+|---|---|---|---|
+| **E-01 STRAT-TYPE** | ✅ pass | re-run beat **+0.18–0.24** all folds (origin/main already carried the `calibration='none'` guard that had made it crash; verified live) | ✅ **CONFIRMED PASS** |
+| **E-07 STRAT-DIR** | ❌ 24/24 | exhaustive sweep on clean data: **4 families** (news, cross-asset, vol-regime, **options-flow incl. IV** — the never-run one, unblocked via the materialized table) × **6 feature sets** (spine / +flow / flow-only / drop-gamma / drop-categorical / top-K-MI) × **3 targets** (uncond / high-conviction / close-to-close). **Every cell beat ≤ 0**; up-share ~0.50 even on decisive bars | ❌ **CONFIRMED FAIL — exhaustively.** Direction is unlearnable, not a feature/target/data artifact |
+| **E-09 MAG gates 1–4** | ✅ structure | phase0/1/2/3 `--all-cells` re-run; **phase1 now reads the fixed `atr_expansion`** — same strong EXPLOSIVE lifts (3–15×) | ✅ **CONFIRMED PASS** |
+| **E-12 MAG gate-7** | ❌ 0/23 | re-run on clean data: IWM realized/implied 0.55–1.47, **1/8 pass** | ❌ **CONFIRMED FAIL (VRP wall).** New: `etf_options_snapshots` now carries a `REALTIME` intraday session (~83 snaps/day) → an honest intraday-IV gate-7 is becoming possible going forward (Gap-1); signed order flow (Gap-2) still vendor-blocked |
+
+**New artifacts (this campaign):**
+- `gcp/research/strat_engine/dir_feature_sweep.py` — the feature-set × target sweep (reuses the production harness; no throwaway).
+- `gcp/fetchers/build_options_daily_features.py` + `options_daily_features` table + `lib/features/experimental/options_derived.py` materialized loader — **perf fix**: the daily options-flow join went from ~9–20 min (52 GB scan) to **0.8 s** (indexed lookup), and now always includes IV. Doubles as a frontend-surfaceable daily options-flow series.
+
+**Open follow-ups:** `etf_options_snapshots` is 52 GB / bloated (needs a non-transactional `VACUUM` runner); wire `build_options_daily_features` into the daily fetcher schedule to keep the materialized table current.
 
 ## A7. Source artifacts consulted
 

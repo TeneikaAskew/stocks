@@ -337,6 +337,94 @@ def _compute_daily_features(opt: pd.DataFrame) -> pd.DataFrame:
     return daily
 
 
+MATERIALIZED_TABLE = "options_daily_features"
+
+
+def _load_materialized(engine, ticker: str, since: str, until: str
+                       ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read the pre-aggregated daily options features (perf fix).
+
+    Returns (pcr_df, iv_df) in the SAME column shapes the live `_load_daily_pcr`
+    and `_load_iv_features` return, so `_compute_daily_features_sql` produces
+    byte-identical output regardless of source. Empty frames if the table has
+    no rows for this ticker/range (caller falls back to live aggregation)."""
+    sql = text(
+        f"""
+        SELECT snapshot_date, call_vol, put_vol, call_oi, put_oi,
+               iv_put25, iv_call25, atm_front_iv, atm_back_iv
+        FROM {MATERIALIZED_TABLE}
+        WHERE ticker = :tk AND snapshot_date >= :s AND snapshot_date <= :u
+        ORDER BY snapshot_date
+        """
+    )
+    with engine.connect() as conn:
+        m = pd.read_sql(sql, conn, params={"tk": ticker, "s": since, "u": until})
+    if m.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    m["snapshot_date"] = pd.to_datetime(m["snapshot_date"]).dt.date
+    pcr_df = m[["snapshot_date", "call_vol", "put_vol", "call_oi", "put_oi"]].copy()
+    iv_df = m[["snapshot_date", "iv_put25", "iv_call25",
+               "atm_front_iv", "atm_back_iv"]].copy()
+    # iv_df is "present" only if any IV value is non-null (mirrors the live
+    # loader returning empty when IV is disabled).
+    if iv_df[["iv_put25", "iv_call25", "atm_front_iv"]].notna().to_numpy().sum() == 0:
+        iv_df = pd.DataFrame()
+    return pcr_df, iv_df
+
+
+def build_materialized(engine, ticker: str, since: str, until: str) -> int:
+    """Populate options_daily_features for one ticker by running the EXACT live
+    aggregation (`_load_daily_pcr` + `_load_iv_features`) once and upserting the
+    raw per-date aggregates. Idempotent (ON CONFLICT DO UPDATE). Returns rows
+    written. This is the slow path — run once per ticker offline; the research
+    harness then reads the fast table."""
+    from sqlalchemy import text as _text
+    pcr_df = _load_daily_pcr(engine, ticker, since, until)
+    iv_df = _load_iv_features(engine, ticker, since, until)
+    if pcr_df.empty and iv_df.empty:
+        log.warning("build_materialized: no rows for %s [%s..%s]", ticker, since, until)
+        return 0
+    base = pcr_df if not pcr_df.empty else iv_df[["snapshot_date"]].copy()
+    merged = base.merge(iv_df, on="snapshot_date", how="outer") if not iv_df.empty else pcr_df
+    merged = merged.sort_values("snapshot_date")
+    for col in ("call_vol", "put_vol", "call_oi", "put_oi",
+                "iv_put25", "iv_call25", "atm_front_iv", "atm_back_iv"):
+        if col not in merged.columns:
+            merged[col] = np.nan
+    upsert = _text(
+        f"""
+        INSERT INTO {MATERIALIZED_TABLE}
+          (ticker, snapshot_date, call_vol, put_vol, call_oi, put_oi,
+           iv_put25, iv_call25, atm_front_iv, atm_back_iv, updated_at)
+        VALUES (:tk, :d, :cv, :pv, :co, :po, :p25, :c25, :af, :ab, now())
+        ON CONFLICT (ticker, snapshot_date) DO UPDATE SET
+          call_vol=EXCLUDED.call_vol, put_vol=EXCLUDED.put_vol,
+          call_oi=EXCLUDED.call_oi, put_oi=EXCLUDED.put_oi,
+          iv_put25=EXCLUDED.iv_put25, iv_call25=EXCLUDED.iv_call25,
+          atm_front_iv=EXCLUDED.atm_front_iv, atm_back_iv=EXCLUDED.atm_back_iv,
+          updated_at=now()
+        """
+    )
+
+    def _nn(v):  # NaN/NaT → None for the driver
+        return None if v is None or (isinstance(v, float) and np.isnan(v)) else float(v)
+
+    n = 0
+    with engine.begin() as conn:
+        for _, r in merged.iterrows():
+            conn.execute(upsert, {
+                "tk": ticker, "d": r["snapshot_date"],
+                "cv": _nn(r.get("call_vol")), "pv": _nn(r.get("put_vol")),
+                "co": _nn(r.get("call_oi")), "po": _nn(r.get("put_oi")),
+                "p25": _nn(r.get("iv_put25")), "c25": _nn(r.get("iv_call25")),
+                "af": _nn(r.get("atm_front_iv")), "ab": _nn(r.get("atm_back_iv")),
+            })
+            n += 1
+    log.info("build_materialized: upserted %d rows for %s [%s..%s]",
+             n, ticker, since, until)
+    return n
+
+
 def add_options_features(df: pd.DataFrame, ticker: str,
                           engine) -> pd.DataFrame:
     """Family-3 feature joiner."""
@@ -361,15 +449,25 @@ def add_options_features(df: pd.DataFrame, ticker: str,
     # contract count exploded), the env var
     # OPTIONS_FAMILY_INCLUDE_IV=1 opts in to the slow IV path; the
     # default ships only the two PCR features.
-    pcr_df = _load_daily_pcr(engine, ticker, since, until)
-    iv_df = pd.DataFrame()
-    if os.environ.get("OPTIONS_FAMILY_INCLUDE_IV") == "1":
-        iv_df = _load_iv_features(engine, ticker, since, until)
-        log.info("loaded daily PCR for %d dates, daily IV for %d dates",
+    # Prefer the materialized daily table (perf fix): a trivial indexed lookup
+    # of ~2,600 rows instead of re-scanning the 52 GB raw table every run. The
+    # materialized path always carries IV (it's free once pre-aggregated), so
+    # OPTIONS_FAMILY_INCLUDE_IV is only consulted on the live fallback. Set
+    # OPTIONS_FAMILY_NO_MATERIALIZED=1 to force the live aggregation.
+    pcr_df, iv_df = (pd.DataFrame(), pd.DataFrame())
+    if os.environ.get("OPTIONS_FAMILY_NO_MATERIALIZED") != "1":
+        pcr_df, iv_df = _load_materialized(engine, ticker, since, until)
+        if not pcr_df.empty or not iv_df.empty:
+            log.info("loaded daily features from %s: PCR %d dates, IV %d dates",
+                     MATERIALIZED_TABLE, len(pcr_df), len(iv_df))
+    if pcr_df.empty and iv_df.empty:
+        # Live fallback (slow): scans the raw table. IV gated by env var.
+        pcr_df = _load_daily_pcr(engine, ticker, since, until)
+        iv_df = pd.DataFrame()
+        if os.environ.get("OPTIONS_FAMILY_INCLUDE_IV") == "1":
+            iv_df = _load_iv_features(engine, ticker, since, until)
+        log.info("materialized miss → live aggregation: PCR %d dates, IV %d dates",
                  len(pcr_df), len(iv_df))
-    else:
-        log.info("loaded daily PCR for %d dates (IV joiner skipped; set "
-                 "OPTIONS_FAMILY_INCLUDE_IV=1 to enable)", len(pcr_df))
     if pcr_df.empty and iv_df.empty:
         raise RuntimeError(f"options-derived family INFEASIBLE: no EOD AV "
                            f"options for ticker={ticker} in [{since}, {until}]")
