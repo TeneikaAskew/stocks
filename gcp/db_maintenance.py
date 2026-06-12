@@ -8,10 +8,16 @@ opens an AUTOCOMMIT connection and runs the maintenance command directly.
 
 Why this exists: `etf_options_snapshots` grew to ~52 GB once the REALTIME
 intraday session landed (1.19M rows/ticker/day). After bulk inserts of that
-size, the visibility map and planner statistics go stale, so even index-eligible
-aggregates fall back to a parallel seq scan. A `VACUUM (ANALYZE)` refreshes both,
-restoring index-only scans and sane row estimates on the raw table. (Research
-reads go through the materialized `options_daily_features` table either way.)
+size, the visibility map and planner statistics go stale. A `VACUUM (ANALYZE)`
+refreshes both — restoring index-only scans for the IV aggregates (delta / IV are
+in the `idx_etf_options_eod_agg` covering index) and sane row estimates.
+
+NOTE (verified 2026-06-12): VACUUM alone does NOT make the PCR aggregate
+(SUM(volume)) fast on the raw table — `volume` is not in the covering index, so
+the planner still seq-scans. Full raw-table PCR query-ability needs `volume` +
+`open_interest` added to the covering index (a slow, write-locking rebuild best
+done in a maintenance window). Research + frontend reads go through the
+materialized `options_daily_features` table, so this is a low-priority follow-up.
 
 Run via the research image (full gcp/ + Cloud SQL connector). Pick a long
 task-timeout — VACUUM on a 52 GB table can take tens of minutes:
