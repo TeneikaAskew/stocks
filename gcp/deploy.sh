@@ -1344,6 +1344,50 @@ deploy_av_options_realtime() {
     gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
 }
 
+# Daily retention prune for etf_options_snapshots — deletes REALTIME rows older
+# than 30 days (EOD rows are never touched). Companion to the two options jobs
+# above: same image, same DB secrets, no AV key (it does no API calls). Wired
+# into the scheduler via `options-retention-daily` (see deploy_schedulers).
+# Entrypoint gcp/options_retention_job.py; policy + capacity math documented
+# there. Added 2026-06-11 to cap REALTIME's ~2.6M rows/day unbounded growth.
+deploy_options_retention() {
+    echo "Deploying etf-options-retention job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},RETENTION_DAYS=30"
+
+    # Sizing per CLAUDE.md Rule 0:
+    #   Steady state deletes ~2.6M rows/day in hourly snapshot_ts windows per
+    #   ticker. Row-delete + 3-index maintenance measured ~175k rows / ~52s, so
+    #   a full day's prune is ~13 min wall-clock; --task-timeout=3600 gives
+    #   ~4.6x headroom and covers a few-day backlog. A timeout mid-run is
+    #   non-fatal: each window commits and the next run resumes from min(ts).
+    #   --memory=512Mi (the job streams windows, holds none in memory).
+    #   --max-retries=0 (Rule 0 default); a missed day is recovered next run.
+    #   NB: the table is autovacuum-clean (0 dead tuples, autovacuum healthy).
+    #   Retention's daily deletes free space that autovacuum returns for REUSE
+    #   by the day's new inserts, so the physical file stays ~flat at live-data
+    #   size — no routine VACUUM FULL needed. VACUUM FULL only helps for a
+    #   one-time disk shrink after a large one-off delete (e.g. if the window is
+    #   ever cut below 30 days).
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 3600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.options_retention_job"
+        --set-secrets=DB_PASS=db-trading-pass:latest
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create etf-options-retention "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update etf-options-retention "${common_flags[@]}"
+}
+
 # REMOVED 2026-05-28: deploy_av_options_historical_intraday and the
 # companion fetcher gcp/fetchers/fetch_av_historical_options_intraday.py.
 # The premise was wrong — AV's HISTORICAL_OPTIONS endpoint accepts a
@@ -2060,6 +2104,7 @@ deploy_fetchers() {
     deploy_fetch_alphavantage
     deploy_av_options_backfill
     deploy_av_options_realtime
+    deploy_options_retention
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -3013,6 +3058,13 @@ deploy_schedulers() {
     # harness's fast join + the frontend options-flow series current.
     _schedule "options-daily-features" "0 22 * * 1-5"  "build-options-daily-features"
 
+    # Daily 02:00 ET REALTIME-options retention prune (deletes REALTIME rows
+    # >30 days old; EOD kept forever). Runs every day — REALTIME only
+    # accumulates on weekdays but the prune is idempotent and a no-op when
+    # nothing is eligible. 02:00 ET is well clear of the */5 RTH writer and the
+    # 21:00 backfill. Added 2026-06-11 to cap ~2.6M REALTIME rows/day growth.
+    _schedule "options-retention-daily" "0 2 * * *"  "etf-options-retention"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
@@ -3306,6 +3358,7 @@ case "${1:-help}" in
     earnings-sweep) build_image && deploy_earnings_sweep ;;
     earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
     intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
+    options-retention) build_image && deploy_options_retention ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     indicator-correlation) build_image && deploy_indicator_correlation ;;
