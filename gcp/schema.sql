@@ -198,6 +198,34 @@ CREATE INDEX IF NOT EXISTS idx_etf_options_realtime
     ON etf_options_snapshots (ticker, snapshot_ts DESC)
     WHERE market_session = 'REALTIME';
 
+-- Materialized daily options-flow features (2026-06: perf fix).
+-- etf_options_snapshots grew to ~52 GB once the REALTIME intraday session
+-- landed (1.19M rows/ticker/day). The daily PCR / IV-skew / ATM-IV aggregates
+-- the research harness needs (one row per ticker per day) were being recomputed
+-- by scanning that 52 GB table on EVERY walk-forward run — the planner won't
+-- use the partial EOD index because the PCR aggregate needs `volume` (not in
+-- the covering index) and the bloat skews estimates to a seq scan (~20 min for
+-- the 2026 slice alone). This table pre-aggregates those values ONCE (~2,600
+-- rows/ticker) so the join is a trivial indexed lookup, and it doubles as a
+-- frontend-surfaceable daily options-flow series. Raw aggregate columns are
+-- stored (not the derived/shifted features) so the existing
+-- lib/features/experimental/options_derived.py:_compute_daily_features_sql
+-- produces byte-identical features whether read from here or recomputed live.
+CREATE TABLE IF NOT EXISTS options_daily_features (
+    ticker         VARCHAR(10) NOT NULL,
+    snapshot_date  DATE        NOT NULL,
+    call_vol       DOUBLE PRECISION,   -- SUM(volume) calls (EOD AV chain)
+    put_vol        DOUBLE PRECISION,   -- SUM(volume) puts
+    call_oi        DOUBLE PRECISION,   -- SUM(open_interest) calls
+    put_oi         DOUBLE PRECISION,   -- SUM(open_interest) puts
+    iv_put25       DOUBLE PRECISION,   -- front-month 25Δ put IV
+    iv_call25      DOUBLE PRECISION,   -- front-month 25Δ call IV
+    atm_front_iv   DOUBLE PRECISION,   -- front-month ATM IV (avg calls+puts)
+    atm_back_iv    DOUBLE PRECISION,   -- back-month ATM IV (currently NULL upstream)
+    updated_at     TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ticker, snapshot_date)
+);
+
 
 -- Phase A (Heatseeker-style grid): per-snapshot per-strike per-expiration
 -- aggregate. Mirrors the 1-D aggregate `lib.gamma.aggregate_by_strike` but
