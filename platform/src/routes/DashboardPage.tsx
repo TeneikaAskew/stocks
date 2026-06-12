@@ -20,6 +20,7 @@ import {
   AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
+import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useInsightReport } from '@/hooks/useInsights';
@@ -175,14 +176,37 @@ export default function DashboardPage() {
   const { data: quote } = useLiveQuote(activeTicker, true);
   const isOpen = status?.is_open ?? false;
 
+  // Review-date wiring: '/' is in REVIEW_AWARE_ROUTES, so the header shows a
+  // historical date/time picker on this page. When a date is selected, every
+  // data fetch below must resolve as-of that date instead of live.
+  const { reviewDate, reviewTime } = useReviewDateStore();
+  const isReview = reviewDate !== null;
+  const reviewCompact = reviewDate?.replace(/-/g, '') ?? '';
+  const reviewSuffix = isReview
+    ? `&end_date=${reviewDate}${reviewTime ? `&end_time=${reviewTime}` : ''}`
+    : '';
+  // Cutoff for the intraday chart (bars are UTC-labeled ET seconds — see
+  // pricePoints). Defaults to the 16:00 ET close when no review time is set.
+  const reviewCutoff = useMemo(() => {
+    if (!isReview || !reviewDate) return null;
+    const [y, m, d] = reviewDate.split('-').map(Number);
+    const [hh, mm] = (reviewTime ?? '16:00').split(':').map(Number);
+    return Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
+  }, [isReview, reviewDate, reviewTime]);
+
   const { data: brief } = useFetch<BriefResponse>(
-    ['brief', activeTicker],
-    `/api/dashboard/brief/${activeTicker}`,
+    ['brief', activeTicker, reviewDate ?? 'live'],
+    isReview
+      ? `/api/dashboard/brief/${activeTicker}?date=${reviewDate}`
+      : `/api/dashboard/brief/${activeTicker}`,
     true,
-    isOpen ? 15_000 : false,
+    isOpen && !isReview ? 15_000 : false,
   );
   const { data: playbook } = useFetch<PlaybookResponse>(['playbook', activeTicker], `/api/playbook/${activeTicker}`);
-  const { data: signalsResp } = useFetch<SignalsResponse>(['signals', activeTicker], `/api/signals/${activeTicker}?limit=20`);
+  const { data: signalsResp } = useFetch<SignalsResponse>(
+    ['signals', activeTicker, reviewDate ?? 'live', reviewTime ?? 'eod'],
+    `/api/signals/${activeTicker}?limit=20${reviewSuffix}`,
+  );
   const { data: catalysts } = useFetch<CatalystsResponse>(
     ['catalysts-overview', todayISO()],
     `/api/catalysts/events?date_from=${todayISO()}&date_to=${isoPlusDays(7)}`,
@@ -190,8 +214,12 @@ export default function DashboardPage() {
   const { data: insight } = useInsightReport(activeTicker);
 
   // Daily reference (prev close + week range) and intraday bars for the chart.
-  // Use the brief's latest daily date as the anchor when available, else today.
-  const anchorDate = (brief?.daily_indicators?.date ?? todayISO()).replace(/-/g, '');
+  // In review mode anchor to the selected date; else the brief's latest daily
+  // date when available, else today. This makes reference + the hourly month
+  // (monthCode) resolve as-of the review date too.
+  const anchorDate = isReview
+    ? reviewCompact
+    : (brief?.daily_indicators?.date ?? todayISO()).replace(/-/g, '');
   const monthCode = anchorDate.slice(0, 6);
   const { data: reference } = useFetch<ReferenceResponse>(
     ['reference', activeTicker, anchorDate],
@@ -224,6 +252,7 @@ export default function DashboardPage() {
       return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
     };
     const inSession = bars.filter((b) => {
+      if (reviewCutoff !== null && b.time > reviewCutoff) return false;  // as-of cutoff
       const h = new Date(b.time * 1000).getUTCHours();
       return h >= 4 && h <= 16;
     });
@@ -243,7 +272,7 @@ export default function DashboardPage() {
           label: `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`,
         };
       });
-  }, [hourly]);
+  }, [hourly, reviewCutoff]);
 
   const sessionBoundary = useMemo(() => {
     if (pricePoints.length < 2) return null;
