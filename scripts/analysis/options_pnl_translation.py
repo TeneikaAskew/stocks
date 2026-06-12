@@ -61,6 +61,7 @@ Usage:
 """
 
 import sys
+import os
 import argparse
 import warnings
 from copy import deepcopy
@@ -461,13 +462,19 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:
     # g(exit) − g(entry). Fall back to the linear model when time-of-day is
     # unavailable.
     theta_daily = abs(theta)
-    entry_mfo = minutes_from_rth_open(trade.get('entry_time'))
-    exit_mfo  = minutes_from_rth_open(trade.get('exit_time'))
-    if entry_mfo is not None and exit_mfo is not None and exit_mfo > entry_mfo:
-        decay_frac = intraday_theta_decay_fraction(entry_mfo, exit_mfo)
-        theta_cost = theta_daily * (390.0 / 1440.0) * decay_frac   # 390 = RTH min
+    # THETA_MODEL=linear forces the legacy hold_min/1440 distribution — kept so
+    # the empirical recalibration can be diffed against the old behaviour (run
+    # the report once each way). Default 'empirical' uses the calibrated curve.
+    if os.environ.get('THETA_MODEL', 'empirical').strip().lower() == 'linear':
+        theta_cost = theta_daily * (trade['hold_min'] / 1440.0)
     else:
-        theta_cost = theta_daily * (trade['hold_min'] / 1440.0)    # linear fallback
+        entry_mfo = minutes_from_rth_open(trade.get('entry_time'))
+        exit_mfo  = minutes_from_rth_open(trade.get('exit_time'))
+        if entry_mfo is not None and exit_mfo is not None and exit_mfo > entry_mfo:
+            decay_frac = intraday_theta_decay_fraction(entry_mfo, exit_mfo)
+            theta_cost = theta_daily * (390.0 / 1440.0) * decay_frac  # 390 = RTH min
+        else:
+            theta_cost = theta_daily * (trade['hold_min'] / 1440.0)   # linear fallback
 
     # Transaction cost (half-spread at entry)
     spread_cost_dollar = (ask - bid) / 2.0 if not pd.isna(bid) and not pd.isna(ask) else mark * 0.02
