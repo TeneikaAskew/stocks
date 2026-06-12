@@ -385,3 +385,84 @@ def _load_intraday_bars(ticker: str, target_date: date) -> Optional[pd.DataFrame
     if df is None or df.empty:
         return None
     return df
+
+
+# ---------------------------------------------------------------------------
+# Intraday 0DTE theta-decay shape  g(t)
+# ---------------------------------------------------------------------------
+# A 0DTE option loses ~all of its time value between the RTH open (09:30 ET)
+# and expiry (16:00 ET). That decay is NOT linear in clock time — the naive
+# ``theta * hold_min/1440`` assumption that consumers used distributes it
+# evenly. ``g(t)`` below is the empirically-measured cumulative fraction of
+# the day's ATM time-value that has decayed by ``t`` minutes after the open.
+#
+# Provenance: calibrated from ``etf_options_snapshots`` market_session='REALTIME'
+# 5-minute ATM-straddle marks (ATM = argmin_K(call+put) over strikes with
+# |delta| in [0.15, 0.85], which excludes stale penny wings). Pooled over
+# SPY+IWM+QQQ × 6 sessions (2026-05-27 … 2026-06-10); the three tickers'
+# curves agreed to within ~0.05 at every knot, so a single shared curve is
+# used. Monotonicity enforced via cumulative-max. Re-derive with
+# ``scripts/analysis/calibrate_intraday_theta.py`` as more sessions accrue.
+#
+# Shape vs. linear: morning decays FASTER than linear (open IV crush), a
+# midday LULL where g falls below linear (~12:00–15:00), then the terminal
+# expiry CLIFF — only ~0.80 has decayed by the last observed bar (~15:55) and
+# the remaining ~0.20 is lost in the final minutes into the 16:00 settle.
+# The 385→390 segment encodes that cliff (last observed bar → expiry pin=1.0).
+_RTH_OPEN_MIN  = 9 * 60 + 30          # 09:30 ET, minutes since midnight
+_RTH_CLOSE_MIN = 16 * 60              # 16:00 ET
+_RTH_SPAN_MIN  = float(_RTH_CLOSE_MIN - _RTH_OPEN_MIN)   # 390
+
+_THETA_DECAY_KNOT_MIN = np.array(
+    [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 360, 375, 385, 390],
+    dtype=float)
+_THETA_DECAY_KNOT_G = np.array(
+    [0.000, 0.136, 0.224, 0.287, 0.344, 0.388, 0.451, 0.502,
+     0.536, 0.582, 0.631, 0.664, 0.721, 0.772, 0.803, 1.000],
+    dtype=float)
+
+
+def minutes_from_rth_open(ts) -> Optional[float]:
+    """Minutes elapsed since the 09:30 ET RTH open for a trade timestamp.
+
+    Returns ``None`` for null / unparseable input so callers can fall back to
+    the naive linear model rather than silently mis-time the decay. Tz-aware
+    timestamps are converted to US/Eastern; naive timestamps are assumed to be
+    exchange wall-clock (the convention the strat backtest already uses).
+    """
+    if ts is None:
+        return None
+    try:
+        t = pd.Timestamp(ts)
+    except (ValueError, TypeError):
+        return None
+    if pd.isna(t):
+        return None
+    if t.tzinfo is not None:
+        t = t.tz_convert("America/New_York")
+    return float(t.hour * 60 + t.minute - _RTH_OPEN_MIN)
+
+
+def cumulative_theta_decay(min_from_open: float) -> float:
+    """g(t): cumulative fraction (0..1) of the RTH day's 0DTE time-value decayed
+    by ``min_from_open`` minutes after the open. Clamps to 0 before the open and
+    1 after the close (``np.interp`` saturates at the endpoint knots)."""
+    return float(np.interp(min_from_open,
+                           _THETA_DECAY_KNOT_MIN, _THETA_DECAY_KNOT_G))
+
+
+def intraday_theta_decay_fraction(entry_min_from_open: float,
+                                  exit_min_from_open: float) -> float:
+    """Fraction of the RTH day's 0DTE time-decay realized over a hold window,
+    i.e. ``g(exit) - g(entry)``.
+
+    This replaces the naive linear ``(exit - entry) / 390``. Multiply by the
+    daily theta budget ``|theta| * (390/1440)`` to get the dollar theta cost of
+    the hold — a full-day hold returns 1.0, preserving the prior full-day
+    magnitude while redistributing it realistically across the session.
+    Returns 0.0 for a non-positive window.
+    """
+    if exit_min_from_open <= entry_min_from_open:
+        return 0.0
+    return (cumulative_theta_decay(exit_min_from_open)
+            - cumulative_theta_decay(entry_min_from_open))
