@@ -60,10 +60,59 @@ def get_ticker_profile(ticker: str) -> Dict[str, float]:
 # Card data computation
 # ---------------------------------------------------------------------------
 
+# Hold-window horizons (minutes) swept for every card so the UI can show
+# win rate / avg return BY timeframe and surface the best-avg-return hold.
+HOLD_HORIZONS = (5, 15, 30, 60)
+
+
 def compute_card_stats(df: pd.DataFrame, labels: pd.Series,
                        pattern_mask: pd.Series, direction: str,
                        target_bps: float, stop_bps: float,
-                       time_stop_min: int = 30) -> Dict:
+                       time_stop_min: int = 30,
+                       horizons=HOLD_HORIZONS) -> Dict:
+    """Score the card at its primary hold and attach a per-horizon sweep.
+
+    The primary stats (win_rate, avg_return_bps, …) are computed at
+    ``time_stop_min`` exactly as before. The SAME target/stop is then scored at
+    each hold window in ``horizons`` and attached so the card can show win rate
+    / avg return BY timeframe:
+
+      * ``horizons``     — list of {minutes, win_rate, avg_return_bps, sample_n}
+      * ``best_horizon`` — the entry with the highest avg_return_bps among
+                           horizons that resolved at least one trade.
+
+    All returns are price-only basis points — NO costs (commission / slippage /
+    spread) are modelled anywhere.
+    """
+    primary = _score_trades(df, labels, pattern_mask, direction,
+                            target_bps, stop_bps, time_stop_min)
+    if primary.get('count', 0) == 0:
+        return primary
+
+    sweep = []
+    for h in horizons:
+        s = _score_trades(df, labels, pattern_mask, direction,
+                          target_bps, stop_bps, h)
+        sweep.append({
+            'minutes': int(h),
+            'win_rate': s.get('win_rate'),
+            'avg_return_bps': s.get('avg_return_bps'),
+            'sample_n': int(s.get('resolved') or 0),
+        })
+    primary['horizons'] = sweep
+
+    valid = [x for x in sweep
+             if x['sample_n'] and x['avg_return_bps'] is not None
+             and not pd.isna(x['avg_return_bps'])]
+    if valid:
+        primary['best_horizon'] = max(valid, key=lambda x: x['avg_return_bps'])
+    return primary
+
+
+def _score_trades(df: pd.DataFrame, labels: pd.Series,
+                  pattern_mask: pd.Series, direction: str,
+                  target_bps: float, stop_bps: float,
+                  time_stop_min: int = 30) -> Dict:
     """Compute triggered target/stop/time-stop statistics for one card.
 
     Each pattern occurrence is treated as a trade entered at the close of
@@ -259,7 +308,24 @@ def generate_card(card_num: int, title: str, ticker: str,
         card += f"  - Stop: {stop_pct}\n"
         card += f"  - Expected hold: {hold_time}\n"
         card += f"  - Avg MFE: {fmt_bps(stats['avg_mfe'])}\n"
-        card += f"  - Avg MAE: {fmt_bps(stats['avg_mae'])}\n\n"
+        card += f"  - Avg MAE: {fmt_bps(stats['avg_mae'])}\n"
+        # Win rate / avg return BY hold window (price-only, no costs).
+        sweep = stats.get('horizons') or []
+        if sweep:
+            cells = []
+            for h in sweep:
+                hw = h.get('win_rate'); ha = h.get('avg_return_bps')
+                hw = '—' if hw is None or pd.isna(hw) else f"{hw:.0%}"
+                ha = '—' if ha is None or pd.isna(ha) else fmt_bps(ha)
+                cells.append(f"{h['minutes']}min {hw}/{ha}")
+            card += f"  - By hold window: {' | '.join(cells)}\n"
+        best = stats.get('best_horizon')
+        if best:
+            bw = best.get('win_rate')
+            bw = '—' if bw is None or pd.isna(bw) else f"{bw:.1%}"
+            card += (f"  - Best avg return: {best['minutes']}-min hold "
+                     f"({bw} win, {fmt_bps(best['avg_return_bps'])})\n")
+        card += "\n"
     else:
         card += f"**IF ALL CONFIRMED -> {direction} ENTRY**\n"
         card += f"  - Insufficient data for this pattern on {ticker}\n\n"
@@ -288,6 +354,15 @@ def generate_card(card_num: int, title: str, ticker: str,
     def _num(v):
         return None if v is None or pd.isna(v) else float(v)
 
+    # Per-hold-window sweep + best-avg-return hold (price-only, no costs).
+    sweep = [
+        {'minutes': h['minutes'], 'win_rate': _num(h.get('win_rate')),
+         'avg_return_bps': _num(h.get('avg_return_bps')),
+         'sample_n': int(h.get('sample_n') or 0)}
+        for h in (stats.get('horizons') or [])
+    ]
+    best = stats.get('best_horizon') or {}
+
     record = {
         'card_num': card_num,
         'name': f"{ticker} CARD {card_num}: {title}",
@@ -302,6 +377,10 @@ def generate_card(card_num: int, title: str, ticker: str,
         'avg_mfe_bps': _num(stats.get('avg_mfe')),
         'avg_mae_bps': _num(stats.get('avg_mae')),
         'confidence': stats.get('confidence'),
+        'horizons': sweep,
+        'best_horizon_min': int(best['minutes']) if best.get('minutes') is not None else None,
+        'best_horizon_win_rate': _num(best.get('win_rate')),
+        'best_horizon_avg_bps': _num(best.get('avg_return_bps')),
     }
 
     return card, record
@@ -890,6 +969,11 @@ def write_playbook_cards(ticker: str, records: List[Dict]) -> int:
             'avg_mfe_bps': r.get('avg_mfe_bps'),
             'avg_mae_bps': r.get('avg_mae_bps'),
             'confidence': r.get('confidence'),
+            # Per-hold-window sweep (JSONB) + best-avg-return hold.
+            'horizons': r.get('horizons') or [],
+            'best_horizon_min': r.get('best_horizon_min'),
+            'best_horizon_win_rate': r.get('best_horizon_win_rate'),
+            'best_horizon_avg_bps': r.get('best_horizon_avg_bps'),
         })
 
     n = upsert_dataframe(

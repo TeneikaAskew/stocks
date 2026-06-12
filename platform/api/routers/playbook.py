@@ -197,8 +197,9 @@ def _cards_from_db(ticker_upper: str) -> list | None:
 
     df = query_to_dataframe(
         "SELECT card_num, name, description, direction, conditions, "
-        "win_rate, avg_return_bps, sample_n FROM playbook_cards "
-        "WHERE ticker = :t ORDER BY card_num",
+        "win_rate, avg_return_bps, sample_n, horizons, "
+        "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
+        "FROM playbook_cards WHERE ticker = :t ORDER BY card_num",
         {"t": ticker_upper},
     )
     if df is None or df.empty:
@@ -225,14 +226,42 @@ def _cards_from_db(ticker_upper: str) -> list | None:
             return ""
         return str(v)
 
+    def _bps(v):
+        # Horizon returns are sub-bps; keep them in raw bps (not % rounded to
+        # 2dp, which would collapse -0.18 bps to -0.00%). NULL/NaN -> None.
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(f) else round(f, 2)
+
+    def _jsonish(v):
+        # JSONB comes back as a Python list/dict (or a string if the driver
+        # didn't adapt it). NULL → empty list.
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return []
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return []
+        return v
+
     cards = []
     for _, row in df.iterrows():
-        cond = row["conditions"]
-        if isinstance(cond, str):
-            try:
-                cond = json.loads(cond)
-            except (ValueError, TypeError):
-                cond = []
+        cond = _jsonish(row["conditions"])
+        # Per-hold-window sweep → percents (win_rate fraction→%, bps→%).
+        horizons = [
+            {
+                "minutes": int(h["minutes"]),
+                "win_rate": _pct(h.get("win_rate"), 100),
+                "avg_return_bps": _bps(h.get("avg_return_bps")),
+                "sample_n": h.get("sample_n"),
+            }
+            for h in _jsonish(row["horizons"]) if h.get("minutes") is not None
+        ]
         cards.append({
             "id": f"card_{int(row['card_num'])}",
             "name": row["name"],
@@ -243,6 +272,14 @@ def _cards_from_db(ticker_upper: str) -> list | None:
             # matching the historical markdown-parsed contract the frontend expects.
             "win_rate": _pct(row["win_rate"], 100),
             "avg_return": _pct(row["avg_return_bps"], 0.01),
+            # Win rate / avg return BY hold window + the best-avg-return hold.
+            "horizons": horizons,
+            "best_horizon_min": (None if row["best_horizon_min"] is None
+                                 or (isinstance(row["best_horizon_min"], float)
+                                     and math.isnan(row["best_horizon_min"]))
+                                 else int(row["best_horizon_min"])),
+            "best_horizon_win_rate": _pct(row["best_horizon_win_rate"], 100),
+            "best_horizon_avg_bps": _bps(row["best_horizon_avg_bps"]),
         })
     return cards
 

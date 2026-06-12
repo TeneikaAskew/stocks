@@ -1188,6 +1188,14 @@ CREATE TABLE IF NOT EXISTS playbook_cards (
     avg_mfe_bps      DOUBLE PRECISION,
     avg_mae_bps      DOUBLE PRECISION,
     confidence       VARCHAR(16),                 -- Low | Moderate | Good | High
+    -- Win rate / avg return BY hold window (5/15/30/60 min) so the UI can show
+    -- the stat by timeframe; horizons = [{minutes, win_rate, avg_return_bps,
+    -- sample_n}, ...]. best_horizon_* = the hold with the highest avg return.
+    -- All price-only basis points — no costs modelled.
+    horizons              JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    best_horizon_min      INTEGER,
+    best_horizon_win_rate DOUBLE PRECISION,       -- fraction in [0,1]
+    best_horizon_avg_bps  DOUBLE PRECISION,
     generated_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
 
     CONSTRAINT pk_playbook_cards PRIMARY KEY (ticker, card_num)

@@ -209,6 +209,48 @@ def test_write_playbook_cards_upserts_typed_rows(monkeypatch):
     assert row["win_rate"] == pytest.approx(0.48)
 
 
+def test_horizon_sweep_attached_and_best_is_argmax():
+    # A single session that drifts up then reverts, so different hold windows
+    # yield different avg returns -> the best-horizon pick is non-trivial.
+    closes = [100, 100.05, 100.10, 100.18, 100.30, 100.20, 100.10, 100.05] + [100.0] * 60
+    rows = [(c, c + 0.02, c - 0.02, c) for c in closes]
+    df = _bars(rows)
+    out = compute_card_stats(df, pd.Series("2U", index=df.index),
+                             _mask(df, [0]), "CALL", 30.0, 15.0, time_stop_min=30)
+    hz = out["horizons"]
+    assert [h["minutes"] for h in hz] == [5, 15, 30, 60]           # all four windows
+    # primary stats == the 30-min horizon entry (consistency)
+    h30 = next(h for h in hz if h["minutes"] == 30)
+    assert out["win_rate"] == h30["win_rate"]
+    assert out["avg_return_bps"] == h30["avg_return_bps"]
+    # best_horizon is the argmax of avg_return_bps among resolved windows
+    valid = [h for h in hz if h["sample_n"]]
+    assert out["best_horizon"] in hz
+    assert out["best_horizon"]["avg_return_bps"] == max(h["avg_return_bps"] for h in valid)
+
+
+def test_no_occurrence_has_no_horizon_sweep():
+    df = _bars([(100, 100, 100, 100)] * 3)
+    out = compute_card_stats(df, pd.Series("2U", index=df.index), _mask(df, []),
+                             "CALL", 30.0, 15.0)
+    assert out == {"count": 0}        # count-0 path returns before the sweep
+
+
+def test_generate_card_record_carries_horizons_and_best():
+    stats = dict(_GOOD_STATS)
+    stats["horizons"] = [
+        {"minutes": 5, "win_rate": 0.46, "avg_return_bps": -0.38, "sample_n": 1074},
+        {"minutes": 60, "win_rate": 0.36, "avg_return_bps": -0.18, "sample_n": 1074},
+    ]
+    stats["best_horizon"] = {"minutes": 60, "win_rate": 0.36, "avg_return_bps": -0.18, "sample_n": 1074}
+    md, rec = _card(stats)
+    assert "By hold window:" in md and "Best avg return: 60-min hold" in md
+    assert [h["minutes"] for h in rec["horizons"]] == [5, 60]
+    assert rec["best_horizon_min"] == 60
+    assert rec["best_horizon_avg_bps"] == pytest.approx(-0.18)
+    assert rec["best_horizon_win_rate"] == pytest.approx(0.36)
+
+
 def test_write_playbook_cards_empty_is_noop(monkeypatch):
     import gcp.database as dbmod
     called = {"n": 0}
