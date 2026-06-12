@@ -20,11 +20,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from scripts.analysis.shared_utils import (
     TICKERS, REPORTS_DIR,
     load_ticker_1m, enrich_with_indicators, classify_strat_series,
-    build_multi_timeframe_dict,
+    build_multi_timeframe_dict, get_trading_dates,
     md_header, md_table, fmt_pct, fmt_bps, fmt_num, save_report,
     timestamp_str, sample_size_label, progress,
     IndicatorConfig, ExitConfig,
 )
+
+
+# ---------------------------------------------------------------------------
+# Per-ticker target/stop/hold profile
+#
+# One source of truth for BOTH the displayed target/stop strings AND the
+# basis-point thresholds fed to compute_card_stats. Previously the display
+# strings were per-ticker but the backtest bps were hardcoded to IWM's
+# 30/15 (CALL) and 38/20 (PUT) for every ticker, so a SPY card claimed
+# "+0.15%" while being scored at 30 bps. Now that compute_card_stats
+# actually uses the bps, the two must agree. Adding a ticker is a config
+# edit here, not a code change in build_all_cards. Unknown tickers get an
+# explicit default (not silently IWM's or QQQ's numbers).
+# ---------------------------------------------------------------------------
+
+TICKER_PROFILES: Dict[str, Dict[str, float]] = {
+    'IWM': {'call_target': 30, 'call_stop': 15, 'put_target': 38, 'put_stop': 20, 'hold': '10-15 min'},
+    'SPY': {'call_target': 15, 'call_stop': 10, 'put_target': 20, 'put_stop': 12, 'hold': '12-18 min'},
+    'QQQ': {'call_target': 25, 'call_stop': 12, 'put_target': 25, 'put_stop': 12, 'hold': '10-15 min'},
+}
+DEFAULT_TICKER_PROFILE: Dict[str, float] = {
+    'call_target': 25, 'call_stop': 12, 'put_target': 25, 'put_stop': 12, 'hold': '10-15 min',
+}
+
+
+def get_ticker_profile(ticker: str) -> Dict[str, float]:
+    """Return the target/stop/hold profile for a ticker (explicit default)."""
+    return TICKER_PROFILES.get(ticker.upper(), DEFAULT_TICKER_PROFILE)
 
 
 # ---------------------------------------------------------------------------
@@ -35,63 +63,152 @@ def compute_card_stats(df: pd.DataFrame, labels: pd.Series,
                        pattern_mask: pd.Series, direction: str,
                        target_bps: float, stop_bps: float,
                        time_stop_min: int = 30) -> Dict:
-    """Compute statistics for a single playbook card."""
-    close = df['Close'] if 'Close' in df.columns else df['Last']
-    next_return = close.pct_change().shift(-1) * 10000
+    """Compute triggered target/stop/time-stop statistics for one card.
 
-    n = pattern_mask.sum()
+    Each pattern occurrence is treated as a trade entered at the close of
+    the signal bar and exited by the FIRST of:
+
+      * **target** — price moves ``target_bps`` in the trade's favour,
+      * **stop**   — price moves ``stop_bps`` against the trade,
+      * **time-stop** — neither is touched within ``time_stop_min`` bars,
+        in which case the trade is marked-to-close at the time-stop bar.
+
+    Target/stop touches are detected intrabar from High/Low. When both the
+    target and the stop fall inside the SAME bar the stop is assumed first
+    (pessimistic — we cannot see intrabar sequencing). The forward window
+    is clipped to the signal bar's own trading session so an overnight gap
+    never counts as part of the trade (the old next-bar proxy silently let
+    it through).
+
+    ``win_rate`` is wins / resolved-trades and ``avg_return_bps`` is the
+    mean realised per-trade return in basis points under that exit logic —
+    NOT the old "did the next 1-minute bar tick up" proxy, which ignored
+    the card's own ``target_bps`` / ``stop_bps`` entirely.
+
+    Returns ``{'count': 0}`` when the pattern never occurs. Occurrences
+    with no same-session forward bar are excluded from the denominator and
+    counted in ``skipped_insufficient_bars`` — no silent coercion to zero
+    (CLAUDE.md §3.7).
+    """
+    close = df['Close'] if 'Close' in df.columns else df['Last']
+    high = df['High'] if 'High' in df.columns else close
+    low = df['Low'] if 'Low' in df.columns else close
+
+    n = int(pattern_mask.sum())
     if n == 0:
         return {'count': 0}
 
-    if direction == 'CALL':
-        trade_return = next_return[pattern_mask]
-        win_mask = trade_return > 0
-    else:
-        trade_return = -next_return[pattern_mask]
-        win_mask = trade_return > 0
+    # Bound forward windows to the signal bar's own session so overnight
+    # gaps don't leak into a trade's path.
+    trade_dates = np.asarray(get_trading_dates(df))
+    close_v = close.to_numpy(dtype=float)
+    high_v = high.to_numpy(dtype=float)
+    low_v = low.to_numpy(dtype=float)
+    n_rows = len(close_v)
 
-    win_rate = win_mask.mean() if len(win_mask) > 0 else 0
-    avg_return = trade_return.mean() if len(trade_return) > 0 else 0
+    indices = df.index[pattern_mask]
+    realized_bps: List[float] = []   # per-trade realised return (bps)
+    win_flags: List[bool] = []
+    mfe_list: List[float] = []
+    mae_list: List[float] = []
+    skipped = 0
 
-    # Forward returns at different horizons
+    def _pos(idx):
+        p = df.index.get_loc(idx)
+        return p.start if isinstance(p, slice) else p
+
+    for idx in indices:
+        pos = _pos(idx)
+        entry = close_v[pos]
+        if not np.isfinite(entry) or entry <= 0:
+            skipped += 1
+            continue
+
+        end = min(pos + time_stop_min + 1, n_rows)
+        sess = trade_dates[pos]
+        fwd_idx = [j for j in range(pos + 1, end) if trade_dates[j] == sess]
+        if not fwd_idx:
+            skipped += 1
+            continue
+
+        tgt = entry * (1 + target_bps / 1e4) if direction == 'CALL' \
+            else entry * (1 - target_bps / 1e4)
+        stp = entry * (1 - stop_bps / 1e4) if direction == 'CALL' \
+            else entry * (1 + stop_bps / 1e4)
+
+        outcome = None
+        mfe = 0.0
+        mae = 0.0
+        for j in fwd_idx:
+            hi, lo = high_v[j], low_v[j]
+            if direction == 'CALL':
+                mfe = max(mfe, (hi - entry) / entry * 1e4)
+                mae = min(mae, (lo - entry) / entry * 1e4)
+                hit_stop = lo <= stp
+                hit_tgt = hi >= tgt
+            else:
+                mfe = max(mfe, (entry - lo) / entry * 1e4)
+                mae = min(mae, (entry - hi) / entry * 1e4)
+                hit_stop = hi >= stp
+                hit_tgt = lo <= tgt
+            if hit_stop:                      # stop assumed first within a bar
+                outcome = -stop_bps
+                break
+            if hit_tgt:
+                outcome = target_bps
+                break
+
+        if outcome is None:                   # time-stop: mark to close
+            last = fwd_idx[-1]
+            if direction == 'CALL':
+                outcome = (close_v[last] - entry) / entry * 1e4
+            else:
+                outcome = (entry - close_v[last]) / entry * 1e4
+
+        realized_bps.append(float(outcome))
+        win_flags.append(bool(outcome > 0))
+        mfe_list.append(mfe)
+        mae_list.append(mae)
+
+    resolved = len(realized_bps)
+    if resolved == 0:
+        return {'count': n, 'resolved': 0,
+                'skipped_insufficient_bars': skipped,
+                'win_rate': np.nan, 'avg_return_bps': np.nan,
+                'confidence': sample_size_label(0)}
+
+    win_rate = float(np.mean(win_flags))
+    avg_return = float(np.mean(realized_bps))
+
+    # Diagnostic forward-horizon means (same-session, target/stop-agnostic)
     fwd_returns = {}
     for p in [5, 10, 15, 30]:
-        fwd = close.pct_change(p).shift(-p) * 10000
-        if direction == 'PUT':
-            fwd = -fwd
-        vals = fwd[pattern_mask].dropna()
-        fwd_returns[p] = vals.mean() if len(vals) > 0 else 0
-
-    # MFE/MAE over 30 bars
-    indices = df.index[pattern_mask]
-    mfe_list, mae_list = [], []
-    for idx in indices:
-        pos = df.index.get_loc(idx)
-        end = min(pos + 31, len(df))
-        if end <= pos + 1:
-            continue
-        future = close.iloc[pos:end]
-        ep = close.iloc[pos]
-        if ep <= 0:
-            continue
-        if direction == 'CALL':
-            rets = (future - ep) / ep * 10000
-        else:
-            rets = (ep - future) / ep * 10000
-        mfe_list.append(rets.max())
-        mae_list.append(rets.min())
+        vals = []
+        for idx in indices:
+            pos = _pos(idx)
+            tp = pos + p
+            if tp >= n_rows or trade_dates[tp] != trade_dates[pos]:
+                continue
+            ep = close_v[pos]
+            if ep <= 0:
+                continue
+            r = (close_v[tp] - ep) / ep * 1e4
+            vals.append(r if direction == 'CALL' else -r)
+        fwd_returns[p] = float(np.mean(vals)) if vals else np.nan
 
     return {
-        'count': int(n),
+        'count': n,
+        'resolved': resolved,
+        'skipped_insufficient_bars': skipped,
         'win_rate': win_rate,
         'avg_return_bps': avg_return,
-        'fwd_5': fwd_returns.get(5, 0),
-        'fwd_10': fwd_returns.get(10, 0),
-        'fwd_15': fwd_returns.get(15, 0),
-        'fwd_30': fwd_returns.get(30, 0),
-        'avg_mfe': np.mean(mfe_list) if mfe_list else 0,
-        'avg_mae': np.mean(mae_list) if mae_list else 0,
-        'confidence': sample_size_label(int(n)),
+        'fwd_5': fwd_returns.get(5, np.nan),
+        'fwd_10': fwd_returns.get(10, np.nan),
+        'fwd_15': fwd_returns.get(15, np.nan),
+        'fwd_30': fwd_returns.get(30, np.nan),
+        'avg_mfe': float(np.mean(mfe_list)) if mfe_list else np.nan,
+        'avg_mae': float(np.mean(mae_list)) if mae_list else np.nan,
+        'confidence': sample_size_label(resolved),
     }
 
 
@@ -120,12 +237,16 @@ def generate_card(card_num: int, title: str, ticker: str,
         card += f"  - [ ] {item}\n"
     card += "\n"
 
-    # Entry
-    if stats['count'] > 0:
+    # Entry — win_rate/avg_return are computed under the card's own
+    # target/stop/time-stop exit (see compute_card_stats). They are NaN only
+    # when the pattern never resolved a same-session trade.
+    resolved = stats.get('resolved', stats.get('count', 0))
+    wr = stats.get('win_rate')
+    if stats['count'] > 0 and resolved and wr is not None and not pd.isna(wr):
         card += f"**IF ALL CONFIRMED -> {direction} ENTRY**\n"
-        card += f"  - Confidence: {stats['confidence']} (n={stats['count']:,})\n"
-        card += f"  - Historical win rate: {stats['win_rate']:.1%}\n"
-        card += f"  - Avg return: {fmt_bps(stats['avg_return_bps'])}\n"
+        card += f"  - Confidence: {stats['confidence']} (n={resolved:,} resolved trades)\n"
+        card += f"  - Historical win rate: {wr:.1%} (target {target_pct} before stop {stop_pct})\n"
+        card += f"  - Avg return per trade: {fmt_bps(stats['avg_return_bps'])}\n"
         card += f"  - Target: {target_pct}\n"
         card += f"  - Stop: {stop_pct}\n"
         card += f"  - Expected hold: {hold_time}\n"
@@ -168,23 +289,20 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     prev2 = labels.shift(2)
     next_label = labels.shift(-1)
 
-    # Ticker-specific defaults
-    if ticker == 'IWM':
-        call_target, put_target = '+0.30%', '+0.38%'
-        call_stop, put_stop = '-0.15%', '-0.20%'
-        hold_time = '10-15 min'
-    elif ticker == 'SPY':
-        call_target, put_target = '+0.15%', '+0.20%'
-        call_stop, put_stop = '-0.10%', '-0.12%'
-        hold_time = '12-18 min'
-    else:  # QQQ
-        call_target, put_target = '+0.25%', '+0.25%'
-        call_stop, put_stop = '-0.12%', '-0.12%'
-        hold_time = '10-15 min'
+    # Per-ticker target/stop/hold profile — single source for both the
+    # displayed strings and the backtest bps (see TICKER_PROFILES).
+    prof = get_ticker_profile(ticker)
+    ct_bps, cs_bps = prof['call_target'], prof['call_stop']
+    pt_bps, ps_bps = prof['put_target'], prof['put_stop']
+    hold_time = prof['hold']
+    call_target = f"+{ct_bps / 100:.2f}%"
+    call_stop = f"-{cs_bps / 100:.2f}%"
+    put_target = f"+{pt_bps / 100:.2f}%"
+    put_stop = f"-{ps_bps / 100:.2f}%"
 
     # --- CARD 1: Bullish Continuation (2U-2U-2U) ---
     mask = (prev2 == '2U') & (prev == '2U') & (labels == '2U')
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         1, "Bullish Continuation (2U-2U-2U)", ticker,
         "  * Daily bar is 2U (higher high, higher low)\n"
@@ -209,7 +327,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 2: Bearish Continuation (2D-2D-2D) ---
     mask = (prev2 == '2D') & (prev == '2D') & (labels == '2D')
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
     report += generate_card(
         2, "Bearish Continuation (2D-2D-2D)", ticker,
         "  * Daily bar is 2D (lower high, lower low)\n"
@@ -234,7 +352,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 3: Bullish Reversal 2-1-2 ---
     mask = (prev2 == '2D') & (prev == '1') & (labels == '2U')
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         3, "Bullish Reversal (2D-1-2U)", ticker,
         "  * Previous bars: 2D (bearish) -> 1 (inside bar compression)\n"
@@ -256,7 +374,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 4: Bearish Reversal 2-1-2 ---
     mask = (prev2 == '2U') & (prev == '1') & (labels == '2D')
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
     report += generate_card(
         4, "Bearish Reversal (2U-1-2D)", ticker,
         "  * Previous bars: 2U (bullish) -> 1 (inside bar compression)\n"
@@ -279,7 +397,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 5: Outside Bar Breakout (Type 3) ---
     mask = labels == '3'
     bullish_3 = mask & (close > close.shift(1))
-    stats_bull = compute_card_stats(df, labels, bullish_3, 'CALL', 30, 15)
+    stats_bull = compute_card_stats(df, labels, bullish_3, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         5, "Outside Bar Breakout (Type 3 Bullish)", ticker,
         "  * Current bar is Type 3 (higher high AND lower low than prev bar)\n"
@@ -301,7 +419,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 6: ORB Breakout Bullish ---
     mask = (orb_trend == 1) & (labels.isin(['2U', '3']))
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         6, "ORB Breakout — Bullish", ticker,
         "  * Price has broken above 30m Opening Range High\n"
@@ -324,7 +442,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 7: ORB Breakout Bearish ---
     mask = (orb_trend == -1) & (labels.isin(['2D', '3']))
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
     report += generate_card(
         7, "ORB Breakout — Bearish", ticker,
         "  * Price has broken below 30m Opening Range Low\n"
@@ -353,7 +471,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = was_above & now_within & (labels == '2D')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'PUT', 20, 15)
+    stats = compute_card_stats(df, labels, mask, 'PUT', 20, ps_bps)  # MR: tighter fixed target
     report += generate_card(
         8, "ORB Failure / Mean Reversion", ticker,
         "  * Price broke above ORB high, then FAILED and returned inside range\n"
@@ -378,7 +496,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = (df['At_Prev_Day_Low'] == 1) & (labels == '2U')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         9, "Support Bounce (at Historical Level)", ticker,
         "  * Price is at previous day's low (support level)\n"
@@ -403,7 +521,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = (df['At_Prev_Day_High'] == 1) & (labels == '2D')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
     report += generate_card(
         10, "Resistance Rejection (at Historical Level)", ticker,
         "  * Price is at previous day's high (resistance level)\n"
@@ -429,7 +547,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = (df['Order_Block_Test'] == 1) & (df.get('Order_Block_Position', 0) >= 0) & (labels == '2U')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         11, "Order Block Test (Institutional Zone)", ticker,
         "  * Price is testing an identified order block zone\n"
@@ -452,7 +570,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 12: FTFC Maximum Conviction ---
     # All timeframes aligned (approximate: EMA cross + ORB trend + 2U or 2D)
     bull_ftfc = (ema_cross == 1) & (orb_trend == 1) & (labels == '2U') & (rsi.between(40, 65))
-    stats = compute_card_stats(df, labels, bull_ftfc, 'CALL', 30, 15)
+    stats = compute_card_stats(df, labels, bull_ftfc, 'CALL', ct_bps, cs_bps)
     report += generate_card(
         12, "FTFC Maximum Conviction (All Aligned)", ticker,
         "  * ALL timeframes showing the same direction\n"
