@@ -91,6 +91,14 @@ def test_firebase_requires_valid_token(monkeypatch):
     assert c.get("/api/secret").status_code == 401            # no token
     assert c.get("/api/health").status_code == 200            # open path
     assert c.get("/api/me").status_code == 200                # open path
+    # /api/me is open (middleware skips it) but must STILL report the verified
+    # identity when a token is present — admin detection depends on it — and
+    # None when anonymous.
+    assert c.get("/api/me").json()["email"] is None
+    assert (
+        c.get("/api/me", headers={"authorization": "Bearer good:Me@X.com"}).json()["email"]
+        == "me@x.com"
+    )
     assert c.get("/api/secret", headers={"authorization": "Bearer bad"}).status_code == 401
     r = c.get("/api/secret", headers={"authorization": "Bearer good:Trader@X.com"})
     assert r.status_code == 200 and r.json()["email"] == "trader@x.com"

@@ -104,72 +104,46 @@ Known prod caveats validated there: AV-on-request endpoints require the
 
 ---
 
-## 6. Staging service — test a real deployment without Google IAP
+## 6. Staging — the in-app Firebase login
 
-Prod is locked behind IAP, so live E2E against it needs the interactive Google
-sign-in (`npm run e2e:cloud:auth`). The separate `trading-platform-staging`
-service avoids that. It comes in two variants (IAP is service-level and can't
-be dropped per-revision, so staging is its own service either way). Prod is
-untouched in both.
+`trading-platform-staging` is a SEPARATE **public** Cloud Run service (so prod's
+IAP is untouched) running `AUTH_MODE=firebase`: an anonymous browser loads the
+login page and Google Identity Platform (Google SSO + email/password) gates
+access. The backend (`api/auth.py`) verifies the Firebase ID token on every
+gated `/api/*`; `/api/health`, `/api/me`, `/api/config/firebase` stay open.
+Open self-signup is on (`AUTH_OPEN_SIGNUP=1`); restrict with
+`AUTH_OPEN_SIGNUP=0 AUTH_ALLOWED_EMAILS=…` (one env change, no code).
 
-**Both variants point staging at a read-only DB role** (`DB_USER=staging_readonly`,
-`DB_PASS_SECRET=trading-db-pass`) so a stray write spec cannot mutate prod:
-`staging_readonly` has SELECT-only grants + `default_transaction_read_only=on`.
-Note the app's journal/admin write endpoints **silently fall back to ephemeral
-local storage** when the DB rejects a write (`{"source":"local"}`) — the write
-looks like a 200 but never reaches prod and vanishes on the next cold start.
+Staging uses the read-only `staging_readonly` DB role (SELECT-only +
+`default_transaction_read_only=on`), so a write **fails loud** (HTTP 500,
+`read-only transaction`) — prod data can't be mutated.
 
-### 6a. Private (DEPLOYED — default `STAGING_SERVICE=1`)
-
-`--no-allow-unauthenticated`; Cloud Run IAM gates it. `claude-web@`/editor can
-deploy and invoke it without `run.services.setIamPolicy`, so it works fully from
-the sandbox. The app-level passcode gate is OFF (IAM already gates every call),
-so `/api/me` returns `auth_bypass_allowed:false` and the app renders open once
-you're past IAM.
-
-```bash
-# Deploy (idempotent; reuses prod's image build under a separate image name)
-IMAGE_NAME=trading-platform-staging DB_USER=staging_readonly DB_NAME=trading \
-  DB_PASS_SECRET=trading-db-pass STAGING_SERVICE=1 ./platform/deploy.sh
-```
 Live URL: `https://trading-platform-staging-28960574877.us-east1.run.app`
 
-Reach it with an identity token (no Google sign-in, no proxy component needed):
+### Deploy / redeploy
+Operator one-time (Owner / firebaseauth.admin): enable Identity Platform, turn
+on the Google + Email/Password providers, add the staging host under Authorized
+domains. Then build+deploy (the Firebase web config is public — read it from
+Project settings → Web app):
 ```bash
-URL="https://trading-platform-staging-28960574877.us-east1.run.app"
-TOK=$(gcloud auth print-identity-token --audiences="$URL")
-curl -s -H "Authorization: Bearer $TOK" "$URL/api/health"      # cloud_sql:true
-curl -s -H "Authorization: Bearer $TOK" "$URL/api/market/dates/SPY"
+FIREBASE_API_KEY=… FIREBASE_AUTH_DOMAIN=adept-mountain-474619-d4.firebaseapp.com FIREBASE_APP_ID=… \
+  DB_USER=staging_readonly DB_NAME=trading DB_PASS_SECRET=trading-db-pass \
+  IMAGE_NAME=trading-platform-staging STAGING_SERVICE=1 ./platform/deploy.sh
+# then (run.admin) make it public — claude-web@ can't set this IAM:
+gcloud run services add-iam-policy-binding trading-platform-staging \
+  --region=us-east1 --member=allUsers --role=roles/run.invoker
 ```
-Run Playwright against it by injecting the bearer token as a header
-(`playwright.config.ts` `cloud` project → `use.extraHTTPHeaders`), e.g.:
-```bash
-URL="https://trading-platform-staging-28960574877.us-east1.run.app"
-STAGING_BEARER="$(gcloud auth print-identity-token --audiences="$URL")" \
-  CLOUD_RUN_URL="$URL" npm run e2e:cloud
-```
-(The token lasts ~1h; re-mint for a longer run.)
 
-### 6b. Public + passcode (opt-in `STAGING_PUBLIC=1`, needs run.admin)
-
-`--allow-unauthenticated` + the app-level passcode gate (`api/auth_bypass.py`:
-middleware + `POST /api/auth/bypass` + `/api/auth/logout`, inert unless
-`ALLOW_AUTH_BYPASS=1`). `/api/me` returns `auth_bypass_allowed:true` → the React
-`<AuthGate>` shows the passcode screen; a correct passcode sets an HttpOnly
-cookie and the app renders as a guest. Needs `run.services.setIamPolicy` for
-`--allow-unauthenticated` (the sandbox SA lacks it) and may be blocked by the
-DRS org policy.
+### Automated testing — persistent test login
+A persistent Firebase email/password user exists for E2E; its credentials live
+in Secret Manager (`staging-e2e-login`, readable by `claude-web@`). Mint a token
+and hit the API with no browser:
 ```bash
-# One-time (operator with run.admin):
-printf '%s' 'YOUR_PASSCODE' | gcloud secrets create staging-passcode \
-  --data-file=- --project=adept-mountain-474619-d4
-gcloud secrets add-iam-policy-binding staging-passcode \
-  --member="serviceAccount:trading-platform-svc@adept-mountain-474619-d4.iam.gserviceaccount.com" \
-  --role=roles/secretmanager.secretAccessor --project=adept-mountain-474619-d4
-# Deploy:
-IMAGE_NAME=trading-platform-staging DB_USER=staging_readonly DB_NAME=trading \
-  DB_PASS_SECRET=trading-db-pass STAGING_SERVICE=1 STAGING_PUBLIC=1 ./platform/deploy.sh
-# Test without Google sign-in (mint the bypass cookie via the passcode):
-curl -sS -c - -X POST "$STAGING_URL/api/auth/bypass" \
-  -H 'Content-Type: application/json' -d '{"passcode":"YOUR_PASSCODE"}' >/dev/null
+TOK=$(bash scripts/staging_e2e_token.sh)
+curl -s -H "Authorization: Bearer $TOK" \
+  https://trading-platform-staging-28960574877.us-east1.run.app/api/market/dates/SPY   # 200 + data
 ```
+For a real browser run, Playwright reads the same secret and fills the login
+form (Google SSO can't be automated headlessly — use email/password for
+automation). If you set `AUTH_OPEN_SIGNUP=0`, add the test account's email to
+`AUTH_ALLOWED_EMAILS` so it stays able to sign in.

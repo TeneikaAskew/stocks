@@ -85,13 +85,20 @@ def current_user_email(request: Request) -> Optional[str]:
     """Identity accessor for routers.
 
     firebase mode: the email the middleware verified and stashed on
-    request.state. iap mode: the IAP header. Otherwise None.
+    request.state; for OPEN paths (e.g. /api/me) the middleware skips
+    verification, so resolve from the bearer token here when present. iap mode:
+    the IAP header. Otherwise None.
     """
     email = getattr(request.state, "user_email", None)
     if email:
         return email
     if AUTH_MODE == "iap":
         return _iap_email(request)
+    if AUTH_MODE == "firebase":
+        try:
+            return _verify_bearer_email(request)
+        except Exception:
+            return None
     return None
 
 
