@@ -246,7 +246,7 @@ def generate_card(card_num: int, title: str, ticker: str,
         card += f"**IF ALL CONFIRMED -> {direction} ENTRY**\n"
         card += f"  - Confidence: {stats['confidence']} (n={resolved:,} resolved trades)\n"
         card += f"  - Historical win rate: {wr:.1%} (target {target_pct} before stop {stop_pct})\n"
-        card += f"  - Avg return per trade: {fmt_bps(stats['avg_return_bps'])}\n"
+        card += f"  - Avg return: {fmt_bps(stats['avg_return_bps'])} (per trade)\n"
         card += f"  - Target: {target_pct}\n"
         card += f"  - Stop: {stop_pct}\n"
         card += f"  - Expected hold: {hold_time}\n"
@@ -471,7 +471,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = was_above & now_within & (labels == '2D')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'PUT', 20, ps_bps)  # MR: tighter fixed target
+    mr_target_bps = 20  # mean-reversion uses a tighter fixed target than the trend profile
+    stats = compute_card_stats(df, labels, mask, 'PUT', mr_target_bps, ps_bps)
     report += generate_card(
         8, "ORB Failure / Mean Reversion", ticker,
         "  * Price broke above ORB high, then FAILED and returned inside range\n"
@@ -482,7 +483,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
             "Strat shows reversal (2D after 2U or 3)",
             "VWAP is nearby (target)",
         ],
-        'PUT', stats, put_target, put_stop, '8-15 min',
+        'PUT', stats, f"+{mr_target_bps / 100:.2f}%", put_stop, '8-15 min',
         [
             "Price re-breaks ORB high -> failure of the failure, exit",
             "Price hits ORB mid and stalls -> take partial profit",
