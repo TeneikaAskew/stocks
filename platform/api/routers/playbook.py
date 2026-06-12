@@ -218,6 +218,13 @@ def _cards_from_db(ticker_upper: str) -> list | None:
             return None
         return round(f * scale, 1 if scale == 100 else 2)
 
+    def _text(v):
+        # NULL text comes back from pandas as None OR NaN (NaN is truthy, so
+        # `v or ""` would leak NaN into the JSON) — coerce both to "".
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
+        return str(v)
+
     cards = []
     for _, row in df.iterrows():
         cond = row["conditions"]
@@ -229,7 +236,7 @@ def _cards_from_db(ticker_upper: str) -> list | None:
         cards.append({
             "id": f"card_{int(row['card_num'])}",
             "name": row["name"],
-            "description": row["description"] or "",
+            "description": _text(row["description"]),
             "direction": row["direction"],
             "conditions": list(cond) if cond is not None else [],
             # win_rate stored as fraction → percent (48.0); bps → percent (-0.10),
