@@ -21,8 +21,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+
+from api.auth import current_user_email
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +106,21 @@ def _save_local(ticker: str, entries: list[dict]) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _require_user(request: Request) -> str:
+    """The signed-in user's email — the journal is per-user. 401 if anonymous."""
+    email = current_user_email(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="sign in to use the journal")
+    return email
+
+
 @router.get("/api/journal/trades/{ticker}")
-async def get_trades(ticker: str):
-    """Return all journal entries for the given ticker, newest first."""
+async def get_trades(ticker: str, request: Request):
+    """Return the signed-in user's journal entries for the ticker, newest first."""
     ticker_upper = ticker.upper()
 
     if _HAS_CLOUD_SQL:
+        user_email = _require_user(request)
         try:
             df = query_to_dataframe(
                 """
@@ -119,10 +130,10 @@ async def get_trades(ticker: str):
                        entry_price, exit_price, return_pct, notes,
                        created_at AT TIME ZONE 'UTC' AS created_at
                 FROM journal_entries
-                WHERE ticker = :ticker
+                WHERE ticker = :ticker AND user_email = :user_email
                 ORDER BY entry_ts DESC
                 """,
-                {"ticker": ticker_upper},
+                {"ticker": ticker_upper, "user_email": user_email},
             )
             if df.empty:
                 trades = []
@@ -145,8 +156,8 @@ async def get_trades(ticker: str):
 
 
 @router.post("/api/journal/trades")
-async def create_trade(trade: JournalTradeCreate):
-    """Insert a new journal entry. Returns the created entry with its id."""
+async def create_trade(trade: JournalTradeCreate, request: Request):
+    """Insert a journal entry for the signed-in user. Returns it with its id."""
     ticker_upper = trade.ticker.upper()
     direction = trade.direction.upper()
     entry_ts = f"{trade.entry_date}T{trade.entry_time}:00"
@@ -154,15 +165,16 @@ async def create_trade(trade: JournalTradeCreate):
     ret_pct  = _return_pct(direction, trade.entry_price, trade.exit_price)
 
     if _HAS_CLOUD_SQL:
+        user_email = _require_user(request)
         try:
             execute_sql(
                 """
                 INSERT INTO journal_entries
                     (ticker, direction, entry_ts, exit_ts,
-                     entry_price, exit_price, return_pct, notes)
+                     entry_price, exit_price, return_pct, notes, user_email)
                 VALUES
                     (:ticker, :direction, :entry_ts, :exit_ts,
-                     :entry_price, :exit_price, :return_pct, :notes)
+                     :entry_price, :exit_price, :return_pct, :notes, :user_email)
                 """,
                 {
                     "ticker": ticker_upper,
@@ -173,15 +185,16 @@ async def create_trade(trade: JournalTradeCreate):
                     "exit_price": trade.exit_price,
                     "return_pct": round(ret_pct, 4),
                     "notes": trade.notes or "",
+                    "user_email": user_email,
                 },
             )
             df = query_to_dataframe(
                 """
                 SELECT id::text FROM journal_entries
-                WHERE ticker = :ticker AND entry_ts = :entry_ts
+                WHERE ticker = :ticker AND entry_ts = :entry_ts AND user_email = :user_email
                 ORDER BY created_at DESC LIMIT 1
                 """,
-                {"ticker": ticker_upper, "entry_ts": entry_ts},
+                {"ticker": ticker_upper, "entry_ts": entry_ts, "user_email": user_email},
             )
             new_id = str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
             return {"source": "cloud_sql", "id": new_id, "return_pct": round(ret_pct, 4)}
@@ -211,13 +224,14 @@ async def create_trade(trade: JournalTradeCreate):
 
 
 @router.delete("/api/journal/trades/{trade_id}")
-async def delete_trade(trade_id: str, ticker: str = ""):
-    """Delete a journal entry by UUID."""
+async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
+    """Delete one of the signed-in user's journal entries by UUID."""
     if _HAS_CLOUD_SQL:
+        user_email = _require_user(request)
         try:
             execute_sql(
-                "DELETE FROM journal_entries WHERE id = :id",
-                {"id": trade_id},
+                "DELETE FROM journal_entries WHERE id = :id AND user_email = :user_email",
+                {"id": trade_id, "user_email": user_email},
             )
             return {"source": "cloud_sql", "deleted": trade_id}
         except Exception as e:
