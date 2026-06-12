@@ -147,3 +147,46 @@ For a real browser run, Playwright reads the same secret and fills the login
 form (Google SSO can't be automated headlessly — use email/password for
 automation). If you set `AUTH_OPEN_SIGNUP=0`, add the test account's email to
 `AUTH_ALLOWED_EMAILS` so it stays able to sign in.
+
+### 6c. Prod cutover to Firebase login — STAGED, not yet executed
+
+As of 2026-06-12 prod (`trading-platform`) still runs behind **Cloud Run native
+IAP** on its existing revision. A Firebase revision is **staged at 0% traffic**
+(tag `staging`, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`, `DB_USER=trading_user`)
+so the cutover is a few small steps. **Cutover makes prod publicly reachable with
+open self-signup — do not run these until that's the intent.**
+
+Safety invariant: the old (IAP-dependent) revision must never serve while IAP is
+off. So traffic moves to the Firebase revision *first* (still behind IAP — safe),
+*then* IAP is disabled. Capture the current serving revision before you start, for
+rollback:
+
+```bash
+# 0. record the live revision (rollback target) and the staged one
+LIVE=$(gcloud run services describe trading-platform --region=us-east1 \
+  --format="json(status.traffic)" | python3 -c "import sys,json;print(next(r['revisionName'] for r in json.load(sys.stdin)['status']['traffic'] if r.get('percent')==100))")
+echo "rollback target: $LIVE"
+
+# 1. authorized domains (Firebase console → Authentication → Settings →
+#    Authorized domains, OR the Identity Toolkit API). Add both prod hosts:
+#      trading-platform-5sjtb3yl7a-ue.a.run.app
+#      trading-platform-28960574877.us-east1.run.app
+
+# 2. (run.developer) route 100% traffic to the Firebase revision — still IAP-gated
+gcloud run services update-traffic trading-platform --region=us-east1 --to-tags=staging=100
+
+# 3. (run.admin) disable IAP + open to the public
+gcloud beta run services update trading-platform --region=us-east1 --no-iap
+gcloud run services add-iam-policy-binding trading-platform --region=us-east1 \
+  --member=allUsers --role=roles/run.invoker
+
+# 4. verify (mint a token for the prod host the same way staging does, or sign in)
+```
+
+Rollback (any time, fast):
+```bash
+gcloud run services update-traffic trading-platform --region=us-east1 --to-revisions=$LIVE=100
+gcloud beta run services update trading-platform --region=us-east1 --iap
+gcloud run services remove-iam-policy-binding trading-platform --region=us-east1 \
+  --member=allUsers --role=roles/run.invoker
+```
