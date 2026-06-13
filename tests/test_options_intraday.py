@@ -14,8 +14,12 @@ import pandas as pd
 import pytest
 
 from lib.options_intraday import (
+    DATA_SOURCE_EMPIRICAL_FALLBACK,
+    DATA_SOURCE_REALTIME,
     _bsm_price_vec,
     _combine_legs,
+    _interpolate_observed_iv,
+    load_realtime_theta_curve,
     reprice_intraday_option,
     reprice_structure_intraday,
     cumulative_theta_decay,
@@ -172,7 +176,7 @@ class TestReprice:
         assert tl.empty
         assert list(tl.columns) == [
             'Time', 'Spot', 'IV_used', 'Theo_value',
-            'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct']
+            'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct', 'data_source']
 
     def test_invalid_option_type(self):
         with pytest.raises(ValueError, match="call/put"):
@@ -279,6 +283,270 @@ class TestCombineLegs:
         out = _combine_legs([leg1], signs=[-1.0], entry=0.5)
         # Short equivalent: +$5
         assert out['Pnl_per_share'].iloc[0] == 5.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Track 2 phase 2a — realtime-observed IV path with empirical fallback
+# ──────────────────────────────────────────────────────────────────────
+
+def _realtime_snapshots(intraday_date: date, ivs: list[float],
+                        snap_minutes: list[int] | None = None) -> pd.DataFrame:
+    """Build a synthetic REALTIME observations DataFrame.
+
+    Mirrors the column shape returned by ``load_realtime_theta_curve``:
+    snapshot_ts, implied_volatility, delta, gamma, theta, vega, mark.
+    """
+    if snap_minutes is None:
+        # Default: 5-min cadence from RTH open
+        snap_minutes = [9*60 + 30 + 5*i for i in range(len(ivs))]
+    assert len(snap_minutes) == len(ivs)
+    return pd.DataFrame({
+        'snapshot_ts': [
+            datetime.combine(intraday_date, datetime.min.time())
+            + timedelta(minutes=m)
+            for m in snap_minutes
+        ],
+        'implied_volatility': ivs,
+        'delta': [0.5] * len(ivs),
+        'gamma': [0.02] * len(ivs),
+        'theta': [-0.10] * len(ivs),
+        'vega':  [0.20] * len(ivs),
+        'mark':  [2.0]  * len(ivs),
+    })
+
+
+class TestLoadRealtimeThetaCurve:
+    """The DB loader is dependency-injected so tests are hermetic."""
+
+    def test_returns_dataframe_when_snapshots_exist(self):
+        captured = {}
+
+        def fake_query(sql, params):
+            captured['sql'] = sql
+            captured['params'] = params
+            return _realtime_snapshots(date(2026, 5, 22), [0.30, 0.25, 0.20])
+
+        out = load_realtime_theta_curve(
+            ticker='spy', intraday_date=date(2026, 5, 22),
+            expiration=date(2026, 5, 22), strike=500.0,
+            option_type='call', query_fn=fake_query,
+        )
+        assert out is not None
+        assert len(out) == 3
+        # Normalises option_type 'call' → 'calls' for the schema
+        assert captured['params']['ot'] == 'calls'
+        assert captured['params']['ticker'] == 'SPY'
+        assert captured['params']['strike'] == 500.0
+        assert "market_session = 'REALTIME'" in captured['sql']
+
+    def test_normalises_put_option_type(self):
+        captured = {}
+
+        def fake_query(sql, params):
+            captured['params'] = params
+            return _realtime_snapshots(date(2026, 5, 22), [0.30])
+
+        load_realtime_theta_curve(
+            ticker='SPY', intraday_date=date(2026, 5, 22),
+            expiration=date(2026, 5, 22), strike=500.0,
+            option_type='put', query_fn=fake_query,
+        )
+        assert captured['params']['ot'] == 'puts'
+
+    def test_returns_none_on_empty_response(self):
+        out = load_realtime_theta_curve(
+            ticker='SPY', intraday_date=date(2020, 1, 2),
+            expiration=date(2020, 1, 3), strike=300.0,
+            option_type='call',
+            query_fn=lambda sql, params: pd.DataFrame(),
+        )
+        assert out is None
+
+    def test_returns_none_when_all_iv_are_nan(self):
+        """If every observation has NaN IV, we can't anchor a path —
+        better to fall back than to interpolate over a no-op series."""
+        df = _realtime_snapshots(date(2026, 5, 22), [0.30])
+        df['implied_volatility'] = float('nan')
+        out = load_realtime_theta_curve(
+            ticker='SPY', intraday_date=date(2026, 5, 22),
+            expiration=date(2026, 5, 22), strike=500.0,
+            option_type='call',
+            query_fn=lambda sql, params: df,
+        )
+        assert out is None
+
+    def test_drops_rows_with_partial_nan_iv(self):
+        df = _realtime_snapshots(date(2026, 5, 22), [0.30, float('nan'), 0.20])
+        out = load_realtime_theta_curve(
+            ticker='SPY', intraday_date=date(2026, 5, 22),
+            expiration=date(2026, 5, 22), strike=500.0,
+            option_type='call',
+            query_fn=lambda sql, params: df,
+        )
+        assert out is not None
+        # NaN row dropped; observed IV values kept in order
+        assert out['implied_volatility'].tolist() == [0.30, 0.20]
+
+
+class TestInterpolateObservedIv:
+
+    def test_linear_interpolation_between_snapshots(self):
+        d = date(2026, 5, 22)
+        rt = _realtime_snapshots(d, [0.50, 0.40], snap_minutes=[9*60+30, 9*60+40])
+        bars = _synthetic_bars(d, [100.0] * 11)  # 9:30 through 9:40
+        iv = _interpolate_observed_iv(rt, bars['Time'])
+        # First bar = first snapshot IV, last bar = last snapshot IV
+        assert iv[0] == pytest.approx(0.50, abs=1e-9)
+        assert iv[-1] == pytest.approx(0.40, abs=1e-9)
+        # Midpoint should be halfway
+        assert iv[5] == pytest.approx(0.45, abs=0.01)
+
+    def test_edge_clamp_before_first_and_after_last(self):
+        d = date(2026, 5, 22)
+        rt = _realtime_snapshots(d, [0.30], snap_minutes=[9*60+45])
+        bars = _synthetic_bars(d, [100.0] * 60)  # 9:30 through 10:29
+        iv = _interpolate_observed_iv(rt, bars['Time'])
+        # Single observation → flat IV at the observed value (every bar)
+        assert iv == pytest.approx(np.full_like(iv, 0.30), abs=1e-9)
+
+
+class TestRealtimePathInReprice:
+    """Integration: reprice_intraday_option consumes realtime data."""
+
+    def test_realtime_path_tags_data_source(self):
+        d = date(2026, 5, 22)
+        rt = _realtime_snapshots(d, [0.30, 0.28, 0.25],
+                                 snap_minutes=[9*60+30, 9*60+35, 9*60+40])
+        bars = _synthetic_bars(d, [100.0] * 11)
+        tl = reprice_intraday_option(
+            ticker='SPY', intraday_date=d, strike=100.0,
+            expiration=date(2026, 5, 23), option_type='call',
+            iv_t_minus_1=0.60,  # would be the empirical anchor; observed wins
+            entry_price_per_share=2.0,
+            intraday_bars=bars,
+            realtime_iv_path=rt,
+            risk_free=0.0, dividend_yield=0.0,
+        )
+        # Every row tagged 'realtime'
+        assert (tl['data_source'] == DATA_SOURCE_REALTIME).all()
+        # IV path follows observed snapshots, not 0.60 * (0.55..0.40)
+        assert tl['IV_used'].iloc[0] == pytest.approx(0.30, abs=1e-9)
+        assert tl['IV_used'].iloc[-1] == pytest.approx(0.25, abs=1e-9)
+
+    def test_empirical_fallback_when_no_realtime_data(self):
+        d = date(2020, 7, 31)  # Pre-Track-0 date — no realtime data
+        bars = _synthetic_bars(d, [100.0] * 5)
+        tl = reprice_intraday_option(
+            ticker='SPY', intraday_date=d, strike=100.0,
+            expiration=date(2020, 8, 1), option_type='call',
+            iv_t_minus_1=0.60,
+            entry_price_per_share=2.0,
+            intraday_bars=bars,
+            realtime_iv_path=None,        # explicitly no realtime
+            use_realtime=False,           # short-circuit the loader
+            iv_open_multiplier=0.55, iv_close_multiplier=0.40,
+            risk_free=0.0, dividend_yield=0.0,
+        )
+        assert (tl['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK).all()
+        # Empirical curve: open=0.60*0.55=0.33, close=0.60*0.40=0.24
+        assert tl['IV_used'].iloc[0] == pytest.approx(0.33, abs=1e-9)
+        assert tl['IV_used'].iloc[-1] == pytest.approx(0.24, abs=1e-9)
+
+    def test_shape_parity_between_realtime_and_fallback(self):
+        """Both branches must return the same column set so downstream
+        code can consume either without conditional schema handling."""
+        d = date(2026, 5, 22)
+        bars = _synthetic_bars(d, [100.0] * 3)
+        rt = _realtime_snapshots(d, [0.30, 0.25],
+                                 snap_minutes=[9*60+30, 9*60+32])
+        tl_realtime = reprice_intraday_option(
+            ticker='SPY', intraday_date=d, strike=100.0,
+            expiration=date(2026, 5, 23), option_type='call',
+            iv_t_minus_1=0.60, entry_price_per_share=2.0,
+            intraday_bars=bars, realtime_iv_path=rt,
+            risk_free=0.0, dividend_yield=0.0,
+        )
+        tl_fallback = reprice_intraday_option(
+            ticker='SPY', intraday_date=d, strike=100.0,
+            expiration=date(2026, 5, 23), option_type='call',
+            iv_t_minus_1=0.60, entry_price_per_share=2.0,
+            intraday_bars=bars, use_realtime=False,
+            risk_free=0.0, dividend_yield=0.0,
+        )
+        assert list(tl_realtime.columns) == list(tl_fallback.columns)
+        assert len(tl_realtime) == len(tl_fallback)
+
+    def test_loader_called_when_realtime_not_preloaded(self, monkeypatch):
+        """Repricer pulls from load_realtime_theta_curve when caller
+        doesn't pre-supply it."""
+        d = date(2026, 5, 22)
+        rt = _realtime_snapshots(d, [0.30],
+                                 snap_minutes=[9*60+30])
+        calls = []
+
+        def fake_loader(**kwargs):
+            calls.append(kwargs)
+            return rt
+
+        monkeypatch.setattr(
+            'lib.options_intraday.load_realtime_theta_curve', fake_loader)
+
+        bars = _synthetic_bars(d, [100.0] * 2)
+        tl = reprice_intraday_option(
+            ticker='SPY', intraday_date=d, strike=100.0,
+            expiration=date(2026, 5, 23), option_type='call',
+            iv_t_minus_1=0.60, entry_price_per_share=2.0,
+            intraday_bars=bars,
+            risk_free=0.0, dividend_yield=0.0,
+        )
+        assert len(calls) == 1
+        assert calls[0]['ticker'] == 'SPY'
+        assert calls[0]['option_type'] == 'call'
+        assert (tl['data_source'] == DATA_SOURCE_REALTIME).all()
+
+
+class TestStructureDataSourcePropagation:
+    """Structure-level data_source aggregates conservatively: realtime
+    only if ALL legs were realtime; otherwise fallback."""
+
+    def test_both_legs_realtime_yields_realtime_structure(self):
+        d = date(2026, 5, 22)
+        bars = _synthetic_bars(d, [100.0, 102.0, 105.0])
+        rt = _realtime_snapshots(d, [0.30, 0.28, 0.25],
+                                 snap_minutes=[9*60+30, 9*60+31, 9*60+32])
+        # Pre-supply realtime to both legs by patching the loader
+        import lib.options_intraday as oi
+        original = oi.load_realtime_theta_curve
+        oi.load_realtime_theta_curve = lambda **kw: rt
+        try:
+            tl = reprice_structure_intraday(
+                structure='long_straddle', ticker='SPY',
+                intraday_date=d, intraday_bars=bars,
+                atm_strike=100.0, expiration=date(2026, 5, 23),
+                call_entry=2.0, put_entry=2.0,
+                call_iv=0.40, put_iv=0.40,
+            )
+        finally:
+            oi.load_realtime_theta_curve = original
+        assert (tl['data_source'] == DATA_SOURCE_REALTIME).all()
+
+    def test_no_legs_realtime_yields_fallback_structure(self):
+        d = date(2020, 7, 31)
+        bars = _synthetic_bars(d, [100.0, 102.0, 105.0])
+        import lib.options_intraday as oi
+        original = oi.load_realtime_theta_curve
+        oi.load_realtime_theta_curve = lambda **kw: None  # No data ever
+        try:
+            tl = reprice_structure_intraday(
+                structure='long_straddle', ticker='SPY',
+                intraday_date=d, intraday_bars=bars,
+                atm_strike=100.0, expiration=date(2020, 8, 1),
+                call_entry=2.0, put_entry=2.0,
+                call_iv=0.40, put_iv=0.40,
+            )
+        finally:
+            oi.load_realtime_theta_curve = original
+        assert (tl['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK).all()
 
 
 class TestIntradayThetaDecay:

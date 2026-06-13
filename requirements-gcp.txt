@@ -68,6 +68,15 @@ uvicorn[standard]>=0.30.0
 pynacl>=1.5.0
 google-cloud-run>=0.10.0
 
+# Used by gcp/audit_infra_drift.py — the daily detector hits the Cloud
+# Scheduler + Artifact Registry control-plane APIs to find scheduler
+# orphans and image-pinning drift. gcloud CLI is NOT in the
+# trading-system base image, so we use the Python SDKs directly. The
+# trading-runner SA already has roles/editor at the project level
+# which includes the read permissions we need.
+google-cloud-scheduler>=2.13.0
+google-cloud-artifact-registry>=1.10.0
+
 # Used by gcp/db_query_job → gcp.queries.run_query for SQL statement splitting
 # and result table formatting (formerly only the GHA db-query workflow needed
 # these; CR-native pivot 2026-05-30 brings them into the GCP image).
