@@ -479,12 +479,14 @@ def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
         {"card_num": 1, "name": "IWM CARD 1: Bullish", "description": "two-up",
          "direction": "CALL", "conditions": ["RSI 40-65", "Above VWAP"],
          "win_rate": 0.48, "avg_return_bps": -10.0, "sample_n": 90,
+         "target_pct": "+0.30%", "stop_pct": "-0.15%",
          "horizons": [{"minutes": 5, "win_rate": 0.46, "avg_return_bps": -0.38, "sample_n": 90},
                       {"minutes": 60, "win_rate": 0.36, "avg_return_bps": -0.18, "sample_n": 90}],
          "best_horizon_min": 60, "best_horizon_win_rate": 0.36, "best_horizon_avg_bps": -0.18},
         {"card_num": 2, "name": "IWM CARD 2: Bearish", "description": None,
          "direction": "PUT", "conditions": '["Below VWAP"]',   # JSON string form
          "win_rate": np.nan, "avg_return_bps": np.nan, "sample_n": 0,
+         "target_pct": None, "stop_pct": None,
          "horizons": '[]', "best_horizon_min": None,           # JSON string + NULLs
          "best_horizon_win_rate": np.nan, "best_horizon_avg_bps": np.nan},
     ])
@@ -506,6 +508,9 @@ def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
     assert c1["best_horizon_min"] == 60
     assert c1["best_horizon_win_rate"] == 36.0
     assert c1["best_horizon_avg_bps"] == pytest.approx(-0.18)
+    # move magnitudes parsed from "+0.30%" / "-0.15%" -> 0.30 / 0.15
+    assert c1["target_pct"] == pytest.approx(0.30)
+    assert c1["stop_pct"] == pytest.approx(0.15)
 
     c2 = cards[1]
     assert c2["win_rate"] is None            # NaN -> None, never 0 (3.7)
@@ -515,6 +520,7 @@ def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
     assert c2["horizons"] == []                 # JSON-string '[]' parsed
     assert c2["best_horizon_min"] is None       # NULL stays None
     assert c2["best_horizon_avg_bps"] is None
+    assert c2["target_pct"] is None and c2["stop_pct"] is None
 
 
 def test_cards_from_db_bridges_when_cloud_sql_off(monkeypatch, evaluator):

@@ -153,6 +153,11 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
             unit = (ar_match.group(2) or "").lower()
             avg_return = val / 100 if unit == "bps" else val
 
+        # --- Target / Stop move magnitudes (e.g. "Target: +0.30%") ---
+        def _move(label: str) -> float | None:
+            m = re.search(rf"{label}[:\s]+[+-]?([0-9]+(?:\.[0-9]+)?)\s*%", body, re.I)
+            return float(m.group(1)) if m else None
+
         cards.append({
             "id": f"card_{i}",
             "name": name,
@@ -161,6 +166,8 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
             "conditions": conditions,
             "win_rate": win_rate,
             "avg_return": avg_return,
+            "target_pct": _move("target"),
+            "stop_pct": _move("stop"),
         })
 
     return {
@@ -197,7 +204,7 @@ def _cards_from_db(ticker_upper: str) -> list | None:
 
     df = query_to_dataframe(
         "SELECT card_num, name, description, direction, conditions, "
-        "win_rate, avg_return_bps, sample_n, horizons, "
+        "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
         "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
         "FROM playbook_cards WHERE ticker = :t ORDER BY card_num",
         {"t": ticker_upper},
@@ -206,6 +213,16 @@ def _cards_from_db(ticker_upper: str) -> list | None:
         return None
 
     import math
+    import re as _re
+
+    def _move_pct(v):
+        # target_pct/stop_pct are stored as display strings like "+0.30%" /
+        # "-0.15%". Return the move MAGNITUDE as a float percent (0.30, 0.15)
+        # so the frontend applies direction itself. NULL -> None.
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        m = _re.search(r"[0-9]+(?:\.[0-9]+)?", str(v))
+        return float(m.group(0)) if m else None
 
     def _pct(v, scale):
         # NULL/NaN stays None — never coerced to 0 (CLAUDE.md §3.7).
@@ -272,6 +289,10 @@ def _cards_from_db(ticker_upper: str) -> list | None:
             # matching the historical markdown-parsed contract the frontend expects.
             "win_rate": _pct(row["win_rate"], 100),
             "avg_return": _pct(row["avg_return_bps"], 0.01),
+            # Move magnitudes (% of price) so the card can render dollar levels
+            # off the live price: target/stop = price × (1 ± pct/100) per direction.
+            "target_pct": _move_pct(row["target_pct"]),
+            "stop_pct": _move_pct(row["stop_pct"]),
             # Win rate / avg return BY hold window + the best-avg-return hold.
             "horizons": horizons,
             "best_horizon_min": (None if row["best_horizon_min"] is None

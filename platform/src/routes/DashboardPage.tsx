@@ -13,6 +13,7 @@ import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
 import { DataPipelineStatus } from '@/components/dashboard/DataPipelineStatus';
+import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
   AlertTriangle, Database, CheckCircle, Circle, HelpCircle, ChevronDown,
@@ -62,7 +63,13 @@ interface BacktestResponse { ticker: string; summary: BacktestSummary; trades: A
 interface EquityResponse { summary: { total_return_pct: number; max_drawdown_pct: number } }
 interface SignalEntry { time: string; direction: string; score: number; conditions_met: string; return_pct: number }
 interface SignalsResponse { ticker: string; count: number; signals: SignalEntry[] }
-interface PlaybookCard { id: string; name: string; direction: string; win_rate: number; avg_return: number; conditions: string[]; description: string }
+interface PlaybookCard {
+  id: string; name: string; direction: string; win_rate: number; avg_return: number;
+  conditions: string[]; description: string;
+  target_pct?: number | null; stop_pct?: number | null;
+  horizons?: SetupHorizon[];
+  best_horizon_min?: number | null; best_horizon_win_rate?: number | null; best_horizon_avg_bps?: number | null;
+}
 interface PlaybookResponse { ticker: string; cards: PlaybookCard[] }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────
@@ -946,6 +953,9 @@ export default function DashboardPage() {
                   })}
                 </div>
               )}
+
+              {/* Trade levels + win rate by hold window */}
+              <SetupCardDetails card={topCard} price={quote?.price ?? null} />
             </div>
           ) : (
             <p className="text-xs text-[var(--color-text-muted)]">No playbook — run phase 6 pipeline first.</p>
