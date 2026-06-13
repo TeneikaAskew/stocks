@@ -331,6 +331,70 @@ def _persist_predictions_table(engine, ticker: str, tf: str,
              len(df))
 
 
+def _persist_production_model_artifact(
+    ticker: str, tf: str, run_id: str,
+    X_full: np.ndarray, y_full: np.ndarray,
+    feature_cols: list[str],
+    calibration: str = DEFAULT_CALIBRATION,
+    cv: int = DEFAULT_CV,
+) -> str | None:
+    """Train a 'production' model on the ENTIRE dataset (no held-out test)
+    and upload it to gs://<bucket>/magnitude-models/production/{ticker}/{tf}/.
+
+    Prerequisite for `gcp.research.magnitude_engine.mag_inference` which
+    loads model.joblib + feature_cols.txt + VERSION from this exact GCS
+    path. Without this, the inference job FileNotFoundErrors on every
+    cron — which is the correct CLAUDE.md §3.7 fail-loud behavior, but
+    operationally useless. Running walk_forward with
+    --persist-production-model produces the artifact the inference job
+    needs.
+
+    Returns the gs:// URI on success, None on failure (failure is logged
+    but does NOT raise — walk_forward's metric persistence is the
+    primary output of the job; this is a side effect).
+    """
+    import io
+    import joblib
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    prefix = f"magnitude-models/production/{ticker}/{tf}"
+
+    log.info("training production model on full dataset "
+             "(%d rows × %d features, calibration=%s)",
+             len(X_full), X_full.shape[1], calibration)
+
+    if calibration == "none":
+        model = make_lgbm(class_weight=None, n_jobs=-1)
+        model.fit(X_full, y_full)
+    else:
+        # Same wrapper as fold training. With cv=DEFAULT_CV the calibration
+        # uses an internal cross-validation split for the sigmoid/isotonic
+        # mapping; the underlying LightGBM still sees the full data.
+        model = CalibratedClassifierCV(
+            estimator=make_lgbm(class_weight=None, n_jobs=cv),
+            method=calibration, cv=cv, n_jobs=cv,
+        )
+        model.fit(X_full, y_full)
+
+    # Upload artifacts: model.joblib, feature_cols.txt, VERSION.
+    try:
+        bucket = gcs.Client().bucket(bucket_name)
+        buf = io.BytesIO()
+        joblib.dump(model, buf)
+        bucket.blob(f"{prefix}/model.joblib").upload_from_string(
+            buf.getvalue(), content_type="application/octet-stream")
+        bucket.blob(f"{prefix}/feature_cols.txt").upload_from_string(
+            "\n".join(feature_cols), content_type="text/plain")
+        bucket.blob(f"{prefix}/VERSION").upload_from_string(
+            run_id, content_type="text/plain")
+        uri = f"gs://{bucket_name}/{prefix}/"
+        log.info("production model persisted -> %s", uri)
+        return uri
+    except Exception as e:
+        log.error("production model persist FAILED (%s): %s",
+                  type(e).__name__, e)
+        return None
+
+
 def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     """Apply the pre-set success bar to a phase's folds and return a verdict."""
     ok = [f for f in folds if f.get("status") == "OK"]
@@ -388,7 +452,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
                   calibration: str = DEFAULT_CALIBRATION,
                   cv: int = DEFAULT_CV,
-                  label_mode: str = "body") -> dict:
+                  label_mode: str = "body",
+                  persist_production_model: bool = False) -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
@@ -539,6 +604,16 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # output is canonical for live consumers).
         if phase == "phase0":
             _persist_predictions_table(engine, ticker, tf, folds, run_id)
+        # Production model artifact (prereq for mag_inference live cron).
+        # Only emit from phase0 — phase1+ share the same backbone features
+        # and we want exactly one canonical artifact per (ticker, tf).
+        if persist_production_model and phase == "phase0":
+            uri = _persist_production_model_artifact(
+                ticker, tf, run_id, X_full, y_full, feature_cols,
+                calibration=calibration, cv=cv,
+            )
+            if uri:
+                summary["production_model_uri"] = uri
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
@@ -675,6 +750,16 @@ def main():
     p.add_argument("--phase", default=None, choices=list(PHASES) + [None])
     p.add_argument("--ticker", default=None, choices=list(TICKERS) + [None])
     p.add_argument("--tf", default=None, choices=list(TIMEFRAMES) + [None])
+    p.add_argument("--persist-production-model", action="store_true",
+                   default=os.environ.get("MAG_PERSIST_PRODUCTION_MODEL",
+                                          "").lower() == "true",
+                   help="After all folds complete (phase0 only), train a "
+                        "final model on the ENTIRE dataset and upload "
+                        "model.joblib + feature_cols.txt + VERSION to "
+                        "gs://<bucket>/magnitude-models/production/{ticker}/"
+                        "{tf}/. Required prerequisite for the "
+                        "magnitude-inference live cron — it fails loud "
+                        "(FileNotFoundError) without this artifact.")
     p.add_argument("--all-cells", action="store_true",
                    help="In-process loop over 9 cells of one phase (legacy; "
                         "prefer Cloud Run --tasks parallelism via MAG_PLAN env)")
@@ -710,7 +795,8 @@ def main():
                  os.environ.get("MAG_PLAN"), os.environ.get("CLOUD_RUN_TASK_INDEX"),
                  phase, ticker, tf)
         walk_forward(engine, phase, ticker, tf,
-                      cutoffs=cutoffs, calibration=args.calibration)
+                      cutoffs=cutoffs, calibration=args.calibration,
+                      persist_production_model=args.persist_production_model)
         return
 
     if args.plan and args.task_index is not None:
@@ -720,7 +806,8 @@ def main():
             return
         phase, ticker, tf = plan[args.task_index]
         walk_forward(engine, phase, ticker, tf,
-                      cutoffs=cutoffs, calibration=args.calibration)
+                      cutoffs=cutoffs, calibration=args.calibration,
+                      persist_production_model=args.persist_production_model)
         return
 
     if args.all_cells:
@@ -738,7 +825,8 @@ def main():
         )
     walk_forward(engine, args.phase, args.ticker, args.tf,
                   cutoffs=cutoffs, calibration=args.calibration,
-                  label_mode=args.label_mode)
+                  label_mode=args.label_mode,
+                  persist_production_model=args.persist_production_model)
 
 
 if __name__ == "__main__":
