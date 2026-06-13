@@ -3,7 +3,10 @@
 # Everything else is excluded to keep Cloud Build uploads small (~5MB vs ~4GB).
 
 # Large market data — migrated to Cloud SQL/GCS via gcp/migrate_to_gcp.py
-data/
+# Anchored to the repo root: a bare `data/` (gitignore semantics) also matches
+# platform/src/data/ (app source), which silently dropped optionsFlowMock.ts
+# from the Cloud Build context and broke `vite build`.
+/data/
 
 # Web apps — deployed separately (GitHub Pages / Firebase)
 chart-viewer/

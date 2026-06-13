@@ -37,9 +37,12 @@ RUN pip install --no-cache-dir -r /tmp/api-reqs.txt \
         scikit-learn>=1.4.0 \
         lightgbm>=4.3.0
 
-# Source — keep the layout main.py expects: <root>/lib, <root>/gcp, <root>/platform
+# Source — keep the layout main.py expects: <root>/lib, <root>/gcp, <root>/scripts, <root>/platform
 COPY lib/ /app/lib/
 COPY gcp/ /app/gcp/
+# scripts/ is needed at runtime: health.py imports scripts/audit_data_freshness.py
+# for /api/health/freshness (powers the Dashboard DataPipelineStatus widget).
+COPY scripts/ /app/scripts/
 COPY platform/api/ /app/platform/api/
 COPY --from=frontend /build/platform/dist /app/platform/dist
 

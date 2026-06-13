@@ -22,6 +22,9 @@ from lib.options_intraday import (
     load_realtime_theta_curve,
     reprice_intraday_option,
     reprice_structure_intraday,
+    cumulative_theta_decay,
+    intraday_theta_decay_fraction,
+    minutes_from_rth_open,
 )
 
 
@@ -544,3 +547,69 @@ class TestStructureDataSourcePropagation:
         finally:
             oi.load_realtime_theta_curve = original
         assert (tl['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK).all()
+
+
+class TestIntradayThetaDecay:
+    """The empirical 0DTE theta-decay curve g(t) and its helpers."""
+
+    def test_cumulative_endpoints_and_clamping(self):
+        # g(open)=0, g(close)=1; saturates outside the session.
+        assert cumulative_theta_decay(0) == pytest.approx(0.0)
+        assert cumulative_theta_decay(390) == pytest.approx(1.0)
+        assert cumulative_theta_decay(-60) == pytest.approx(0.0)   # pre-open
+        assert cumulative_theta_decay(600) == pytest.approx(1.0)   # post-close
+
+    def test_cumulative_monotonic_non_decreasing(self):
+        # Cumulative decay can never run backwards.
+        xs = list(range(0, 391, 5))
+        gs = [cumulative_theta_decay(x) for x in xs]
+        assert all(b >= a - 1e-9 for a, b in zip(gs, gs[1:]))
+
+    def test_full_day_fraction_is_one(self):
+        # Magnitude-preserving: a full RTH hold returns the whole daily budget.
+        assert intraday_theta_decay_fraction(0, 390) == pytest.approx(1.0)
+
+    def test_fraction_is_additive(self):
+        # frac(a,c) == frac(a,b) + frac(b,c) since it is g(c) - g(a).
+        whole = intraday_theta_decay_fraction(30, 300)
+        split = (intraday_theta_decay_fraction(30, 180)
+                 + intraday_theta_decay_fraction(180, 300))
+        assert whole == pytest.approx(split, abs=1e-9)
+
+    def test_non_positive_window_is_zero(self):
+        assert intraday_theta_decay_fraction(120, 120) == 0.0
+        assert intraday_theta_decay_fraction(200, 100) == 0.0
+
+    def test_morning_decays_faster_than_linear(self):
+        # Open IV crush → first hour loses more than its time share.
+        linear = 60 / 390.0
+        assert intraday_theta_decay_fraction(0, 60) > linear
+
+    def test_midday_is_a_lull_below_linear(self):
+        # The empirical curve falls below linear midday (≈12:00–15:00):
+        # by 1:30pm (240 min) less than the linear 240/390 has decayed.
+        assert cumulative_theta_decay(240) < 240 / 390.0
+
+    def test_terminal_cliff_carries_outsized_decay(self):
+        # ~0.80 decayed by the last observed bar (~15:55); the final minutes
+        # into expiry carry the remaining ~0.20 — far steeper than any
+        # equal-length midday window.
+        assert cumulative_theta_decay(385) < 0.85
+        last_5min = intraday_theta_decay_fraction(385, 390)
+        midday_5min = intraday_theta_decay_fraction(180, 185)
+        assert last_5min > 10 * midday_5min
+
+    def test_minutes_from_rth_open_naive(self):
+        assert minutes_from_rth_open(datetime(2025, 7, 31, 9, 30)) == 0.0
+        assert minutes_from_rth_open(datetime(2025, 7, 31, 10, 30)) == 60.0
+        assert minutes_from_rth_open(datetime(2025, 7, 31, 16, 0)) == 390.0
+
+    def test_minutes_from_rth_open_tz_aware_converts_to_eastern(self):
+        # 14:30 UTC == 10:30 EDT == 60 min after the open.
+        ts = pd.Timestamp("2025-07-31 14:30", tz="UTC")
+        assert minutes_from_rth_open(ts) == pytest.approx(60.0)
+
+    def test_minutes_from_rth_open_null_inputs_return_none(self):
+        assert minutes_from_rth_open(None) is None
+        assert minutes_from_rth_open(pd.NaT) is None
+        assert minutes_from_rth_open("not-a-time") is None

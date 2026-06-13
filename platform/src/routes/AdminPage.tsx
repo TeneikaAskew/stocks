@@ -38,7 +38,7 @@ export default function AdminPage() {
 
   return (
     <div className="mx-auto max-w-5xl p-4">
-      <h1 className="mb-4 text-lg font-semibold text-[var(--color-text-primary)]">Admin</h1>
+      <h1 className="mb-4 text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Admin</h1>
       {authed ? (
         <div className="space-y-8">
           <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} showLogout={!isAdmin} />

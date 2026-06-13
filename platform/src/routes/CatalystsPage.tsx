@@ -466,7 +466,7 @@ export default function CatalystsPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight text-[var(--color-brand)]">Catalysts</h1>
+          <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Catalysts</h1>
           <p className="label-micro mt-2">
             {impactCounts.Total} events
             {' '}<span className="text-[var(--bear)] font-semibold">{impactCounts.High}H</span>{' / '}

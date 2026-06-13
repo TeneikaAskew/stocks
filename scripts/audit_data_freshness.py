@@ -365,11 +365,20 @@ def _query_freshness_one(
 
     where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-    # Count how many rows land on the expected trading day (sanity check)
+    # Count how many rows land on the expected trading day (sanity check).
+    # For timestamp columns use a half-open range on the raw column rather than
+    # DATE(ts_col) = :date — wrapping the column in DATE() is NOT sargable, so
+    # Postgres can't use the ts index and falls back to a full table scan. That
+    # scan, run per (table, ticker), is the dominant cost of this audit on the
+    # large market_data_intraday / etf_options_snapshots tables (it pushed the
+    # endpoint past 150s). The range form counts the identical rows.
     if check["ts_is_date"]:
         count_filter = f"{ts_col} = :expected_date"
+        params["expected_date"] = expected_date
     else:
-        count_filter = f"DATE({ts_col}) = :expected_date"
+        count_filter = f"{ts_col} >= :day_start AND {ts_col} < :day_end"
+        params["day_start"] = datetime.combine(expected_date, time.min)
+        params["day_end"] = datetime.combine(expected_date, time.min) + timedelta(days=1)
 
     count_where = list(where_clauses) + [count_filter]
     count_where_sql = " WHERE " + " AND ".join(count_where)
@@ -381,7 +390,6 @@ def _query_freshness_one(
     FROM {check['name']}
     {where_sql}
     """
-    params["expected_date"] = expected_date
 
     try:
         df = query_to_dataframe(q, params)
@@ -513,11 +521,20 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
 
     date_expr = ts_col if check["ts_is_date"] else f"DATE({ts_col})"
     extra_where = check.get("where")
-    where_parts = [
-        f"{ticker_col} = ANY(:tickers)",
-        f"{date_expr} >= :start_date",
-        f"{date_expr} <= :end_date",
-    ]
+    # Bound the scan with a sargable range on the raw ts column. Filtering on
+    # DATE(ts_col) (a function on the column) is not sargable and forces a full
+    # table scan; the raw-column range lets Postgres use the ts index. GROUP BY
+    # still buckets by calendar day, so the result is identical.
+    if check["ts_is_date"]:
+        range_where = [f"{ts_col} >= :start_bound", f"{ts_col} <= :end_bound"]
+        range_params = {"start_bound": expected_days[-1], "end_bound": expected_days[0]}
+    else:
+        range_where = [f"{ts_col} >= :start_bound", f"{ts_col} < :end_bound"]
+        range_params = {
+            "start_bound": datetime.combine(expected_days[-1], time.min),
+            "end_bound": datetime.combine(expected_days[0], time.min) + timedelta(days=1),
+        }
+    where_parts = [f"{ticker_col} = ANY(:tickers)"] + range_where
     if extra_where:
         where_parts.append(extra_where)
     where_sql = " WHERE " + " AND ".join(where_parts)
@@ -529,11 +546,7 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
     GROUP BY {ticker_col}, {date_expr}
     """
     try:
-        df = query_to_dataframe(sql, {
-            "tickers": list(tickers),
-            "start_date": expected_days[-1],
-            "end_date": expected_days[0],
-        })
+        df = query_to_dataframe(sql, {"tickers": list(tickers), **range_params})
     except Exception as e:
         if "does not exist" not in str(e):
             log.warning("Gap scan failed for %s: %s", check["name"], e)
@@ -570,6 +583,13 @@ def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
     """Hardcoded cross-table sanity checks on recent rows. Returns only
     FAILING rows; silent when everything is within range.
     """
+    # Scope the options scan to the tracked tickers AND end-of-day snapshots so
+    # it uses the idx_etf_options_eod_agg (ticker, snapshot_date) partial index
+    # and examines ~1 snapshot/day instead of all intraday snapshots. Without
+    # both predicates the snapshot_date range matches no index and the audit
+    # full-scans the large etf_options_snapshots table (>120s); with them ~4s.
+    # EOD is the canonical daily snapshot; TICKERS is the set this audit tracks.
+    tkr_array = "ARRAY[" + ", ".join(f"'{t}'" for t in TICKERS) + "]"
     checks: list[tuple[str, str, str]] = [
         # (label, SQL returning count of bad rows, description)
         (
@@ -589,8 +609,10 @@ def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
         ),
         (
             "etf_options_snapshots [sanity]",
-            """SELECT COUNT(*) AS bad FROM etf_options_snapshots
-               WHERE snapshot_date >= CURRENT_DATE - INTERVAL '7 days'
+            f"""SELECT COUNT(*) AS bad FROM etf_options_snapshots
+               WHERE ticker = ANY({tkr_array})
+                 AND market_session = 'EOD'
+                 AND snapshot_date >= CURRENT_DATE - INTERVAL '7 days'
                  AND data_source = 'alphavantage'
                  AND (strike <= 0 OR mark < 0)""",
             "non-positive strike or negative mark",

@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/AppShell';
+import { AuthGate } from '@/components/auth/AuthGate';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { RouteErrorBoundary } from '@/components/shared/RouteErrorBoundary';
 
@@ -17,6 +18,7 @@ const InsightsPage = lazy(() => import('@/routes/InsightsPage'));
 const CatalystsPage = lazy(() => import('@/routes/CatalystsPage'));
 const AdminPage = lazy(() => import('@/routes/AdminPage'));
 const HelpPage = lazy(() => import('@/routes/HelpPage'));
+const SettingsPage = lazy(() => import('@/routes/SettingsPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -56,6 +58,7 @@ const router = createBrowserRouter([
       { path: '/catalysts', errorElement, element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },
       { path: '/admin', errorElement, element: <Suspense fallback={<PageLoader />}><AdminPage /></Suspense> },
       { path: '/help', errorElement, element: <Suspense fallback={<PageLoader />}><HelpPage /></Suspense> },
+      { path: '/settings', errorElement, element: <Suspense fallback={<PageLoader />}><SettingsPage /></Suspense> },
     ],
   },
 ]);
@@ -63,7 +66,9 @@ const router = createBrowserRouter([
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <AuthGate>
+        <RouterProvider router={router} />
+      </AuthGate>
     </QueryClientProvider>
   );
 }

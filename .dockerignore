@@ -1,8 +1,8 @@
 # .dockerignore — mirrors .gcloudignore for local docker build runs
 # gcp/Dockerfile copies: lib/ gcp/ scripts/ alert_config.json requirements-gcp.txt
 
-# Large market data
-data/
+# Large market data (anchored — a bare `data/` also matched platform/src/data/)
+/data/
 
 # Web apps
 chart-viewer/

@@ -1,46 +1,18 @@
 import { NavLink } from 'react-router-dom';
+import { Search, PanelLeft } from 'lucide-react';
+import { Button, Kbd } from '@heroui/react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useTickerStore } from '@/stores/tickerStore';
 import { useUser } from '@/hooks/useUser';
-import {
-  LayoutDashboard,
-  Activity,
-  CandlestickChart,
-  Layers,
-  BookOpen,
-  BarChart3,
-  Search,
-  NotebookPen,
-  BrainCircuit,
-  Zap,
-  Settings,
-  HelpCircle,
-  ChevronLeft,
-  ChevronRight,
-} from 'lucide-react';
-import type { Ticker } from '@/types';
+import { Brand } from './Brand';
+import { NAV_GROUPS } from './navConfig';
 
-const navItems = [
-  { path: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/live', label: 'Live Market', icon: Activity },
-  { path: '/charts', label: 'Charts', icon: CandlestickChart },
-  { path: '/options', label: 'Options Flow', icon: Layers },
-  { path: '/playbook', label: 'Playbook', icon: BookOpen },
-  { path: '/reports', label: 'Reports', icon: BarChart3 },
-  { path: '/signals', label: 'Signals', icon: Search },
-  { path: '/journal', label: 'Journal', icon: NotebookPen },
-  { path: '/insights', label: 'AI Insights', icon: BrainCircuit },
-  { path: '/catalysts', label: 'Catalysts', icon: Zap },
-  { path: '/admin', label: 'Admin', icon: Settings, adminOnly: true },
-  { path: '/help', label: 'Help & Glossary', icon: HelpCircle },
-];
+interface SidebarProps {
+  onOpenSearch: () => void;
+}
 
-export function Sidebar() {
+export function Sidebar({ onOpenSearch }: SidebarProps) {
   const { sidebarCollapsed, toggleSidebar } = useSettingsStore();
-  const { activeTicker, setTicker, availableTickers } = useTickerStore();
   const { isAdmin } = useUser();
-
-  const visibleNavItems = navItems.filter((item) => !('adminOnly' in item && item.adminOnly) || isAdmin);
 
   return (
     <aside
@@ -48,59 +20,65 @@ export function Sidebar() {
         sidebarCollapsed ? 'w-16' : 'w-56'
       }`}
     >
-      {/* Logo */}
-      <div className="flex h-14 items-center justify-between px-4">
-        {!sidebarCollapsed && (
-          <span className="font-display text-sm font-semibold tracking-wide text-[var(--brand)]">
-            Trading Platform
-          </span>
-        )}
+      {/* Brand + collapse */}
+      <div className="flex h-12 items-center justify-between px-3">
+        {!sidebarCollapsed && <Brand />}
         <button
           onClick={toggleSidebar}
-          className="rounded-md p-1 text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)] transition-colors"
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="rounded-md p-1 text-[var(--on-surface-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)] transition-colors"
         >
-          {sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          <PanelLeft size={16} />
         </button>
       </div>
 
-      {/* Ticker selector */}
+      {/* Search trigger */}
       {!sidebarCollapsed && (
-        <div className="flex gap-1 px-3 pb-3">
-          {availableTickers.map((t: Ticker) => (
-            <button
-              key={t}
-              onClick={() => setTicker(t)}
-              className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
-                activeTicker === t
-                  ? 'bg-[var(--brand)] text-[var(--on-brand)]'
-                  : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)] hover:text-[var(--on-surface)]'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          fullWidth
+          onPress={onOpenSearch}
+          className="search-trigger mx-2.5 mb-2"
+        >
+          <Search size={13} />
+          <span>Search</span>
+          <Kbd>⌘K</Kbd>
+        </Button>
       )}
 
-      {/* Nav items */}
-      <nav className="flex-1 overflow-y-auto py-2">
-        {visibleNavItems.map(({ path, label, icon: Icon }) => (
-          <NavLink
-            key={path}
-            to={path}
-            end={path === '/'}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 mx-2 rounded-lg text-sm transition-colors ${
-                isActive
-                  ? 'bg-[var(--surface-2)] text-[var(--brand)] font-semibold'
-                  : 'text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)]'
-              }`
-            }
-          >
-            <Icon size={18} className="shrink-0" />
-            {!sidebarCollapsed && <span>{label}</span>}
-          </NavLink>
-        ))}
+      {/* Grouped nav */}
+      <nav className="flex-1 overflow-y-auto py-1">
+        {NAV_GROUPS.map((g) => {
+          const items = g.items.filter((it) => !it.adminOnly || isAdmin);
+          if (items.length === 0) return null;
+          return (
+            <div key={g.group}>
+              {!sidebarCollapsed && <div className="nav-group-label">{g.group}</div>}
+              {items.map(({ path, label, icon: Icon, badge }) => (
+                <NavLink
+                  key={path}
+                  to={path}
+                  end={path === '/'}
+                  title={label}
+                  className={({ isActive }) =>
+                    `mx-2 flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                      isActive
+                        ? 'bg-[var(--surface-2)] font-semibold text-[var(--brand)]'
+                        : 'text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)]'
+                    } ${sidebarCollapsed ? 'justify-center' : ''}`
+                  }
+                >
+                  <Icon size={18} className="shrink-0" />
+                  {!sidebarCollapsed && <span className="flex-1">{label}</span>}
+                  {!sidebarCollapsed && badge && (
+                    <span className={`nav-badge${badge.tone === 'live' ? ' live' : ''}`}>{badge.text}</span>
+                  )}
+                </NavLink>
+              ))}
+            </div>
+          );
+        })}
       </nav>
     </aside>
   );

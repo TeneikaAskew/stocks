@@ -8,8 +8,8 @@ function getInitialTheme(): Theme {
   if (typeof window === 'undefined') return 'dark';
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored === 'dark' || stored === 'light') return stored;
-  // Prefer OS preference, default to dark
-  if (window.matchMedia?.('(prefers-color-scheme: light)').matches) return 'light';
+  // Dark is the product default (Obsidian Analyst), regardless of OS preference.
+  // Users who explicitly pick light keep it via the stored value above.
   return 'dark';
 }
 

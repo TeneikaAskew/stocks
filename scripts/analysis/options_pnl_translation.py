@@ -23,7 +23,7 @@ Estimation method (Greeks approximation):
   3. At entry, mark price M = (bid + ask) / 2
   4. Estimated option P&L:
        delta_pnl   = delta × (entry_price × underlying_return)      [$ gain from underlying move]
-       theta_cost  = |theta| × (hold_min / 1440)                    [$ lost to time decay]
+       theta_cost  = |theta| × (390/1440) × [g(exit) − g(entry)]    [time decay, intraday-shaped]
        net_pnl_$   = delta_pnl − theta_cost
        net_pnl_pct = net_pnl_$ / M                                  [return on premium paid]
   5. Transaction cost: half-spread at entry = (ask − bid) / (2 × M) subtracted
@@ -35,18 +35,26 @@ Estimation paths (2026-05-22, Track 2 phase 2a):
     mark_entry - spread_cost`. No Greeks approximation. Used for dates
     after the realtime fetcher began writing rows (~2026-05-22+).
   - Fallback: empirical Greeks approximation. Used for historical dates
-    where REALTIME data does not exist (pre-2026-05-22) — applies EOD
-    delta + theta linearly to the underlying move, with the
-    20-40% afternoon-theta UNDERESTIMATION caveat below.
+    where REALTIME data does not exist (pre-2026-05-22) — applies the EOD
+    delta to the underlying move and distributes the EOD theta across the
+    hold via the calibrated intraday g(t) decay curve, with the residual
+    MAGNITUDE caveat below.
 
 Empirical-fallback bias (applies ONLY when data_source='empirical_fallback'):
-  - Options data is EOD snapshots, not intraday. Delta/theta values are end-of-day,
-    which for 0DTE options have very little time value left. At the time signals fire
-    (9:30–12:00 AM), delta is similar to EOD but theta is much higher (0DTE theta
-    accelerates exponentially through the day). This means theta_cost is UNDERESTIMATED
-    here — actual options P&L is likely WORSE than reported.
-  - Results should be interpreted as an UPPER BOUND on options profitability for
-    fallback rows. Realtime rows reflect realized mid-to-mid P&L within bid-ask spread.
+  - Options data is EOD snapshots, not intraday. Delta/theta are end-of-day
+    Greeks. The intraday SHAPE of theta decay is now calibrated — g(t)
+    (lib.options_intraday) is morning-heavy (open IV crush), dips into a midday
+    LULL, then a terminal expiry CLIFF in the last minutes. NB: this corrects
+    the earlier belief that 0DTE theta "accelerates exponentially through the
+    day" / is understated in the afternoon — the data shows the afternoon
+    (pre-cliff) is actually a lull.
+  - MAGNITUDE residual remains: the |theta| anchor is still an EOD Greek, not
+    the option's intraday-repriced value, so the absolute theta budget can be
+    off even though the SHAPE is calibrated. A fully correct magnitude requires
+    repricing the option at entry/exit (lib.options_intraday.reprice_intraday_option).
+  - Results should therefore be interpreted as an UPPER BOUND on options
+    profitability for fallback rows. Realtime rows reflect realized mid-to-mid
+    P&L within bid-ask spread and carry neither caveat.
   - See docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 2 for the full plan.
 
 Coverage:
@@ -62,6 +70,7 @@ Usage:
 """
 
 import sys
+import os
 import argparse
 import warnings
 from copy import deepcopy
@@ -87,6 +96,8 @@ from lib.backtest import BacktestEngine
 from lib.options_intraday import (
     DATA_SOURCE_EMPIRICAL_FALLBACK,
     DATA_SOURCE_REALTIME,
+    minutes_from_rth_open,
+    intraday_theta_decay_fraction,
 )
 
 # How close (in minutes) an observed REALTIME snapshot must be to the
@@ -574,9 +585,10 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series,
        ``data_source='empirical_fallback'``) — used for historical dates
        where no realtime snapshots exist (pre-2026-05-22) or when the
        trade's entry/exit minutes fall outside any realtime snapshot's
-       tolerance window. Applies EOD delta + theta linearly to the
-       underlying move; underestimates afternoon theta by 20-40% per
-       module docstring.
+       tolerance window. Applies the EOD delta to the underlying move and
+       distributes the EOD theta across the hold via the calibrated intraday
+       g(t) decay curve; absolute theta magnitude is a residual upper bound
+       per the module docstring `Empirical-fallback bias` block.
 
     Returns dict with estimated metrics + ``data_source`` column, or None
     if neither path yields a value (atm_opt empty or all-NaN).
@@ -595,7 +607,7 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series,
     | mark             | entry mid (live)  | EOD mid                |
     | delta, theta     | entry-snap Greeks | EOD Greeks             |
     | delta_pnl        | NaN               | eff_delta × |chg|      |
-    | theta_cost       | NaN               | |theta| × hold/1440    |
+    | theta_cost       | NaN               | |theta|×(390/1440)×Δg  |
     | spread_cost      | observed at entry | EOD (ask-bid)/2        |
     | net_pnl_dollar   | mark_exit - mark_entry - spread (REALIZED) | delta_pnl - theta_cost - spread (MODELED) |
     | net_pnl_pct      | net_pnl_dollar / mark_entry                | net_pnl_dollar / mark                     |
@@ -681,13 +693,33 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series,
     elif trade['direction'] == 'PUT' and underlying_chg > 0:
         delta_pnl = -delta_pnl
 
-    # Theta cost for hold period (theta is $/day).
-    # NOTE: This underestimates theta for 0DTE — see module docstring
-    # `Empirical-fallback bias` block. data_source='empirical_fallback'
-    # is stamped on the row so downstream rendering can surface the
-    # caveat per Track 2 phase 2a.
+    # Theta cost for the hold. theta is $/calendar-day; a full RTH session is
+    # 390/1440 of a calendar day. The intraday DISTRIBUTION of that decay is
+    # not linear — empirical g(t) (lib.options_intraday) is morning-heavy with
+    # a midday lull and a terminal expiry cliff. Keep the full-day magnitude
+    # (390/1440 of daily theta) and redistribute it across the session via
+    # g(exit) − g(entry); fall back to the linear model when time-of-day is
+    # unavailable. NB: the SHAPE is calibrated but the |theta| anchor is still
+    # an EOD Greek, so the absolute magnitude of theta_cost remains an UPPER
+    # BOUND for these empirical_fallback rows — see the module docstring
+    # `Empirical-fallback bias` block. (Realtime rows measure realized
+    # mid-to-mid P&L directly and carry neither the shape nor magnitude caveat.)
+    # data_source='empirical_fallback' is stamped on the row so downstream
+    # rendering can surface the caveat per Track 2 phase 2a.
     theta_daily = abs(theta)
-    theta_cost  = theta_daily * (trade['hold_min'] / 1440.0)
+    # THETA_MODEL=linear forces the legacy hold_min/1440 distribution — kept so
+    # the empirical recalibration can be diffed against the old behaviour (run
+    # the report once each way). Default 'empirical' uses the calibrated curve.
+    if os.environ.get('THETA_MODEL', 'empirical').strip().lower() == 'linear':
+        theta_cost = theta_daily * (trade['hold_min'] / 1440.0)
+    else:
+        entry_mfo = minutes_from_rth_open(trade.get('entry_time'))
+        exit_mfo  = minutes_from_rth_open(trade.get('exit_time'))
+        if entry_mfo is not None and exit_mfo is not None and exit_mfo > entry_mfo:
+            decay_frac = intraday_theta_decay_fraction(entry_mfo, exit_mfo)
+            theta_cost = theta_daily * (390.0 / 1440.0) * decay_frac  # 390 = RTH min
+        else:
+            theta_cost = theta_daily * (trade['hold_min'] / 1440.0)   # linear fallback
 
     # Transaction cost (half-spread at entry)
     spread_cost_dollar = (ask - bid) / 2.0 if not pd.isna(bid) and not pd.isna(ask) else mark * 0.02
@@ -815,9 +847,10 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
     out += f'trades, empirical Greeks fallback on {fb_count:,}.\n'
     if fb_count > 0:
         out += (
-            '> ⚠️ **Empirical-fallback caveat**: fallback rows use EOD Greeks '
-            'applied to intraday trades. Theta is underestimated for 0DTE '
-            '(20-40% in the afternoon); their P&L is an **upper bound**, '
+            '> ⚠️ **Empirical-fallback caveat**: fallback rows use EOD Greeks. '
+            'Theta is shaped by the calibrated intraday g(t) curve (morning-'
+            'heavy, midday lull, terminal cliff), but its absolute magnitude '
+            'still scales an EOD Greek, so their P&L is an **upper bound**, '
             'not a precise forecast.\n'
         )
     out += '\n'
@@ -906,13 +939,15 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         tod_rows,
     ) + '\n'
     # Caveat applies only to fallback rows — realtime rows measure P&L
-    # directly so afternoon theta acceleration is captured.
+    # directly so neither the theta shape nor magnitude caveat applies.
     if fb_count > 0:
         out += (
-            f'_Note: afternoon theta cost is understated for the {fb_count:,} '
-            'empirical-fallback rows — EOD Greeks do not capture 0DTE '
-            'acceleration after 14:00. Realtime rows reflect realized '
-            'mid-to-mid P&L within bid-ask spread._\n\n'
+            f'_Note: theta cost for the {fb_count:,} empirical-fallback rows '
+            'uses the calibrated intraday 0DTE decay curve (lib.options_intraday) '
+            '— morning-heavy, midday lull, terminal expiry cliff. The intraday '
+            'SHAPE is corrected, but absolute magnitude still scales an EOD theta '
+            'Greek, so treat fallback P&L as an upper bound. Realtime rows reflect '
+            'realized mid-to-mid P&L within bid-ask spread._\n\n'
         )
 
     # Underlying WR vs options WR mismatch analysis

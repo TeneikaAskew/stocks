@@ -13,6 +13,10 @@ import {
   type ColumnFiltersState,
 } from '@tanstack/react-table';
 import { ChevronUp, ChevronDown, Filter, AlertTriangle } from 'lucide-react';
+import { useTradeSummary } from '@/hooks/useTradeAnalytics';
+import { KpiTile, MicroLabel } from '@/components/primitives';
+import { TickerSelect } from '@/components/shared/TickerSelect';
+import { fmtPct, fmtNum } from '@/lib/format';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface SignalRow {
@@ -142,6 +146,9 @@ export default function SignalsPage() {
   );
   const allSignals = data?.signals ?? [];
 
+  // 90-day backtest P&L summary (server-computed; no duplicate TS math).
+  const { data: pnl } = useTradeSummary(activeTicker);
+
   // Client-side filtering (still used for direction/score + local date range)
   const filtered = useMemo(() => {
     let rows = allSignals;
@@ -166,15 +173,36 @@ export default function SignalsPage() {
   const displayRows = table.getRowModel().rows.slice(0, 500);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-bold text-[var(--color-text-primary)]">
-          {activeTicker} Signal Explorer
-        </h1>
-        <p className="text-xs text-[var(--color-text-muted)]">
-          {data ? `${data.count.toLocaleString()} total signals — showing ${filtered.length.toLocaleString()} filtered` : 'Historical signals with indicator data'}
-        </p>
+    <div className="space-y-5">
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Signals</h1>
+          <MicroLabel className="mt-1">
+            {activeTicker} ·{' '}
+            {data ? `${data.count.toLocaleString()} signals` : 'signal explorer'}
+            {data && filtered.length !== allSignals.length ? ` · ${filtered.length.toLocaleString()} shown` : ''}
+          </MicroLabel>
+        </div>
+        <TickerSelect />
       </div>
+
+      {/* ── Performance summary (90-day backtest) ───────────────────────── */}
+      {pnl && pnl.closedTrades > 0 && (() => {
+        const wr = pnl.winRate <= 1 ? pnl.winRate * 100 : pnl.winRate;
+        return (
+          <div>
+            <MicroLabel className="mb-2">Performance · 90-day backtest</MicroLabel>
+            <div className="grid grid-cols-2 gap-[14px] md:grid-cols-3 lg:grid-cols-5">
+              <KpiTile label="Win rate" value={`${wr.toFixed(1)}%`} tone={wr >= 50 ? 'bull' : 'bear'} sub={`${pnl.winCount}W / ${pnl.lossCount}L`} />
+              <KpiTile label="Total P&L" value={fmtPct(pnl.totalPnL)} tone={pnl.totalPnL >= 0 ? 'bull' : 'bear'} />
+              <KpiTile label="Avg / trade" value={fmtPct(pnl.avgPnL)} tone={pnl.avgPnL >= 0 ? 'bull' : 'bear'} />
+              <KpiTile label="Profit factor" value={fmtNum(pnl.profitFactor, 2)} tone={(pnl.profitFactor ?? 0) >= 1 ? 'bull' : 'bear'} />
+              <KpiTile label="Closed trades" value={pnl.closedTrades.toLocaleString()} sub={`${pnl.callCount} call · ${pnl.putCount} put`} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 rounded-xl bg-[var(--surface-2)] px-3 py-2">
