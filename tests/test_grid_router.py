@@ -117,15 +117,15 @@ def _install_query_router(monkeypatch, realtime_df=None, eod_df=None,
     based on which CTE filter the SQL contains. Reads the SQL text to
     decide which path is being exercised.
 
-    `open_df` feeds the session-open baseline loader (MIN(snapshot_ts)).
+    `open_df` feeds the prior-snapshot baseline loader (nested MAX < MAX).
     `calls` (optional list) records each dispatched SQL so tests can
     assert the I/O shape (e.g. "realtime grid fires exactly 2 queries")."""
     def fake_query(sql, params=None):
         if calls is not None:
             calls.append(sql)
-        # The session-open baseline query also contains REALTIME, so match it
-        # FIRST by its distinctive MIN(snapshot_ts) subquery.
-        if "MIN(snapshot_ts)" in sql:
+        # The prior-snapshot baseline query also contains REALTIME, so match it
+        # FIRST by its distinctive `snapshot_ts < (` strict-less-than subquery.
+        if "snapshot_ts < (" in sql:
             return open_df if open_df is not None else pd.DataFrame()
         if "market_session = 'REALTIME'" in sql:
             return realtime_df if realtime_df is not None else pd.DataFrame()
@@ -777,10 +777,10 @@ class TestGridTimeseries:
 
 
 def _open_chain_df(snapshot_date: date) -> pd.DataFrame:
-    """Session-open snapshot: EARLIER snapshot_ts and LOWER open interest than
+    """Prior-snapshot baseline: EARLIER snapshot_ts and LOWER open interest than
     `_chain_df`, so the latest snapshot shows positive GEX drift per cell."""
     df = _chain_df(snapshot_date, "REALTIME")
-    df["snapshot_ts"] = pd.Timestamp(f"{snapshot_date.isoformat()}T09:30:00")
+    df["snapshot_ts"] = pd.Timestamp(f"{snapshot_date.isoformat()}T15:50:00")
     df["open_interest"] = (df["open_interest"] * 0.5).astype(int)
     return df
 
@@ -800,7 +800,7 @@ class TestGridIntradayChange:
         assert r.status_code == 200
         data = r.json()
         assert data["data_source"] == "realtime"
-        # Exactly TWO chain loads: latest snapshot + session-open baseline
+        # Exactly TWO chain loads: latest snapshot + prior-snapshot baseline
         # (Rule 0 — no per-cell queries; the other dispatches are the
         # daily_rates risk-free lookups inside the gamma-flip math).
         chain_qs = [c for c in calls if "etf_options_snapshots" in c]
@@ -811,18 +811,18 @@ class TestGridIntradayChange:
         for c in changed:
             assert c["abs_change"] is not None
 
-    def test_session_just_opened_yields_null_change(self, client, monkeypatch):
-        """When the earliest snapshot IS the latest (single snapshot so far),
-        change is null + a warning, not a wall of 0.0%."""
+    def test_single_snapshot_yields_null_change(self, client, monkeypatch):
+        """When there's no prior snapshot to diff against (single snapshot so
+        far this session), change is null + a warning, not a wall of 0.0%."""
         monkeypatch.setattr(grid_router.gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
         latest = _chain_df(date(2026, 5, 23), "REALTIME")
-        # open_df == latest (same snapshot_ts) → base_ts == ts_iso
-        _install_query_router(monkeypatch, realtime_df=latest, open_df=latest.copy())
+        # No prior snapshot exists → baseline loader returns empty.
+        _install_query_router(monkeypatch, realtime_df=latest, open_df=pd.DataFrame())
 
         r = client.get("/api/options/SPY/grid")
         data = r.json()
         assert all(c["pct_change"] is None for c in data["cells"])
-        assert any("just opened" in w for w in data["warnings"])
+        assert any("intraday change not yet available" in w for w in data["warnings"])
 
     def test_include_change_false_skips_baseline_query(self, client, monkeypatch):
         latest = _chain_df(date(2026, 5, 23), "REALTIME")

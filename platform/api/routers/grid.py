@@ -292,15 +292,24 @@ def _load_chain_for_live(
     return (_df_to_contracts(df_eod), ts_iso, sd, tier, days_behind)
 
 
-def _load_session_open_chain(
+def _load_prior_snapshot_chain(
     ticker: str, session_date: date_type,
 ) -> tuple[list[dict], Optional[str]]:
-    """Load the EARLIEST realtime snapshot of `session_date` — the session-open
-    baseline for per-cell intraday %-change.
+    """Load the PRIOR realtime snapshot of `session_date` — the rolling
+    baseline for per-cell intraday %-change (the snapshot immediately before
+    the latest one, typically ~5 min back).
 
-    Returns (contracts, snapshot_ts_iso). Empty list + None when the session has
-    no realtime rows. Exactly ONE query (mirrors the MAX(snapshot_ts) pattern in
-    _load_chain_for_live with MIN), index-backed by idx_etf_options_realtime.
+    A rolling prior-snapshot baseline (rather than session-open) is what keeps
+    the %-badges in a sane, readable range. Empirically, a session-open
+    baseline on 0DTE explodes to hundreds–thousands of % because dealer gamma
+    sharpens enormously from the pre-market open into the 4pm expiry; the
+    prior-snapshot delta captures only the incremental ~5-min drift (median
+    ~24% vs ~177% for session-open on real QQQ data), matching the
+    competitor's +10–90% near-spot gradient.
+
+    Returns (contracts, snapshot_ts_iso). Empty list + None when the session
+    has fewer than two realtime snapshots (e.g. just opened). Exactly ONE
+    query (nested MAX < MAX), index-backed by idx_etf_options_realtime.
     """
     from gcp.database import query_to_dataframe
 
@@ -315,11 +324,18 @@ def _load_session_open_chain(
           AND market_session = 'REALTIME'
           AND snapshot_date = :session_date
           AND snapshot_ts = (
-            SELECT MIN(snapshot_ts) FROM etf_options_snapshots
+            SELECT MAX(snapshot_ts) FROM etf_options_snapshots
             WHERE ticker = :ticker
               AND data_source = 'alphavantage'
               AND market_session = 'REALTIME'
               AND snapshot_date = :session_date
+              AND snapshot_ts < (
+                SELECT MAX(snapshot_ts) FROM etf_options_snapshots
+                WHERE ticker = :ticker
+                  AND data_source = 'alphavantage'
+                  AND market_session = 'REALTIME'
+                  AND snapshot_date = :session_date
+              )
           )
         ORDER BY expiration, strike, option_type
     """
@@ -647,17 +663,21 @@ async def get_grid_live(
     # Per-cell intraday %-change overlay — realtime path only. EOD/stale have a
     # single snapshot/day, so an intraday "change" is meaningless (cells keep
     # pct_change=None and the UI hides the badges). One extra bounded query.
+    # Baseline = the PRIOR realtime snapshot (rolling ~5-min), not session-open:
+    # a session-open baseline explodes 0DTE %s into the thousands; the prior-
+    # snapshot delta stays in the competitor's sane +10–90% range.
     base_contracts: list[dict] = []
     base_ts: Optional[str] = None
     extra_warning: Optional[str] = None
     if include_change and data_source == "realtime" and snapshot_date is not None:
-        base_contracts, base_ts = _load_session_open_chain(
+        base_contracts, base_ts = _load_prior_snapshot_chain(
             ticker_upper, snapshot_date)
         if base_ts is not None and base_ts == ts_iso:
-            # Session just opened — open IS the latest snapshot. Treat as "no
-            # delta available yet" rather than a wall of 0.0% badges.
+            # Only one snapshot so far this session — no prior to diff against.
             base_contracts = []
-            extra_warning = "session just opened — intraday change not yet available"
+            extra_warning = "only one snapshot so far this session — intraday change not yet available"
+        elif base_ts is None:
+            extra_warning = "only one snapshot so far this session — intraday change not yet available"
 
     if base_contracts:
         summary = gamma.build_grid_summary_with_change(

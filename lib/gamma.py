@@ -1183,10 +1183,16 @@ def build_grid_summary_with_change(
 ) -> GammaGridSummary:
     """Like `build_grid_summary`, but overlays per-cell intraday rate-of-change.
 
-    `baseline_options` is the session-open snapshot of the SAME chain (earliest
-    realtime snapshot of the current session). For every current cell that also
-    existed at the open, sets `cell.abs_change = gex_now - gex_open` and
-    `cell.pct_change = (gex_now - gex_open) / abs(gex_open) * 100`.
+    `baseline_options` is the PRIOR-snapshot view of the SAME chain (the realtime
+    snapshot immediately before the latest, ~5 min back — a rolling baseline).
+    For every current cell that also existed in the prior snapshot, sets
+    `cell.abs_change = gex_now - gex_prev` and
+    `cell.pct_change = (gex_now - gex_prev) / abs(gex_prev) * 100`.
+
+    A rolling prior-snapshot baseline (not session-open) is what keeps the
+    %-badges in the competitor's sane +10–90% range: session-open on 0DTE
+    explodes to hundreds–thousands of % as gamma sharpens into expiry, whereas
+    the ~5-min delta captures only incremental positioning drift.
 
     Discipline (CLAUDE.md Rule 3.7 — no silent fallbacks):
       * No baseline (None/empty) → all cells keep `pct_change = abs_change = None`.
