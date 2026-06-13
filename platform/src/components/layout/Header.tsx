@@ -20,7 +20,7 @@ export function Header() {
   const { theme, toggleTheme } = useThemeStore();
 
   return (
-    <header className="flex h-14 items-center justify-between bg-[var(--surface-1)] px-5 gap-3">
+    <header className="flex flex-wrap items-center justify-between gap-2 bg-[var(--surface-1)] px-5 py-2 sm:h-14 sm:flex-nowrap sm:gap-3 sm:py-0">
       <div className="flex items-center gap-4 min-w-0">
         <span className="font-display text-lg font-bold text-[var(--on-surface)]">{activeTicker}</span>
         {/* Live quote is only meaningful in live mode. In review mode, the
