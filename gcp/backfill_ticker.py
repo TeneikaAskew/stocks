@@ -47,7 +47,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 import requests
 
@@ -299,9 +298,8 @@ def compute_indicators_for_full_range(ticker: str) -> int:
         return 0
 
     enriched = add_all_indicators(df, close_col="Close")
-    enriched["volatility_20d"] = (
-        enriched["Close"].pct_change().rolling(20).std() * np.sqrt(252)
-    )
+    # volatility_{5,20}d + high_low_spread{,_pct} + ATR20/RSI30 now come
+    # from add_all_indicators (single source of truth, 2026-05-27).
 
     rows: list[dict] = []
     for i in range(len(enriched)):
@@ -363,9 +361,6 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
             continue
         df = df.iloc[::-1].reset_index(drop=True)
         enriched = add_all_indicators(df, close_col="Close")
-        enriched["volatility_20d"] = (
-            enriched["Close"].pct_change().rolling(20).std() * np.sqrt(252)
-        )
         last = enriched.iloc[-1]
 
         row: dict = {"ticker": ticker.upper(), "date": fd}
@@ -446,6 +441,29 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
 # Entrypoint
 # ──────────────────────────────────────────────────────────────────────
 def run() -> int:
+    """Backfill one ticker end-to-end. Five-step sequence:
+
+      1. AV TIME_SERIES_DAILY_ADJUSTED full → ``market_data_daily``
+         (last ``BACKFILL_HISTORY_DAYS`` rows; floor 800 ≈ 12 quarters
+         of earnings reactions + ATR-14 warm-up + D±10 buffer).
+      2. AV TIME_SERIES_INTRADAY 1-min → ``market_data_intraday``, one
+         API call per (year-month) touched by ``BACKFILL_DATES`` and
+         its prior trading day.
+      3. (optional, ``BACKFILL_INCLUDE_NEWS=true``) AV NEWS_SENTIMENT
+         → ``news_sentiment`` for the [first_date − N, last_date + 1d]
+         window where N = ``BACKFILL_NEWS_WINDOW`` days.
+      4a. Multi-day indicators over the full backfilled daily range
+          (without this, indicators stay NULL outside BACKFILL_DATES).
+      4b. Per-date strat + pre-market context for each
+          ``BACKFILL_DATES`` entry and its prior trading day.
+      5. Add ticker to ``watchlists`` so downstream surfaces pick it up.
+
+    Reads env: ``BACKFILL_TICKER`` (required), ``ALPHA_VANTAGE_API_KEY``
+    (required), ``BACKFILL_HISTORY_DAYS`` (default 800),
+    ``BACKFILL_INCLUDE_NEWS`` (default true), ``BACKFILL_NEWS_WINDOW``
+    (default 7), ``BACKFILL_DATES`` (comma-sep YYYY-MM-DD list).
+    Returns 0 on success, 1 if required env is missing.
+    """
     ticker = (_env("BACKFILL_TICKER") or "").upper()
     if not ticker:
         log.error("BACKFILL_TICKER is required")

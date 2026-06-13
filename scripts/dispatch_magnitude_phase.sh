@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Dispatch one magnitude_engine plan via Cloud Run Job task-parallel execution.
+#
+# The job spreads N cells across N parallel worker instances. Wall-clock
+# is the slowest single cell (~30-60 min), not the sum.
+#
+# Per Phase-3 post-mortem (2026-05-28), every walk-forward dispatch should
+# be followed by bootstrap gate-fragility (gate 5) and mechanism check
+# (gate 6) on the resulting predictions. Use `--with-checks` flag to
+# auto-dispatch those follow-ups against the just-completed run, OR run
+# them manually with scripts/bootstrap_gate_fragility.py +
+# scripts/check_event_window_concentration.py.
+#
+# Usage:
+#   ./scripts/dispatch_magnitude_phase.sh no_backfill     # 27 cells (phases 0+1+3) parallel
+#   ./scripts/dispatch_magnitude_phase.sh phase0          # 9 cells of phase0 parallel
+#   ./scripts/dispatch_magnitude_phase.sh phase1          # 9 cells of phase1
+#   ./scripts/dispatch_magnitude_phase.sh phase3          # 9 cells of phase3
+#   ./scripts/dispatch_magnitude_phase.sh phase2          # 9 cells of phase2  (needs backfill!)
+#   ./scripts/dispatch_magnitude_phase.sh phase4          # 9 cells of phase4  (needs backfill!)
+#   ./scripts/dispatch_magnitude_phase.sh phase_calendar  # 9 cells of phase_calendar
+#   ./scripts/dispatch_magnitude_phase.sh audit           # leakage audit (IWM 15m), single task
+#
+# The job must already exist:  ./gcp/deploy.sh magnitude-engine
+# (Run from repo root after the :research image is built.)
+
+set -euo pipefail
+REGION=us-east1
+JOB=magnitude-engine
+
+plan="${1:-no_backfill}"
+
+case "$plan" in
+  audit)
+    echo "Dispatching leakage audit (IWM 15m, single task)…"
+    gcloud run jobs execute "$JOB" --region="$REGION" \
+        --update-env-vars="MAG_PLAN=" \
+        --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m" \
+        --tasks=1 --parallelism=1 \
+        --wait
+    ;;
+  no_backfill)
+    echo "Dispatching plan=no_backfill (27 cells = 3 phases × 9, parallel)…"
+    gcloud run jobs execute "$JOB" --region="$REGION" \
+        --update-env-vars="MAG_PLAN=no_backfill" \
+        --tasks=27 --parallelism=27 \
+        --async
+    ;;
+  phase0|phase1|phase2|phase3|phase4|phase_calendar)
+    echo "Dispatching plan=$plan (9 cells parallel)…"
+    gcloud run jobs execute "$JOB" --region="$REGION" \
+        --update-env-vars="MAG_PLAN=$plan" \
+        --tasks=9 --parallelism=9 \
+        --async
+    ;;
+  *)
+    echo "Unknown plan: $plan"
+    echo "Valid: no_backfill | phase0 | phase1 | phase2 | phase3 | phase4 | audit"
+    exit 1
+    ;;
+esac

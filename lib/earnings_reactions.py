@@ -291,18 +291,41 @@ def action_hint_for_archetype(archetype: Optional[str]) -> str:
 _IC_RATIO_THRESHOLD     = 0.85   # realized must be < 85% of implied
 _IC_STRANGLE_THRESHOLD  = 5.0    # short-strangle PnL must be > +5%
 
+# Long-only-mode thresholds (2026-05-22 long-only-detail report):
+# The 8% of Q5 events with realized/implied > 1.5 had 91% hit rate
+# and +117% mean PnL on long straddle. The KEY predictor of those
+# wins was IMPLIED MOVE SIZE — long-wins averaged implied = 12.1%,
+# long-skips averaged 18.0%. Below 12% implied is the "easier to beat"
+# zone; above 15% the premium is too rich for long premium to win
+# on average. Between 12-15% is a coin-flip — fall back to archetype.
+_LO_IMPLIED_SAFE_MAX     = 12.0   # below this → long premium has edge
+_LO_IMPLIED_HARD_MAX     = 15.0   # above this → skip; premium too rich
+
 
 def recommended_structure(
     archetype: Optional[str],
     score_quintile: Optional[str],
     calibration: Optional[dict] = None,
+    implied_move_pct: Optional[float] = None,
+    long_only: Optional[bool] = None,
 ) -> Optional[str]:
     """Return the brief's action tag for one earnings row.
 
-    For Q5 (top-conviction) picks AND a calibration row showing the
-    options market is over-pricing the realized move, returns 'IC'
-    (Iron Condor — defined-risk short strangle). Otherwise falls back
-    to the archetype-driven map (CALL / PUT / STRDL).
+    Default mode (long_only=False or unset): Q5 picks render 'IC'
+    (Iron Condor) when the live calibration confirms over-pricing.
+    Otherwise falls back to the archetype-driven map (CALL / PUT / STRDL).
+
+    Long-only mode (long_only=True or env RECOMMEND_LONG_ONLY=true):
+    For traders who only BUY premium. Never returns 'IC'. Instead:
+      - If would-have-been IC: check per-event implied_move_pct.
+        - Above _LO_IMPLIED_HARD_MAX (15%) → 'SKIP' (premium too rich)
+        - Otherwise → archetype-driven LONG variant:
+            bullish_trend → 'LONG CALL'
+            bearish_trend → 'LONG PUT'
+            anything else → 'LONG STRDL'
+      - Otherwise: archetype-driven LONG variant (same map as above,
+        no SKIP filter since these are Q1-Q4 picks where the
+        over-pricing isn't confirmed).
 
     ``calibration`` is a dict with optional keys:
       - realized_vs_implied_ratio (float, e.g. 0.636)
@@ -310,6 +333,15 @@ def recommended_structure(
     Both must be present and above thresholds for the override to
     fire. None / missing values cleanly fall through to the archetype
     map per CLAUDE.md §3.7 — no silent fallback to a hardcoded vehicle.
+
+    ``implied_move_pct`` is the per-event implied move from the
+    earnings_calendar row (NOT the calibration's avg). Only consulted
+    in long_only mode. None = no filter (treat as 'unknown', keep
+    the long recommendation).
+
+    ``long_only`` overrides the env var when explicitly passed. The
+    env var fallback supports running the brief in long-only mode
+    without code changes.
     """
     _archetype_map = {
         'bullish_trend': 'CALL',
@@ -317,25 +349,66 @@ def recommended_structure(
         'reversal_play': 'STRDL',
         'mixed':         'STRDL',
     }
-    archetype_action = _archetype_map.get(archetype) if archetype else None
+    _long_archetype_map = {
+        'bullish_trend': 'LONG CALL',
+        'bearish_trend': 'LONG PUT',
+        'reversal_play': 'LONG STRDL',
+        'mixed':         'LONG STRDL',
+    }
 
-    # Override only kicks in for Q5 (top quintile) — that's where the
-    # backtest showed the options edge concentrates.
+    if long_only is None:
+        long_only = _env_long_only()
+
+    archetype_action = (
+        _long_archetype_map.get(archetype) if long_only
+        else _archetype_map.get(archetype)
+    ) if archetype else None
+
+    # Below Q5: archetype map wins (the options edge is concentrated
+    # in Q5 per the 2026-05-22 backtest).
     if score_quintile != 'Q5':
         return archetype_action
+
+    # No calibration → can't confirm over/under-pricing. Return the
+    # archetype map result (no IC override).
     if not calibration:
         return archetype_action
 
     ratio = calibration.get('realized_vs_implied_ratio')
     ss_pnl = calibration.get('avg_short_strangle_pnl_pct')
-    # Both signals must agree: stock under-moves vs implied AND
-    # short-strangle PnL is meaningfully positive.
-    if (ratio is not None and ss_pnl is not None
-            and ratio < _IC_RATIO_THRESHOLD
-            and ss_pnl > _IC_STRANGLE_THRESHOLD):
+    is_over_priced = (
+        ratio is not None and ss_pnl is not None
+        and ratio < _IC_RATIO_THRESHOLD
+        and ss_pnl > _IC_STRANGLE_THRESHOLD
+    )
+
+    if not is_over_priced:
+        return archetype_action
+
+    # Q5 + over-priced confirmed. Branch on mode.
+    if not long_only:
         return 'IC'
 
+    # Long-only mode: would have been IC, but the user only buys.
+    # Filter by per-event implied move — when premium is rich
+    # (>15% implied), even the directional long bet has historically
+    # lost. Skip these instead of recommending a losing trade.
+    if (implied_move_pct is not None
+            and implied_move_pct > _LO_IMPLIED_HARD_MAX):
+        return 'SKIP'
+    # Otherwise return the long archetype map's recommendation.
     return archetype_action
+
+
+def _env_long_only() -> bool:
+    """Read RECOMMEND_LONG_ONLY env var as a bool.
+
+    Truthy values: 'true', '1', 'yes', 'on' (case-insensitive).
+    Anything else / unset → False (default = IC mode).
+    """
+    import os
+    raw = (os.environ.get('RECOMMEND_LONG_ONLY') or '').strip().lower()
+    return raw in {'true', '1', 'yes', 'on'}
 
 
 def get_calibration_options_metrics() -> dict:

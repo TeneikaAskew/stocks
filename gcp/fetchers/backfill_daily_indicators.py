@@ -61,7 +61,6 @@ import sys
 import time
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from gcp.database import (
@@ -200,11 +199,10 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     from lib.indicators import add_all_indicators
 
     enriched = add_all_indicators(df, close_col='Close')
-    # 20-day annualised historical volatility — same recipe the live
-    # writer uses (not part of add_all_indicators).
-    enriched['volatility_20d'] = (
-        enriched['Close'].pct_change().rolling(20).std() * np.sqrt(252)
-    )
+    # volatility_{5,20}d, high_low_spread{,_pct}, ATR20, RSI30 all come
+    # from add_all_indicators now (single source of truth — see
+    # lib/config.py IndicatorConfig.{volatility_periods,atr_extra_periods,
+    # rsi_extra_periods}).
 
     # Strat per-bar classifier output. ftfc is daily+weekly; we compute
     # it row-by-row only at the very end of the backfill since the
@@ -390,7 +388,20 @@ def main() -> int:
              len(tickers), total_rows, len(errors))
     if errors:
         log.warning("Errors on: %s", ", ".join(errors[:20]))
-    return 0 if not errors else 1
+    # Job-level disposition: exit 1 only if more than half the tickers
+    # failed. A single ticker with a delisted symbol or a one-off AV
+    # 'Invalid API call' should NOT page on a job that processed 1,678/
+    # 1,679 successfully. Closes F6 (CLAUDE.md §3.7 — single-ticker errors
+    # are surfaced via the per-ticker WARNING log + the Errors-on summary,
+    # not the job-level exit code). The failure-notifier still opens an
+    # issue if the threshold trips. Pattern matches run_historical_signals.
+    n_failed = len(errors)
+    n_total = len(tickers)
+    if n_total and n_failed / n_total > 0.5:
+        log.error("TOO-MANY-FAILURES — %d/%d tickers (%.0f%%) failed",
+                  n_failed, n_total, 100 * n_failed / n_total)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

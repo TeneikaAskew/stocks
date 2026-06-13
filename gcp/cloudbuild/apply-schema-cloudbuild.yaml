@@ -1,0 +1,15 @@
+# Auto-dispatches the apply-schema-migrations Cloud Run Job whenever
+# gcp/schema.sql changes on main. Replaces the GHA workflow
+# .github/workflows/apply-schema-migrations-on-change.yml.
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - apply-schema-migrations
+      - --region=us-east1
+      - --wait
+options:
+  logging: CLOUD_LOGGING_ONLY

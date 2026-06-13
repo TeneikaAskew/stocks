@@ -65,6 +65,16 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
     price_vs_ema9       DOUBLE PRECISION,
     price_vs_ema20      DOUBLE PRECISION,   -- renamed from price_vs_ema21
 
+    -- Promoted 2026-05-31 vol/momentum features (daily-meaningful subset).
+    -- Also added via idempotent ALTER at the end of this file for live DBs.
+    realized_vol_short  DOUBLE PRECISION,
+    price_vs_ema9_atr   DOUBLE PRECISION,
+    price_vs_ema20_atr  DOUBLE PRECISION,
+    ema_spread_atr      DOUBLE PRECISION,
+    ema9_slope          DOUBLE PRECISION,
+    bb_squeeze          DOUBLE PRECISION,
+    rsi_divergence      DOUBLE PRECISION,
+
     -- Strat fields (populated by analyze_market_data)
     strat_candle        VARCHAR(10),
     strat_combo         VARCHAR(30),
@@ -174,6 +184,221 @@ CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_date
     ON etf_options_snapshots (ticker, snapshot_date DESC);
 CREATE INDEX IF NOT EXISTS idx_etf_options_expiry
     ON etf_options_snapshots (ticker, expiration, strike);
+
+-- Track 1 (2026-05-23): partial index on REALTIME rows only.
+-- The premarket-brief gamma freshness probe needs to find "is there
+-- a REALTIME row for this ticker within the last 15 days?" — without
+-- this partial index the planner walks every EOD row in date order
+-- looking for the rare REALTIME match (5s+ on SPY's 14k contracts/day).
+-- The partial index has one entry per REALTIME row only, so the probe
+-- becomes index-only and sub-100ms even at table scale.
+-- See gcp/premarket_brief.py:_load_gamma_freshness and
+-- docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 1.
+CREATE INDEX IF NOT EXISTS idx_etf_options_realtime
+    ON etf_options_snapshots (ticker, snapshot_ts DESC)
+    WHERE market_session = 'REALTIME';
+
+-- Materialized daily options-flow features (2026-06: perf fix).
+-- etf_options_snapshots grew to ~52 GB once the REALTIME intraday session
+-- landed (1.19M rows/ticker/day). The daily PCR / IV-skew / ATM-IV aggregates
+-- the research harness needs (one row per ticker per day) were being recomputed
+-- by scanning that 52 GB table on EVERY walk-forward run — the planner won't
+-- use the partial EOD index because the PCR aggregate needs `volume` (not in
+-- the covering index) and the bloat skews estimates to a seq scan (~20 min for
+-- the 2026 slice alone). This table pre-aggregates those values ONCE (~2,600
+-- rows/ticker) so the join is a trivial indexed lookup, and it doubles as a
+-- frontend-surfaceable daily options-flow series. Raw aggregate columns are
+-- stored (not the derived/shifted features) so the existing
+-- lib/features/experimental/options_derived.py:_compute_daily_features_sql
+-- produces byte-identical features whether read from here or recomputed live.
+CREATE TABLE IF NOT EXISTS options_daily_features (
+    ticker         VARCHAR(10) NOT NULL,
+    snapshot_date  DATE        NOT NULL,
+    call_vol       DOUBLE PRECISION,   -- SUM(volume) calls (EOD AV chain)
+    put_vol        DOUBLE PRECISION,   -- SUM(volume) puts
+    call_oi        DOUBLE PRECISION,   -- SUM(open_interest) calls
+    put_oi         DOUBLE PRECISION,   -- SUM(open_interest) puts
+    iv_put25       DOUBLE PRECISION,   -- front-month 25Δ put IV
+    iv_call25      DOUBLE PRECISION,   -- front-month 25Δ call IV
+    atm_front_iv   DOUBLE PRECISION,   -- front-month ATM IV (avg calls+puts)
+    atm_back_iv    DOUBLE PRECISION,   -- back-month ATM IV (currently NULL upstream)
+    updated_at     TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ticker, snapshot_date)
+);
+
+
+-- Phase A (Heatseeker-style grid): per-snapshot per-strike per-expiration
+-- aggregate. Mirrors the 1-D aggregate `lib.gamma.aggregate_by_strike` but
+-- keeps the expiration dimension intact so consumers can render the 2-D
+-- `strike × expiration` heatmap. CREATE OR REPLACE so re-applying the
+-- schema picks up math fixes without dropping dependents.
+--
+-- Read pattern: usually filtered by (ticker, snapshot_ts) — uses
+-- idx_etf_options_realtime for the live path and idx_etf_options_ticker_date
+-- for the historical path.
+--
+-- Sign convention (matches lib.gamma):
+--   net_gamma = call_gamma×OI − put_gamma×OI
+--   net_vega  = call_vega×OI  − put_vega×OI
+--   GEX/VEX dollar conversion stays in the Python layer so callers
+--   share one source of truth for the multipliers; this view exposes
+--   only the raw aggregates.
+--
+-- See docs/plans/HEATSEEKER_STYLE_GAMMA_PLAN.md §4.1 for the design.
+CREATE OR REPLACE VIEW v_etf_options_node AS
+SELECT
+    ticker,
+    snapshot_ts,
+    snapshot_date,
+    market_session,
+    expiration,
+    strike,
+    -- Net (calls add, puts subtract) — same sign convention as lib.gamma.
+    SUM(
+        CASE
+            WHEN option_type = 'calls'
+                THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0)
+            WHEN option_type = 'puts'
+                THEN -COALESCE(gamma, 0) * COALESCE(open_interest, 0)
+            ELSE 0
+        END
+    )                                                                AS net_gamma,
+    SUM(
+        CASE
+            WHEN option_type = 'calls'
+                THEN COALESCE(vega, 0) * COALESCE(open_interest, 0)
+            WHEN option_type = 'puts'
+                THEN -COALESCE(vega, 0) * COALESCE(open_interest, 0)
+            ELSE 0
+        END
+    )                                                                AS net_vega,
+    -- Per-side gamma×OI (unsigned, so the dollar-conversion layer can
+    -- decide whether to subtract puts).
+    SUM(CASE WHEN option_type = 'calls'
+             THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0) ELSE 0 END) AS call_gamma_oi,
+    SUM(CASE WHEN option_type = 'puts'
+             THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0) ELSE 0 END) AS put_gamma_oi,
+    SUM(CASE WHEN option_type = 'calls'
+             THEN COALESCE(vega, 0)  * COALESCE(open_interest, 0) ELSE 0 END) AS call_vega_oi,
+    SUM(CASE WHEN option_type = 'puts'
+             THEN COALESCE(vega, 0)  * COALESCE(open_interest, 0) ELSE 0 END) AS put_vega_oi,
+    -- OI / volume context.
+    SUM(CASE WHEN option_type = 'calls' THEN COALESCE(open_interest, 0) ELSE 0 END) AS call_oi,
+    SUM(CASE WHEN option_type = 'puts'  THEN COALESCE(open_interest, 0) ELSE 0 END) AS put_oi,
+    SUM(CASE WHEN option_type = 'calls' THEN COALESCE(volume, 0) ELSE 0 END)        AS call_volume,
+    SUM(CASE WHEN option_type = 'puts'  THEN COALESCE(volume, 0) ELSE 0 END)        AS put_volume
+FROM etf_options_snapshots
+WHERE data_source = 'alphavantage'
+GROUP BY ticker, snapshot_ts, snapshot_date, market_session, expiration, strike;
+
+
+-- Materialized DAILY directional-greek aggregates (one row per ticker × EOD
+-- day). RULE 0 (NON-NEGOTIABLE): the per-experiment flow-direction feature
+-- loader MUST NOT re-aggregate the ~14M-row etf_options_snapshots table — doing
+-- so re-scans millions of REALTIME rows per run and starves the shared DB (the
+-- 2026-06-05 incident: 5 concurrent runs, 100-900s/year-chunk). This table is
+-- computed ONCE by the build-options-greeks Cloud Run Job (backfill) and
+-- appended incrementally after each EOD options fetch, so experiments read
+-- ~250 rows/yr/ticker instantly.
+--
+-- Dealer sign convention (matches lib/features/flow_direction.py, consistent
+-- with lib.gamma total_vex = -(call+put)): dealer = OPPOSITE of net-long
+-- customer book, so every aggregate is negated:
+--   dex           = -SUM(delta·OI)                       (all contracts)
+--   short_dte_dex = -SUM(delta·OI) WHERE dte<=2          (0-2DTE charm-pin slice)
+--   vanna/charm    = -SUM(greek_contract·OI)             (near-term band only;
+--                    dte 0-60, |delta|<=0.95 — deep wings carry ~0 net 2nd-order)
+CREATE TABLE IF NOT EXISTS etf_options_daily_greeks (
+    ticker          VARCHAR(10)      NOT NULL,
+    snapshot_date   DATE             NOT NULL,
+    dex             DOUBLE PRECISION,   -- dealer delta exposure, all contracts
+    short_dte_dex   DOUBLE PRECISION,   -- dex restricted to 0-2DTE
+    total_oi        DOUBLE PRECISION,   -- SUM(OI), scale-free normaliser
+    vanna           DOUBLE PRECISION,   -- net dealer vanna (near-term band)
+    charm           DOUBLE PRECISION,   -- net dealer charm (near-term band)
+    n_contracts     INTEGER,            -- contracts in the vanna/charm band
+    computed_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, snapshot_date)
+);
+
+-- Partial COVERING index so the builder's EOD-AV aggregation is index-only and
+-- never touches the REALTIME rows (the bulk of the table). Without it the
+-- planner walks every REALTIME contract for the ticker/date before applying the
+-- EOD filter.
+--
+-- NOT created here: on this ~14M-row table a transactional CREATE INDEX locks
+-- the table and exceeds the statement timeout, and apply_schema.py runs every
+-- statement inside engine.begin() (a transaction) so CREATE INDEX CONCURRENTLY
+-- is illegal here too. It is therefore built OUT-OF-BAND, idempotently and
+-- without a long lock, via:
+--     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+--       --args="-m,gcp.build_options_daily_greeks,--build-index"
+-- which opens an AUTOCOMMIT connection and runs:
+--     CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_etf_options_eod_agg
+--         ON etf_options_snapshots (ticker, snapshot_date)
+--         INCLUDE (delta, open_interest, expiration, implied_volatility,
+--                  option_type, strike)
+--         WHERE market_session = 'EOD' AND data_source = 'alphavantage';
+
+
+-- Materialized per-15m-bucket intraday order-flow imbalance (OFI). Built ONCE
+-- per ticker by the build-intraday-flow Job from the ~2M-row/ticker 1-min
+-- market_data_intraday; experiments read this (~6.5k rows/yr) via
+-- lib.features.intraday_flow.add_intraflow_features (Rule 0). The raw signed-
+-- volume aggregates are stored; the joiner derives ofi_norm / ofi_3bar /
+-- cvd_intraday. ts is the UTC bar-OPEN timestamp, aligned to the strat_features
+-- 15m grid (a 15-min floor of the 1-min ts).
+CREATE TABLE IF NOT EXISTS intraday_flow_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    signed_vol  DOUBLE PRECISION,        -- Σ tick-rule sign · 1-min volume
+    tot_vol     DOUBLE PRECISION,        -- Σ 1-min volume in the bucket
+    up_vol      DOUBLE PRECISION,        -- Σ volume on up-tick minutes
+    dn_vol      DOUBLE PRECISION,        -- Σ volume on down-tick minutes
+    n_min       INTEGER,                 -- # 1-min bars in the bucket
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
+-- Materialized per-15m-bucket RECONSTRUCTED intraday dealer GEX/DEX. Built per
+-- ticker by the build-intraday-gex Job by walking the prior-day (T-1) EOD option
+-- chain forward to each intraday spot (delta-gamma re-curve; see
+-- lib/features/intraday_gex.py for the math + frozen-OI/IV assumptions).
+-- Experiments read this (~6.5k rows/yr) via add_intragex_features (Rule 0: no
+-- per-run scan of the ~14M-row etf_options_snapshots). ts is the UTC 15m bar-open
+-- aligned to the strat_features grid. Raw aggregates stored; the joiner derives
+-- dist_to_flip_pct / gex_per_oi / dex_per_oi (all scale-free).
+CREATE TABLE IF NOT EXISTS intraday_gex_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    total_gex   DOUBLE PRECISION,        -- NetΓ · spot² · GEX_MULTIPLIER
+    total_dex   DOUBLE PRECISION,        -- (A + B·(spot−S_eod)) · spot  (re-curved)
+    total_oi    DOUBLE PRECISION,        -- Σ open interest in the T-1 chain
+    gamma_flip  DOUBLE PRECISION,        -- cumulative-GEX zero-cross (per-day)
+    spot        DOUBLE PRECISION,        -- 15m bucket underlying close
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
+
+
+-- Materialized per-15m-bucket REAL intraday dealer GEX/DEX from the
+-- av-options-realtime feed (actual intraday greeks; market_session='REALTIME',
+-- live since 2026-05-23). Same shape/conventions as intraday_gex_15m but the
+-- source is real captured greeks, not the EOD re-curve — short history, exact.
+-- Built daily by the build-realtime-gex Job so the real-intraday-DEX lead can be
+-- walk-forward tested as the window lengthens. Read via add_realgex_features.
+CREATE TABLE IF NOT EXISTS realtime_gex_15m (
+    ticker      VARCHAR(10)  NOT NULL,
+    ts          TIMESTAMPTZ  NOT NULL,   -- 15m bar-open (UTC), strat grid
+    total_gex   DOUBLE PRECISION,        -- NetΓ(real) · spot² · GEX_MULTIPLIER
+    total_dex   DOUBLE PRECISION,        -- Σ(δ·OI)(real) · 100 · spot
+    total_oi    DOUBLE PRECISION,        -- Σ open interest (real intraday)
+    gamma_flip  DOUBLE PRECISION,        -- cumulative-GEX zero-cross
+    spot        DOUBLE PRECISION,        -- 15m bucket underlying close
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, ts)
+);
 
 
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
@@ -2457,6 +2682,47 @@ CREATE TABLE IF NOT EXISTS backtest_reports (
 CREATE INDEX IF NOT EXISTS idx_backtest_reports_created
     ON backtest_reports (created_at DESC);
 
+-- backtest_walk_forward_folds — one row per (run_id, ticker, mode, fold).
+-- Stores the per-fold aggregate metrics from WalkForwardValidator.run() so
+-- the report can compare mean OOS Sharpe against the in-sample sharpe
+-- from backtest_trades. stability_score is denormalised on every row
+-- (same value for all folds in a (run_id, ticker, mode)) for simple query
+-- patterns — there are only ~16 rows per (run_id, ticker, mode) so the
+-- redundancy is negligible.
+CREATE TABLE IF NOT EXISTS backtest_walk_forward_folds (
+    run_id           UUID             NOT NULL,
+    ticker           VARCHAR(10)      NOT NULL,
+    use_strat        BOOLEAN          NOT NULL,
+    mode             VARCHAR(8)       NOT NULL,    -- 'base' | 'strat'
+    fold_index       INTEGER          NOT NULL,    -- 0-based
+
+    train_start      DATE,
+    train_end        DATE,
+    test_start       DATE,
+    test_end         DATE,
+
+    total_trades     INTEGER,
+    win_rate         DOUBLE PRECISION,
+    profit_factor    DOUBLE PRECISION,
+    expectancy       DOUBLE PRECISION,
+    sharpe           DOUBLE PRECISION,
+    max_dd           DOUBLE PRECISION,
+    avg_win          DOUBLE PRECISION,
+    avg_loss         DOUBLE PRECISION,
+
+    stability_score  DOUBLE PRECISION,   -- denormalised — same for all folds in a (run_id, ticker, mode)
+
+    created_at       TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_walk_forward_folds UNIQUE (run_id, ticker, mode, fold_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_folds_run
+    ON backtest_walk_forward_folds (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_folds_ticker_created
+    ON backtest_walk_forward_folds (ticker, created_at DESC);
+
 -- ─────────────────────────────────────────────────────────
 -- WALK_FORWARD_RESULTS: per-(parameter combo) walk-forward sweep output
 --
@@ -2572,3 +2838,286 @@ ALTER TABLE earnings_calibration
     ADD COLUMN IF NOT EXISTS avg_short_strangle_pnl_pct  DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;
+
+-- ---------------------------------------------------------------------------
+-- Intraday indicator → forward-return correlation / Information Coefficient
+-- ---------------------------------------------------------------------------
+-- Populated by `gcp.indicator_correlation_job`. One row per
+-- (ticker, indicator, horizon) for a given trailing window. The 'POOLED'
+-- ticker stacks all tickers for the cross-sectional ranking.
+--
+-- rank_ic is the Spearman rank correlation (the quant Information
+-- Coefficient); pearson is the linear correlation. Both are NULLABLE on
+-- purpose — a NULL means "could not be computed for this column/window"
+-- and must NOT be read as 0 (CLAUDE.md Rule 3.7: 0 ≠ missing for a
+-- financial statistic).
+CREATE TABLE IF NOT EXISTS indicator_correlation (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,   -- as-of date of the run
+    window_start    DATE              NOT NULL,   -- inclusive start of data window
+    window_end      DATE              NOT NULL,   -- inclusive end (== computed_date)
+    lookback_days   INTEGER,                      -- calendar days requested
+    ticker          VARCHAR(10)       NOT NULL,   -- 'SPY'|'IWM'|'QQQ'|'POOLED'
+    indicator       VARCHAR(64)       NOT NULL,   -- e.g. 'ATR14', 'ORB_15m_Range'
+    horizon_min     INTEGER           NOT NULL,   -- forward-return horizon (minutes)
+    -- target_name distinguishes WHAT the indicator is scored against:
+    --   'forward_return' (regression vs fwd log-return; the original behaviour),
+    --   'regime'  (BIG/UP/DOWN/FLAT class membership),
+    --   'strat'   (next-bar 1/2U/2D/3 class membership),
+    --   'signal'  (signal_alerts win/loss outcome).
+    -- target_class is the per-class label for classification targets. It uses
+    -- '' (empty string) — NOT NULL — for the regression / overall case
+    -- (forward_return). The empty string is a CATEGORICAL sentinel (a class
+    -- label), not a financial-zero, so Rule 3.7 (NULL≠0 on numeric stats) does
+    -- not apply; making it NOT NULL keeps the UNIQUE key a single plain
+    -- constraint that the generic upsert_dataframe ON CONFLICT path can target
+    -- (NULLs are distinct in a UNIQUE index, which would defeat dedup).
+    target_name     VARCHAR(32)       NOT NULL DEFAULT 'forward_return',
+    target_class    VARCHAR(12)       NOT NULL DEFAULT '',  -- '' = regression/overall; else 'BIG','UP','2U',...
+    pearson         DOUBLE PRECISION,             -- linear corr (NULL = unavailable)
+    rank_ic         DOUBLE PRECISION,             -- Spearman IC (NULL = unavailable)
+    abs_rank_ic     DOUBLE PRECISION,             -- |rank_ic| for ranking convenience
+    mutual_info     DOUBLE PRECISION,             -- MI(indicator; class) (NULL = unavailable / regression)
+    class_lift      DOUBLE PRECISION,             -- P(class | feat>med) / base-rate (NULL = unavailable / regression)
+    n               INTEGER,                      -- paired observations
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_indicator_correlation
+        UNIQUE (computed_date, window_start, window_end, ticker, indicator,
+                horizon_min, target_name, target_class)
+);
+
+-- Idempotent migration for instances created before the target-modular columns
+-- (2026-05-31). The two metric columns are NULLABLE (Rule 3.7: NULL ≠ 0 for a
+-- statistic). target_name / target_class carry NOT-NULL defaults so legacy
+-- forward_return rows stay valid and the UNIQUE key stays a single plain
+-- constraint (see column comment above for why target_class is '' not NULL).
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS target_name  VARCHAR(32) NOT NULL DEFAULT 'forward_return';
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS target_class VARCHAR(12) NOT NULL DEFAULT '';
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS mutual_info  DOUBLE PRECISION;
+ALTER TABLE indicator_correlation
+    ADD COLUMN IF NOT EXISTS class_lift   DOUBLE PRECISION;
+
+-- Recreate the UNIQUE constraint to include (target_name, target_class). Drop
+-- the legacy 6-column constraint first if it exists, then add the 8-column one
+-- (guarded so re-runs are no-ops).
+ALTER TABLE indicator_correlation DROP CONSTRAINT IF EXISTS uq_indicator_correlation;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_indicator_correlation'
+    ) THEN
+        ALTER TABLE indicator_correlation
+            ADD CONSTRAINT uq_indicator_correlation
+            UNIQUE (computed_date, window_start, window_end, ticker, indicator,
+                    horizon_min, target_name, target_class);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_indicator_correlation_rank
+    ON indicator_correlation (computed_date, horizon_min, abs_rank_ic DESC);
+
+-- ---------------------------------------------------------------------------
+-- Regime combination predictors  (Effort A — regime_combo_miner / job)
+-- ---------------------------------------------------------------------------
+-- One row per interpretable indicator-combination that predicts a forward
+-- regime (BIG / UP / DOWN / FLAT) out-of-sample, per ticker × horizon. The
+-- `conditions` text is the AND-joined combo (e.g. "Realized_Vol_Short>med AND
+-- ORB_15m_High_Pct>med"). hit_rate/base_rate/lift are NULLABLE on purpose — a
+-- NULL means "not computable for this window", never 0 (CLAUDE.md Rule 3.7).
+CREATE TABLE IF NOT EXISTS regime_combo_results (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,
+    window_start    DATE              NOT NULL,
+    window_end      DATE              NOT NULL,
+    ticker          VARCHAR(10)       NOT NULL,
+    horizon_min     INTEGER           NOT NULL,
+    target_class    VARCHAR(8)        NOT NULL,   -- 'BIG'|'UP'|'DOWN'|'FLAT'
+    conditions      TEXT              NOT NULL,   -- AND-joined combo
+    combo_order     INTEGER,                      -- 1 / 2 / 3-way
+    hit_rate        DOUBLE PRECISION,             -- OOS P(target | combo)
+    base_rate       DOUBLE PRECISION,             -- OOS P(target)
+    lift            DOUBLE PRECISION,             -- hit_rate / base_rate
+    support         INTEGER,                      -- OOS rows matching combo
+    train_support   INTEGER,
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_regime_combo
+        UNIQUE (computed_date, window_start, window_end, ticker, horizon_min,
+                target_class, conditions)
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_combo_rank
+    ON regime_combo_results (computed_date, ticker, horizon_min, target_class,
+                             lift DESC);
+
+-- ---------------------------------------------------------------------------
+-- Strat next-candle combination predictors  (Effort B — strat_combo_miner)
+-- ---------------------------------------------------------------------------
+-- One row per indicator-combination that predicts the NEXT Strat candle
+-- (1/2U/2D/3) out-of-sample, per ticker × timeframe. Same nullable-stat
+-- discipline as above.
+CREATE TABLE IF NOT EXISTS strat_combo_results (
+    id              BIGSERIAL         PRIMARY KEY,
+    computed_date   DATE              NOT NULL,
+    window_start    DATE              NOT NULL,
+    window_end      DATE              NOT NULL,
+    ticker          VARCHAR(10)       NOT NULL,
+    tf              VARCHAR(4)        NOT NULL,   -- '5m'|'15m'|'30m'|'60m'|'D'
+    target_class    VARCHAR(4)        NOT NULL,   -- '1'|'2U'|'2D'|'3'
+    conditions      TEXT              NOT NULL,
+    combo_order     INTEGER,
+    hit_rate        DOUBLE PRECISION,
+    base_rate       DOUBLE PRECISION,
+    lift            DOUBLE PRECISION,
+    support         INTEGER,
+    train_support   INTEGER,
+    computed_at     TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_strat_combo
+        UNIQUE (computed_date, window_start, window_end, ticker, tf,
+                target_class, conditions)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strat_combo_rank
+    ON strat_combo_results (computed_date, ticker, tf, target_class, lift DESC);
+
+-- ── earnings_options_strategy_insights (PR-B follow-up, 2026-05-22) ─────────
+-- Per-(quintile × ratio_bucket × structure) breakdown of historical
+-- options P&L. Persisted in DB so the report from
+-- scripts/calibrate_earnings.py --options-insights is queryable
+-- forever (Cloud Run logs expire after 30 days).
+--
+-- Covers BOTH long AND short structures across ALL quintiles (not
+-- just Q5) so the user can audit why Q5 was selected as the strongest
+-- bucket and spot any hidden edge in Q1-Q4.
+--
+-- Structures: long_straddle, long_call, long_put, long_strangle,
+--             short_straddle, short_strangle.
+-- (Single-leg short_call/short_put omitted — they're income
+-- strategies requiring covered/cash-secured positioning, not
+-- directional bets.)
+--
+-- ratio_bucket values: 'over_realized' (realized/implied > 1.5,
+--                       long-wins-big subset),
+--                      'fair'          (0.85-1.5),
+--                      'over_priced'   (< 0.85, the IC subset from PR-B),
+--                      'all'           (no ratio filter, baseline).
+--
+-- Re-running the sweep with --options-insights replaces today's rows
+-- via the unique (calculation_date, quintile, ratio_bucket, structure)
+-- constraint.
+CREATE TABLE IF NOT EXISTS earnings_options_strategy_insights (
+    id                       BIGSERIAL PRIMARY KEY,
+    calculation_date         DATE NOT NULL,
+    quintile                 TEXT NOT NULL,
+    ratio_bucket             TEXT NOT NULL,
+    structure                TEXT NOT NULL,
+    n_events                 INTEGER NOT NULL,
+    hit_rate_pct             DOUBLE PRECISION,
+    mean_pnl_pct             DOUBLE PRECISION,
+    median_pnl_pct           DOUBLE PRECISION,
+    p10_pnl_pct              DOUBLE PRECISION,
+    p90_pnl_pct              DOUBLE PRECISION,
+    avg_implied_move_pct     DOUBLE PRECISION,
+    avg_realized_move_pct    DOUBLE PRECISION,
+    notes                    TEXT,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (calculation_date, quintile, ratio_bucket, structure)
+);
+
+CREATE INDEX IF NOT EXISTS idx_eosi_recent
+    ON earnings_options_strategy_insights (calculation_date DESC);
+
+
+-- ── earnings_options_strategy_winners (named drill-downs) ──────────────────
+-- Top-10 historical winners per (calculation_date × structure × quintile).
+-- Lets the brief surface "the next NVAX" — events where a ticker has
+-- historically blown through implied. Joined back to
+-- earnings_options_snapshots via (ticker, event_date - 1 day = snapshot_date).
+CREATE TABLE IF NOT EXISTS earnings_options_strategy_winners (
+    id                       BIGSERIAL PRIMARY KEY,
+    calculation_date         DATE NOT NULL,
+    structure                TEXT NOT NULL,
+    quintile                 TEXT NOT NULL,
+    rank                     INTEGER NOT NULL,
+    ticker                   TEXT NOT NULL,
+    event_date               DATE NOT NULL,
+    archetype                TEXT,
+    spot_entry               DOUBLE PRECISION,
+    spot_exit                DOUBLE PRECISION,
+    strike                   DOUBLE PRECISION,
+    premium_per_share        DOUBLE PRECISION,
+    exit_value_per_share     DOUBLE PRECISION,
+    pnl_pct                  DOUBLE PRECISION,
+    implied_move_pct         DOUBLE PRECISION,
+    realized_move_pct        DOUBLE PRECISION,
+    ratio                    DOUBLE PRECISION,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (calculation_date, structure, quintile, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_eosw_recent
+    ON earnings_options_strategy_winners (calculation_date DESC, structure);
+
+-- ---------------------------------------------------------------------------
+-- Persist the 2026-05-31 promoted volatility/momentum features
+-- ---------------------------------------------------------------------------
+-- These features were promoted into lib.indicators.add_all_indicators and are
+-- computed everywhere, but the feature tables write a fixed column allow-list,
+-- so they were computed-then-dropped (a known gap). Add the columns so the
+-- backfill + strat builder persist them. All NULLABLE (no fabricated 0 —
+-- CLAUDE.md Rule 3.7); a re-backfill populates history. Idempotent.
+--
+-- market_data_daily (DAILY bars): the intraday-only Mins_Since_Open and the
+-- daily-degenerate Price_vs_VWAP_ATR are intentionally omitted (daily has no
+-- intraday clock and no meaningful intraday VWAP).
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION;
+
+-- strat_features_<tf> (INTRADAY 1m/5m/15m/30m/60m/4h): all 9 are meaningful.
+-- Unlike market_data_daily, the strat_features_<tf> tables are NOT created by
+-- this schema file — the strat-engine feature builder creates them at runtime
+-- (gcp/research/strat_engine/strat_data_builder.py). A bare `ALTER TABLE
+-- strat_features_1m ...` therefore aborts the whole script with "relation does
+-- not exist" when schema.sql is loaded into a fresh DB (e.g. the ephemeral
+-- Postgres CI job). Guard each ALTER with a to_regclass existence check so the
+-- columns are added where the table exists and skipped (with a NOTICE) where it
+-- doesn't — idempotent in both cases.
+DO $$
+DECLARE
+    tf   text;
+    cols text := '
+        ADD COLUMN IF NOT EXISTS realized_vol_short  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS realized_vol_z      DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS mins_since_open     DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS price_vs_ema9_atr   DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS price_vs_ema20_atr  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS price_vs_vwap_atr   DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS ema_spread_atr      DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS ema9_slope          DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS bb_squeeze          DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS rsi_divergence      DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS bb20_bandwidth             DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS realized_vol_z             DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS range_expansion_ratio      DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS intraday_range_vs_prevday  DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS atr_expansion              DOUBLE PRECISION';
+BEGIN
+    FOREACH tf IN ARRAY ARRAY['1m','5m','15m','30m','60m','4h'] LOOP
+        IF to_regclass('public.strat_features_' || tf) IS NOT NULL THEN
+            EXECUTE 'ALTER TABLE strat_features_' || tf || cols;
+        ELSE
+            RAISE NOTICE 'strat_features_% not present — skipping promoted-feature columns (built at runtime by strat-engine)', tf;
+        END IF;
+    END LOOP;
+END $$;

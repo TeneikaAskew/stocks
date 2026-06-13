@@ -107,6 +107,13 @@ def compute_reaction(
         return None
 
     def safe(idx):
+        """Bounds-checked ``daily.iloc[idx]`` — returns None on out-of-range.
+
+        Lets the surrounding window math (D-10..D+10) silently skip bars
+        that don't exist (fresh IPOs, current-quarter reports without a
+        forward window) without raising IndexError. Callers branch on
+        the None sentinel and emit explicit NULLs to the DB column.
+        """
         return daily.iloc[idx] if 0 <= idx < len(daily) else None
 
     d_minus_10 = safe(d_idx - 10)
@@ -161,6 +168,18 @@ def compute_reaction(
     # 3.67% over the prior week but its intraday high in that window was
     # ~10% above D-5 close.
     def pre_window_high_low(window_days: int, anchor_close):
+        """Return (max_high_pct, min_low_pct) over the pre-earnings window.
+
+        Walks bars D-N..D-1 inclusive (the same window the matching
+        ``drift_Nd_pct`` close-to-close metric uses) and returns the
+        intraday high and low expressed as % vs ``anchor_close`` (the
+        D-N close that anchors the drift calculation).
+
+        Returns (None, None) when the anchor is missing or invalid, or
+        when no bars in the window exist — the caller emits NULL.
+        Surfaces "ran and gave back" patterns that pure close-to-close
+        drift misses (see the in-line HIMS 2026-05-11 example).
+        """
         if anchor_close is None or anchor_close <= 0:
             return (None, None)
         bars = []
@@ -224,6 +243,19 @@ def compute_reaction(
     SUSTAIN_ANOMALY_PCT = 50.0
 
     def sustain_at(n_days):
+        """Return (close_at_D+N, sustain_pct) for the reaction window.
+
+        ``sustain_pct`` = (close_at_D+N − anchor_price) / anchor_price × 100,
+        where ``anchor_price`` = D close (BMO) or D+1 open (AMC) — set
+        by the surrounding scope.
+
+        Returns (None, None) when D+N is past the loaded daily range.
+        Returns (close, None) when the magnitude exceeds
+        ``SUSTAIN_ANOMALY_PCT`` (almost certainly a stock-split artifact
+        in unadjusted prices — see the WMT 2024 example above); keeping
+        the close value preserves audit info while nulling the percent
+        so downstream aggregates skip this quarter for this horizon.
+        """
         # n trading days after D (so D+5 = d_idx + 5 in the bars index)
         idx = d_idx + n_days
         bar = safe(idx)
@@ -232,9 +264,6 @@ def compute_reaction(
         close = float(bar['close'])
         pct = (close - anchor_price) / anchor_price * 100
         if abs(pct) > SUSTAIN_ANOMALY_PCT:
-            # Almost certainly a split artifact in unadjusted prices.
-            # Null it so downstream aggregates skip this quarter for
-            # this horizon. Keep the close value in case audit needs it.
             return close, None
         return close, pct
 

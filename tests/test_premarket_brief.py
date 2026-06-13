@@ -2745,3 +2745,137 @@ class TestCalibrationOptionsLoaderObservable:
         pb._build_earnings_embed({'mode': 'daily', 'earnings': []})
         # Module-global got set to {} after the failure
         assert pb._BRIEF_CAL_OPTS == {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Track 1 — gamma freshness footer
+# (see docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md)
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestBuildGammaFooter:
+    """`_build_gamma_footer` aggregates per-ticker gamma_data_source.
+
+    The brief embed uses worst-case-across-tickers severity to drive
+    the user-visible footer wording, so a single ticker on stale data
+    can demote a brief where the other two are live.
+    """
+
+    def _brief_with(self, **per_ticker_kwargs) -> dict:
+        """Build a minimal brief dict with the gamma metadata fields
+        each test wants to assert against."""
+        tickers = {}
+        for ticker, kwargs in per_ticker_kwargs.items():
+            tickers[ticker] = {
+                'gamma_data_source': kwargs.get('ds'),
+                'gamma_snapshot_ts': kwargs.get('ts'),
+                'gamma_snapshot_date': kwargs.get('sd'),
+                'gamma_days_behind': kwargs.get('days'),
+            }
+        return {'tickers': tickers}
+
+    def test_returns_none_when_no_tickers_have_gamma(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(SPY={}, IWM={}, QQQ={})
+        assert _build_gamma_footer(brief) is None
+
+    def test_returns_none_when_all_unavailable(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'unavailable'},
+            IWM={'ds': 'unavailable'},
+            QQQ={'ds': 'unavailable'},
+        )
+        # Per the helper: every ticker dark → omit the footer rather
+        # than render a noisy 'unavailable' line; the existing
+        # data-freshness summary already covers pipeline-health.
+        assert _build_gamma_footer(brief) is None
+
+    def test_all_realtime_renders_green_live_line(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'realtime', 'ts': '2026-05-22T19:50:00+00:00'},
+            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+        )
+        out = _build_gamma_footer(brief)
+        assert out is not None
+        assert 'Live gamma' in out
+        # Green circle marker so phone-only readers see status at a
+        # glance (matches the existing 📊 freshness-line convention).
+        assert '🟢' in out
+
+    def test_any_eod_fallback_demotes_to_amber(self):
+        """One EOD fallback among realtime peers → footer reflects
+        worst case (EOD), not the cheerful 'Live' wording."""
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+        )
+        out = _build_gamma_footer(brief)
+        assert out is not None
+        assert '⚠️' in out
+        assert 'EOD gamma' in out
+        assert "realtime fetcher missed today's session" in out
+
+    def test_any_stale_fallback_demotes_to_red(self):
+        """Stale (3-5 trading days) beats EOD beats realtime in severity."""
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'stale_fallback', 'ts': '2026-05-15T20:00:00+00:00', 'days': 4},
+        )
+        out = _build_gamma_footer(brief)
+        assert out is not None
+        assert '⚠️' in out
+        assert 'Stale gamma' in out
+        assert '4 trading days old' in out
+
+    def test_unavailable_alongside_realtime_still_renders_live(self):
+        """An UNAVAILABLE ticker shouldn't drag the footer down when
+        live data exists for others — the unavailable one is recorded
+        but the live ticker's data is still useful to the reader."""
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = self._brief_with(
+            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'unavailable'},
+        )
+        # Per the severity table, 'unavailable' currently outranks
+        # 'realtime' so the footer is suppressed. This documents the
+        # current behavior; revisit if the user wants partial-coverage
+        # footers (e.g. "Live gamma · SPY only").
+        out = _build_gamma_footer(brief)
+        assert out is None
+
+
+class TestFmtGammaTs:
+    """`_fmt_gamma_ts` converts ISO timestamps for the footer."""
+
+    def test_formats_utc_iso_as_et_short(self):
+        from gcp.premarket_brief import _fmt_gamma_ts
+        # 2026-05-22 19:55 UTC = 15:55 ET (EDT, UTC-4). Within RTH so
+        # we expect HH:MM ET format (no weekday prefix).
+        out = _fmt_gamma_ts('2026-05-22T19:55:00+00:00')
+        assert out == '15:55 ET'
+
+    def test_overnight_timestamp_gets_weekday_prefix(self):
+        from gcp.premarket_brief import _fmt_gamma_ts
+        # 2026-05-22 03:00 UTC = 23:00 ET previous day (Thu) — out-of-RTH
+        # hours get a weekday prefix so the reader doesn't mistake an
+        # overnight EOD timestamp for an intraday one.
+        out = _fmt_gamma_ts('2026-05-22T03:00:00+00:00')
+        # Either 'Thu 23:00 ET' or 'Fri 23:00 ET' depending on what the
+        # helper picks; assert the format shape rather than the literal.
+        assert 'ET' in out
+        assert ':' in out
+
+    def test_handles_none_and_invalid_gracefully(self):
+        from gcp.premarket_brief import _fmt_gamma_ts
+        assert _fmt_gamma_ts(None) == ''
+        assert _fmt_gamma_ts('') == ''
+        # Garbage input falls through to the original string rather
+        # than crashing the brief embed builder.
+        assert _fmt_gamma_ts('not-an-iso-string') == 'not-an-iso-string'

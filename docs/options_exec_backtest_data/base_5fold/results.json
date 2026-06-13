@@ -1,0 +1,125 @@
+{
+  "variant": "base",
+  "window": "5fold",
+  "verdict": "FAIL",
+  "ticker": "IWM",
+  "cells": [
+    "5m",
+    "15m",
+    "30m"
+  ],
+  "cutoffs": [
+    "2022-01-01",
+    "2023-01-01",
+    "2024-01-01",
+    "2025-01-01",
+    "2026-01-01"
+  ],
+  "confidence": 0.55,
+  "target_multiple": 1.5,
+  "otm_offset": 0,
+  "expiration_dte": 0,
+  "positive_fold_threshold": 4,
+  "per_cell_verdict": {
+    "5m": {
+      "verdict": "FAIL",
+      "checks": {
+        "c1_pos_exp_folds": [
+          4,
+          5,
+          true
+        ],
+        "c2_agg_net_exp": [
+          0.08007657060915743,
+          5.0,
+          false
+        ],
+        "c3_asymm_ratio": [
+          1.0084055505007212,
+          1.2,
+          false
+        ],
+        "c4_no_dom": [
+          1.6683055467963739,
+          0.5,
+          false
+        ]
+      },
+      "total_trades": 22115,
+      "pos_exp_folds": 4,
+      "n_folds": 5,
+      "weighted_net_exp": 0.08007657060915743,
+      "overall_hit_rate": 0.3788831110106263,
+      "asymm_ratio": 1.0084055505007212,
+      "total_net": 1770.8933590215167,
+      "max_fold_share": 1.6683055467963739
+    },
+    "15m": {
+      "verdict": "FAIL",
+      "checks": {
+        "c1_pos_exp_folds": [
+          4,
+          5,
+          true
+        ],
+        "c2_agg_net_exp": [
+          0.0093074257816452,
+          5.0,
+          false
+        ],
+        "c3_asymm_ratio": [
+          1.0009023977164668,
+          1.2,
+          false
+        ],
+        "c4_no_dom": [
+          20.382548495048468,
+          0.5,
+          false
+        ]
+      },
+      "total_trades": 6482,
+      "pos_exp_folds": 4,
+      "n_folds": 5,
+      "weighted_net_exp": 0.0093074257816452,
+      "overall_hit_rate": 0.3764270286948473,
+      "asymm_ratio": 1.0009023977164668,
+      "total_net": 60.33073391662418,
+      "max_fold_share": 20.382548495048468
+    },
+    "30m": {
+      "verdict": "FAIL",
+      "checks": {
+        "c1_pos_exp_folds": [
+          3,
+          5,
+          false
+        ],
+        "c2_agg_net_exp": [
+          1.900407292817029,
+          5.0,
+          false
+        ],
+        "c3_asymm_ratio": [
+          1.1411772733256993,
+          1.2,
+          false
+        ],
+        "c4_no_dom": [
+          0.5518423489988377,
+          0.5,
+          false
+        ]
+      },
+      "total_trades": 2627,
+      "pos_exp_folds": 3,
+      "n_folds": 5,
+      "weighted_net_exp": 1.900407292817029,
+      "overall_hit_rate": 0.35744194899124476,
+      "asymm_ratio": 1.1411772733256993,
+      "total_net": 4992.369958230335,
+      "max_fold_share": 0.5518423489988377
+    }
+  },
+  "trade_count": 31224
+}

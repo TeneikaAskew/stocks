@@ -1,0 +1,24 @@
+# Research-only dependencies.
+# Used by Cloud Run Jobs under gcp/research/ for statistical /
+# ML / feature-importance audits.
+#
+# These are intentionally NOT in requirements-gcp.txt because they:
+#   - Add ~250MB to the production image (lightgbm + scipy + sklearn
+#     pull in numpy linkage that the prod fetchers don't need)
+#   - Pin to versions that prioritize research stability over
+#     production-fetcher compatibility
+#
+# Built via gcp/Dockerfile.research which extends the prod image.
+
+# Gradient boosting (the workhorse model for tabular finance)
+lightgbm>=4.1.0
+xgboost>=2.0.0
+
+# Linear baselines + scaling + CV
+scikit-learn>=1.3.0
+
+# Statistical tests (Spearman, KS, proportion z-test, normal CDF)
+scipy>=1.11.0
+
+# Interpretability — Shapley values for tree feature attribution
+shap>=0.43.0

@@ -189,9 +189,8 @@ gcloud logging read 'resource.type=cloud_run_job
 gcloud run jobs execute signal-monitor-eod-resolver \
   --args="--lookback-days=N" --wait
 
-# 5. Verify via SQL — db-query.yml workflow:
-gh workflow run db-query.yml \
-  -f sql="SELECT ... FROM signal_alerts WHERE alert_date='2026-05-08' ..."
+# 5. Verify via SQL — CR-native db-query (replaces the old db-query.yml):
+./scripts/db_query_cr.sh -q "SELECT ... FROM signal_alerts WHERE alert_date='2026-05-08' ..."
 ```
 
 #### Forbidden phrases (rewrite the answer)
@@ -224,7 +223,7 @@ Before filing "verification pending", ask:
    reproduce the failure mode on yesterday's data?
 2. Can I read `market_data_intraday` for date D and replay the
    strategy against it without touching the live monitor?
-3. Can I dispatch a SQL via `db-query.yml` that would already show
+3. Can I dispatch a SQL via `./scripts/db_query_cr.sh` that would already show
    me the answer from the existing schema?
 
 If any answer is yes, do that first. Only file "waiting" if all
@@ -273,7 +272,7 @@ questions — MUST run through one of these production-grade paths.
   cached CSVs.
 - Mocking `_latest_overrides` or any production resolver in a script
   that won't ship — instead seed/unseed `exit_config_overrides` via
-  `db-query.yml commit=true`, run the production replay, then revert.
+  `./scripts/db_query_cr.sh ... --commit`, run the production replay, then revert.
 - Using `add_all_indicators` directly in a replay script — let
   `signal_monitor.calculate_indicators` (lib/strategies + production
   glue) do it. The production indicator contract is more than just
@@ -299,8 +298,8 @@ small PR BEFORE running the audit. Don't write a throwaway harness
 Only for one-shot read-only inspection that doesn't touch the
 strategy / indicator / signal pipeline:
 - "How many rows in `signal_alerts` for ticker X on date Y" — use
-  `db-query.yml`.
-- "What's the schema of `exit_config_overrides`" — use `db-query.yml`.
+  `./scripts/db_query_cr.sh`.
+- "What's the schema of `exit_config_overrides`" — use `./scripts/db_query_cr.sh`.
 
 Anything that simulates a fire decision goes through the production
 replay paths.
@@ -543,7 +542,7 @@ firewall" — it's "find the 443-based escape hatch for this operation."
 | SSH to Cloud Run / Compute / IAP tunnel | TCP | 22 (or 22-over-IAP) | ❌ |
 | Anything binding raw TCP outbound on a non-443 port | TCP | * | ❌ |
 
-The two patterns documented below — `db-query.yml` for DB access, and the
+The two patterns documented below — `./scripts/db_query_cr.sh` for DB access, and the
 PAT-via-Secret-Manager pattern for GitHub API — exist specifically to route
 work over 443 for operations that would otherwise need a blocked port. The
 GH Actions runner has unrestricted egress, so dispatching a workflow is the
@@ -602,16 +601,16 @@ firewall; use the documented escape hatch:**
 
 | If you tried | You'll get | Use instead |
 |---|---|---|
-| `psql -h <cloud-sql-ip>` | timeout on 5432 | `gh workflow run db-query.yml -f sql='...'` (see [Database access](#database-access) below) |
-| `psycopg2.connect(host=...)` / `pg8000.connect(...)` / `SQLAlchemy create_engine(...)` against Cloud SQL | timeout on 5432 | same — dispatch `db-query.yml`, then `gh run download` the artifact |
-| `cloud-sql-proxy` / `cloud_sql_proxy <conn>` | timeout on 3307 | same — dispatch `db-query.yml` |
+| `psql -h <cloud-sql-ip>` | timeout on 5432 | `./scripts/db_query_cr.sh -q '...'` (see [Database access](#database-access) below) |
+| `psycopg2.connect(host=...)` / `pg8000.connect(...)` / `SQLAlchemy create_engine(...)` against Cloud SQL | timeout on 5432 | same — dispatch `./scripts/db_query_cr.sh`, then `gh run download` the artifact |
+| `cloud-sql-proxy` / `cloud_sql_proxy <conn>` | timeout on 3307 | same — dispatch `./scripts/db_query_cr.sh` |
 | `ssh user@<cloud-run-host>` | timeout on 22 | n/a — Cloud Run has no SSH. Use `gcloud beta run jobs executions logs read` (443) for inspection |
 | `gcloud compute ssh <vm>` | timeout on 22 (over IAP) | for shells, switch to a desktop session; for inspection, use `gcloud compute instances describe` (443) |
 | Direct `redis-cli`, `mongosh`, etc. against any GCP-hosted DB | timeout on whatever the DB port is | route the work into a Cloud Run Job (controlled via 443) or a workflow runner |
 
 The mental rule: **if the connection target is in GCP and the port isn't 443,
 you need a 443-based intermediary.** The two intermediaries this repo has
-already wired up are `db-query.yml` (for ad-hoc SQL) and Cloud Run Jobs (for
+already wired up are `./scripts/db_query_cr.sh` (for ad-hoc SQL) and Cloud Run Jobs (for
 anything else that needs production network access — they're triggered from
 443 but execute with full GCP networking).
 
@@ -623,181 +622,151 @@ anything else that needs production network access — they're triggered from
 > gotchas, MCP caveats, and the rationale behind the patterns documented
 > below.
 
+> **TL;DR — querying Cloud SQL over 443 IS possible from the sandbox.** Use
+> `./scripts/db_query_cr.sh` (the CR-native db-query Cloud Run Job). The old
+> `.github/workflows/db-query.yml` GitHub Actions workflow is **deleted and no
+> longer used** — do not look for it or try to dispatch it. The Cloud Run Job
+> is the one and only supported DB-access path. The dispatch travels over 443
+> (Cloud Run control-plane API); the actual SQL runs inside GCP with full Cloud
+> SQL networking, so the sandbox's port-443-only egress is never a blocker.
+
 Direct DB connections from Claude Code on the web sandbox are blocked: the
 sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
 5432 (Postgres) or 3307 (Auth Proxy backend). Both time out. Adding the
 sandbox IP to authorized networks does not help — the binding constraint is
-the sandbox's outbound firewall, not the DB's inbound ACL.
+the sandbox's outbound firewall, not the DB's inbound ACL. **But you are not
+blocked from querying the DB** — the CR-native path below routes the work over
+443 and runs the SQL inside GCP.
 
-To query Cloud SQL Postgres (`trading` database) from any session, dispatch
-the `.github/workflows/db-query.yml` workflow. It runs the SQL inside a
-GitHub Actions runner (which has unrestricted egress to Cloud SQL via the
-project's existing `gcp/database.py` connector), captures structured results,
-posts a phone-friendly summary as a comment on a tracking issue if specified,
-and uploads the full results as a workflow artifact.
+**Primary path — the ONLY supported path (CR-native Cloud Run Job; the old
+GitHub Actions `db-query.yml` workflow is deleted and unavailable):**
+
+```bash
+./scripts/db_query_cr.sh -q "SELECT count(*) FROM trades WHERE date > current_date - 7"
+./scripts/db_query_cr.sh -f gcp/queries/check_daily_rates_nulls.sql
+./scripts/db_query_cr.sh -q "UPDATE x SET y=1 WHERE z=2" --commit
+```
+
+The script dispatches the `db-query` Cloud Run Job (entrypoint
+`gcp/db_query_job.py`), which runs `gcp/queries/run_query.py` inside
+the trading-system image with full Cloud SQL access, writes results
+to `gs://${PROJECT_ID}-trading-data/query-results/${exec_id}/`, and
+the dispatcher pulls and prints the summary. Total latency ~5-15s
+for typical reads. Same safety guarantee as the GHA path: every
+statement runs in its own transaction; default is rollback;
+`--commit` to persist.
+
+**Historical note**: there was a `.github/workflows/db-query.yml` GHA
+workflow that did the same thing via a GitHub-Actions runner. It was
+deleted 2026-05-30 after the GHA-platform outage rendered it unusable
+for ~36 hours and the CR-native path proved sufficient. The CR Job is
+the only supported path now.
 
 #### Invocation patterns
 
-**Single read query** (default — transaction is rolled back, which is a no-op
-for SELECT):
+**Single read query** (default — transaction is rolled back, which is
+a no-op for SELECT):
 ```bash
-gh workflow run db-query.yml \
-  -f sql='SELECT count(*) FROM trades WHERE date > current_date - 7' \
-  -f issue_number=<TRACKING_ISSUE>
+./scripts/db_query_cr.sh -q "SELECT count(*) FROM trades WHERE date > current_date - 7"
 ```
 
-**Multi-statement in one dispatch** — this is the answer to "varying amounts
-of queries." Batch into one dispatch instead of dispatching N times. Each
-statement runs in its own transaction:
+**Multi-statement** — batch separated by `;`:
 ```bash
-gh workflow run db-query.yml \
-  -f sql='SELECT count(*) FROM trades; SELECT count(*) FROM signal_alerts; SELECT max(date) FROM market_data_daily' \
-  -f issue_number=<TRACKING_ISSUE>
+./scripts/db_query_cr.sh -q "SELECT count(*) FROM trades; SELECT count(*) FROM signal_alerts; SELECT max(date) FROM market_data_daily"
 ```
 
-**File-based** (for SQL too large for a dispatch input or DDL with embedded
-semicolons like `DO $$ ... $$` blocks or `CREATE FUNCTION ... LANGUAGE
-plpgsql`):
+**File-based** (for SQL too large for a single shell arg, or DDL with
+embedded semicolons like `DO $$ ... $$` blocks or `CREATE FUNCTION ...
+LANGUAGE plpgsql`):
 ```bash
 # Commit the .sql file to gcp/queries/ first, then:
-gh workflow run db-query.yml \
-  -f sql_file=gcp/queries/check_freshness.sql \
-  -f issue_number=<TRACKING_ISSUE>
+./scripts/db_query_cr.sh -f gcp/queries/check_daily_rates_nulls.sql
 ```
 The file content is sent as **one** statement. Multi-statement splitting
-only happens for the inline `sql` input. For DO blocks or function
-definitions, always use `sql_file`.
+only happens for the inline `-q` form. For DO blocks or function
+definitions, always use `-f`.
 
 **Write query** (must explicitly opt in to commit):
 ```bash
-gh workflow run db-query.yml \
-  -f sql="UPDATE trades SET status='reviewed' WHERE id IN (1,2,3)" \
-  -f commit=true \
-  -f issue_number=<TRACKING_ISSUE>
+./scripts/db_query_cr.sh -q "UPDATE trades SET status='reviewed' WHERE id IN (1,2,3)" --commit
 ```
-Without `commit=true`, every transaction rolls back at the end. A write
-without `commit=true` is a deliberate no-op — the summary will show
+Without `--commit`, every transaction rolls back at the end. A write
+without `--commit` is a deliberate no-op — the summary will show
 `↩️ rolled back` so the user knows. This is the load-bearing safety
-guarantee: a typo'd UPDATE/DELETE without `commit=true` cannot persist.
+guarantee: a typo'd UPDATE/DELETE without `--commit` cannot persist.
 
 #### Reading results
 
-Each dispatch takes ~30–90 s end-to-end (queue + cold runner + connection +
-query + summary). After dispatch:
-```bash
-sleep 5
-RUN_ID=$(gh run list --workflow=db-query.yml --limit=1 --json databaseId -q '.[0].databaseId')
-gh run watch $RUN_ID                                       # blocks until done
-gh issue view <TRACKING_ISSUE> --comments | tail -120      # phone-friendly summary
-# OR for full results:
-gh run download $RUN_ID --name "query-results-$RUN_ID"
-```
+Each dispatch takes ~5–15 s end-to-end. The dispatcher prints the
+summary to stdout when the run completes. Full artifacts are at
+`gs://${PROJECT_ID}-trading-data/query-results/${EXECUTION_NAME}/`:
 
-Artifact contents:
 - `results.json` — structured per-statement results (columns, rows,
   row_count, truncated, duration_ms, mode, error, sqlstate,
   row_cap_strategy)
 - `result_NNN.csv` — per-statement CSV (only for statements that returned
   rows)
-- `summary.md` — full markdown summary, untruncated
-- `summary_for_comment.md` — same content, hard-truncated to 60 KB for the
-  issue comment
+- `summary.md` — full markdown summary
+- `summary_for_comment.md` — hard-truncated to 60 KB (legacy artifact
+  for the old GHA flow; the CR-native path prints summary.md directly)
 
-#### Inputs reference
+To re-read results after the dispatcher exits, find the execution and
+read the GCS prefix:
 
-| Input | Default | Notes |
+```bash
+EXEC=$(gcloud beta run jobs executions list --job=db-query \
+       --region=us-east1 --limit=1 --format='value(name)')
+gcloud storage cat "gs://${PROJECT_ID}-trading-data/query-results/${EXEC}/summary.md"
+gcloud storage cat "gs://${PROJECT_ID}-trading-data/query-results/${EXEC}/results.json"
+```
+
+#### `scripts/db_query_cr.sh` flags
+
+| Flag | Default | Notes |
 |---|---|---|
-| `sql` | `""` | Inline SQL; multi-statement separated by `;`. Exclusive with `sql_file`. |
-| `sql_file` | `""` | Path to `.sql` file in repo. Sent as one statement. Exclusive with `sql`. |
-| `commit` | `false` | `true` to persist writes; otherwise transaction rolls back. |
-| `issue_number` | `""` | Issue # to post summary comment to. Empty → falls back to `vars.DB_QUERY_TRACKING_ISSUE`, then to artifact-only. |
-| `statement_timeout_seconds` | `120` | Per-statement Postgres `statement_timeout`. |
-
-If you create a single tracking issue once and set the repo variable
-`DB_QUERY_TRACKING_ISSUE` to its number (`gh variable set
-DB_QUERY_TRACKING_ISSUE -b <num>`), every dispatch posts there by default
-without needing `issue_number=` each time.
+| `-q SQL` | — | Inline SQL; multi-statement separated by `;`. Exclusive with `-f`. |
+| `-f SQL_FILE` | — | Path to `.sql` file in repo. File CONTENT is read locally and sent as one statement. Exclusive with `-q`. |
+| `--commit` | off | Persist writes; otherwise transaction rolls back. |
+| `--timeout SECS` | 120 | Per-statement Postgres `statement_timeout`. |
+| `--quiet` | off | Suppress progress logs; only the summary is printed. |
 
 #### Limits
 
-- **Statement timeout**: 120 s default (override with
-  `statement_timeout_seconds`).
-- **Row cap**: 50,000 per statement in the artifact, top 50 in the issue
-  comment. For single-SELECT statements the cap is enforced server-side via
-  subquery wrap (`row_cap_strategy: server_limit`); for multi-statement,
-  non-SELECT, or queries with `FOR UPDATE`/`FOR SHARE`/`SELECT INTO` it's
-  enforced client-side via `fetchmany(50001)` (`row_cap_strategy:
-  client_fetchmany`). The latter is slower for huge result sets but the
-  timeout caps wall-time.
-- **Issue comment**: 60 KB hard truncation (GitHub's limit is 65 KB);
-  truncated comments link to the artifact.
-- **Concurrency**: all dispatches serialize through one queue (group
-  `db-query`) with `cancel-in-progress: false` — verified in
-  `.github/workflows/db-query.yml`. A read dispatched while a write
-  is in flight waits ~30–60 s for the queue.
-
-#### Known limitation: rapid-burst dispatches
-
-Audit 2026-05-08 G.P2.24 flagged that during multi-track audits,
-dispatches fired within the same ~5 s window can show as cancelled in
-the GitHub Actions UI even though `cancel-in-progress: false` is set.
-This is GitHub-side queue scheduling behaviour — the workflow YAML is
-correct; the cancellations are GitHub deciding multiple
-queue-position-zero dispatches with the same group key collide on
-intake.
-
-Mitigation:
-
-- For human-paced ad-hoc queries: just wait 30 s between dispatches
-  (the typical run takes 30–90 s anyway, so back-to-back dispatches
-  are rarely needed).
-- For programmatic batch use: combine N statements into ONE dispatch
-  via the `sql` input multi-statement syntax (`-f sql='SELECT 1;
-  SELECT 2; ...'`) or commit a `.sql` file and pass `sql_file=`. Each
-  dispatch is one workflow run; one run can execute many statements.
-- For the audit-style scenario where N tracks each need to query
-  Cloud SQL: stagger by track owner and rely on the queue rather
-  than firing all at once.
-
-The cancellation never causes data loss (every statement runs in its
-own transaction, default rollback) — it just means a dispatched run
-may not produce results when GitHub silently cancels it on intake.
-Re-dispatch when that happens.
+- **Statement timeout**: 120 s default (override with `--timeout`).
+- **Row cap**: 50,000 per statement in the artifact. For single-SELECT
+  statements the cap is enforced server-side via subquery wrap; for
+  multi-statement, non-SELECT, or queries with `FOR UPDATE`/`FOR SHARE`/
+  `SELECT INTO` it's enforced client-side via `fetchmany(50001)`. The
+  latter is slower for huge result sets but the timeout caps wall-time.
 
 #### What not to do
 
-- **Don't paste secrets, API keys, or passwords as SQL string literals** in
-  `inputs.sql`. The `sql` input is recorded in plaintext in the workflow
-  run history and is visible to anyone with **read** access to the repo.
-- **Don't dispatch the workflow N times for N queries.** Batch into
-  multi-statement SQL (`-f sql='SELECT 1; SELECT 2; ...'`) or commit a
-  `.sql` file with the full batch and use `sql_file`. Each dispatch costs
-  30–90 s.
-- **Don't use this for production migrations.** For schema changes,
-  `gcp/schema.sql` + `gcp/apply_schema.py` is the source of truth. This
-  workflow is for ad-hoc inspection and one-off data fixes.
+- **Don't paste secrets, API keys, or passwords as SQL string literals.**
+  The SQL is logged at INFO level in Cloud Logging and visible to anyone
+  with `roles/run.viewer` on the project.
+- **Don't dispatch many small queries when one batched dispatch will do.**
+  Batch via multi-statement (`-q "SELECT 1; SELECT 2; ..."`) or commit
+  a `.sql` file and pass `-f`. Each dispatch costs ~5-15 s of overhead.
+- **Don't use this for production schema migrations.** For schema
+  changes, `gcp/schema.sql` + `gcp/apply_schema.py` (run via the
+  `apply-schema-migrations` CR Job) is the source of truth.
 
 #### Why this exists
 
-Phone-only sessions on Claude Code on the web cannot reach Cloud SQL on any
-port (sandbox blocks all egress except 443). A GH-Actions-mediated query
-workflow is the only path that works without a desktop fallback. The
-runner reuses `gcp/database.py:get_engine()` and the existing
-`CLOUD_SQL_CONNECTION_NAME` / `DB_USER` / `DB_PASS` / `DB_NAME` repo
-secrets. Auth uses **`CLAUDE_CODE_WEB_GCP_SA_KEY`** — the same SA key
-used by every other data-pipeline workflow in this repo since the
-2026-05-10 consolidation. The original "web-sandbox vs data-pipeline"
-key split was paranoia-tier separation that didn't buy anything in
-this single-owner / single-project setup; both surfaces share blast
-radius. The `claude-web@` SA holds `roles/editor` at the project
-level which is sufficient for every workflow that touches GCP.
+Phone-only sessions on Claude Code on the web cannot reach Cloud SQL
+on any port (sandbox blocks all egress except 443). The CR Job
+runs `gcp/db_query_job.py` → `gcp/queries/run_query.py` inside the
+trading-system image with full Cloud SQL access (via the Python
+connector), writes results to GCS, and the sandbox-side dispatcher
+reads them back over 443. Same `gcp/database.py:get_engine()` code
+path as every other CR Job in this repo.
 
-A consequence of the consolidation: a `CLAUDE_CODE_WEB_GCP_SA_KEY`
-compromise now affects every workflow in this repo. Mitigations: rotate
-via `gcloud iam service-accounts keys` + GitHub repo secret update;
-keep the SA scoped to a single GCP project; rely on Cloud Audit Logs
-for forensics. The dual-key option remains available if a future
-threat model justifies the operational cost; today it doesn't.
+Auth: the `trading-runner@` service account holds the IAM bindings
+needed (Cloud SQL Client, Storage Object Admin on the trading-data
+bucket). The sandbox uses its own `claude-web@` SA (held in
+`CLAUDE_CODE_WEB_GCP_SA_KEY` repo secret) to dispatch the CR Job
+over 443 — same auth surface as `gcloud run jobs execute` everywhere
+else in this guide.
 
 ### Backup and disaster recovery
 
@@ -924,20 +893,22 @@ GH_TOKEN=$(gcloud secrets versions access latest \
   --secret=gh-stocks-repo-pat \
   --project=adept-mountain-474619-d4)
 
-# Dispatch the db-query workflow against any branch
+# Dispatch any remaining GHA workflow (e.g. the CI/CD ones that respond
+# to PR events). For ad-hoc SQL, prefer ./scripts/db_query_cr.sh — the
+# CR-native path doesn't need this PAT dance at all.
 curl -sS -X POST \
   -H "Authorization: Bearer $GH_TOKEN" \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
-  https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/db-query.yml/dispatches \
-  -d '{"ref":"main","inputs":{"sql":"SELECT now()"}}'
+  https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/<workflow-name>.yml/dispatches \
+  -d '{"ref":"main","inputs":{"key":"value"}}'
 
-# Poll most recent run
+# Poll most recent run of <workflow-name>
 RUN_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
-  "https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/db-query.yml/runs?per_page=1" \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/<workflow-name>.yml/runs?per_page=1" \
   | python -c "import sys,json; print(json.load(sys.stdin)['workflow_runs'][0]['id'])")
 
-# Download the artifact (returns a ZIP)
+# Download the artifact (returns a ZIP) if the workflow emits one
 ARTIFACT_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
   "https://api.github.com/repos/TeneikaAskew/stocks/actions/runs/$RUN_ID/artifacts" \
   | python -c "import sys,json; print(json.load(sys.stdin)['artifacts'][0]['id'])")
@@ -1053,6 +1024,44 @@ gh issue list --label "bug"
 ```powershell
 & "C:\Program Files\GitHub CLI\gh.exe" issue list
 ```
+
+### Workflow retirement / Cloud-Run-migration convention
+
+Most data-fetching and analysis workflows that used to run on GH Actions
+crons have moved to Cloud Run Jobs scheduled by Cloud Scheduler. The
+repo distinguishes two states a "non-active" workflow can be in, and
+the convention is:
+
+| state | convention | meaning |
+|---|---|---|
+| **Fully retired** | rename file to `*.yml.disabled` | GH Actions ignores it (only picks up `.yml`/`.yaml`). The workload itself is gone; there is NO Cloud Run replacement. Add a header comment at the top of the disabled file explaining when and why it was retired and what (if anything) replaced it. |
+| **Migrated to Cloud Run, manual fallback retained** | keep `.yml`, remove the cron, leave `workflow_dispatch:` only, add a header comment naming the Cloud Run Job + Cloud Scheduler trigger that owns the primary execution | Primary execution runs in Cloud Run (cheaper, more capable, has GCP networking); the GH Actions workflow stays as a manual break-glass / backfill path. Cron was removed so the two surfaces don't both fire daily and burn metered Actions minutes. |
+
+When migrating a new workflow to Cloud Run, do the second pattern by
+default:
+1. Add the Cloud Run Job to `gcp/deploy.sh`
+2. Add the Cloud Scheduler entry that drives it
+3. In the GH workflow file, delete the `schedule:` trigger, keep
+   `workflow_dispatch:`, and add a header comment of the form:
+   ```yaml
+   on:
+     # Primary execution: Cloud Scheduler (<scheduler-name>) ->
+     # <cloud-run-job-name> Cloud Run Job. The GA cron was removed so
+     # this workflow no longer duplicates that schedule and burns
+     # Actions minutes; workflow_dispatch is kept as a manual break-glass.
+     workflow_dispatch:
+   ```
+4. Only rename to `.yml.disabled` if the workload is being fully retired
+   (no Cloud Run replacement, no expected future need). The disabled
+   file's body is kept for archaeology — it documents what the old
+   approach did.
+
+Live examples to copy from:
+- `analyze-market-data.yml` — pattern 2 (manual fallback)
+- `fetch-alphavantage-intraday-monthly.yml` — pattern 2 (manual fallback)
+- `fetch-news-sentiment.yml` — pattern 2 (manual fallback)
+- `fetch-market-data.yml.disabled` — pattern 1 (fully retired)
+- `earnings-options-analytics.yml.disabled` — pattern 1 (fully retired)
 
 ### Automated Workflow Failure Handling
 

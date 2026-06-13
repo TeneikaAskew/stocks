@@ -322,7 +322,10 @@ export default function OptionsFlowPage() {
     enabled: dates.length > 0 && !!selectedDate,
   });
   const gammaLevels = levelsQuery.data;
-  const flip = gammaLevels?.flip ?? null;
+  // gammaFlip = true BS-recurved zero-gamma level (the real regime divider);
+  // gammaBalance = cumulative-net-gamma balance price (formerly mislabeled flip).
+  const gammaFlip = gammaLevels?.gamma_flip ?? null;
+  const gammaBalance = gammaLevels?.gamma_balance ?? null;
   const regime = gammaLevels?.regime ?? 'unknown';
   const spotMethod = gammaLevels?.spot.method;
   const serverSpot = gammaLevels?.spot.price;
@@ -490,8 +493,13 @@ export default function OptionsFlowPage() {
           />
           <MetricCard
             label="Gamma Flip"
-            value={flip ? `$${flip.toFixed(2)}` : (metrics.zero_gamma ? `$${metrics.zero_gamma.toFixed(2)}` : '--')}
-            changeLabel={flip ? regimeLabel(regime).description : undefined}
+            value={gammaFlip ? `$${gammaFlip.toFixed(2)}` : (metrics.zero_gamma ? `$${metrics.zero_gamma.toFixed(2)}` : '--')}
+            changeLabel={gammaFlip ? regimeLabel(regime).description : undefined}
+          />
+          <MetricCard
+            label="Gamma Balance"
+            value={gammaBalance ? `$${gammaBalance.toFixed(2)}` : '--'}
+            changeLabel={gammaBalance ? 'Cumulative-gamma balance' : undefined}
           />
           <MetricCard
             label="Max Pain"
@@ -544,11 +552,11 @@ export default function OptionsFlowPage() {
               ◆ Gate ${g.strike.toFixed(2)}
             </span>
           ))}
-          {gammaLevels.flip_levels.map(f => (
+          {gammaLevels.gamma_balance_levels.map(f => (
             <span
-              key={`flip-${f.strike}`}
+              key={`gamma-balance-${f.strike}`}
               className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-violet-400"
-              title={`Adjacent to flip @ ${flip?.toFixed(2) ?? '--'}`}
+              title={`Adjacent to gamma balance @ ${gammaBalance?.toFixed(2) ?? '--'}`}
             >
               ⇅ Flip ${f.strike.toFixed(2)}
             </span>

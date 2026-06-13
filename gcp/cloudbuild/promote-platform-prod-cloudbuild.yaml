@@ -1,0 +1,15 @@
+# Routes 100% of trading-platform production traffic to the
+# `staging`-tagged Cloud Run revision. Manual trigger only.
+# Replaces the GHA workflow .github/workflows/promote-platform-prod.yml.
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update-traffic
+      - trading-platform
+      - --region=us-east1
+      - --to-tags=staging=100
+options:
+  logging: CLOUD_LOGGING_ONLY

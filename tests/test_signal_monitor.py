@@ -224,3 +224,70 @@ class TestSignalsWebhookRouting:
         monkeypatch.delenv('DISCORD_WEBHOOK_URL', raising=False)
         m = _build_monitor()
         assert m.webhook_url is None
+
+
+class TestIndicatorEngineContract:
+    """Lock the 'one source of truth' contract: signal_monitor delegates to
+    lib.indicators.add_all_indicators, which MUST produce every indicator
+    column the live strategies read. Before 2026-05-31 the monitor hand-rolled
+    a subset and silently lagged the engine; this guards against regressing to
+    a second calculation location.
+    """
+
+    # Indicator columns the live strategies (MOMENTUM / agreement / signals /
+    # brief_bias) read off each bar via row.get(...). NOT including
+    # level/historical columns (Broke_Prev_Day_*), which are added by
+    # refresh_level_map, not the indicator engine.
+    REQUIRED = [
+        'RSI14', 'EMA9', 'EMA20', 'ATR14', 'VWAP', 'RVOL', 'OBV',
+        'StochRSI_K', 'StochRSI_D', 'Price_Change',
+        'Consecutive_Up', 'Consecutive_Down', 'Consecutive_Up_5', 'Consecutive_Down_5',
+        'RVol_Recent_20', 'ATR_Expansion', 'RSI_Thrust_3',
+        'Price_vs_VWAP', 'Price_vs_EMA9', 'Price_vs_EMA20',
+    ]
+
+    def _window(self, n=120):
+        import numpy as np, pandas as pd
+        rng = np.random.RandomState(7)
+        idx = pd.date_range('2026-05-29 09:30', periods=n, freq='1min', tz='UTC')
+        close = pd.Series(200 + np.cumsum(rng.randn(n) * 0.05), index=idx)
+        return pd.DataFrame({
+            'Open': close.shift(1).fillna(close.iloc[0]),
+            'High': close + abs(rng.randn(n)) * 0.05,
+            'Low': close - abs(rng.randn(n)) * 0.05,
+            'Close': close,
+            'Volume': rng.randint(1e4, 1e5, n).astype(float),
+            'Time': idx,
+        }, index=idx)
+
+    def test_engine_produces_all_live_columns(self):
+        from lib.indicators import add_all_indicators
+        out = add_all_indicators(self._window(), close_col='Close')
+        missing = [c for c in self.REQUIRED if c not in out.columns]
+        assert not missing, f"add_all_indicators missing live columns: {missing}"
+
+    def test_engine_includes_promoted_features_for_live(self):
+        """The 2026-05-31 promoted features now reach live firing too."""
+        from lib.indicators import add_all_indicators
+        out = add_all_indicators(self._window(), close_col='Close')
+        for c in ['Realized_Vol_Short', 'Mins_Since_Open', 'EMA9_Slope',
+                  'EMA_Spread_ATR', 'BB_Squeeze', 'RSI_Divergence', 'Price_vs_VWAP_ATR']:
+            assert c in out.columns, f"promoted feature not in live engine output: {c}"
+
+    def test_per_ticker_consecutive_override_flows_through(self):
+        """Threading consecutive_periods via IndicatorConfig must change the
+        Consecutive_Up/Down window (the live Tier-A calibration nuance)."""
+        import dataclasses
+        from lib.config import IndicatorConfig
+        from lib.indicators import add_all_indicators
+        w = self._window()
+        base = add_all_indicators(w, close_col='Close',
+                                  indicator_config=IndicatorConfig())
+        cfg = dataclasses.replace(IndicatorConfig(), consecutive_periods=99)
+        overridden = add_all_indicators(w, close_col='Close', indicator_config=cfg)
+        # window 99 on a 120-bar frame => far fewer/zero qualifying streaks
+        assert not base['Consecutive_Up'].equals(overridden['Consecutive_Up'])
+        # the relaxed *_5 column is independent of the override
+        import pandas as pd
+        pd.testing.assert_series_equal(base['Consecutive_Up_5'],
+                                       overridden['Consecutive_Up_5'])

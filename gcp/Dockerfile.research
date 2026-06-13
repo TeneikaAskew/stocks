@@ -1,0 +1,46 @@
+# Research image — extends the prod fetcher image with ML deps.
+#
+# Built on top of the existing prod base so we share the same lib/, gcp/,
+# scripts/, Cloud SQL connector, and AlphaVantage clients. Adds only the
+# extras needed for statistical / ML / feature-importance audits
+# (lightgbm + scikit-learn + scipy + shap) — see requirements-research.txt
+# for rationale.
+#
+# Build:
+#   gcloud builds submit \
+#     --tag us-east1-docker.pkg.dev/$PROJECT/trading/trading-system:research \
+#     --config <none — uses this Dockerfile in the build context>
+#
+# Deploy as Cloud Run Job:
+#   gcloud run jobs create p45-deep-ds \
+#     --image us-east1-docker.pkg.dev/$PROJECT/trading/trading-system:research \
+#     --memory 4Gi --cpu 2 --task-timeout 1800 --max-retries 0 \
+#     --command python --args=-m,gcp.research.p45_deep_ds_job \
+#     ...
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System dependencies — same as prod
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev gcc g++ libgomp1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install base + research dependencies together so pip can resolve
+# version constraints in one pass
+COPY requirements-gcp.txt requirements-research.txt requirements-gcp.lock* ./
+RUN if [ -f requirements-gcp.lock ]; then \
+        pip install --no-cache-dir -r requirements-gcp.lock -r requirements-research.txt; \
+    else \
+        pip install --no-cache-dir -r requirements-gcp.txt -r requirements-research.txt; \
+    fi
+
+# Copy shared library, GCP modules, scripts
+COPY lib/ lib/
+COPY gcp/ gcp/
+COPY scripts/ scripts/
+COPY alert_config.json .
+
+# Default entrypoint — overridden at deploy
+CMD ["python", "-m", "gcp.research.p45_deep_ds_job"]

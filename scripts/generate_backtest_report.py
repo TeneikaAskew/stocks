@@ -38,6 +38,8 @@ from lib.insights import (
     insight_narrative_winners_losers,
     insight_timeframe_sweep,
     insight_combo_sweep,
+    insight_general_combo_sweep,
+    insight_walk_forward,
     insight_what_numbers_mean,
     insight_base_vs_strat,
     insight_filter_stats,
@@ -192,28 +194,69 @@ def load_sweeps_from_table(ticker: str, run_id: str | None) -> pd.DataFrame | No
     return df.rename(columns={"sweep_type": "type"})
 
 
+def load_walk_forward_from_table(
+    ticker: str, run_id: str | None,
+) -> pd.DataFrame | None:
+    """Load per-fold walk-forward metrics for one ticker from
+    backtest_walk_forward_folds.
+
+    Mirrors load_sweeps_from_table: when ``run_id`` is given the rows
+    from exactly that pipeline run are returned; when it is ``None`` the
+    newest run for the ticker is selected (latest created_at).
+
+    Returns ``None`` when no rows exist for the ticker — distinct from
+    an empty DataFrame so the caller can tell "no data" apart from "a
+    run that produced zero folds".
+    """
+    params: dict = {"ticker": ticker}
+    if run_id:
+        sql = (
+            "SELECT * FROM backtest_walk_forward_folds "
+            "WHERE ticker = :ticker AND run_id = :run_id "
+            "ORDER BY mode, fold_index"
+        )
+        params["run_id"] = run_id
+    else:
+        sql = (
+            "SELECT * FROM backtest_walk_forward_folds "
+            "WHERE ticker = :ticker "
+            "AND run_id = ("
+            "  SELECT run_id FROM backtest_walk_forward_folds "
+            "  WHERE ticker = :ticker "
+            "  ORDER BY created_at DESC LIMIT 1"
+            ") "
+            "ORDER BY mode, fold_index"
+        )
+    df = query_to_dataframe(sql, params)
+    if df.empty:
+        return None
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
 
 def _load_trade_data(
     tickers: list[str], run_id: str | None,
-) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
-    """Load base / strat trades and sweeps for every ticker.
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame],
+           dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    """Load base / strat trades, sweeps, and walk-forward folds for every ticker.
 
-    Canonical path: the backtest_trades / backtest_sweeps Cloud SQL
-    tables (written by run_backtest.py / run_timeframe_sweep.py).
-    Falls back to the legacy CSV globbing only when Cloud SQL is not
-    configured — that fallback exists purely for offline/local dev and
-    is intentionally NOT a silent failure path: if Cloud SQL IS
-    configured, a query failure raises out of query_to_dataframe's
-    caller rather than being masked by CSVs.
+    Canonical path: the backtest_trades / backtest_sweeps /
+    backtest_walk_forward_folds Cloud SQL tables. Falls back to the
+    legacy CSV globbing only when Cloud SQL is not configured — that
+    fallback exists purely for offline/local dev and is intentionally
+    NOT a silent failure path. WF data has no CSV fallback: it's a
+    pipeline-stage output, so when Cloud SQL isn't configured the WF
+    section simply doesn't render.
 
-    Returns (base_dfs, strat_dfs, sweep_dfs).
+    Returns (base_dfs, strat_dfs, sweep_dfs, wf_dfs).
     """
     base_dfs: dict[str, pd.DataFrame] = {}
     strat_dfs: dict[str, pd.DataFrame] = {}
     sweep_dfs: dict[str, pd.DataFrame] = {}
+    wf_dfs: dict[str, pd.DataFrame] = {}
 
     if is_cloud_sql_configured():
         source = f"run_id={run_id}" if run_id else "newest run per ticker"
@@ -231,6 +274,10 @@ def _load_trade_data(
             if sweep is not None:
                 print(f"  {ticker} sweep: {len(sweep)} rows")
                 sweep_dfs[ticker] = sweep
+            wf = load_walk_forward_from_table(ticker, run_id)
+            if wf is not None:
+                print(f"  {ticker} walk-forward: {len(wf)} fold rows")
+                wf_dfs[ticker] = wf
     else:
         print("  Cloud SQL not configured — falling back to local CSVs "
               "(offline/local-dev path)")
@@ -247,7 +294,37 @@ def _load_trade_data(
             if fpath:
                 sweep_dfs[ticker] = pd.read_csv(fpath)
 
-    return base_dfs, strat_dfs, sweep_dfs
+    return base_dfs, strat_dfs, sweep_dfs, wf_dfs
+
+
+def _in_sample_sharpes(
+    base_dfs: dict[str, pd.DataFrame],
+    strat_dfs: dict[str, pd.DataFrame],
+) -> dict[str, dict[str, float]]:
+    """Compute per-(ticker, mode) full-sample Sharpe for the IS-vs-OOS
+    comparison in insight_walk_forward.
+
+    Uses the daily-pooled Sharpe approximation (same method as
+    compute_aggregate_metrics) so the numbers are directly comparable
+    to the report's other Sharpe figures.
+    """
+    out: dict[str, dict[str, float]] = {}
+
+    def _sharpe(df: pd.DataFrame) -> float:
+        if df.empty:
+            return float('nan')
+        daily = df.copy()
+        daily['date'] = pd.to_datetime(daily['entry_time']).dt.date
+        pnl = daily.groupby('date')['return_pct'].sum()
+        if pnl.std() == 0 or pd.isna(pnl.std()):
+            return float('nan')
+        return float(pnl.mean() / pnl.std() * np.sqrt(252))
+
+    for ticker, df in base_dfs.items():
+        out.setdefault(ticker, {})['base'] = _sharpe(df)
+    for ticker, df in strat_dfs.items():
+        out.setdefault(ticker, {})['strat'] = _sharpe(df)
+    return out
 
 
 def compute_aggregate_metrics(trade_dfs: dict[str, pd.DataFrame]) -> dict:
@@ -355,8 +432,8 @@ def build_report(tickers: list[str], run_id: str | None = None) -> str:
     # ----- Strategy parameters -----
     lines += _section_strategy_params(tickers)
 
-    # ----- Load trade + sweep data (tables, or CSV fallback offline) -----
-    base_dfs, strat_dfs, sweep_dfs = _load_trade_data(tickers, run_id)
+    # ----- Load trade + sweep + WF data (tables, or CSV fallback offline) -----
+    base_dfs, strat_dfs, sweep_dfs, wf_dfs = _load_trade_data(tickers, run_id)
 
     # Use strat as primary if available, else base
     trade_dfs = strat_dfs if strat_dfs else base_dfs
@@ -383,6 +460,10 @@ def build_report(tickers: list[str], run_id: str | None = None) -> str:
     # ----- Timeframe sweep -----
     if sweep_dfs:
         lines += _section_sweep(sweep_dfs)
+
+    # ----- Walk-forward validation (renders [] when no rows) -----
+    if wf_dfs:
+        lines += _section_walk_forward(wf_dfs, base_dfs, strat_dfs)
 
     # ----- Key Findings (cross-ticker narrative) -----
     all_exit: dict[str, dict] = {}
@@ -549,7 +630,24 @@ def _section_sweep(sweep_dfs: dict[str, pd.DataFrame]) -> list[str]:
     ]
     lines += insight_timeframe_sweep(sweep_dfs)
     lines += insight_combo_sweep(sweep_dfs)
+    # Phase 3 — coarser entry-TF combos (5m+15m, 15m+30m, ...). Renders
+    # nothing when the sweep ran without --all-combos. See PR #519.
+    lines += insight_general_combo_sweep(sweep_dfs)
     return lines
+
+
+def _section_walk_forward(
+    wf_dfs: dict[str, pd.DataFrame],
+    base_dfs: dict[str, pd.DataFrame],
+    strat_dfs: dict[str, pd.DataFrame],
+) -> list[str]:
+    """Walk-forward section. The IS-vs-OOS narrative anchors the OOS
+    fold-mean Sharpe against the in-sample Sharpe computed from the
+    backtest_trades rows for the same run — so the report can be
+    honest about whether the strategy's edge survives out-of-sample.
+    """
+    is_sh = _in_sample_sharpes(base_dfs, strat_dfs)
+    return insight_walk_forward(wf_dfs, in_sample_sharpes=is_sh)
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +684,7 @@ def main():
     # Canonical persistence: record the run in backtest_reports. Only when
     # a run_id was passed (a pipeline run) AND Cloud SQL is configured.
     if args.run_id and is_cloud_sql_configured():
-        base_dfs, strat_dfs, _ = _load_trade_data(args.tickers, args.run_id)
+        base_dfs, strat_dfs, _, _ = _load_trade_data(args.tickers, args.run_id)
         primary = strat_dfs if strat_dfs else base_dfs
         metrics = compute_aggregate_metrics(primary)
         persist_report(args.run_id, args.tickers, report, metrics)

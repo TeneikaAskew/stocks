@@ -34,6 +34,12 @@ from typing import Any
 
 import pandas as pd
 import sqlparse
+# Lift sqlparse's default 10k-token grouping limit so multi-row INSERTs
+# (e.g. yfinance-backed VIX backfill, 8500+ rows ≈ 130k tokens) don't
+# blow up in clean_for_wrap. Affects parsing only — the resulting SQL
+# is still sent verbatim to Postgres. Added 2026-05-23.
+import sqlparse.engine.grouping as _sqlparse_grouping
+_sqlparse_grouping.MAX_GROUPING_TOKENS = 5_000_000
 from sqlalchemy import text
 from sqlalchemy.exc import (
     DataError,
@@ -281,6 +287,17 @@ def _render_table(columns: list[str], rows: list[list[Any]]) -> str:
 
 def build_summary(stmts: list[dict], database: str, run_url: str | None,
                   truncate_for_comment: bool) -> str:
+    """Render a list of statement results as a phone-friendly markdown summary.
+
+    Each statement gets a section with status icon, commit/rollback icon,
+    duration, row count, SQL block, and a result-table preview limited
+    to the top ``SUMMARY_ROWS``. ``truncate_for_comment=True`` enforces
+    the 60 KB issue-comment ceiling (GitHub's limit is 65 KB; the buffer
+    leaves room for the "truncated" footer + workflow-run link). Pass
+    False to get the full untruncated body for the artifact ``summary.md``.
+
+    Returns the markdown string. Pure function — no I/O.
+    """
     overall_ok = all(s['status'] == 'ok' for s in stmts)
     icon = '✅' if overall_ok else '❌'
     n = len(stmts)

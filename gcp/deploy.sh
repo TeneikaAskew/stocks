@@ -247,6 +247,84 @@ deploy_signal_quality_alarm() {
         --quiet
 }
 
+# ── Indicator → forward-return correlation (Cloud Run Job) ───────────────────
+# Computes the full production indicator suite on 1-min RTH bars and ranks
+# each indicator by Information Coefficient (Spearman) vs forward returns.
+# Writes to indicator_correlation. Read-only on market_data_intraday; one
+# upsert at the end.
+#
+# Capacity (CLAUDE.md Rule 0): 3 tickers × ~30 sessions × 390 RTH bars
+# ≈ 35k bars total, held in memory at once (~tens of MB). 3 SELECTs total
+# (one per ticker, batched by date range — NOT per-bar). Pandas corr over
+# ~74 cols × 3 horizons is seconds. 1800s timeout is ~10× headroom.
+# --max-retries 1: pure read+single-upsert, idempotent, transient-retry safe.
+#
+# Uses the RESEARCH image: the target-modular classification targets (regime/
+# strat/signal) compute per-class mutual information via sklearn's
+# mutual_info_classif, and sklearn + scipy are deliberately excluded from the
+# main image (dev-only in requirements-gcp.txt) to keep signal-monitor's
+# cold-start lean. On the main image the MI helper hits its ImportError path
+# and writes mutual_info=NULL for every row (class_lift/rank_ic still populate);
+# the research image is the right home so all three metrics compute.
+deploy_indicator_correlation() {
+    echo "Deploying indicator-correlation job..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create indicator-correlation \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update indicator-correlation \
+        --image "${research_image}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Regime combination miner (Cloud Run Job — Effort A) ──────────────────────
+# Mines indicator-value COMBINATIONS predictive of forward regime (BIG/UP/DOWN/
+# FLAT) and upserts to regime_combo_results. Read-only on market_data_intraday;
+# one upsert at the end.
+#
+# Capacity (Rule 0): 3 tickers × ~1yr × ~390 RTH bars ≈ 290k bars total, held
+# in memory at once (~tens of MB). 3 batched SELECTs (one per ticker, NOT
+# per-bar). The cost driver is sklearn permutation_importance + mutual_info,
+# both row-capped in lib.combo_mining (perm 8k, MI 30k, train fit 80k) so
+# wall-clock is bounded ~2 min/ticker. 2 vCPU / 2Gi gives headroom; 3600s
+# timeout is ~5× the wall estimate. --max-retries 1: pure read + single
+# idempotent upsert.
+deploy_regime_combo() {
+    echo "Deploying regime-combo job..."
+    # Uses the RESEARCH image: model_lift/select_top_features need scikit-learn +
+    # scipy, which are deliberately excluded from the main image (dev-only in
+    # requirements-gcp.txt) to keep signal-monitor's cold-start lean. regime-combo
+    # is a Lane-2 research job, so the heavier image is the right home.
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create regime-combo \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 1 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update regime-combo \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 3600 \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
 # Re-posts stored signal_alerts to the signals Discord channel for a
 # historical date + ET time block. Triggered by the /replay-signals
@@ -391,6 +469,12 @@ _env_string() {
     env="${env},DB_USER=$(_secret db-trading-user)"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    # User-preference flag — set to true so the morning brief
+    # recommends LONG STRADDLE / LONG CALL / LONG PUT / SKIP instead
+    # of IC. The user explicitly only buys premium ("I would always
+    # buy them sell" — 2026-05-22). See
+    # lib/earnings_reactions.recommended_structure() for the logic.
+    env="${env},RECOMMEND_LONG_ONLY=true"
     echo "$env"
 }
 
@@ -562,11 +646,24 @@ deploy_backtest() {
 }
 
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
+# Capacity (CLAUDE.md Rule 0): LLM-summary + multiple Cloud SQL probes +
+# Discord webhook. Observed worst-case ~7-12 min on slow LLM responses or
+# large earnings calendars (issues #122, #377, #425, #466, #538 — five
+# documented timeouts at the default 600s task-timeout). 1800s = 30 min
+# is 3x the observed worst-case with comfortable headroom; Cloud Run
+# bills wall-time, not the cap, so headroom is free.
+#
+# --max-retries 0 because the brief is idempotent on its content but a
+# blind retry that succeeds posts a SECOND Discord embed for the same
+# session, AND a retry that ALSO times out files a second `gcp-job-
+# failure` issue against the same root cause. With 0 retries a timeout
+# is a single loud failure that the operator triages once.
 deploy_premarket() {
     echo "Deploying pre-market brief job..."
     gcloud run jobs create premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
@@ -574,6 +671,7 @@ deploy_premarket() {
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
+        --max-retries 0 --task-timeout 1800 \
         --command "python,-m,gcp.premarket_brief" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
@@ -605,6 +703,40 @@ deploy_earnings_reactions_brief() {
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Long-side "Next NVAX" weekly watchlist (Cloud Run Job, Sunday 7:45pm) ────
+# Joins upcoming earnings_calendar reporters against
+# earnings_options_strategy_winners to surface tickers with prior
+# long-side history. Posts a Discord embed to the standard
+# DISCORD_WEBHOOK_URL.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume: ~1,500 upcoming reporters × 360 winner rows joined
+#   Velocity: 1 SQL query + 1 Discord POST = ~3-5s total
+#   Wall: ~10s typical
+#   timeout: 600s (5× headroom — Discord can take 30+ sec under load)
+#   memory: 512Mi (single query result + small DataFrame)
+#   retries: 0 (idempotent — Sunday cron, miss is recoverable manually)
+deploy_earnings_long_watchlist() {
+    echo "Deploying earnings-long-watchlist job..."
+    gcloud run jobs create earnings-long-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_long_watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-long-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_long_watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -697,6 +829,309 @@ deploy_premarket_playbook_resolver() {
         --quiet
 }
 
+# ── Strat Directionality Engine (Cloud Run Job, research image) ─────────────
+# Replaces the P7-era `p7b-next-candle-classifier` job (which is now used
+# only to keep the prior modeling pipeline reachable for reference;
+# scripts moved to gcp/research/_archive/).
+#
+# This single job hosts the entire strat_engine pipeline. Different
+# entry points are selected via --args:
+#   --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipelineer,--tickers=IWM,--tf-only=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
+#   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
+#
+# Image: research (lightgbm + scikit-learn + scipy + shap). Build it with the
+# `build-research` target below — `gcloud builds submit` has no -f/--file flag,
+# so the Dockerfile must be named `Dockerfile` in the build context (we stage a
+# tmpdir, exactly like build_image does for the main image).
+build_research_image() {
+    echo "Building RESEARCH Docker image (lightgbm + sklearn + scipy + shap)..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp requirements-gcp.txt requirements-research.txt "$tmpdir/"
+    cp requirements-gcp.lock "$tmpdir/" 2>/dev/null || true
+    cp alert_config.json "$tmpdir/"
+    cp gcp/Dockerfile.research "$tmpdir/Dockerfile"
+    cp -r lib/    "$tmpdir/lib/"
+    cp -r gcp/    "$tmpdir/gcp/"
+    cp -r scripts/ "$tmpdir/scripts/"
+    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir"
+    rm -rf "$tmpdir"
+}
+
+deploy_strat_engine() {
+    echo "Deploying strat-engine job..."
+    # 8Gi memory is sized for the production cron path (incremental
+    # daily update on the per-bar feature tables). Operator-only mode
+    # `--rebuild --start-date=2016-01-01` loads ~1M 1-min SPY bars +
+    # the equivalent for IWM/QQQ into memory before featurizing and
+    # has tripped OOM at 8Gi (rrjlc, 2026-06-01 05:53 UTC — see
+    # docs/incidents/2026-06-01-pipeline-failures-audit.md F3). To run
+    # a full-history rebuild, dispatch with --memory 32Gi:
+    #   gcloud run jobs update strat-engine --memory 32Gi --region us-east1
+    #   gcloud run jobs execute strat-engine \
+    #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01" \
+    #       --region us-east1 --wait
+    #   gcloud run jobs update strat-engine --memory 8Gi --region us-east1
+    local research_image="${IMAGE}:research"
+
+    gcloud run jobs create strat-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update strat-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Direction Probe (Cloud Run Job, research image) ─────────────────────────
+# Phase 1 of the directionality research program. Runs the LABEL-reframe probes
+# in gcp/research/strat_engine/strat_dir_probes.py (e1_horizon, e2_trigger)
+# through the exact production walk-forward harness the failed baseline used.
+# Research only — NO production hooks, NO scheduler. Same image as strat-engine
+# (build with `build-research`). Dedicated job so the shared strat-engine daily
+# job is never disturbed.
+#
+# Per-run variation is via --args at execute time, e.g.:
+#   gcloud run jobs execute direction-probe --region us-east1 --wait \
+#     --args="-m,gcp.research.strat_engine.strat_dir_probes,\
+#             --experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=5"
+deploy_direction_probe() {
+    echo "Deploying direction-probe job (Phase 1 directionality probes)..."
+    local research_image="${IMAGE}:research"
+    # 4 CPU / 8Gi mirrors strat-engine: featurize-once over ~5-15 yr of
+    # intraday bars for one ticker/tf, then 8 LightGBM folds. max-retries 0
+    # (Rule 0: a stuck run fails loud). task-timeout 5400 is ≥4× the ~3-min
+    # wall estimate (Rule 0 sizing checklist).
+    gcloud run jobs create direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Build Options Daily Greeks (Cloud Run Job, research image) ──────────────
+# Materializes etf_options_daily_greeks (daily DEX/vanna/charm per ticker) so
+# the flow-direction feature loader never re-scans the ~14M-row
+# etf_options_snapshots table per experiment (Rule 0). Backfill once, then run
+# incrementally after the EOD options fetch.
+#   Backfill (one-off, per ticker, sequential — avoid concurrent full scans):
+#     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+#       --args="-m,gcp.build_options_daily_greeks,--backfill,--ticker,IWM"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU: the per-ticker daily frame is tiny; headroom is for the SPY
+# near-term contract pull. max-retries 0 (fail loud). 3600s task-timeout.
+deploy_build_options_greeks() {
+    echo "Deploying build-options-greeks job (materialized daily greeks)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        --task-timeout 3600 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── build-options-daily-features (Cloud Run Job, research image) ────────────
+# Materializes the daily options-flow features (PCR vol/OI, 25Δ IV skew, ATM IV)
+# into options_daily_features so the research harness reads ~2,600 rows/ticker
+# instead of re-scanning the ~52 GB etf_options_snapshots table on every
+# walk-forward run (the join dropped from ~9-20 min to ~0.8 s). Reuses the EXACT
+# live aggregation (lib/features/experimental/options_derived.build_materialized)
+# so stored values are byte-identical to recompute. Also the frontend-surfaceable
+# daily options-flow series.
+#   Backfill (one-off, per ticker — the 2026 REALTIME slice is slow, isolate it):
+#     gcloud run jobs execute build-options-daily-features --region us-east1 --wait \
+#       --task-timeout 10800 \
+#       --args="^|^-m|gcp.fetchers.build_options_daily_features|--tickers=IWM|--since=2016-01-01"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU mirrors build-options-greeks; the daily frame is tiny. max-retries 0.
+deploy_build_options_daily_features() {
+    echo "Deploying build-options-daily-features job (materialized options flow)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-options-daily-features \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-daily-features \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
+        --task-timeout 3600 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── build-realtime-gex (Cloud Run Job, research image) ──────────────────────
+# Materializes REAL intraday dealer GEX/DEX from the av-options-realtime feed
+# into realtime_gex_15m (gcp/build_realtime_gex.py). Default = incremental last
+# 3 days (the scheduled daily path; scheduler `realtime-gex-daily` at 17:00 ET
+# weekdays, after close + the day's intraday bars land). Backfill the live
+# window with --args="-m,gcp.build_realtime_gex,--backfill". Exists so the
+# real-intraday-DEX LEAD accrues in a query-cheap table for a future walk-forward.
+deploy_build_realtime_gex() {
+    echo "Deploying build-realtime-gex job (real intraday GEX/DEX)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        --task-timeout 1800 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
+# Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
+# Walk-forward research only — NO production hooks. Same image as strat-engine.
+#
+# Common entry points:
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells"
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase1,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
+deploy_magnitude_engine() {
+    echo "Deploying magnitude-engine job (task-parallel)..."
+    local research_image="${IMAGE}:research"
+    # Task-parallel design:
+    #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
+    #                                   one per (phase, ticker, tf) cell of
+    #                                   plan=no_backfill (3 phases × 9).
+    #   --task-timeout 5400           — 90 min per cell (one cell ≤ 60 min
+    #                                   in practice with all 4 CPUs to itself)
+    #   --memory 8Gi --cpu 4          — per-task allocation
+    #   --max-retries 0               — Rule 0: a stuck cell fails loud
+    # Run-time plan is chosen at EXECUTE time via --update-env-vars=MAG_PLAN=...
+    # (default plan stamped here is no_backfill so a bare execute works).
+    local plan_default=no_backfill
+    local plan_size=27
+    gcloud run jobs create magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string),MAG_PLAN=${plan_default}" \
+        --quiet
+}
+
+# ── Magnitude live-inference job ──────────────────────────────────────────────
+# Phase B of magnitude productionization. Daily cron at 09:25 ET scores
+# the most-recent settled bars from strat_features_<tf> using the
+# canonical production model (gs://${PROJECT_ID}-trading-data/
+# magnitude-models/production/{ticker}/{tf}/model.joblib) and upserts
+# results to magnitude_per_bar_predictions with source='inference'.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 3 cells × ~78 bars/24h = ~234 INSERT-target rows/day.
+#   Velocity: 1 SELECT per cell + 1 model.predict_proba + 1 INSERT.
+#   Wall-clock: < 30s for the whole job. 300s task-timeout is 10× p100.
+#
+# Cost: ~$0.0005/run × 252 sessions/yr ≈ $0.13/yr. Effectively free.
+#
+# Failure handling: half-or-more cell failures -> exit 1
+# (failure-notifier opens issue). Under-half -> WARN. Matches the F11
+# threshold pattern from 2026-06-01-pipeline-failures-audit F6/F11.
+deploy_magnitude_inference() {
+    echo "Deploying magnitude-inference job..."
+    local research_image="${IMAGE}:research"
+
+    gcloud run jobs create magnitude-inference \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-inference \
+        --image "${research_image}" --region "${REGION}" \
+        --task-timeout 300 \
+        --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
+# Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
+# Cloud Run Job itself stays around briefly so any in-flight references
+# resolve, but new work should use deploy_strat_engine above.
+# Removing this function next: when no `p7b-next-candle-classifier-*`
+# executions are pending and no other code path dispatches it.
+deploy_p7b_classifier_DEPRECATED() {
+    echo "DEPRECATED — use deploy_strat_engine instead."
+    return 1
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -719,16 +1154,19 @@ deploy_weekend() {
 # ── Data-fetching jobs ────────────────────────────────────────────────────────
 deploy_fetch_market_data() {
     echo "Deploying fetch-market-data job..."
-    # 1800s timeout: with EARNINGS_WINDOW_DAYS=7 we may pull bars for
-    # ~100 tickers; at 150 RPM that's ~80s of AV calls plus per-ticker
-    # indicator computation. 30 min leaves comfortable headroom.
+    # 5400s (90 min) timeout: nightly path (EARNINGS_WINDOW_DAYS=7, ~100
+    # tickers at 150 RPM) finishes in ~5 min. The headroom is for
+    # `--backfill BACKFILL_ALL_HISTORY=true` runs against the full
+    # earnings_history universe (~1,700 tickers); at the premium-tier
+    # 1.0s AV pacing default that's ~30 min, plus per-ticker upsert.
+    # Headroom = ~3x; Cloud Run charges runtime, not the cap.
     local env
     env="$(_env_string),EARNINGS_WINDOW_DAYS=7"
 
     gcloud run jobs create fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 2 \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
@@ -736,7 +1174,7 @@ deploy_fetch_market_data() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 1800 \
+        --task-timeout 5400 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
@@ -844,6 +1282,11 @@ deploy_av_options_backfill() {
         --task-timeout 43200
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options"
+        # CLAUDE.md Rule 0 — `--args "value"` (space form) works ONLY if value
+        # contains no `=`. Empirically verified 2026-05-29: any `=` in the
+        # value (even after a comma, e.g. `--tickers,SPY,--from=2025`) makes
+        # gcloud's argparse reject it with "expected one argument". If you
+        # add a `--flag=value` here, switch to `--args=^|^arg1|arg2` form.
         --args "--tickers,SPY IWM QQQ SPX,--from-latest"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
@@ -852,6 +1295,339 @@ deploy_av_options_backfill() {
 
     gcloud run jobs create fetch-av-options-backfill "${common_flags[@]}" 2>/dev/null || \
     gcloud run jobs update fetch-av-options-backfill "${common_flags[@]}"
+}
+
+# Companion to deploy_av_options_backfill — same image, same secrets,
+# different entrypoint. Runs every 5 min during RTH and writes
+# market_session='REALTIME' rows to etf_options_snapshots. Wired into the
+# scheduler via `av-options-realtime` (see deploy_schedulers).
+#
+# Added 2026-05-22 after AV subscription upgrade to the realtime-options
+# tier ($199.99/mo, 600 req/min). See
+# docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md for the
+# multi-track plan this job unlocks (Tracks 1-5).
+deploy_av_options_realtime() {
+    echo "Deploying fetch-av-options-realtime job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Sizing per CLAUDE.md Rule 0 back-of-envelope:
+    #   3 tickers × ~14k contracts/snapshot × 3-5s wall-clock per snapshot
+    #   = ~10-15s total wall-clock; --task-timeout=600 gives ~50x headroom.
+    #   --memory=512Mi peak working set is ~120 MiB (one ticker chain at a
+    #   time), 4x headroom. --max-retries=0 is the Rule 0 default — a
+    #   transient AV blip at 14:05 is recovered automatically by the 14:10
+    #   fire 5 min later; no need for Cloud Run-side retry to double-write.
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_realtime_options"
+        # Same `=`-trap as deploy_av_options_backfill above — if you add a
+        # `--flag=value` to args, switch to `--args=^|^arg1|arg2` form.
+        --args "--tickers,SPY IWM QQQ"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-realtime "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
+}
+
+# REMOVED 2026-05-28: deploy_av_options_historical_intraday and the
+# companion fetcher gcp/fetchers/fetch_av_historical_options_intraday.py.
+# The premise was wrong — AV's HISTORICAL_OPTIONS endpoint accepts a
+# `date=YYYY-MM-DD` param (EOD snapshot only); there is no `datetime=`
+# param for historical intraday options. Empirical test on
+# 2022-01-03T09:50:00 ET returned the CURRENT chain (2026-05-26
+# expirations), not the 2022 chain — AV silently ignored the
+# unsupported param and returned the live snapshot.
+#
+# The options-exec-backtest pivots to use the EXISTING EOD path
+# (fetch_av_historical_options.py via deploy_av_options_backfill) +
+# lib/options_intraday.reprice_intraday_option for the intraday
+# minute-by-minute BSM walk anchored to T-1 EOD IV.
+
+# Options exec backtest — Track B' (parallels lib/exec_backtest but trades
+# IWM 0DTE ATM options instead of the underlying). Mode dispatched at execute
+# time via --update-args:
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=emit_timestamps,--out=gs://..."  --wait
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=base"  --wait
+#
+# Per Rule 0 sizing:
+# - Volume: IWM × 3 cells × 5 folds; each cell-fold trains 1 LGBM and
+#   replays ~3-10k setups against pre-loaded 1m bars + pre-loaded IV
+#   snapshots. ~50k total trades simulated.
+# - Velocity: 5 folds × 3 cells × ~60s per LGBM fit = ~15 min training.
+#   Setups replayed at ~0.5ms each in pure pandas/numpy.
+# - Wall-clock estimate: ~25 min; task-timeout 14400 (4hr) for headroom.
+# - Memory: 1m IWM bars 2018-2026 ~250 MiB + features matrix ~1 GiB per cell.
+#   8Gi allocation.
+# - max-retries 0; non-idempotent (writes to a new GCS run_id each time).
+deploy_options_exec_backtest() {
+    echo "Deploying options-exec-backtest job..."
+
+    # This job imports gcp.research.strat_engine.strat_pred_train which
+    # depends on lightgbm + scikit-learn — both are in the RESEARCH
+    # image, not the prod image. The research image must be built
+    # first (see deploy_strat_engine for the same dependency).
+    local research_image="${IMAGE}:research"
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${research_image}" --region "${REGION}"
+        --memory 8Gi --cpu 2 --max-retries 0
+        --task-timeout 14400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,lib.options_exec_backtest.cli"
+        # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
+        # with `-`, otherwise gcloud parses the value as a new flag.
+        "--args=--mode=base"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create options-exec-backtest "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update options-exec-backtest "${common_flags[@]}"
+}
+
+# Ad-hoc DB query Cloud Run Job — CR-native replacement for the GHA
+# `.github/workflows/db-query.yml` workflow. Reads SQL from env vars
+# (overridable at execute time via `gcloud run jobs execute db-query
+# --update-env-vars=DB_QUERY_SQL=...`); writes results to GCS at
+# `gs://${PROJECT_ID}-trading-data/query-results/${CLOUD_RUN_EXECUTION}/`.
+# The sandbox dispatches over 443 (no Cloud SQL port needed); reads
+# results back via `gcloud storage cat`. See gcp/db_query_job.py for the
+# entrypoint and scripts/db_query_cr.sh for the dispatcher.
+#
+# Why this exists 2026-05-30: the GHA workflow has been broken by a
+# repo-level Actions outage since 2026-05-29. The CR-native path
+# routes around it.
+#
+# Sizing: 1 vCPU, 512MiB, 10-min timeout. Same Postgres connector
+# code path as the other CR jobs.
+deploy_db_query() {
+    echo "Deploying db-query job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    # Default SQL — overridden at execute time via --update-env-vars.
+    # SELECT 1 is a safe sanity check that proves the job pipeline works.
+    non_secret_env="${non_secret_env},DB_QUERY_SQL=SELECT 1 AS sanity_check"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.db_query_job"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create db-query "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update db-query "${common_flags[@]}"
+}
+
+# Freshness watchdog — CR-native replacement for the GHA
+# `.github/workflows/freshness-watchdog.yml` workflow. Runs
+# `scripts/audit_data_freshness.py --strict` against Cloud SQL on a
+# schedule; any stale table makes the job exit non-zero, which the
+# existing failure-notifier Cloud Run Service catches via its log sink
+# and posts to Discord. Same coverage, same alerting, no GHA dependency.
+#
+# Triggered 2026-05-30 by the GHA-side outage that broke the GHA
+# watchdog (along with every other workflow in the repo).
+#
+# Sizing: 1 vCPU, 512MiB, 15-min timeout. The audit hits one SELECT
+# per table (~20 tables); first run on the CR image clocked 14m9s
+# end-to-end (vs the GHA runs that took ~1-2m). The wall-clock
+# difference is suspicious — likely Cloud SQL connector setup +
+# per-query handshake latency adds up, OR the script's tabulate
+# output is buffered and only flushes at the end (all log lines
+# stamp the same second). Functionally correct either way; 15-min
+# task-timeout (900s) gives 2x headroom over the observed worst case.
+# The hourly scheduler will queue overlapping invocations naturally
+# (max-retries=0 prevents snowball; concurrent runs are independent).
+# TODO: profile the script under CR — if connection-pool reuse fixes
+# the 14m, drop task-timeout back to 300s.
+deploy_freshness_watchdog() {
+    echo "Deploying freshness-watchdog job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # 3600s (1h) task-timeout: observed wall-clock floats 8m–14m9s
+        # across recent runs (variance >50%). The 900s budget had only
+        # 1.07x headroom and tripped a timeout on 2026-05-30 15:50
+        # (rndfd) and 2026-06-01 13:00 (nd4x2). Per CLAUDE.md Rule 0.5,
+        # task-timeout >= 4x wall-clock — 60 min is 4.3x the 14 min p100.
+        # Cloud Run charges runtime, not the cap. See
+        # docs/incidents/2026-06-01-pipeline-failures-audit.md F2.
+        --task-timeout 3600
+        --service-account "${SA_EMAIL}"
+        --command "python,scripts/audit_data_freshness.py"
+        # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
+        "--args=--strict"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create freshness-watchdog "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update freshness-watchdog "${common_flags[@]}"
+}
+
+# ── Infra drift detector ─────────────────────────────────────────────────────
+# Daily check that surfaces production-impacting drift between deployed
+# GCP state and the repo's expected state. The 2026-06-01 audit
+# documented two patterns this catches:
+#
+#   * Image-pinning drift — Cloud Run pins the `:latest` digest at
+#     update-time, so a job can run an outdated image indefinitely while
+#     `:latest` advances. Direct cause of fetch-earnings-history-5t2hr
+#     running pre-PR-#580 code for ~12h after the fix merged.
+#   * Scheduler orphans — Cloud Scheduler entries pointing at deleted /
+#     renamed CR Jobs (stale issue #555 from p7b-next-candle-classifier).
+#
+# Posts findings to DISCORD_WEBHOOK_URL. Exits 0 always — Discord is
+# the output channel, not the exit code, so the failure-notifier
+# doesn't double-spam on every drift finding.
+deploy_audit_infra_drift() {
+    echo "Deploying audit-infra-drift job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # Drift detection is gcloud-API-bound (one `list jobs`, one
+        # `list schedulers`, one `describe image`, N `executions list`).
+        # ~50 gcloud calls × ~0.3s each = ~15s p100. 300s is 20x —
+        # the cap covers the tail when gcloud is throttled.
+        --task-timeout 300
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_infra_drift"
+        --set-secrets "DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-infra-drift "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-infra-drift "${common_flags[@]}"
+}
+
+# Per-factor walk-forward audit — CR-native replacement for the GHA
+# `.github/workflows/per-factor-walkforward.yml` workflow. Runs the
+# audit script weekly via the gcp/audit_job_runner.py wrapper which
+# uploads the report to GCS + posts a phone-friendly comment to the
+# tracking issue (variable AUDIT_TRACKING_ISSUE in the env block).
+#
+# Wired 2026-05-30 alongside db-query + freshness-watchdog as part of
+# the "everything on Cloud Run" consolidation triggered by the
+# GHA-platform outage.
+deploy_audit_walkforward() {
+    echo "Deploying audit-walkforward job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--folds 4"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=30"
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0,3"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔁 Weekly walk-forward audit"
+    # Tracking issue lives in the env; an empty value disables the
+    # GitHub comment without breaking the run. Override per-execution
+    # if needed via --update-env-vars=AUDIT_TRACKING_ISSUE=NNN.
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-walkforward "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-walkforward "${common_flags[@]}"
+}
+
+# Brief bias verification audit — CR-native replacement for the GHA
+# `.github/workflows/verify-brief-bias.yml` workflow. Same pattern as
+# audit-walkforward but uses --since (not --start/--end) and exits
+# strictly on any NULL bias (no AUDIT_ALLOWED_EXIT_CODES tolerance for
+# exit 1, which is the "found NULL" signal).
+deploy_audit_brief_bias() {
+    echo "Deploying audit-brief-bias job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    # Pass --since via AUDIT_SCRIPT_ARGS (defaults to 2026-05-12 per the
+    # script's docstring). The wrapper's auto-window logic only fires
+    # when --since / --start aren't already in args.
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--since 2026-05-12 --tickers SPY,IWM,QQQ"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=0"   # disable auto-window
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔍 Weekly brief bias verification"
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-brief-bias "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-brief-bias "${common_flags[@]}"
 }
 
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
@@ -1081,9 +1857,16 @@ deploy_fetch_earnings_history() {
     # This self-heals the OHLCV coverage gap that blocked the
     # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
     # missing reaction rows because their bars weren't ever fetched).
+    # AV_BACKFILL_SLEEP_SECS=1.0: the chained _run_backfill step was
+    # tripping the 7200s timeout every night for 5+ consecutive runs
+    # (audit 2026-05-30 — t8jq5, 4v9br, xwsk8, hf92b, cwftn all died at
+    # ticker [518/627]). Root cause: the hardcoded 13s free-tier sleep
+    # in _run_backfill made ~600 non-skipped tickers cost 13s × 600 =
+    # 2.2h, blowing the budget on retry. We're on premium AV (75 RPM),
+    # so 1.0s/call is safe and cuts wall-clock to ~10 min.
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     local env_string
-    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true"
+    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
@@ -1276,6 +2059,7 @@ deploy_fetchers() {
     deploy_backfill_daily_indicators
     deploy_fetch_alphavantage
     deploy_av_options_backfill
+    deploy_av_options_realtime
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -1290,6 +2074,14 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_topics
     deploy_fetch_news_sentiment_earnings
     deploy_backtest_pipeline
+    deploy_options_exec_backtest
+    deploy_db_query
+    deploy_freshness_watchdog
+    deploy_audit_infra_drift
+    deploy_audit_walkforward
+    deploy_audit_brief_bias
+    # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
+    # above that function; AV has no historical intraday options endpoint.)
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────
@@ -1641,6 +2433,10 @@ deploy_intraday_bulk_backfill() {
     secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
     secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
     secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    # GH PAT for filing data-quality issues when dead tickers detected
+    # (see fetch_alphavantage_intraday.py:_file_data_quality_issue).
+    # Same secret used by db-query.yml and the web-sandbox tooling.
+    secrets_flag="${secrets_flag},GH_DATA_QUALITY_TOKEN=gh-stocks-repo-pat:latest"
 
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
@@ -2078,8 +2874,39 @@ deploy_schedulers() {
     # historical post-earnings reaction pattern. Plain _schedule (no
     # containerOverride) — the job carries no run-kind label of its own.
     _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
+    # Freshness watchdog — CR-native, replaces .github/workflows/freshness-watchdog.yml
+    # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
+    _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
+    _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
+
+    # Infra-drift detector — daily at 12:30 UTC (08:30 ET), 30 min after
+    # the daily nightly fetcher chain has settled. Posts findings to
+    # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
+    _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
+
+    # Magnitude-inference — daily Mon-Fri at 09:25 ET, 5 min before
+    # market open. _schedule passes --time-zone America/New_York, so
+    # the cron expression is in ET, not UTC. (Codex P2 on PR #597:
+    # the original "25 13 * * 1-5" would have fired at 13:25 ET = 1:25
+    # PM, well after open, defeating the whole point.) Scores
+    # most-recent settled bars from strat_features_5m and writes to
+    # magnitude_per_bar_predictions. See
+    # gcp/research/magnitude_engine/mag_inference.py.
+    _schedule "magnitude-inference-daily" "25 9 * * 1-5" "magnitude-inference"
+    # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
+    _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
+    # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)
+    _schedule "audit-brief-bias-weekly"  "0 10 * * 0" "audit-brief-bias"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
+    # P&L cell is identified. The classifier hits 58-60% OOS accuracy but the
+    # P7d backtest showed every exit model loses money after 10 bps round-trip
+    # costs. Uncomment when (a) a profitable cell is found via the avenues in
+    # docs/research/2026-05-25/P7_4track_verdict.md §"What I'd push next" and
+    # (b) the deploy function is updated to --mode=predict instead of evaluate.
+    # _schedule_with_args "p7b-classifier-daily" "30 16 * * 1-5" "p7b-next-candle-classifier" \
+    #     "-m" "gcp.research.p7b_next_candle_classifier" "--mode=all" "--ticker=IWM" "--tf=5m"
     # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
     # so any late-arriving intraday bars are queryable). Sweeps any alerts
     # still is_open=TRUE or with exit_ts NULL and resolves them via the
@@ -2160,6 +2987,32 @@ deploy_schedulers() {
     # makes overlap idempotent.
     _schedule "av-options-daily"    "0 21 * * 1-5"  "fetch-av-options-backfill"
     _schedule "av-options-monthly"  "0 5 1 * *"  "fetch-av-options-backfill"
+
+    # Realtime options — every 5 min, 09:00-15:55 ET, Mon-Fri. Fires
+    # 84 times per session (covers premarket 09:00-09:25 + RTH 09:30-
+    # 15:55). The 16:00 close snapshot is captured by av-options-daily
+    # at 21:00 ET; missing 16:00 from the realtime cadence is fine —
+    # signal monitor's last useful intraday read is 15:55 anyway.
+    #
+    # Capacity: 84 fires × 3 tickers = 252 AV calls/day, well under
+    # the 600/min realtime-tier budget (600 × 60 × 6.5h = 234,000/day
+    # ceiling). Cloud Run cost ~$3-5/mo.
+    #
+    # Added 2026-05-22 — unblocks Tracks 1-5 in
+    # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
+    _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
+
+    # Materialize REAL intraday GEX/DEX after close (5 PM ET weekdays — after the
+    # realtime feed stops ~15:55 ET and the day's 1-min bars land). Feeds the
+    # real-intraday-DEX lead's eventual walk-forward (build-realtime-gex).
+    _schedule "realtime-gex-daily" "0 17 * * 1-5"  "build-realtime-gex"
+
+    # Materialize daily options-flow features (PCR / IV-skew / ATM-IV) into
+    # options_daily_features at 10 PM ET weekdays — one hour after the EOD
+    # options fetch (av-options-daily, 21:00) lands. Keeps the research
+    # harness's fast join + the frontend options-flow series current.
+    _schedule "options-daily-features" "0 22 * * 1-5"  "build-options-daily-features"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
@@ -2215,6 +3068,9 @@ deploy_schedulers() {
     _schedule "weekly-earnings-refresh-calendar"   "0 19 * * 0"  "fetch-earnings-calendar"
     _schedule "weekly-earnings-refresh-history"   "15 19 * * 0"  "fetch-earnings-history"
     _schedule "weekly-earnings-refresh-reactions" "30 19 * * 0"  "compute-earnings-reactions"
+    # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
+    # Fires after the refresh chain so the data is current.
+    _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
@@ -2237,6 +3093,11 @@ deploy_schedulers() {
     # weekly recalibration would be mostly noise. Manual override
     # always available: `gcloud run jobs execute calibrate-thresholds`.
     _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
+
+    # Regime combination miner (Effort A) — weekly, Sunday 05:00 ET, after the
+    # weekly data settles. Refreshes regime_combo_results so combo edge + its
+    # drift over time are queryable. Trailing-365d window by default.
+    _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
 
     # Phase 0.5 — signal-quality report.
     # Hourly during market hours: --mode=rolling, incremental update of
@@ -2410,11 +3271,21 @@ case "${1:-help}" in
     setup)       setup ;;
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
+    build-research) build_research_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
+    earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
+    strat-engine) deploy_strat_engine ;;
+    direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
+    build-options-greeks) deploy_build_options_greeks ;;  # research image
+    build-realtime-gex) deploy_build_realtime_gex ;;      # research image
+    build-options-daily-features) deploy_build_options_daily_features ;;  # research image
+    magnitude-engine) deploy_magnitude_engine ;;
+    magnitude-inference) build_image && deploy_magnitude_inference ;;
+    p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
@@ -2424,6 +3295,11 @@ case "${1:-help}" in
     pg-dump)      build_image && deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
+    db-query)     build_image && deploy_db_query ;;
+    freshness-watchdog) build_image && deploy_freshness_watchdog ;;
+    audit-infra-drift) build_image && deploy_audit_infra_drift ;;
+    audit-walkforward) build_image && deploy_audit_walkforward ;;
+    audit-brief-bias) build_image && deploy_audit_brief_bias ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
@@ -2432,6 +3308,8 @@ case "${1:-help}" in
     intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
+    indicator-correlation) build_image && deploy_indicator_correlation ;;
+    regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -2452,6 +3330,7 @@ case "${1:-help}" in
         deploy_signal_quality_report
         deploy_signal_quality_alarm
         deploy_signal_replay
+        deploy_indicator_correlation
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers

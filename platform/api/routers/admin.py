@@ -168,3 +168,384 @@ async def admin_list_models(request: Request, x_admin_token: Optional[str] = Hea
     return AvailableModelsResponse(
         models=[_model_to_row(m) for m in list_available_models()]
     )
+
+
+# ---------------------------------------------------------------------------
+# Structure brief — dev-only readout of the strat-engine type model.
+#
+# The model is a STRUCTURE predictor (next bar is 1 / 2U / 2D / 3) under
+# the calibration=none production config. This endpoint surfaces its
+# per-cell predictions for use in a dev-only review surface. It is NOT
+# wired into /dashboard, /signals, /live, /premarket_brief, or any other
+# user-facing route. It is NOT triggered by any scheduler. Deploy is
+# blocked until Tracks B and C report verdicts.
+# ---------------------------------------------------------------------------
+
+STRUCTURE_BRIEF_TICKERS = ("IWM", "SPY", "QQQ")
+STRUCTURE_BRIEF_TFS = ("5m", "15m", "30m")
+STRUCTURE_BRIEF_ECE_CEILING = 0.05
+STRUCTURE_BRIEF_SCOPE_STATEMENT = (
+    "Calibrated structure prediction. Not a directional or P&L edge. "
+    "Use with discretion."
+)
+
+
+class StructureBriefClassProb(BaseModel):
+    cls: str  # one of "1", "2U", "2D", "3"
+    prob: float
+
+
+class StructureBriefCell(BaseModel):
+    ticker: str
+    timeframe: str
+    available: bool
+    top_class: Optional[str] = None
+    top_prob: Optional[float] = None
+    distribution: list[StructureBriefClassProb] = []
+    live_ece: Optional[float] = None
+    ece_ceiling: float = STRUCTURE_BRIEF_ECE_CEILING
+    muted: bool = False
+    mute_reason: Optional[str] = None
+    refreshed_at: Optional[str] = None  # ISO-8601 UTC
+    note: Optional[str] = None  # populated when available=false
+
+
+class StructureBriefResponse(BaseModel):
+    scope_statement: str = STRUCTURE_BRIEF_SCOPE_STATEMENT
+    cells: list[StructureBriefCell]
+    ece_ceiling: float = STRUCTURE_BRIEF_ECE_CEILING
+
+
+def _load_structure_brief_snapshot() -> Optional[dict]:
+    """Load the most recent structure-brief snapshot from GCS.
+
+    The snapshot is written by an upstream process that is OUT OF SCOPE for
+    Track A (it is part of the production pipeline blocked behind the
+    deploy gate). When the snapshot does not exist, each cell is returned
+    with available=False so the brief degrades gracefully.
+    """
+    bucket_name = os.environ.get(
+        "GCS_BUCKET", "adept-mountain-474619-d4-trading-data"
+    )
+    blob_path = "research/strat_engine/structure_brief_latest.json"
+    try:
+        from google.cloud import storage as gcs
+        client = gcs.Client()
+        blob = client.bucket(bucket_name).blob(blob_path)
+        if not blob.exists():
+            return None
+        import json as _json
+        return _json.loads(blob.download_as_bytes())
+    except Exception:
+        return None
+
+
+def _build_brief_cell(ticker: str, tf: str, snap: Optional[dict]) -> StructureBriefCell:
+    """Build one cell from a snapshot dict; return available=False when absent."""
+    if snap is None:
+        return StructureBriefCell(
+            ticker=ticker,
+            timeframe=tf,
+            available=False,
+            note=(
+                "No live snapshot available. Production data source is "
+                "blocked behind the Track B / Track C deploy gate."
+            ),
+        )
+    key = f"{ticker}_{tf}"
+    cell_data = snap.get("cells", {}).get(key)
+    if not cell_data:
+        return StructureBriefCell(
+            ticker=ticker,
+            timeframe=tf,
+            available=False,
+            note="Cell missing from snapshot.",
+        )
+    live_ece = cell_data.get("live_ece")
+    muted = False
+    mute_reason = None
+    if live_ece is not None and live_ece > STRUCTURE_BRIEF_ECE_CEILING:
+        muted = True
+        mute_reason = (
+            f"model muted, ECE breach (live ECE {live_ece:.3f} "
+            f"> ceiling {STRUCTURE_BRIEF_ECE_CEILING:.3f})"
+        )
+    dist = [
+        StructureBriefClassProb(cls=c, prob=float(p))
+        for c, p in cell_data.get("distribution", {}).items()
+    ]
+    if dist:
+        top = max(dist, key=lambda x: x.prob)
+        top_class = top.cls
+        top_prob = top.prob
+    else:
+        top_class = None
+        top_prob = None
+    return StructureBriefCell(
+        ticker=ticker,
+        timeframe=tf,
+        available=True,
+        top_class=None if muted else top_class,
+        top_prob=None if muted else top_prob,
+        distribution=[] if muted else dist,
+        live_ece=live_ece,
+        ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
+        muted=muted,
+        mute_reason=mute_reason,
+        refreshed_at=cell_data.get("refreshed_at"),
+    )
+
+
+@router.get("/structure-brief", response_model=StructureBriefResponse)
+async def admin_structure_brief(
+    request: Request, x_admin_token: Optional[str] = Header(None)
+):
+    """Dev-only readout of the strat-engine type model's structure predictions.
+
+    Dev-only: this endpoint sits behind the existing admin auth (IAP email
+    OR X-Admin-Token header). It is NOT wired into any user-facing route
+    and is NOT triggered by any scheduler.
+    """
+    _require_admin(request, x_admin_token)
+    snap = _load_structure_brief_snapshot()
+    cells = [
+        _build_brief_cell(ticker, tf, snap)
+        for ticker in STRUCTURE_BRIEF_TICKERS
+        for tf in STRUCTURE_BRIEF_TFS
+    ]
+    return StructureBriefResponse(
+        scope_statement=STRUCTURE_BRIEF_SCOPE_STATEMENT,
+        cells=cells,
+        ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strat-engine on-demand prediction — admin-gated single-bar prediction.
+#
+# Wraps `gcp.research.strat_engine.strat_pred_serve.predict_one`. The model
+# is FROZEN (calibration=none, 143-col enriched feature set). This endpoint
+# does not retrain. It loads the model.pkl from GCS and queries Cloud SQL
+# for the most recent labeled features.
+#
+# This endpoint is admin-gated. It is NOT wired into any user-facing route
+# and is NOT triggered by any scheduler. Production triggers are blocked
+# until a documented use case + a fresh validation pass land.
+# ---------------------------------------------------------------------------
+
+
+class StratEnginePredictRequest(BaseModel):
+    ticker: str
+    timeframe: str
+    as_of_timestamp: Optional[str] = None  # ISO-8601; defaults to latest
+
+
+class StratEnginePredictResponse(BaseModel):
+    ticker: str
+    timeframe: str
+    ts: Optional[str] = None  # bar timestamp the prediction was based on
+    available: bool
+    top_class: Optional[str] = None
+    top_prob: Optional[float] = None
+    class_probs: dict = {}
+    model_version: Optional[str] = None
+    last_train_date: Optional[str] = None
+    live_ece: Optional[float] = None
+    muted: bool = False
+    mute_reason: Optional[str] = None
+    scope_statement: str
+    note: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Strat-engine model state — read-only per-cell artifact metadata.
+#
+# Powers the admin-side Model State Snapshot card. Identical data shape to
+# the inline HTML section at /dev, but returned as JSON for the React UI.
+# ---------------------------------------------------------------------------
+
+
+class StratEngineCellState(BaseModel):
+    ticker: str
+    timeframe: str
+    available: bool
+    model_version: Optional[str] = None
+    last_train_date: Optional[str] = None
+    live_ece: Optional[float] = None
+
+
+class StratEngineStateResponse(BaseModel):
+    cells: list[StratEngineCellState]
+    ece_ceiling: float = STRUCTURE_BRIEF_ECE_CEILING
+
+
+def _strat_engine_state_cells() -> list[StratEngineCellState]:
+    """Read each deployed cell's metrics.json + live-ECE snapshot from GCS.
+
+    Best-effort: any cell whose metadata can't be loaded returns
+    available=False. The Cloud Run image is responsible for having
+    google-cloud-storage available (platform/Dockerfile installs it).
+
+    `available=True` requires the top-level `model.pkl` pointer to exist —
+    that's the artifact the predict endpoint actually serves. The Stage 4
+    trainer writes a `metrics_<epoch>.json` for EVERY run including
+    diagnostic/variant runs, but only LOCKED-default runs update the
+    top-level `model.pkl`. So "metrics file exists" ≠ "served model exists";
+    we anchor availability + metadata on `model.pkl` and match metrics to
+    the served model by epoch proximity to its mtime.
+    """
+    rows: list[StratEngineCellState] = []
+    try:
+        from google.cloud import storage as _gcs
+    except ImportError:
+        return rows
+    bucket_name = os.environ.get(
+        "GCS_BUCKET", "adept-mountain-474619-d4-trading-data"
+    )
+    try:
+        client = _gcs.Client()
+        bucket = client.bucket(bucket_name)
+    except Exception:
+        return rows
+
+    import json as _json
+    snap_cells: dict = {}
+    try:
+        snap_blob = bucket.blob("research/strat_engine/structure_brief_latest.json")
+        if snap_blob.exists():
+            snap_cells = _json.loads(snap_blob.download_as_bytes()).get("cells", {})
+    except Exception:
+        snap_cells = {}
+
+    for ticker in STRUCTURE_BRIEF_TICKERS:
+        for tf in STRUCTURE_BRIEF_TFS:
+            prefix = f"research/strat_engine/{ticker.lower()}_{tf}"
+            row = StratEngineCellState(
+                ticker=ticker, timeframe=tf, available=False,
+            )
+            # Production pointer check — this is the served artifact. If
+            # it doesn't exist, the cell is genuinely unavailable; any
+            # metrics_<epoch>.json present here would be from a diagnostic
+            # run that did NOT update the served model.
+            try:
+                model_blob = bucket.blob(f"{prefix}/model.pkl")
+                model_blob.reload()
+                model_mtime = model_blob.updated  # raises if blob missing
+            except Exception:
+                rows.append(row)
+                continue
+
+            row.available = True
+            # Match the metrics file to the served model by picking the
+            # one whose epoch (encoded in filename) is closest to
+            # model.pkl's mtime. Variant runs that wrote metrics after
+            # the locked-default model.pkl was written will not be the
+            # closest match, so they don't poison the metadata report.
+            try:
+                import re as _re
+                model_epoch = int(model_mtime.timestamp())
+                best = None
+                best_delta: Optional[int] = None
+                for b in client.list_blobs(bucket, prefix=f"{prefix}/metrics_"):
+                    if not b.name.endswith(".json"):
+                        continue
+                    m = _re.search(r"/metrics_(\d{8,})\.json$", b.name)
+                    if not m:
+                        continue
+                    epoch = int(m.group(1))
+                    delta = abs(epoch - model_epoch)
+                    if best_delta is None or delta < best_delta:
+                        best = b
+                        best_delta = delta
+                if best is not None:
+                    metrics = _json.loads(best.download_as_bytes())
+                    row.model_version = (
+                        metrics.get("run_id")
+                        or metrics.get("config_signature")
+                        or metrics.get("model_version")
+                    )
+                    if row.model_version is None:
+                        m = _re.search(r"/metrics_(\d{8,})\.json$", best.name)
+                        if m:
+                            row.model_version = f"epoch-{m.group(1)}"
+                    row.last_train_date = (
+                        metrics.get("trained_at")
+                        or metrics.get("computed_at")
+                        or metrics.get("train_until")
+                    )
+                # Fall back to model.pkl mtime if no metrics matched
+                if row.last_train_date is None:
+                    row.last_train_date = model_mtime.isoformat()
+                if row.model_version is None:
+                    row.model_version = f"epoch-{model_epoch}"
+            except Exception:
+                pass
+
+            ece = snap_cells.get(f"{ticker}_{tf}", {}).get("live_ece")
+            if ece is not None:
+                row.live_ece = float(ece)
+            rows.append(row)
+    return rows
+
+
+@router.get("/strat-engine/state", response_model=StratEngineStateResponse)
+async def admin_strat_engine_state(
+    request: Request, x_admin_token: Optional[str] = Header(None)
+):
+    """Operator snapshot of the on-shelf strat-engine model state.
+
+    Read-only: lists per-cell `model_version`, `last_train_date`, and
+    `live_ece` for each deployed (ticker, timeframe). No model is loaded,
+    no Cloud SQL query happens — this is GCS metadata only.
+    """
+    _require_admin(request, x_admin_token)
+    return StratEngineStateResponse(
+        cells=_strat_engine_state_cells(),
+        ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
+    )
+
+
+@router.post(
+    "/strat-engine/predict",
+    response_model=StratEnginePredictResponse,
+)
+async def admin_strat_engine_predict(
+    body: StratEnginePredictRequest,
+    request: Request,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Run the frozen strat-engine type model for ONE bar.
+
+    Body:
+      { ticker: "IWM", timeframe: "15m", as_of_timestamp: "..." (optional) }
+
+    Returns the 4-class distribution + metadata. When the rolling live
+    ECE exceeds the per-cell ceiling, the prediction is muted (top_class
+    null, mute_reason populated).
+    """
+    _require_admin(request, x_admin_token)
+
+    ticker = body.ticker.upper().strip()
+    tf = body.timeframe.strip()
+    if ticker not in STRUCTURE_BRIEF_TICKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ticker must be one of {STRUCTURE_BRIEF_TICKERS}; got {ticker!r}",
+        )
+    if tf not in STRUCTURE_BRIEF_TFS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"timeframe must be one of {STRUCTURE_BRIEF_TFS}; got {tf!r}",
+        )
+
+    # Lazy-import the predict path so the API container doesn't have
+    # lightgbm + scikit-learn loaded into memory unless this endpoint
+    # is actually hit. Heavy module-load only when needed.
+    from gcp.database import get_engine  # noqa: PLC0415
+    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+    import pandas as _pd  # noqa: PLC0415
+
+    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
+    engine = get_engine()
+    result = predict_one(engine, ticker, tf, as_of=as_of)
+    return StratEnginePredictResponse(**result)

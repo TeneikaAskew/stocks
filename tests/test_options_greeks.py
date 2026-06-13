@@ -19,12 +19,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Skip the math-heavy tests if the optional dependency isn't installed.
-py_vollib_vectorized = pytest.importorskip(
-    "py_vollib_vectorized",
-    reason="py_vollib_vectorized not installed — install with "
-           "`pip install py_vollib_vectorized` before running these tests.",
-)
+# DO NOT importorskip py_vollib_vectorized here. lib/options_greeks no
+# longer uses it (replaced with scipy on 2026-05-31 after py_vollib_vectorized's
+# numba decoration started failing with "cannot type infer runaway recursion"
+# on the current numba version). Importing py_vollib_vectorized at all in
+# this process monkey-patches py_vollib.black_scholes_merton globally and
+# breaks the _bsm_price helper below. The test now requires only scipy +
+# py_vollib (the unpatched plain-Python library), both standard deps.
 
 from lib.options_greeks import (
     COMPUTE_GREEKS_TICKERS,

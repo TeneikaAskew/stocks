@@ -17,7 +17,228 @@ from lib.indicators import (
     calculate_consecutive_moves,
     calculate_historical_levels,
     add_all_indicators,
+    add_signal_indicators,
+    add_brief_indicators,
+    select_features,
+    FEATURE_GROUPS,
 )
+
+
+# Pinned snapshot of the 83 indicator columns add_all_indicators emits (beyond
+# the 6 OHLCV/Time source columns) under the default IndicatorConfig. This is
+# the byte-identical contract ~25 callers + an in-flight backfill depend on; if
+# this list changes, the change to add_all_indicators was NOT a pure refactor.
+_PINNED_ADD_ALL_COLUMNS = {
+    'ATR14', 'ATR20', 'ATR_Expansion', 'BB_Lower', 'BB_Middle', 'BB_Pct',
+    'BB_Squeeze', 'BB_Upper', 'BB_Width', 'Close_vs_Range', 'Consecutive_Down',
+    'Consecutive_Down_5', 'Consecutive_Up', 'Consecutive_Up_5', 'Daily_Range',
+    'Daily_Range_Pct', 'EMA20', 'EMA50', 'EMA9', 'EMA9_Slope', 'EMA_Spread_ATR',
+    'MACD', 'MACD_Histogram', 'MACD_Signal', 'Mins_Since_Open', 'OBV',
+    'ORB_15m_Broke_High', 'ORB_15m_Broke_Low', 'ORB_15m_Distance', 'ORB_15m_High',
+    'ORB_15m_High_Pct', 'ORB_15m_Low', 'ORB_15m_Low_Pct', 'ORB_15m_Mid',
+    'ORB_15m_Mid_Pct', 'ORB_15m_Range', 'ORB_15m_Trend', 'ORB_15m_Within_Range',
+    'ORB_30m_Broke_High', 'ORB_30m_Broke_Low', 'ORB_30m_Distance', 'ORB_30m_High',
+    'ORB_30m_High_Pct', 'ORB_30m_Low', 'ORB_30m_Low_Pct', 'ORB_30m_Mid',
+    'ORB_30m_Mid_Pct', 'ORB_30m_Range', 'ORB_30m_Trend', 'ORB_30m_Within_Range',
+    'ORB_5m_Broke_High', 'ORB_5m_Broke_Low', 'ORB_5m_Distance', 'ORB_5m_High',
+    'ORB_5m_High_Pct', 'ORB_5m_Low', 'ORB_5m_Low_Pct', 'ORB_5m_Mid',
+    'ORB_5m_Mid_Pct', 'ORB_5m_Range', 'ORB_5m_Trend', 'ORB_5m_Within_Range',
+    'Price_Change', 'Price_vs_EMA20', 'Price_vs_EMA20_ATR', 'Price_vs_EMA9',
+    'Price_vs_EMA9_ATR', 'Price_vs_VWAP', 'Price_vs_VWAP_ATR', 'RSI14', 'RSI30',
+    'RSI9', 'RSI_Divergence', 'RSI_Thrust_3', 'RVOL', 'RVol_Recent_20',
+    'Realized_Vol_Short', 'SMA10', 'SMA20', 'SMA200', 'SMA5', 'SMA50',
+    'StochRSI_D', 'StochRSI_K', 'VWAP',
+    # Added on main (merged 2026-05-31): snake_case SQL-writer aliases +
+    # annualised historical volatility periods.
+    'high_low_spread', 'high_low_spread_pct', 'volatility_5d', 'volatility_20d',
+    # Magnitude-engine volatility-expansion block (migrated 2026-06-01 from the
+    # inline mag_dataset._add_phase1_features). Intraday-only / Time-gated.
+    'BB20_Bandwidth', 'Realized_Vol_Z', 'Range_Expansion_Ratio',
+    'Intraday_Range_vs_PrevDay',
+}
+_SOURCE_COLUMNS = {'Time', 'Open', 'High', 'Low', 'Close', 'Volume'}
+
+
+def _two_session_ohlcv(seed=42, n_per=120):
+    """Two RTH sessions of 1-min bars WITH a Time column (so VWAP/ORB fire)."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for i, day in enumerate(['2024-01-02', '2024-01-03']):
+        steps = rng.normal(0, 0.0008, n_per)
+        close = 200.0 * np.exp(np.cumsum(steps))
+        high = close * (1 + np.abs(rng.normal(0, 0.0005, n_per)))
+        low = close * (1 - np.abs(rng.normal(0, 0.0005, n_per)))
+        open_ = close * (1 + rng.normal(0, 0.0003, n_per))
+        vol = rng.integers(1_000, 50_000, n_per).astype(float)
+        times = pd.date_range(f'{day} 09:30', periods=n_per, freq='1min')
+        frames.append(pd.DataFrame(
+            {'Time': times, 'Open': open_, 'High': high, 'Low': low,
+             'Close': close, 'Volume': vol}, index=times))
+    return pd.concat(frames)
+
+
+class TestFeatureTiering:
+    """Pure-refactor parity + leanness contract for the capability tiers."""
+
+    def test_add_all_indicators_column_set_unchanged(self):
+        df = _two_session_ohlcv()
+        out = add_all_indicators(df)
+        new = set(out.columns) - _SOURCE_COLUMNS
+        assert new == _PINNED_ADD_ALL_COLUMNS, (
+            "add_all_indicators output changed — refactor was not byte-identical.\n"
+            f"  added: {sorted(new - _PINNED_ADD_ALL_COLUMNS)}\n"
+            f"  removed: {sorted(_PINNED_ADD_ALL_COLUMNS - new)}"
+        )
+        # 6 source + 93 indicators = 99 total. +4 over the post-merge 95 from
+        # the 2026-06-01 magnitude block (BB20_Bandwidth, Realized_Vol_Z,
+        # Range_Expansion_Ratio, Intraday_Range_vs_PrevDay).
+        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 99
+
+    def test_feature_groups_keys_and_membership(self):
+        assert set(FEATURE_GROUPS) == {'signal', 'brief', 'regime', 'strat', 'magnitude'}
+        # Every signal/brief/magnitude column is a real add_all_indicators output.
+        for cap in ('signal', 'brief', 'magnitude'):
+            for col in FEATURE_GROUPS[cap]:
+                assert col in _PINNED_ADD_ALL_COLUMNS, f"{cap} col {col} not produced"
+
+    def test_magnitude_block_matches_inline_reference(self):
+        """The 4 migrated magnitude features must equal the old inline
+        mag_dataset._add_phase1_features math at 0.0 max-abs-diff. This pins the
+        migration as a pure move (no silent behaviour change for the magnitude
+        engine), the same parity contract the signal/brief tiers carry."""
+        df = _two_session_ohlcv(seed=5)
+        out = add_all_indicators(df)
+        d = out.copy()
+        sess = pd.to_datetime(d['Time']).dt.date
+        h, l, c = d['High'], d['Low'], d['Close']
+        prev_c = c.groupby(sess).shift(1)
+        # BB20 bandwidth
+        bb_ref = np.where(c.notna() & (c != 0),
+                          (d['BB_Upper'] - d['BB_Lower']) / c, np.nan)
+        # Realized-vol z (15/60, session-grouped)
+        logret = np.log(c / prev_c)
+        rv15 = logret.groupby(sess).rolling(15).std().reset_index(level=0, drop=True)
+        rv_mu = rv15.groupby(sess).rolling(60).mean().reset_index(level=0, drop=True)
+        rv_sd = rv15.groupby(sess).rolling(60).std().reset_index(level=0, drop=True)
+        rvz_ref = np.where(rv_sd.notna() & (rv_sd > 0), (rv15 - rv_mu) / rv_sd, np.nan)
+        # Range expansion (prior-5 mean, session-grouped)
+        rng = h - l
+        avg5 = (rng.groupby(sess).shift(1).groupby(sess).rolling(5).mean()
+                   .reset_index(level=0, drop=True))
+        rer_ref = np.where(avg5.notna() & (avg5 > 0), rng / avg5, np.nan)
+        for col, ref in [('BB20_Bandwidth', bb_ref),
+                         ('Realized_Vol_Z', rvz_ref),
+                         ('Range_Expansion_Ratio', rer_ref)]:
+            np.testing.assert_allclose(
+                out[col].to_numpy(dtype=float), np.asarray(ref, dtype=float),
+                equal_nan=True, atol=0.0, err_msg=f"magnitude parity broke on {col}")
+
+    def test_magnitude_features_time_gated(self):
+        """Magnitude block is intraday-only — absent without a Time column."""
+        n = 60
+        close = pd.Series(np.linspace(100, 105, n))
+        df = pd.DataFrame({'Open': close * 0.999, 'High': close * 1.001,
+                           'Low': close * 0.998, 'Close': close,
+                           'Volume': np.full(n, 1e4)})
+        out = add_all_indicators(df)
+        for col in ('BB20_Bandwidth', 'Realized_Vol_Z', 'Range_Expansion_Ratio',
+                    'Intraday_Range_vs_PrevDay'):
+            assert col not in out.columns, f"{col} should be Time-gated out"
+
+    def test_signal_tier_parity_zero_diff(self):
+        df = _two_session_ohlcv(seed=7)
+        full = add_all_indicators(df)
+        lean = add_signal_indicators(df)
+        for col in FEATURE_GROUPS['signal']:
+            assert col in lean.columns, f"signal tier missing {col}"
+            np.testing.assert_allclose(
+                lean[col].to_numpy(dtype=float),
+                full[col].to_numpy(dtype=float),
+                equal_nan=True, atol=0.0,
+                err_msg=f"signal-tier parity broke on {col}")
+
+    def test_brief_tier_parity_zero_diff(self):
+        df = _two_session_ohlcv(seed=9)
+        full = add_all_indicators(df)
+        lean = add_brief_indicators(df)
+        for col in FEATURE_GROUPS['brief']:
+            assert col in lean.columns, f"brief tier missing {col}"
+            np.testing.assert_allclose(
+                lean[col].to_numpy(dtype=float),
+                full[col].to_numpy(dtype=float),
+                equal_nan=True, atol=0.0,
+                err_msg=f"brief-tier parity broke on {col}")
+
+    def test_signal_tier_is_lean(self):
+        """Proves the lean path skips the heavy ORB / SMA blocks."""
+        df = _two_session_ohlcv()
+        lean = add_signal_indicators(df)
+        assert not any(c.startswith('ORB_') for c in lean.columns)
+        assert not any(c.startswith('SMA') for c in lean.columns)
+        # promoted-regime + bollinger blocks skipped too
+        assert 'BB_Upper' not in lean.columns
+        assert 'Realized_Vol_Short' not in lean.columns
+
+    def test_brief_tier_is_lean(self):
+        df = _two_session_ohlcv()
+        lean = add_brief_indicators(df)
+        # Skips the heavy ORB / promoted-regime blocks and the unread RVOL/OBV.
+        assert not any(c.startswith('ORB_') for c in lean.columns)
+        assert 'Realized_Vol_Short' not in lean.columns
+        assert 'RVOL' not in lean.columns
+        assert 'OBV' not in lean.columns
+        # But VWAP + Price_vs_VWAP MUST be produced: check_call/put_conditions
+        # score on Price_vs_VWAP, so dropping these silently changes the brief's
+        # published signal_status (regression caught in review 2026-05-31).
+        assert 'VWAP' in lean.columns
+        assert 'Price_vs_VWAP' in lean.columns
+
+    def test_brief_tier_matches_full_on_daily_sql_passthrough(self):
+        """Daily Cloud-SQL frames arrive WITH a pre-existing intraday
+        ``Price_vs_VWAP`` column AND a Time column. The brief must treat that
+        frame byte-identically to add_all_indicators: because Time is present,
+        both recompute a degenerate daily VWAP and OVERWRITE the inbound
+        price_vs_vwap. If add_brief_indicators skipped the VWAP/price-levels
+        blocks, the stale SQL value would survive and flip the brief's
+        below_vwap/above_vwap scoring. This is the case the intraday parity
+        fixture did not cover."""
+        n = 40
+        rng = np.random.RandomState(3)
+        close = pd.Series(100 + np.cumsum(rng.normal(0, 0.5, n)))
+        df = pd.DataFrame({
+            'Time': pd.date_range('2026-04-01', periods=n, freq='D'),
+            'Open': close.shift(1).fillna(close.iloc[0]),
+            'High': close + 0.5, 'Low': close - 0.5, 'Close': close,
+            'Volume': rng.randint(1e6, 5e6, n).astype(float),
+            # Pre-existing intraday-session value from SQL (alias of price_vs_vwap).
+            'Price_vs_VWAP': rng.normal(-1.0, 0.5, n),
+        })
+        full = add_all_indicators(df.copy(), close_col='Close')
+        brief = add_brief_indicators(df.copy(), close_col='Close')
+        # Both must overwrite the inbound Price_vs_VWAP with the daily recompute,
+        # to the exact same values — no stale-SQL passthrough divergence.
+        np.testing.assert_allclose(
+            pd.to_numeric(brief['Price_vs_VWAP'], errors='coerce').to_numpy(),
+            pd.to_numeric(full['Price_vs_VWAP'], errors='coerce').to_numpy(),
+            equal_nan=True, atol=0.0,
+            err_msg='brief diverged from full engine on daily-SQL Price_vs_VWAP',
+        )
+
+    def test_select_features_tolerates_time_gated_absence(self):
+        """No Time → VWAP absent; select_features must not KeyError."""
+        n = 60
+        close = pd.Series(np.linspace(100, 105, n))
+        df = pd.DataFrame({
+            'Open': close * 0.999, 'High': close * 1.001, 'Low': close * 0.998,
+            'Close': close,
+            'Volume': np.random.RandomState(0).randint(1e3, 1e4, n).astype(float),
+        })
+        lean = add_signal_indicators(df)
+        sel = select_features(lean, 'signal')
+        assert 'VWAP' not in sel.columns       # Time-gated, legitimately absent
+        assert 'RSI14' in sel.columns
+        with pytest.raises(KeyError):
+            select_features(lean, 'nonsense')
 
 
 class TestWilderMA:
@@ -154,6 +375,39 @@ class TestAddAllIndicators:
         assert 'MACD' in result.columns
         assert 'Consecutive_Up' in result.columns
 
+    def test_emits_secondary_atr_rsi_volatility_and_spread(self, sample_ohlcv):
+        """Regression guard for the 2026-05-27 silent-NaN fix:
+        ATR20, RSI30, volatility_5d, volatility_20d, high_low_spread,
+        and high_low_spread_pct must be produced by default. Pre-fix,
+        each was declared in market_data_daily but never computed —
+        every row shipped NaN in those columns.
+        """
+        result = add_all_indicators(sample_ohlcv)
+        for col in (
+            'ATR20', 'RSI30',
+            'volatility_5d', 'volatility_20d',
+            'high_low_spread', 'high_low_spread_pct',
+        ):
+            assert col in result.columns, f"{col} missing from add_all_indicators output"
+            # At least one non-NaN value must exist on a >20-bar sample.
+            assert result[col].notna().any(), f"{col} is all-NaN — computation never ran"
+
+    def test_daily_indicator_to_sql_column_covers_new_cols(self, sample_ohlcv):
+        """Every key in DAILY_INDICATOR_TO_SQL_COLUMN must resolve to a
+        real column in add_all_indicators output. Pre-fix, ATR20/RSI30/
+        volatility_5d/high_low_spread{,_pct} keys were missing, so the
+        SQL columns shipped NaN. This test pins the mapping ↔ producer
+        contract so a future rename can't silently break it.
+        """
+        from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN
+        result = add_all_indicators(sample_ohlcv)
+        missing = [src for src in DAILY_INDICATOR_TO_SQL_COLUMN
+                   if src not in result.columns]
+        assert not missing, (
+            f"DAILY_INDICATOR_TO_SQL_COLUMN references columns not produced "
+            f"by add_all_indicators: {missing}"
+        )
+
     def test_orb_columns_present_when_time_exists(self, sample_ohlcv):
         """add_all_indicators should produce ORB columns when Time column exists."""
         result = add_all_indicators(sample_ohlcv)
@@ -191,6 +445,47 @@ class TestAddAllIndicators:
         assert actual_values.issubset(valid_values), (
             f"ORB_5m_Trend contains unexpected values: {actual_values - valid_values}"
         )
+
+    # ── Promoted volatility-regime / momentum-velocity features (2026-05-31) ──
+    def test_promoted_features_present(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        for col in ['Realized_Vol_Short', 'Mins_Since_Open', 'Price_vs_EMA9_ATR',
+                    'Price_vs_EMA20_ATR', 'Price_vs_VWAP_ATR', 'EMA_Spread_ATR',
+                    'EMA9_Slope', 'BB_Squeeze', 'RSI_Divergence']:
+            assert col in result.columns, f"promoted feature missing: {col}"
+
+    def test_mins_since_open_first_rth_bar_is_zero(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        # sample_ohlcv starts at the 09:30 open per the fixture.
+        first = pd.to_datetime(result['Time']).iloc[0]
+        if first.hour == 9 and first.minute == 30:
+            assert result['Mins_Since_Open'].iloc[0] == 0.0
+
+    def test_promoted_features_absent_pieces_without_time(self):
+        """No Time → no Mins_Since_Open (parity with ORB guard)."""
+        n = 60
+        close = pd.Series(np.linspace(100, 105, n))
+        df = pd.DataFrame({
+            'Open': close * 0.999, 'High': close * 1.001, 'Low': close * 0.998,
+            'Close': close, 'Volume': np.random.RandomState(0).randint(1e3, 1e4, n).astype(float),
+        })
+        result = add_all_indicators(df)
+        assert 'Mins_Since_Open' not in result.columns
+        # ATR-based ones still computed (no Time needed)
+        assert 'Realized_Vol_Short' in result.columns
+
+    def test_rsi_divergence_equals_fast_minus_slow(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        expected = result['RSI9'] - result['RSI14']
+        pd.testing.assert_series_equal(
+            result['RSI_Divergence'], expected, check_names=False)
+
+    def test_atr_normalised_distance_matches_formula(self, sample_ohlcv):
+        result = add_all_indicators(sample_ohlcv)
+        atr = result['ATR14']
+        expected = (result['Close'] - result['VWAP']) / atr.where(atr.abs() > 0, np.nan)
+        pd.testing.assert_series_equal(
+            result['Price_vs_VWAP_ATR'], expected, check_names=False)
 
     def test_orb_custom_windows(self):
         """add_all_indicators with custom orb_windows should produce matching columns."""
@@ -263,3 +558,73 @@ class TestHistoricalLevels:
         ts = pd.to_datetime(times)
         is_q1 = ts.dt.to_period('Q') == ts.dt.to_period('Q').iloc[0]
         assert result.loc[is_q1.values, 'Prev_Quarter_High'].isna().all()
+
+
+# ── EMA200 config wiring (2026-06-07 column audit, family C) ─────────────────
+# The strat_features builder lists `ema_200` in NUMERIC_FEATURES but called
+# add_all_indicators with the default IndicatorConfig (ema_periods=[9,20,50]),
+# so EMA200 was never produced → the column was 100% NaN (dead feature). The
+# builder now passes a config including 200. These pin both halves of that.
+class TestEMA200ConfigWiring:
+    def test_ema200_absent_under_default_config(self):
+        """Documents the bug: default config does NOT produce EMA200."""
+        from lib.indicators import add_all_indicators
+        out = add_all_indicators(_two_session_ohlcv(n_per=150))
+        assert "EMA200" not in out.columns
+
+    def test_ema200_produced_when_200_in_periods(self):
+        """The builder's fix: ema_periods including 200 → EMA200 computed + finite."""
+        from lib.indicators import add_all_indicators
+        from lib.config import IndicatorConfig
+        cfg = IndicatorConfig()
+        cfg.ema_periods = [9, 20, 50, 200]
+        out = add_all_indicators(_two_session_ohlcv(n_per=150),
+                                 indicator_config=cfg)
+        assert "EMA200" in out.columns
+        assert pd.notna(out["EMA200"].iloc[-1])
+        # fast/mid unchanged (so Price_vs_EMA9/20 etc. are unaffected)
+        assert "EMA9" in out.columns and "EMA20" in out.columns
+
+
+# ── realized_vol_zscore: shared one-source-of-truth helper (wired 2026-06-08) ──
+def _multiday_ohlcv(n_days=12, bars_per_day=26, seed=7):
+    """N days of `bars_per_day` bars (default 26 ≈ a 15m RTH session)."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    base = pd.Timestamp('2024-01-02 09:30')
+    for d in range(n_days):
+        day = (base + pd.Timedelta(days=d)).normalize() + pd.Timedelta(hours=9, minutes=30)
+        steps = rng.normal(0, 0.001, bars_per_day)
+        close = 200.0 * np.exp(np.cumsum(steps))
+        times = pd.date_range(day, periods=bars_per_day, freq='15min')
+        frames.append(pd.DataFrame({'Close': close}, index=times))
+    df = pd.concat(frames)
+    return df
+
+
+class TestRealizedVolZScore:
+    def test_within_day_rv_warmup(self):
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv()
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert len(z) == len(df)
+        # first bar of each day has no within-day prior return -> NaN
+        assert pd.isna(z.iloc[0])
+
+    def test_populated_on_low_bars_per_day_tf(self):
+        """The 2026-06-08 fix: ~26 bars/day (15m-like) must NOT be all-NaN.
+        The old within-day z-window(60) could never fill on <60 bars/day."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=26)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() > 0  # would be 0 under the old within-day formula
+
+    def test_coarse_tf_below_rv_window_is_all_nan(self):
+        """rv needs >= rv_window bars/day; e.g. 8 bars/day < 15 -> genuinely NULL."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=8)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() == 0  # genuine missingness (not a bug)

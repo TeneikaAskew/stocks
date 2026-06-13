@@ -258,6 +258,27 @@ def _coerce_int_columns(df: pd.DataFrame, tbl) -> pd.DataFrame:
     return df
 
 
+def _na_to_none_records(records: list[dict]) -> list[dict]:
+    """Coerce pandas NA scalars (NaN / NaT) in row dicts to None so they bind as
+    SQL NULL — NOT a float8 'NaN' literal. A NaN written into a float8 column is a
+    valid, non-NULL value that silently breaks `WHERE col IS NULL` checks
+    downstream (CLAUDE.md §3.7 — the same class of bug as the 2026-06-07 audit
+    found in flip_price / distance_to_king_pct / distance_to_gate_pct, 56.7% of
+    flip_price rows stored as NaN instead of NULL).
+
+    Complements `_coerce_int_columns` (which already maps NaN→None for INT-family
+    columns) by covering FLOAT / other columns, for ALL `upsert_dataframe`
+    callers. The COPY fast path (`bulk_copy_upsert`) already renders NaN as the
+    CSV NULL token; this closes the pg8000 bind fallback path.
+    """
+    def _fix(v):
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v  # non-scalar (list/array) — leave as-is
+    return [{k: _fix(v) for k, v in r.items()} for r in records]
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -336,7 +357,11 @@ def upsert_dataframe(
     # is actually preferable — partial progress is durable on crash.
     # Cost: ~5 ms per checkout × N chunks.
     for i in range(0, len(records), effective_chunksize):
-        batch = records[i: i + effective_chunksize]
+        # NaN/NaT → None PER CHUNK so they bind as SQL NULL, not a float8 'NaN'
+        # (§3.7). Done per-chunk (not on the whole frame up front) so a large
+        # table — e.g. strat_features_1m at ~1M rows — doesn't double its memory
+        # and OOM (the bug that killed the 2026-06-08 SPY rebuild).
+        batch = _na_to_none_records(records[i: i + effective_chunksize])
         stmt = pg_insert(tbl).values(batch)
 
         if update_cols:
@@ -353,6 +378,194 @@ def upsert_dataframe(
 
     logger.info("Upserted %d rows into %s", total, table)
     return total
+
+
+def bulk_copy_upsert(
+    df: pd.DataFrame,
+    table: str,
+    conflict_cols: List[str],
+    update_cols: Optional[List[str]] = None,
+) -> int:
+    """Fast bulk upsert via psycopg2 COPY FROM STDIN → temp table → INSERT ... ON CONFLICT.
+
+    10-30× faster than `upsert_dataframe()` (which uses pg8000 per-row binds)
+    for large DataFrames. Uses the same Cloud SQL Connector but with the
+    psycopg2 driver path. Falls back to `upsert_dataframe()` if psycopg2
+    isn't installed or the COPY path errors.
+
+    Implementation:
+      1. Open psycopg2 connection via Cloud SQL Connector
+      2. CREATE TEMPORARY TABLE matching target schema
+      3. COPY FROM STDIN (CSV) into temp — single binary stream, no per-row
+         binds, no parameter-count limit
+      4. INSERT INTO target SELECT * FROM temp ON CONFLICT DO UPDATE
+      5. Drop temp (implicit on connection close)
+
+    Why this matters: pg8000's bind-param limit caps row throughput at
+    ~890 rows per round-trip. With a ~1M row 1-min bar table that's
+    1,124 round-trips × 1-2s each = 20-40 min per upsert. COPY does the
+    same volume in ~30s.
+    """
+    if df.empty:
+        return 0
+
+    try:
+        import psycopg2
+    except ImportError:
+        logger.warning("psycopg2 not installed — falling back to upsert_dataframe()")
+        return upsert_dataframe(df, table, conflict_cols, update_cols)
+
+    # Reflect target columns first so we drop extra DataFrame cols (same
+    # safety check as upsert_dataframe) before COPY.
+    import sqlalchemy
+    engine = get_engine()
+    meta = sqlalchemy.MetaData()
+    meta.reflect(bind=engine, only=[table])
+    tbl = meta.tables[table]
+    table_col_names = {col.name for col in tbl.columns}
+    dropped = [c for c in df.columns if c not in table_col_names]
+    if dropped:
+        logger.warning("bulk_copy_upsert(%s): dropping %d cols not in schema: %s",
+                        table, len(dropped), dropped[:5])
+    df = df[[c for c in df.columns if c in table_col_names]].copy()
+
+    cols = list(df.columns)
+    if update_cols is None:
+        update_cols = [c for c in cols if c not in conflict_cols]
+
+    # Use pg8000's native COPY support via the existing Cloud SQL engine.
+    # google-cloud-sql-python-connector only supports pg8000/asyncpg drivers
+    # (not psycopg2), so we route COPY through pg8000.copy_from on the raw
+    # connection. Much simpler than swapping drivers.
+    try:
+        engine = get_engine()
+        raw_conn = engine.raw_connection()
+    except Exception as e:
+        logger.warning("bulk_copy_upsert(%s): raw_connection failed (%s); fallback", table, e)
+        return upsert_dataframe(df, table, conflict_cols, update_cols)
+
+    try:
+        import uuid, io
+        temp_name = f"tmp_upsert_{table}_{uuid.uuid4().hex[:8]}"
+
+        # pg8000 has NO psycopg2-style cur.copy_from(); its native COPY is
+        # cur.execute("COPY ... FROM STDIN WITH (FORMAT CSV ...)", stream=sio).
+        # Use real CSV (quoted) so embedded commas/newlines are safe; NULLs as
+        # an explicit sentinel via the CSV NULL option.
+        sio = io.StringIO()
+        df.to_csv(sio, index=False, header=False, na_rep='\\N')
+        sio.seek(0)
+
+        # pg8000's cursor does NOT have copy_from (that is psycopg2's API — the
+        # prior code silently failed every call and fell back to the slow
+        # upsert_dataframe, defeating this fast path and reintroducing the
+        # float8-NaN write bug). pg8000 does COPY via execute(..., stream=...).
+        cur = raw_conn.cursor()
+        try:
+            cur.execute(
+                f"CREATE TEMPORARY TABLE {temp_name} (LIKE {table} INCLUDING DEFAULTS) "
+                f"ON COMMIT DROP"
+            )
+
+            col_list_copy = ", ".join(f'"{c}"' for c in cols)
+            cur.execute(
+                f"COPY {temp_name} ({col_list_copy}) FROM STDIN "
+                f"WITH (FORMAT CSV, NULL '\\N')",
+                stream=sio,
+            )
+            copied = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(df)
+            col_list = ", ".join(f'"{c}"' for c in cols)
+
+            conflict_clause = ", ".join(f'"{c}"' for c in conflict_cols)
+            update_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
+            cur.execute(
+                f"INSERT INTO {table} ({col_list}) "
+                f"SELECT {col_list} FROM {temp_name} "
+                f"ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}"
+            )
+            upserted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else copied
+        finally:
+            try: cur.close()
+            except Exception: pass
+
+        raw_conn.commit()
+        logger.info("bulk_copy_upsert(%s): COPY'd %d rows, upserted %d",
+                     table, copied, upserted)
+        return upserted
+    except Exception as e:
+        try: raw_conn.rollback()
+        except Exception: pass
+        logger.warning("bulk_copy_upsert(%s) COPY path failed (%s); fallback to upsert_dataframe",
+                        table, e)
+        return upsert_dataframe(df, table, conflict_cols, update_cols)
+    finally:
+        try: raw_conn.close()
+        except Exception: pass
+
+
+def bulk_copy_update(
+    df: pd.DataFrame,
+    table: str,
+    key_cols: List[str],
+    update_cols: List[str],
+) -> int:
+    """Bulk UPDATE-only of `update_cols` on existing rows, keyed by `key_cols`.
+
+    Unlike bulk_copy_upsert this NEVER inserts: it COPYs (keys + update_cols)
+    into a temp table, then `UPDATE target SET col=t.col FROM temp WHERE keys
+    match`. Use when you are backfilling a column SUBSET on rows that already
+    exist and the target has NOT-NULL columns you are deliberately not touching
+    (an INSERT...ON CONFLICT would still validate NOT-NULL on the insert attempt
+    and fail). Rows present in `df` but absent in `target` are silently ignored
+    (no insert). Idempotent. Falls back to a pg8000 per-row UPDATE on COPY error.
+    """
+    df = df[[c for c in df.columns if c in (set(key_cols) | set(update_cols))]].copy()
+    cols = list(df.columns)
+    try:
+        engine = get_engine()
+        raw_conn = engine.raw_connection()
+    except Exception as e:
+        logger.warning("bulk_copy_update(%s): raw_connection failed (%s)", table, e)
+        raise
+
+    try:
+        import uuid, io
+        temp_name = f"tmp_update_{table}_{uuid.uuid4().hex[:8]}"
+        sio = io.StringIO()
+        df.to_csv(sio, index=False, header=False, na_rep='\\N')
+        sio.seek(0)
+        col_defs = ", ".join(f'"{c}" DOUBLE PRECISION' if c not in key_cols
+                             else (f'"{c}" TIMESTAMPTZ' if 'ts' in c else f'"{c}" TEXT')
+                             for c in cols)
+        cur = raw_conn.cursor()
+        try:
+            cur.execute(f"CREATE TEMPORARY TABLE {temp_name} ({col_defs}) ON COMMIT DROP")
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            cur.execute(
+                f"COPY {temp_name} ({col_list}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')",
+                stream=sio,
+            )
+            set_clause = ", ".join(f'"{c}" = t."{c}"' for c in update_cols)
+            where = " AND ".join(f'{table}."{k}" = t."{k}"' for k in key_cols)
+            cur.execute(
+                f"UPDATE {table} SET {set_clause} FROM {temp_name} t WHERE {where}"
+            )
+            updated = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        finally:
+            try: cur.close()
+            except Exception: pass
+        raw_conn.commit()
+        logger.info("bulk_copy_update(%s): updated %d rows (%d cols)",
+                     table, updated, len(update_cols))
+        return updated
+    except Exception as e:
+        try: raw_conn.rollback()
+        except Exception: pass
+        logger.warning("bulk_copy_update(%s) COPY path failed (%s)", table, e)
+        raise
+    finally:
+        try: raw_conn.close()
+        except Exception: pass
 
 
 def bulk_insert_dataframe(
@@ -481,7 +694,9 @@ def execute_sql(sql: str, params: Optional[dict] = None) -> None:
 DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'RSI14':          'rsi_14',
     'RSI9':           'rsi_9',
+    'RSI30':          'rsi_30',
     'ATR14':          'atr_14',
+    'ATR20':          'atr_20',
     'EMA9':           'ema_9',
     'EMA20':          'ema_20',
     'EMA50':          'ema_50',
@@ -505,5 +720,18 @@ DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'Consecutive_Down': 'consecutive_down',
     'Price_vs_EMA9':    'price_vs_ema9',
     'Price_vs_EMA20':   'price_vs_ema20',
+    # Sourced from `add_all_indicators` (snake_case keys match SQL cols).
     'volatility_20d':   'volatility_20d',
+    'volatility_5d':    'volatility_5d',
+    'high_low_spread':     'high_low_spread',
+    'high_low_spread_pct': 'high_low_spread_pct',
+    # Promoted 2026-05-31 (daily-meaningful subset; Mins_Since_Open and
+    # Price_vs_VWAP_ATR omitted — no intraday clock / degenerate daily VWAP).
+    'Realized_Vol_Short': 'realized_vol_short',
+    'Price_vs_EMA9_ATR':  'price_vs_ema9_atr',
+    'Price_vs_EMA20_ATR': 'price_vs_ema20_atr',
+    'EMA_Spread_ATR':     'ema_spread_atr',
+    'EMA9_Slope':         'ema9_slope',
+    'BB_Squeeze':         'bb_squeeze',
+    'RSI_Divergence':     'rsi_divergence',
 }

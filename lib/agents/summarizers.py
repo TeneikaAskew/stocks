@@ -69,10 +69,21 @@ def _unavailable(reason: str) -> dict:
 # rolled, expirations have been added, dealers have re-hedged. Citing
 # Kings/Gates/Flip off that chain misleads the LLM and the reader.
 #
-# Threshold of 2 means: chains 0-2 trading days behind = serve; 3+ = silence.
-# This covers Mon brief / Fri-EOD (1 day) and Tue brief / Mon-EOD (1 day)
-# as fresh, while flagging anything older than 2 trading days as stale.
+# Used by `summarize_options_flow` (volume/OI/IV aggregates — still
+# hard-silences at >2 trading days) and as the soft-warn boundary in
+# `summarize_gamma_levels` (which now uses a tiered loader — see
+# MAX_OPTIONS_HARD_STALE_TRADING_DAYS below).
 MAX_OPTIONS_STALE_TRADING_DAYS = 2
+
+# Hard cutoff for summarize_gamma_levels — beyond this, even the
+# stale_fallback path returns `available: False`. Chosen at 5 trading days
+# (one full trading week) because dealer positioning a week old is no
+# longer a useful signal — strikes have rolled, expirations have been
+# added, and the King/Gate map bears little relation to current spot.
+# Added 2026-05-23 alongside the tiered realtime → EOD → stale loader
+# in summarize_gamma_levels per docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md
+# Track 1.
+MAX_OPTIONS_HARD_STALE_TRADING_DAYS = 5
 
 
 def _check_chain_freshness(
@@ -103,6 +114,26 @@ def _check_chain_freshness(
             f"(snapshot_date={chain_date})"
         )
     return None
+
+
+def classify_gamma_freshness(days_behind: int) -> str:
+    """Map a trading-day gap to a Track 1 data_source tier.
+
+    Returns one of:
+      'eod_fallback'    — 0-2 trading days behind (institutional norm)
+      'stale_fallback'  — 3-5 trading days behind (warn but still serve)
+      'unavailable'     — >5 trading days behind (hard silence)
+
+    Shared between `summarize_gamma_levels` (which runs the full GEX
+    math) and the premarket-brief freshness footer (which probes only
+    the snapshot metadata) so the two paths can never disagree on
+    which tier a given chain falls into.
+    """
+    if days_behind > MAX_OPTIONS_HARD_STALE_TRADING_DAYS:
+        return "unavailable"
+    if days_behind > MAX_OPTIONS_STALE_TRADING_DAYS:
+        return "stale_fallback"
+    return "eod_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -562,44 +593,133 @@ def summarize_gamma_levels(
 ) -> dict:
     """Stratalyst-style gamma analytics: King / Gate / Spot / Flip + regime.
 
-    Pulls the latest AlphaVantage chain for the ticker (or the most recent
-    snapshot on or before `as_of`) and runs lib.gamma.build_summary. The
-    output feeds the gamma analyst prompt; any consumer wanting a richer
-    response should call the /api/options/{ticker}/{date}/levels endpoint
-    directly instead of consuming this summary.
+    Tiered loader (added 2026-05-23 per Track 1 of
+    docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md, after the AV
+    subscription upgrade exposed REALTIME_OPTIONS):
+
+      1. REALTIME — most recent intraday snapshot from
+         etf_options_snapshots WHERE market_session='REALTIME' (writes
+         from fetch_av_realtime_options.py every 5 min during RTH).
+      2. EOD fallback (≤2 trading days old) — most recent snapshot
+         WHERE market_session='EOD' (writes from
+         fetch_av_historical_options.py nightly at ~21:00 ET). The
+         standard institutional convention; a Tuesday-morning brief
+         reading Monday-EOD chain is 1 trading day behind = fresh.
+      3. Stale fallback (3-5 trading days old) — same EOD path but
+         flagged so the consumer can warn the user. The 3-day cliff
+         used to silence the section entirely; now we surface it with
+         a `stale_fallback` marker so dealer walls are still visible
+         after long weekends or fetcher outages.
+      4. Hard stale (>5 trading days) — returns `{available: False}`.
+
+    The return dict adds two fields beyond the pre-Track-1 contract:
+
+      - `data_source`: 'realtime' | 'eod_fallback' | 'stale_fallback'
+      - `snapshot_ts`:  ISO-formatted timestamp of the underlying
+                        snapshot (REALTIME → intraday wall-clock;
+                        EOD → ~21:00 ET nightly)
+
+    Consumers (premarket brief, gamma analyst prompt, key_levels glue)
+    use these to render a freshness footer and to caveat any analyst
+    language that would otherwise read intraday repositioning into
+    yesterday's static EOD chain.
+
+    Any consumer wanting a richer response should call the
+    /api/options/{ticker}/{date}/levels endpoint directly instead of
+    consuming this summary.
 
     ``inclusive_today`` mirrors summarize_options_flow — see its
-    docstring. False = premarket contract (no as_of-dated EOD snapshot).
+    docstring. False = premarket contract (no as_of-dated snapshots);
+    True = include today's snapshots (insight pipeline live runs).
     """
     from lib import gamma  # local import to avoid circular at module load
 
     snap_op = "<=" if inclusive_today else "<"
-    sql = (
-        "SELECT option_type, strike, expiration, "
-        "       open_interest, gamma, vega, delta, "
-        "       bid, ask, mark, last_price, snapshot_date "
-        "FROM etf_options_snapshots "
-        "WHERE ticker = :ticker "
-        "  AND data_source = 'alphavantage' "
-        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
-        + "  AND snapshot_date = ("
-        "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
-        "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
-        + "  )"
-    )
     params: dict[str, Any] = {"ticker": ticker.upper()}
     if as_of:
         params["as_of"] = str(as_of)
-    df = _query(sql, params)
-    if df.empty:
-        return _unavailable(f"no etf_options_snapshots for {ticker}")
 
-    chain_date_raw = df["snapshot_date"].iloc[0]
-    chain_date = chain_date_raw.date() if hasattr(chain_date_raw, "date") else pd.to_datetime(chain_date_raw).date()
-    stale_reason = _check_chain_freshness(chain_date, as_of)
-    if stale_reason:
-        return _unavailable(stale_reason)
+    # Phase 1: try REALTIME — pull all rows of the latest intraday
+    # snapshot_ts. The unique key (ticker, snapshot_ts, option_type,
+    # expiration, strike) guarantees one snapshot_ts == one full chain.
+    realtime_sql = (
+        "SELECT option_type, strike, expiration, "
+        "       open_interest, gamma, vega, delta, "
+        "       bid, ask, mark, last_price, snapshot_date, snapshot_ts "
+        "FROM etf_options_snapshots "
+        "WHERE ticker = :ticker "
+        "  AND data_source = 'alphavantage' "
+        "  AND market_session = 'REALTIME' "
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
+        + "  AND snapshot_ts = ("
+        "      SELECT MAX(snapshot_ts) FROM etf_options_snapshots "
+        "      WHERE ticker = :ticker "
+        "        AND data_source = 'alphavantage' "
+        "        AND market_session = 'REALTIME'"
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
+        + "  )"
+    )
+    df = _query(realtime_sql, params)
+
+    data_source: Optional[str] = None
+    if not df.empty:
+        data_source = "realtime"
+    else:
+        # Phase 2: fall back to EOD. The OR-NULL clause handles the
+        # historical rows written before market_session was populated
+        # (pre-Track-0 EOD writes set it explicitly; older rows are
+        # NULL but still 'EOD' semantically).
+        eod_sql = (
+            "SELECT option_type, strike, expiration, "
+            "       open_interest, gamma, vega, delta, "
+            "       bid, ask, mark, last_price, snapshot_date, snapshot_ts "
+            "FROM etf_options_snapshots "
+            "WHERE ticker = :ticker "
+            "  AND data_source = 'alphavantage' "
+            "  AND (market_session = 'EOD' OR market_session IS NULL) "
+            + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
+            + "  AND snapshot_date = ("
+            "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
+            "      WHERE ticker = :ticker "
+            "        AND data_source = 'alphavantage' "
+            "        AND (market_session = 'EOD' OR market_session IS NULL)"
+            + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
+            + "  )"
+        )
+        df = _query(eod_sql, params)
+        if df.empty:
+            return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+        # Tier the EOD snapshot into eod_fallback / stale_fallback /
+        # hard-stale based on trading-day gap.
+        chain_date_raw = df["snapshot_date"].iloc[0]
+        chain_date = (
+            chain_date_raw.date() if hasattr(chain_date_raw, "date")
+            else pd.to_datetime(chain_date_raw).date()
+        )
+        target = as_of if as_of else date_type.today()
+        if isinstance(target, datetime):
+            target = target.date()
+        days_behind = int(np.busday_count(chain_date, target))
+        data_source = classify_gamma_freshness(days_behind)
+        if data_source == "unavailable":
+            return _unavailable(
+                f"chain hard-stale: {days_behind} trading days behind {target} "
+                f"(snapshot_date={chain_date})"
+            )
+
+    # Snapshot timestamp for the freshness footer / analyst prompt.
+    # Falls back to snapshot_date midnight if a row predates the
+    # snapshot_ts column (shouldn't happen — schema has NOT NULL — but
+    # defensive against rows backfilled with synthetic ts).
+    snapshot_ts_raw = (
+        df["snapshot_ts"].iloc[0] if "snapshot_ts" in df.columns
+        else df["snapshot_date"].iloc[0]
+    )
+    snapshot_ts_iso = (
+        snapshot_ts_raw.isoformat() if hasattr(snapshot_ts_raw, "isoformat")
+        else str(snapshot_ts_raw)
+    )
 
     # Map the chain rows to the dict shape lib.gamma accepts.
     type_map = {"calls": "call", "puts": "put"}
@@ -641,14 +761,17 @@ def summarize_gamma_levels(
 
     return {
         "available": True,
+        "data_source": data_source,
+        "snapshot_ts": snapshot_ts_iso,
         "spot": round(summary.spot.price, 2),
         "spot_method": summary.spot.method,
-        "flip": round(summary.flip, 2) if summary.flip else None,
+        "gamma_balance": round(summary.gamma_balance, 2) if summary.gamma_balance else None,
+        "gamma_flip": round(summary.gamma_flip, 2) if summary.gamma_flip else None,
         "regime": summary.regime,
         "total_gex": round(summary.total_gex, 0),
         "kings": [_level_brief(lv) for lv in summary.kings[:3]],
         "gates": [_level_brief(lv) for lv in summary.gates[:5]],
-        "flip_levels": [_level_brief(lv) for lv in summary.flip_levels],
+        "gamma_balance_levels": [_level_brief(lv) for lv in summary.gamma_balance_levels],
         "warnings": summary.warnings,
         "chain_size": len(options),
     }

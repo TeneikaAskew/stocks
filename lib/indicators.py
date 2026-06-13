@@ -259,6 +259,36 @@ def calculate_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return vol_direction.cumsum()
 
 
+def realized_vol_zscore(close: pd.Series, bar_date: pd.Series,
+                        rv_window: int = 15, z_window: int = 60) -> pd.Series:
+    """Realized-volatility z-score (ONE source of truth).
+
+    realized vol (`rv`) = WITHIN-day rolling std of log returns over `rv_window`
+    bars (intraday vol, never crosses the overnight gap). The z-normalization
+    mean/std then run over a trailing `z_window` of `rv` values ACROSS days
+    (with `min_periods`), z = (rv − mean)/std.
+
+    The cross-day z-window is the fix for the 2026-06-08 bug: a WITHIN-day
+    z-window can never reach `z_window` on TFs with fewer than `z_window`
+    bars/day (e.g. 15m ≈ 26 bars/day), so it returned 100% NaN — which is why
+    `strat_features.realized_vol_z` AND the magnitude engine's `realized_vol_z15`
+    (which shared this inline formula) were dead for those TFs. `rv` itself still
+    needs ≥ `rv_window` bars/day, so the feature is legitimately NULL on coarse
+    TFs (30m/60m/4h have < 15 bars/day) — that is genuine missingness, not a bug.
+    """
+    c = pd.to_numeric(close, errors="coerce")
+    prev_c = c.groupby(bar_date).shift(1)
+    logret = np.log(c / prev_c)
+    rv = logret.groupby(bar_date).rolling(rv_window).std().reset_index(level=0, drop=True)
+    # mean/std over the trailing z_window of rv ACROSS days (chronological index);
+    # min_periods lets it warm up gracefully and tolerates the daily NaN gaps in rv.
+    mp = max(rv_window, z_window // 3)
+    mu = rv.rolling(z_window, min_periods=mp).mean()
+    sd = rv.rolling(z_window, min_periods=mp).std()
+    return pd.Series(np.where(sd.notna() & (sd > 0), (rv - mu) / sd, np.nan),
+                     index=c.index)
+
+
 # ---------------------------------------------------------------------------
 # Pattern / consecutive-move detection
 # ---------------------------------------------------------------------------
@@ -275,6 +305,86 @@ def calculate_consecutive_moves(
     consecutive_up = up.rolling(periods, min_periods=1).sum()
     consecutive_down = down.rolling(periods, min_periods=1).sum()
     return consecutive_up, consecutive_down
+
+
+# ---------------------------------------------------------------------------
+# Current-period running levels (today / WTD / MTD / QTD / YTD)
+# ---------------------------------------------------------------------------
+
+def calculate_current_period_levels(
+    times: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    open_: pd.Series,
+    close: pd.Series,
+) -> pd.DataFrame:
+    """Running HLO for current day / week / month / quarter / year, accumulating
+    up to (and including) each bar. Close is NOT emitted here because the
+    current bar's close is already in the OHLC source.
+
+    For each period (Day/Week/Month/Quarter/Year), emits per-bar:
+      Cur_<Period>_Open : first bar's open of the current period
+      Cur_<Period>_High : running max of high up to and including this bar
+      Cur_<Period>_Low  : running min of low up to and including this bar
+      Cur_<Period>_HL_Mid: (Cur_High + Cur_Low) / 2
+      Cur_<Period>_OC_Mid: (Cur_Open + close) / 2
+
+    Plus normalized features per period:
+      Cur_<Period>_Range_Pct  : (Cur_High - Cur_Low) / Cur_Open * 100
+      Pos_in_Cur_<Period>     : (close - Cur_Low) / (Cur_High - Cur_Low)  in [0, 1]
+      Pct_From_Cur_<Period>_Open : (close - Cur_Open) / Cur_Open * 100
+
+    Returns: DataFrame indexed like input with ~40 columns.
+
+    NO LOOKAHEAD: every value is computed using only bars at or before
+    the current index within the same period bucket.
+    """
+    df = pd.DataFrame({
+        'Time': times, 'High': high.values, 'Low': low.values,
+        'Open': open_.values, 'Close': close.values,
+    })
+    ts = pd.to_datetime(df['Time'])
+    df['Date'] = ts.dt.date
+    df['Week'] = ts.dt.to_period('W')
+    df['Month'] = ts.dt.to_period('M')
+    df['Quarter'] = ts.dt.to_period('Q')
+    df['Year'] = ts.dt.to_period('Y')
+
+    result = pd.DataFrame(index=df.index)
+    for period_col, label in [
+        ('Date', 'Day'), ('Week', 'Week'), ('Month', 'Month'),
+        ('Quarter', 'Quarter'), ('Year', 'Year'),
+    ]:
+        prefix = f'Cur_{label}'
+        grp = df.groupby(period_col, sort=False)
+        # running min/max (cummax/cummin, NOT period-final)
+        result[f'{prefix}_High'] = grp['High'].cummax().values
+        result[f'{prefix}_Low'] = grp['Low'].cummin().values
+        # first open per period (broadcast — period's first bar's open)
+        first_open = grp['Open'].transform('first')
+        result[f'{prefix}_Open'] = first_open.values
+        # midpoints
+        result[f'{prefix}_HL_Mid'] = (
+            (result[f'{prefix}_High'] + result[f'{prefix}_Low']) / 2.0
+        )
+        result[f'{prefix}_OC_Mid'] = (
+            (result[f'{prefix}_Open'] + close.values) / 2.0
+        )
+        # normalized features
+        rng = result[f'{prefix}_High'] - result[f'{prefix}_Low']
+        result[f'{prefix}_Range_Pct'] = (
+            rng / result[f'{prefix}_Open'].replace(0, np.nan) * 100.0
+        )
+        # position-in-range: 0 = at low, 1 = at high. NaN if range is 0.
+        result[f'Pos_in_{prefix}'] = np.where(
+            rng > 0, (close.values - result[f'{prefix}_Low']) / rng, np.nan,
+        )
+        result[f'Pct_From_{prefix}_Open'] = (
+            (close.values - result[f'{prefix}_Open'])
+            / result[f'{prefix}_Open'].replace(0, np.nan) * 100.0
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -595,86 +705,134 @@ def calculate_order_blocks(
 # Convenience: add all indicators to a DataFrame
 # ---------------------------------------------------------------------------
 
-def add_all_indicators(
-    df: pd.DataFrame,
-    close_col: str = 'Close',
-    indicator_config=None,
-) -> pd.DataFrame:
-    """Add a comprehensive set of indicators to an OHLCV DataFrame.
+# ---------------------------------------------------------------------------
+# Indicator block helpers (idempotent — each mutates & returns `out`)
+# ---------------------------------------------------------------------------
+# add_all_indicators (and the leaner capability tiers below) are composed from
+# these blocks. Each block takes (out, ind, close_col) where:
+#   out       : the working DataFrame (already a copy of the caller's input)
+#   ind       : an IndicatorConfig
+#   close_col : the close column name ('Close' or 'Last')
+# The blocks were extracted VERBATIM from the historical inline body of
+# add_all_indicators — the arithmetic is byte-identical. Each block documents
+# the upstream columns it reads so the leaner tiers can order their calls so
+# every dependency exists before it's consumed. The 'Time' guards for
+# VWAP / ORB / Mins_Since_Open are preserved exactly.
 
-    Expects columns: Open, High, Low, Close (or `close_col`), Volume, Time.
-    Handles both 'Close' and 'Last' column naming via `close_col`.
 
-    Parameters
-    ----------
-    indicator_config : IndicatorConfig, optional
-        All indicator periods and parameters. Uses defaults if None.
-    """
-    if indicator_config is None:
-        from lib.config import IndicatorConfig
-        indicator_config = IndicatorConfig()
-
-    ind = indicator_config
-    out = df.copy()
+def _add_atr(out, ind, close_col):
+    """ATR + short/long ATR-expansion ratio. Deps: High, Low, close_col."""
     c = out[close_col]
     h = out['High']
     l = out['Low']
-    v = out['Volume']
-
-    # ATR
     out[ind.atr_col] = calculate_atr(h, l, c, ind.atr_period)
+    # Additional ATR windows (e.g. ATR20 for research / longer-horizon
+    # vol gauges). Skip the primary period to avoid recomputing it.
+    for p in ind.atr_extra_periods:
+        if p != ind.atr_period:
+            out[f'ATR{p}'] = calculate_atr(h, l, c, p)
     # Phase 0.7.x — short/long ATR ratio for the `atr_expansion` gate.
     # Values > 1 = recent volatility above baseline (regime expansion).
     out['ATR_Expansion'] = calculate_atr_expansion(h, l, c, short=5, long=20)
+    return out
 
-    # RSI
+
+def _add_rsi(out, ind, close_col):
+    """RSI (slow + fast) and 3-bar RSI thrust. Deps: close_col."""
+    c = out[close_col]
     out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)
     out[ind.rsi_fast_col] = calculate_rsi(c, ind.rsi_fast_period)
+    # Additional RSI windows (e.g. RSI30). Skip any period that matches
+    # the primary or fast period — already computed above.
+    for p in ind.rsi_extra_periods:
+        if p not in (ind.rsi_period, ind.rsi_fast_period):
+            out[f'RSI{p}'] = calculate_rsi(c, p)
     # Phase 0.7.x — signed 3-bar RSI delta for the directional
     # `rsi_thrust` momentum gate.
     out['RSI_Thrust_3'] = calculate_rsi_thrust(out[ind.rsi_col], lookback=3)
+    return out
 
-    # EMAs
+
+def _add_emas(out, ind, close_col):
+    """Exponential moving averages. Deps: close_col."""
+    c = out[close_col]
     for p in ind.ema_periods:
         out[f'EMA{p}'] = calculate_ema(c, p)
+    return out
 
-    # SMAs
+
+def _add_smas(out, ind, close_col):
+    """Simple moving averages. Deps: close_col."""
+    c = out[close_col]
     for p in ind.sma_periods:
         out[f'SMA{p}'] = calculate_sma(c, p)
+    return out
 
-    # VWAP
+
+def _add_vwap(out, ind, close_col):
+    """Session-resetting VWAP. Deps: High, Low, close_col, Volume, Time.
+
+    Time-gated: produces no VWAP column when 'Time' is absent."""
     if 'Time' in out.columns:
+        c = out[close_col]
+        h = out['High']
+        l = out['Low']
+        v = out['Volume']
         dates = pd.to_datetime(out['Time']).dt.date
         out['VWAP'] = calculate_vwap(h, l, c, v, dates)
+    return out
 
-    # RVOL
+
+def _add_rvol(out, ind, close_col):
+    """Mean- and median-based relative volume. Deps: Volume."""
+    v = out['Volume']
     out['RVOL'] = calculate_rvol(v, ind.rvol_period)
     # Phase 0.7.x — median-based RVOL for the `rvol_above_recent` gate
     # (robust to outlier-volume bars vs. the mean-based RVOL above).
     out['RVol_Recent_20'] = calculate_rvol_recent(v, ind.rvol_period)
+    return out
 
-    # OBV
+
+def _add_obv(out, ind, close_col):
+    """On-balance volume. Deps: close_col, Volume."""
+    c = out[close_col]
+    v = out['Volume']
     out['OBV'] = calculate_obv(c, v)
+    return out
 
-    # Stochastic RSI
+
+def _add_stochrsi(out, ind, close_col):
+    """Stochastic RSI %K / %D. Deps: ind.rsi_col (run _add_rsi first)."""
     out['StochRSI_K'], out['StochRSI_D'] = calculate_stoch_rsi(
         out[ind.rsi_col], ind.stoch_rsi_period, ind.stoch_rsi_k_period, ind.stoch_rsi_d_period,
     )
+    return out
 
-    # Bollinger Bands
+
+def _add_bollinger(out, ind, close_col):
+    """Bollinger bands + width + %B. Deps: close_col."""
+    c = out[close_col]
     out['BB_Upper'], out['BB_Middle'], out['BB_Lower'] = calculate_bollinger_bands(
         c, ind.bb_period, ind.bb_std_mult,
     )
     out['BB_Width'] = out['BB_Upper'] - out['BB_Lower']
     bb_range = out['BB_Upper'] - out['BB_Lower']
     out['BB_Pct'] = (c - out['BB_Lower']) / bb_range.where(bb_range > 0, np.nan)
+    return out
 
-    # MACD
+
+def _add_macd(out, ind, close_col):
+    """MACD line / signal / histogram. Deps: close_col."""
+    c = out[close_col]
     out['MACD'], out['MACD_Signal'], out['MACD_Histogram'] = calculate_macd(
         c, ind.macd_fast, ind.macd_slow, ind.macd_signal,
     )
+    return out
 
-    # Consecutive moves
+
+def _add_consecutive(out, ind, close_col):
+    """Price-change % + consecutive up/down move counts. Deps: close_col."""
+    c = out[close_col]
     price_change = c.pct_change() * 100.0
     out['Price_Change'] = price_change
     out['Consecutive_Up'], out['Consecutive_Down'] = calculate_consecutive_moves(
@@ -683,8 +841,18 @@ def add_all_indicators(
     out['Consecutive_Up_5'], out['Consecutive_Down_5'] = calculate_consecutive_moves(
         price_change, ind.consecutive_relaxed_window,
     )
+    return out
 
-    # Price position relative to first two EMAs
+
+def _add_price_levels(out, ind, close_col):
+    """Price-vs-EMA/VWAP %-distances + daily-range metrics.
+
+    Deps: close_col, High, Low, EMA{fast}/EMA{mid} (run _add_emas first),
+    VWAP (run _add_vwap first; VWAP-distance is Time-gated via VWAP presence).
+    """
+    c = out[close_col]
+    h = out['High']
+    l = out['Low']
     ema_fast_p = ind.ema_fast_period
     ema_mid_p = ind.ema_mid_period
     out[f'Price_vs_EMA{ema_fast_p}'] = (c - out[f'EMA{ema_fast_p}']) / out[f'EMA{ema_fast_p}'] * 100.0
@@ -696,13 +864,465 @@ def add_all_indicators(
     out['Daily_Range'] = h - l
     out['Daily_Range_Pct'] = (h - l) / c * 100.0
     out['Close_vs_Range'] = (c - l) / (h - l).where((h - l) > 0, np.nan)
+    # Same values under the canonical snake_case names the SQL writer
+    # maps to `market_data_daily.high_low_spread{,_pct}`. Pre-2026-05-27,
+    # only Daily_Range[_Pct] existed in indicator output and the snake_case
+    # schema columns shipped all-NaN.
+    out['high_low_spread'] = out['Daily_Range']
+    out['high_low_spread_pct'] = out['Daily_Range_Pct']
 
-    # ORB (Opening Range Breakout)
+    # Annualised historical volatility (single source of truth — pre-fix
+    # each writer recomputed `volatility_20d` separately, and the 5-day
+    # variant was simply missing). The snake_case key matches the SQL
+    # column so the standard writer loop persists it without renaming.
+    returns = c.pct_change()
+    for p in ind.volatility_periods:
+        out[f'volatility_{p}d'] = returns.rolling(p).std() * np.sqrt(252)
+    return out
+
+
+def _add_orb(out, ind, close_col):
+    """Opening Range Breakout columns (~39). Deps: High, Low, close_col, Time.
+
+    Time-gated: produces no ORB columns when 'Time' is absent."""
     if 'Time' in out.columns:
+        c = out[close_col]
+        h = out['High']
+        l = out['Low']
         orb_result = calculate_all_orb(
             pd.to_datetime(out['Time']), h, l, c,
             orb_windows=ind.orb_windows,
         )
         out = pd.concat([out, orb_result], axis=1)
+    return out
+
+
+def _add_promoted_regime(out, ind, close_col):
+    """Volatility-regime / momentum-velocity features.
+
+    Promoted 2026-05-31 from the combo-mining measure-first study: each was a
+    top permutation-importance driver of the forward regime (BIG move) and/or
+    the next Strat candle, out-of-sample, across IWM/SPY/QQQ. All are
+    stationary (slopes / ATR-normalised distances / ratios) and derive only
+    from columns already computed by earlier blocks, so live (signal_monitor)
+    and research (strat_data_builder) share one definition.
+
+    Deps: close_col, ind.atr_col (_add_atr), EMA{fast}/EMA{mid} (_add_emas),
+    VWAP (_add_vwap, Time-gated), BB_Width (_add_bollinger), RSI9+RSI14
+    (_add_rsi). Time-gated for Mins_Since_Open.
+    """
+    c = out[close_col]
+    ema_fast_p = ind.ema_fast_period
+    ema_mid_p = ind.ema_mid_period
+    atr_col = ind.atr_col
+    atr = out[atr_col] if atr_col in out.columns else None
+
+    def _norm(num, den):
+        return num / den.where(den.abs() > 0, np.nan)
+
+    # Realized short-horizon volatility — rolling std of 1-bar log returns.
+    logret = np.log(c).diff()
+    out['Realized_Vol_Short'] = logret.rolling(
+        ind.realized_vol_window, min_periods=ind.realized_vol_window).std()
+
+    # Minutes since the 09:30 open (intraday clock; NaN-safe without Time).
+    if 'Time' in out.columns:
+        _ts = pd.to_datetime(out['Time'])
+        out['Mins_Since_Open'] = (
+            _ts.dt.hour * 60 + _ts.dt.minute - (9 * 60 + 30)).astype(float)
+
+    if atr is not None:
+        # ATR-normalised distances (stationary twins of the %-based Price_vs_*).
+        if f'EMA{ema_fast_p}' in out.columns:
+            out['Price_vs_EMA9_ATR'] = _norm(c - out[f'EMA{ema_fast_p}'], atr)
+        if f'EMA{ema_mid_p}' in out.columns:
+            out['Price_vs_EMA20_ATR'] = _norm(c - out[f'EMA{ema_mid_p}'], atr)
+        if 'VWAP' in out.columns:
+            out['Price_vs_VWAP_ATR'] = _norm(c - out['VWAP'], atr)
+        # Trend separation, vol-normalised.
+        if f'EMA{ema_fast_p}' in out.columns and f'EMA{ema_mid_p}' in out.columns:
+            out['EMA_Spread_ATR'] = _norm(
+                out[f'EMA{ema_fast_p}'] - out[f'EMA{ema_mid_p}'], atr)
+        # Momentum velocity — n-bar change in EMA9, ATR-normalised.
+        if f'EMA{ema_fast_p}' in out.columns:
+            out['EMA9_Slope'] = _norm(
+                out[f'EMA{ema_fast_p}'].diff(ind.ema_slope_lookback), atr)
+
+    # Bollinger compression — BB_Width vs its own rolling median.
+    if 'BB_Width' in out.columns:
+        bw = out['BB_Width']
+        out['BB_Squeeze'] = _norm(
+            bw, bw.rolling(ind.bb_squeeze_window,
+                           min_periods=ind.bb_squeeze_window).median())
+
+    # RSI fast-vs-slow divergence.
+    if 'RSI9' in out.columns and 'RSI14' in out.columns:
+        out['RSI_Divergence'] = out['RSI9'] - out['RSI14']
 
     return out
+
+
+def _add_magnitude(out, ind, close_col):
+    """Magnitude-engine volatility-expansion features (migrated 2026-06-01).
+
+    These were hand-rolled inline in gcp/research/magnitude_engine/mag_dataset.py
+    (``_add_phase1_features``), duplicating math the engine then could not share.
+    Folded into the single indicator spine so the magnitude engine consumes the
+    SAME definitions as regime/strat (CLAUDE.md "one source of truth for math").
+
+    Session-aware: every rolling window is grouped by the intraday session date
+    so it never crosses the overnight gap. Requires a 'Time' column to derive
+    the session key; without 'Time' the block is skipped (these features are
+    intraday-only and meaningless on daily bars). Deps: High, Low, close_col,
+    BB_Upper/BB_Lower (_add_bollinger). All Rule-3.7 NaN-safe — no fabricated 0.
+
+    Note: the inline ``atr5_atr20_ratio`` is intentionally NOT reproduced here.
+    It was ATR5/ATR20 with mixed smoothing built atop the removed
+    ``_compute_atr20`` workaround; the canonical ``ATR_Expansion`` (ATR5/ATR20,
+    Wilder, from _add_atr/_add_promoted_regime) is the single-source equivalent
+    and the magnitude engine reads that instead.
+    """
+    if 'Time' not in out.columns:
+        return out
+
+    h = out['High']
+    l = out['Low']
+    c = out[close_col]
+    sess = pd.to_datetime(out['Time']).dt.date
+    prev_c = c.groupby(sess).shift(1)
+
+    def _safe_div(num, den):
+        return num / den.where(den.abs() > 0, np.nan)
+
+    # BB20 bandwidth: (upper - lower) / close. Uses the spine's Bollinger bands.
+    if 'BB_Upper' in out.columns and 'BB_Lower' in out.columns:
+        out['BB20_Bandwidth'] = _safe_div(out['BB_Upper'] - out['BB_Lower'], c)
+
+    # 15-bar realized-vol z-score: rv15 = std of log returns over 15 bars;
+    # z = (rv15 - rolling_mean_60(rv15)) / rolling_std_60(rv15). Session-grouped.
+    logret = np.log(_safe_div(c, prev_c))
+    rv15 = logret.groupby(sess).rolling(ind.mag_rv_window).std().reset_index(level=0, drop=True)
+    rv_mu = rv15.groupby(sess).rolling(ind.mag_rv_z_window).mean().reset_index(level=0, drop=True)
+    rv_sd = rv15.groupby(sess).rolling(ind.mag_rv_z_window).std().reset_index(level=0, drop=True)
+    out['Realized_Vol_Z'] = _safe_div(rv15 - rv_mu, rv_sd)
+
+    # Range expansion: current bar range / mean of prior-N bar ranges (session).
+    rng = h - l
+    avg_prior = (rng.groupby(sess).shift(1)
+                    .groupby(sess).rolling(ind.mag_range_expansion_window).mean()
+                    .reset_index(level=0, drop=True))
+    out['Range_Expansion_Ratio'] = _safe_div(rng, avg_prior)
+
+    # Cumulative intraday range so far / prior session's full range. cummax/
+    # cummin are within-session (groupby preserves the original index); the
+    # prior session's full range is mapped back per row via the session key.
+    cum_hi = h.groupby(sess).cummax()
+    cum_lo = l.groupby(sess).cummin()
+    cumrange = cum_hi - cum_lo
+    daily_range = h.groupby(sess).max() - l.groupby(sess).min()   # indexed by session
+    prev_daily = daily_range.shift(1)                              # prior session's range
+    prev_daily_aligned = pd.Series(sess.map(prev_daily).to_numpy(), index=out.index)
+    out['Intraday_Range_vs_PrevDay'] = _safe_div(cumrange, prev_daily_aligned)
+
+    return out
+
+
+def _resolve_config(indicator_config):
+    if indicator_config is None:
+        from lib.config import IndicatorConfig
+        return IndicatorConfig()
+    return indicator_config
+
+
+# ---------------------------------------------------------------------------
+# Convenience: add all indicators to a DataFrame
+# ---------------------------------------------------------------------------
+
+def add_all_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Add a comprehensive set of indicators to an OHLCV DataFrame.
+
+    Expects columns: Open, High, Low, Close (or `close_col`), Volume, Time.
+    Handles both 'Close' and 'Last' column naming via `close_col`.
+
+    This is a thin composition over the ``_add_*`` block helpers, called in
+    dependency order. The 89-column output is byte-identical to the historical
+    inline implementation (~25 callers + an in-flight backfill depend on it).
+
+    Parameters
+    ----------
+    indicator_config : IndicatorConfig, optional
+        All indicator periods and parameters. Uses defaults if None.
+    """
+    ind = _resolve_config(indicator_config)
+    out = df.copy()
+    out = _add_atr(out, ind, close_col)
+    out = _add_rsi(out, ind, close_col)
+    out = _add_emas(out, ind, close_col)
+    out = _add_smas(out, ind, close_col)
+    out = _add_vwap(out, ind, close_col)
+    out = _add_rvol(out, ind, close_col)
+    out = _add_obv(out, ind, close_col)
+    out = _add_stochrsi(out, ind, close_col)
+    out = _add_bollinger(out, ind, close_col)
+    out = _add_macd(out, ind, close_col)
+    out = _add_consecutive(out, ind, close_col)
+    out = _add_price_levels(out, ind, close_col)
+    out = _add_orb(out, ind, close_col)
+    out = _add_promoted_regime(out, ind, close_col)
+    out = _add_magnitude(out, ind, close_col)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Capability tiers — lean indicator subsets for latency-sensitive consumers
+# ---------------------------------------------------------------------------
+# The live signal monitor and the premarket brief each read only ~12-20 of the
+# 89 add_all_indicators columns, yet historically paid for the full suite
+# (incl. the ~39 ORB columns + the promoted-regime block). The functions below
+# run ONLY the blocks each capability needs, with byte-identical per-block
+# arithmetic — verified 0.0 max-abs-diff vs add_all_indicators on the shared
+# columns in tests/test_indicators.py. Research / nightly paths keep calling
+# add_all_indicators unchanged.
+#
+# FEATURE_GROUPS is the authoritative output-column list per capability. It is
+# the contract the parity test pins; if a consumer starts reading a new column,
+# add the producing block to the tier AND the column here.
+
+
+def _signal_columns(ind) -> List[str]:
+    ema_fast_p, ema_mid_p = ind.ema_fast_period, ind.ema_mid_period
+    return [
+        ind.atr_col, 'ATR_Expansion',
+        ind.rsi_col, ind.rsi_fast_col, 'RSI_Thrust_3',
+        *[f'EMA{p}' for p in ind.ema_periods],
+        'VWAP',
+        'RVOL', 'RVol_Recent_20',
+        'OBV',
+        'StochRSI_K', 'StochRSI_D',
+        'MACD', 'MACD_Signal', 'MACD_Histogram',
+        'Price_Change', 'Consecutive_Up', 'Consecutive_Down',
+        'Consecutive_Up_5', 'Consecutive_Down_5',
+        f'Price_vs_EMA{ema_fast_p}', f'Price_vs_EMA{ema_mid_p}', 'Price_vs_VWAP',
+        'Daily_Range', 'Daily_Range_Pct', 'Close_vs_Range',
+    ]
+
+
+def _brief_columns(ind) -> List[str]:
+    ema_fast_p, ema_mid_p = ind.ema_fast_period, ind.ema_mid_period
+    return [
+        ind.atr_col, 'ATR_Expansion',
+        ind.rsi_col, ind.rsi_fast_col, 'RSI_Thrust_3',
+        *[f'EMA{p}' for p in ind.ema_periods],
+        *[f'SMA{p}' for p in ind.sma_periods],
+        'VWAP',
+        'StochRSI_K', 'StochRSI_D',
+        'BB_Upper', 'BB_Middle', 'BB_Lower', 'BB_Width', 'BB_Pct',
+        'MACD', 'MACD_Signal', 'MACD_Histogram',
+        'Price_Change', 'Consecutive_Up', 'Consecutive_Down',
+        'Consecutive_Up_5', 'Consecutive_Down_5',
+        # Price levels — the brief's check_call/put_conditions score on
+        # Price_vs_VWAP, so the VWAP + price-levels blocks must run to stay
+        # byte-identical to add_all_indicators (incl. the daily-bar VWAP
+        # recompute-overwrite on Cloud-SQL daily frames). See test_brief_*.
+        f'Price_vs_EMA{ema_fast_p}', f'Price_vs_EMA{ema_mid_p}', 'Price_vs_VWAP',
+        'Daily_Range', 'Daily_Range_Pct', 'Close_vs_Range',
+    ]
+
+
+# Magnitude-engine volatility-expansion features (intraday-only, Time-gated).
+# Migrated from mag_dataset._add_phase1_features 2026-06-01. The magnitude
+# engine reads these from the spine plus the shared ATR_Expansion / volatility
+# columns rather than recomputing them inline.
+_MAGNITUDE_EXACT = [
+    'BB20_Bandwidth', 'Realized_Vol_Z',
+    'Range_Expansion_Ratio', 'Intraday_Range_vs_PrevDay',
+]
+
+
+# Stationary leak-safe feature set for the research regime model. Mirrors
+# lib.combo_mining._STATIONARY_EXACT (minus MACD_Hist_Slope, which is a
+# combo_mining candidate feature not produced by add_all_indicators).
+_REGIME_EXACT = [
+    'RSI14', 'RSI9', 'RSI_Thrust_3', 'StochRSI_K', 'StochRSI_D', 'MACD_Histogram',
+    'ATR_Expansion', 'BB_Pct', 'BB_Width',
+    'RVOL', 'RVol_Recent_20',
+    'Price_Change', 'Close_vs_Range', 'Daily_Range_Pct',
+    'Consecutive_Up', 'Consecutive_Down', 'Consecutive_Up_5', 'Consecutive_Down_5',
+    'Price_vs_VWAP', 'Price_vs_EMA9', 'Price_vs_EMA20',
+    'EMA9_Slope', 'Mins_Since_Open', 'Price_vs_EMA9_ATR', 'Price_vs_EMA20_ATR',
+    'Price_vs_VWAP_ATR', 'EMA_Spread_ATR', 'BB_Squeeze', 'Realized_Vol_Short',
+    'RSI_Divergence',
+]
+
+
+def _all_indicator_columns(ind) -> List[str]:
+    """Every column add_all_indicators emits beyond the OHLCV/Time source set."""
+    cols = (_signal_columns(ind) + _brief_columns(ind) + [
+        'RSI_Divergence', 'Realized_Vol_Short', 'Mins_Since_Open',
+        'Price_vs_EMA9_ATR', 'Price_vs_EMA20_ATR', 'Price_vs_VWAP_ATR',
+        'EMA_Spread_ATR', 'EMA9_Slope', 'BB_Squeeze',
+    ] + list(_MAGNITUDE_EXACT))
+    # ORB columns for every configured window.
+    for w in ind.orb_windows:
+        lab = w['label']
+        for ref in ['High', 'Low', 'Range', 'Mid']:
+            cols.append(f'ORB_{lab}_{ref}')
+        for ref in ['High', 'Low', 'Mid']:
+            cols.append(f'ORB_{lab}_{ref}_Pct')
+        for ref in ['Broke_High', 'Broke_Low', 'Within_Range', 'Trend', 'Distance']:
+            cols.append(f'ORB_{lab}_{ref}')
+    # de-dup preserving order
+    seen, ordered = set(), []
+    for c in cols:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
+def _feature_groups() -> Dict[str, List[str]]:
+    """Build FEATURE_GROUPS from the default IndicatorConfig.
+
+    Computed at import with the default config; periods rarely change and the
+    membership is the authoritative contract pinned by the parity test.
+    """
+    from lib.config import IndicatorConfig
+    ind = IndicatorConfig()
+    return {
+        'signal': _signal_columns(ind),
+        'brief': _brief_columns(ind),
+        'regime': list(_REGIME_EXACT),
+        'strat': list(_REGIME_EXACT),
+        # Magnitude = the stationary regime/strat set + the migrated
+        # volatility-expansion features. ATR_Expansion is already in the
+        # regime set and is the single-source replacement for the old inline
+        # atr5_atr20_ratio.
+        'magnitude': list(_REGIME_EXACT) + list(_MAGNITUDE_EXACT),
+    }
+
+
+FEATURE_GROUPS: Dict[str, List[str]] = _feature_groups()
+
+
+def add_signal_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Lean indicator set for the live signal monitor.
+
+    Runs ONLY the blocks the live strategies (+ Discord embed) read: ATR, RSI,
+    EMAs, VWAP, RVOL, OBV, StochRSI, MACD, consecutive moves, and price levels.
+    Skips the heavy SMA / Bollinger / ORB (~39 cols) / promoted-regime blocks.
+
+    Per-block arithmetic is byte-identical to add_all_indicators on the shared
+    columns (FEATURE_GROUPS['signal']). Time guards for VWAP are preserved.
+    """
+    ind = _resolve_config(indicator_config)
+    out = df.copy()
+    out = _add_atr(out, ind, close_col)
+    out = _add_rsi(out, ind, close_col)
+    out = _add_emas(out, ind, close_col)
+    out = _add_vwap(out, ind, close_col)
+    out = _add_rvol(out, ind, close_col)
+    out = _add_obv(out, ind, close_col)
+    out = _add_stochrsi(out, ind, close_col)
+    out = _add_macd(out, ind, close_col)
+    out = _add_consecutive(out, ind, close_col)
+    out = _add_price_levels(out, ind, close_col)
+    return out
+
+
+def add_brief_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Lean indicator set for the premarket brief.
+
+    Runs the blocks the brief reads: ATR, RSI, EMAs, SMAs, VWAP, StochRSI,
+    Bollinger, MACD, consecutive moves, and price levels. The price-levels block
+    is required because the brief's check_call/put_conditions score on
+    ``Price_vs_VWAP``; VWAP must run first so that distance is computed (and, on
+    Cloud-SQL daily frames carrying a pre-existing ``price_vs_vwap`` column, the
+    daily-bar VWAP recompute overwrites it exactly as add_all_indicators did).
+    Skips only RVOL / OBV / ORB (~39 cols) / promoted-regime — none are read by
+    the brief. Per-block arithmetic is byte-identical to add_all_indicators on
+    the shared columns (FEATURE_GROUPS['brief']).
+    """
+    ind = _resolve_config(indicator_config)
+    out = df.copy()
+    out = _add_atr(out, ind, close_col)
+    out = _add_rsi(out, ind, close_col)
+    out = _add_emas(out, ind, close_col)
+    out = _add_smas(out, ind, close_col)
+    out = _add_vwap(out, ind, close_col)
+    out = _add_stochrsi(out, ind, close_col)
+    out = _add_bollinger(out, ind, close_col)
+    out = _add_macd(out, ind, close_col)
+    out = _add_consecutive(out, ind, close_col)
+    out = _add_price_levels(out, ind, close_col)
+    return out
+
+
+def add_regime_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Indicator set for the research regime model (near-full).
+
+    Provided for API symmetry. The regime model consumes the stationary
+    feature set (FEATURE_GROUPS['regime']), which spans the promoted-regime
+    block; producing it requires nearly every block, so this delegates to
+    add_all_indicators (research path — latency is not the constraint).
+    """
+    return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
+
+
+def add_strat_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Indicator set for the strat next-bar model (near-full).
+
+    Provided for API symmetry; see add_regime_indicators. Research path.
+    """
+    return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
+
+
+def add_magnitude_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Indicator set for the research magnitude engine (near-full).
+
+    Produces the stationary regime/strat features PLUS the migrated
+    volatility-expansion block (FEATURE_GROUPS['magnitude']). The magnitude
+    engine previously hand-rolled these inline (mag_dataset._add_phase1_features
+    + a local atr_20 workaround); it now consumes them from this single spine.
+    Delegates to add_all_indicators (research path — latency is not a
+    constraint and the magnitude block is Time-gated/intraday-only).
+    """
+    return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
+
+
+def select_features(df: pd.DataFrame, capability: str) -> pd.DataFrame:
+    """Return the subset of `df` columns that belong to `capability`.
+
+    Tolerant of Time-gated absences (e.g. VWAP/ORB when there is no Time
+    column) — only columns actually present are returned, never KeyError.
+    """
+    if capability not in FEATURE_GROUPS:
+        raise KeyError(
+            f"unknown capability {capability!r}; "
+            f"known: {sorted(FEATURE_GROUPS)}"
+        )
+    cols = [c for c in FEATURE_GROUPS[capability] if c in df.columns]
+    return df[cols]
