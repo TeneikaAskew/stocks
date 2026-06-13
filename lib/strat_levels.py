@@ -64,6 +64,11 @@ class LevelMap:
     puts_trigger: Optional[dict] = None
     room_to_run_up: Optional[float] = None
     room_to_run_down: Optional[float] = None
+    # Next-N structural levels each way (nearest-first), each a dict with
+    # price/name/period/level_type/distance_pct. `call_levels` are above the
+    # current price, `put_levels` below — see select_nearest_levels().
+    call_levels: list = field(default_factory=list)
+    put_levels: list = field(default_factory=list)
 
 
 # ─── Level classification ─────────────────────────────────────────────────
@@ -905,6 +910,74 @@ def identify_triggers(
     return result
 
 
+# Level types that count as a "next level" for the brief's call/put display.
+# Prior-period HIGHS and LOWS (and gap highs/lows) are the structural lines
+# price breaks; closes and opens are reference lines, not breakout levels, so
+# they're excluded here even though identify_triggers considers the full set.
+_NEXT_LEVEL_TYPES = frozenset({'high', 'low', 'gap_high', 'gap_low'})
+
+
+def select_nearest_levels(
+    current_price: float,
+    levels: Dict[str, StratLevel],
+    atr: Optional[float] = None,
+    n: int = 2,
+    level_types: frozenset = _NEXT_LEVEL_TYPES,
+) -> dict:
+    """Pick the next ``n`` structural levels above and below the price.
+
+    Returns ``{'calls': [...], 'puts': [...]}`` where ``calls`` are the
+    nearest ``n`` levels ABOVE the current price (bullish targets) and
+    ``puts`` the nearest ``n`` BELOW (bearish targets), each ordered
+    nearest-first. Direction is purely positional — a prior-MONTH high
+    sitting below price is a put (bearish) level, a prior-WEEK low above
+    price is a call level. This matches how a trader reads the tape: "what
+    are the next two lines price has to clear going up, and the next two it
+    breaks going down."
+
+    Only prior-period highs/lows (and gap highs/lows) are considered by
+    default (``level_types``) — closes and opens are reference lines, not
+    the structural breakout levels the trader means by "next level".
+
+    Each entry is a dict ``{price, name, period, level_type,
+    distance_pct}``. Levels are de-duplicated by price (within a cent) so
+    two coincident lines (e.g. PDH == PWH) don't both consume a slot. The
+    same staleness window as ``identify_triggers`` is applied so a year-old
+    crash low 40% away never surfaces as a "next level". When fewer than
+    ``n`` qualifying levels exist on a side the list is short — never padded
+    with a fabricated price (CLAUDE.md §3.7).
+    """
+    candidates = [lv for lv in levels.values()
+                  if not level_types or lv.level_type in level_types]
+    above = sorted((lv for lv in candidates if lv.price > current_price),
+                   key=lambda lv: lv.price)
+    below = sorted((lv for lv in candidates if lv.price < current_price),
+                   key=lambda lv: -lv.price)
+    above = [lv for lv in above
+             if _within_staleness_window(lv.price, current_price, atr)]
+    below = [lv for lv in below
+             if _within_staleness_window(lv.price, current_price, atr)]
+
+    def _take(seq):
+        out, seen = [], []
+        for lv in seq:
+            if any(abs(lv.price - p) < 0.01 for p in seen):
+                continue
+            seen.append(lv.price)
+            out.append({
+                'price': round(float(lv.price), 2),
+                'name': lv.name,
+                'period': lv.timeframe,
+                'level_type': lv.level_type,
+                'distance_pct': round((lv.price - current_price) / current_price * 100, 2),
+            })
+            if len(out) >= n:
+                break
+        return out
+
+    return {'calls': _take(above), 'puts': _take(below)}
+
+
 # ─── Level map builder ────────────────────────────────────────────────────
 
 
@@ -950,6 +1023,11 @@ def build_level_map(
         current_price, structural_dict, daily_strat_class, combo, atr=atr,
     )
 
+    # Next two structural levels each way (nearest-first), for the brief's
+    # "Call levels / Put levels" display. Uses the same structural set as
+    # the triggers so the two are consistent.
+    nearest = select_nearest_levels(current_price, structural_dict, atr=atr, n=2)
+
     # `room_to_run_*` must use the SAME level set as `identify_triggers`
     # so the playbook's 'Room to trigger: X%' number is consistent
     # with the actual trigger emitted. Previously this used
@@ -970,6 +1048,8 @@ def build_level_map(
         puts_trigger=triggers.get('puts'),
         room_to_run_up=room_up['distance_pct'],
         room_to_run_down=room_down['distance_pct'],
+        call_levels=nearest['calls'],
+        put_levels=nearest['puts'],
     )
 
 
@@ -1286,6 +1366,14 @@ def format_levels_for_brief(
     elif no_put_banner:
         lines.append(no_put_banner)
 
+    # Next two structural levels each way (always shown, regime-agnostic):
+    # the literal next lines price has to clear going up (CALLS) and break
+    # going down (PUTS), each tagged with its period.
+    next_block = _format_next_levels(level_map)
+    if next_block:
+        lines.append('')
+        lines.extend(next_block)
+
     if level_map.pmg_zones:
         lines.append('')
         lines.append('  PMG ZONES:')
@@ -1297,6 +1385,32 @@ def format_levels_for_brief(
             )
 
     return '\n'.join(lines)
+
+
+def _format_next_levels(level_map: LevelMap) -> list:
+    """Render LevelMap.call_levels / put_levels as brief lines.
+
+    Example:
+      NEXT LEVELS:
+        Calls (up):  251.50 PWH (week) +0.60%, 252.00 PDH (day) +0.80%
+        Puts (down): 248.00 PQL (quarter) -0.80%, 245.00 PMH (month) -2.00%
+    """
+    calls = level_map.call_levels or []
+    puts = level_map.put_levels or []
+    if not calls and not puts:
+        return []
+
+    def _fmt(lv):
+        period = f" ({lv['period']})" if lv.get('period') else ''
+        return (f"{lv['price']:.2f} {_display_level_name(lv['name'])}"
+                f"{period} {lv['distance_pct']:+.2f}%")
+
+    out = ['  NEXT LEVELS:']
+    if calls:
+        out.append('    Calls (up):  ' + ', '.join(_fmt(lv) for lv in calls))
+    if puts:
+        out.append('    Puts (down): ' + ', '.join(_fmt(lv) for lv in puts))
+    return out
 
 
 # ---------------------------------------------------------------------------

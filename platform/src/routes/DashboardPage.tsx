@@ -28,6 +28,7 @@ import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
+import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { fmtPrice, fmtPct, fmtNum, NA } from '@/lib/format';
@@ -49,6 +50,9 @@ interface BriefResponse {
 interface PlaybookCard {
   id: string; name: string; direction: string; win_rate: number;
   avg_return: number; conditions: string[]; description: string;
+  target_pct?: number | null; stop_pct?: number | null;
+  horizons?: SetupHorizon[];
+  best_horizon_min?: number | null; best_horizon_win_rate?: number | null; best_horizon_avg_bps?: number | null;
 }
 interface PlaybookResponse { ticker: string; cards: PlaybookCard[] }
 interface SignalEntry {
@@ -445,6 +449,12 @@ export default function DashboardPage() {
                     ))}
                   </div>
                 </div>
+                {/* Trade levels + win rate by hold window. Price falls back to
+                    the brief's latest close so levels render when market is closed. */}
+                <SetupCardDetails
+                  card={topCard}
+                  price={quote?.price ?? brief?.live?.price ?? brief?.daily_indicators?.close ?? null}
+                />
               </>
             ) : (
               <div>

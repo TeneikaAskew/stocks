@@ -9,6 +9,7 @@ Output: reports/phase6_playbook_{ticker}.md + reports/phase6_playbook_combined.m
 """
 
 import sys
+import os
 import argparse
 import pandas as pd
 import numpy as np
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from scripts.analysis.shared_utils import (
     TICKERS, REPORTS_DIR,
     load_ticker_1m, enrich_with_indicators, classify_strat_series,
-    build_multi_timeframe_dict,
+    build_multi_timeframe_dict, get_trading_dates,
     md_header, md_table, fmt_pct, fmt_bps, fmt_num, save_report,
     timestamp_str, sample_size_label, progress,
     IndicatorConfig, ExitConfig,
@@ -28,70 +29,236 @@ from scripts.analysis.shared_utils import (
 
 
 # ---------------------------------------------------------------------------
+# Per-ticker target/stop/hold profile
+#
+# One source of truth for BOTH the displayed target/stop strings AND the
+# basis-point thresholds fed to compute_card_stats. Previously the display
+# strings were per-ticker but the backtest bps were hardcoded to IWM's
+# 30/15 (CALL) and 38/20 (PUT) for every ticker, so a SPY card claimed
+# "+0.15%" while being scored at 30 bps. Now that compute_card_stats
+# actually uses the bps, the two must agree. Adding a ticker is a config
+# edit here, not a code change in build_all_cards. Unknown tickers get an
+# explicit default (not silently IWM's or QQQ's numbers).
+# ---------------------------------------------------------------------------
+
+TICKER_PROFILES: Dict[str, Dict[str, float]] = {
+    'IWM': {'call_target': 30, 'call_stop': 15, 'put_target': 38, 'put_stop': 20, 'hold': '10-15 min'},
+    'SPY': {'call_target': 15, 'call_stop': 10, 'put_target': 20, 'put_stop': 12, 'hold': '12-18 min'},
+    'QQQ': {'call_target': 25, 'call_stop': 12, 'put_target': 25, 'put_stop': 12, 'hold': '10-15 min'},
+}
+DEFAULT_TICKER_PROFILE: Dict[str, float] = {
+    'call_target': 25, 'call_stop': 12, 'put_target': 25, 'put_stop': 12, 'hold': '10-15 min',
+}
+
+
+def get_ticker_profile(ticker: str) -> Dict[str, float]:
+    """Return the target/stop/hold profile for a ticker (explicit default)."""
+    return TICKER_PROFILES.get(ticker.upper(), DEFAULT_TICKER_PROFILE)
+
+
+# ---------------------------------------------------------------------------
 # Card data computation
 # ---------------------------------------------------------------------------
+
+# Hold-window horizons (minutes) swept for every card so the UI can show
+# win rate / avg return BY timeframe and surface the best-avg-return hold.
+HOLD_HORIZONS = (5, 15, 30, 60)
+
 
 def compute_card_stats(df: pd.DataFrame, labels: pd.Series,
                        pattern_mask: pd.Series, direction: str,
                        target_bps: float, stop_bps: float,
-                       time_stop_min: int = 30) -> Dict:
-    """Compute statistics for a single playbook card."""
-    close = df['Close'] if 'Close' in df.columns else df['Last']
-    next_return = close.pct_change().shift(-1) * 10000
+                       time_stop_min: int = 30,
+                       horizons=HOLD_HORIZONS) -> Dict:
+    """Score the card at its primary hold and attach a per-horizon sweep.
 
-    n = pattern_mask.sum()
+    The primary stats (win_rate, avg_return_bps, …) are computed at
+    ``time_stop_min`` exactly as before. The SAME target/stop is then scored at
+    each hold window in ``horizons`` and attached so the card can show win rate
+    / avg return BY timeframe:
+
+      * ``horizons``     — list of {minutes, win_rate, avg_return_bps, sample_n}
+      * ``best_horizon`` — the entry with the highest avg_return_bps among
+                           horizons that resolved at least one trade.
+
+    All returns are price-only basis points — NO costs (commission / slippage /
+    spread) are modelled anywhere.
+    """
+    primary = _score_trades(df, labels, pattern_mask, direction,
+                            target_bps, stop_bps, time_stop_min)
+    if primary.get('count', 0) == 0:
+        return primary
+
+    sweep = []
+    for h in horizons:
+        s = _score_trades(df, labels, pattern_mask, direction,
+                          target_bps, stop_bps, h)
+        sweep.append({
+            'minutes': int(h),
+            'win_rate': s.get('win_rate'),
+            'avg_return_bps': s.get('avg_return_bps'),
+            'sample_n': int(s.get('resolved') or 0),
+        })
+    primary['horizons'] = sweep
+
+    valid = [x for x in sweep
+             if x['sample_n'] and x['avg_return_bps'] is not None
+             and not pd.isna(x['avg_return_bps'])]
+    if valid:
+        primary['best_horizon'] = max(valid, key=lambda x: x['avg_return_bps'])
+    return primary
+
+
+def _score_trades(df: pd.DataFrame, labels: pd.Series,
+                  pattern_mask: pd.Series, direction: str,
+                  target_bps: float, stop_bps: float,
+                  time_stop_min: int = 30) -> Dict:
+    """Compute triggered target/stop/time-stop statistics for one card.
+
+    Each pattern occurrence is treated as a trade entered at the close of
+    the signal bar and exited by the FIRST of:
+
+      * **target** — price moves ``target_bps`` in the trade's favour,
+      * **stop**   — price moves ``stop_bps`` against the trade,
+      * **time-stop** — neither is touched within ``time_stop_min`` bars,
+        in which case the trade is marked-to-close at the time-stop bar.
+
+    Target/stop touches are detected intrabar from High/Low. When both the
+    target and the stop fall inside the SAME bar the stop is assumed first
+    (pessimistic — we cannot see intrabar sequencing). The forward window
+    is clipped to the signal bar's own trading session so an overnight gap
+    never counts as part of the trade (the old next-bar proxy silently let
+    it through).
+
+    ``win_rate`` is wins / resolved-trades and ``avg_return_bps`` is the
+    mean realised per-trade return in basis points under that exit logic —
+    NOT the old "did the next 1-minute bar tick up" proxy, which ignored
+    the card's own ``target_bps`` / ``stop_bps`` entirely.
+
+    Returns ``{'count': 0}`` when the pattern never occurs. Occurrences
+    with no same-session forward bar are excluded from the denominator and
+    counted in ``skipped_insufficient_bars`` — no silent coercion to zero
+    (CLAUDE.md §3.7).
+    """
+    close = df['Close'] if 'Close' in df.columns else df['Last']
+    high = df['High'] if 'High' in df.columns else close
+    low = df['Low'] if 'Low' in df.columns else close
+
+    n = int(pattern_mask.sum())
     if n == 0:
         return {'count': 0}
 
-    if direction == 'CALL':
-        trade_return = next_return[pattern_mask]
-        win_mask = trade_return > 0
-    else:
-        trade_return = -next_return[pattern_mask]
-        win_mask = trade_return > 0
+    # Bound forward windows to the signal bar's own session so overnight
+    # gaps don't leak into a trade's path.
+    trade_dates = np.asarray(get_trading_dates(df))
+    close_v = close.to_numpy(dtype=float)
+    high_v = high.to_numpy(dtype=float)
+    low_v = low.to_numpy(dtype=float)
+    n_rows = len(close_v)
 
-    win_rate = win_mask.mean() if len(win_mask) > 0 else 0
-    avg_return = trade_return.mean() if len(trade_return) > 0 else 0
+    indices = df.index[pattern_mask]
+    realized_bps: List[float] = []   # per-trade realised return (bps)
+    win_flags: List[bool] = []
+    mfe_list: List[float] = []
+    mae_list: List[float] = []
+    skipped = 0
 
-    # Forward returns at different horizons
+    def _pos(idx):
+        p = df.index.get_loc(idx)
+        return p.start if isinstance(p, slice) else p
+
+    for idx in indices:
+        pos = _pos(idx)
+        entry = close_v[pos]
+        if not np.isfinite(entry) or entry <= 0:
+            skipped += 1
+            continue
+
+        end = min(pos + time_stop_min + 1, n_rows)
+        sess = trade_dates[pos]
+        fwd_idx = [j for j in range(pos + 1, end) if trade_dates[j] == sess]
+        if not fwd_idx:
+            skipped += 1
+            continue
+
+        tgt = entry * (1 + target_bps / 1e4) if direction == 'CALL' \
+            else entry * (1 - target_bps / 1e4)
+        stp = entry * (1 - stop_bps / 1e4) if direction == 'CALL' \
+            else entry * (1 + stop_bps / 1e4)
+
+        outcome = None
+        mfe = 0.0
+        mae = 0.0
+        for j in fwd_idx:
+            hi, lo = high_v[j], low_v[j]
+            if direction == 'CALL':
+                mfe = max(mfe, (hi - entry) / entry * 1e4)
+                mae = min(mae, (lo - entry) / entry * 1e4)
+                hit_stop = lo <= stp
+                hit_tgt = hi >= tgt
+            else:
+                mfe = max(mfe, (entry - lo) / entry * 1e4)
+                mae = min(mae, (entry - hi) / entry * 1e4)
+                hit_stop = hi >= stp
+                hit_tgt = lo <= tgt
+            if hit_stop:                      # stop assumed first within a bar
+                outcome = -stop_bps
+                break
+            if hit_tgt:
+                outcome = target_bps
+                break
+
+        if outcome is None:                   # time-stop: mark to close
+            last = fwd_idx[-1]
+            if direction == 'CALL':
+                outcome = (close_v[last] - entry) / entry * 1e4
+            else:
+                outcome = (entry - close_v[last]) / entry * 1e4
+
+        realized_bps.append(float(outcome))
+        win_flags.append(bool(outcome > 0))
+        mfe_list.append(mfe)
+        mae_list.append(mae)
+
+    resolved = len(realized_bps)
+    if resolved == 0:
+        return {'count': n, 'resolved': 0,
+                'skipped_insufficient_bars': skipped,
+                'win_rate': np.nan, 'avg_return_bps': np.nan,
+                'confidence': sample_size_label(0)}
+
+    win_rate = float(np.mean(win_flags))
+    avg_return = float(np.mean(realized_bps))
+
+    # Diagnostic forward-horizon means (same-session, target/stop-agnostic)
     fwd_returns = {}
     for p in [5, 10, 15, 30]:
-        fwd = close.pct_change(p).shift(-p) * 10000
-        if direction == 'PUT':
-            fwd = -fwd
-        vals = fwd[pattern_mask].dropna()
-        fwd_returns[p] = vals.mean() if len(vals) > 0 else 0
-
-    # MFE/MAE over 30 bars
-    indices = df.index[pattern_mask]
-    mfe_list, mae_list = [], []
-    for idx in indices:
-        pos = df.index.get_loc(idx)
-        end = min(pos + 31, len(df))
-        if end <= pos + 1:
-            continue
-        future = close.iloc[pos:end]
-        ep = close.iloc[pos]
-        if ep <= 0:
-            continue
-        if direction == 'CALL':
-            rets = (future - ep) / ep * 10000
-        else:
-            rets = (ep - future) / ep * 10000
-        mfe_list.append(rets.max())
-        mae_list.append(rets.min())
+        vals = []
+        for idx in indices:
+            pos = _pos(idx)
+            tp = pos + p
+            if tp >= n_rows or trade_dates[tp] != trade_dates[pos]:
+                continue
+            ep = close_v[pos]
+            if ep <= 0:
+                continue
+            r = (close_v[tp] - ep) / ep * 1e4
+            vals.append(r if direction == 'CALL' else -r)
+        fwd_returns[p] = float(np.mean(vals)) if vals else np.nan
 
     return {
-        'count': int(n),
+        'count': n,
+        'resolved': resolved,
+        'skipped_insufficient_bars': skipped,
         'win_rate': win_rate,
         'avg_return_bps': avg_return,
-        'fwd_5': fwd_returns.get(5, 0),
-        'fwd_10': fwd_returns.get(10, 0),
-        'fwd_15': fwd_returns.get(15, 0),
-        'fwd_30': fwd_returns.get(30, 0),
-        'avg_mfe': np.mean(mfe_list) if mfe_list else 0,
-        'avg_mae': np.mean(mae_list) if mae_list else 0,
-        'confidence': sample_size_label(int(n)),
+        'fwd_5': fwd_returns.get(5, np.nan),
+        'fwd_10': fwd_returns.get(10, np.nan),
+        'fwd_15': fwd_returns.get(15, np.nan),
+        'fwd_30': fwd_returns.get(30, np.nan),
+        'avg_mfe': float(np.mean(mfe_list)) if mfe_list else np.nan,
+        'avg_mae': float(np.mean(mae_list)) if mae_list else np.nan,
+        'confidence': sample_size_label(resolved),
     }
 
 
@@ -104,8 +271,15 @@ def generate_card(card_num: int, title: str, ticker: str,
                   direction: str, stats: Dict,
                   target_pct: str, stop_pct: str,
                   hold_time: str, warnings: List[str],
-                  ticker_notes: List[str]) -> str:
-    """Generate a single playbook card in markdown."""
+                  ticker_notes: List[str]) -> Tuple[str, Dict]:
+    """Generate a single playbook card.
+
+    Returns ``(markdown, record)`` — the human-readable markdown card AND a
+    structured record dict. The record is the source of truth the
+    ``playbook_cards`` table (and hence ``/api/playbook``) is built from, so the
+    UI reads typed columns instead of regex-scraping the prose. Both come from
+    the same inputs, so they cannot drift.
+    """
 
     card = f"\n---\n\n"
     card += md_header(f"{ticker} CARD {card_num}: {title}", 3)
@@ -120,17 +294,38 @@ def generate_card(card_num: int, title: str, ticker: str,
         card += f"  - [ ] {item}\n"
     card += "\n"
 
-    # Entry
-    if stats['count'] > 0:
+    # Entry — win_rate/avg_return are computed under the card's own
+    # target/stop/time-stop exit (see compute_card_stats). They are NaN only
+    # when the pattern never resolved a same-session trade.
+    resolved = stats.get('resolved', stats.get('count', 0))
+    wr = stats.get('win_rate')
+    if stats['count'] > 0 and resolved and wr is not None and not pd.isna(wr):
         card += f"**IF ALL CONFIRMED -> {direction} ENTRY**\n"
-        card += f"  - Confidence: {stats['confidence']} (n={stats['count']:,})\n"
-        card += f"  - Historical win rate: {stats['win_rate']:.1%}\n"
-        card += f"  - Avg return: {fmt_bps(stats['avg_return_bps'])}\n"
+        card += f"  - Confidence: {stats['confidence']} (n={resolved:,} resolved trades)\n"
+        card += f"  - Historical win rate: {wr:.1%} (target {target_pct} before stop {stop_pct})\n"
+        card += f"  - Avg return: {fmt_bps(stats['avg_return_bps'])} (per trade)\n"
         card += f"  - Target: {target_pct}\n"
         card += f"  - Stop: {stop_pct}\n"
         card += f"  - Expected hold: {hold_time}\n"
         card += f"  - Avg MFE: {fmt_bps(stats['avg_mfe'])}\n"
-        card += f"  - Avg MAE: {fmt_bps(stats['avg_mae'])}\n\n"
+        card += f"  - Avg MAE: {fmt_bps(stats['avg_mae'])}\n"
+        # Win rate / avg return BY hold window (price-only, no costs).
+        sweep = stats.get('horizons') or []
+        if sweep:
+            cells = []
+            for h in sweep:
+                hw = h.get('win_rate'); ha = h.get('avg_return_bps')
+                hw = '—' if hw is None or pd.isna(hw) else f"{hw:.0%}"
+                ha = '—' if ha is None or pd.isna(ha) else fmt_bps(ha)
+                cells.append(f"{h['minutes']}min {hw}/{ha}")
+            card += f"  - By hold window: {' | '.join(cells)}\n"
+        best = stats.get('best_horizon')
+        if best:
+            bw = best.get('win_rate')
+            bw = '—' if bw is None or pd.isna(bw) else f"{bw:.1%}"
+            card += (f"  - Best avg return: {best['minutes']}-min hold "
+                     f"({bw} win, {fmt_bps(best['avg_return_bps'])})\n")
+        card += "\n"
     else:
         card += f"**IF ALL CONFIRMED -> {direction} ENTRY**\n"
         card += f"  - Insufficient data for this pattern on {ticker}\n\n"
@@ -147,12 +342,66 @@ def generate_card(card_num: int, title: str, ticker: str,
         card += f"  - {note}\n"
     card += "\n"
 
-    return card
+    # Structured record — mirrors what the markdown displays, but typed.
+    # win_rate is a fraction in [0, 1]; avg_return_bps is per-trade bps. Both
+    # are None (not 0) when the pattern never resolved a same-session trade —
+    # missing must never be confused with a real value (CLAUDE.md §3.7).
+    desc_bullets = [
+        ln.strip().lstrip('*').strip()
+        for ln in visual_setup.splitlines() if ln.strip()
+    ]
+
+    def _num(v):
+        return None if v is None or pd.isna(v) else float(v)
+
+    # Per-hold-window sweep + best-avg-return hold (price-only, no costs).
+    sweep = [
+        {'minutes': h['minutes'], 'win_rate': _num(h.get('win_rate')),
+         'avg_return_bps': _num(h.get('avg_return_bps')),
+         'sample_n': int(h.get('sample_n') or 0)}
+        for h in (stats.get('horizons') or [])
+    ]
+    best = stats.get('best_horizon') or {}
+
+    record = {
+        'card_num': card_num,
+        'name': f"{ticker} CARD {card_num}: {title}",
+        'direction': direction,
+        'description': '; '.join(desc_bullets[:3]),
+        'conditions': list(checklist),
+        'win_rate': _num(stats.get('win_rate')),
+        'avg_return_bps': _num(stats.get('avg_return_bps')),
+        'sample_n': int(stats.get('resolved') or 0) or None,
+        'target_pct': target_pct,
+        'stop_pct': stop_pct,
+        'avg_mfe_bps': _num(stats.get('avg_mfe')),
+        'avg_mae_bps': _num(stats.get('avg_mae')),
+        'confidence': stats.get('confidence'),
+        'horizons': sweep,
+        'best_horizon_min': int(best['minutes']) if best.get('minutes') is not None else None,
+        'best_horizon_win_rate': _num(best.get('win_rate')),
+        'best_horizon_avg_bps': _num(best.get('avg_return_bps')),
+    }
+
+    return card, record
 
 
-def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
-    """Build all 12 playbook cards for a ticker."""
+def build_all_cards(ticker: str, df: pd.DataFrame,
+                    labels: pd.Series) -> Tuple[str, List[Dict]]:
+    """Build all 12 playbook cards for a ticker.
+
+    Returns ``(markdown, records)`` — the concatenated markdown report and the
+    list of structured card records (one per card) for ``playbook_cards``.
+    """
     report = ""
+    card_records: List[Dict] = []
+
+    def card(*args, **kwargs):
+        """Collect each card's structured record while accumulating markdown."""
+        md, rec = generate_card(*args, **kwargs)
+        card_records.append(rec)
+        return md
+
     ind = IndicatorConfig()
     rsi_col = ind.rsi_col
     close = df['Close'] if 'Close' in df.columns else df['Last']
@@ -168,24 +417,21 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     prev2 = labels.shift(2)
     next_label = labels.shift(-1)
 
-    # Ticker-specific defaults
-    if ticker == 'IWM':
-        call_target, put_target = '+0.30%', '+0.38%'
-        call_stop, put_stop = '-0.15%', '-0.20%'
-        hold_time = '10-15 min'
-    elif ticker == 'SPY':
-        call_target, put_target = '+0.15%', '+0.20%'
-        call_stop, put_stop = '-0.10%', '-0.12%'
-        hold_time = '12-18 min'
-    else:  # QQQ
-        call_target, put_target = '+0.25%', '+0.25%'
-        call_stop, put_stop = '-0.12%', '-0.12%'
-        hold_time = '10-15 min'
+    # Per-ticker target/stop/hold profile — single source for both the
+    # displayed strings and the backtest bps (see TICKER_PROFILES).
+    prof = get_ticker_profile(ticker)
+    ct_bps, cs_bps = prof['call_target'], prof['call_stop']
+    pt_bps, ps_bps = prof['put_target'], prof['put_stop']
+    hold_time = prof['hold']
+    call_target = f"+{ct_bps / 100:.2f}%"
+    call_stop = f"-{cs_bps / 100:.2f}%"
+    put_target = f"+{pt_bps / 100:.2f}%"
+    put_stop = f"-{ps_bps / 100:.2f}%"
 
     # --- CARD 1: Bullish Continuation (2U-2U-2U) ---
     mask = (prev2 == '2U') & (prev == '2U') & (labels == '2U')
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
+    report += card(
         1, "Bullish Continuation (2U-2U-2U)", ticker,
         "  * Daily bar is 2U (higher high, higher low)\n"
         "  * 15m bar is 2U\n"
@@ -209,8 +455,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 2: Bearish Continuation (2D-2D-2D) ---
     mask = (prev2 == '2D') & (prev == '2D') & (labels == '2D')
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
+    report += card(
         2, "Bearish Continuation (2D-2D-2D)", ticker,
         "  * Daily bar is 2D (lower high, lower low)\n"
         "  * 15m bar is 2D\n"
@@ -234,8 +480,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 3: Bullish Reversal 2-1-2 ---
     mask = (prev2 == '2D') & (prev == '1') & (labels == '2U')
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
+    report += card(
         3, "Bullish Reversal (2D-1-2U)", ticker,
         "  * Previous bars: 2D (bearish) -> 1 (inside bar compression)\n"
         "  * Current bar: Breaking above the inside bar's high (2U)",
@@ -256,8 +502,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 4: Bearish Reversal 2-1-2 ---
     mask = (prev2 == '2U') & (prev == '1') & (labels == '2D')
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
+    report += card(
         4, "Bearish Reversal (2U-1-2D)", ticker,
         "  * Previous bars: 2U (bullish) -> 1 (inside bar compression)\n"
         "  * Current bar: Breaking below the inside bar's low (2D)",
@@ -279,8 +525,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 5: Outside Bar Breakout (Type 3) ---
     mask = labels == '3'
     bullish_3 = mask & (close > close.shift(1))
-    stats_bull = compute_card_stats(df, labels, bullish_3, 'CALL', 30, 15)
-    report += generate_card(
+    stats_bull = compute_card_stats(df, labels, bullish_3, 'CALL', ct_bps, cs_bps)
+    report += card(
         5, "Outside Bar Breakout (Type 3 Bullish)", ticker,
         "  * Current bar is Type 3 (higher high AND lower low than prev bar)\n"
         "  * Close is above previous bar's close (bullish resolution)",
@@ -301,8 +547,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 6: ORB Breakout Bullish ---
     mask = (orb_trend == 1) & (labels.isin(['2U', '3']))
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
+    report += card(
         6, "ORB Breakout — Bullish", ticker,
         "  * Price has broken above 30m Opening Range High\n"
         "  * Current Strat bar confirms: 2U or 3",
@@ -324,8 +570,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
 
     # --- CARD 7: ORB Breakout Bearish ---
     mask = (orb_trend == -1) & (labels.isin(['2D', '3']))
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
+    report += card(
         7, "ORB Breakout — Bearish", ticker,
         "  * Price has broken below 30m Opening Range Low\n"
         "  * Current Strat bar confirms: 2D or 3",
@@ -353,8 +599,9 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = was_above & now_within & (labels == '2D')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'PUT', 20, 15)
-    report += generate_card(
+    mr_target_bps = 20  # mean-reversion uses a tighter fixed target than the trend profile
+    stats = compute_card_stats(df, labels, mask, 'PUT', mr_target_bps, ps_bps)
+    report += card(
         8, "ORB Failure / Mean Reversion", ticker,
         "  * Price broke above ORB high, then FAILED and returned inside range\n"
         "  * Current Strat shows 2D (confirming the failure)",
@@ -364,7 +611,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
             "Strat shows reversal (2D after 2U or 3)",
             "VWAP is nearby (target)",
         ],
-        'PUT', stats, put_target, put_stop, '8-15 min',
+        'PUT', stats, f"+{mr_target_bps / 100:.2f}%", put_stop, '8-15 min',
         [
             "Price re-breaks ORB high -> failure of the failure, exit",
             "Price hits ORB mid and stalls -> take partial profit",
@@ -378,8 +625,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = (df['At_Prev_Day_Low'] == 1) & (labels == '2U')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
+    report += card(
         9, "Support Bounce (at Historical Level)", ticker,
         "  * Price is at previous day's low (support level)\n"
         "  * Current bar is 2U (bouncing off support)",
@@ -403,8 +650,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = (df['At_Prev_Day_High'] == 1) & (labels == '2D')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'PUT', 38, 20)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'PUT', pt_bps, ps_bps)
+    report += card(
         10, "Resistance Rejection (at Historical Level)", ticker,
         "  * Price is at previous day's high (resistance level)\n"
         "  * Current bar is 2D (rejecting off resistance)",
@@ -429,8 +676,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         mask = (df['Order_Block_Test'] == 1) & (df.get('Order_Block_Position', 0) >= 0) & (labels == '2U')
     else:
         mask = pd.Series(False, index=df.index)
-    stats = compute_card_stats(df, labels, mask, 'CALL', 30, 15)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, mask, 'CALL', ct_bps, cs_bps)
+    report += card(
         11, "Order Block Test (Institutional Zone)", ticker,
         "  * Price is testing an identified order block zone\n"
         "  * Current bar is 2U (bouncing off the institutional zone)",
@@ -452,8 +699,8 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
     # --- CARD 12: FTFC Maximum Conviction ---
     # All timeframes aligned (approximate: EMA cross + ORB trend + 2U or 2D)
     bull_ftfc = (ema_cross == 1) & (orb_trend == 1) & (labels == '2U') & (rsi.between(40, 65))
-    stats = compute_card_stats(df, labels, bull_ftfc, 'CALL', 30, 15)
-    report += generate_card(
+    stats = compute_card_stats(df, labels, bull_ftfc, 'CALL', ct_bps, cs_bps)
+    report += card(
         12, "FTFC Maximum Conviction (All Aligned)", ticker,
         "  * ALL timeframes showing the same direction\n"
         "  * EMAs bullish, ORB bullish, Strat 2U, RSI healthy\n"
@@ -476,7 +723,7 @@ def build_all_cards(ticker: str, df: pd.DataFrame, labels: pd.Series) -> str:
         _get_ticker_notes(ticker, 'ftfc_conviction'),
     )
 
-    return report
+    return report, card_records
 
 
 def _get_ticker_notes(ticker: str, card_type: str) -> List[str]:
@@ -690,8 +937,61 @@ def generate_quick_reference() -> str:
 # Main Runner
 # ---------------------------------------------------------------------------
 
-def run_phase6(tickers: list = None):
-    """Run Phase 6 — generate all playbook cards."""
+def write_playbook_cards(ticker: str, records: List[Dict]) -> int:
+    """Upsert the structured playbook cards into Cloud SQL (``playbook_cards``).
+
+    This is the typed source of truth ``/api/playbook`` reads — it replaces the
+    fragile regex-scrape of the markdown. A DB/schema failure is INTERNAL (our
+    code), so it is raised, never swallowed into a fake success (CLAUDE.md §3.7).
+    """
+    if not records:
+        return 0
+
+    from gcp.database import upsert_dataframe
+
+    rows = []
+    for r in records:
+        rows.append({
+            'ticker': ticker.upper(),
+            'card_num': r['card_num'],
+            'name': r['name'],
+            'direction': r['direction'],
+            'description': r.get('description') or None,
+            # JSONB column — pass the Python list; upsert_dataframe builds a
+            # typed pg_insert against the reflected JSONB column, so SQLAlchemy
+            # serializes it exactly once (a pre-dumped string would double-encode).
+            'conditions': r.get('conditions') or [],
+            'win_rate': r.get('win_rate'),
+            'avg_return_bps': r.get('avg_return_bps'),
+            'sample_n': r.get('sample_n'),
+            'target_pct': r.get('target_pct'),
+            'stop_pct': r.get('stop_pct'),
+            'avg_mfe_bps': r.get('avg_mfe_bps'),
+            'avg_mae_bps': r.get('avg_mae_bps'),
+            'confidence': r.get('confidence'),
+            # Per-hold-window sweep (JSONB) + best-avg-return hold.
+            'horizons': r.get('horizons') or [],
+            'best_horizon_min': r.get('best_horizon_min'),
+            'best_horizon_win_rate': r.get('best_horizon_win_rate'),
+            'best_horizon_avg_bps': r.get('best_horizon_avg_bps'),
+        })
+
+    n = upsert_dataframe(
+        pd.DataFrame(rows), 'playbook_cards',
+        conflict_cols=['ticker', 'card_num'],
+    )
+    progress(f"Upserted {n} playbook_cards rows", ticker)
+    return n
+
+
+def run_phase6(tickers: list = None, write_db: bool = False):
+    """Run Phase 6 — generate all playbook cards.
+
+    When ``write_db`` is set (``--write-db`` / ``PHASE6_WRITE_DB=1``) the
+    structured card records are upserted into the ``playbook_cards`` Cloud SQL
+    table, which is the source of truth ``/api/playbook`` reads. Markdown is
+    still written for human consumption.
+    """
     if tickers is None:
         tickers = TICKERS
 
@@ -719,11 +1019,14 @@ def run_phase6(tickers: list = None):
         report += f"Data: {df.index.min()} to {df.index.max()} ({len(df):,} bars)\n"
         report += "\n12 decision cards for real-time trading.\n"
 
-        cards = build_all_cards(ticker, df, labels)
+        cards, card_records = build_all_cards(ticker, df, labels)
         report += cards
 
         save_report(report, f'phase6_playbook_{ticker.lower()}.md')
         combined_report += f"\n---\n\n" + cards
+
+        if write_db:
+            write_playbook_cards(ticker, card_records)
 
         progress("Phase 6 complete!", ticker)
 
@@ -733,5 +1036,10 @@ def run_phase6(tickers: list = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Phase 6: Playbook')
     parser.add_argument('--tickers', nargs='+', default=TICKERS)
+    parser.add_argument(
+        '--write-db', action='store_true',
+        default=os.environ.get('PHASE6_WRITE_DB') == '1',
+        help='Upsert structured cards into the playbook_cards Cloud SQL table',
+    )
     args = parser.parse_args()
-    run_phase6(tickers=args.tickers)
+    run_phase6(tickers=args.tickers, write_db=args.write_db)

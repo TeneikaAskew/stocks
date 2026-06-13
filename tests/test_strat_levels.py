@@ -16,6 +16,7 @@ from lib.strat_levels import (
     identify_triggers,
     build_level_map,
     format_levels_for_brief,
+    select_nearest_levels,
     StratLevel,
     LevelMap,
     MIN_ROOM_PCT,
@@ -866,3 +867,75 @@ class TestLevelsToNamedDict:
             levels=[], pmg_zones=[],
         )
         assert levels_to_named_dict(empty) == {}
+
+
+# ─── select_nearest_levels (next-N each way) ─────────────────────────────
+
+
+class TestSelectNearestLevels:
+    """The brief's 'next two call levels / next two put levels' display.
+
+    Mirrors the user's worked example: price 250, with PWH 251.50 and PDH
+    252 above (call levels) and PQL 248 and PMH 245 below (put levels).
+    """
+
+    def _levels(self):
+        return {
+            'PWH': StratLevel('PWH', 251.50, timeframe='week', level_type='high'),
+            'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high'),
+            'PQL': StratLevel('PQL', 248.00, timeframe='quarter', level_type='low'),
+            'PMH': StratLevel('PMH', 245.00, timeframe='month', level_type='high'),
+        }
+
+    def test_next_two_call_levels_nearest_first(self):
+        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
+        assert [lv['name'] for lv in out['calls']] == ['PWH', 'PDH']
+        assert out['calls'][0]['price'] == 251.50
+        assert out['calls'][0]['period'] == 'week'
+        assert out['calls'][1]['price'] == 252.00
+
+    def test_next_two_put_levels_nearest_first(self):
+        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
+        # nearest below first: PQL (248) then PMH (245)
+        assert [lv['name'] for lv in out['puts']] == ['PQL', 'PMH']
+        assert out['puts'][0]['price'] == 248.00
+        assert out['puts'][1]['price'] == 245.00
+
+    def test_direction_is_positional_not_by_high_low(self):
+        # a prior-month HIGH below price is a PUT (bearish) level
+        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
+        put_names = [lv['name'] for lv in out['puts']]
+        assert 'PMH' in put_names  # month HIGH, but it sits below price
+
+    def test_distance_pct_sign(self):
+        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
+        assert out['calls'][0]['distance_pct'] > 0   # above
+        assert out['puts'][0]['distance_pct'] < 0    # below
+
+    def test_dedup_coincident_prices(self):
+        lvls = {
+            'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high'),
+            'PWH': StratLevel('PWH', 252.00, timeframe='week', level_type='high'),
+            'PMH': StratLevel('PMH', 255.00, timeframe='month', level_type='high'),
+        }
+        out = select_nearest_levels(250.0, lvls, atr=5.0, n=2)
+        prices = [lv['price'] for lv in out['calls']]
+        assert prices == [252.00, 255.00]  # 252 not counted twice
+
+    def test_short_side_not_padded(self):
+        # only one level above -> calls has length 1, never fabricated
+        lvls = {'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high')}
+        out = select_nearest_levels(250.0, lvls, atr=5.0, n=2)
+        assert len(out['calls']) == 1
+        assert out['puts'] == []
+
+    def test_build_level_map_populates_call_put_levels(self):
+        df = _daily_df(120)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('TEST', df, price, atr=float(df['Close'].iloc[-1] * 0.01))
+        assert isinstance(lm.call_levels, list)
+        assert isinstance(lm.put_levels, list)
+        for lv in lm.call_levels:
+            assert lv['price'] > price
+        for lv in lm.put_levels:
+            assert lv['price'] < price
