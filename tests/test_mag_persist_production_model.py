@@ -57,7 +57,7 @@ def _toy_data(n_rows: int = 100, n_features: int = 4):
 
 def _capture_blob_uploads():
     """Wire up a MagicMock google.cloud.storage that records every
-    upload_from_string call. Returns (patcher_ctx, captured_dict).
+    upload_from_string call. Returns (fake_client, captured_dict).
     """
     captured: dict[str, bytes] = {}
 
@@ -76,16 +76,27 @@ def _capture_blob_uploads():
     return fake_client, captured
 
 
-def test_persists_three_blobs_with_correct_names(monkeypatch):
+@pytest.fixture
+def joblib_dump_stub():
+    """Stub joblib.dump so MagicMock estimators don't trip PicklingError
+    in CI (joblib is real there; in the sandbox it's already a MagicMock
+    via _stub_missing_modules). The stub writes a placeholder so the
+    surrounding upload code still receives bytes."""
+    import joblib as _joblib_mod
+    def _fake_dump(obj, buf):
+        buf.write(b"PICKLED_MODEL_STUB")
+    with patch.object(_joblib_mod, "dump", side_effect=_fake_dump):
+        yield
+
+
+def test_persists_three_blobs_with_correct_names(monkeypatch, joblib_dump_stub):
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
 
     X, y = _toy_data()
     fake_client, captured = _capture_blob_uploads()
 
-    # Mock the model fit/train surface — we're testing persistence, not training.
-    fake_model = MagicMock()
-    with patch.object(mwf, "make_lgbm", return_value=fake_model), \
+    with patch.object(mwf, "make_lgbm", return_value=MagicMock()), \
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="testrun-001",
@@ -94,16 +105,19 @@ def test_persists_three_blobs_with_correct_names(monkeypatch):
             calibration="none",
         )
 
+    # Atomic-publish: blobs land under a run-scoped path and a LATEST
+    # pointer (single-blob write) is updated last. The contract returned
+    # is the canonical {ticker}/{tf}/ prefix where LATEST lives.
     assert uri == "gs://test-bucket/magnitude-models/production/IWM/5m/"
-    keys = set(captured.keys())
-    assert keys == {
-        "magnitude-models/production/IWM/5m/model.joblib",
-        "magnitude-models/production/IWM/5m/feature_cols.txt",
-        "magnitude-models/production/IWM/5m/VERSION",
-    }
+    expected_run_prefix = "magnitude-models/production/IWM/5m/testrun-001"
+    assert f"{expected_run_prefix}/model.joblib" in captured
+    assert f"{expected_run_prefix}/feature_cols.txt" in captured
+    assert f"{expected_run_prefix}/VERSION" in captured
+    assert "magnitude-models/production/IWM/5m/LATEST" in captured
+    assert captured["magnitude-models/production/IWM/5m/LATEST"] == b"testrun-001"
 
 
-def test_version_blob_is_the_run_id(monkeypatch):
+def test_version_blob_is_the_run_id(monkeypatch, joblib_dump_stub):
     """mag_inference reads VERSION to pin the model_version column in
     magnitude_per_bar_predictions — must match the run_id exactly."""
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
@@ -120,11 +134,12 @@ def test_version_blob_is_the_run_id(monkeypatch):
             feature_cols=["x"], calibration="none",
         )
 
-    version_blob = captured["magnitude-models/production/SPY/5m/VERSION"]
-    assert version_blob == b"walk-forward-2026-06-13-SPY-5m-v3"
+    run_id = "walk-forward-2026-06-13-SPY-5m-v3"
+    version_blob = captured[f"magnitude-models/production/SPY/5m/{run_id}/VERSION"]
+    assert version_blob == run_id.encode()
 
 
-def test_feature_cols_blob_is_newline_delimited(monkeypatch):
+def test_feature_cols_blob_is_newline_delimited(monkeypatch, joblib_dump_stub):
     """mag_inference does feature_cols.txt.split('\\n') — must round-trip."""
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
@@ -140,11 +155,11 @@ def test_feature_cols_blob_is_newline_delimited(monkeypatch):
             feature_cols=cols, calibration="none",
         )
 
-    blob = captured["magnitude-models/production/QQQ/5m/feature_cols.txt"]
+    blob = captured["magnitude-models/production/QQQ/5m/r/feature_cols.txt"]
     assert blob.decode("utf-8").split("\n") == cols
 
 
-def test_returns_none_on_upload_failure_no_raise(monkeypatch):
+def test_returns_none_on_upload_failure_no_raise(monkeypatch, joblib_dump_stub):
     """A failing GCS upload must NOT raise — walk_forward's metric
     persistence is the primary output. Failure is logged and surfaced as
     a None return."""
@@ -164,7 +179,42 @@ def test_returns_none_on_upload_failure_no_raise(monkeypatch):
     assert got is None
 
 
-def test_uses_calibrated_wrapper_when_calibration_not_none(monkeypatch):
+def test_latest_pointer_updated_last(monkeypatch, joblib_dump_stub):
+    """Codex P2 — atomic publish: LATEST is the LAST blob written. If
+    LATEST upload fails after the staging blobs land, the previous
+    LATEST value stays valid and inference loads the prior version
+    instead of pairing fresh model.joblib with stale metadata."""
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    order: list[str] = []
+
+    def make_blob(name):
+        b = MagicMock()
+        def _up(data, content_type=None):
+            order.append(name)
+        b.upload_from_string = _up
+        return b
+
+    fake_bucket = MagicMock()
+    fake_bucket.blob.side_effect = make_blob
+    fake_client = MagicMock()
+    fake_client.bucket.return_value = fake_bucket
+
+    with patch.object(mwf, "make_lgbm", return_value=MagicMock()), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        mwf._persist_production_model_artifact(
+            "IWM", "5m", run_id="rX", X_full=X, y_full=y,
+            feature_cols=["x"], calibration="none",
+        )
+
+    # LATEST must be the last write in the upload sequence.
+    assert order[-1].endswith("/LATEST"), \
+        f"LATEST must be the LAST blob to land for atomic publish; order was {order}"
+
+
+def test_uses_calibrated_wrapper_when_calibration_not_none(monkeypatch, joblib_dump_stub):
     """When calibration='sigmoid' or 'isotonic', we must wrap the LGBM
     in CalibratedClassifierCV — same as the per-fold training. A drift
     here would silently ship un-calibrated probabilities to live
@@ -177,7 +227,6 @@ def test_uses_calibrated_wrapper_when_calibration_not_none(monkeypatch):
 
     # Track whether CalibratedClassifierCV is instantiated.
     ccv_seen = []
-    real_ccv = mwf.CalibratedClassifierCV
 
     def fake_ccv(*args, **kwargs):
         ccv_seen.append(kwargs)
@@ -252,3 +301,54 @@ def test_env_var_alternative_to_cli_flag():
     import inspect
     src = inspect.getsource(mwf.main)
     assert "MAG_PERSIST_PRODUCTION_MODEL" in src
+
+
+def test_run_all_cells_threads_persist_flag_through():
+    """Codex P2 #615: --all-cells dispatch was silently losing the flag
+    because run_all_cells didn't accept it. Pin the wiring: the signature
+    has the kwarg AND every internal walk_forward call forwards it."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    import inspect
+    sig = inspect.signature(mwf.run_all_cells)
+    assert "persist_production_model" in sig.parameters, \
+        "run_all_cells must accept persist_production_model (Codex P2 #615)"
+    src = inspect.getsource(mwf.run_all_cells)
+    assert "persist_production_model=persist_production_model" in src, \
+        "run_all_cells must forward the flag into walk_forward"
+
+
+# ──────────────────── inference featurize contract ────────────────────
+#
+# Codex P1 #615: feature_cols persisted by walk_forward are the POST-
+# featurize() names (dummies for prev1_candle, etc). mag_inference must
+# run featurize() on the live frame before alignment, or every cron
+# raises 'feature drift' against the raw strat_features_<tf> schema.
+
+
+def test_score_and_persist_runs_featurize_before_alignment():
+    """If mag_inference._score_and_persist source mentions `featurize`,
+    the P1 fix is in place. If a future refactor removes it, this test
+    catches it before the inference cron silently breaks."""
+    from gcp.research.magnitude_engine import mag_inference as mi
+    import inspect
+    src = inspect.getsource(mi._score_and_persist)
+    assert "featurize" in src, (
+        "mag_inference._score_and_persist must call mag_pred_train.featurize() "
+        "on the raw frame before column alignment — without it, every cron "
+        "fails with 'feature drift' against the post-one-hot training schema. "
+        "Codex P1 #615."
+    )
+
+
+def test_load_model_reads_latest_pointer():
+    """The atomic-publish layout (#615 P2) means the artifact loader
+    must read LATEST first, then follow the pointer to {ticker}/{tf}/
+    {run_id}/. A loader that hard-codes the old flat path silently loads
+    a stale model after a partial retrain."""
+    from gcp.research.magnitude_engine import mag_inference as mi
+    import inspect
+    src = inspect.getsource(mi._load_model_and_version)
+    assert "LATEST" in src, (
+        "mag_inference._load_model_and_version must read the LATEST "
+        "pointer for atomic-publish safety (Codex P2 #615)."
+    )

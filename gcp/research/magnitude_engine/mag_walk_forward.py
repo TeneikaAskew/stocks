@@ -356,7 +356,15 @@ def _persist_production_model_artifact(
     import io
     import joblib
     bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
-    prefix = f"magnitude-models/production/{ticker}/{tf}"
+    # Atomic-publish layout (Codex P2 #615): every retrain lands its
+    # three artifacts under a per-run path, then we update a single
+    # LATEST pointer file last. A failure between the three blob writes
+    # and the LATEST write leaves the prior production version intact —
+    # inference always reads LATEST first and follows it to the
+    # run-scoped path, so it can't mix a fresh model.joblib with stale
+    # feature_cols.txt.
+    base_prefix = f"magnitude-models/production/{ticker}/{tf}"
+    run_prefix = f"{base_prefix}/{run_id}"
 
     log.info("training production model on full dataset "
              "(%d rows × %d features, calibration=%s)",
@@ -375,19 +383,25 @@ def _persist_production_model_artifact(
         )
         model.fit(X_full, y_full)
 
-    # Upload artifacts: model.joblib, feature_cols.txt, VERSION.
+    # Upload artifacts under run_prefix; update LATEST pointer LAST.
     try:
         bucket = gcs.Client().bucket(bucket_name)
         buf = io.BytesIO()
         joblib.dump(model, buf)
-        bucket.blob(f"{prefix}/model.joblib").upload_from_string(
+        bucket.blob(f"{run_prefix}/model.joblib").upload_from_string(
             buf.getvalue(), content_type="application/octet-stream")
-        bucket.blob(f"{prefix}/feature_cols.txt").upload_from_string(
+        bucket.blob(f"{run_prefix}/feature_cols.txt").upload_from_string(
             "\n".join(feature_cols), content_type="text/plain")
-        bucket.blob(f"{prefix}/VERSION").upload_from_string(
+        bucket.blob(f"{run_prefix}/VERSION").upload_from_string(
             run_id, content_type="text/plain")
-        uri = f"gs://{bucket_name}/{prefix}/"
-        log.info("production model persisted -> %s", uri)
+        # Atomic flip: LATEST is a single-blob write. Its presence/
+        # contents is what mag_inference reads to choose which run to
+        # load.
+        bucket.blob(f"{base_prefix}/LATEST").upload_from_string(
+            run_id, content_type="text/plain")
+        uri = f"gs://{bucket_name}/{base_prefix}/"
+        log.info("production model persisted (run=%s, LATEST flipped) -> %s",
+                 run_id, uri)
         return uri
     except Exception as e:
         log.error("production model persist FAILED (%s): %s",
@@ -630,14 +644,16 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
-                   calibration: str = DEFAULT_CALIBRATION) -> dict:
+                   calibration: str = DEFAULT_CALIBRATION,
+                   persist_production_model: bool = False) -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
         for tf in TIMEFRAMES:
             try:
                 s = walk_forward(engine, phase, ticker, tf,
-                                 cutoffs=cutoffs, calibration=calibration)
+                                 cutoffs=cutoffs, calibration=calibration,
+                                 persist_production_model=persist_production_model)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -813,7 +829,9 @@ def main():
     if args.all_cells:
         if not args.phase:
             raise SystemExit("--all-cells needs --phase")
-        run_all_cells(engine, args.phase, cutoffs=cutoffs, calibration=args.calibration)
+        run_all_cells(engine, args.phase, cutoffs=cutoffs,
+                       calibration=args.calibration,
+                       persist_production_model=args.persist_production_model)
         return
 
     if not args.phase or not args.ticker or not args.tf:
