@@ -354,3 +354,44 @@ class TestRealtimeRowSchema:
         # corrupted by averaging in a 0.30 gross-P&L from the realtime row.
         assert df['delta_pnl'].mean() == pytest.approx(1.25, abs=0.01)
         assert df['theta_cost'].mean() == pytest.approx(0.00417, abs=0.001)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex 2026-06-13: load_options_chain must exclude REALTIME rows so
+# find_atm_option can never pick an intraday snapshot as the "EOD chain
+# row" — both have data_source='alphavantage' but the EOD path assumes
+# end-of-day Greeks. See PR #614 review.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestLoadOptionsChainExcludesRealtime:
+    """The SQL emitted by load_options_chain must filter REALTIME rows out
+    of the EOD chain result set. Failing to do so corrupts the
+    Greeks-approximation fallback path of estimate_options_pnl because
+    find_atm_option could pick a mid-day REALTIME snapshot as the "ATM
+    chain row" — its delta/theta are intraday Greeks, not EOD."""
+
+    def test_sql_excludes_realtime_market_session(self, monkeypatch):
+        captured = {}
+
+        def fake_query(sql, params):
+            captured['sql'] = sql
+            return pd.DataFrame()  # query result irrelevant for this test
+
+        monkeypatch.setenv('CLOUD_SQL_CONNECTION_NAME', 'fake')
+        monkeypatch.setattr(
+            'gcp.database.query_to_dataframe', fake_query)
+
+        from scripts.analysis.options_pnl_translation import load_options_chain
+        load_options_chain('SPY', date(2026, 6, 12))
+
+        sql = captured.get('sql', '')
+        # The fix: chain query must reject REALTIME rows (NULL allowed for
+        # legacy yahooquery EOD rows).
+        assert "market_session != 'REALTIME'" in sql, \
+            "EOD chain loader must filter REALTIME rows so the ATM picker " \
+            "can't accidentally select an intraday snapshot " \
+            "(Codex 2026-06-13)"
+        assert 'market_session IS NULL' in sql, \
+            "Legacy EOD rows (no market_session enum at write time) must " \
+            "still be returned by the chain query"

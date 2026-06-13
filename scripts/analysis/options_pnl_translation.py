@@ -312,8 +312,22 @@ def options_path(ticker: str, date) -> Path:
 def load_options_chain(ticker: str, date) -> pd.DataFrame:
     """Load the AV EOD options chain for a ticker/date.
 
-    Tries Cloud SQL first (WHERE data_source='alphavantage'), falls back to
-    local parquet.  Returns empty DataFrame if neither source has data.
+    Tries Cloud SQL first (WHERE data_source='alphavantage' AND market_session
+    is EOD/legacy), falls back to local parquet. Returns empty DataFrame if
+    neither source has data.
+
+    The ``market_session != 'REALTIME'`` filter is load-bearing as of Track 2
+    phase 2a (2026-05-22). Track 0 (PR #536) writes intraday REALTIME rows
+    with ``data_source='alphavantage'`` — the same data_source as EOD rows —
+    so a query that filtered only on data_source would silently return a
+    mix of EOD + intraday snapshots. ``find_atm_option`` would then pick the
+    "closest strike" row from across that mix without knowing whether it
+    was the EOD chain row or a mid-day REALTIME snapshot, corrupting the
+    Greeks-approximation fallback path which assumes EOD inputs.
+
+    Legacy yahooquery EOD rows have ``market_session IS NULL`` (no enum at
+    the time they were written) — the OR clause keeps them in scope so
+    pre-2026 historical backtests still find their chain.
     """
     import os
     d = pd.Timestamp(date).date()
@@ -335,6 +349,7 @@ def load_options_chain(ticker: str, date) -> pd.DataFrame:
                 WHERE ticker = :ticker
                   AND snapshot_date = :snap_date
                   AND data_source = 'alphavantage'
+                  AND (market_session != 'REALTIME' OR market_session IS NULL)
                 ORDER BY expiration, strike, option_type
             """
             df = query_to_dataframe(sql, {'ticker': ticker.upper(), 'snap_date': str(d)})
