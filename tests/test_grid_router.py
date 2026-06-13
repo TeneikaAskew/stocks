@@ -111,11 +111,22 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _install_query_router(monkeypatch, realtime_df=None, eod_df=None):
+def _install_query_router(monkeypatch, realtime_df=None, eod_df=None,
+                          open_df=None, calls=None):
     """Route the lazy `query_to_dataframe` import to fixture DataFrames
     based on which CTE filter the SQL contains. Reads the SQL text to
-    decide which path is being exercised."""
+    decide which path is being exercised.
+
+    `open_df` feeds the session-open baseline loader (MIN(snapshot_ts)).
+    `calls` (optional list) records each dispatched SQL so tests can
+    assert the I/O shape (e.g. "realtime grid fires exactly 2 queries")."""
     def fake_query(sql, params=None):
+        if calls is not None:
+            calls.append(sql)
+        # The session-open baseline query also contains REALTIME, so match it
+        # FIRST by its distinctive MIN(snapshot_ts) subquery.
+        if "MIN(snapshot_ts)" in sql:
+            return open_df if open_df is not None else pd.DataFrame()
         if "market_session = 'REALTIME'" in sql:
             return realtime_df if realtime_df is not None else pd.DataFrame()
         if "market_session = 'EOD'" in sql:
@@ -760,3 +771,87 @@ class TestGridTimeseries:
 
         r = client.get("/api/options/SPY/grid/timeseries?strikes=,,")
         assert r.status_code == 400
+
+
+# ─── Per-cell intraday %-change overlay ─────────────────────────────────────
+
+
+def _open_chain_df(snapshot_date: date) -> pd.DataFrame:
+    """Session-open snapshot: EARLIER snapshot_ts and LOWER open interest than
+    `_chain_df`, so the latest snapshot shows positive GEX drift per cell."""
+    df = _chain_df(snapshot_date, "REALTIME")
+    df["snapshot_ts"] = pd.Timestamp(f"{snapshot_date.isoformat()}T09:30:00")
+    df["open_interest"] = (df["open_interest"] * 0.5).astype(int)
+    return df
+
+
+class TestGridIntradayChange:
+    """GET /api/options/{ticker}/grid — per-cell pct_change/abs_change overlay."""
+
+    def test_realtime_overlay_fires_exactly_two_queries(self, client, monkeypatch):
+        # Floor low so the small fixture GEX still yields a ratio.
+        monkeypatch.setattr(grid_router.gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
+        latest = _chain_df(date(2026, 5, 23), "REALTIME")
+        opn = _open_chain_df(date(2026, 5, 23))
+        calls: list[str] = []
+        _install_query_router(monkeypatch, realtime_df=latest, open_df=opn, calls=calls)
+
+        r = client.get("/api/options/SPY/grid")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["data_source"] == "realtime"
+        # Exactly TWO chain loads: latest snapshot + session-open baseline
+        # (Rule 0 — no per-cell queries; the other dispatches are the
+        # daily_rates risk-free lookups inside the gamma-flip math).
+        chain_qs = [c for c in calls if "etf_options_snapshots" in c]
+        assert len(chain_qs) == 2
+        # At least one cell carries a non-null, non-zero intraday change.
+        changed = [c for c in data["cells"] if c["pct_change"] not in (None, 0.0)]
+        assert changed, "expected at least one cell with a non-null pct_change"
+        for c in changed:
+            assert c["abs_change"] is not None
+
+    def test_session_just_opened_yields_null_change(self, client, monkeypatch):
+        """When the earliest snapshot IS the latest (single snapshot so far),
+        change is null + a warning, not a wall of 0.0%."""
+        monkeypatch.setattr(grid_router.gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
+        latest = _chain_df(date(2026, 5, 23), "REALTIME")
+        # open_df == latest (same snapshot_ts) → base_ts == ts_iso
+        _install_query_router(monkeypatch, realtime_df=latest, open_df=latest.copy())
+
+        r = client.get("/api/options/SPY/grid")
+        data = r.json()
+        assert all(c["pct_change"] is None for c in data["cells"])
+        assert any("just opened" in w for w in data["warnings"])
+
+    def test_include_change_false_skips_baseline_query(self, client, monkeypatch):
+        latest = _chain_df(date(2026, 5, 23), "REALTIME")
+        opn = _open_chain_df(date(2026, 5, 23))
+        calls: list[str] = []
+        _install_query_router(monkeypatch, realtime_df=latest, open_df=opn, calls=calls)
+
+        r = client.get("/api/options/SPY/grid?include_change=false")
+        data = r.json()
+        chain_qs = [c for c in calls if "etf_options_snapshots" in c]
+        assert len(chain_qs) == 1  # only the latest snapshot, no baseline
+        assert all(c["pct_change"] is None for c in data["cells"])
+
+    def test_eod_fallback_has_null_change(self, client, monkeypatch):
+        """EOD path never computes change (single snapshot/day)."""
+        eod = _chain_df(date.today() - pd.Timedelta(days=1), "EOD")
+        calls: list[str] = []
+        _install_query_router(monkeypatch, realtime_df=None, eod_df=eod, calls=calls)
+
+        r = client.get("/api/options/IWM/grid")
+        data = r.json()
+        assert data["data_source"] == "eod_fallback"
+        assert all(c["pct_change"] is None for c in data["cells"])
+
+    def test_historical_grid_has_null_change(self, client, monkeypatch):
+        eod = _chain_df(date(2026, 5, 22), "EOD")
+        _install_query_router(monkeypatch, realtime_df=None, eod_df=eod)
+
+        r = client.get("/api/options/SPY/2026-05-22/grid")
+        assert r.status_code == 200
+        data = r.json()
+        assert all(c["pct_change"] is None for c in data["cells"])

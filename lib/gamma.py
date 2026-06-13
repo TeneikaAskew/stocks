@@ -63,6 +63,17 @@ NODE_TOP_COUNT = 5                # king + gatekeepers
 MIDPOINT_RATIO = 0.5              # gamma balance band for midpoint detection
 DEFAULT_STRIKE_RANGE_PCT = 0.15   # ±15% display range around spot
 
+# Intraday %-change badge: floor on |GEX_open| (dollar-notional) below which
+# the session-open baseline is too small to yield a meaningful rate-of-change.
+# Below this, pct_change is reported as None (never a fabricated ±9999%); the
+# absolute dollar change is still well-defined and kept. Set at noise level for
+# PER-CELL GEX (one strike × one expiration is typically $0.1M–$5M, far below
+# the $10M+ aggregated-per-strike King). Legitimate small-base, large-% moves
+# survive the floor and are bounded by the display-layer clamp (~±999%).
+# Tunable: too low → near-zero-gamma strikes emit explosive ratios; too high →
+# suppresses real small-base moves the competitor surfaces.
+GEX_PCT_CHANGE_OPEN_FLOOR = 1e5
+
 # Level classification thresholds (proportions of max |GEX| in window)
 NODE_KING_PCT = 0.50
 NODE_GATE_PCT = 0.20
@@ -168,6 +179,13 @@ class GammaGridCell:
     put_volume: int
     # Display geometry — distance from spot, signed
     distance_pct: float
+    # Intraday rate-of-change of this cell's net GEX from the session-open
+    # baseline to the current snapshot. Populated only on the realtime path
+    # via build_grid_summary_with_change; None means "no baseline available"
+    # (EOD/historical, just-opened session, new strike, or open below the
+    # GEX_PCT_CHANGE_OPEN_FLOOR). None is distinct from 0.0 ("no movement").
+    pct_change: float | None = None   # (gex_now - gex_open) / abs(gex_open) * 100
+    abs_change: float | None = None   # gex_now - gex_open (dollar-notional)
 
 
 @dataclass
@@ -1143,3 +1161,72 @@ def build_grid_summary(
         window_pct=window_pct,
         warnings=warnings,
     )
+
+
+def _cell_key(strike: float, expiration: str) -> tuple[float, str]:
+    """Join key for matching cells across two snapshots."""
+    return (round(float(strike), 4), str(expiration)[:10])
+
+
+def build_grid_summary_with_change(
+    ticker: str,
+    snapshot_date: str,
+    options: Sequence[dict],
+    baseline_options: Sequence[dict] | None,
+    *,
+    snapshot_ts: str | None = None,
+    data_source: str = "realtime",
+    spot_override: float | None = None,
+    window_pct: float = 8.0,
+    strike_window_pct: float | None = None,
+    expirations_filter: list[str] | None = None,
+) -> GammaGridSummary:
+    """Like `build_grid_summary`, but overlays per-cell intraday rate-of-change.
+
+    `baseline_options` is the session-open snapshot of the SAME chain (earliest
+    realtime snapshot of the current session). For every current cell that also
+    existed at the open, sets `cell.abs_change = gex_now - gex_open` and
+    `cell.pct_change = (gex_now - gex_open) / abs(gex_open) * 100`.
+
+    Discipline (CLAUDE.md Rule 3.7 — no silent fallbacks):
+      * No baseline (None/empty) → all cells keep `pct_change = abs_change = None`.
+        A missing baseline is reported as null, never a fabricated 0.
+      * Open GEX below `GEX_PCT_CHANGE_OPEN_FLOOR` → `pct_change = None` (the
+        ratio would explode), but `abs_change` stays (it is well-defined).
+      * Identical open and current → `pct_change = 0.0` (real "no movement",
+        distinct from None "no baseline").
+      * Strike/expiration listed intraday (absent at open) → both stay None.
+
+    Both GEX legs use the CURRENT snapshot's spot, so the change reflects
+    gamma/OI drift, not spot drift (matches the timeseries endpoint's choice).
+    """
+    summary = build_grid_summary(
+        ticker, snapshot_date, options,
+        snapshot_ts=snapshot_ts, data_source=data_source,
+        spot_override=spot_override, window_pct=window_pct,
+        strike_window_pct=strike_window_pct, expirations_filter=expirations_filter,
+    )
+
+    # No baseline → fail-loud null (Rule 3.7). Cells already default to None.
+    if not baseline_options or summary.spot.price <= 0:
+        return summary
+
+    # Baseline GEX per (strike, expiration), computed with the CURRENT spot.
+    spot_sq = summary.spot.price * summary.spot.price
+    base_gex: dict[tuple[float, str], float] = {}
+    for row in aggregate_by_strike_expiration(list(baseline_options)):
+        base_gex[_cell_key(row["strike"], row["expiration"])] = (
+            row["net_gamma"] * spot_sq * GEX_MULTIPLIER
+        )
+
+    for cell in summary.cells:
+        g_open = base_gex.get(_cell_key(cell.strike, cell.expiration))
+        if g_open is None:
+            continue  # strike/expiration didn't exist at the open → leave None
+        cell.abs_change = cell.gex - g_open
+        if abs(g_open) >= GEX_PCT_CHANGE_OPEN_FLOOR:
+            cell.pct_change = (cell.gex - g_open) / abs(g_open) * 100.0
+        # else: open too small for a meaningful ratio → pct_change stays None,
+        #       abs_change kept (it's a real dollar delta).
+
+    return summary

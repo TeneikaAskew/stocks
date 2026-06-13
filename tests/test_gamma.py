@@ -748,6 +748,94 @@ class TestBuildGridSummary:
         assert summary.regime == "unknown"
 
 
+class TestBuildGridSummaryWithChange:
+    """Per-cell intraday %-change overlay (session-open vs latest snapshot)."""
+
+    def _chain(self, oi_100c=1000):
+        # spot_override=100 in every test → spot²·GEX_MULTIPLIER = 100, so
+        # cell GEX == net_gamma · 100 (deterministic, easy to reason about).
+        return [
+            {"type": "call", "strike": 100, "expiration": "2026-06-20",
+             "bid": 2.50, "ask": 2.60, "open_interest": oi_100c, "gamma": 0.05,
+             "vega": 0.20, "delta": 0.50},
+            {"type": "put", "strike": 100, "expiration": "2026-06-20",
+             "bid": 2.45, "ask": 2.55, "open_interest": 800, "gamma": 0.05,
+             "vega": 0.20, "delta": -0.50},
+            {"type": "call", "strike": 105, "expiration": "2026-06-20",
+             "bid": 0.50, "ask": 0.60, "open_interest": 500, "gamma": 0.04,
+             "vega": 0.18, "delta": 0.20},
+            {"type": "put", "strike": 105, "expiration": "2026-06-20",
+             "bid": 5.50, "ask": 5.60, "open_interest": 200, "gamma": 0.04,
+             "vega": 0.18, "delta": -0.80},
+        ]
+
+    def _cell(self, summary, strike):
+        return next(c for c in summary.cells if c.strike == strike)
+
+    def test_happy_path_change(self, monkeypatch):
+        monkeypatch.setattr(gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
+        now = self._chain(oi_100c=2000)   # call OI grew 1000 → 2000
+        opn = self._chain(oi_100c=1000)
+        s = gamma.build_grid_summary_with_change(
+            "XYZ", "2026-05-23", now, opn, spot_override=100.0, window_pct=10)
+        c100 = self._cell(s, 100)
+        # now net = 0.05*2000 - 0.05*800 = 60 → gex 6000; open net = 10 → gex 1000
+        assert c100.gex == pytest.approx(6000.0)
+        assert c100.abs_change == pytest.approx(5000.0)
+        assert c100.pct_change == pytest.approx(500.0)
+        # 105 strike unchanged between snapshots → real 0.0%, NOT None
+        c105 = self._cell(s, 105)
+        assert c105.pct_change == 0.0
+        assert c105.abs_change == pytest.approx(0.0)
+
+    def test_no_baseline_all_none(self):
+        now = self._chain(oi_100c=2000)
+        s = gamma.build_grid_summary_with_change(
+            "XYZ", "2026-05-23", now, [], spot_override=100.0, window_pct=10)
+        assert all(c.pct_change is None and c.abs_change is None for c in s.cells)
+
+    def test_identical_is_zero_not_none(self, monkeypatch):
+        monkeypatch.setattr(gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
+        now = self._chain(oi_100c=2000)
+        s = gamma.build_grid_summary_with_change(
+            "XYZ", "2026-05-23", now, list(now), spot_override=100.0, window_pct=10)
+        assert all(c.pct_change == 0.0 for c in s.cells)
+
+    def test_new_strike_intraday_is_none(self, monkeypatch):
+        monkeypatch.setattr(gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
+        now = self._chain(oi_100c=2000) + [
+            {"type": "call", "strike": 102, "expiration": "2026-06-20",
+             "bid": 1.0, "ask": 1.1, "open_interest": 600, "gamma": 0.05,
+             "vega": 0.2, "delta": 0.4},
+        ]
+        opn = self._chain(oi_100c=1000)  # no 102 strike at open
+        s = gamma.build_grid_summary_with_change(
+            "XYZ", "2026-05-23", now, opn, spot_override=100.0, window_pct=10)
+        c102 = self._cell(s, 102)
+        assert c102.pct_change is None and c102.abs_change is None
+
+    def test_open_below_floor_yields_none_pct_but_real_abs(self):
+        # Real floor (1e5). Balanced open at 100 → net_gamma 0 → gex_open 0 < floor.
+        now = self._chain(oi_100c=2000)
+        opn = self._chain(oi_100c=800)   # call OI 800 == put OI 800 → net 0
+        s = gamma.build_grid_summary_with_change(
+            "XYZ", "2026-05-23", now, opn, spot_override=100.0, window_pct=10)
+        c100 = self._cell(s, 100)
+        assert c100.pct_change is None          # ratio would explode → suppressed
+        assert c100.abs_change == pytest.approx(6000.0)  # dollar delta still real
+
+    def test_baseline_gex_uses_current_spot(self, monkeypatch):
+        monkeypatch.setattr(gamma, "GEX_PCT_CHANGE_OPEN_FLOOR", 1.0)
+        now = self._chain(oi_100c=2000)
+        opn = self._chain(oi_100c=1000)
+        s = gamma.build_grid_summary_with_change(
+            "XYZ", "2026-05-23", now, opn, spot_override=100.0, window_pct=10)
+        c100 = self._cell(s, 100)
+        # abs_change == (net_now - net_open) * spot² * GEX_MULTIPLIER, spot=100
+        expected = (60 - 10) * (100.0 ** 2) * gamma.GEX_MULTIPLIER
+        assert c100.abs_change == pytest.approx(expected)
+
+
 # ── True Black-Scholes-recurved gamma flip ──────────────────────────────────
 
 

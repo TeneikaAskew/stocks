@@ -292,6 +292,46 @@ def _load_chain_for_live(
     return (_df_to_contracts(df_eod), ts_iso, sd, tier, days_behind)
 
 
+def _load_session_open_chain(
+    ticker: str, session_date: date_type,
+) -> tuple[list[dict], Optional[str]]:
+    """Load the EARLIEST realtime snapshot of `session_date` — the session-open
+    baseline for per-cell intraday %-change.
+
+    Returns (contracts, snapshot_ts_iso). Empty list + None when the session has
+    no realtime rows. Exactly ONE query (mirrors the MAX(snapshot_ts) pattern in
+    _load_chain_for_live with MIN), index-backed by idx_etf_options_realtime.
+    """
+    from gcp.database import query_to_dataframe
+
+    sql = """
+        SELECT contract_symbol, expiration, strike, option_type,
+               bid, ask, mark, last_price, volume, open_interest,
+               implied_volatility, delta, gamma, theta, vega, rho,
+               snapshot_ts, snapshot_date
+        FROM etf_options_snapshots
+        WHERE ticker = :ticker
+          AND data_source = 'alphavantage'
+          AND market_session = 'REALTIME'
+          AND snapshot_date = :session_date
+          AND snapshot_ts = (
+            SELECT MIN(snapshot_ts) FROM etf_options_snapshots
+            WHERE ticker = :ticker
+              AND data_source = 'alphavantage'
+              AND market_session = 'REALTIME'
+              AND snapshot_date = :session_date
+          )
+        ORDER BY expiration, strike, option_type
+    """
+    df = query_to_dataframe(
+        sql, {"ticker": ticker, "session_date": str(session_date)})
+    if df.empty:
+        return ([], None)
+    ts_raw = df["snapshot_ts"].iloc[0]
+    ts_iso = ts_raw.isoformat() if hasattr(ts_raw, "isoformat") else str(ts_raw)
+    return (_df_to_contracts(df), ts_iso)
+
+
 def _load_chain_for_historical(
     ticker: str, requested_date: date_type,
 ) -> tuple[list[dict], Optional[str], Optional[date_type], str, int]:
@@ -537,6 +577,8 @@ async def get_grid_live(
                                         description="Comma-separated ISO dates to whitelist"),
     allow_on_demand: bool = Query(True,
                                    description="Allow on-demand AV dispatch when Cloud SQL has no data"),
+    include_change: bool = Query(True,
+                                  description="Overlay per-cell intraday %-change vs session open (realtime only)"),
 ):
     """Live 2-D strike × expiration grid.
 
@@ -557,7 +599,8 @@ async def get_grid_live(
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
 
-    cache_key = (ticker_upper, round(strike_window_pct, 2), expirations or "")
+    cache_key = (ticker_upper, round(strike_window_pct, 2), expirations or "",
+                 include_change)
     cached = _LIVE_GRID_CACHE.get(cache_key)
     if cached is not None:
         response.headers["Cache-Control"] = "public, max-age=60"
@@ -600,15 +643,45 @@ async def get_grid_live(
         return envelope
 
     exp_filter = [e.strip() for e in expirations.split(",")] if expirations else None
-    summary = gamma.build_grid_summary(
-        ticker_upper,
-        snapshot_date.isoformat() if snapshot_date else "",
-        contracts,
-        snapshot_ts=ts_iso,
-        data_source=data_source,
-        window_pct=strike_window_pct,
-        expirations_filter=exp_filter,
-    )
+
+    # Per-cell intraday %-change overlay — realtime path only. EOD/stale have a
+    # single snapshot/day, so an intraday "change" is meaningless (cells keep
+    # pct_change=None and the UI hides the badges). One extra bounded query.
+    base_contracts: list[dict] = []
+    base_ts: Optional[str] = None
+    extra_warning: Optional[str] = None
+    if include_change and data_source == "realtime" and snapshot_date is not None:
+        base_contracts, base_ts = _load_session_open_chain(
+            ticker_upper, snapshot_date)
+        if base_ts is not None and base_ts == ts_iso:
+            # Session just opened — open IS the latest snapshot. Treat as "no
+            # delta available yet" rather than a wall of 0.0% badges.
+            base_contracts = []
+            extra_warning = "session just opened — intraday change not yet available"
+
+    if base_contracts:
+        summary = gamma.build_grid_summary_with_change(
+            ticker_upper,
+            snapshot_date.isoformat() if snapshot_date else "",
+            contracts,
+            base_contracts,
+            snapshot_ts=ts_iso,
+            data_source=data_source,
+            window_pct=strike_window_pct,
+            expirations_filter=exp_filter,
+        )
+    else:
+        summary = gamma.build_grid_summary(
+            ticker_upper,
+            snapshot_date.isoformat() if snapshot_date else "",
+            contracts,
+            snapshot_ts=ts_iso,
+            data_source=data_source,
+            window_pct=strike_window_pct,
+            expirations_filter=exp_filter,
+        )
+    if extra_warning:
+        summary.warnings.append(extra_warning)
     payload = summary.to_dict()
     _LIVE_GRID_CACHE[cache_key] = payload
     response.headers["Cache-Control"] = "public, max-age=60"
