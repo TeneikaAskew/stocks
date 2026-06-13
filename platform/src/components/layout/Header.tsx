@@ -22,7 +22,12 @@ export function Header() {
   return (
     <header className="flex flex-wrap items-center justify-between gap-2 bg-[var(--surface-1)] px-5 py-2 sm:h-14 sm:flex-nowrap sm:gap-3 sm:py-0">
       <div className="flex items-center gap-4 min-w-0">
-        <span className="font-display text-lg font-bold text-[var(--on-surface)]">{activeTicker}</span>
+        {/* The Dashboard ('/') renders the ticker prominently in its body, so
+            suppress the header copy there to avoid a duplicate. Other routes
+            keep it — when the sidebar is collapsed it's the only ticker label. */}
+        {pathname !== '/' && (
+          <span className="font-display text-lg font-bold text-[var(--on-surface)]">{activeTicker}</span>
+        )}
         {/* Live quote is only meaningful in live mode. In review mode, the
             Dashboard page body renders the historical quote prominently. */}
         {!isReview && quote && (
