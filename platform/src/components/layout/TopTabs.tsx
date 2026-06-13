@@ -85,7 +85,7 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
             aria-hidden="true"
             onClick={() => setMenuOpen(false)}
           />
-          <nav className="absolute right-2 top-full z-50 mt-1 max-h-[80vh] w-60 overflow-y-auto rounded-xl border border-[var(--surface-3)] bg-[var(--surface-1)] p-2 shadow-2xl sm:hidden">
+          <nav className="fixed right-2 top-[52px] z-50 max-h-[80vh] w-60 overflow-y-auto rounded-xl border border-[var(--surface-3)] bg-[var(--surface-1)] p-2 shadow-2xl sm:hidden">
             {NAV_GROUPS.map((g) => {
               const groupItems = g.items.filter((it) => !it.adminOnly || isAdmin);
               if (groupItems.length === 0) return null;

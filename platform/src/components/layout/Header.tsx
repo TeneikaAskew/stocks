@@ -20,7 +20,7 @@ export function Header() {
   const { theme, toggleTheme } = useThemeStore();
 
   return (
-    <header className="flex h-12 items-center justify-end gap-3 bg-[var(--surface-1)] px-5">
+    <header className="flex min-h-12 flex-wrap items-center justify-end gap-2 bg-[var(--surface-1)] px-5 py-1.5 sm:h-12 sm:flex-nowrap sm:gap-3 sm:py-0">
       <GuestBadge />
       {showDateSelector && <DateSelector />}
       <button
