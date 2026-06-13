@@ -3284,7 +3284,7 @@ case "${1:-help}" in
     build-realtime-gex) deploy_build_realtime_gex ;;      # research image
     build-options-daily-features) deploy_build_options_daily_features ;;  # research image
     magnitude-engine) deploy_magnitude_engine ;;
-    magnitude-inference) build_image && deploy_magnitude_inference ;;
+    magnitude-inference) build_research_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
