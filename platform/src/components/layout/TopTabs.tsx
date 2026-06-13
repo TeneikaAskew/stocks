@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Search, Menu, X } from 'lucide-react';
+import { Search, Menu, X, Moon, Sun } from 'lucide-react';
 import { Button, Kbd } from '@heroui/react';
 import { Brand } from './Brand';
 import { FLAT_NAV, NAV_GROUPS } from './navConfig';
 import { useUser } from '@/hooks/useUser';
+import { useThemeStore } from '@/stores/themeStore';
 
 interface TopTabsProps {
   onOpenSearch: () => void;
@@ -23,6 +24,7 @@ interface TopTabsProps {
  */
 export function TopTabs({ onOpenSearch }: TopTabsProps) {
   const { isAdmin } = useUser();
+  const { theme, toggleTheme } = useThemeStore();
   const items = FLAT_NAV.filter((it) => !it.adminOnly || isAdmin);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -63,6 +65,17 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
         <span className="hidden sm:inline">Search</span>
         <Kbd className="hidden sm:inline">⌘K</Kbd>
       </Button>
+
+      {/* Mobile: theme toggle, grouped with the other top-bar chrome (it lives
+          in the utility Header on desktop, hidden there on mobile). */}
+      <button
+        type="button"
+        onClick={toggleTheme}
+        aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+        className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)] sm:hidden"
+      >
+        {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+      </button>
 
       {/* Mobile: hamburger toggle. */}
       <Button
