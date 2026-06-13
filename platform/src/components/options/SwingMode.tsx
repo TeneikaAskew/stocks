@@ -1007,7 +1007,7 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
       const below = levels.gates
         .filter((g) => g.strike < spotPrice)
         .sort((a, b) => b.strike - a.strike)[0];
-      const flipLvl = levels.flip_levels?.[0];
+      const flipLvl = levels.gamma_balance_levels?.[0];
       return {
         isReal: true,
         ticker: sym,
@@ -1018,7 +1018,7 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         kingGex: king?.gex ?? HS.nodes.king.gex,
         gateAbove: above ? { strike: above.strike, gex: above.gex } : undefined,
         gateBelow: below ? { strike: below.strike, gex: below.gex } : undefined,
-        flipStrike: levels.flip ?? HS.flip,
+        flipStrike: levels.gamma_balance ?? HS.flip,
         flipGex: flipLvl?.gex ?? HS.nodes.flip.gex,
         regime: levels.regime,
         totalGex: levels.total_gex,

@@ -337,7 +337,7 @@ export default function ProfilesTab({ activeTicker }: ProfilesTabProps) {
     enabled: dates.length > 0 && !!selectedDate,
   });
   const gammaLevels = levelsQuery.data;
-  const flip = gammaLevels?.flip ?? null;
+  const flip = gammaLevels?.gamma_balance ?? null;
   const regime = gammaLevels?.regime ?? 'unknown';
   const spotMethod = gammaLevels?.spot.method;
   const serverSpot = gammaLevels?.spot.price;
@@ -559,7 +559,7 @@ export default function ProfilesTab({ activeTicker }: ProfilesTabProps) {
               ◆ Gate ${g.strike.toFixed(2)}
             </span>
           ))}
-          {gammaLevels.flip_levels.map(f => (
+          {gammaLevels.gamma_balance_levels.map(f => (
             <span
               key={`flip-${f.strike}`}
               className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-violet-400"

@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
-from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude
 from api.auth_bypass import (
     router as auth_router,
     staging_auth_middleware,
@@ -77,6 +77,7 @@ app.include_router(config_router.router, prefix="")
 app.include_router(health.router, prefix="")
 app.include_router(glossary.router, prefix="")
 app.include_router(auth_router)
+app.include_router(magnitude.router, prefix="")
 
 data_loader = DataLoader()
 

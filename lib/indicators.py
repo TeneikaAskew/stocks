@@ -259,6 +259,36 @@ def calculate_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return vol_direction.cumsum()
 
 
+def realized_vol_zscore(close: pd.Series, bar_date: pd.Series,
+                        rv_window: int = 15, z_window: int = 60) -> pd.Series:
+    """Realized-volatility z-score (ONE source of truth).
+
+    realized vol (`rv`) = WITHIN-day rolling std of log returns over `rv_window`
+    bars (intraday vol, never crosses the overnight gap). The z-normalization
+    mean/std then run over a trailing `z_window` of `rv` values ACROSS days
+    (with `min_periods`), z = (rv − mean)/std.
+
+    The cross-day z-window is the fix for the 2026-06-08 bug: a WITHIN-day
+    z-window can never reach `z_window` on TFs with fewer than `z_window`
+    bars/day (e.g. 15m ≈ 26 bars/day), so it returned 100% NaN — which is why
+    `strat_features.realized_vol_z` AND the magnitude engine's `realized_vol_z15`
+    (which shared this inline formula) were dead for those TFs. `rv` itself still
+    needs ≥ `rv_window` bars/day, so the feature is legitimately NULL on coarse
+    TFs (30m/60m/4h have < 15 bars/day) — that is genuine missingness, not a bug.
+    """
+    c = pd.to_numeric(close, errors="coerce")
+    prev_c = c.groupby(bar_date).shift(1)
+    logret = np.log(c / prev_c)
+    rv = logret.groupby(bar_date).rolling(rv_window).std().reset_index(level=0, drop=True)
+    # mean/std over the trailing z_window of rv ACROSS days (chronological index);
+    # min_periods lets it warm up gracefully and tolerates the daily NaN gaps in rv.
+    mp = max(rv_window, z_window // 3)
+    mu = rv.rolling(z_window, min_periods=mp).mean()
+    sd = rv.rolling(z_window, min_periods=mp).std()
+    return pd.Series(np.where(sd.notna() & (sd > 0), (rv - mu) / sd, np.nan),
+                     index=c.index)
+
+
 # ---------------------------------------------------------------------------
 # Pattern / consecutive-move detection
 # ---------------------------------------------------------------------------
@@ -932,6 +962,71 @@ def _add_promoted_regime(out, ind, close_col):
     return out
 
 
+def _add_magnitude(out, ind, close_col):
+    """Magnitude-engine volatility-expansion features (migrated 2026-06-01).
+
+    These were hand-rolled inline in gcp/research/magnitude_engine/mag_dataset.py
+    (``_add_phase1_features``), duplicating math the engine then could not share.
+    Folded into the single indicator spine so the magnitude engine consumes the
+    SAME definitions as regime/strat (CLAUDE.md "one source of truth for math").
+
+    Session-aware: every rolling window is grouped by the intraday session date
+    so it never crosses the overnight gap. Requires a 'Time' column to derive
+    the session key; without 'Time' the block is skipped (these features are
+    intraday-only and meaningless on daily bars). Deps: High, Low, close_col,
+    BB_Upper/BB_Lower (_add_bollinger). All Rule-3.7 NaN-safe — no fabricated 0.
+
+    Note: the inline ``atr5_atr20_ratio`` is intentionally NOT reproduced here.
+    It was ATR5/ATR20 with mixed smoothing built atop the removed
+    ``_compute_atr20`` workaround; the canonical ``ATR_Expansion`` (ATR5/ATR20,
+    Wilder, from _add_atr/_add_promoted_regime) is the single-source equivalent
+    and the magnitude engine reads that instead.
+    """
+    if 'Time' not in out.columns:
+        return out
+
+    h = out['High']
+    l = out['Low']
+    c = out[close_col]
+    sess = pd.to_datetime(out['Time']).dt.date
+    prev_c = c.groupby(sess).shift(1)
+
+    def _safe_div(num, den):
+        return num / den.where(den.abs() > 0, np.nan)
+
+    # BB20 bandwidth: (upper - lower) / close. Uses the spine's Bollinger bands.
+    if 'BB_Upper' in out.columns and 'BB_Lower' in out.columns:
+        out['BB20_Bandwidth'] = _safe_div(out['BB_Upper'] - out['BB_Lower'], c)
+
+    # 15-bar realized-vol z-score: rv15 = std of log returns over 15 bars;
+    # z = (rv15 - rolling_mean_60(rv15)) / rolling_std_60(rv15). Session-grouped.
+    logret = np.log(_safe_div(c, prev_c))
+    rv15 = logret.groupby(sess).rolling(ind.mag_rv_window).std().reset_index(level=0, drop=True)
+    rv_mu = rv15.groupby(sess).rolling(ind.mag_rv_z_window).mean().reset_index(level=0, drop=True)
+    rv_sd = rv15.groupby(sess).rolling(ind.mag_rv_z_window).std().reset_index(level=0, drop=True)
+    out['Realized_Vol_Z'] = _safe_div(rv15 - rv_mu, rv_sd)
+
+    # Range expansion: current bar range / mean of prior-N bar ranges (session).
+    rng = h - l
+    avg_prior = (rng.groupby(sess).shift(1)
+                    .groupby(sess).rolling(ind.mag_range_expansion_window).mean()
+                    .reset_index(level=0, drop=True))
+    out['Range_Expansion_Ratio'] = _safe_div(rng, avg_prior)
+
+    # Cumulative intraday range so far / prior session's full range. cummax/
+    # cummin are within-session (groupby preserves the original index); the
+    # prior session's full range is mapped back per row via the session key.
+    cum_hi = h.groupby(sess).cummax()
+    cum_lo = l.groupby(sess).cummin()
+    cumrange = cum_hi - cum_lo
+    daily_range = h.groupby(sess).max() - l.groupby(sess).min()   # indexed by session
+    prev_daily = daily_range.shift(1)                              # prior session's range
+    prev_daily_aligned = pd.Series(sess.map(prev_daily).to_numpy(), index=out.index)
+    out['Intraday_Range_vs_PrevDay'] = _safe_div(cumrange, prev_daily_aligned)
+
+    return out
+
+
 def _resolve_config(indicator_config):
     if indicator_config is None:
         from lib.config import IndicatorConfig
@@ -978,6 +1073,7 @@ def add_all_indicators(
     out = _add_price_levels(out, ind, close_col)
     out = _add_orb(out, ind, close_col)
     out = _add_promoted_regime(out, ind, close_col)
+    out = _add_magnitude(out, ind, close_col)
     return out
 
 
@@ -1037,6 +1133,16 @@ def _brief_columns(ind) -> List[str]:
     ]
 
 
+# Magnitude-engine volatility-expansion features (intraday-only, Time-gated).
+# Migrated from mag_dataset._add_phase1_features 2026-06-01. The magnitude
+# engine reads these from the spine plus the shared ATR_Expansion / volatility
+# columns rather than recomputing them inline.
+_MAGNITUDE_EXACT = [
+    'BB20_Bandwidth', 'Realized_Vol_Z',
+    'Range_Expansion_Ratio', 'Intraday_Range_vs_PrevDay',
+]
+
+
 # Stationary leak-safe feature set for the research regime model. Mirrors
 # lib.combo_mining._STATIONARY_EXACT (minus MACD_Hist_Slope, which is a
 # combo_mining candidate feature not produced by add_all_indicators).
@@ -1059,7 +1165,7 @@ def _all_indicator_columns(ind) -> List[str]:
         'RSI_Divergence', 'Realized_Vol_Short', 'Mins_Since_Open',
         'Price_vs_EMA9_ATR', 'Price_vs_EMA20_ATR', 'Price_vs_VWAP_ATR',
         'EMA_Spread_ATR', 'EMA9_Slope', 'BB_Squeeze',
-    ])
+    ] + list(_MAGNITUDE_EXACT))
     # ORB columns for every configured window.
     for w in ind.orb_windows:
         lab = w['label']
@@ -1091,6 +1197,11 @@ def _feature_groups() -> Dict[str, List[str]]:
         'brief': _brief_columns(ind),
         'regime': list(_REGIME_EXACT),
         'strat': list(_REGIME_EXACT),
+        # Magnitude = the stationary regime/strat set + the migrated
+        # volatility-expansion features. ATR_Expansion is already in the
+        # regime set and is the single-source replacement for the old inline
+        # atr5_atr20_ratio.
+        'magnitude': list(_REGIME_EXACT) + list(_MAGNITUDE_EXACT),
     }
 
 
@@ -1181,6 +1292,23 @@ def add_strat_indicators(
     """Indicator set for the strat next-bar model (near-full).
 
     Provided for API symmetry; see add_regime_indicators. Research path.
+    """
+    return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
+
+
+def add_magnitude_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
+    """Indicator set for the research magnitude engine (near-full).
+
+    Produces the stationary regime/strat features PLUS the migrated
+    volatility-expansion block (FEATURE_GROUPS['magnitude']). The magnitude
+    engine previously hand-rolled these inline (mag_dataset._add_phase1_features
+    + a local atr_20 workaround); it now consumes them from this single spine.
+    Delegates to add_all_indicators (research path — latency is not a
+    constraint and the magnitude block is Time-gated/intraday-only).
     """
     return add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
 

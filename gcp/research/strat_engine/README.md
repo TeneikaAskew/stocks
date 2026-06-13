@@ -4,8 +4,11 @@ Movement prediction only — **no money in v1.** For a given ticker, at the
 close of each bar, output `P(next bar is 1 / 2U / 2D / 3)` per timeframe,
 plus the FTFC stacked read and the indicator drivers.
 
-See `STRAT_DIRECTIONALITY_ENGINE_PRD.md` + `..._TECH_PLAN.md` for product
-intent. This README is the engineering reference.
+See [`STRAT_DIRECTIONALITY_ENGINE_PRD.md`](STRAT_DIRECTIONALITY_ENGINE_PRD.md)
+for product intent, the two models (TYPE + DIRECTION), success bars, and
+verified verdicts. This README is the engineering reference. (The tech-plan
+content was folded into the PRD §1 spine + this README; the standalone
+`..._TECH_PLAN.md` was never committed.)
 
 ## File map
 
@@ -134,7 +137,10 @@ If Stage 4 fails its HARD gate, Stages 5 + 6 are skipped for that cell.
 
 1. SPX intraday: **dropped** — no intraday source available.
 2. 4h source: **aggregate from 60m** (ET 09:30 origin).
-3. Calibration: **isotonic** (vs sigmoid).
+3. Calibration: **none** (raw native softmax) — LOCKED 2026-05-27. The
+   24-fold walk-forward proved the sigmoid wrapper hurt ECE in every fold;
+   `sigmoid`/`isotonic` are retained as diagnostic-only modes. (Was
+   `isotonic` at design time.)
 4. Correlation primary metric: **mutual information** (vs linear).
 5. Read-out form: **JSON/table** (Pine label feed deferred to M4).
 6. Acceptance thresholds: **+5pp accuracy advisory, ≤0.05 ECE hard, log-loss < base hard**.

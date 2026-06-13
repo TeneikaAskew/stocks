@@ -51,6 +51,10 @@ _PINNED_ADD_ALL_COLUMNS = {
     # Added on main (merged 2026-05-31): snake_case SQL-writer aliases +
     # annualised historical volatility periods.
     'high_low_spread', 'high_low_spread_pct', 'volatility_5d', 'volatility_20d',
+    # Magnitude-engine volatility-expansion block (migrated 2026-06-01 from the
+    # inline mag_dataset._add_phase1_features). Intraday-only / Time-gated.
+    'BB20_Bandwidth', 'Realized_Vol_Z', 'Range_Expansion_Ratio',
+    'Intraday_Range_vs_PrevDay',
 }
 _SOURCE_COLUMNS = {'Time', 'Open', 'High', 'Low', 'Close', 'Volume'}
 
@@ -85,16 +89,61 @@ class TestFeatureTiering:
             f"  added: {sorted(new - _PINNED_ADD_ALL_COLUMNS)}\n"
             f"  removed: {sorted(_PINNED_ADD_ALL_COLUMNS - new)}"
         )
-        # 6 source + 89 indicators = 95 total (89 after the 2026-05-31 main
-        # merge added ATR20/RSI30 + high_low_spread{,_pct} + volatility_{5,20}d).
-        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 95
+        # 6 source + 93 indicators = 99 total. +4 over the post-merge 95 from
+        # the 2026-06-01 magnitude block (BB20_Bandwidth, Realized_Vol_Z,
+        # Range_Expansion_Ratio, Intraday_Range_vs_PrevDay).
+        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 99
 
     def test_feature_groups_keys_and_membership(self):
-        assert set(FEATURE_GROUPS) == {'signal', 'brief', 'regime', 'strat'}
-        # Every signal/brief column is a real add_all_indicators output column.
-        for cap in ('signal', 'brief'):
+        assert set(FEATURE_GROUPS) == {'signal', 'brief', 'regime', 'strat', 'magnitude'}
+        # Every signal/brief/magnitude column is a real add_all_indicators output.
+        for cap in ('signal', 'brief', 'magnitude'):
             for col in FEATURE_GROUPS[cap]:
                 assert col in _PINNED_ADD_ALL_COLUMNS, f"{cap} col {col} not produced"
+
+    def test_magnitude_block_matches_inline_reference(self):
+        """The 4 migrated magnitude features must equal the old inline
+        mag_dataset._add_phase1_features math at 0.0 max-abs-diff. This pins the
+        migration as a pure move (no silent behaviour change for the magnitude
+        engine), the same parity contract the signal/brief tiers carry."""
+        df = _two_session_ohlcv(seed=5)
+        out = add_all_indicators(df)
+        d = out.copy()
+        sess = pd.to_datetime(d['Time']).dt.date
+        h, l, c = d['High'], d['Low'], d['Close']
+        prev_c = c.groupby(sess).shift(1)
+        # BB20 bandwidth
+        bb_ref = np.where(c.notna() & (c != 0),
+                          (d['BB_Upper'] - d['BB_Lower']) / c, np.nan)
+        # Realized-vol z (15/60, session-grouped)
+        logret = np.log(c / prev_c)
+        rv15 = logret.groupby(sess).rolling(15).std().reset_index(level=0, drop=True)
+        rv_mu = rv15.groupby(sess).rolling(60).mean().reset_index(level=0, drop=True)
+        rv_sd = rv15.groupby(sess).rolling(60).std().reset_index(level=0, drop=True)
+        rvz_ref = np.where(rv_sd.notna() & (rv_sd > 0), (rv15 - rv_mu) / rv_sd, np.nan)
+        # Range expansion (prior-5 mean, session-grouped)
+        rng = h - l
+        avg5 = (rng.groupby(sess).shift(1).groupby(sess).rolling(5).mean()
+                   .reset_index(level=0, drop=True))
+        rer_ref = np.where(avg5.notna() & (avg5 > 0), rng / avg5, np.nan)
+        for col, ref in [('BB20_Bandwidth', bb_ref),
+                         ('Realized_Vol_Z', rvz_ref),
+                         ('Range_Expansion_Ratio', rer_ref)]:
+            np.testing.assert_allclose(
+                out[col].to_numpy(dtype=float), np.asarray(ref, dtype=float),
+                equal_nan=True, atol=0.0, err_msg=f"magnitude parity broke on {col}")
+
+    def test_magnitude_features_time_gated(self):
+        """Magnitude block is intraday-only — absent without a Time column."""
+        n = 60
+        close = pd.Series(np.linspace(100, 105, n))
+        df = pd.DataFrame({'Open': close * 0.999, 'High': close * 1.001,
+                           'Low': close * 0.998, 'Close': close,
+                           'Volume': np.full(n, 1e4)})
+        out = add_all_indicators(df)
+        for col in ('BB20_Bandwidth', 'Realized_Vol_Z', 'Range_Expansion_Ratio',
+                    'Intraday_Range_vs_PrevDay'):
+            assert col not in out.columns, f"{col} should be Time-gated out"
 
     def test_signal_tier_parity_zero_diff(self):
         df = _two_session_ohlcv(seed=7)
@@ -509,3 +558,73 @@ class TestHistoricalLevels:
         ts = pd.to_datetime(times)
         is_q1 = ts.dt.to_period('Q') == ts.dt.to_period('Q').iloc[0]
         assert result.loc[is_q1.values, 'Prev_Quarter_High'].isna().all()
+
+
+# ── EMA200 config wiring (2026-06-07 column audit, family C) ─────────────────
+# The strat_features builder lists `ema_200` in NUMERIC_FEATURES but called
+# add_all_indicators with the default IndicatorConfig (ema_periods=[9,20,50]),
+# so EMA200 was never produced → the column was 100% NaN (dead feature). The
+# builder now passes a config including 200. These pin both halves of that.
+class TestEMA200ConfigWiring:
+    def test_ema200_absent_under_default_config(self):
+        """Documents the bug: default config does NOT produce EMA200."""
+        from lib.indicators import add_all_indicators
+        out = add_all_indicators(_two_session_ohlcv(n_per=150))
+        assert "EMA200" not in out.columns
+
+    def test_ema200_produced_when_200_in_periods(self):
+        """The builder's fix: ema_periods including 200 → EMA200 computed + finite."""
+        from lib.indicators import add_all_indicators
+        from lib.config import IndicatorConfig
+        cfg = IndicatorConfig()
+        cfg.ema_periods = [9, 20, 50, 200]
+        out = add_all_indicators(_two_session_ohlcv(n_per=150),
+                                 indicator_config=cfg)
+        assert "EMA200" in out.columns
+        assert pd.notna(out["EMA200"].iloc[-1])
+        # fast/mid unchanged (so Price_vs_EMA9/20 etc. are unaffected)
+        assert "EMA9" in out.columns and "EMA20" in out.columns
+
+
+# ── realized_vol_zscore: shared one-source-of-truth helper (wired 2026-06-08) ──
+def _multiday_ohlcv(n_days=12, bars_per_day=26, seed=7):
+    """N days of `bars_per_day` bars (default 26 ≈ a 15m RTH session)."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    base = pd.Timestamp('2024-01-02 09:30')
+    for d in range(n_days):
+        day = (base + pd.Timedelta(days=d)).normalize() + pd.Timedelta(hours=9, minutes=30)
+        steps = rng.normal(0, 0.001, bars_per_day)
+        close = 200.0 * np.exp(np.cumsum(steps))
+        times = pd.date_range(day, periods=bars_per_day, freq='15min')
+        frames.append(pd.DataFrame({'Close': close}, index=times))
+    df = pd.concat(frames)
+    return df
+
+
+class TestRealizedVolZScore:
+    def test_within_day_rv_warmup(self):
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv()
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert len(z) == len(df)
+        # first bar of each day has no within-day prior return -> NaN
+        assert pd.isna(z.iloc[0])
+
+    def test_populated_on_low_bars_per_day_tf(self):
+        """The 2026-06-08 fix: ~26 bars/day (15m-like) must NOT be all-NaN.
+        The old within-day z-window(60) could never fill on <60 bars/day."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=26)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() > 0  # would be 0 under the old within-day formula
+
+    def test_coarse_tf_below_rv_window_is_all_nan(self):
+        """rv needs >= rv_window bars/day; e.g. 8 bars/day < 15 -> genuinely NULL."""
+        from lib.indicators import realized_vol_zscore
+        df = _multiday_ohlcv(n_days=12, bars_per_day=8)
+        bd = pd.Series(df.index.date, index=df.index)
+        z = realized_vol_zscore(df["Close"], bd)
+        assert z.notna().sum() == 0  # genuine missingness (not a bug)

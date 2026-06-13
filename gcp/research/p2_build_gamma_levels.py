@@ -21,7 +21,7 @@ Schema:
     CREATE TABLE gamma_levels_eod (
       ticker          VARCHAR(16) NOT NULL,
       snapshot_date   DATE        NOT NULL,
-      level_kind      VARCHAR(8)  NOT NULL,  -- 'king' | 'gate' | 'flip'
+      level_kind      VARCHAR(20) NOT NULL,  -- 'king' | 'gate' | 'gamma_balance'
       level_strike    NUMERIC(12,4) NOT NULL,
       gex             DOUBLE PRECISION,
       net_gamma       DOUBLE PRECISION,
@@ -29,7 +29,8 @@ Schema:
       tags            TEXT,                  -- comma-joined tag list
       regime          VARCHAR(20),           -- positive_gamma | negative_gamma | unknown
       total_gex       DOUBLE PRECISION,
-      flip_price      DOUBLE PRECISION,
+      gamma_balance_price DOUBLE PRECISION,  -- cumulative-net-gamma balance price
+      gamma_flip      DOUBLE PRECISION,      -- true BS-recurved zero-gamma level
       spot_estimate   DOUBLE PRECISION,
       spot_method     VARCHAR(20),
       n_strikes_in_window INT,
@@ -79,7 +80,7 @@ CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS gamma_levels_eod (
     ticker          VARCHAR(16)  NOT NULL,
     snapshot_date   DATE         NOT NULL,
-    level_kind      VARCHAR(8)   NOT NULL,
+    level_kind      VARCHAR(20)  NOT NULL,
     level_strike    NUMERIC(12,4) NOT NULL,
     gex             DOUBLE PRECISION,
     net_gamma       DOUBLE PRECISION,
@@ -87,7 +88,8 @@ CREATE TABLE IF NOT EXISTS gamma_levels_eod (
     tags            TEXT,
     regime          VARCHAR(20),
     total_gex       DOUBLE PRECISION,
-    flip_price      DOUBLE PRECISION,
+    gamma_balance_price DOUBLE PRECISION,
+    gamma_flip      DOUBLE PRECISION,
     spot_estimate   DOUBLE PRECISION,
     spot_method     VARCHAR(20),
     n_strikes_in_window INT,
@@ -179,7 +181,8 @@ def _process_one_day(ticker: str, snap_date: _date, chain_rows: pd.DataFrame) ->
         snapshot_date=snap_date,
         regime=summary.regime,
         total_gex=float(summary.total_gex or 0.0),
-        flip_price=float(summary.flip) if summary.flip is not None else None,
+        gamma_balance_price=float(summary.gamma_balance) if summary.gamma_balance is not None else None,
+        gamma_flip=float(summary.gamma_flip) if summary.gamma_flip is not None else None,
         spot_estimate=float(summary.spot.price) if summary.spot.price else None,
         spot_method=str(summary.spot.method),
         n_strikes_in_window=len(summary.levels),
@@ -203,14 +206,14 @@ def _process_one_day(ticker: str, snap_date: _date, chain_rows: pd.DataFrame) ->
                     "score": float(lv.score or 0.0),
                     "tags": ",".join(lv.tags or []),
                     })
-    if summary.flip is not None and float(summary.flip) > 0:
+    if summary.gamma_balance is not None and float(summary.gamma_balance) > 0:
         out.append({**common,
-                    "level_kind": "flip",
-                    "level_strike": float(summary.flip),
+                    "level_kind": "gamma_balance",
+                    "level_strike": float(summary.gamma_balance),
                     "gex": None,
                     "net_gamma": None,
                     "score": None,
-                    "tags": "flip",
+                    "tags": "gamma_balance",
                     })
 
     return out
@@ -248,8 +251,8 @@ def _process_ticker(engine, ticker: str, start_year: int, end_year: int) -> int:
             df, "gamma_levels_eod",
             conflict_cols=["ticker", "snapshot_date", "level_kind", "level_strike"],
             update_cols=["gex", "net_gamma", "score", "tags", "regime",
-                         "total_gex", "flip_price", "spot_estimate",
-                         "spot_method", "n_strikes_in_window"],
+                         "total_gex", "gamma_balance_price", "gamma_flip",
+                         "spot_estimate", "spot_method", "n_strikes_in_window"],
         )
         n = len(df)
         total_rows += n

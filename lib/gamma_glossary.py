@@ -169,27 +169,52 @@ GAMMA_TERMS: dict[str, GammaTerm] = {
         },
     ),
 
-    "flip": GammaTerm(
-        canonical="Flip",
+    "gamma_flip": GammaTerm(
+        canonical="Gamma Flip",
         short_definition=(
-            "The price level where cumulative GEX crosses zero — the "
-            "regime divider."
+            "The TRUE zero-gamma price level — where re-priced (Black-Scholes) "
+            "dealer gamma exposure crosses zero. The real regime divider."
         ),
         long_definition=(
-            "Above the Flip = positive-gamma regime (dealers buy dips / sell "
-            "rips → pinning, suppressed volatility, range-bound action). "
-            "Below the Flip = negative-gamma regime (dealers sell dips / buy "
-            "rips → amplified volatility, trending action, faster moves). "
-            "Crossing the Flip with volume is the signal traders watch for "
-            "a regime change."
+            "Computed by re-pricing every contract's BSM gamma across candidate "
+            "spot prices and finding where net dealer gamma exposure GEX(S)=0. "
+            "Above the Gamma Flip = positive-gamma regime (dealers buy dips / "
+            "sell rips → pinning, suppressed volatility, range-bound action). "
+            "Below = negative-gamma regime (dealers sell dips / buy rips → "
+            "amplified volatility, trending action). Crossing it with volume is "
+            "the signal traders watch for a regime change. This is the "
+            "spot's side of the flip == sign(total_gex)."
         ),
-        math="cumulative-GEX zero crossing nearest spot, linearly interpolated",
+        math="Black-Scholes-recurved spot S where Σ sign·γ_BS(S)·OI = 0, nearest spot",
         aliases={
             "stratalyst":     "Regime Pivot",
             "heatseeker":     "Flip",
             "squeezemetrics": "Gamma Flip",
             "spotgamma":      "Zero Gamma",
             "plain_english":  "Regime divider",
+        },
+    ),
+
+    "gamma_balance": GammaTerm(
+        canonical="Gamma Balance",
+        short_definition=(
+            "The price where CUMULATIVE net gamma crosses zero — an "
+            "OI-weighted balance point (not the true regime flip)."
+        ),
+        long_definition=(
+            "Walks strikes accumulating per-strike net gamma and returns the "
+            "cumulative zero-crossing nearest spot. Useful as a structural "
+            "balance level, but it is NOT the dealer-gamma regime divider — for "
+            "that use the Gamma Flip (the BS-recurved zero-gamma level). "
+            "Formerly mislabeled 'Flip' (renamed 2026-06-09)."
+        ),
+        math="cumulative-net-gamma zero crossing nearest spot, linearly interpolated",
+        aliases={
+            "stratalyst":     "Gamma Balance",
+            "heatseeker":     "Balance",
+            "squeezemetrics": "Cumulative Gamma Balance",
+            "spotgamma":      "Gamma Balance",
+            "plain_english":  "Balance point",
         },
     ),
 
@@ -330,7 +355,7 @@ GAMMA_TERMS: dict[str, GammaTerm] = {
             "trend-continuation plays struggle. First-touches at high-gamma "
             "strikes react about 80% of the time."
         ),
-        math="spot > flip_price",
+        math="total_gex > 0  (spot above the Gamma Flip)",
         aliases={
             "stratalyst":     "Pinning Regime",
             "heatseeker":     "Positive Gamma",
@@ -343,7 +368,7 @@ GAMMA_TERMS: dict[str, GammaTerm] = {
     "negative_gamma_regime": GammaTerm(
         canonical="Negative Gamma",
         short_definition=(
-            "Spot is below the Flip — dealers sell dips, buy rips, vol is "
+            "Spot is below the Gamma Flip — dealers sell dips, buy rips, vol is "
             "amplified, action is trending."
         ),
         long_definition=(
@@ -353,7 +378,7 @@ GAMMA_TERMS: dict[str, GammaTerm] = {
             "trends toward rather than reverses at. Breakouts trend; ranges "
             "fail."
         ),
-        math="spot < flip_price",
+        math="total_gex < 0  (spot below the Gamma Flip)",
         aliases={
             "stratalyst":     "Trending Regime",
             "heatseeker":     "Negative Gamma",

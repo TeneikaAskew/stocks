@@ -268,7 +268,8 @@ class TestNodesLive:
         assert isinstance(data.get("hedge_nodes", []), list)
         assert isinstance(data.get("opex_nodes", []), list)
         assert "regime" in data
-        assert "flip" in data
+        assert "gamma_balance" in data
+        assert "gamma_flip" in data
 
     def test_opex_nodes_tagged_for_third_fridays(self, client, monkeypatch):
         """Cells whose expiration is a third Friday are tagged as OPEX

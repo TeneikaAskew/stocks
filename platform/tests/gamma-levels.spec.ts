@@ -41,14 +41,15 @@ test.describe('Gamma Levels: API contract', () => {
     expect(summary.ticker).toBe(ETF_TICKER);
     expect(summary).toHaveProperty('snapshot_date');
     expect(summary).toHaveProperty('spot');
-    expect(summary).toHaveProperty('flip'); // may be null
+    expect(summary).toHaveProperty('gamma_balance'); // may be null
+    expect(summary).toHaveProperty('gamma_flip'); // may be null
     expect(summary).toHaveProperty('regime');
     expect(['positive_gamma', 'negative_gamma', 'unknown']).toContain(summary.regime);
     expect(summary).toHaveProperty('total_gex');
     expect(summary).toHaveProperty('levels');
     expect(summary).toHaveProperty('kings');
     expect(summary).toHaveProperty('gates');
-    expect(summary).toHaveProperty('flip_levels');
+    expect(summary).toHaveProperty('gamma_balance_levels');
     expect(summary).toHaveProperty('warnings');
     expect(summary).toHaveProperty('chain_size');
 

@@ -47,7 +47,8 @@ NUMERIC_FEATURES: tuple[str, ...] = (
     "intraday_return", "high_low_spread_pct",
     # Regime
     "vix_close", "total_gex", "total_vex",
-    "flip_price", "distance_to_king_pct", "distance_to_gate_pct",
+    "gamma_balance_price", "gamma_flip", "dist_to_gamma_flip_pct",
+    "distance_to_king_pct", "distance_to_gate_pct",
 )
 
 # Categorical/sequence features. The PRD requires prev1/prev2/prev3 — only

@@ -21,7 +21,7 @@ export interface GammaLevel {
   put_oi: number;
   distance_pct: number;
   score: number;
-  kind: 'king' | 'gate' | 'spot' | 'flip' | 'none';
+  kind: 'king' | 'gate' | 'spot' | 'gamma_balance' | 'none';
   tags: string[];
 }
 
@@ -31,13 +31,16 @@ export interface GammaLevelsResponse {
   ticker: string;
   snapshot_date: string;
   spot: SpotEstimate;
-  flip: number | null;
+  // Cumulative-net-gamma balance price (formerly mislabeled `flip`).
+  gamma_balance: number | null;
+  // True Black-Scholes-recurved zero-gamma level (the real regime divider).
+  gamma_flip: number | null;
   regime: GammaRegime;
   total_gex: number;
   levels: GammaLevel[];
   kings: GammaLevel[];
   gates: GammaLevel[];
-  flip_levels: GammaLevel[];
+  gamma_balance_levels: GammaLevel[];
   window_pct: number;
   warnings: string[];
   snapshot_timestamp?: string | null;
@@ -105,19 +108,19 @@ export function regimeLabel(regime: GammaRegime): {
     case 'positive_gamma':
       return {
         label: 'Positive gamma',
-        description: 'Above flip — pinning / range-bound',
+        description: 'Above gamma flip — pinning / range-bound',
         tone: 'positive',
       };
     case 'negative_gamma':
       return {
         label: 'Negative gamma',
-        description: 'Below flip — trending / vol-amplifying',
+        description: 'Below gamma flip — trending / vol-amplifying',
         tone: 'negative',
       };
     case 'unknown':
       return {
         label: 'Regime unclear',
-        description: 'No flip detected in window',
+        description: 'No gamma flip detected in window',
         tone: 'neutral',
       };
   }

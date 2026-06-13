@@ -3,7 +3,7 @@ import { useGammaTerm } from '../../hooks/useGammaGlossary';
 
 interface TermHoverProps {
   /**
-   * Key into the gamma glossary (e.g. 'king', 'flip', 'vex'). Must
+   * Key into the gamma glossary (e.g. 'king', 'gamma_flip', 'vex'). Must
    * match a key in `lib/gamma_glossary.GAMMA_TERMS`. Unknown keys
    * render the wrapped text plain — no tooltip, no error.
    */
@@ -11,7 +11,7 @@ interface TermHoverProps {
   /**
    * The text the user sees inline. Usually the term's canonical name
    * (`<TermHover term="king">King</TermHover>`), but can also be a
-   * narrative phrase (`<TermHover term="flip">regime divider</TermHover>`).
+   * narrative phrase (`<TermHover term="gamma_flip">regime divider</TermHover>`).
    */
   children: React.ReactNode;
   /**
@@ -39,7 +39,7 @@ interface TermHoverProps {
  *
  * Usage:
  *   <TermHover term="king">King</TermHover>
- *   <TermHover term="flip">Gamma Flip</TermHover>
+ *   <TermHover term="gamma_flip">Gamma Flip</TermHover>
  *   <TermHover term="vex">VEX</TermHover>
  */
 export function TermHover({ term, children, className }: TermHoverProps) {

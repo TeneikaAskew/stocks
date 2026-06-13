@@ -32,6 +32,7 @@ from sqlalchemy.exc import ProgrammingError, OperationalError
 
 from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, MAGNITUDE_THRESHOLDS, PHASE_FEATURES,
+    LABEL_MODES, DEFAULT_LABEL_MODE,
     NEW_INDICATORS_TABLE, NEW_CROSS_ASSET_TABLE,
 )
 from gcp.research.strat_engine.strat_dataset import (
@@ -46,31 +47,33 @@ log = logging.getLogger(__name__)
 
 # ─────────────────────── Target ───────────────────────
 
-def _compute_atr20(df: pd.DataFrame) -> pd.Series:
-    """Compute ATR-20 from OHLCV via continuous true-range rolling mean.
+# Phase-1 volatility-expansion features, mapped to the spine columns that
+# lib.indicators.add_all_indicators now produces and strat_data_builder
+# persists. The magnitude engine consumes these instead of recomputing them.
+_PHASE1_SPINE_COLUMNS = (
+    "atr_expansion",            # ATR5/ATR20 (Wilder) — single-source ratio
+    "bb20_bandwidth",
+    "realized_vol_z",
+    "range_expansion_ratio",
+    "intraday_range_vs_prevday",
+)
 
-    Required because `strat_features_{tf}.atr_20` is stored as NaN across all
-    rows (upstream `lib.indicators.add_all_indicators` doesn't compute the
-    20-bar variant; the column is silently NaN-filled by `strat_data_builder`).
-    Computing locally keeps the magnitude target spec-compliant ("ATR-20
-    multiples") rather than substituting atr_14 under a different label.
 
-    Method: simple rolling-20 mean of continuous true range. ATR is
-    inherently a multi-session measure — the rolling window crosses
-    sessions intentionally so the overnight price gap (close[D-1] →
-    open[D]) shows up in true_range at the first bar of the new day.
-    That's the textbook definition; session-aware rolling would yield
-    zero valid rows on 30m bars (only 13 RTH bars per day < 20-bar window).
+def _require_phase1_spine_features(df: pd.DataFrame) -> None:
+    """Assert the Phase-1 volatility features are present from the spine.
+
+    They are computed in lib.indicators.add_all_indicators (the _add_magnitude
+    block + ATR_Expansion) and persisted in strat_features_<tf>, so they arrive
+    with the base frame. If they're absent the strat_features rebuild that
+    persists them has not run — fail loud rather than silently re-deriving
+    (CLAUDE.md Rule 3.7 / no-workarounds).
     """
-    h, l, c = df["high"], df["low"], df["close"]
-    prev_c = c.shift(1)
-    tr_components = pd.concat([
-        (h - l),
-        (h - prev_c).abs(),
-        (l - prev_c).abs(),
-    ], axis=1)
-    true_range = tr_components.max(axis=1, skipna=True)
-    return true_range.rolling(20, min_periods=20).mean()
+    missing = [c for c in _PHASE1_SPINE_COLUMNS if c not in df.columns]
+    if missing:
+        raise RuntimeError(
+            f"Phase-1 spine features missing from strat_features: {missing}. "
+            "Re-run strat_data_builder --rebuild so add_all_indicators' "
+            "magnitude block is persisted. Do NOT recompute these inline.")
 
 
 def _bucket_magnitude(move: pd.Series, atr20: pd.Series) -> pd.Series:
@@ -93,83 +96,6 @@ def _bucket_magnitude(move: pd.Series, atr20: pd.Series) -> pd.Series:
     bucket.loc[valid & (ratio >= t1) & (ratio < t2)] = LABEL_CLASSES[2]
     bucket.loc[valid & (ratio >= t2)] = LABEL_CLASSES[3]
     return bucket
-
-
-# ─────────────────────── Phase-1 features (computed on the fly) ───────────────────────
-
-def _add_phase1_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add Phase-1 volatility-family features. Session-aware within bar_date
-    so the rolling windows never cross overnight gaps inside the same bar."""
-    df = df.copy()
-
-    # atr5 / atr20 ratio. atr_5 not in source — compute from high-low-close.
-    # ATR uses Wilder smoothing in lib/indicators; for research we use
-    # simple rolling-mean of true_range over 5 bars — clearly noted as a
-    # research approximation, NOT a substitute label that is supposed to
-    # mirror an external API.
-    h, l, c = df["high"], df["low"], df["close"]
-    prev_c = c.groupby(df["bar_date"]).shift(1)
-    tr = pd.concat([
-        (h - l),
-        (h - prev_c).abs(),
-        (l - prev_c).abs(),
-    ], axis=1).max(axis=1)
-    df["atr_5_simple"] = tr.groupby(df["bar_date"]).rolling(5).mean().reset_index(level=0, drop=True)
-    # Use the locally-computed atr_20 (stored atr_20 is NaN in source).
-    atr20 = df["atr_20_computed"]
-    df["atr5_atr20_ratio"] = np.where(
-        atr20.notna() & (atr20 > 0),
-        df["atr_5_simple"] / atr20, np.nan,
-    )
-
-    # BB20 bandwidth: (bb_upper - bb_lower) / sma. We have bb_upper/lower
-    # already; bb_width in strat_features is already (upper-lower)/middle
-    # in some places but we recompute clean to avoid version drift:
-    # bandwidth = (upper - lower) / close — same denominator everywhere.
-    df["bb20_bandwidth"] = np.where(
-        df["close"].notna() & (df["close"] != 0),
-        (df["bb_upper"] - df["bb_lower"]) / df["close"], np.nan,
-    )
-
-    # 15-bar realized volatility z-score. Realized vol = stddev of log returns
-    # over 15 bars; z = (current - rolling_mean_60) / rolling_std_60.
-    logret = np.log(c / prev_c)
-    rv15 = logret.groupby(df["bar_date"]).rolling(15).std().reset_index(level=0, drop=True)
-    rv_mu = rv15.groupby(df["bar_date"]).rolling(60).mean().reset_index(level=0, drop=True)
-    rv_sd = rv15.groupby(df["bar_date"]).rolling(60).std().reset_index(level=0, drop=True)
-    df["realized_vol_z15"] = np.where(
-        rv_sd.notna() & (rv_sd > 0),
-        (rv15 - rv_mu) / rv_sd, np.nan,
-    )
-
-    # range_expansion_ratio = current bar range / avg of prior 5 bars' range
-    rng = h - l
-    avg_prior5 = rng.groupby(df["bar_date"]).shift(1).groupby(df["bar_date"]).rolling(5).mean().reset_index(level=0, drop=True)
-    df["range_expansion_ratio"] = np.where(
-        avg_prior5.notna() & (avg_prior5 > 0),
-        rng / avg_prior5, np.nan,
-    )
-
-    # intraday_range_vs_prior_day: cumulative intraday range / prior day's full range.
-    # bar_date groups intraday; prior-day range comes from a per-day max-high - min-low.
-    daily_range = (
-        df.groupby("bar_date")
-          .apply(lambda g: g["high"].max() - g["low"].min())
-          .rename("daily_range")
-          .reset_index()
-    )
-    daily_range["prev_daily_range"] = daily_range["daily_range"].shift(1)
-    df = df.merge(daily_range[["bar_date", "prev_daily_range"]], on="bar_date", how="left")
-    cumrange = (
-        df.groupby("bar_date").apply(lambda g: g["high"].cummax() - g["low"].cummin())
-          .reset_index(level=0, drop=True)
-    )
-    df["intraday_range_vs_prior_day"] = np.where(
-        df["prev_daily_range"].notna() & (df["prev_daily_range"] > 0),
-        cumrange / df["prev_daily_range"], np.nan,
-    )
-
-    return df
 
 
 # ─────────────────────── Phase-3 features (event proximity) ───────────────────────
@@ -387,8 +313,18 @@ def _add_table_join_features(df: pd.DataFrame, engine, table: str,
 
 def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
                             since: str | None = None,
-                            until: str | None = None) -> pd.DataFrame:
-    """Load the labeled dataset for one (ticker, tf, phase) cell."""
+                            until: str | None = None,
+                            label_mode: str = DEFAULT_LABEL_MODE) -> pd.DataFrame:
+    """Load the labeled dataset for one (ticker, tf, phase) cell.
+
+    label_mode='body'      → target = |next_close - next_open| / atr_20 (the IV
+                             expected-move comparison; default).
+    label_mode='excursion' → target = (next_high - next_low) / atr_20 (intrabar
+                             path/range; the gamma-scalp question). See
+                             mag_config.LABEL_MODES.
+    """
+    if label_mode not in LABEL_MODES:
+        raise ValueError(f"label_mode must be one of {LABEL_MODES}, got {label_mode!r}")
     # Reuse strat_engine's loader with next-bar OHLC so we can compute the
     # magnitude target. The strat_engine label (next_bar_type) is also in
     # the frame; we drop it explicitly via featurize()'s drop set.
@@ -397,12 +333,36 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
         include_levels=True, include_next_bar_ohlc=True,
     )
 
-    # Compute magnitude target. atr_20 is stored as NaN in strat_features
-    # (upstream pipeline never computed it) so we recompute locally from
-    # OHLCV via session-aware true-range rolling mean.
-    df["atr_20_computed"] = _compute_atr20(df)
-    move = (df["next_close"] - df["next_open"]).abs()
-    df[LABEL_COL] = _bucket_magnitude(move, df["atr_20_computed"])
+    # Magnitude target = |next_close - next_open| / atr_20. atr_20 now comes
+    # from the single indicator spine (lib.indicators.add_all_indicators →
+    # strat_features_<tf>.atr_20), populated by the 2026-06-01 rebuild. No local
+    # recompute / workaround (CLAUDE.md "one source of truth", no shortcuts).
+    if "atr_20" not in df.columns:
+        raise RuntimeError(
+            "strat_features is missing the atr_20 column — the magnitude target "
+            "requires it. Re-run strat_data_builder --rebuild so the spine's "
+            "ATR20 is persisted; do NOT substitute a locally-recomputed ATR.")
+    atr20 = df["atr_20"]
+    if not (atr20.notna() & (atr20 > 0)).any():
+        raise RuntimeError(
+            "strat_features.atr_20 is entirely NaN/zero — the upstream rebuild "
+            "that persists ATR20 from add_all_indicators has not run. Fix the "
+            "data (rebuild), do not work around it.")
+    if label_mode == "excursion":
+        # Intrabar path/range — the gamma-scalp question.
+        move = (df["next_high"] - df["next_low"]).abs()
+    elif label_mode == "call":
+        # Upside-only excursion: how far ABOVE the open the next bar reached.
+        # A down-bar has ~0 upside excursion → TIGHT, so EXPLOSIVE-call = big UP.
+        # clip(lower=0): next_high >= next_open always, but guard float noise.
+        move = (df["next_high"] - df["next_open"]).clip(lower=0)
+    elif label_mode == "put":
+        # Downside-only excursion: how far BELOW the open the next bar reached.
+        # An up-bar has ~0 downside excursion → TIGHT, so EXPLOSIVE-put = big DOWN.
+        move = (df["next_open"] - df["next_low"]).clip(lower=0)
+    else:  # "body" — open→close, the IV expected-move comparison.
+        move = (df["next_close"] - df["next_open"]).abs()
+    df[LABEL_COL] = _bucket_magnitude(move, atr20)
     # Drop rows missing magnitude (no valid ATR or no next-bar OHLC).
     n_before = len(df)
     df = df[df[LABEL_COL].notna()].copy()
@@ -410,9 +370,24 @@ def load_magnitude_dataset(engine, ticker: str, tf: str, phase: str,
     log.info("magnitude label assigned: %d rows (%d dropped for missing atr/next-bar)",
              n_after, n_before - n_after)
 
-    # Phase-specific feature additions.
-    if phase in ("phase1",):
-        df = _add_phase1_features(df)
+    # Phase-specific feature additions. Phase-1 volatility-expansion features
+    # now come from the spine (persisted in strat_features by add_all_indicators)
+    # — they are loaded automatically with the base frame.
+    #
+    # CRITICAL phase-isolation: because these columns are now PERSISTED (vs the
+    # old inline path that only computed them when phase=='phase1'), every phase
+    # would otherwise train on them via load_strat_dataset's SELECT s.*,
+    # contaminating the baseline/other-phase comparisons. To keep each phase
+    # isolating only ITS additions (the spec contract), DROP the phase-1 spine
+    # columns whenever phase != 'phase1'. phase1 keeps + verifies them.
+    if phase == "phase1":
+        _require_phase1_spine_features(df)
+    else:
+        _drop = [c for c in _PHASE1_SPINE_COLUMNS if c in df.columns]
+        if _drop:
+            df = df.drop(columns=_drop)
+            log.info("phase=%s: dropped %d persisted phase-1 spine columns to "
+                     "preserve phase isolation (%s)", phase, len(_drop), _drop)
     if phase in ("phase3",):
         df = _add_phase3_features(df, engine)
     if phase in ("phase2",):
@@ -453,8 +428,6 @@ _FEATURE_DROP_COLS = frozenset({
     # Both labels.
     LABEL_COL,
     STRAT_LABEL_COL,  # = "next_bar_type"
-    # Target-construction intermediate.
-    "atr_20_computed",
 })
 
 _NUMERIC_DTYPES = (np.float64, np.int64, np.int32, np.int8, np.float32, np.int16)

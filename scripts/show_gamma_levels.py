@@ -60,7 +60,8 @@ def render(summary: gamma.GammaSummary, snap_name: str) -> None:
     spot = summary.spot.price
     print()
     print(f"  {summary.ticker}   spot≈{spot:.2f} ({summary.spot.method})   "
-          f"flip={'%.2f' % summary.flip if summary.flip else 'n/a'}   "
+          f"balance={'%.2f' % summary.gamma_balance if summary.gamma_balance else 'n/a'}   "
+          f"flip={'%.2f' % summary.gamma_flip if summary.gamma_flip else 'n/a'}   "
           f"regime={summary.regime}   ({snap_name})")
     if summary.spot.note:
         print(f"  spot detail: {summary.spot.note}")
@@ -81,8 +82,8 @@ def render(summary: gamma.GammaSummary, snap_name: str) -> None:
         print(f"  KINGS:  {', '.join(f'{l.strike:.2f}' for l in summary.kings)}")
     if summary.gates:
         print(f"  GATES:  {', '.join(f'{l.strike:.2f}' for l in summary.gates)}")
-    if summary.flip_levels:
-        print(f"  FLIPS:  {', '.join(f'{l.strike:.2f}' for l in summary.flip_levels)}")
+    if summary.gamma_balance_levels:
+        print(f"  GAMMA_BALANCE:  {', '.join(f'{l.strike:.2f}' for l in summary.gamma_balance_levels)}")
     print(f"  TOTAL GEX: {fmt_gex(summary.total_gex)}")
     if summary.warnings:
         print()

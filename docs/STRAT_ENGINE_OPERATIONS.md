@@ -2,6 +2,8 @@
 
 **Status: ON THE SHELF.** The strat-engine candle-type prediction model is finalized as a production-grade deliverable. It is callable on demand. **It is NOT activated** — no schedulers, no user-facing routes, no live brief integration. The deploy gate at the bottom of this doc defines what would need to be true to activate any production trigger.
 
+**Product spec:** [`../gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md`](../gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md) — goal/target/features/success-bars for both the TYPE (validated) and DIRECTION (rejected) models, with the verified per-fold evidence and the 6-point validation contract.
+
 ---
 
 ## 1. What the model is
@@ -14,7 +16,7 @@ A multi-class LightGBM classifier that predicts the next bar's **strat candle ty
 | Algorithm | LightGBM `LGBMClassifier` (objective=`multiclass`, 4 classes) |
 | Calibration | **`none`** — raw native softmax (the 24-fold walk-forward proved sigmoid Platt scaling hurt calibration in 24/24 folds) |
 | Feature set | 143-column enriched feature set (technicals + ORB + historical levels + order blocks + gamma + VIX context) |
-| Deployed cells | IWM, SPY, QQQ × 5m, 15m, 30m timeframes (9 cells; 1m and 60m excluded per the locked FTFC config) |
+| Deployed cells | **IWM, SPY, QQQ × 5m / 15m / 30m (9 cells)** — all built & validated 2026-06-04. Each has a trained `model.pkl` (calibration=none) and a walk-forward report. Single-split OOS gate: 9/9 PASS. Walk-forward: 5m/15m clean PASS on all three tickers; 30m PARTIAL on all three (ECE ~0.04–0.05, a cell property — see PRD §2). 1m and 60m excluded per the locked FTFC config. |
 | Training method | Anchored expanding walk-forward, 8 cutoffs (2019/2020/2021/2022/2023/2024/2025/2026), no recalibration between folds |
 
 The model is **frozen**. The configuration, hyperparameters, feature set, and calibration policy are not changed by routine operations. Retraining is allowed (and expected — see §5), but the configuration is fixed.
@@ -23,7 +25,7 @@ The model is **frozen**. The configuration, hyperparameters, feature set, and ca
 
 | Not validated | Evidence |
 |---|---|
-| Bar-body direction (close > open) | Track C R&D: 0/24 walk-forward folds had positive log-loss beat across news / cross-asset / vol-regime feature families. See [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md). |
+| Bar-body direction (close > open) | Track C R&D: 0/24 IWM walk-forward folds had positive log-loss beat across news / cross-asset / vol-regime families — **re-confirmed cross-ticker 2026-06-04: 0/8 beat in every one of IWM/SPY/QQQ × 5m/15m/30m (0/72 folds), decisive-call hit-rate stuck at a coin flip.** See [`DIRECTION_FEATURES_R&D.md`](DIRECTION_FEATURES_R&D.md) + [`../gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md`](../gcp/research/strat_engine/STRAT_DIRECTIONALITY_ENGINE_PRD.md) §3. |
 | Net-P&L-after-friction edge under the strat execution playbook | Track B exec backtest: 0/8 walk-forward folds positive net expectancy, in all 3 cells, on 88k trades. Friction is structurally larger than the gross edge. See [`EXEC_BACKTEST_RESULTS.md`](EXEC_BACKTEST_RESULTS.md). |
 | Magnitude / how far the next bar travels | Out of scope; the model is a class predictor, not a regression. |
 | Earnings-window, gap-day, or pre-market edge | Not tested; the training window includes those bars but the model is not specialized. |
@@ -41,7 +43,7 @@ The model is a **structure predictor**, not a directional or P&L surface. The ve
 | `gs://${BUCKET}/research/strat_engine/{ticker}_{tf}/model.pkl` | Pickled `lgb.LGBMClassifier` (the frozen production config) |
 | `gs://${BUCKET}/research/strat_engine/{ticker}_{tf}/features.txt` | Feature-column list used at training time |
 | `gs://${BUCKET}/research/strat_engine/{ticker}_{tf}/classes.txt` | Class-label order used by `predict_proba` |
-| `gs://${BUCKET}/research/strat_engine/{ticker}_{tf}/metrics.json` | OOS metrics + `run_id` + training timestamps |
+| `gs://${BUCKET}/research/strat_engine/{ticker}_{tf}/metrics_{epoch}.json` | OOS metrics + `run_id` + training timestamps. **Note:** there is no top-level `metrics.json` pointer — only timestamped `metrics_{epoch}.json` sidecars (one per training run, including diagnostic variants). `strat_pred_serve.py:_load_metrics` picks the sidecar whose epoch is closest to the served `model.pkl` mtime; `model_version` is therefore best-effort and can reflect a variant run. |
 | `gs://${BUCKET}/research/strat_engine/{ticker}_{tf}/runs/{run_id}/` | Per-run archive (every training run lands here too) |
 | `gs://${BUCKET}/research/strat_engine/structure_brief_latest.json` | (Future) live-ECE rolling-window snapshot — read by `/api/admin/structure-brief` and `/api/admin/strat-engine/predict` for the mute decision. Out of scope for this closeout. |
 
@@ -180,7 +182,7 @@ Until all three are present, the strat-engine job stays callable but quiescent. 
 | Predict (admin API) | `curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" -d '{"ticker":"IWM","timeframe":"15m"}' .../api/admin/strat-engine/predict` |
 | Predict (Cloud Run Job) | `gcloud run jobs execute strat-engine --args="-m,gcp.research.strat_engine.strat_pred_serve,--ticker=IWM,--tf=15m" --wait` |
 | Retrain | `gcloud run jobs execute strat-engine --args="-m,gcp.research.strat_engine.strat_pred_train,--ticker=IWM,--tf=15m" --wait` |
-| Walk-forward (validation) | `gcloud run jobs execute strat-engine --args="-m,gcp.research.strat_engine.strat_walk_forward,--ticker=IWM,--tf=15m" --wait` |
+| Walk-forward (validation) | `gcloud run jobs execute strat-engine --args="-m,gcp.research.strat_engine.strat_walk_forward,--ticker=IWM,--tf=15m,--calibration=none" --wait` (the `--calibration` flag + the `none` branch were added 2026-06-04; before that the harness unconditionally wrapped in `CalibratedClassifierCV` and **crashed** under the locked `calibration=none` config — the only surviving TYPE walk-forward evidence came from the adaptive harness's `mode=none` path) |
 | Read structure-brief snapshot | `gsutil cat gs://${BUCKET}/research/strat_engine/structure_brief_latest.json` |
 | Dev page snapshot | open `https://${PLATFORM_HOST}/dev` (IAP-authenticated as the admin email) |
 | Check scheduler status | `gcloud scheduler jobs list --location=us-east1 --filter="name~strat-engine"` (should return zero rows) |
