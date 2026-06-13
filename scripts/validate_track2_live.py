@@ -309,12 +309,17 @@ def main():
         # ── Test 6 ── reprice_intraday_option realtime IV path ──────
         log.info("")
         log.info("=== TEST 6: reprice_intraday_option observed IV path ===")
-        # Synthetic 1-min bars covering 9:30-10:30 ET (13:30-14:30 UTC)
+        # Bars must use UTC timestamps to match the REALTIME snapshots'
+        # TIMESTAMPTZ storage in Cloud SQL. In production `_load_intraday_bars`
+        # queries `market_data_intraday.ts` (TIMESTAMPTZ) which round-trips
+        # as tz-aware UTC; the test's synthetic bars must follow the same
+        # convention or the int64 nanosecond gap shifts every bar outside
+        # the snapshot's interpolation window and np.interp left-clamps.
         bars = pd.DataFrame({
-            'Time': [datetime.combine(VALIDATION_DATE, datetime.min.time())
-                     + timedelta(minutes=m)
-                     for m in [9*60+30, 9*60+35, 9*60+40, 10*60+0,
-                               10*60+5, 10*60+30]],
+            'Time': [datetime.combine(VALIDATION_DATE, datetime.min.time(),
+                                       tzinfo=timezone.utc)
+                     + timedelta(hours=13, minutes=m)
+                     for m in [30, 35, 40, 60, 65, 90]],  # 13:30 → 15:00 UTC
             'Spot': [600.0, 600.5, 601.0, 601.5, 601.0, 600.0],
         })
         tl = reprice_intraday_option(
