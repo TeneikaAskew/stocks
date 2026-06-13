@@ -2640,6 +2640,113 @@ def test_loader_routes_q1_to_low_conviction_not_dropped(mock_cloud_sql,
     assert any(e['ticker'] == 'HD' for e in result['low_conviction'])
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Track 2 phase 2a — empirical_fallback_footer helper
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestEmpiricalFallbackFooter:
+    """Helper that surfaces the 0DTE-empirical-fallback warning when any
+    rendered P&L row carries data_source='empirical_fallback'. See
+    docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 2."""
+
+    def test_empty_when_no_rows(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        assert empirical_fallback_footer([]) == ""
+        assert empirical_fallback_footer(None) == ""
+
+    def test_empty_when_all_realtime(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        rows = [
+            {"ticker": "SPY", "net_pnl_pct": 0.03, "data_source": "realtime"},
+            {"ticker": "QQQ", "net_pnl_pct": 0.01, "data_source": "realtime"},
+        ]
+        assert empirical_fallback_footer(rows) == ""
+
+    def test_footer_when_any_row_used_fallback(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        rows = [
+            {"ticker": "SPY", "data_source": "realtime"},
+            {"ticker": "QQQ", "data_source": "empirical_fallback"},
+        ]
+        result = empirical_fallback_footer(rows)
+        assert "empirical curve" in result
+        assert "realtime Greeks unavailable" in result
+
+    def test_accepts_single_dict(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        assert empirical_fallback_footer({"data_source": "empirical_fallback"})
+        assert empirical_fallback_footer({"data_source": "realtime"}) == ""
+
+    def test_handles_rows_missing_data_source(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        # Rows without data_source field (e.g. legacy callers) are
+        # treated as "unknown" — neither realtime nor fallback. No
+        # footer emitted.
+        rows = [{"ticker": "SPY"}, {"ticker": "QQQ"}]
+        assert empirical_fallback_footer(rows) == ""
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fallback-guard regression: calibration loader must log on failure
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestCalibrationOptionsLoaderObservable:
+    """AUDIT-2026-05-23 (Track 2 phase 2a review): the brief's
+    `_build_earnings_embed` previously silent-swallowed a failure in
+    `get_calibration_options_metrics()`, causing the calibration-aware
+    Q5 IC override to revert to archetype-only with zero operator
+    signal. The fix promotes the swallow to `logger.exception`.
+
+    These tests pin the new behavior: empty dict still propagates
+    (brief keeps running), but the failure is observable via the
+    ERROR-level log.
+    """
+
+    def test_logger_exception_fires_on_calibration_failure(self, caplog,
+                                                            monkeypatch):
+        from gcp import premarket_brief as pb
+
+        # Make the lib call raise; the existing _BRIEF_INCLUDE_UNCONFIRMED
+        # autouse fixture means we don't need to set the env var.
+        monkeypatch.setattr(
+            'lib.earnings_reactions.get_calibration_options_metrics',
+            lambda: (_ for _ in ()).throw(RuntimeError('simulated lib failure')),
+        )
+
+        # Minimal earnings_data to drive the embed builder past the
+        # calibration load — the calibration load happens BEFORE the
+        # "no earnings" early-return, so even an empty 'earnings' list
+        # exercises the path we care about.
+        earnings_data = {'mode': 'daily', 'earnings': []}
+
+        with caplog.at_level('ERROR', logger='gcp.premarket_brief'):
+            pb._build_earnings_embed(earnings_data)
+
+        assert any(
+            'calibration_options_metrics load failed' in r.getMessage()
+            for r in caplog.records
+        ), f"expected ERROR log; got: {[r.getMessage() for r in caplog.records]}"
+        # Stack trace captured (logger.exception attaches exc_info)
+        assert any(r.exc_info is not None for r in caplog.records), \
+            "expected exc_info attached via logger.exception"
+
+    def test_empty_dict_still_propagates_after_failure(self, monkeypatch):
+        """The fix preserves brief-keeps-running behavior — empty
+        _BRIEF_CAL_OPTS just disables the Q5 calibration override."""
+        from gcp import premarket_brief as pb
+
+        monkeypatch.setattr(
+            'lib.earnings_reactions.get_calibration_options_metrics',
+            lambda: (_ for _ in ()).throw(RuntimeError('boom')),
+        )
+        pb._build_earnings_embed({'mode': 'daily', 'earnings': []})
+        # Module-global got set to {} after the failure
+        assert pb._BRIEF_CAL_OPTS == {}
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Track 1 — gamma freshness footer
 # (see docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md)

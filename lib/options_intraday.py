@@ -13,19 +13,35 @@ and dividend yield in ``daily_rates``. With those four inputs and an
 IV-decay assumption we can rebuild the option's mid value at every
 minute via BSM repricing.
 
-The piece we DON'T have is the true intraday IV path. Real option IV
-crushes 30-50% at the earnings open then linearly bleeds to ~40% of T-1
-by close. This module models that with two configurable multipliers —
-``iv_open_multiplier`` (default 0.55) and ``iv_close_multiplier``
-(default 0.40). The default values are the median of empirical earnings
-crushes across the SPY single-name basket; callers needing higher
-fidelity can override per-event from observed T+1 IV data.
+The piece we historically didn't have is the true intraday IV path.
+Real option IV crushes 30-50% at the earnings open then linearly bleeds
+to ~40% of T-1 by close. The empirical fallback models that with two
+configurable multipliers — ``iv_open_multiplier`` (default 0.55) and
+``iv_close_multiplier`` (default 0.40). The defaults are the median of
+empirical earnings crushes across the SPY single-name basket.
 
-The bias direction is documented per CLAUDE.md §3.7 — we don't fabricate
-a "true" intraday IV, we explicitly model it and surface the assumption.
-The IV path is the only modeled quantity; everything else is observed
-data (spot from intraday bars, r/q from FRED, strike/expiry from the
-T-1 snapshot).
+AUDIT-2026-05-22 (Track 2 phase 2a, see
+``docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md``): with AV's
+REALTIME_OPTIONS endpoint live (Track 0 / PR #536), the observed
+intraday IV path is now available in ``etf_options_snapshots`` for any
+contract whose strike+expiration matched a REALTIME snapshot during the
+trading day. ``reprice_intraday_option`` now consults
+``load_realtime_theta_curve`` FIRST and uses observed (snapshot_ts,
+implied_volatility, delta, gamma, theta) values as the primary IV path.
+The empirical linear curve is the explicit fallback when no realtime
+data exists for that contract on that date (e.g. dates pre-2026-05-22).
+
+Output rows carry an explicit ``data_source`` column — ``'realtime'`` or
+``'empirical_fallback'`` — so callers (and the premarket brief) can
+flag fallback usage to humans rather than hiding the model assumption.
+Per CLAUDE.md §3.7 the fallback is intentional, typed, and visible.
+
+The bias direction of the empirical curve is unchanged — it
+underestimates afternoon theta by 20-40% per the four docstring caveats
+in ``scripts/analysis/options_pnl_translation.py`` — but every row that
+used it is now tagged, so a future Phase 2b can refit the constants
+from accumulated observed data without re-discovering which results
+were biased.
 
 Usage
 -----
@@ -50,7 +66,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -61,6 +77,12 @@ log = logging.getLogger(__name__)
 # Empirical defaults from cross-sectional study of earnings IV crushes.
 # Open IV ≈ 55% of T-1 IV; close IV ≈ 40% of T-1 IV. Overrideable
 # per-call when finer event-specific data is available.
+#
+# AUDIT-2026-05-22: these constants are the explicit empirical fallback
+# now. The primary path is observed-from-REALTIME-snapshots; see module
+# docstring and ``load_realtime_theta_curve``. Phase 2b will refit these
+# constants from ≥14 trading days of accumulated realtime observations
+# (target ~2026-06-05+).
 _DEFAULT_IV_OPEN_MULT  = 0.55
 _DEFAULT_IV_CLOSE_MULT = 0.40
 
@@ -69,6 +91,140 @@ _DEFAULT_IV_CLOSE_MULT = 0.40
 # in years.
 _TRADING_DAYS_PER_YEAR  = 252
 _CALENDAR_DAYS_PER_YEAR = 365
+
+# Data-source markers stamped onto every repricer output row so the
+# brief footer logic and any downstream analytics can distinguish
+# observed vs modelled IV paths.
+DATA_SOURCE_REALTIME           = 'realtime'
+DATA_SOURCE_EMPIRICAL_FALLBACK = 'empirical_fallback'
+
+
+def load_realtime_theta_curve(
+    *,
+    ticker: str,
+    intraday_date: date,
+    expiration: date,
+    strike: float,
+    option_type: Literal['call', 'put', 'calls', 'puts'],
+    query_fn: Optional[Callable[[str, dict], pd.DataFrame]] = None,
+) -> Optional[pd.DataFrame]:
+    """Load observed (snapshot_ts, IV, Greeks, mark) for one contract on one day.
+
+    Reads ``etf_options_snapshots WHERE market_session='REALTIME'`` for the
+    given (ticker, snapshot_date, expiration, strike, option_type). This is
+    the primary input to ``reprice_intraday_option`` and the mark-to-mark
+    P&L path in ``scripts/analysis/options_pnl_translation.py`` — replaces
+    the empirical 0.55→0.40 linear IV-decay curve with observed values.
+
+    Added 2026-05-22 as part of Track 2 phase 2a; see
+    ``docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md`` for the multi-track
+    plan. Realtime data starts accumulating once Track 0 (PR #536) merges
+    and the ``av-options-realtime`` Cloud Scheduler fires its first
+    sessions. Until then this function returns ``None`` for every
+    historical date and callers transparently fall back to the empirical
+    curve, stamping ``data_source='empirical_fallback'`` on the result.
+
+    Parameters
+    ----------
+    ticker, intraday_date, expiration, strike, option_type
+        Contract identifying tuple. ``option_type`` accepts 'call'/'put' or
+        the schema-native 'calls'/'puts'.
+    query_fn
+        Optional injection point for tests. Defaults to
+        ``gcp.database.query_to_dataframe`` which itself swallows query
+        errors and returns an empty DataFrame — that empty result is
+        treated identically to "no realtime data" here, so a Cloud SQL
+        outage gracefully falls back to the empirical path. The fallback
+        is surfaced via the ``data_source`` column, not hidden.
+
+    Returns
+    -------
+    DataFrame or None
+        Columns: ``snapshot_ts``, ``implied_volatility``, ``delta``,
+        ``gamma``, ``theta``, ``vega``, ``mark``, sorted by snapshot_ts.
+        Returns ``None`` if no REALTIME rows exist for the contract on
+        that date, or if every row has NaN IV (can't anchor a path).
+    """
+    ot = (option_type or '').lower().strip()
+    if ot in ('call', 'c'):
+        ot_db = 'calls'
+    elif ot in ('put', 'p'):
+        ot_db = 'puts'
+    else:
+        ot_db = ot
+
+    if query_fn is None:
+        try:
+            from gcp.database import query_to_dataframe as query_fn
+        except ImportError:
+            return None
+
+    sql = (
+        "SELECT snapshot_ts, implied_volatility, delta, gamma, theta, "
+        "       vega, mark "
+        "FROM etf_options_snapshots "
+        "WHERE ticker = :ticker "
+        "  AND snapshot_date = :sd "
+        "  AND expiration = :exp "
+        "  AND strike = :strike "
+        "  AND option_type = :ot "
+        "  AND market_session = 'REALTIME' "
+        "ORDER BY snapshot_ts ASC"
+    )
+    df = query_fn(sql, {
+        'ticker': ticker.upper(),
+        'sd': intraday_date,
+        'exp': expiration,
+        'strike': float(strike),
+        'ot': ot_db,
+    })
+    if df is None or df.empty:
+        return None
+    df = df.dropna(subset=['implied_volatility']).reset_index(drop=True)
+    if df.empty:
+        return None
+    df['snapshot_ts'] = pd.to_datetime(df['snapshot_ts'])
+    return df
+
+
+def _interpolate_observed_iv(
+    realtime_path: pd.DataFrame,
+    bar_times: pd.Series,
+) -> np.ndarray:
+    """Project observed 5-min IV snapshots onto a 1-min bar grid.
+
+    Linear interpolation between snapshots, edge-clamped before the first
+    snapshot and after the last. This matches how dealers observe IV
+    evolve — roughly constant between vendor refreshes. With ≤1 observed
+    snapshot the path is flat at that single observed value, which is
+    still more honest than fabricating a linear curve.
+
+    Both inputs are forced to tz-naive ``datetime64[ns]`` before
+    interpolation. ``np.interp`` requires monotonic x; the caller guarantees
+    this via the ``ORDER BY snapshot_ts`` clause in
+    ``load_realtime_theta_curve``.
+    """
+    rt_ts = pd.to_datetime(realtime_path['snapshot_ts'])
+    try:
+        rt_ts = rt_ts.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+
+    bar_ts = pd.to_datetime(bar_times)
+    try:
+        bar_ts = bar_ts.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+
+    rt_ns = rt_ts.astype('int64').to_numpy()
+    bar_ns = bar_ts.astype('int64').to_numpy()
+    iv_vals = realtime_path['implied_volatility'].astype(float).to_numpy()
+
+    return np.interp(
+        bar_ns, rt_ns, iv_vals,
+        left=float(iv_vals[0]),
+        right=float(iv_vals[-1]),
+    )
 
 
 def reprice_intraday_option(
@@ -85,6 +241,8 @@ def reprice_intraday_option(
     iv_close_multiplier: float = _DEFAULT_IV_CLOSE_MULT,
     risk_free: Optional[float] = None,
     dividend_yield: Optional[float] = None,
+    use_realtime: bool = True,
+    realtime_iv_path: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Minute-by-minute PnL timeline for one option contract on one day.
 
@@ -107,16 +265,30 @@ def reprice_intraday_option(
         Optional pre-loaded ``market_data_intraday`` slice. If None, the
         function pulls bars for (ticker, intraday_date) from Cloud SQL.
     iv_open_multiplier, iv_close_multiplier
-        IV decay assumption. See module docstring. Both expressed as
-        fractions of ``iv_t_minus_1``.
+        Empirical-fallback IV decay assumption. See module docstring.
+        Both expressed as fractions of ``iv_t_minus_1``. Only consulted
+        when no realtime data exists for the contract on that date.
     risk_free, dividend_yield
         Override the daily_rates lookup if you've already resolved them.
+    use_realtime
+        Default ``True`` — query ``etf_options_snapshots`` for observed
+        REALTIME data and use it as the primary IV path. Set ``False``
+        to force the empirical curve (e.g. for tests, or for explicit
+        pre-Track-0 backfill replays where the realtime branch must be
+        skipped).
+    realtime_iv_path
+        Optional pre-loaded realtime curve (output of
+        ``load_realtime_theta_curve``). Useful for tests and for callers
+        that want to reuse one fetch across multiple repricing calls.
 
     Returns
     -------
     DataFrame
         Columns: Time (tz-naive ET), Spot, IV_used, Theo_value,
-        Pnl_per_share, Pnl_per_contract, Pnl_pct.
+        Pnl_per_share, Pnl_per_contract, Pnl_pct, data_source.
+        ``data_source`` is ``'realtime'`` if observed IV was used,
+        ``'empirical_fallback'`` if the linear curve was used (no
+        realtime data available or ``use_realtime=False``).
         Empty DataFrame if no intraday bars for the (ticker, date).
     """
     # Normalise option_type to py_vollib's single-letter format ('c'/'p').
@@ -143,23 +315,40 @@ def reprice_intraday_option(
                     ticker, intraday_date)
         return pd.DataFrame(columns=[
             'Time', 'Spot', 'IV_used', 'Theo_value',
-            'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct'])
+            'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct', 'data_source'])
 
     bars = bars.copy()
     bars['Time'] = pd.to_datetime(bars['Time'])
     bars = bars.sort_values('Time').reset_index(drop=True)
     n = len(bars)
 
-    # Linear IV decay from open multiplier to close multiplier across the
-    # session. Index 0 = open, index n-1 = close.
-    if n > 1:
-        progress = np.arange(n, dtype=float) / (n - 1)
-    else:
-        progress = np.zeros(1)
-    iv_path = iv_t_minus_1 * (
-        iv_open_multiplier
-        + (iv_close_multiplier - iv_open_multiplier) * progress
-    )
+    # Track 2 phase 2a: realtime-observed IV path is primary; empirical
+    # linear curve is the explicit fallback. See module docstring.
+    data_source = DATA_SOURCE_EMPIRICAL_FALLBACK
+    iv_path: Optional[np.ndarray] = None
+
+    if use_realtime:
+        if realtime_iv_path is None:
+            realtime_iv_path = load_realtime_theta_curve(
+                ticker=ticker, intraday_date=intraday_date,
+                expiration=expiration, strike=strike,
+                option_type=option_type,
+            )
+        if realtime_iv_path is not None and not realtime_iv_path.empty:
+            iv_path = _interpolate_observed_iv(realtime_iv_path, bars['Time'])
+            data_source = DATA_SOURCE_REALTIME
+
+    if iv_path is None:
+        # Empirical fallback: linear IV decay from open to close. Index 0 =
+        # open, index n-1 = close.
+        if n > 1:
+            progress = np.arange(n, dtype=float) / (n - 1)
+        else:
+            progress = np.zeros(1)
+        iv_path = iv_t_minus_1 * (
+            iv_open_multiplier
+            + (iv_close_multiplier - iv_open_multiplier) * progress
+        )
 
     # Time-to-expiry in years, recomputed per-bar (decreases through the day).
     bars_ts = bars['Time'].dt.tz_localize(None)
@@ -183,6 +372,7 @@ def reprice_intraday_option(
     out['Pnl_per_share']    = out['Theo_value'] - entry_price_per_share
     out['Pnl_per_contract'] = out['Pnl_per_share'] * 100.0
     out['Pnl_pct']          = out['Pnl_per_share'] / entry_price_per_share * 100.0
+    out['data_source']      = data_source
     return out
 
 
@@ -227,7 +417,8 @@ def reprice_structure_intraday(
         intraday_bars = _load_intraday_bars(ticker, intraday_date)
     if intraday_bars is None or intraday_bars.empty:
         return pd.DataFrame(columns=[
-            'Time', 'Spot', 'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct'])
+            'Time', 'Spot', 'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct',
+            'data_source'])
 
     if structure in ('long_call', 'long_put'):
         if atm_strike is None or call_entry is None and structure == 'long_call':
@@ -304,10 +495,16 @@ def _combine_legs(legs: list[pd.DataFrame], *, signs: list[float],
 
     Each timeline contributes its ``Pnl_per_share`` × sign to the combined
     position. ``Pnl_pct`` is recomputed against the combined entry.
+
+    ``data_source`` propagates from the legs: ``'realtime'`` only if EVERY
+    leg used realtime data; otherwise ``'empirical_fallback'``. A mixed
+    structure (one leg observed, one leg modeled) is fallback-tagged
+    because the structure's P&L is only as honest as its weakest leg.
     """
     if not legs or any(l.empty for l in legs):
         return pd.DataFrame(columns=[
-            'Time', 'Spot', 'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct'])
+            'Time', 'Spot', 'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct',
+            'data_source'])
     if len(legs) != len(signs):
         raise ValueError("legs and signs must match length")
 
@@ -317,6 +514,17 @@ def _combine_legs(legs: list[pd.DataFrame], *, signs: list[float],
         base['Pnl_per_share'] += sign * leg['Pnl_per_share'].to_numpy()
     base['Pnl_per_contract'] = base['Pnl_per_share'] * 100.0
     base['Pnl_pct'] = base['Pnl_per_share'] / entry * 100.0 if entry > 0 else np.nan
+
+    leg_sources = [
+        (leg['data_source'].iloc[0] if 'data_source' in leg.columns and not leg.empty
+         else DATA_SOURCE_EMPIRICAL_FALLBACK)
+        for leg in legs
+    ]
+    base['data_source'] = (
+        DATA_SOURCE_REALTIME
+        if all(s == DATA_SOURCE_REALTIME for s in leg_sources)
+        else DATA_SOURCE_EMPIRICAL_FALLBACK
+    )
     return base
 
 
