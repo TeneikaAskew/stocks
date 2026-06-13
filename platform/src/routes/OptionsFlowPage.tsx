@@ -353,8 +353,8 @@ export default function OptionsFlowPage() {
 
       {/* 2-D Grid */}
       {hasGrid && (
-        <div className="rounded-xl bg-[var(--surface-2)] p-3">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="rounded-xl bg-[var(--surface-2)] p-2">
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs text-[var(--color-text-muted)]">
               {metric.toUpperCase()} by Strike × Expiration — {filter === 'net' ? 'Net' : filter === 'calls' ? 'Calls' : 'Puts'} — ±{windowPct}% range ({summary!.strikes.length} strikes × {Math.min(GRID_MAX_EXPIRATIONS, summary!.expirations.length)} of {summary!.expirations.length} expirations)
             </span>

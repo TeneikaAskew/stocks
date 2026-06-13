@@ -13,13 +13,21 @@ export function selectValue(cell: GammaGridCell, metric: Metric, filter: Filter)
   return filter === 'calls' ? cell.call_gex : filter === 'puts' ? cell.put_gex : cell.gex;
 }
 
-const POS = interpolateRgb('#0a3d2f', '#34d399'); // dark → emerald
-const NEG = interpolateRgb('#3b1d6b', '#a78bfa'); // dark → violet
+// Dark, saturated ramps so bright-white values stay legible at every
+// magnitude. Positive (call-dominant) GEX → teal; negative (put) → violet —
+// the violet matches the competitor's signature look, both dark enough for
+// AA-contrast white text. The bright end is intentionally capped mid-tone.
+const POS = interpolateRgb('#06281d', '#0f9b6c'); // deep → teal
+const NEG = interpolateRgb('#241452', '#6d28d9'); // deep → violet
+
+// Empty cell (no contracts at that strike × expiration) — a near-black fill
+// instead of blank, so the grid reads as a solid dense matrix, not a sieve.
+export const EMPTY_CELL = '#0e0c1a';
 
 export function cellColor(value: number, maxAbs: number): string {
-  if (!value || maxAbs <= 0) return 'transparent';
-  // floor t so even small non-zero cells get a visible tint
-  const t = 0.18 + 0.82 * Math.min(Math.abs(value) / maxAbs, 1);
+  if (!value || maxAbs <= 0) return EMPTY_CELL;
+  // floor t so even small non-zero cells get a clearly visible tint
+  const t = 0.32 + 0.68 * Math.min(Math.abs(value) / maxAbs, 1);
   return value >= 0 ? POS(t) : NEG(t);
 }
 

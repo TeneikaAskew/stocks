@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { GammaGridSummary, GammaGridCell } from '@/hooks/useGammaGrid';
 import { formatGex, formatPctChange } from '@/lib/formatGex';
-import { selectValue, cellColor, expHeader, type Metric, type Filter } from './gammaGridUtils';
+import { selectValue, cellColor, expHeader, EMPTY_CELL, type Metric, type Filter } from './gammaGridUtils';
 
 interface Props {
   summary: GammaGridSummary;
@@ -65,13 +65,18 @@ export function GammaGrid({ summary, metric, filter, kingStrike, maxExpirations 
   // King strike: prefer the explicit prop (from /levels), else the largest |net GEX| cell.
   const kingRow = kingStrike ?? (kingKey ? Number(kingKey.split('|')[0]) : undefined);
 
-  const gridCols = `64px repeat(${columns.length}, minmax(76px, 1fr))`;
+  const gridCols = `56px repeat(${columns.length}, minmax(74px, 1fr))`;
 
   return (
     <div className="overflow-auto rounded-lg border border-[var(--color-border)]" style={{ maxHeight: 620 }}>
-      <div className="grid text-[11px]" style={{ gridTemplateColumns: gridCols }} data-testid="gamma-grid">
+      {/* gap-px over a dark backdrop paints crisp 1px gridlines without per-cell borders */}
+      <div
+        className="grid gap-px text-[11px]"
+        style={{ gridTemplateColumns: gridCols, backgroundColor: '#272233' }}
+        data-testid="gamma-grid"
+      >
         {/* Header row */}
-        <div className="sticky left-0 top-0 z-30 flex items-center justify-center border-b border-r border-[var(--color-border)] bg-[var(--surface-3)] px-1 py-1.5 font-medium text-[var(--color-text-muted)]">
+        <div className="sticky left-0 top-0 z-30 flex items-center justify-center bg-[var(--surface-3)] px-1 py-1.5 font-medium text-[var(--color-text-muted)]">
           Strike
         </div>
         {columns.map((exp) => {
@@ -79,7 +84,7 @@ export function GammaGrid({ summary, metric, filter, kingStrike, maxExpirations 
           return (
             <div
               key={exp}
-              className="sticky top-0 z-20 flex flex-col items-center justify-center border-b border-[var(--color-border)] bg-[var(--surface-3)] px-1 py-1"
+              className="sticky top-0 z-20 flex flex-col items-center justify-center bg-[var(--surface-3)] px-1 py-1"
             >
               <span className="font-medium text-[var(--color-text-secondary)]">{h.date}</span>
               <span className="text-[9px] text-[var(--color-text-muted)]">{h.dte}</span>
@@ -103,7 +108,7 @@ export function GammaGrid({ summary, metric, filter, kingStrike, maxExpirations 
               showChange={showChange}
               isSpotRow={isSpotRow}
               isKingRow={isKingRow}
-              kingRow={kingRow}
+              kingKey={kingKey}
             />
           );
         })}
@@ -122,7 +127,7 @@ function Row({
   showChange,
   isSpotRow,
   isKingRow,
-  kingRow,
+  kingKey,
 }: {
   strike: number;
   columns: string[];
@@ -133,18 +138,18 @@ function Row({
   showChange: boolean;
   isSpotRow: boolean;
   isKingRow: boolean;
-  kingRow?: number;
+  kingKey: string | null;
 }) {
   return (
     <>
       {/* Sticky strike label */}
       <div
-        className={`sticky left-0 z-10 flex items-center justify-end gap-1 border-r border-[var(--color-border)] px-1.5 font-mono ${
+        className={`sticky left-0 z-10 flex items-center justify-end gap-1 px-2 font-mono text-[11px] ${
           isSpotRow
-            ? 'bg-[var(--color-accent-red)]/15 font-semibold text-[var(--bear)]'
+            ? 'border-l-2 border-l-[var(--bull)] bg-[#0f1b2a] font-semibold text-[var(--bull)]'
             : isKingRow
-            ? 'bg-[var(--color-accent-amber)]/15 text-[var(--color-accent-amber)]'
-            : 'bg-[var(--surface-2)] text-[var(--color-text-secondary)]'
+            ? 'bg-[#3a2c07] font-semibold text-[var(--color-accent-amber)]'
+            : 'bg-[#15131f] text-[var(--color-text-secondary)]'
         }`}
       >
         {isKingRow && <span aria-hidden>★</span>}
@@ -152,7 +157,8 @@ function Row({
       </div>
       {columns.map((exp) => {
         const cell = cellMap.get(`${strike}|${exp}`);
-        const isKingCell = isKingRow && kingRow !== undefined && strike === kingRow;
+        // Only the single dominant cell (largest |net GEX|) is gold, not the row.
+        const isKingCell = kingKey === `${strike}|${exp}`;
         return (
           <Cell
             key={exp}
@@ -162,7 +168,6 @@ function Row({
             maxAbs={maxAbs}
             showChange={showChange}
             isKingCell={isKingCell}
-            isSpotRow={isSpotRow}
           />
         );
       })}
@@ -177,7 +182,6 @@ function Cell({
   maxAbs,
   showChange,
   isKingCell,
-  isSpotRow,
 }: {
   cell?: GammaGridCell;
   metric: Metric;
@@ -185,19 +189,12 @@ function Cell({
   maxAbs: number;
   showChange: boolean;
   isKingCell: boolean;
-  isSpotRow: boolean;
 }) {
   if (!cell) {
-    return (
-      <div
-        className={`min-h-[34px] border-b border-l border-[var(--color-border-subtle)] ${
-          isSpotRow ? 'bg-[var(--color-accent-red)]/5' : ''
-        }`}
-      />
-    );
+    return <div className="min-h-[26px]" style={{ backgroundColor: EMPTY_CELL }} />;
   }
   const value = selectValue(cell, metric, filter);
-  const bg = cellColor(value, maxAbs);
+  const bg = isKingCell ? '#f5c518' : cellColor(value, maxAbs);
   const pct = cell.pct_change;
   const tooltip =
     `${cell.strike} · ${cell.expiration} (${cell.dte}d)\n` +
@@ -205,28 +202,30 @@ function Cell({
     `OI ${cell.call_oi}c / ${cell.put_oi}p` +
     (pct !== null ? `\nIntraday Δ: ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` : '');
 
+  // King cell is gold → use dark text; all others ride dark heatmap → white.
+  const textColor = isKingCell ? '#1a1505' : '#ffffff';
+
   return (
     <div
       title={tooltip}
-      className={`relative flex min-h-[34px] flex-col items-center justify-center border-b border-l px-0.5 py-0.5 ${
-        isKingCell
-          ? 'z-[1] ring-2 ring-inset ring-[var(--color-accent-amber)] border-transparent'
-          : 'border-[var(--color-border-subtle)]'
-      }`}
+      className="flex min-h-[26px] items-center justify-end gap-1 px-1.5"
       style={{ backgroundColor: bg }}
     >
-      <span className="font-medium leading-none text-white/90">{formatGex(value)}</span>
       {showChange && pct !== null && (
         <span
-          className="mt-0.5 rounded px-1 text-[8.5px] font-semibold leading-tight"
+          className="rounded-sm px-1 text-[9px] font-bold leading-tight"
           style={{
-            backgroundColor: pct >= 0 ? 'rgba(16,185,129,0.22)' : 'rgba(244,63,94,0.22)',
-            color: pct >= 0 ? '#34d399' : '#fb7185',
+            backgroundColor: pct >= 0 ? '#059669' : '#e11d48',
+            color: '#ffffff',
           }}
         >
           {formatPctChange(pct)}
         </span>
       )}
+      <span className="font-mono text-[11px] font-semibold leading-none" style={{ color: textColor }}>
+        {formatGex(value)}
+        {isKingCell && <span className="ml-0.5">★</span>}
+      </span>
     </div>
   );
 }

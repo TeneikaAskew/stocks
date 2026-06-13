@@ -30,9 +30,9 @@ describe('selectValue', () => {
 });
 
 describe('cellColor', () => {
-  it('is transparent for zero value or zero scale', () => {
-    expect(cellColor(0, 100)).toBe('transparent');
-    expect(cellColor(100, 0)).toBe('transparent');
+  it('uses the empty-cell fill for zero value or zero scale', () => {
+    expect(cellColor(0, 100)).toBe('#0e0c1a');
+    expect(cellColor(100, 0)).toBe('#0e0c1a');
   });
   it('returns a green-ish rgb for positive, purple-ish for negative', () => {
     const pos = cellColor(100, 100);
