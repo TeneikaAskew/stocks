@@ -829,6 +829,44 @@ deploy_premarket_playbook_resolver() {
         --quiet
 }
 
+# ── Phase 6 playbook generator (Cloud Run Job) ──────────────────────────────
+# Builds the 12 structured setup cards per ticker and upserts them into the
+# playbook_cards Cloud SQL table (the typed source /api/playbook reads).
+# Daily run keys cards to today; --as-of <date> backfills a past card set for
+# the dashboard's historical "view as of" mode (loads only bars before the
+# date — no look-ahead).
+#
+# Capacity (CLAUDE.md §0):
+#   Volume:    ~1.25M RTH 1-min bars/ticker × 3 tickers ≈ 3.75M rows;
+#              pandas peak ~1 GB.
+#   Velocity:  1 Cloud SQL load per ticker (3 reads) + 1 upsert per ticker.
+#              No per-row SQL — cards are vectorised over the in-memory frame.
+#   Wall:      ~5 min/run (full-history load + 12-card scoring × 3 tickers).
+#   timeout:   3600s = 1hr (≥ 4× wall-clock; backfill runs one date per exec).
+#   memory:    4Gi (peak ~1 GB × overhead margin).
+#   retries:   0 (idempotent upsert on PK (ticker, card_num, analysis_date);
+#              transient retries don't help and would double-run the load).
+deploy_phase6_playbook() {
+    echo "Deploying phase6-playbook job..."
+    gcloud run jobs create phase6-playbook \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.analysis.phase6_playbook" \
+        --args "--write-db" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update phase6-playbook \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,scripts.analysis.phase6_playbook" \
+        --args "--write-db" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Strat Directionality Engine (Cloud Run Job, research image) ─────────────
 # Replaces the P7-era `p7b-next-candle-classifier` job (which is now used
 # only to keep the prior modeling pipeline reachable for reference;
@@ -3330,6 +3368,7 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
+    phase6-playbook) build_image && deploy_phase6_playbook ;;
     strat-engine) deploy_strat_engine ;;
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
