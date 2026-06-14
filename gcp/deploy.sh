@@ -854,14 +854,14 @@ deploy_phase6_playbook() {
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.analysis.phase6_playbook" \
-        --args "--write-db" \
+        --args="--write-db" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,scripts.analysis.phase6_playbook" \
-        --args "--write-db" \
+        --args="--write-db" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
