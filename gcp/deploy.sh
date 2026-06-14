@@ -837,20 +837,23 @@ deploy_premarket_playbook_resolver() {
 # date — no look-ahead).
 #
 # Capacity (CLAUDE.md §0):
-#   Volume:    ~1.25M RTH 1-min bars/ticker × 3 tickers ≈ 3.75M rows;
-#              pandas peak ~1 GB.
+#   Volume:    ~1.25M RTH 1-min bars/ticker × 3 tickers ≈ 3.75M rows. Tickers
+#              are processed one at a time (frames released between iterations),
+#              so peak working set is ONE ticker's enriched frame: 1.25M rows ×
+#              ~50 indicator columns × 8 B × pandas copy-overhead ≈ 3–5 GB.
+#              (Empirical: 4Gi OOM-killed (signal 9) after the first ticker.)
 #   Velocity:  1 Cloud SQL load per ticker (3 reads) + 1 upsert per ticker.
 #              No per-row SQL — cards are vectorised over the in-memory frame.
 #   Wall:      ~5 min/run (full-history load + 12-card scoring × 3 tickers).
 #   timeout:   3600s = 1hr (≥ 4× wall-clock; backfill runs one date per exec).
-#   memory:    4Gi (peak ~1 GB × overhead margin).
+#   memory:    8Gi (≥ 4 CPU required) — headroom over the empirical ~4 GB peak.
 #   retries:   0 (idempotent upsert on PK (ticker, card_num, analysis_date);
 #              transient retries don't help and would double-run the load).
 deploy_phase6_playbook() {
     echo "Deploying phase6-playbook job..."
     gcloud run jobs create phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi --cpu 2 --max-retries 0 \
+        --memory 8Gi --cpu 4 --max-retries 0 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.analysis.phase6_playbook" \
