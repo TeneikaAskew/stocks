@@ -219,7 +219,10 @@ export default function DashboardPage() {
     true,
     isOpen && !isReview ? 15_000 : false,
   );
-  const { data: playbook } = useFetch<PlaybookResponse>(['playbook', activeTicker], `/api/playbook/${activeTicker}`);
+  const { data: playbook } = useFetch<PlaybookResponse>(
+    ['playbook', activeTicker, reviewDate ?? 'live'],
+    isReview ? `/api/playbook/${activeTicker}?date=${reviewDate}` : `/api/playbook/${activeTicker}`,
+  );
   const { data: signalsResp } = useFetch<SignalsResponse>(
     ['signals', activeTicker, reviewDate ?? 'live', reviewTime ?? 'eod'],
     `/api/signals/${activeTicker}?limit=20${reviewSuffix}`,

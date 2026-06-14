@@ -1197,9 +1197,55 @@ CREATE TABLE IF NOT EXISTS playbook_cards (
     best_horizon_win_rate DOUBLE PRECISION,       -- fraction in [0,1]
     best_horizon_avg_bps  DOUBLE PRECISION,
     generated_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    -- Date the cards were computed AS OF. Lets the dashboard's historical
+    -- "view as of" mode read the card set knowable on a past date instead of
+    -- only the current one. phase6 --as-of writes the reviewed date here; the
+    -- daily run writes CURRENT_DATE.
+    analysis_date    DATE             NOT NULL DEFAULT CURRENT_DATE,
 
-    CONSTRAINT pk_playbook_cards PRIMARY KEY (ticker, card_num)
+    CONSTRAINT pk_playbook_cards PRIMARY KEY (ticker, card_num, analysis_date)
 );
+
+-- Migration (idempotent): date-key playbook_cards for historical "view as of".
+-- Existing installs created the table with PK (ticker, card_num) and no
+-- analysis_date; these statements add the column, backfill it from
+-- generated_at, and swap the PK to include analysis_date. Fresh installs get
+-- the final shape from the CREATE above and these are no-ops.
+ALTER TABLE playbook_cards
+    ADD COLUMN IF NOT EXISTS analysis_date DATE;
+
+UPDATE playbook_cards
+    SET analysis_date = generated_at::date
+    WHERE analysis_date IS NULL;
+
+ALTER TABLE playbook_cards
+    ALTER COLUMN analysis_date SET DEFAULT CURRENT_DATE;
+ALTER TABLE playbook_cards
+    ALTER COLUMN analysis_date SET NOT NULL;
+
+DO $$
+BEGIN
+    -- Swap PK to (ticker, card_num, analysis_date) only if it doesn't already
+    -- include analysis_date (so re-running this migration is a no-op).
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'pk_playbook_cards'
+          AND conrelid = 'playbook_cards'::regclass
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+        WHERE c.conname = 'pk_playbook_cards'
+          AND c.conrelid = 'playbook_cards'::regclass
+          AND a.attname = 'analysis_date'
+    ) THEN
+        ALTER TABLE playbook_cards DROP CONSTRAINT pk_playbook_cards;
+        ALTER TABLE playbook_cards
+            ADD CONSTRAINT pk_playbook_cards
+            PRIMARY KEY (ticker, card_num, analysis_date);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS economic_events (
     id              BIGSERIAL PRIMARY KEY,

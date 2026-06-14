@@ -15,6 +15,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+from datetime import datetime, timezone, date as date_cls, timedelta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -937,23 +938,31 @@ def generate_quick_reference() -> str:
 # Main Runner
 # ---------------------------------------------------------------------------
 
-def write_playbook_cards(ticker: str, records: List[Dict]) -> int:
+def write_playbook_cards(ticker: str, records: List[Dict], analysis_date=None) -> int:
     """Upsert the structured playbook cards into Cloud SQL (``playbook_cards``).
 
     This is the typed source of truth ``/api/playbook`` reads — it replaces the
     fragile regex-scrape of the markdown. A DB/schema failure is INTERNAL (our
     code), so it is raised, never swallowed into a fake success (CLAUDE.md §3.7).
+
+    ``analysis_date`` keys the cards to the date they were computed AS OF so the
+    dashboard's historical "view as of" mode can read a past card set. None →
+    today (UTC), matching the table's CURRENT_DATE default for the daily run.
     """
     if not records:
         return 0
 
     from gcp.database import upsert_dataframe
 
+    if analysis_date is None:
+        analysis_date = datetime.now(timezone.utc).date()
+
     rows = []
     for r in records:
         rows.append({
             'ticker': ticker.upper(),
             'card_num': r['card_num'],
+            'analysis_date': analysis_date,
             'name': r['name'],
             'direction': r['direction'],
             'description': r.get('description') or None,
@@ -978,22 +987,36 @@ def write_playbook_cards(ticker: str, records: List[Dict]) -> int:
 
     n = upsert_dataframe(
         pd.DataFrame(rows), 'playbook_cards',
-        conflict_cols=['ticker', 'card_num'],
+        conflict_cols=['ticker', 'card_num', 'analysis_date'],
     )
-    progress(f"Upserted {n} playbook_cards rows", ticker)
+    progress(f"Upserted {n} playbook_cards rows (analysis_date={analysis_date})", ticker)
     return n
 
 
-def run_phase6(tickers: list = None, write_db: bool = False):
+def run_phase6(tickers: list = None, write_db: bool = False, as_of=None):
     """Run Phase 6 — generate all playbook cards.
 
     When ``write_db`` is set (``--write-db`` / ``PHASE6_WRITE_DB=1``) the
     structured card records are upserted into the ``playbook_cards`` Cloud SQL
     table, which is the source of truth ``/api/playbook`` reads. Markdown is
     still written for human consumption.
+
+    ``as_of`` (a ``date``) computes the cards AS OF a past date for the
+    dashboard's historical "view as of" mode: only intraday bars dated strictly
+    BEFORE ``as_of`` are loaded (no look-ahead, CLAUDE.md §3.6 — matches the
+    premarket-brief "data through D-1" convention), and the resulting card set
+    is keyed to ``as_of`` in ``playbook_cards.analysis_date``. None → today,
+    using the full history (the normal daily run).
     """
     if tickers is None:
         tickers = TICKERS
+
+    # As-of cutoff: load only bars dated <= (as_of - 1 day) so the as-of day's
+    # own session can't leak into stats keyed to it. load_ticker_1m's end_date
+    # is inclusive, so we pass the day before.
+    end_date = None
+    if as_of is not None:
+        end_date = (as_of - timedelta(days=1)).isoformat()
 
     combined_report = md_header("Phase 6: The Beginner's Playbook — All Tickers", 1)
     combined_report += f"\nGenerated: {timestamp_str()}\n"
@@ -1004,7 +1027,7 @@ def run_phase6(tickers: list = None, write_db: bool = False):
     for ticker in tickers:
         progress(f"Starting Phase 6 — building playbook cards", ticker)
 
-        df_1m = load_ticker_1m(ticker)
+        df_1m = load_ticker_1m(ticker, end_date=end_date)
         if df_1m.empty:
             progress("No data, skipping.", ticker)
             continue
@@ -1026,7 +1049,7 @@ def run_phase6(tickers: list = None, write_db: bool = False):
         combined_report += f"\n---\n\n" + cards
 
         if write_db:
-            write_playbook_cards(ticker, card_records)
+            write_playbook_cards(ticker, card_records, analysis_date=as_of)
 
         progress("Phase 6 complete!", ticker)
 
@@ -1041,5 +1064,21 @@ if __name__ == '__main__':
         default=os.environ.get('PHASE6_WRITE_DB') == '1',
         help='Upsert structured cards into the playbook_cards Cloud SQL table',
     )
+    parser.add_argument(
+        '--as-of', dest='as_of', default=os.environ.get('PHASE6_AS_OF'),
+        help=('Compute cards AS OF this date (YYYY-MM-DD) using only bars '
+              'before it, and key them to it in analysis_date. For historical '
+              '"view as of" backfill. Default: today (full history).'),
+    )
     args = parser.parse_args()
-    run_phase6(tickers=args.tickers, write_db=args.write_db)
+
+    as_of_date = None
+    if args.as_of:
+        try:
+            as_of_date = date_cls.fromisoformat(args.as_of.strip())
+        except ValueError:
+            parser.error(f"--as-of must be YYYY-MM-DD, got {args.as_of!r}")
+        if as_of_date > datetime.now(timezone.utc).date():
+            parser.error(f"--as-of {as_of_date} is in the future")
+
+    run_phase6(tickers=args.tickers, write_db=args.write_db, as_of=as_of_date)

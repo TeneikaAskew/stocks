@@ -199,7 +199,8 @@ def test_write_playbook_cards_upserts_typed_rows(monkeypatch):
 
     assert n == 1
     assert captured["table"] == "playbook_cards"
-    assert captured["conflict"] == ["ticker", "card_num"]
+    # PK is date-keyed so historical "view as of" can store one card set per day.
+    assert captured["conflict"] == ["ticker", "card_num", "analysis_date"]
     row = captured["df"].iloc[0]
     assert row["ticker"] == "IWM"                      # upper-cased
     assert row["card_num"] == 1
@@ -207,6 +208,25 @@ def test_write_playbook_cards_upserts_typed_rows(monkeypatch):
     # serializes it exactly once (no double-encoding).
     assert row["conditions"] == ["RSI between 40-65", "Price above VWAP"]
     assert row["win_rate"] == pytest.approx(0.48)
+
+
+def test_write_playbook_cards_keys_explicit_analysis_date(monkeypatch):
+    """An explicit as-of date is stamped on every row (historical backfill)."""
+    import datetime as _dt
+    import gcp.database as dbmod
+    captured = {}
+
+    def fake_upsert(df, table, conflict_cols, **kw):
+        captured["df"] = df
+        return len(df)
+
+    monkeypatch.setattr(dbmod, "upsert_dataframe", fake_upsert)
+
+    _md, rec = _card(_GOOD_STATS)
+    as_of = _dt.date(2026, 6, 12)
+    write_playbook_cards("iwm", [rec], analysis_date=as_of)
+
+    assert (captured["df"]["analysis_date"] == as_of).all()
 
 
 def test_horizon_sweep_attached_and_best_is_argmax():

@@ -187,13 +187,20 @@ def _download_markdown(blob_path_relative: str) -> str:
         raise HTTPException(status_code=502, detail=f"Failed to download report from GCS: {exc}")
 
 
-def _cards_from_db(ticker_upper: str) -> list | None:
+def _cards_from_db(ticker_upper: str, as_of: str | None = None) -> list | None:
     """Read structured cards from the playbook_cards table.
 
     Returns the card list, or None when the structured source is unavailable
     (Cloud SQL not configured, or no rows yet) so the caller can bridge to the
     markdown parse. This is the typed path that replaces regex-scraping prose:
     a formatting change in the markdown can no longer null a card's stats.
+
+    The table is date-keyed (``analysis_date``): a ticker has one card set per
+    date the playbook was computed as-of. We always resolve to a single date —
+    the most recent ``analysis_date`` (``<= as_of`` when given, for the
+    dashboard's historical "view as of" mode) — so cards from different dates
+    never mix. ``as_of`` selects the latest set knowable on that date, never a
+    later one (no look-ahead, §3.6).
     """
     try:
         from gcp.database import is_cloud_sql_configured, query_to_dataframe
@@ -202,13 +209,27 @@ def _cards_from_db(ticker_upper: str) -> list | None:
     if not is_cloud_sql_configured():
         return None
 
-    df = query_to_dataframe(
-        "SELECT card_num, name, description, direction, conditions, "
-        "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
-        "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
-        "FROM playbook_cards WHERE ticker = :t ORDER BY card_num",
-        {"t": ticker_upper},
-    )
+    if as_of is None:
+        df = query_to_dataframe(
+            "SELECT card_num, name, description, direction, conditions, "
+            "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
+            "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
+            "FROM playbook_cards WHERE ticker = :t "
+            "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards WHERE ticker = :t) "
+            "ORDER BY card_num",
+            {"t": ticker_upper},
+        )
+    else:
+        df = query_to_dataframe(
+            "SELECT card_num, name, description, direction, conditions, "
+            "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
+            "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
+            "FROM playbook_cards WHERE ticker = :t "
+            "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards "
+            "                     WHERE ticker = :t AND analysis_date <= :d) "
+            "ORDER BY card_num",
+            {"t": ticker_upper, "d": as_of},
+        )
     if df is None or df.empty:
         return None
 
@@ -306,25 +327,41 @@ def _cards_from_db(ticker_upper: str) -> list | None:
 
 
 @router.get("/api/playbook/{ticker}")
-async def get_playbook(ticker: str):
+async def get_playbook(ticker: str, date: str | None = None):
     """Return structured setup cards for a ticker.
 
     Primary source is the typed ``playbook_cards`` Cloud SQL table. Until that
     table is populated (it is written by phase6 ``--write-db`` after deploy), we
     bridge to parsing ``phase6_playbook_{ticker}.md`` from GCS so the UI keeps
     working through the cutover.
+
+    ``?date=YYYY-MM-DD`` (historical "view as of" mode) returns the latest card
+    set computed on or before that date. The markdown bridge is current-only,
+    so an as-of request with no matching DB rows 404s rather than falling back
+    to today's markdown (no look-ahead / no mislabelled cards, §3.6/§3.7).
     """
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _PLAYBOOK_CACHE:
-        return _PLAYBOOK_CACHE[ticker_upper]
+    cache_key = (ticker_upper, date or "latest")
+    if cache_key in _PLAYBOOK_CACHE:
+        return _PLAYBOOK_CACHE[cache_key]
 
-    db_cards = _cards_from_db(ticker_upper)
+    db_cards = _cards_from_db(ticker_upper, as_of=date)
     if db_cards:
         result = {"ticker": ticker_upper, "cards": db_cards, "source": "cloud_sql"}
-        _PLAYBOOK_CACHE[ticker_upper] = result
+        if date:
+            result["as_of"] = date
+        _PLAYBOOK_CACHE[cache_key] = result
         return result
+
+    # As-of requests don't fall back to the (current-only) markdown — a past
+    # date with no stored card set is an explicit 404, not today's cards.
+    if date:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No playbook for '{ticker_upper}' as of {date}.",
+        )
 
     # Bridge: structured table not yet populated — parse the markdown.
     log.info("playbook_cards empty for %s; bridging to markdown parse", ticker_upper)
@@ -338,7 +375,7 @@ async def get_playbook(ticker: str):
 
     result = _parse_playbook_markdown(content, ticker)
     result["source"] = "markdown"
-    _PLAYBOOK_CACHE[ticker_upper] = result
+    _PLAYBOOK_CACHE[cache_key] = result
     return result
 
 
