@@ -115,21 +115,39 @@ class ReportEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _fetch_latest_report(ticker: str) -> Optional[dict]:
+def _fetch_latest_report(
+    ticker: str, as_of: Optional[Union[date, datetime]] = None
+) -> Optional[dict]:
+    """Latest report for the ticker. When `as_of` is given, the latest report
+    dated on or before that cutoff (historical "view as of" mode) — never a
+    report from after the cutoff (no look-ahead, §3.6)."""
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id::text, ticker, as_of, report, model_versions,
-                   cost_usd, latency_ms
-            FROM insight_reports
-            WHERE ticker = %s
-            ORDER BY as_of DESC
-            LIMIT 1
-            """,
-            (ticker.upper(),),
-        )
+        if as_of is None:
+            cur.execute(
+                """
+                SELECT id::text, ticker, as_of, report, model_versions,
+                       cost_usd, latency_ms
+                FROM insight_reports
+                WHERE ticker = %s
+                ORDER BY as_of DESC
+                LIMIT 1
+                """,
+                (ticker.upper(),),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id::text, ticker, as_of, report, model_versions,
+                       cost_usd, latency_ms
+                FROM insight_reports
+                WHERE ticker = %s AND as_of <= %s
+                ORDER BY as_of DESC
+                LIMIT 1
+                """,
+                (ticker.upper(), as_of),
+            )
         row = cur.fetchone()
     finally:
         conn.close()
@@ -623,14 +641,21 @@ async def get_watchlist(
 
 
 @router.get("/api/insights/report/{ticker}", response_model=ReportEnvelope)
-async def get_insight_report(ticker: str):
-    """Return the most recent InsightReport for the ticker."""
-    row = _fetch_latest_report(ticker)
+async def get_insight_report(ticker: str, as_of: Optional[str] = None):
+    """Return the most recent InsightReport for the ticker.
+
+    With ``?as_of=YYYY-MM-DD`` returns the latest report dated on or before
+    that cutoff (historical "view as of" mode); 404 when none exists ≤ cutoff
+    rather than falling through to a newer report (no look-ahead, §3.6/§3.7).
+    """
+    cutoff = _parse_as_of_param(as_of)
+    row = _fetch_latest_report(ticker, cutoff)
     if row is None:
+        suffix = f" as of {as_of}" if cutoff is not None else ""
         raise HTTPException(
             status_code=404,
             detail=(
-                f"No insight report for {ticker.upper()}. "
+                f"No insight report for {ticker.upper()}{suffix}. "
                 "Call POST /api/insights/report/{ticker}/refresh to generate one."
             ),
         )
