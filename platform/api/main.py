@@ -551,8 +551,12 @@ async def get_market_data(
         raise HTTPException(status_code=404, detail=f"No data for {ticker_upper} on {date} at or before end_time={end_time}")
 
     # Convert to chart format
-    # Timestamps as Unix seconds (naive ET — what the chart expects)
-    times = (df.index.astype('int64') // 1_000_000_000).tolist()
+    # Timestamps as Unix seconds (naive ET — what the chart expects).
+    # Use as_unit('s') instead of astype('int64')//1e9: the latter assumes a
+    # nanosecond-resolution index, but pandas 2.2+/3.x default to us-resolution
+    # for to_datetime, which made //1e9 return seconds÷1000 (1970-era values)
+    # and broke every chart timestamp. as_unit('s') is resolution-independent.
+    times = df.index.as_unit('s').astype('int64').tolist()
 
     candlestick = []
     volume = []
