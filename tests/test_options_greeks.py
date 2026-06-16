@@ -6,9 +6,6 @@ no-op path.
 These tests are hermetic — no Cloud SQL, no FRED, no AlphaVantage. They pin
 known-good textbook BSM values so a sign error or formula bug fails CI before
 any production backfill runs.
-
-Skipped automatically if ``py_vollib_vectorized`` is not installed (the math
-tests need it; the no-op tests do not).
 """
 from __future__ import annotations
 
@@ -39,18 +36,29 @@ from lib.options_greeks import (
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _bsm_price(flag, S, K, t, r, q, sigma):
-    """Reference Black-Scholes-Merton price.
+    """Reference Black-Scholes-Merton price via scipy.
 
-    py_vollib_vectorized monkey-patches black_scholes_merton to return a
-    DataFrame even for scalar inputs, so we extract the scalar manually.
+    py_vollib_vectorized (still installed per requirements.txt) monkey-patches
+    py_vollib.black_scholes_merton at import time to route through a Numba JIT
+    path.  Numba ≥0.65 cannot compile the recursive black() helper
+    ("cannot type infer runaway recursion"), causing this test to fail
+    intermittently whenever py_vollib_vectorized is imported first by another
+    test in the same pytest session.  Using scipy makes this helper immune to
+    that side-effect.  The math is identical (BSM, Hull Ch. 14).
     """
-    from py_vollib.black_scholes_merton import black_scholes_merton
-    val = black_scholes_merton(flag, S, K, t, r, sigma, q)
-    if hasattr(val, "iloc"):
-        return float(val.iloc[0, 0]) if hasattr(val.iloc[0], "__len__") else float(val.iloc[0])
-    if hasattr(val, "__len__"):
-        return float(val[0])
-    return float(val)
+    from scipy.stats import norm
+    if t <= 0:
+        intrinsic = max(S - K, 0.0) if flag == "c" else max(K - S, 0.0)
+        return float(intrinsic)
+    if sigma <= 0:
+        return 0.0
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma ** 2) * t) / (sigma * math.sqrt(t))
+    d2 = d1 - sigma * math.sqrt(t)
+    fwd = S * math.exp(-q * t)
+    disc = math.exp(-r * t)
+    if flag == "c":
+        return float(fwd * norm.cdf(d1) - K * disc * norm.cdf(d2))
+    return float(K * disc * norm.cdf(-d2) - fwd * norm.cdf(-d1))
 
 
 def _bsm_call_price(S, K, t, r, q, sigma):
