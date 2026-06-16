@@ -51,7 +51,9 @@ def _bsm_price(flag, S, K, t, r, q, sigma):
         intrinsic = max(S - K, 0.0) if flag == "c" else max(K - S, 0.0)
         return float(intrinsic)
     if sigma <= 0:
-        return 0.0
+        F = S * math.exp((r - q) * t)
+        intrinsic = max(F - K, 0.0) if flag == "c" else max(K - F, 0.0)
+        return float(math.exp(-r * t) * intrinsic)
     d1 = (math.log(S / K) + (r - q + 0.5 * sigma ** 2) * t) / (sigma * math.sqrt(t))
     d2 = d1 - sigma * math.sqrt(t)
     fwd = S * math.exp(-q * t)
