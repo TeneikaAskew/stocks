@@ -1,5 +1,5 @@
 # Core data processing
-pandas>=2.1.4
+pandas>=2.1.4,<3
 numpy>=1.26.2
 pyarrow>=14.0.0
 
