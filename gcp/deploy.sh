@@ -3247,31 +3247,31 @@ deploy_schedulers() {
     _schedule "refresh-earnings-views-weekly"     "0 20 * * 0"   "refresh-earnings-views"
     _schedule_args "refresh-earnings-views-daily" "30 7 * * 1-5" "refresh-earnings-views" "--mode=daily"
 
-    # Platform keep-warm — solo-user pattern (cheaper than min-instances=1
-    # at $0.01/month vs $3-5/month). Hits /api/earnings/health/ping every
-    # 5 min, 7:30 AM - 5:00 PM ET, weekdays. Cloud Run's 15-min idle
-    # timeout keeps resetting → instance stays alive all day. After
-    # hours: instance scales to 0, cold start returns. Acceptable for
-    # rare after-hours use.
-    local PLATFORM_URL
-    PLATFORM_URL=$(gcloud run services describe trading-platform \
-        --region "${REGION}" --format='value(status.url)' 2>/dev/null \
-        || echo "https://trading-platform-5sjtb3yl7a-ue.a.run.app")
-    if gcloud scheduler jobs describe "keep-platform-warm-business-hours" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
-        gcloud scheduler jobs update http "keep-platform-warm-business-hours" \
-            --location "${REGION}" \
-            --schedule "*/5 7-17 * * 1-5" \
-            --uri "${PLATFORM_URL}/api/earnings/health/ping" \
-            --quiet
-    else
-        gcloud scheduler jobs create http "keep-platform-warm-business-hours" \
-            --location "${REGION}" \
-            --schedule "*/5 7-17 * * 1-5" \
-            --time-zone "America/New_York" \
-            --uri "${PLATFORM_URL}/api/earnings/health/ping" \
-            --http-method GET \
-            --quiet
-    fi
+    # Platform keep-warm — DROPPED (was: a plain unauthenticated GET to
+    # ${PLATFORM_URL}/api/earnings/health/ping every 5 min on business hours).
+    #
+    # The trading-platform service is deployed by platform/deploy.sh behind
+    # Identity-Aware Proxy (IAP) — NOT by this file, and NOT with plain Cloud
+    # Run IAM. A bare unauthenticated GET gets 401/403 at IAP and never reaches
+    # the FastAPI worker, so it warmed nothing while still firing on a cron.
+    #
+    # It cannot be fixed by copying an existing scheduler's auth, because there
+    # is none to copy: the only OIDC-authenticated HTTP-service scheduler here
+    # (reconcile-failure-notifier-hourly) targets the failure-notifier service,
+    # which is --no-allow-unauthenticated (plain Cloud Run IAM, satisfied by an
+    # OIDC run.invoker token). IAP is a different auth layer — it validates a
+    # Google-signed JWT whose audience is the IAP OAuth client id and checks an
+    # IAP access policy; a Cloud Run run.invoker OIDC token does NOT satisfy it.
+    # The IAP OAuth client id isn't even referenced in this file (it lives only
+    # in platform/deploy.sh), so there's no safe, established pattern to mirror.
+    #
+    # Rather than ship a scheduler that 401s on every tick (a slow leak that
+    # warms nothing — CLAUDE.md Rule 0/6), keep-warm is removed. The harmless
+    # /api/earnings/health/ping endpoint is left in place. If warm instances
+    # are wanted later, the correct fix is min-instances>=1 on the platform
+    # service in platform/deploy.sh, or an IAP-aware scheduler that mints a JWT
+    # for the IAP OAuth client-id audience — both belong with the platform
+    # deploy, not here.
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so

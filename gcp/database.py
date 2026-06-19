@@ -170,6 +170,15 @@ def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     Uses sqlalchemy.text() so named parameters (:name style) are handled
     correctly regardless of the underlying DBAPI (pg8000, psycopg2, etc.).
     Returns an empty DataFrame on error (so callers can fall back gracefully).
+
+    WARNING — this SWALLOWS errors (CLAUDE.md Rule 3.7 "silent fallback").
+    A connection failure / missing relation returns an empty DataFrame that
+    callers cannot distinguish from a legitimate zero-row result. Do NOT use
+    it where "query failed" must surface as an error (e.g. an API endpoint
+    that should return 5xx on a real DB failure). Use
+    ``query_to_dataframe_strict`` for those paths. (This function is left
+    swallowing for the existing callers that depend on the behaviour; see the
+    fallback-audit backlog.)
     """
     try:
         import sqlalchemy
@@ -179,6 +188,26 @@ def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     except Exception as e:
         logger.warning("Cloud SQL query failed: %s", e)
         return pd.DataFrame()
+
+
+def query_to_dataframe_strict(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    """Run a SELECT and return a DataFrame — RAISES on any failure.
+
+    The non-swallowing sibling of ``query_to_dataframe``. A connection error,
+    missing relation, SQL error, etc. propagates to the caller instead of
+    being masked as an empty DataFrame. This is the correct path for callers
+    that must tell "query failed" apart from "query succeeded, zero rows" —
+    e.g. the earnings API router, which turns a propagated exception into a
+    real 5xx (CLAUDE.md Rule 3.7: INTERNAL failures fail loud, never fabricate
+    an empty result).
+
+    An empty DataFrame returned by this function therefore unambiguously means
+    "the query ran and matched no rows", never "the DB was unreachable".
+    """
+    import sqlalchemy
+    engine = get_engine()
+    with engine.connect() as conn:
+        return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
 
 
 # pg8000 packs the bind-parameter count as an unsigned 16-bit short, so

@@ -45,6 +45,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from gcp.database import (  # noqa: E402
     execute_sql,
+    get_engine,
     is_cloud_sql_configured,
     query_to_dataframe,
     upsert_dataframe,
@@ -57,15 +58,66 @@ log = logging.getLogger("refresh-earnings-views")
 
 # ── Weekly: REFRESH MATERIALIZED VIEW ─────────────────────────────────
 
-def refresh_weekly() -> None:
-    """REFRESH both mat views CONCURRENTLY (non-blocking on readers)."""
-    log.info("refreshing earnings_event_outcomes (CONCURRENT)...")
-    execute_sql("REFRESH MATERIALIZED VIEW CONCURRENTLY earnings_event_outcomes")
-    log.info("  refreshed earnings_event_outcomes")
+# Ordered: earnings_ticker_lean is built FROM earnings_event_outcomes, so the
+# base view must be refreshed first or the lean view aggregates stale data.
+_WEEKLY_VIEWS = ("earnings_event_outcomes", "earnings_ticker_lean")
 
-    log.info("refreshing earnings_ticker_lean (CONCURRENT)...")
-    execute_sql("REFRESH MATERIALIZED VIEW CONCURRENTLY earnings_ticker_lean")
-    log.info("  refreshed earnings_ticker_lean")
+
+def _is_view_populated(view: str) -> bool:
+    """Return True iff the mat view has been populated at least once.
+
+    Postgres rejects ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` until a view
+    has data (ours are created ``WITH NO DATA`` in gcp/schema.sql), with:
+        ObjectNotInPrerequisiteState (55000):
+        "CONCURRENTLY cannot be used when the materialized view is not
+         populated".
+    ``pg_class.relispopulated`` is the authoritative flag for that state.
+
+    This uses a raising query path (NOT query_to_dataframe, which swallows
+    errors and would make a connection failure look like "not populated" —
+    CLAUDE.md Rule 3.7). A missing relation / connection error propagates so
+    the job fails loud instead of silently choosing the wrong refresh mode.
+    """
+    import sqlalchemy
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            sqlalchemy.text(
+                "SELECT relispopulated FROM pg_class WHERE relname = :v"
+            ),
+            {"v": view},
+        ).first()
+    if row is None:
+        # The view doesn't exist — schema.sql wasn't applied. Fail loud;
+        # refreshing a non-existent relation can't succeed either way.
+        raise RuntimeError(
+            f"materialized view {view!r} not found in pg_class — "
+            f"apply gcp/schema.sql (apply-schema-migrations job) first"
+        )
+    return bool(row[0])
+
+
+def _refresh_one(view: str) -> None:
+    """Refresh a single mat view, CONCURRENTLY only once it's populated.
+
+    First populate (WITH NO DATA → never refreshed) must be non-concurrent;
+    every subsequent refresh is CONCURRENTLY so readers don't block. Both
+    weekly views carry a UNIQUE index (idx_eeo_ticker_date / idx_etl_ticker),
+    which CONCURRENTLY requires.
+    """
+    if _is_view_populated(view):
+        log.info("refreshing %s (CONCURRENT — already populated)...", view)
+        execute_sql(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view}")
+    else:
+        log.info("refreshing %s (NON-concurrent — first populate)...", view)
+        execute_sql(f"REFRESH MATERIALIZED VIEW {view}")
+    log.info("  refreshed %s", view)
+
+
+def refresh_weekly() -> None:
+    """REFRESH both weekly mat views (CONCURRENTLY once populated)."""
+    for view in _WEEKLY_VIEWS:
+        _refresh_one(view)
 
 
 # ── Daily: rebuild earnings_upcoming_with_history ─────────────────────

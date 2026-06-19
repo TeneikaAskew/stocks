@@ -1,6 +1,6 @@
 """Hermetic tests for platform/api/routers/earnings.py.
 
-Mocks gcp.database.query_to_dataframe so tests run offline. Verifies:
+Mocks gcp.database.query_to_dataframe_strict so tests run offline. Verifies:
   - Endpoint shapes (rows + count for collections; single dict for /event)
   - 503 when Cloud SQL unconfigured
   - 404 when ticker/event not found
@@ -62,7 +62,7 @@ class TestUpcoming:
              'long_winner_count': 3, 'short_winner_count': 1,
              'last_3_events': '[]'},
         ])
-        with patch('gcp.database.query_to_dataframe', return_value=fake_df):
+        with patch('gcp.database.query_to_dataframe_strict', return_value=fake_df):
             resp = client.get('/api/earnings/upcoming?days=14')
         assert resp.status_code == 200
         data = resp.json()
@@ -72,7 +72,7 @@ class TestUpcoming:
         assert resp.headers.get('cache-control') == 'public, max-age=300'
 
     def test_empty_returns_zero_count(self, client):
-        with patch('gcp.database.query_to_dataframe',
+        with patch('gcp.database.query_to_dataframe_strict',
                    return_value=pd.DataFrame()):
             resp = client.get('/api/earnings/upcoming')
         assert resp.status_code == 200
@@ -98,7 +98,7 @@ class TestHistory:
              'implied_move_pct': 10.2, 'realized_vs_implied_ratio': 12.2,
              'best_long_pnl_pct': 4969},
         ])
-        with patch('gcp.database.query_to_dataframe', return_value=fake_df):
+        with patch('gcp.database.query_to_dataframe_strict', return_value=fake_df):
             resp = client.get('/api/earnings/history/NVAX?limit=10')
         assert resp.status_code == 200
         data = resp.json()
@@ -109,7 +109,7 @@ class TestHistory:
         assert resp.headers.get('cache-control') == 'public, max-age=3600'
 
     def test_404_when_no_events(self, client):
-        with patch('gcp.database.query_to_dataframe',
+        with patch('gcp.database.query_to_dataframe_strict',
                    return_value=pd.DataFrame()):
             resp = client.get('/api/earnings/history/UNKNOWNTICKER')
         assert resp.status_code == 404
@@ -119,7 +119,7 @@ class TestHistory:
         def _capture(sql, params=None):
             captured['params'] = params
             return pd.DataFrame([{'ticker': 'MSFT'}])
-        with patch('gcp.database.query_to_dataframe', side_effect=_capture):
+        with patch('gcp.database.query_to_dataframe_strict', side_effect=_capture):
             client.get('/api/earnings/history/msft')
         assert captured['params']['t'] == 'MSFT'
 
@@ -134,7 +134,7 @@ class TestEvent:
             {'ticker': 'MSFT', 'reported_date': date(2025, 7, 30),
              'beat_meet_miss': 'beat', 'reaction_gap_pct': 8.18},
         ])
-        with patch('gcp.database.query_to_dataframe', return_value=fake_df):
+        with patch('gcp.database.query_to_dataframe_strict', return_value=fake_df):
             resp = client.get('/api/earnings/event/MSFT/2025-07-30')
         assert resp.status_code == 200
         data = resp.json()
@@ -145,7 +145,7 @@ class TestEvent:
         assert resp.headers.get('cache-control') == 'public, max-age=86400'
 
     def test_404_when_missing(self, client):
-        with patch('gcp.database.query_to_dataframe',
+        with patch('gcp.database.query_to_dataframe_strict',
                    return_value=pd.DataFrame()):
             resp = client.get('/api/earnings/event/MSFT/2099-01-01')
         assert resp.status_code == 404
@@ -165,7 +165,7 @@ class TestLean:
         def _capture(sql, params=None):
             captured['sql'] = sql
             return fake_df
-        with patch('gcp.database.query_to_dataframe', side_effect=_capture):
+        with patch('gcp.database.query_to_dataframe_strict', side_effect=_capture):
             resp = client.get('/api/earnings/lean?direction=long')
         assert resp.status_code == 200
         # Long direction → ORDER BY long_winner_count DESC
@@ -176,7 +176,7 @@ class TestLean:
         def _capture(sql, params=None):
             captured['sql'] = sql
             return pd.DataFrame()
-        with patch('gcp.database.query_to_dataframe', side_effect=_capture):
+        with patch('gcp.database.query_to_dataframe_strict', side_effect=_capture):
             client.get('/api/earnings/lean?direction=short')
         assert 'short_winner_count DESC' in captured['sql']
 
@@ -196,7 +196,7 @@ class TestCalibration:
              'lookback_quarters': 16, 'realized_vs_implied_ratio': 0.636,
              'avg_short_strangle_pnl_pct': 20.3},
         ])
-        with patch('gcp.database.query_to_dataframe', return_value=fake_df):
+        with patch('gcp.database.query_to_dataframe_strict', return_value=fake_df):
             resp = client.get('/api/earnings/calibration')
         assert resp.status_code == 200
         data = resp.json()
@@ -209,7 +209,7 @@ class TestCalibration:
 
 class TestHealthPing:
     def test_ping_returns_200_with_no_store(self, client):
-        with patch('gcp.database.query_to_dataframe',
+        with patch('gcp.database.query_to_dataframe_strict',
                    return_value=pd.DataFrame([{'ping': 1}])):
             resp = client.get('/api/earnings/health/ping')
         assert resp.status_code == 200
@@ -220,7 +220,7 @@ class TestHealthPing:
         assert resp.headers.get('cache-control') == 'no-store'
 
     def test_ping_handles_db_error_gracefully(self, client):
-        with patch('gcp.database.query_to_dataframe',
+        with patch('gcp.database.query_to_dataframe_strict',
                    side_effect=RuntimeError('cloud sql unreachable')):
             resp = client.get('/api/earnings/health/ping')
         # Still 200 — keep-warm shouldn't trigger pager alerts on
@@ -259,7 +259,7 @@ class TestDfToRecords:
             {'ticker': 'X', 'long_winner_count': 3,
              'avg_ratio': float('nan'), 'lean_score': 0.0},
         ])
-        with patch('gcp.database.query_to_dataframe', return_value=fake_df):
+        with patch('gcp.database.query_to_dataframe_strict', return_value=fake_df):
             resp = client.get('/api/earnings/lean')
         data = resp.json()
         assert data['rows'][0]['avg_ratio'] is None
@@ -270,6 +270,6 @@ class TestDfToRecords:
             {'ticker': 'X', 'reported_date': date(2025, 5, 1),
              'beat_meet_miss': 'beat'},
         ])
-        with patch('gcp.database.query_to_dataframe', return_value=fake_df):
+        with patch('gcp.database.query_to_dataframe_strict', return_value=fake_df):
             resp = client.get('/api/earnings/history/X')
         assert resp.json()['rows'][0]['reported_date'] == '2025-05-01'

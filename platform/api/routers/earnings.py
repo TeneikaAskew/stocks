@@ -43,21 +43,31 @@ _CLOUD_SQL = bool(
 
 
 def _query_or_503(sql: str, params: dict | None = None):
-    """Run a Cloud SQL query or return 503 if not configured.
+    """Run a Cloud SQL query or raise an HTTP error.
 
-    Caller gets a DataFrame or raises HTTPException(503).
+    Returns a DataFrame on success (possibly empty — an empty frame here
+    unambiguously means "ran, zero rows"). Raises:
+      - HTTPException(503) when Cloud SQL is not configured on this instance, or
+      - HTTPException(503) when the query itself fails (DB unreachable, missing
+        view, SQL error, …).
+
+    Uses ``query_to_dataframe_strict`` (the RAISING helper), NOT the swallowing
+    ``query_to_dataframe``. The swallowing variant returns an empty DataFrame on
+    a real failure, which is indistinguishable from a legitimate empty result —
+    so a Cloud SQL outage or a missing mat view would surface as a bogus
+    "no earnings" 200/404 instead of a real error (CLAUDE.md Rule 3.7).
     """
     if not _CLOUD_SQL:
         raise HTTPException(status_code=503,
                             detail='Cloud SQL not configured on this instance')
-    from gcp.database import query_to_dataframe
+    from gcp.database import query_to_dataframe_strict
     try:
-        df = query_to_dataframe(sql, params or {})
+        df = query_to_dataframe_strict(sql, params or {})
         return df
     except Exception as e:
         log.error('earnings router query failed: %s', e)
-        raise HTTPException(status_code=500,
-                            detail=f'query failed: {type(e).__name__}')
+        raise HTTPException(status_code=503,
+                            detail=f'database query failed: {type(e).__name__}')
 
 
 def _set_cache(response: Response, seconds: int) -> None:
@@ -323,8 +333,11 @@ async def health_ping(response: Response):
     if not _CLOUD_SQL:
         return {'status': 'ok', 'db': 'not_configured'}
     try:
-        from gcp.database import query_to_dataframe
-        query_to_dataframe('SELECT 1 AS ping', {})
+        # Strict (raising) helper so a real DB failure actually reaches the
+        # except-branch below and is reported as db:error. The swallowing
+        # query_to_dataframe would mask an outage as db:reachable.
+        from gcp.database import query_to_dataframe_strict
+        query_to_dataframe_strict('SELECT 1 AS ping', {})
         return {'status': 'ok', 'db': 'reachable'}
     except Exception as e:
         log.warning('health/ping db check failed: %s', e)
