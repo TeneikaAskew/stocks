@@ -41,6 +41,24 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     cat_present = [c for c in CATEGORICAL_FEATURES if c in df.columns]
     enc = pd.get_dummies(df, columns=cat_present, dummy_na=False, dtype=np.int8)
 
+    # All-NaN columns coming from pd.read_sql arrive with dtype=object,
+    # which the numeric-dtype filter below would drop. That's correct
+    # at training (no signal), but BREAKS the train-vs-inference contract
+    # when a column is mostly-populated at training and 100% NULL during
+    # an inference window — feature_cols.txt records the column as a
+    # numeric feature, but featurize at inference drops it, and the
+    # mag_inference alignment check then raises 'feature drift' on every
+    # cron. Pre-coerce these to float64 so the dtype filter accepts them;
+    # the subsequent `.fillna(0)` produces a zero column with the same
+    # semantics training would have produced for sparse-NULL rows.
+    # Surfaced 2026-06-19 when mag_inference rejected vix_close=NULL on
+    # the recently-backfilled strat_features_5m bars (root-cause: upstream
+    # VIX join in strat_data_builder is broken for new rows; tracked
+    # separately).
+    for c in enc.columns:
+        if enc[c].dtype == object and enc[c].isna().all():
+            enc[c] = enc[c].astype(np.float64)
+
     drop = {
         "ticker", "ts", "tf", "bar_date",
         "open", "high", "low", "close", "volume",
