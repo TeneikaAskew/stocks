@@ -13,7 +13,6 @@ real token. Run with `make test` or `pytest tests/test_platform_auth.py`.
 """
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 
@@ -30,12 +29,17 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 def _build(monkeypatch, mode: str, *, open_signup: str = "1", allowed: str = ""):
-    monkeypatch.setenv("AUTH_MODE", mode)
     monkeypatch.setenv("AUTH_OPEN_SIGNUP", open_signup)
     monkeypatch.setenv("AUTH_ALLOWED_EMAILS", allowed)
 
     import api.auth as a
-    importlib.reload(a)  # re-read AUTH_MODE at import time
+    # Set the module-level AUTH_MODE via setattr — NOT setenv + importlib.reload.
+    # reload() re-executes api.auth in place, persistently mutating its shared
+    # module globals; because api.main's auth_middleware reads AUTH_MODE from
+    # that same module namespace, a left-over "firebase" leaks into every later
+    # TestClient test in the session (it 401'd test_playbook_evaluate). setattr
+    # is reverted by monkeypatch at teardown, so each test stays isolated.
+    monkeypatch.setattr(a, "AUTH_MODE", mode)
 
     # Stub Firebase verification: Bearer "good:<email>" -> email; "bad" -> raise;
     # anything else / no header -> None. Exercises middleware logic, not the SDK.
