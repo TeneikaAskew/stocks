@@ -149,6 +149,130 @@ def test_load_strat_features_with_levels_is_the_shared_helper():
         )
 
 
+def test_load_recent_features_recreates_training_lags():
+    """Codex P1 (PR #627): training's `label_next_bar_type()` adds
+    `prev1/2/3_candle` to the frame BEFORE featurize() one-hot encodes
+    them, so `feature_cols.txt` lists `prev1_candle_<value>` dummies.
+    Inference MUST re-add those lag columns via the same helper, or
+    every `prev*_candle_*` dummy is missing at featurize() time and the
+    zero-fill heuristic in `_score_and_persist` silently erases the
+    sequence feature on every live prediction.
+
+    This test asserts the loader produces a frame with the lag columns
+    populated, using the same session-aware shift training uses."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    # Mock the SQL helper to return 6 bars in a single session with
+    # known strat_candle values.
+    raw = pd.DataFrame({
+        "ts": pd.date_range("2026-06-19 13:30", periods=6,
+                            freq="5min", tz="UTC"),
+        "ticker": ["IWM"] * 6,
+        "bar_date": [pd.Timestamp("2026-06-19").date()] * 6,
+        "strat_candle": ["1", "2U", "2D", "3", "1", "2U"],
+        "orb_5m_high": [205.0] * 6,
+    })
+    with patch(
+        "gcp.research.strat_engine.strat_dataset.load_strat_features_with_levels",
+        return_value=raw,
+    ):
+        out = mod._load_recent_features("IWM", "5m", 24, engine=MagicMock())
+
+    # prev1/2/3_candle MUST be present — these are the source columns
+    # featurize() one-hot encodes.
+    assert "prev1_candle" in out.columns, (
+        "_load_recent_features MUST recreate prev1_candle — without it "
+        "featurize produces no prev1_candle_* dummies and the model "
+        "silently sees all-zero sequence features (Codex P1 #627)"
+    )
+    assert "prev2_candle" in out.columns
+    assert "prev3_candle" in out.columns
+    # Session-aware: row 3 (i=3) has prev1=row 2 strat_candle = '2D'.
+    # Warmup drop removes rows 0/1/2 (prev3_candle NaN); the 4th raw row
+    # becomes the FIRST surviving row. Check the lag values are right.
+    assert len(out) == 3  # rows 3, 4, 5 survived
+    assert out.iloc[0]["prev1_candle"] == "2D"   # raw row 3 prev1 = raw row 2 strat = '2D'
+    assert out.iloc[0]["prev2_candle"] == "2U"   # raw row 3 prev2 = raw row 1 strat = '2U'
+    assert out.iloc[0]["prev3_candle"] == "1"    # raw row 3 prev3 = raw row 0 strat = '1'
+    assert out.iloc[2]["prev1_candle"] == "1"    # raw row 5 prev1 = raw row 4 strat = '1'
+
+
+def test_load_recent_features_drops_session_warmup_bars():
+    """Training calls label_next_bar_type with drop_warmup=True (default)
+    so the model NEVER saw a row where prev3_candle was NaN. Inference
+    must drop those rows too — feeding them to the model would supply
+    all-zero prev*_candle_* dummies, which is out-of-distribution."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    raw = pd.DataFrame({
+        "ts": pd.date_range("2026-06-19 13:30", periods=5,
+                            freq="5min", tz="UTC"),
+        "ticker": ["IWM"] * 5,
+        "bar_date": [pd.Timestamp("2026-06-19").date()] * 5,
+        "strat_candle": ["1", "2U", "2D", "3", "1"],
+    })
+    with patch(
+        "gcp.research.strat_engine.strat_dataset.load_strat_features_with_levels",
+        return_value=raw,
+    ):
+        out = mod._load_recent_features("IWM", "5m", 24, engine=MagicMock())
+    # First 3 bars have prev3_candle NaN (no 3 prior bars in this session)
+    # — they must be dropped.
+    assert len(out) == 2, f"expected 2 surviving bars, got {len(out)}"
+    assert out["prev3_candle"].notna().all()
+
+
+def test_add_session_aware_lags_matches_label_next_bar_type():
+    """Pin that the new shared helper produces identical prev1/2/3_candle
+    columns to the inline logic `label_next_bar_type` used pre-refactor.
+    If the helper's shift semantics drift away from the labeler, training
+    and inference will start producing different sequence features for
+    the same raw frame — the exact failure mode this refactor exists to
+    prevent."""
+    from gcp.research.strat_engine.strat_dataset import (
+        add_session_aware_lags, label_next_bar_type,
+    )
+    raw = pd.DataFrame({
+        "ts": pd.date_range("2026-06-19 13:30", periods=8,
+                            freq="5min", tz="UTC"),
+        "bar_date": [pd.Timestamp("2026-06-19").date()] * 4 +
+                    [pd.Timestamp("2026-06-20").date()] * 4,
+        "strat_candle": ["1", "2U", "2D", "3", "1", "2U", "2D", "3"],
+        "open": [100.0] * 8, "high": [101.0] * 8,
+        "low": [99.0] * 8, "close": [100.5] * 8,
+    })
+
+    lags_only = add_session_aware_lags(raw, "5m")
+    full = label_next_bar_type(raw, "5m", drop_warmup=False)
+
+    # The helper's lag columns must match the labeler's lag columns
+    # for every row the labeler kept.
+    for col in ("prev1_candle", "prev2_candle", "prev3_candle"):
+        merged = full[["ts", col]].merge(
+            lags_only[["ts", col]], on="ts", suffixes=("_full", "_helper"),
+        )
+        for _, row in merged.iterrows():
+            full_val = row[f"{col}_full"]
+            helper_val = row[f"{col}_helper"]
+            # Both NaN OR both equal
+            if pd.isna(full_val) and pd.isna(helper_val):
+                continue
+            assert full_val == helper_val, (
+                f"{col} mismatch at ts={row['ts']}: "
+                f"label_next_bar_type={full_val!r} vs "
+                f"add_session_aware_lags={helper_val!r}"
+            )
+    # Session-aware: first row of session 2 (2026-06-20) has prev=NaN
+    # because session-aware shift doesn't cross days.
+    session_two_first = lags_only[
+        lags_only["bar_date"] == pd.Timestamp("2026-06-20").date()
+    ].iloc[0]
+    assert pd.isna(session_two_first["prev1_candle"]), (
+        "session-aware shift must produce NaN for the first bar of a "
+        "new session — it crossed days, which is the bug this helper "
+        "exists to prevent"
+    )
+
+
 def test_load_labeled_dataset_routes_through_shared_helper():
     """Training's `load_labeled_dataset` must delegate to the same
     helper inference uses. Otherwise the two paths can drift again."""

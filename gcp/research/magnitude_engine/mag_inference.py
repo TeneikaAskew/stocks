@@ -201,7 +201,7 @@ def _load_recent_features(ticker: str, tf: str,
     # Lazy import — keeps test stubbing surface small for the score/persist
     # tests that don't exercise the SQL layer.
     from gcp.research.strat_engine.strat_dataset import (
-        load_strat_features_with_levels,
+        load_strat_features_with_levels, add_session_aware_lags,
     )
     df = load_strat_features_with_levels(
         engine, ticker, tf,
@@ -216,6 +216,28 @@ def _load_recent_features(ticker: str, tf: str,
     if df.empty:
         log.warning("no bars in strat_features_%s+levels for %s since %s",
                     tf, ticker, cutoff)
+        return df
+
+    # Codex P1 (PR #627): training adds prev1/prev2/prev3_candle in
+    # label_next_bar_type() BEFORE featurize() one-hot encodes them.
+    # Without recreating those lags here, the inference frame is missing
+    # every `prev*_candle_*` dummy and the zero-fill heuristic in
+    # _score_and_persist silently erases the sequence feature on every
+    # live prediction. Use the SAME helper training uses so the lag
+    # semantics can't drift.
+    if "strat_candle" in df.columns and "bar_date" in df.columns:
+        df = add_session_aware_lags(df, tf)
+        # Match training's drop_warmup=True: training NEVER trained on a
+        # row where prev3_candle is NaN (first 3 bars of a session for
+        # intraday TFs). Scoring those at inference would feed
+        # all-zero prev*_candle_* dummies — out-of-distribution. The
+        # 24h lookback window is large enough that the bars we actually
+        # care about (most-recent) always have valid lags.
+        n_before = len(df)
+        df = df[df["prev3_candle"].notna()].reset_index(drop=True)
+        if n_before > len(df):
+            log.info("%s:%s — dropped %d session-warmup bars (prev3_candle NaN)",
+                     ticker, tf, n_before - len(df))
     return df
 
 
