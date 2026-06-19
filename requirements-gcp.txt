@@ -3,7 +3,7 @@
 # are intentionally excluded — use requirements.txt for local dev and GitHub Actions.
 
 # Core data processing
-pandas>=2.1.4
+pandas>=2.1.4,<3
 numpy>=1.26.2
 pyarrow>=14.0.0
 
