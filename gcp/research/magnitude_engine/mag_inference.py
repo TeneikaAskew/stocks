@@ -48,7 +48,7 @@ import pandas as pd
 # Add project root for gcp.* / lib.* imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from gcp.database import get_engine, query_to_dataframe  # noqa: E402
+from gcp.database import get_engine  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     LABEL_CLASSES, LABEL_TO_IDX,
 )
@@ -178,49 +178,44 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
 
 
 def _load_recent_features(ticker: str, tf: str,
-                           lookback_hours: int = INFERENCE_LOOKBACK_HOURS
+                           lookback_hours: int = INFERENCE_LOOKBACK_HOURS,
+                           engine=None,
                            ) -> pd.DataFrame:
     """Pull the most-recent feature rows for scoring.
 
-    MUST mirror the TRAINING loader (strat_dataset.load_labeled_dataset): the
-    model is trained on `strat_features_{tf}` LEFT JOIN
-    `strat_features_levels_{tf}` (the ORB / historical-level / order-block
-    enrichment columns). Loading strat_features ALONE drops those
-    non-categorical columns, so every cell fails the alignment check in
-    _score_and_persist with "feature drift" on e.g. orb_5m_high. Falls back to
-    plain features if the levels table is missing for this TF — same contract
-    as training.
+    Routes through the SAME loader training uses
+    (`strat_dataset.load_strat_features_with_levels`) so the feature
+    schemas can't drift between train and inference. A bare
+    `SELECT * FROM strat_features_<tf>` is NOT a substitute — it skips
+    the LEFT JOIN to `strat_features_levels_<tf>` and silently drops
+    ORB / historical-level / order-block columns. Surfaced 2026-06-19
+    when the inference cron raised 'feature drift for orb_5m_high'
+    on every cell (the column lives in the levels table, not the base
+    features table). PR #629 inlined the JOIN here; this PR extracts
+    the SQL into a shared helper so the train-vs-inference contract is
+    a single function call rather than two near-duplicate SQL strings.
     """
-    from sqlalchemy import text
-    from gcp.research.strat_engine.strat_enrich_levels import levels_table
-
-    s_table = f"strat_features_{tf}"
-    l_table = levels_table(tf)
+    if engine is None:
+        engine = get_engine()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    params = {"t": ticker, "cutoff": cutoff.isoformat()}
-    engine = get_engine()
-    try:
-        sql = text(
-            f"SELECT s.*, l.* FROM {s_table} s "
-            f"LEFT JOIN {l_table} l ON l.ticker = s.ticker AND l.ts = s.ts "
-            f"WHERE s.ticker = :t AND s.ts >= :cutoff ORDER BY s.ts ASC"
-        )
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=params)
-    except Exception as e:
-        log.warning("levels join failed (%s); falling back to plain features",
-                    type(e).__name__)
-        sql = text(
-            f"SELECT * FROM {s_table} s "
-            f"WHERE s.ticker = :t AND s.ts >= :cutoff ORDER BY s.ts ASC"
-        )
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=params)
-    # Deduplicate the ticker/ts columns that `s.*, l.*` duplicates (mirror
-    # load_labeled_dataset).
-    df = df.loc[:, ~df.columns.duplicated()]
+    # Lazy import — keeps test stubbing surface small for the score/persist
+    # tests that don't exercise the SQL layer.
+    from gcp.research.strat_engine.strat_dataset import (
+        load_strat_features_with_levels,
+    )
+    df = load_strat_features_with_levels(
+        engine, ticker, tf,
+        since_ts=cutoff.isoformat(),
+        include_levels=True,
+        # Inference scores any bar the model can score — keep partial /
+        # unsettled rows (e.g. the most recent bar that may not have a
+        # strat_candle assigned yet). The NaN guard in _score_and_persist
+        # drops anything actually unscorable.
+        require_strat_candle=False,
+    )
     if df.empty:
-        log.warning("no bars in %s for %s since %s", s_table, ticker, cutoff)
+        log.warning("no bars in strat_features_%s+levels for %s since %s",
+                    tf, ticker, cutoff)
     return df
 
 
@@ -381,7 +376,9 @@ def main() -> int:
     for ticker, tf in cells:
         try:
             model, feature_cols, version = _load_model_and_version(ticker, tf)
-            features = _load_recent_features(ticker, tf, args.lookback_hours)
+            features = _load_recent_features(
+                ticker, tf, args.lookback_hours, engine=engine,
+            )
             n = _score_and_persist(engine, ticker, tf,
                                     model, feature_cols, version, features)
             log.info("%s:%s — %d predictions written (model_version=%s)",
