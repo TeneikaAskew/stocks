@@ -32,15 +32,15 @@ DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 # IAP on Cloud Run is service-level and can't be dropped per-revision. Instead,
 # AUTH_MODE=firebase re-protects the API: api/auth.py verifies a Firebase ID
 # token on every gated /api/* request, so the service is NOT wide-open even
-# though anyone can load the login page. Access is fail-closed to an allow-list
-# by default (AUTH_OPEN_SIGNUP=0 + AUTH_ALLOWED_EMAILS). Prod (trading-platform)
-# is untouched and stays behind IAP.
+# though anyone can load the login page. Access defaults to OPEN self-signup —
+# any user who signs in (Google or email/password) is allowed; flip to an
+# allow-list with AUTH_OPEN_SIGNUP=0 + AUTH_ALLOWED_EMAILS. Prod
+# (trading-platform) is untouched and stays behind IAP.
 #
 # One-time prerequisites (operator with run.admin — NOT the CI SA):
 #   1. Create a Firebase web app (console -> Project settings -> Web app) and
-#      pass its config + allow-list via env at deploy time:
+#      pass its config via env at deploy time:
 #        FIREBASE_API_KEY=… FIREBASE_AUTH_DOMAIN=… FIREBASE_APP_ID=… \
-#          AUTH_ALLOWED_EMAILS=you@example.com \
 #          STAGING_SERVICE=1 ./platform/deploy.sh
 #   2. --allow-unauthenticated needs run.services.setIamPolicy; deploying as a
 #      run.admin principal grants allUsers invoker automatically. (If org policy
@@ -91,9 +91,10 @@ if [[ "${AUTH_MODE_VAL}" == "firebase" ]]; then
   : "${FIREBASE_API_KEY:?set FIREBASE_API_KEY for AUTH_MODE=firebase (console -> Project settings -> Web app)}"
   : "${FIREBASE_AUTH_DOMAIN:?set FIREBASE_AUTH_DOMAIN}"
   : "${FIREBASE_APP_ID:?set FIREBASE_APP_ID}"
-  # Access policy: FAIL-CLOSED allow-list by default — only AUTH_ALLOWED_EMAILS
-  # may sign in. Set AUTH_OPEN_SIGNUP=1 to allow open self-signup instead.
-  ENV_VARS="${ENV_VARS},FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-${PROJECT_ID}},FIREBASE_API_KEY=${FIREBASE_API_KEY},FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN},FIREBASE_APP_ID=${FIREBASE_APP_ID},AUTH_OPEN_SIGNUP=${AUTH_OPEN_SIGNUP:-0},AUTH_ALLOWED_EMAILS=${AUTH_ALLOWED_EMAILS:-teneika@bictech.org}"
+  # Access policy: OPEN self-signup by default — any user who signs in (Google or
+  # email/password) is allowed. Restrict to an allow-list instead by deploying
+  # with AUTH_OPEN_SIGNUP=0 AUTH_ALLOWED_EMAILS=a@x.com,b@y.com.
+  ENV_VARS="${ENV_VARS},FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-${PROJECT_ID}},FIREBASE_API_KEY=${FIREBASE_API_KEY},FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN},FIREBASE_APP_ID=${FIREBASE_APP_ID},AUTH_OPEN_SIGNUP=${AUTH_OPEN_SIGNUP:-1},AUTH_ALLOWED_EMAILS=${AUTH_ALLOWED_EMAILS:-}"
 fi
 
 echo ">> project=${PROJECT_ID} region=${REGION} service=${SERVICE}"
