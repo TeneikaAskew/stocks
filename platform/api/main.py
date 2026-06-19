@@ -21,13 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude
-from api.auth_bypass import (
-    router as auth_router,
-    staging_auth_middleware,
-    bypass_enabled,
-    has_valid_bypass_cookie,
-    GUEST_EMAIL,
-)
+from api.auth import auth_middleware, current_user_email
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +44,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Staging passcode gate — no-op unless ALLOW_AUTH_BYPASS=1 (set only on the
-# public, no-IAP `trading-platform-staging` service). Prod stays behind IAP
-# and is untouched. See api/auth_bypass.py.
-app.middleware("http")(staging_auth_middleware)
+# App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
+# mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
+app.middleware("http")(auth_middleware)
 
 # ── Router includes ──────────────────────────────────────────────────────────
 app.include_router(live.router, prefix="")
@@ -76,7 +69,6 @@ app.include_router(analytics.router, prefix="")
 app.include_router(config_router.router, prefix="")
 app.include_router(health.router, prefix="")
 app.include_router(glossary.router, prefix="")
-app.include_router(auth_router)
 app.include_router(magnitude.router, prefix="")
 
 data_loader = DataLoader()
@@ -145,20 +137,15 @@ async def health_check():
 
 @app.get("/api/me")
 async def get_current_user(request: Request):
-    """Return the current user's identity + whether staging bypass is allowed.
+    """Return the authenticated identity + admin flag.
 
-    - Production (behind IAP): `email` is the authenticated Google email.
-    - Staging (ALLOW_AUTH_BYPASS=1): `email` is the guest identity once a valid
-      passcode cookie is present, else None; `auth_bypass_allowed` is True so
-      the frontend renders the sign-in screen.
-    - Local dev (no IAP, no bypass): `email` is None, `auth_bypass_allowed`
-      False — the frontend renders the app directly, as before.
+    `email` is the server-VERIFIED identity: the Firebase token's email in
+    firebase mode, the IAP header in iap mode, or None in local/open. `is_admin`
+    is computed server-side (vs ADMIN_EMAIL) so the frontend can't spoof it.
     """
-    email = _iap_user_email(request)
-    allowed = bypass_enabled()
-    if email is None and allowed and has_valid_bypass_cookie(request):
-        email = GUEST_EMAIL
-    return {"email": email, "auth_bypass_allowed": allowed}
+    email = current_user_email(request)
+    admin_email = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lower()
+    return {"email": email, "is_admin": bool(email and email == admin_email)}
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
