@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Optional, Union
 from uuid import UUID, uuid4
@@ -121,6 +121,15 @@ def _fetch_latest_report(
     """Latest report for the ticker. When `as_of` is given, the latest report
     dated on or before that cutoff (historical "view as of" mode) — never a
     report from after the cutoff (no look-ahead, §3.6)."""
+    # A date-only cutoff (?as_of=YYYY-MM-DD) means "as of the end of that
+    # day" — the review picker defaults to the market close. Postgres would
+    # otherwise coerce a bare date to midnight and exclude that day's own
+    # report (insight_reports.as_of lands pre-noon UTC), wrongly returning
+    # the prior day or 404. Normalizing to end-of-day is look-ahead-safe:
+    # reports are generated in the morning, well before the review default.
+    # (datetime is a subclass of date, so this only fires for pure dates.)
+    if as_of is not None and not isinstance(as_of, datetime):
+        as_of = datetime.combine(as_of, time.max, tzinfo=timezone.utc)
     conn = connect()
     try:
         cur = conn.cursor()
