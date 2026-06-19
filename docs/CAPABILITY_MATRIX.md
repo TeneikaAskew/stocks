@@ -128,7 +128,7 @@ Rows = capabilities (mostly living in `lib/`). Columns = surfaces. This is the h
 | Backtest + walk-forward (`backtest`, `walk_forward`) | ◐ `/backtest/results` (static only) | ✅ | ❌ | ✅ `/backtest` cmd | ❌ | ❌ |
 | Options Greeks + intraday repricing (`options_greeks`, `options_intraday`) | ◐ `/options/greeks` (on-demand calc) | ◐ | ◐ | ❌ | ❌ | ❌ |
 | Earnings reactions / playability (`earnings_reactions`) | ❌ | ✅ | ◐ (catalyst analyst) | ✅ earnings briefs | ❌ | ◐ EW tracking (own) |
-| Playbook cards (`phase6_playbook`) | ✅ `/playbook` | ✅ builder + resolver | ❌ | ❌ | ❌ | ❌ |
+| Playbook cards (`phase6_playbook`) | ✅ `/playbook` | ◐ builder live; **resolver job MISSING (G19)** | ❌ | ❌ | ❌ | ❌ |
 | AI insight report (`agents/*`) | ✅ `/insights/*` | ✅ pipeline job | ✅ (is the pipeline) | ✅ daily push | ❌ | ❌ |
 | Candidate ranking (`agents/ranker`) | ❌ | ✅ auto-refresh | ◐ | ❌ | ❌ | ❌ |
 | Combo mining (`combo_mining`) | ❌ | ✅ research | ❌ | ❌ | ❌ | ❌ |
@@ -152,6 +152,18 @@ Each gap: current state → target → effort (S/M/L) → why it matters.
   *Current:* No Firebase code exists anywhere in the repo (the `AuthGate`/`SignInScreen` on `main` are the **passcode** screen). The public staging service has leftover `AUTH_MODE=firebase` + `AUTH_OPEN_SIGNUP=1` env with **no code behind it**, is **missing `ALLOW_AUTH_BYPASS=1`**, and the **`staging-passcode` secret was deleted** — so neither auth path activates, the gate falls through, and users land in the app with no sign-in and no logout. The `deploy-platform-staging` trigger also lacked `iam.serviceAccountUser` on `trading-platform-svc@` (fixed 2026-06-19).
   *Target:* Decide the real auth model (IAP-only for prod vs. a true app-level login). If a user-facing login is wanted, it must be built end-to-end (frontend screen **+** backend identity endpoint **+** session/logout). Restore `staging-passcode` + `ALLOW_AUTH_BYPASS=1` to make staging verifiable in the meantime.
   *Effort:* M (config restore) / L (real login). *Matters:* you currently cannot validate sign-in at all.
+
+### Tier 0.5 — Live infra failures & drift (full audit 2026-06-19)
+
+A live-vs-repo drift audit (all 69 jobs, 78 schedulers, 4 services, 83 tables) surfaced these — several are **active production outages**, not doc issues:
+
+- **G17 · `magnitude-inference` is failing on every run (P0, active).** 3+ consecutive failures on 2026-06-19 (exit 1); scheduler `magnitude-inference-daily` keeps firing it (max-retries=0, so each fire = one failed execution). Daily magnitude scoring is **down** → `magnitude_per_bar_predictions` goes stale, and `/api/magnitude/*` + any consumer reads stale data. *Fix: pull the execution logs, diagnose the exit-1, redeploy. Effort: M.*
+- **G18 · `cloud-sql-weekly-export` job does not exist, but its scheduler fires every Sunday 04:00 (P0).** The weekly `pg_dump` backup layer (CLAUDE.md "PR #389 in flight") **was never deployed**; the scheduler 404s weekly. **There is no tested recovery path against instance deletion / region outage** — daily snapshots + PITR don't survive instance deletion. *Fix: `./gcp/deploy.sh setup-pg-dump-iam && build && pg-dump && schedulers`. Effort: M. Treat any instance-delete as sev-1 until live.*
+- **G19 · `premarket-playbook-resolver` job does not exist, but its scheduler fires M–F 16:30 (P1).** Playbook-card outcome resolution (trigger/target/stop hit, MAE/MFE, EOD P&L) **has not run** since the scheduler was created; it 404s daily. Playbook win-rate/return stats shown in the UI are therefore unresolved/stale. *Fix: add the job to deploy.sh + deploy. Effort: M.*
+- **G20 · `fetch-fred-rates` runs a stale branch image (`:spx-removal-fred-20260516`, P2).** 34+ days old; every other main-image job uses the floating tag / `:latest`. The risk-free-rate fetcher (feeds BSM Greeks) is frozen to that branch's code. *Fix: `./gcp/deploy.sh fred-rates`. Effort: S.*
+- **G21 · 20 live tables have no `CREATE TABLE` DDL in the repo (P3, DR gap).** Incl. `gamma_events`, `gamma_levels_eod`, `strat_features_4h`, all 6 `strat_features_levels_*`, `magnitude_per_bar_predictions`, `magnitude_walk_forward_results`, the per-ticker `*_30m_predictions`. Created at runtime by jobs; a blank-instance restore would not recreate them. *Fix: codify as `CREATE TABLE IF NOT EXISTS` in `schema.sql`/migrations. Effort: M.*
+- **G22 · 14 orphan jobs + 4 orphan schedulers exist live but aren't in `deploy.sh`.** Notably the *active production producers* `etf-options-retention`, `refresh-earnings-views`, and `strat-engine`(scheduler) — `./gcp/deploy.sh all` would not recreate/update them. Rest are research jobs (`p2/p7*`, `exec-backtest`, etc.). *Fix: codify the production ones; document the research ones as intentionally ad-hoc. Effort: M.*
+- **G23 · `trading-platform` (+ staging) still on deprecated GCR.** Uses `gcr.io/…`; all jobs + the other 2 services migrated to Artifact Registry (`us-east1-docker.pkg.dev/…`). *Fix: migrate the platform image. Effort: S–M.*
 
 ### Tier 1 — High-value capability exposure (compute exists, UI doesn't)
 
