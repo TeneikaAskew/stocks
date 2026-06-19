@@ -76,8 +76,13 @@ def _compute_enrichments(df: pd.DataFrame, include_current_period: bool = False)
     o = df["open"].astype(float)
     c = df["close"].astype(float)
 
-    # 1) ORB (all default windows: 5/15/30)
-    orb = calculate_all_orb(times, h, l, c)
+    # 1) ORB (all default windows: 5/15/30). The opening-range window
+    # (market_open=09:30 ET in calculate_orb) must be matched in EASTERN time.
+    # strat_features.ts is UTC, so the raw wall-clock never falls inside
+    # 09:30-09:35 and every ORB high/low/mid/range comes back NaN — the
+    # orb_5m_high "always NULL" bug that left the magnitude models trained on a
+    # dead ORB feature set. Convert to ET before the session filter.
+    orb = calculate_all_orb(times.dt.tz_convert("America/New_York"), h, l, c)
     orb.index = df.index
     log.info("  ORB: %d cols", orb.shape[1])
 
