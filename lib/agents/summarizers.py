@@ -1521,7 +1521,10 @@ def retrieve_similar_journal(
         "SELECT id::text AS id, ticker, direction, return_pct, "
         "       (embedding <=> :vec::vector) AS cosine_distance "
         "FROM journal_entries "
-        "WHERE embedding IS NOT NULL AND ticker = :ticker "
+        # Per-user privacy: never surface a user-owned (private) journal entry in
+        # the GLOBAL insights reflection — only owner-less (legacy/system) rows
+        # feed the cross-user memory. Per-user insights are a separate follow-up.
+        "WHERE embedding IS NOT NULL AND ticker = :ticker AND user_email IS NULL "
         "ORDER BY embedding <=> :vec::vector ASC "
         "LIMIT :k"
     )

@@ -1102,12 +1102,19 @@ CREATE TABLE IF NOT EXISTS journal_entries (
     exit_price      DOUBLE PRECISION NOT NULL,
     return_pct      DOUBLE PRECISION,   -- computed on insert by application layer
     notes           TEXT,
+    user_email      TEXT,               -- owner; the journal is per-user
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- Per-user ownership: each signed-in user sees only their own trades. Added
+-- via ADD COLUMN IF NOT EXISTS so existing deployments roll forward idempotently.
+ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS user_email TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_journal_entries_ticker_ts
     ON journal_entries (ticker, entry_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_journal_entries_user_ticker_ts
+    ON journal_entries (user_email, ticker, entry_ts DESC);
 
 -- Reuse the existing set_updated_at() trigger function defined below
 CREATE OR REPLACE TRIGGER set_journal_updated_at

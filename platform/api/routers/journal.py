@@ -9,15 +9,17 @@ Endpoints:
 """
 import csv
 import json
+import logging
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ── Path setup ───────────────────────────────────────────────────────────────
@@ -33,6 +35,21 @@ try:
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception:
     _HAS_CLOUD_SQL = False
+
+# Server-verified identity for per-user scoping.
+from api.auth import current_user_email
+
+
+def _journal_owner(request: Request) -> str:
+    """Owner key the journal is scoped by.
+
+    In firebase/iap mode (deployed) the middleware/IAP guarantees a verified
+    identity on every gated /api/journal request, so this is the user's email
+    and one user can never see another's trades. In open/local dev there is no
+    auth, so all entries share the "local" owner — the journal keeps working
+    offline and existing local data isn't stranded.
+    """
+    return current_user_email(request) or "local"
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -97,11 +114,12 @@ def _save_local(ticker: str, entries: list[dict]) -> None:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/journal/trades/{ticker}")
-async def get_trades(ticker: str):
-    """Return all journal entries for the given ticker, newest first."""
+async def get_trades(ticker: str, request: Request):
+    """Return the signed-in user's journal entries for the ticker, newest first."""
     ticker_upper = ticker.upper()
 
     if _HAS_CLOUD_SQL:
+        owner = _journal_owner(request)
         try:
             df = query_to_dataframe(
                 """
@@ -111,10 +129,10 @@ async def get_trades(ticker: str):
                        entry_price, exit_price, return_pct, notes,
                        created_at AT TIME ZONE 'UTC' AS created_at
                 FROM journal_entries
-                WHERE ticker = :ticker
+                WHERE ticker = :ticker AND user_email = :user_email
                 ORDER BY entry_ts DESC
                 """,
-                {"ticker": ticker_upper},
+                {"ticker": ticker_upper, "user_email": owner},
             )
             if df.empty:
                 trades = []
@@ -125,7 +143,13 @@ async def get_trades(ticker: str):
                 trades = df.to_dict(orient="records")
             return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
         except Exception:
-            pass  # fall through to local on any DB error
+            # Authenticated deployment (real owner): a Cloud SQL failure must NOT
+            # fall back to the shared, owner-less local JSON file — that would
+            # return another user's trades and silently serve stale data
+            # (Rule 3.7). Fail loud. Only open/local dev (owner == "local", no
+            # auth) uses the local fallback.
+            if owner != "local":
+                raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     # Local fallback
     entries = _load_local(ticker_upper)
@@ -134,8 +158,8 @@ async def get_trades(ticker: str):
 
 
 @router.post("/api/journal/trades")
-async def create_trade(trade: JournalTradeCreate):
-    """Insert a new journal entry. Returns the created entry with its id."""
+async def create_trade(trade: JournalTradeCreate, request: Request):
+    """Insert a journal entry for the signed-in user. Returns it with its id."""
     ticker_upper = trade.ticker.upper()
     direction = trade.direction.upper()
     entry_ts = f"{trade.entry_date}T{trade.entry_time}:00"
@@ -143,15 +167,16 @@ async def create_trade(trade: JournalTradeCreate):
     ret_pct  = _return_pct(direction, trade.entry_price, trade.exit_price)
 
     if _HAS_CLOUD_SQL:
+        owner = _journal_owner(request)
         try:
             execute_sql(
                 """
                 INSERT INTO journal_entries
                     (ticker, direction, entry_ts, exit_ts,
-                     entry_price, exit_price, return_pct, notes)
+                     entry_price, exit_price, return_pct, notes, user_email)
                 VALUES
                     (:ticker, :direction, :entry_ts, :exit_ts,
-                     :entry_price, :exit_price, :return_pct, :notes)
+                     :entry_price, :exit_price, :return_pct, :notes, :user_email)
                 """,
                 {
                     "ticker": ticker_upper,
@@ -162,20 +187,25 @@ async def create_trade(trade: JournalTradeCreate):
                     "exit_price": trade.exit_price,
                     "return_pct": round(ret_pct, 4),
                     "notes": trade.notes or "",
+                    "user_email": owner,
                 },
             )
             df = query_to_dataframe(
                 """
                 SELECT id::text FROM journal_entries
-                WHERE ticker = :ticker AND entry_ts = :entry_ts
+                WHERE ticker = :ticker AND entry_ts = :entry_ts AND user_email = :user_email
                 ORDER BY created_at DESC LIMIT 1
                 """,
-                {"ticker": ticker_upper, "entry_ts": entry_ts},
+                {"ticker": ticker_upper, "entry_ts": entry_ts, "user_email": owner},
             )
             new_id = str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
             return {"source": "cloud_sql", "id": new_id, "return_pct": round(ret_pct, 4)}
         except Exception:
-            pass  # fall through to local
+            # Auth mode: never write to the shared owner-less local file (would
+            # be visible to other users) — fail loud. Local fallback is open-dev
+            # only. See get_trades for the full rationale.
+            if owner != "local":
+                raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     # Local fallback
     entries = _load_local(ticker_upper)
@@ -197,17 +227,20 @@ async def create_trade(trade: JournalTradeCreate):
 
 
 @router.delete("/api/journal/trades/{trade_id}")
-async def delete_trade(trade_id: str, ticker: str = ""):
-    """Delete a journal entry by UUID."""
+async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
+    """Delete one of the signed-in user's journal entries by UUID."""
     if _HAS_CLOUD_SQL:
+        owner = _journal_owner(request)
         try:
             execute_sql(
-                "DELETE FROM journal_entries WHERE id = :id",
-                {"id": trade_id},
+                "DELETE FROM journal_entries WHERE id = :id AND user_email = :user_email",
+                {"id": trade_id, "user_email": owner},
             )
             return {"source": "cloud_sql", "deleted": trade_id}
         except Exception:
-            pass
+            # Auth mode: don't fall back to the cross-user local file. Fail loud.
+            if owner != "local":
+                raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     # Local fallback
     if ticker:
