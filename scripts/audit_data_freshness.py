@@ -194,6 +194,53 @@ CHECKS: list[dict] = [
         "settle_hour_et": 1,                # 05:00 UTC ≈ 01:00 ET
         "tolerate_holidays": True,
     },
+    # strat_features_5m / _15m / _30m — written by strat-engine in
+    # default-mode (incremental). 2026-06-19 investigation found these
+    # three tables had been silently stale since 2026-06-09 because
+    # strat-engine had NO scheduler entry at all and its job-spec
+    # `--args` had been hand-edited to a one-off `--recompute-cols=...`
+    # invocation. Magnitude-inference (correctly per §3.7) failed
+    # ZERO-OUTPUT every cron — but the watchdog never caught the
+    # upstream staleness because these tables weren't in CHECKS.
+    #
+    # This PR fixes both ends: scheduler registered in deploy.sh, plus
+    # these CHECKS entries so any future stall — scheduler-failure,
+    # job-spec drift, or data-quality bug — alerts within one
+    # watchdog cycle. settle_hour_et=23 matches the strat-engine-daily
+    # cron (Mon-Fri 23:35 ET).
+    {
+        "name": "strat_features_5m",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "strat-engine",
+        "settle_hour_et": 23,
+        "tolerate_holidays": True,
+    },
+    {
+        "name": "strat_features_15m",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "strat-engine",
+        "settle_hour_et": 23,
+        "tolerate_holidays": True,
+    },
+    {
+        "name": "strat_features_30m",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "strat-engine",
+        "settle_hour_et": 23,
+        "tolerate_holidays": True,
+    },
 ]
 
 
