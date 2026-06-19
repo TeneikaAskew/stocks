@@ -3,12 +3,12 @@
 Every Cloud SQL query in the journal router must be scoped to the signed-in
 user's email, so one user can never read or delete another user's trades. In
 open/local dev (no auth) the owner defaults to "local" so the journal still
-works offline.
+works offline; in an authenticated deployment a Cloud SQL failure fails loud
+rather than falling back to the shared local file (which would leak trades).
 
 Hermetic: the DB layer is mocked and the recorded SQL + params are asserted —
 no network, no real Postgres.
 """
-import asyncio
 import sys
 from pathlib import Path
 
@@ -20,6 +20,23 @@ pytest.importorskip("fastapi")
 pytest.importorskip("pydantic")
 
 import api.routers.journal as journal  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+
+
+def _run(coro):
+    """Drive a no-await coroutine to completion without an event loop.
+
+    The journal endpoints are ``async def`` but contain no ``await`` (the DB
+    layer is synchronous), so a single ``.send(None)`` runs the whole body and
+    StopIteration carries the return value. This avoids ``asyncio.run()``, which
+    raises "cannot be called from a running event loop" under the repo's test
+    session.
+    """
+    try:
+        coro.send(None)
+    except StopIteration as e:
+        return e.value
+    raise AssertionError("journal endpoint unexpectedly awaited")
 
 
 class _EmptyDF:
@@ -61,7 +78,7 @@ def _trade():
 def test_get_is_scoped_to_user(scoped, monkeypatch):
     j, calls = scoped
     _as(monkeypatch, "alice@x.com")
-    asyncio.run(j.get_trades("spy", object()))
+    _run(j.get_trades("spy", object()))
     sql, params = calls["q"][-1]
     assert "user_email = :user_email" in sql
     assert params["user_email"] == "alice@x.com"
@@ -70,19 +87,19 @@ def test_get_is_scoped_to_user(scoped, monkeypatch):
 def test_post_stamps_owner(scoped, monkeypatch):
     j, calls = scoped
     _as(monkeypatch, "alice@x.com")
-    asyncio.run(j.create_trade(_trade(), object()))
+    _run(j.create_trade(_trade(), object()))
     insert_sql, insert_params = calls["x"][-1]
     assert "user_email" in insert_sql
     assert insert_params["user_email"] == "alice@x.com"
     # the read-back is also scoped so it can't surface another user's row
-    select_sql, select_params = calls["q"][-1]
+    _, select_params = calls["q"][-1]
     assert select_params["user_email"] == "alice@x.com"
 
 
 def test_delete_is_scoped_to_owner(scoped, monkeypatch):
     j, calls = scoped
     _as(monkeypatch, "alice@x.com")
-    asyncio.run(j.delete_trade("id-123", object()))
+    _run(j.delete_trade("id-123", object()))
     sql, params = calls["x"][-1]
     assert "id = :id AND user_email = :user_email" in sql
     assert params["user_email"] == "alice@x.com"
@@ -91,9 +108,9 @@ def test_delete_is_scoped_to_owner(scoped, monkeypatch):
 def test_two_users_are_isolated(scoped, monkeypatch):
     j, calls = scoped
     _as(monkeypatch, "alice@x.com")
-    asyncio.run(j.get_trades("spy", object()))
+    _run(j.get_trades("spy", object()))
     _as(monkeypatch, "bob@y.com")
-    asyncio.run(j.get_trades("spy", object()))
+    _run(j.get_trades("spy", object()))
     assert calls["q"][-2][1]["user_email"] == "alice@x.com"
     assert calls["q"][-1][1]["user_email"] == "bob@y.com"
 
@@ -102,5 +119,20 @@ def test_open_mode_defaults_to_local(scoped, monkeypatch):
     """No identity (open/local dev) → the shared 'local' owner, never a crash."""
     j, calls = scoped
     _as(monkeypatch, None)
-    asyncio.run(j.get_trades("spy", object()))
+    _run(j.get_trades("spy", object()))
     assert calls["q"][-1][1]["user_email"] == "local"
+
+
+def test_auth_mode_db_failure_fails_closed(scoped, monkeypatch):
+    """A signed-in user must NOT get the shared local file on a Cloud SQL error
+    (cross-user leak + Rule 3.7) — it fails loud with a 503 instead."""
+    j, _ = scoped
+
+    def boom(sql, params=None):
+        raise RuntimeError("cloud sql down")
+
+    _as(monkeypatch, "alice@x.com")
+    monkeypatch.setattr(j, "query_to_dataframe", boom, raising=False)
+    with pytest.raises(HTTPException) as ei:
+        _run(j.get_trades("spy", object()))
+    assert ei.value.status_code == 503

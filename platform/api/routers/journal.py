@@ -143,7 +143,13 @@ async def get_trades(ticker: str, request: Request):
                 trades = df.to_dict(orient="records")
             return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
         except Exception:
-            pass  # fall through to local on any DB error
+            # Authenticated deployment (real owner): a Cloud SQL failure must NOT
+            # fall back to the shared, owner-less local JSON file — that would
+            # return another user's trades and silently serve stale data
+            # (Rule 3.7). Fail loud. Only open/local dev (owner == "local", no
+            # auth) uses the local fallback.
+            if owner != "local":
+                raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     # Local fallback
     entries = _load_local(ticker_upper)
@@ -195,7 +201,11 @@ async def create_trade(trade: JournalTradeCreate, request: Request):
             new_id = str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
             return {"source": "cloud_sql", "id": new_id, "return_pct": round(ret_pct, 4)}
         except Exception:
-            pass  # fall through to local
+            # Auth mode: never write to the shared owner-less local file (would
+            # be visible to other users) — fail loud. Local fallback is open-dev
+            # only. See get_trades for the full rationale.
+            if owner != "local":
+                raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     # Local fallback
     entries = _load_local(ticker_upper)
@@ -228,7 +238,9 @@ async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
             )
             return {"source": "cloud_sql", "deleted": trade_id}
         except Exception:
-            pass
+            # Auth mode: don't fall back to the cross-user local file. Fail loud.
+            if owner != "local":
+                raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     # Local fallback
     if ticker:
