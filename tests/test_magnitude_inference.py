@@ -236,3 +236,77 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
         rc = mod.main()
     # 2/3 cells failed -> >50% threshold -> exit 1
     assert rc == 1
+
+
+# ─────────── _load_recent_features train/inference parity ───────────
+#
+# Root cause of the 2026-06-19 outage (13/13 executions failed): inference
+# SELECTed from strat_features_<tf> ONLY, while TRAINING joins the
+# strat_features_levels_<tf> companion table that carries the ORB / level
+# columns (orb_5m_high, orb_5m_broke_high, …). The model's feature_cols
+# therefore referenced columns inference never loaded, so _score_and_persist
+# raised "feature drift" on every cell. These tests guard the join so the
+# train/inference skew can't silently return when someone adds a level
+# column and retrains. (CLAUDE.md §0.3 — assert the I/O shape.)
+
+def test_load_recent_features_joins_levels_table():
+    """Inference MUST LEFT JOIN strat_features_levels_<tf> so the model's
+    ORB / level columns are present — mirrors strat_dataset's
+    load_labeled_dataset(include_levels=True) path."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    captured = {}
+
+    def fake_q(sql):
+        captured["sql"] = sql
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    with patch.object(mod, "query_to_dataframe", side_effect=fake_q):
+        mod._load_recent_features("IWM", "5m")
+
+    sql = captured["sql"].lower()
+    assert "strat_features_levels_5m" in sql, \
+        "inference must join the levels table that carries the ORB columns"
+    assert "left join" in sql
+    assert "l.ticker = s.ticker" in sql and "l.ts = s.ts" in sql
+
+
+def test_load_recent_features_dedupes_join_key_columns():
+    """SELECT s.*, l.* duplicates ticker/ts; the loader must drop the
+    duplicate labels so downstream featurize() sees a clean frame."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    # Frame as returned by `SELECT s.*, l.*` — duplicate 'ticker' and 'ts'.
+    dup = pd.DataFrame(
+        [["IWM", 1, 10.0, "IWM", 1],
+         ["IWM", 2, 11.0, "IWM", 2]],
+        columns=["ticker", "ts", "orb_5m_high", "ticker", "ts"],
+    )
+    with patch.object(mod, "query_to_dataframe", return_value=dup):
+        out = mod._load_recent_features("IWM", "5m")
+
+    assert list(out.columns).count("ticker") == 1
+    assert list(out.columns).count("ts") == 1
+    assert "orb_5m_high" in out.columns
+
+
+def test_load_recent_features_falls_back_when_levels_missing():
+    """If the levels table doesn't exist for this tf, fall back to the plain
+    features query (no crash). A genuinely-missing ORB column is still
+    caught later by _score_and_persist's hard feature-drift raise — this is
+    a graceful degrade, NOT a silent data fallback (CLAUDE.md §3.7)."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    calls = []
+
+    def fake_q(sql):
+        calls.append(sql)
+        if len(calls) == 1:
+            raise RuntimeError(
+                'relation "strat_features_levels_5m" does not exist')
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    with patch.object(mod, "query_to_dataframe", side_effect=fake_q):
+        out = mod._load_recent_features("IWM", "5m")
+
+    assert len(calls) == 2, "must retry with the plain-features fallback query"
+    assert "left join" not in calls[1].lower()
+    assert out is not None

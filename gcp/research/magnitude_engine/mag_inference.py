@@ -188,14 +188,45 @@ def _load_recent_features(ticker: str, tf: str,
     """
     table = f"strat_features_{tf}"
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    sql = f"""
-        SELECT *
-          FROM {table}
-         WHERE ticker = '{ticker}'
-           AND ts >= '{cutoff.isoformat()}'
-         ORDER BY ts ASC
-    """
-    df = query_to_dataframe(sql)
+    # CRITICAL — inference MUST load the SAME feature frame training used.
+    # The ORB / historical-level / order-block columns (orb_5m_high,
+    # orb_5m_broke_high, …) live ONLY in the strat_features_levels_<tf>
+    # companion table, not in strat_features_<tf> (see the TODO in
+    # strat_data_builder.py and strat_dataset.load_labeled_dataset's
+    # include_levels=True path). Training joins them in; if inference does
+    # not, featurize() can't produce those columns and _score_and_persist
+    # raises "feature drift" on every cell — the bug that made this job
+    # fail on 13/13 executions. Mirror strat_dataset's LEFT JOIN + dedupe.
+    from gcp.research.strat_engine.strat_enrich_levels import levels_table
+    levels = levels_table(tf)
+    try:
+        sql = f"""
+            SELECT s.*, l.*
+              FROM {table} s
+              LEFT JOIN {levels} l
+                ON l.ticker = s.ticker AND l.ts = s.ts
+             WHERE s.ticker = '{ticker}'
+               AND s.ts >= '{cutoff.isoformat()}'
+             ORDER BY s.ts ASC
+        """
+        df = query_to_dataframe(sql)
+    except Exception as e:
+        # If the levels table doesn't exist for this tf, fall back to the
+        # plain features load (mirrors strat_dataset's same guard). This is
+        # NOT a silent data fallback — a missing ORB column will still be
+        # caught downstream by _score_and_persist's hard feature-drift raise.
+        log.warning("levels join failed (%s); falling back to plain %s",
+                    type(e).__name__, table)
+        sql = f"""
+            SELECT *
+              FROM {table}
+             WHERE ticker = '{ticker}'
+               AND ts >= '{cutoff.isoformat()}'
+             ORDER BY ts ASC
+        """
+        df = query_to_dataframe(sql)
+    # SELECT s.*, l.* duplicates the join keys (ticker/ts); keep the first.
+    df = df.loc[:, ~df.columns.duplicated()]
     if df.empty:
         log.warning("no bars in %s for %s since %s", table, ticker, cutoff)
     return df
