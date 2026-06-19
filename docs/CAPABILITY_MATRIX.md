@@ -6,6 +6,8 @@
 
 **Generated:** 2026-06-19 from a fresh read-only code inventory. Synthesizes (does not duplicate) the existing docs — see [§9](#9-existing-documentation--what-this-replaces-vs-references).
 
+**Validated:** Code claims (routes, endpoints, `lib/` modules, fetchers, auth) were read from **live source on `main`** (2026-06-19), not from the docs. GCP/DB claims were validated against **live state** on 2026-06-19 via `gcloud run jobs list` (69), `gcloud run services list` (4), `gcloud scheduler jobs list` (78), and a live `information_schema` query (83 base tables). Where live state exceeds a figure in `ARCHITECTURE.md`, the live number is used here and the stale doc is flagged in §9. Per-job *schedules/timeouts* below are read from `deploy.sh` (intended state); the authoritative live job list is `ARCHITECTURE.md`, which needs regeneration (G14).
+
 **Legend:** ✅ present / live · ◐ partial or indirect · ❌ absent · — N/A
 
 ---
@@ -18,7 +20,7 @@ Seven surfaces consume the shared `lib/` spine. They differ wildly in how much o
 |---|---|---|---|---|---|
 | S1 | **Web platform** | Unified analytics UI + control plane | React (Vite) + FastAPI, Cloud Run service `trading-platform` | Prod: Google IAP · Staging: passcode bypass · Local: open | ✅ live (prod 100% on rev `00049`; merged `main` staged on rev `00058`) |
 | S2 | **`lib/` backend** | Shared math/logic spine | Python package | — (imported) | ✅ the single source of truth for all financial math |
-| S3 | **GCP jobs + fetchers** | Batch data + analytics | ~60 Cloud Run Jobs, ~50 schedulers | Service account | ✅ live |
+| S3 | **GCP jobs + fetchers** | Batch data + analytics | **69 Cloud Run Jobs, 78 schedulers** (live 2026-06-19) | Service account | ✅ live (1 scheduler PAUSED — G16) |
 | S4 | **AI insight pipeline** | Multi-agent advisory | 11-node async orchestrator (`lib/agents`) | via job / API | ✅ live (daily 08:45 + on-demand) |
 | S5 | **Discord bot** | Conversational + alerting | Cloud Run service `discord-interactions` + webhooks | Ed25519 signature | ✅ live (5 slash commands, 3 channels) |
 | S6 | **TradingView Pine** | Chart overlays / scanners | Pine v6 (standalone) | TradingView account | ✅ live (4 scripts, user-maintained) |
@@ -92,6 +94,7 @@ The system is **AlphaVantage-primary** (premium tier; realtime-options on the $1
 | Staging revision (IAP, 0% traffic, merged `main`) | `https://staging---trading-platform-5sjtb3yl7a-ue.a.run.app` |
 | Public staging service (passcode — **currently mis-configured**, see Gap G1) | `https://trading-platform-staging-5sjtb3yl7a-ue.a.run.app` |
 | Discord interactions | Cloud Run service `discord-interactions` (`/discord/interactions`) |
+| Cloud Run services (4, live) | `trading-platform`, `trading-platform-staging`, `discord-interactions`, `failure-notifier` |
 | Frontend routes | 13 (see [§2](#2-capability-inventory--the-web-platform-s1-page-by-page)) |
 | API endpoints | ~50 across 16 routers (`/api/*`) |
 
@@ -101,7 +104,7 @@ The system is **AlphaVantage-primary** (premium tier; realtime-options on the $1
 
 | Category | Requirement |
 |---|---|
-| **Database** | Cloud SQL `trading-db` (Postgres 15, us-east1), DB `trading`, `pgvector` ext, schema = `gcp/schema.sql` (~30 tables). Access via Cloud SQL Connector (Unix socket). |
+| **Database** | Cloud SQL `trading-db` (Postgres 15, us-east1), DB `trading`, `pgvector` ext, schema seeded from `gcp/schema.sql`; **83 base tables live** (validated 2026-06-19; `DATA_DICTIONARY.md` listed 81 as of 06-09). Access via Cloud SQL Connector (Unix socket). |
 | **Service account** | `trading-runner@` with `cloudsql.client`/`editor`, `run.developer`, `storage.objectAdmin`, `logging.logWriter`, `cloudscheduler.jobRunner`, `artifactregistry.writer`. **Platform deploy also needs `iam.serviceAccountUser` on `trading-platform-svc@`** (see Gap G1). |
 | **Secrets** | `db-trading-pass/user`, `av-api-key` (+ `alpha-vantage-api-key` alias), `discord-webhook-*`, `discord-app-id/public-key/bot-token`, `fred-api-key`, `benzinga-api-key`, `staging-passcode` (**missing — Gap G1**). |
 | **Env vars** | `CLOUD_SQL_CONNECTION_NAME`, `DB_USER/NAME`, `GCS_BUCKET`, `GCP_PROJECT_ID`, `IAP_OAUTH_CLIENT_ID`, plus per-job tuning (`INSIGHT_AUTO_REFRESH_TOP_N`, `RETENTION_DAYS`, etc.). |
@@ -174,6 +177,7 @@ These are `lib/` capabilities that run in jobs/insights but have **no web endpoi
 
 - **G14 · Stale docs.** `BRIEFING_DECK.md` (Apr 26) and `GCP_IMPLEMENTATION_STATUS.md` (Apr 29) predate the May expansion; `DATA_PIPELINE.md` (May 1) is 49 d old. The auto-regen `refresh-architecture-docs.yml` is reportedly not running. *Target:* regenerate or retire. *Effort: S.*
 - **G15 · GuestBadge dead-render.** Renders only for the guest sentinel; with G1 unresolved it never shows. Tie its lifecycle to whatever auth model G1 settles on. *Effort: S.*
+- **G16 · `signal-quality-report-hourly` scheduler is PAUSED (live).** The hourly signal-quality classification is **not currently running** (validated 2026-06-19); only the nightly mode (if its scheduler is enabled) would fire. The matrix's "signal quality" capability is therefore degraded in production. *Target:* decide resume vs. retire; if retire, remove the scheduler so it isn't mistaken for live. *Effort: S.* *Matters:* `signal-quality-alarm` depends on fresh `signal_metrics`; a paused producer can make the alarm silently no-op.
 
 ---
 
@@ -183,7 +187,7 @@ This matrix is a **synthesis layer**, not a replacement. Authoritative sources:
 
 | Doc | Status | Relationship |
 |---|---|---|
-| `ARCHITECTURE.md` (2026-05-22) | current | Canonical live GCP inventory (42 jobs, 49 schedulers). This matrix references it; don't duplicate the resource lists. |
+| `ARCHITECTURE.md` (2026-05-22) | **partially stale** | Inventory narrative still useful, but its counts (42 jobs / 49 schedulers) are **out of date** — live is 69 jobs / 78 schedulers (validated 2026-06-19). Needs regen (G14). |
 | `docs/GCP_ARCHITECTURE.md` (2026-05-16) | current | Narrative topology companion. |
 | `docs/API.md` | current | Endpoint reference — the per-endpoint contract source. |
 | `docs/DATA_DICTIONARY.md` (2026-06-09) | current | 81 tables / 2,745 columns — the column-level source of truth. |
