@@ -56,22 +56,43 @@ jobs:
     # that the hermetic mocked tests in the `test` job are blind to.
     # The image is pgvector/pgvector:pg15 — schema.sql does
     # `CREATE EXTENSION vector`, which the stock postgres:15 image lacks.
-    services:
-      postgres:
-        image: pgvector/pgvector:pg15
-        env:
-          POSTGRES_USER: trading_user
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: trading
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+    #
+    # NOTE: we intentionally do NOT use `services:` here. The services
+    # block pulls the image via the runner's Docker daemon with no retry
+    # logic; a transient Docker Hub outage (registry-1.docker.io timeout)
+    # causes the entire job to fail before any test code runs. CI run #850
+    # (2026-06-10, SHA 3eaa91a0aea7) hit this — identical code, 3-second-
+    # later sibling run #851 succeeded on a different runner. Instead we
+    # pull explicitly with a 5-attempt retry loop so a momentary registry
+    # blip doesn't become a CI failure.
     steps:
       - uses: actions/checkout@v4
+
+      - name: Pull pgvector/pgvector:pg15 (with retry)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull pgvector/pgvector:pg15 && break
+            echo "Pull attempt $attempt/5 failed; waiting 20s before retry..."
+            [ "$attempt" -lt 5 ] && sleep 20
+          done
+
+      - name: Start Postgres
+        run: |
+          docker run -d \
+            --name postgres_test \
+            -e POSTGRES_USER=trading_user \
+            -e POSTGRES_PASSWORD=testpass \
+            -e POSTGRES_DB=trading \
+            -p 5432:5432 \
+            pgvector/pgvector:pg15
+
+      - name: Wait for Postgres to be ready
+        run: |
+          for i in $(seq 1 30); do
+            docker exec postgres_test pg_isready -U trading_user && break
+            echo "Waiting for Postgres... ($i/30)"
+            sleep 2
+          done
 
       - uses: actions/setup-python@v5
         with:
