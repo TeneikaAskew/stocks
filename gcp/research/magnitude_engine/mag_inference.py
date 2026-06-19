@@ -180,24 +180,47 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
 def _load_recent_features(ticker: str, tf: str,
                            lookback_hours: int = INFERENCE_LOOKBACK_HOURS
                            ) -> pd.DataFrame:
-    """Pull the most-recent strat_features rows for scoring.
+    """Pull the most-recent feature rows for scoring.
 
-    The features table is strat_features_<tf> (e.g. strat_features_5m),
-    populated by strat-engine. Returns a DataFrame with at minimum
-    `ts` and the feature columns the model needs.
+    MUST mirror the TRAINING loader (strat_dataset.load_labeled_dataset): the
+    model is trained on `strat_features_{tf}` LEFT JOIN
+    `strat_features_levels_{tf}` (the ORB / historical-level / order-block
+    enrichment columns). Loading strat_features ALONE drops those
+    non-categorical columns, so every cell fails the alignment check in
+    _score_and_persist with "feature drift" on e.g. orb_5m_high. Falls back to
+    plain features if the levels table is missing for this TF — same contract
+    as training.
     """
-    table = f"strat_features_{tf}"
+    from sqlalchemy import text
+    from gcp.research.strat_engine.strat_enrich_levels import levels_table
+
+    s_table = f"strat_features_{tf}"
+    l_table = levels_table(tf)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    sql = f"""
-        SELECT *
-          FROM {table}
-         WHERE ticker = '{ticker}'
-           AND ts >= '{cutoff.isoformat()}'
-         ORDER BY ts ASC
-    """
-    df = query_to_dataframe(sql)
+    params = {"t": ticker, "cutoff": cutoff.isoformat()}
+    engine = get_engine()
+    try:
+        sql = text(
+            f"SELECT s.*, l.* FROM {s_table} s "
+            f"LEFT JOIN {l_table} l ON l.ticker = s.ticker AND l.ts = s.ts "
+            f"WHERE s.ticker = :t AND s.ts >= :cutoff ORDER BY s.ts ASC"
+        )
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params=params)
+    except Exception as e:
+        log.warning("levels join failed (%s); falling back to plain features",
+                    type(e).__name__)
+        sql = text(
+            f"SELECT * FROM {s_table} s "
+            f"WHERE s.ticker = :t AND s.ts >= :cutoff ORDER BY s.ts ASC"
+        )
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params=params)
+    # Deduplicate the ticker/ts columns that `s.*, l.*` duplicates (mirror
+    # load_labeled_dataset).
+    df = df.loc[:, ~df.columns.duplicated()]
     if df.empty:
-        log.warning("no bars in %s for %s since %s", table, ticker, cutoff)
+        log.warning("no bars in %s for %s since %s", s_table, ticker, cutoff)
     return df
 
 
