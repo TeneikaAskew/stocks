@@ -462,14 +462,17 @@ class TestJournalCRUD:
         assert r.json()["return_pct"] == 0.0
 
     def test_delete_round_trip_cloud_sql(self, client, monkeypatch):
-        """DELETE issues a single SQL DELETE keyed on id."""
+        """DELETE issues a single SQL DELETE keyed on id + the signed-in owner."""
         captured = self._patch_cloud_sql(monkeypatch)
         r = client.delete("/api/journal/trades/abc-123")
         assert r.status_code == 200
         assert r.json() == {"source": "cloud_sql", "deleted": "abc-123"}
         del_sql, del_params = captured["execute"][0]
         assert "DELETE FROM journal_entries" in del_sql
-        assert del_params == {"id": "abc-123"}
+        # Now scoped to the owner so a user can't delete another's entry; no auth
+        # in this test → the open/local-dev "local" owner.
+        assert "user_email = :user_email" in del_sql
+        assert del_params == {"id": "abc-123", "user_email": "local"}
 
     def test_post_falls_back_to_local_on_cloud_sql_failure(self, client, monkeypatch, tmp_path):
         """If Cloud SQL throws, the router writes to a local JSON file
