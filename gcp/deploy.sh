@@ -917,20 +917,42 @@ deploy_strat_engine() {
     #   gcloud run jobs update strat-engine --memory 8Gi --region us-east1
     local research_image="${IMAGE}:research"
 
+    # DAILY-INCREMENTAL args: bare strat_data_builder dispatch picks up
+    # TICKERS_DEFAULT = ['SPY','IWM','QQQ'] across every TF in TF_LIST
+    # and does an INCREMENTAL write (adds bars since the per-(ticker, tf)
+    # cached max bar_date). Closes the 2026-06-09 → 06-19 gap where
+    # strat_features_5m/15m/30m had no scheduled writer; every consumer
+    # downstream (mag_inference, signal_monitor's feature joins) went
+    # stale silently. Audit-infra-drift + freshness-watchdog can't
+    # detect a missing scheduler — only a stale writer. Hence the new
+    # `strat-engine-daily` cron registered below, paired with
+    # `audit_data_freshness.py` tracking the three strat_features_<tf>
+    # tables (this PR).
+    #
+    # Operator-discretion modes (override --args at execute time):
+    #   --recompute-cols=COLS    targeted recompute of specific columns
+    #                            (short-circuits incremental featurize)
+    #   --rebuild --start-date=  full historical rebuild — needs 32Gi:
+    #     gcloud run jobs update strat-engine --memory 32Gi
+    #     gcloud run jobs execute strat-engine \
+    #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01"
+    #     gcloud run jobs update strat-engine --memory 8Gi
+    local default_args="-m,gcp.research.strat_engine.strat_data_builder"
+
     gcloud run jobs create strat-engine \
         --image "${research_image}" --region "${REGION}" \
         --memory 8Gi --cpu 4 --max-retries 0 \
         --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python" \
-        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        --args="${default_args}" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update strat-engine \
         --image "${research_image}" --region "${REGION}" \
         --command "python" \
-        --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m" \
+        --args="${default_args}" \
         --task-timeout 5400 \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
@@ -2969,6 +2991,19 @@ deploy_schedulers() {
     # the daily nightly fetcher chain has settled. Posts findings to
     # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
     _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
+
+    # Strat-engine daily incremental — Mon-Fri at 23:35 ET (5 min after
+    # fetch-market-data-daily's 23:30 ET settle deadline for today's
+    # daily bars + intraday catch-up). Bare strat_data_builder dispatch
+    # picks up TICKERS_DEFAULT × every TF and INCREMENTALLY adds new
+    # bars since each (ticker, tf) cell's cached max bar_date.
+    #
+    # This scheduler entry closes the 2026-06-09 → 06-19 gap surfaced
+    # when magnitude-inference-daily ran ZERO-OUTPUT: strat_features_5m
+    # had no scheduled writer for 10 days, downstream consumers stalled
+    # silently. See PR description for the freshness-watchdog extension
+    # that catches this class of bug regardless of scheduler presence.
+    _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
 
     # Magnitude-inference — daily Mon-Fri at 09:25 ET, 5 min before
     # market open. _schedule passes --time-zone America/New_York, so

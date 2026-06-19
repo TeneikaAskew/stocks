@@ -194,6 +194,72 @@ CHECKS: list[dict] = [
         "settle_hour_et": 1,                # 05:00 UTC ≈ 01:00 ET
         "tolerate_holidays": True,
     },
+    # strat_features_5m / _15m / _30m — written by strat-engine in
+    # default-mode (incremental). 2026-06-19 investigation found these
+    # three tables had been silently stale since 2026-06-09 because
+    # strat-engine had NO scheduler entry at all and its job-spec
+    # `--args` had been hand-edited to a one-off `--recompute-cols=...`
+    # invocation. Magnitude-inference (correctly per §3.7) failed
+    # ZERO-OUTPUT every cron — but the watchdog never caught the
+    # upstream staleness because these tables weren't in CHECKS.
+    #
+    # This PR fixes both ends: scheduler registered in deploy.sh, plus
+    # these CHECKS entries so any future stall — scheduler-failure,
+    # job-spec drift, or data-quality bug — alerts within one
+    # watchdog cycle. settle_hour_et=23 matches the strat-engine-daily
+    # cron (Mon-Fri 23:35 ET).
+    # Codex P2 #622 — expected_lag_hours alone wouldn't flag a single
+    # missed daily run: MAX(ts) only advances ~24h per run, so a missed
+    # Tuesday run leaves Wednesday's check at ~36h which would only
+    # `warn`, not `stale`. The `min_rows_per_day` + `gap_scan_days`
+    # pattern (mirrored from market_data_intraday / etf_options_snapshots)
+    # checks "did today's expected partition land at all?" — a missed
+    # run fails IMMEDIATELY because today's row_count == 0 < min.
+    #
+    # min_rows_per_day floors (conservative RTH-only counts; the builder
+    # may emit more if extended-hours bars are configured):
+    #   5m  → 70  (RTH 6.5h × 12 bars/hr = 78, give 10% margin)
+    #   15m → 24  (RTH 26 bars, give margin)
+    #   30m → 12  (RTH 13 bars, give margin)
+    {
+        "name": "strat_features_5m",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 24,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "strat-engine",
+        "settle_hour_et": 23,
+        "tolerate_holidays": True,
+        "min_rows_per_day": 70,
+        "gap_scan_days": 5,
+    },
+    {
+        "name": "strat_features_15m",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 24,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "strat-engine",
+        "settle_hour_et": 23,
+        "tolerate_holidays": True,
+        "min_rows_per_day": 24,
+        "gap_scan_days": 5,
+    },
+    {
+        "name": "strat_features_30m",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 24,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "writer_job": "strat-engine",
+        "settle_hour_et": 23,
+        "tolerate_holidays": True,
+        "min_rows_per_day": 12,
+        "gap_scan_days": 5,
+    },
 ]
 
 
