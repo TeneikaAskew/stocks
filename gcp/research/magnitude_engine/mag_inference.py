@@ -128,17 +128,32 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
 
     bucket_name = os.environ.get("GCS_BUCKET",
                                   "adept-mountain-474619-d4-trading-data")
-    prefix = f"magnitude-models/production/{ticker}/{tf}"
+    base_prefix = f"magnitude-models/production/{ticker}/{tf}"
 
     client = gcs.Client()
     bucket = client.bucket(bucket_name)
+    # Atomic-publish layout (#615): LATEST is a pointer to a per-run
+    # subprefix. Reading it last is what makes the artifact set consistent
+    # — model.joblib + feature_cols.txt + VERSION at <base>/<run_id>/ are
+    # guaranteed to belong together because the operator only flips
+    # LATEST after all three uploads succeed.
+    latest_blob = bucket.blob(f"{base_prefix}/LATEST")
+    if not latest_blob.exists():
+        raise FileNotFoundError(
+            f"no production model deployed for {ticker}:{tf} — LATEST "
+            f"pointer missing at gs://{bucket_name}/{base_prefix}/LATEST. "
+            f"Run walk_forward with --persist-production-model to publish."
+        )
+    run_id = latest_blob.download_as_text().strip()
+    prefix = f"{base_prefix}/{run_id}"
     model_blob = bucket.blob(f"{prefix}/model.joblib")
     version_blob = bucket.blob(f"{prefix}/VERSION")
     features_blob = bucket.blob(f"{prefix}/feature_cols.txt")
 
     if not model_blob.exists():
         raise FileNotFoundError(
-            f"production model missing for {ticker}:{tf} — expected at "
+            f"production model missing for {ticker}:{tf} — LATEST points "
+            f"at run={run_id} but model.joblib is missing at "
             f"gs://{bucket_name}/{prefix}/model.joblib"
         )
 
@@ -193,29 +208,73 @@ def _score_and_persist(engine, ticker: str, tf: str,
     if features.empty:
         return 0
 
-    # Align feature matrix to training columns. Any column missing in
-    # `features` is a real bug (feature drift) and we should NOT silently
-    # fabricate it. Raise.
-    missing = [c for c in feature_cols if c not in features.columns]
-    if missing:
-        raise RuntimeError(
-            f"feature drift for {ticker}:{tf} — model expects {len(feature_cols)}"
-            f" cols, {len(missing)} missing: {missing[:5]}…"
-        )
-
-    X = features[feature_cols].to_numpy()
-    # Filter rows with any NaN — model can't score them. Surface count
-    # but don't fail; this happens at session boundaries.
+    # NaN guard on RAW frame — drop rows where any numeric input column
+    # is NaN, BEFORE featurize() fills them with 0. A bar with NaN in
+    # the source feature table means the upstream feature builder hasn't
+    # populated this row yet (session boundary). Scoring it would silently
+    # ship a zero-filled prediction tagged as a real inference.
     import numpy as np
-    nan_mask = np.isnan(X).any(axis=1)
-    if nan_mask.any():
-        log.info("%s:%s — %d/%d bars have NaN features; skipping those",
-                 ticker, tf, int(nan_mask.sum()), len(X))
-        features = features.loc[~nan_mask].reset_index(drop=True)
-        X = X[~nan_mask]
-    if len(X) == 0:
-        log.warning("%s:%s — zero scorable bars after NaN filter", ticker, tf)
+    raw_numeric_cols = [
+        c for c in features.columns
+        if c not in ("ts", "ticker", "tf", "bar_date")
+        and pd.api.types.is_numeric_dtype(features[c].dtype)
+    ]
+    if raw_numeric_cols:
+        nan_mask = features[raw_numeric_cols].isna().any(axis=1).to_numpy()
+        if nan_mask.any():
+            log.info("%s:%s — %d/%d bars have NaN raw features; skipping those",
+                     ticker, tf, int(nan_mask.sum()), len(features))
+            features = features.loc[~nan_mask].reset_index(drop=True)
+    if len(features) == 0:
+        log.warning("%s:%s — zero scorable bars after raw NaN filter", ticker, tf)
         return 0
+
+    # CRITICAL — apply the SAME preprocessing the training pipeline used
+    # (Codex P1 #615). `feature_cols` was captured AFTER mag_pred_train.
+    # featurize() one-hot encoded CATEGORICAL_FEATURES (prev1_candle,
+    # prev2_candle, …) and dropped forward-looking columns. The raw
+    # SELECT * frame from strat_features_<tf> does NOT have the dummy
+    # column names — without running featurize() here, every alignment
+    # check fails with "feature drift" and the cron raises on every cell.
+    from gcp.research.magnitude_engine.mag_pred_train import featurize
+    # Preserve `ts` for the persistence loop below, since featurize drops
+    # it (it's not a model input). Re-attach after the transform.
+    ts_series = features["ts"].reset_index(drop=True)
+    enc, _live_cols = featurize(features)
+    enc = enc.reset_index(drop=True)
+    # Some training-time dummy columns may be absent from a given live
+    # window (e.g. a rare prev1_candle category that didn't occur today).
+    # Fabricating them as zeros is the CORRECT one-hot semantics — not a
+    # silent fallback. We DO NOT fabricate any non-dummy numeric column;
+    # if a real numeric is missing, that's still a hard error.
+    for col in feature_cols:
+        if col not in enc.columns:
+            # Heuristic: training-time one-hot dummies look like
+            # `<categorical>_<value>`; raw numerics don't. Anything that
+            # matches a known CATEGORICAL prefix is safe to zero-fill
+            # (correct one-hot semantics for a value that didn't occur
+            # in the live window — NOT a silent fallback).
+            from gcp.research.strat_engine.strat_config import (
+                CATEGORICAL_FEATURES,
+            )
+            if any(col.startswith(f"{c}_") for c in CATEGORICAL_FEATURES):
+                enc[col] = np.int8(0)
+            else:
+                raise RuntimeError(
+                    f"feature drift for {ticker}:{tf} — model expects "
+                    f"non-categorical column {col!r} which featurize() did "
+                    f"not produce from the live frame. Schema may have "
+                    f"changed since the model was trained (run={version})."
+                )
+    # Rebuild features as a DataFrame keyed to (ts, feature_cols)
+    features = pd.concat(
+        [ts_series.rename("ts"), enc[feature_cols]],
+        axis=1,
+    )
+    # No more missing-column check needed — we either added zero-dummies
+    # above or raised on a real numeric drift. Raw NaN was already
+    # filtered earlier; featurize() then fillna(0)'d any infs.
+    X = features[feature_cols].to_numpy()
 
     proba = model.predict_proba(X)
     if proba.shape[1] != len(LABEL_CLASSES):

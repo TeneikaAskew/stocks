@@ -331,6 +331,84 @@ def _persist_predictions_table(engine, ticker: str, tf: str,
              len(df))
 
 
+def _persist_production_model_artifact(
+    ticker: str, tf: str, run_id: str,
+    X_full: np.ndarray, y_full: np.ndarray,
+    feature_cols: list[str],
+    calibration: str = DEFAULT_CALIBRATION,
+    cv: int = DEFAULT_CV,
+) -> str | None:
+    """Train a 'production' model on the ENTIRE dataset (no held-out test)
+    and upload it to gs://<bucket>/magnitude-models/production/{ticker}/{tf}/.
+
+    Prerequisite for `gcp.research.magnitude_engine.mag_inference` which
+    loads model.joblib + feature_cols.txt + VERSION from this exact GCS
+    path. Without this, the inference job FileNotFoundErrors on every
+    cron — which is the correct CLAUDE.md §3.7 fail-loud behavior, but
+    operationally useless. Running walk_forward with
+    --persist-production-model produces the artifact the inference job
+    needs.
+
+    Returns the gs:// URI on success, None on failure (failure is logged
+    but does NOT raise — walk_forward's metric persistence is the
+    primary output of the job; this is a side effect).
+    """
+    import io
+    import joblib
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    # Atomic-publish layout (Codex P2 #615): every retrain lands its
+    # three artifacts under a per-run path, then we update a single
+    # LATEST pointer file last. A failure between the three blob writes
+    # and the LATEST write leaves the prior production version intact —
+    # inference always reads LATEST first and follows it to the
+    # run-scoped path, so it can't mix a fresh model.joblib with stale
+    # feature_cols.txt.
+    base_prefix = f"magnitude-models/production/{ticker}/{tf}"
+    run_prefix = f"{base_prefix}/{run_id}"
+
+    log.info("training production model on full dataset "
+             "(%d rows × %d features, calibration=%s)",
+             len(X_full), X_full.shape[1], calibration)
+
+    if calibration == "none":
+        model = make_lgbm(class_weight=None, n_jobs=-1)
+        model.fit(X_full, y_full)
+    else:
+        # Same wrapper as fold training. With cv=DEFAULT_CV the calibration
+        # uses an internal cross-validation split for the sigmoid/isotonic
+        # mapping; the underlying LightGBM still sees the full data.
+        model = CalibratedClassifierCV(
+            estimator=make_lgbm(class_weight=None, n_jobs=cv),
+            method=calibration, cv=cv, n_jobs=cv,
+        )
+        model.fit(X_full, y_full)
+
+    # Upload artifacts under run_prefix; update LATEST pointer LAST.
+    try:
+        bucket = gcs.Client().bucket(bucket_name)
+        buf = io.BytesIO()
+        joblib.dump(model, buf)
+        bucket.blob(f"{run_prefix}/model.joblib").upload_from_string(
+            buf.getvalue(), content_type="application/octet-stream")
+        bucket.blob(f"{run_prefix}/feature_cols.txt").upload_from_string(
+            "\n".join(feature_cols), content_type="text/plain")
+        bucket.blob(f"{run_prefix}/VERSION").upload_from_string(
+            run_id, content_type="text/plain")
+        # Atomic flip: LATEST is a single-blob write. Its presence/
+        # contents is what mag_inference reads to choose which run to
+        # load.
+        bucket.blob(f"{base_prefix}/LATEST").upload_from_string(
+            run_id, content_type="text/plain")
+        uri = f"gs://{bucket_name}/{base_prefix}/"
+        log.info("production model persisted (run=%s, LATEST flipped) -> %s",
+                 run_id, uri)
+        return uri
+    except Exception as e:
+        log.error("production model persist FAILED (%s): %s",
+                  type(e).__name__, e)
+        return None
+
+
 def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     """Apply the pre-set success bar to a phase's folds and return a verdict."""
     ok = [f for f in folds if f.get("status") == "OK"]
@@ -388,7 +466,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cutoffs: list[str] | None = None,
                   calibration: str = DEFAULT_CALIBRATION,
                   cv: int = DEFAULT_CV,
-                  label_mode: str = "body") -> dict:
+                  label_mode: str = "body",
+                  persist_production_model: bool = False) -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
@@ -539,6 +618,16 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # output is canonical for live consumers).
         if phase == "phase0":
             _persist_predictions_table(engine, ticker, tf, folds, run_id)
+        # Production model artifact (prereq for mag_inference live cron).
+        # Only emit from phase0 — phase1+ share the same backbone features
+        # and we want exactly one canonical artifact per (ticker, tf).
+        if persist_production_model and phase == "phase0":
+            uri = _persist_production_model_artifact(
+                ticker, tf, run_id, X_full, y_full, feature_cols,
+                calibration=calibration, cv=cv,
+            )
+            if uri:
+                summary["production_model_uri"] = uri
     except Exception as e:
         # Hard failure — log loud, but DON'T fail the task because GCS
         # persistence is the canonical output anyway.
@@ -555,14 +644,16 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
-                   calibration: str = DEFAULT_CALIBRATION) -> dict:
+                   calibration: str = DEFAULT_CALIBRATION,
+                   persist_production_model: bool = False) -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
         for tf in TIMEFRAMES:
             try:
                 s = walk_forward(engine, phase, ticker, tf,
-                                 cutoffs=cutoffs, calibration=calibration)
+                                 cutoffs=cutoffs, calibration=calibration,
+                                 persist_production_model=persist_production_model)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -675,6 +766,16 @@ def main():
     p.add_argument("--phase", default=None, choices=list(PHASES) + [None])
     p.add_argument("--ticker", default=None, choices=list(TICKERS) + [None])
     p.add_argument("--tf", default=None, choices=list(TIMEFRAMES) + [None])
+    p.add_argument("--persist-production-model", action="store_true",
+                   default=os.environ.get("MAG_PERSIST_PRODUCTION_MODEL",
+                                          "").lower() == "true",
+                   help="After all folds complete (phase0 only), train a "
+                        "final model on the ENTIRE dataset and upload "
+                        "model.joblib + feature_cols.txt + VERSION to "
+                        "gs://<bucket>/magnitude-models/production/{ticker}/"
+                        "{tf}/. Required prerequisite for the "
+                        "magnitude-inference live cron — it fails loud "
+                        "(FileNotFoundError) without this artifact.")
     p.add_argument("--all-cells", action="store_true",
                    help="In-process loop over 9 cells of one phase (legacy; "
                         "prefer Cloud Run --tasks parallelism via MAG_PLAN env)")
@@ -710,7 +811,8 @@ def main():
                  os.environ.get("MAG_PLAN"), os.environ.get("CLOUD_RUN_TASK_INDEX"),
                  phase, ticker, tf)
         walk_forward(engine, phase, ticker, tf,
-                      cutoffs=cutoffs, calibration=args.calibration)
+                      cutoffs=cutoffs, calibration=args.calibration,
+                      persist_production_model=args.persist_production_model)
         return
 
     if args.plan and args.task_index is not None:
@@ -720,13 +822,16 @@ def main():
             return
         phase, ticker, tf = plan[args.task_index]
         walk_forward(engine, phase, ticker, tf,
-                      cutoffs=cutoffs, calibration=args.calibration)
+                      cutoffs=cutoffs, calibration=args.calibration,
+                      persist_production_model=args.persist_production_model)
         return
 
     if args.all_cells:
         if not args.phase:
             raise SystemExit("--all-cells needs --phase")
-        run_all_cells(engine, args.phase, cutoffs=cutoffs, calibration=args.calibration)
+        run_all_cells(engine, args.phase, cutoffs=cutoffs,
+                       calibration=args.calibration,
+                       persist_production_model=args.persist_production_model)
         return
 
     if not args.phase or not args.ticker or not args.tf:
@@ -738,7 +843,8 @@ def main():
         )
     walk_forward(engine, args.phase, args.ticker, args.tf,
                   cutoffs=cutoffs, calibration=args.calibration,
-                  label_mode=args.label_mode)
+                  label_mode=args.label_mode,
+                  persist_production_model=args.persist_production_model)
 
 
 if __name__ == "__main__":
