@@ -7,8 +7,11 @@
 #   STAGING=1 ./platform/deploy.sh        prod service, new revision tagged `staging`,
 #                                         no traffic — shares prod's IAP (see note below)
 #   STAGING_SERVICE=1 ./platform/deploy.sh  SEPARATE public staging service
-#                                         (trading-platform-staging) with NO IAP +
-#                                         the app-level passcode gate. Prod untouched.
+#                                         (trading-platform-staging) NO IAP, gated by
+#                                         in-app Firebase login (AUTH_MODE=firebase).
+#                                         Prod untouched. Needs FIREBASE_API_KEY,
+#                                         FIREBASE_AUTH_DOMAIN, FIREBASE_APP_ID (+ optional
+#                                         AUTH_ALLOWED_EMAILS) in env.
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-adept-mountain-474619-d4}"
@@ -23,30 +26,34 @@ IMAGE="gcr.io/${PROJECT_ID}/${IMAGE_NAME}"
 DB_USER="${DB_USER:?set DB_USER (e.g. export DB_USER=postgres)}"
 DB_NAME="${DB_NAME:?set DB_NAME (e.g. export DB_NAME=trading)}"
 DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
-STAGING_PASSCODE_SECRET="${STAGING_PASSCODE_SECRET:-staging-passcode}"
 
 # ── Separate public staging service ────────────────────────────────────────
 # trading-platform-staging runs WITHOUT IAP (--allow-unauthenticated) because
-# IAP on Cloud Run is service-level and can't be dropped per-revision. The
-# app-level passcode gate (ALLOW_AUTH_BYPASS=1 + STAGING_PASSCODE) re-protects
-# the API so the service isn't wide-open. Prod (trading-platform) is untouched
-# and stays behind IAP.
+# IAP on Cloud Run is service-level and can't be dropped per-revision. Instead,
+# AUTH_MODE=firebase re-protects the API: api/auth.py verifies a Firebase ID
+# token on every gated /api/* request, so the service is NOT wide-open even
+# though anyone can load the login page. Access is fail-closed to an allow-list
+# by default (AUTH_OPEN_SIGNUP=0 + AUTH_ALLOWED_EMAILS). Prod (trading-platform)
+# is untouched and stays behind IAP.
 #
-# One-time prerequisites (run by an operator with run.admin — NOT the CI SA):
-#   1. Create the passcode secret:
-#        printf '%s' 'YOUR_PASSCODE' | gcloud secrets create staging-passcode \
-#          --data-file=- --project=${PROJECT_ID}
-#   2. Let the runtime SA read it:
-#        gcloud secrets add-iam-policy-binding staging-passcode \
-#          --member="serviceAccount:trading-platform-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-#          --role=roles/secretmanager.secretAccessor --project=${PROJECT_ID}
-#   3. --allow-unauthenticated needs run.services.setIamPolicy; deploying as a
+# One-time prerequisites (operator with run.admin — NOT the CI SA):
+#   1. Create a Firebase web app (console -> Project settings -> Web app) and
+#      pass its config + allow-list via env at deploy time:
+#        FIREBASE_API_KEY=… FIREBASE_AUTH_DOMAIN=… FIREBASE_APP_ID=… \
+#          AUTH_ALLOWED_EMAILS=you@example.com \
+#          STAGING_SERVICE=1 ./platform/deploy.sh
+#   2. --allow-unauthenticated needs run.services.setIamPolicy; deploying as a
 #      run.admin principal grants allUsers invoker automatically. (If org policy
 #      DRS blocks allUsers, the public service can't be created — escalate.)
+# Auth mode (read by api/auth.py): prod = iap (IAP gates at the edge; identity
+# comes from the IAP header). The public staging service flips to firebase below.
+AUTH_MODE_VAL="${AUTH_MODE:-iap}"
+
 if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
   SERVICE="trading-platform-staging"
-  PUBLIC=1   # public ingress; the passcode gate is the access control
-  echo ">> STAGING_SERVICE mode: deploying public ${SERVICE} (no IAP, passcode-gated)"
+  PUBLIC=1                   # public ingress so the login page can load
+  AUTH_MODE_VAL="firebase"   # in-app Firebase login gates the API (verify ID token)
+  echo ">> STAGING_SERVICE mode: deploying PUBLIC ${SERVICE} (no IAP; Firebase login gates the API)"
 fi
 
 # Auth: PUBLIC=1 ./deploy.sh skips the IAM gate (then put IAP or app-level auth in front).
@@ -73,12 +80,20 @@ if [[ "${STAGING:-0}" == "1" ]]; then
 fi
 
 # ── Env vars + secrets (composed so staging can append its own) ────────────
-ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com"
+ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com,AUTH_MODE=${AUTH_MODE_VAL}"
 SECRETS="DB_PASS=${DB_PASS_SECRET}:latest,AV_API_KEY=av-api-key:latest,ALPHA_VANTAGE_API_KEY=av-api-key:latest"
 
-if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
-  ENV_VARS="${ENV_VARS},ALLOW_AUTH_BYPASS=1"
-  SECRETS="${SECRETS},STAGING_PASSCODE=${STAGING_PASSCODE_SECRET}:latest"
+# Firebase-mode services need the web SDK config (apiKey/authDomain/appId are
+# PUBLIC identifiers — access is enforced server-side by token verification +
+# the allow-list, not by hiding these). Fail fast if a firebase deploy is missing
+# them rather than shipping a login page that can't initialize.
+if [[ "${AUTH_MODE_VAL}" == "firebase" ]]; then
+  : "${FIREBASE_API_KEY:?set FIREBASE_API_KEY for AUTH_MODE=firebase (console -> Project settings -> Web app)}"
+  : "${FIREBASE_AUTH_DOMAIN:?set FIREBASE_AUTH_DOMAIN}"
+  : "${FIREBASE_APP_ID:?set FIREBASE_APP_ID}"
+  # Access policy: FAIL-CLOSED allow-list by default — only AUTH_ALLOWED_EMAILS
+  # may sign in. Set AUTH_OPEN_SIGNUP=1 to allow open self-signup instead.
+  ENV_VARS="${ENV_VARS},FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-${PROJECT_ID}},FIREBASE_API_KEY=${FIREBASE_API_KEY},FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN},FIREBASE_APP_ID=${FIREBASE_APP_ID},AUTH_OPEN_SIGNUP=${AUTH_OPEN_SIGNUP:-0},AUTH_ALLOWED_EMAILS=${AUTH_ALLOWED_EMAILS:-teneika@bictech.org}"
 fi
 
 echo ">> project=${PROJECT_ID} region=${REGION} service=${SERVICE}"
@@ -96,15 +111,6 @@ if ! gcloud secrets describe "${DB_PASS_SECRET}" >/dev/null 2>&1; then
   echo ">> secret '${DB_PASS_SECRET}' not found — create it with:"
   echo "   echo -n 'YOUR_DB_PASSWORD' | gcloud secrets create ${DB_PASS_SECRET} --data-file=-"
   exit 1
-fi
-
-# 2b. Staging service requires the passcode secret to exist
-if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
-  if ! gcloud secrets describe "${STAGING_PASSCODE_SECRET}" >/dev/null 2>&1; then
-    echo ">> secret '${STAGING_PASSCODE_SECRET}' not found — create it with:"
-    echo "   printf '%s' 'YOUR_STAGING_PASSCODE' | gcloud secrets create ${STAGING_PASSCODE_SECRET} --data-file=- --project=${PROJECT_ID}"
-    exit 1
-  fi
 fi
 
 # 3. Deploy

@@ -23,12 +23,13 @@ const notFound = () => ({
 /** Apply mocks for endpoints every page hits — call from beforeEach. */
 export async function mockCommon(page: Page) {
   await page.route('**/api/health', (r) => r.fulfill(ok({ status: 'ok', cloud_sql: false })));
-  // Auth gate probe — `auth_bypass_allowed: false` keeps the gate inert
-  // (renders the app directly), matching prod-IAP / local-dev behaviour.
-  // The staging sign-in screen only appears when this flag is true.
-  await page.route('**/api/me', (r) =>
-    r.fulfill(ok({ email: null, auth_bypass_allowed: false }))
+  // Auth config probe — `open` mode keeps the gate inert (renders the app
+  // directly), matching iap/local behaviour. The login page only appears in
+  // `firebase` mode.
+  await page.route('**/api/config/firebase', (r) =>
+    r.fulfill(ok({ authMode: 'open', firebase: null }))
   );
+  await page.route('**/api/me', (r) => r.fulfill(ok({ email: null, is_admin: false })));
   await page.route('**/api/live/status', (r) =>
     r.fulfill(ok({ session: 'closed', is_open: false, ts: '2026-04-25T20:00:00Z' }))
   );

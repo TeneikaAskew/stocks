@@ -1,34 +1,56 @@
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-
-const ADMIN_EMAIL = 'teneika@bictech.org';
-
-/** Guest identity returned by /api/me after a staging passcode bypass.
- *  Must match GUEST_EMAIL in platform/api/auth_bypass.py. */
-export const GUEST_EMAIL = 'guest@staging.local';
+import { getAuthMode } from '@/lib/runtimeConfig';
+import { subscribeAuth } from '@/lib/firebase';
 
 interface MeResponse {
   email: string | null;
-  /** Server flag — true only on the staging service (ALLOW_AUTH_BYPASS=1). */
-  auth_bypass_allowed?: boolean;
+  is_admin?: boolean;
 }
 
+/**
+ * Single identity hook for the app.
+ *
+ * - firebase mode: tracks Firebase auth state; once signed in, reads the
+ *   server-VERIFIED identity from /api/me (so `is_admin` can't be spoofed).
+ * - iap / open / local mode: polls /api/me exactly as before (IAP header gives
+ *   the email in prod; null locally) — no gate, no behaviour change.
+ */
 export function useUser() {
+  const authMode = getAuthMode();
+  const firebaseMode = authMode === 'firebase';
+
+  // In non-firebase modes there's no client auth state: "ready" + "signed in".
+  const [fbReady, setFbReady] = useState(!firebaseMode);
+  const [signedIn, setSignedIn] = useState(!firebaseMode);
+
+  useEffect(() => {
+    if (!firebaseMode) return;
+    const unsub = subscribeAuth((user) => {
+      setSignedIn(!!user);
+      setFbReady(true);
+    });
+    return () => unsub();
+  }, [firebaseMode]);
+
+  // Only hit /api/me when it can succeed: always in non-firebase modes; in
+  // firebase mode only once signed in (the token attaches via authedFetch).
+  const meEnabled = !firebaseMode || signedIn;
   const query = useQuery<MeResponse>({
-    queryKey: ['me'],
+    queryKey: ['me', signedIn],
+    enabled: meEnabled,
     queryFn: async () => {
       const r = await fetch('/api/me');
-      // A non-OK /api/me means "not authenticated and bypass not offered" —
-      // the gate treats that as local/open (prod can't reach this state
-      // because IAP authenticates before the app loads).
-      if (!r.ok) return { email: null, auth_bypass_allowed: false };
+      if (!r.ok) return { email: null, is_admin: false };
       return r.json();
     },
     staleTime: 5 * 60_000,
   });
 
   const email = query.data?.email ?? null;
-  const isAdmin = email?.toLowerCase() === ADMIN_EMAIL;
-  const authBypassAllowed = query.data?.auth_bypass_allowed === true;
+  const isAdmin = query.data?.is_admin === true;
+  const isSignedIn = firebaseMode ? signedIn : true;
+  const isLoading = !fbReady || (meEnabled && query.isLoading);
 
-  return { email, isAdmin, authBypassAllowed, isLoading: query.isLoading };
+  return { email, isAdmin, isSignedIn, isLoading, authMode };
 }

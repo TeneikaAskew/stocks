@@ -2,7 +2,7 @@ import { Moon, Sun } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useThemeStore } from '@/stores/themeStore';
 import { DateSelector } from '@/components/shared/DateSelector';
-import { GuestBadge } from '@/components/auth/GuestBadge';
+import { SignOutButton } from '@/components/auth/SignOutButton';
 
 /** Routes where the global historical DateSelector is functional. */
 const REVIEW_AWARE_ROUTES = ['/', '/live', '/charts', '/signals'];
@@ -21,7 +21,7 @@ export function Header() {
 
   return (
     <header className="flex min-h-12 flex-wrap items-center justify-end gap-2 bg-[var(--surface-1)] px-5 py-1.5 sm:h-12 sm:flex-nowrap sm:gap-3 sm:py-0">
-      <GuestBadge />
+      <SignOutButton />
       {showDateSelector && <DateSelector />}
       <button
         type="button"
