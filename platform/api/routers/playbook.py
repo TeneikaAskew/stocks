@@ -18,6 +18,7 @@ gs://adept-mountain-474619-d4-trading-data/raw/reports/
 
 All three endpoints cache with a 24h TTL because markdown files change rarely.
 """
+import json
 import logging
 import re
 import sys
@@ -152,6 +153,11 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
             unit = (ar_match.group(2) or "").lower()
             avg_return = val / 100 if unit == "bps" else val
 
+        # --- Target / Stop move magnitudes (e.g. "Target: +0.30%") ---
+        def _move(label: str) -> float | None:
+            m = re.search(rf"{label}[:\s]+[+-]?([0-9]+(?:\.[0-9]+)?)\s*%", body, re.I)
+            return float(m.group(1)) if m else None
+
         cards.append({
             "id": f"card_{i}",
             "name": name,
@@ -160,6 +166,8 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
             "conditions": conditions,
             "win_rate": win_rate,
             "avg_return": avg_return,
+            "target_pct": _move("target"),
+            "stop_pct": _move("stop"),
         })
 
     return {
@@ -179,15 +187,184 @@ def _download_markdown(blob_path_relative: str) -> str:
         raise HTTPException(status_code=502, detail=f"Failed to download report from GCS: {exc}")
 
 
+def _cards_from_db(ticker_upper: str, as_of: str | None = None) -> list | None:
+    """Read structured cards from the playbook_cards table.
+
+    Returns the card list, or None when the structured source is unavailable
+    (Cloud SQL not configured, or no rows yet) so the caller can bridge to the
+    markdown parse. This is the typed path that replaces regex-scraping prose:
+    a formatting change in the markdown can no longer null a card's stats.
+
+    The table is date-keyed (``analysis_date``): a ticker has one card set per
+    date the playbook was computed as-of. We always resolve to a single date —
+    the most recent ``analysis_date`` (``<= as_of`` when given, for the
+    dashboard's historical "view as of" mode) — so cards from different dates
+    never mix. ``as_of`` selects the latest set knowable on that date, never a
+    later one (no look-ahead, §3.6).
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    except Exception:
+        return None
+    if not is_cloud_sql_configured():
+        return None
+
+    if as_of is None:
+        df = query_to_dataframe(
+            "SELECT card_num, name, description, direction, conditions, "
+            "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
+            "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
+            "FROM playbook_cards WHERE ticker = :t "
+            "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards WHERE ticker = :t) "
+            "ORDER BY card_num",
+            {"t": ticker_upper},
+        )
+    else:
+        df = query_to_dataframe(
+            "SELECT card_num, name, description, direction, conditions, "
+            "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
+            "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
+            "FROM playbook_cards WHERE ticker = :t "
+            "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards "
+            "                     WHERE ticker = :t AND analysis_date <= :d) "
+            "ORDER BY card_num",
+            {"t": ticker_upper, "d": as_of},
+        )
+    if df is None or df.empty:
+        return None
+
+    import math
+    import re as _re
+
+    def _move_pct(v):
+        # target_pct/stop_pct are stored as display strings like "+0.30%" /
+        # "-0.15%". Return the move MAGNITUDE as a float percent (0.30, 0.15)
+        # so the frontend applies direction itself. NULL -> None.
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        m = _re.search(r"[0-9]+(?:\.[0-9]+)?", str(v))
+        return float(m.group(0)) if m else None
+
+    def _pct(v, scale):
+        # NULL/NaN stays None — never coerced to 0 (CLAUDE.md §3.7).
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(f):
+            return None
+        return round(f * scale, 1 if scale == 100 else 2)
+
+    def _text(v):
+        # NULL text comes back from pandas as None OR NaN (NaN is truthy, so
+        # `v or ""` would leak NaN into the JSON) — coerce both to "".
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
+        return str(v)
+
+    def _bps(v):
+        # Horizon returns are sub-bps; keep them in raw bps (not % rounded to
+        # 2dp, which would collapse -0.18 bps to -0.00%). NULL/NaN -> None.
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(f) else round(f, 2)
+
+    def _jsonish(v):
+        # JSONB comes back as a Python list/dict (or a string if the driver
+        # didn't adapt it). NULL → empty list.
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return []
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (ValueError, TypeError):
+                return []
+        return v
+
+    cards = []
+    for _, row in df.iterrows():
+        cond = _jsonish(row["conditions"])
+        # Per-hold-window sweep → percents (win_rate fraction→%, bps→%).
+        horizons = [
+            {
+                "minutes": int(h["minutes"]),
+                "win_rate": _pct(h.get("win_rate"), 100),
+                "avg_return_bps": _bps(h.get("avg_return_bps")),
+                "sample_n": h.get("sample_n"),
+            }
+            for h in _jsonish(row["horizons"]) if h.get("minutes") is not None
+        ]
+        cards.append({
+            "id": f"card_{int(row['card_num'])}",
+            "name": row["name"],
+            "description": _text(row["description"]),
+            "direction": row["direction"],
+            "conditions": list(cond) if cond is not None else [],
+            # win_rate stored as fraction → percent (48.0); bps → percent (-0.10),
+            # matching the historical markdown-parsed contract the frontend expects.
+            "win_rate": _pct(row["win_rate"], 100),
+            "avg_return": _pct(row["avg_return_bps"], 0.01),
+            # Move magnitudes (% of price) so the card can render dollar levels
+            # off the live price: target/stop = price × (1 ± pct/100) per direction.
+            "target_pct": _move_pct(row["target_pct"]),
+            "stop_pct": _move_pct(row["stop_pct"]),
+            # Win rate / avg return BY hold window + the best-avg-return hold.
+            "horizons": horizons,
+            "best_horizon_min": (None if row["best_horizon_min"] is None
+                                 or (isinstance(row["best_horizon_min"], float)
+                                     and math.isnan(row["best_horizon_min"]))
+                                 else int(row["best_horizon_min"])),
+            "best_horizon_win_rate": _pct(row["best_horizon_win_rate"], 100),
+            "best_horizon_avg_bps": _bps(row["best_horizon_avg_bps"]),
+        })
+    return cards
+
+
 @router.get("/api/playbook/{ticker}")
-async def get_playbook(ticker: str):
-    """Read phase6_playbook_{ticker}.md from GCS and return structured setup cards."""
+async def get_playbook(ticker: str, date: str | None = None):
+    """Return structured setup cards for a ticker.
+
+    Primary source is the typed ``playbook_cards`` Cloud SQL table. Until that
+    table is populated (it is written by phase6 ``--write-db`` after deploy), we
+    bridge to parsing ``phase6_playbook_{ticker}.md`` from GCS so the UI keeps
+    working through the cutover.
+
+    ``?date=YYYY-MM-DD`` (historical "view as of" mode) returns the latest card
+    set computed on or before that date. The markdown bridge is current-only,
+    so an as-of request with no matching DB rows 404s rather than falling back
+    to today's markdown (no look-ahead / no mislabelled cards, §3.6/§3.7).
+    """
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _PLAYBOOK_CACHE:
-        return _PLAYBOOK_CACHE[ticker_upper]
+    cache_key = (ticker_upper, date or "latest")
+    if cache_key in _PLAYBOOK_CACHE:
+        return _PLAYBOOK_CACHE[cache_key]
 
+    db_cards = _cards_from_db(ticker_upper, as_of=date)
+    if db_cards:
+        result = {"ticker": ticker_upper, "cards": db_cards, "source": "cloud_sql"}
+        if date:
+            result["as_of"] = date
+        _PLAYBOOK_CACHE[cache_key] = result
+        return result
+
+    # As-of requests don't fall back to the (current-only) markdown — a past
+    # date with no stored card set is an explicit 404, not today's cards.
+    if date:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No playbook for '{ticker_upper}' as of {date}.",
+        )
+
+    # Bridge: structured table not yet populated — parse the markdown.
+    log.info("playbook_cards empty for %s; bridging to markdown parse", ticker_upper)
     blob_path = f"{GCS_PREFIX}phase6_playbook_{ticker_lower}.md"
     content = _download_markdown(blob_path)
     if not content:
@@ -197,7 +374,8 @@ async def get_playbook(ticker: str):
         )
 
     result = _parse_playbook_markdown(content, ticker)
-    _PLAYBOOK_CACHE[ticker_upper] = result
+    result["source"] = "markdown"
+    _PLAYBOOK_CACHE[cache_key] = result
     return result
 
 

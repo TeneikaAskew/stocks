@@ -213,6 +213,45 @@ def test_get_insight_report_404_when_missing(client):
     assert "QQQ" in r.json()["detail"]
 
 
+def test_get_insight_report_as_of_includes_same_day_morning_report(client):
+    """Regression: a date-only ?as_of=YYYY-MM-DD cutoff must include that
+    day's own report. Reports land pre-noon UTC; a bare date coerces to
+    midnight in the TIMESTAMPTZ comparison, so without end-of-day
+    normalization the same-day report is wrongly excluded (returns the
+    prior day or 404). Also asserts no look-ahead: an earlier cutoff does
+    not pull the later report."""
+    conn = connect()
+    row_id = str(uuid4())
+    # 2026-06-12 12:46 UTC — a realistic morning generation time.
+    as_of = datetime(2026, 6, 12, 12, 46, 0, tzinfo=timezone.utc)
+    payload = {"ticker": "IWM", "direction": "short", "confidence_score": 0.5}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO insight_reports
+                    (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
+                VALUES (%s, 'IWM', %s, %s::jsonb, %s::jsonb, %s, %s)
+                """,
+                (row_id, as_of, json.dumps(payload), json.dumps({}), 0.01, 100),
+            )
+        conn.commit()
+
+        # Same-day date cutoff must return the morning report (the bug).
+        r = client.get("/api/insights/report/IWM?as_of=2026-06-12")
+        assert r.status_code == 200, r.text
+        assert r.json()["ticker"] == "IWM"
+
+        # Earlier-day cutoff must NOT see it — no look-ahead.
+        r_prior = client.get("/api/insights/report/IWM?as_of=2026-06-11")
+        assert r_prior.status_code == 404, r_prior.text
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM insight_reports WHERE id=%s", (row_id,))
+        conn.commit()
+        conn.close()
+
+
 def test_get_insight_history_returns_list(client, seed_report):
     r = client.get("/api/insights/report/SPY/history?limit=10")
     assert r.status_code == 200

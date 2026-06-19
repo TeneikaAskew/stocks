@@ -42,11 +42,15 @@ export function useBriefDirection(ticker: string) {
 // this ticker — the UI shows a "Generate Report" CTA in that case.
 // ---------------------------------------------------------------------------
 
-export function useInsightReport(ticker: string) {
+// `asOf` (ISO date, YYYY-MM-DD) selects the latest report dated on or before
+// that cutoff — used by the dashboard's historical "view as of" mode. Omitted
+// → latest live report.
+export function useInsightReport(ticker: string, asOf?: string) {
   return useQuery<InsightReportEnvelope | null>({
-    queryKey: ['insight-report', ticker],
+    queryKey: ['insight-report', ticker, asOf ?? 'live'],
     queryFn: async () => {
-      const r = await fetch(`/api/insights/report/${ticker}`);
+      const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+      const r = await fetch(`/api/insights/report/${ticker}${qs}`);
       if (r.status === 404) return null;
       if (!r.ok) throw new Error(`insights ${r.status}`);
       return r.json();

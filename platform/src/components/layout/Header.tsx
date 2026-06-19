@@ -20,14 +20,14 @@ export function Header() {
   const { theme, toggleTheme } = useThemeStore();
 
   return (
-    <header className="flex h-12 items-center justify-end gap-3 bg-[var(--surface-1)] px-5">
+    <header className="flex min-h-12 flex-wrap items-center justify-end gap-2 bg-[var(--surface-1)] px-5 py-1.5 sm:h-12 sm:flex-nowrap sm:gap-3 sm:py-0">
       <GuestBadge />
       {showDateSelector && <DateSelector />}
       <button
         type="button"
         onClick={toggleTheme}
         aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)] transition-colors"
+        className="hidden h-8 w-8 items-center justify-center rounded-full text-[var(--on-surface-variant)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)] sm:flex"
         title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
       >
         {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}

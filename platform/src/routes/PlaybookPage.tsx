@@ -12,6 +12,7 @@ import {
 } from '@/lib/playbookEvaluator';
 import { usePlaybookBatch } from '@/hooks/usePlaybookEvaluation';
 import { CheckCircle, Circle, HelpCircle, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
+import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 
 interface PlaybookCard {
   id: string;
@@ -21,6 +22,12 @@ interface PlaybookCard {
   conditions: string[];
   win_rate: number | null;
   avg_return: number | null;
+  target_pct?: number | null;
+  stop_pct?: number | null;
+  horizons?: SetupHorizon[];
+  best_horizon_min?: number | null;
+  best_horizon_win_rate?: number | null;
+  best_horizon_avg_bps?: number | null;
 }
 
 interface PlaybookResponse {
@@ -136,10 +143,11 @@ function ConditionRow({ condition, result, color }: {
   );
 }
 
-function PlaybookCardUI({ card, results, hasLiveData }: {
+function PlaybookCardUI({ card, results, hasLiveData, price }: {
   card: PlaybookCard;
   results: EvalResult[];
   hasLiveData: boolean;
+  price?: number | null;
 }) {
   const color = dirColors(card.direction);
   const total = card.conditions.length;
@@ -232,6 +240,9 @@ function PlaybookCardUI({ card, results, hasLiveData }: {
           )}
         </div>
       </div>
+
+      {/* Trade levels + win rate by hold window */}
+      <SetupCardDetails card={card} price={price} />
     </div>
   );
 }
@@ -333,6 +344,7 @@ export default function PlaybookPage() {
             card={card}
             results={cardResults.get(card.id) ?? card.conditions.map(() => ({ status: 'unknown', reason: 'no data' }))}
             hasLiveData={hasLiveData}
+            price={quote?.price ?? null}
           />
         ))}
       </div>

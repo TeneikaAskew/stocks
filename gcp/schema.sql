@@ -1166,6 +1166,87 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     CONSTRAINT uq_premarket_analysis UNIQUE (analysis_date, ticker)
 );
 
+-- Structured playbook decision cards — the typed source of truth that
+-- /api/playbook reads, replacing the fragile regex-parse of the
+-- phase6_playbook_{ticker}.md prose (a label tweak used to silently null a
+-- card's avg_return). Written by scripts/analysis/phase6_playbook.py
+-- (run with --write-db / PHASE6_WRITE_DB=1). One row per (ticker, card_num).
+-- win_rate (fraction 0..1) and avg_return_bps are NULL — never 0 — when the
+-- pattern never resolved a same-session trade (CLAUDE.md §3.7).
+CREATE TABLE IF NOT EXISTS playbook_cards (
+    ticker           VARCHAR(10)      NOT NULL,
+    card_num         INTEGER          NOT NULL,
+    name             TEXT             NOT NULL,
+    direction        VARCHAR(8)       NOT NULL,   -- CALL | PUT | NEUTRAL
+    description      TEXT,
+    conditions       JSONB            NOT NULL DEFAULT '[]'::jsonb,
+    win_rate         DOUBLE PRECISION,            -- fraction in [0,1]; NULL = unresolved
+    avg_return_bps   DOUBLE PRECISION,            -- per-trade realised bps; NULL = unresolved
+    sample_n         INTEGER,                     -- resolved trades backing the stats
+    target_pct       VARCHAR(12),
+    stop_pct         VARCHAR(12),
+    avg_mfe_bps      DOUBLE PRECISION,
+    avg_mae_bps      DOUBLE PRECISION,
+    confidence       VARCHAR(16),                 -- Low | Moderate | Good | High
+    -- Win rate / avg return BY hold window (5/15/30/60 min) so the UI can show
+    -- the stat by timeframe; horizons = [{minutes, win_rate, avg_return_bps,
+    -- sample_n}, ...]. best_horizon_* = the hold with the highest avg return.
+    -- All price-only basis points — no costs modelled.
+    horizons              JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    best_horizon_min      INTEGER,
+    best_horizon_win_rate DOUBLE PRECISION,       -- fraction in [0,1]
+    best_horizon_avg_bps  DOUBLE PRECISION,
+    generated_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    -- Date the cards were computed AS OF. Lets the dashboard's historical
+    -- "view as of" mode read the card set knowable on a past date instead of
+    -- only the current one. phase6 --as-of writes the reviewed date here; the
+    -- daily run writes CURRENT_DATE.
+    analysis_date    DATE             NOT NULL DEFAULT CURRENT_DATE,
+
+    CONSTRAINT pk_playbook_cards PRIMARY KEY (ticker, card_num, analysis_date)
+);
+
+-- Migration (idempotent): date-key playbook_cards for historical "view as of".
+-- Existing installs created the table with PK (ticker, card_num) and no
+-- analysis_date; these statements add the column, backfill it from
+-- generated_at, and swap the PK to include analysis_date. Fresh installs get
+-- the final shape from the CREATE above and these are no-ops.
+ALTER TABLE playbook_cards
+    ADD COLUMN IF NOT EXISTS analysis_date DATE;
+
+UPDATE playbook_cards
+    SET analysis_date = generated_at::date
+    WHERE analysis_date IS NULL;
+
+ALTER TABLE playbook_cards
+    ALTER COLUMN analysis_date SET DEFAULT CURRENT_DATE;
+ALTER TABLE playbook_cards
+    ALTER COLUMN analysis_date SET NOT NULL;
+
+DO $$
+BEGIN
+    -- Swap PK to (ticker, card_num, analysis_date) only if it doesn't already
+    -- include analysis_date (so re-running this migration is a no-op).
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'pk_playbook_cards'
+          AND conrelid = 'playbook_cards'::regclass
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+        WHERE c.conname = 'pk_playbook_cards'
+          AND c.conrelid = 'playbook_cards'::regclass
+          AND a.attname = 'analysis_date'
+    ) THEN
+        ALTER TABLE playbook_cards DROP CONSTRAINT pk_playbook_cards;
+        ALTER TABLE playbook_cards
+            ADD CONSTRAINT pk_playbook_cards
+            PRIMARY KEY (ticker, card_num, analysis_date);
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS economic_events (
     id              BIGSERIAL PRIMARY KEY,
     event_date      DATE         NOT NULL,

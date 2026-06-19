@@ -23,11 +23,13 @@ import { useTickerStore } from '@/stores/tickerStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
+import { useReviewQuote } from '@/hooks/useReviewQuote';
 import { useInsightReport } from '@/hooks/useInsights';
 import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
+import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { fmtPrice, fmtPct, fmtNum, NA } from '@/lib/format';
@@ -49,6 +51,9 @@ interface BriefResponse {
 interface PlaybookCard {
   id: string; name: string; direction: string; win_rate: number;
   avg_return: number; conditions: string[]; description: string;
+  target_pct?: number | null; stop_pct?: number | null;
+  horizons?: SetupHorizon[];
+  best_horizon_min?: number | null; best_horizon_win_rate?: number | null; best_horizon_avg_bps?: number | null;
 }
 interface PlaybookResponse { ticker: string; cards: PlaybookCard[] }
 interface SignalEntry {
@@ -142,8 +147,13 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 function isoPlusDays(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
+  return isoPlusDaysFrom(todayISO(), days);
+}
+// Add `days` to an arbitrary ISO date (used so review-mode catalysts window
+// is anchored to the review date, not today).
+function isoPlusDaysFrom(baseISO: string, days: number): string {
+  const d = new Date(`${baseISO}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
 
@@ -194,6 +204,13 @@ export default function DashboardPage() {
     return Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
   }, [isReview, reviewDate, reviewTime]);
 
+  // Hero price: live quote normally; in review mode a synthetic quote rebuilt
+  // from the review day's intraday bars up to the selected time (honors the
+  // time picker). §3.7: undefined (→ "—") when the day has no intraday bars,
+  // never a fabricated price.
+  const reviewQuote = useReviewQuote(activeTicker, reviewDate, reviewTime);
+  const heroQuote = isReview ? reviewQuote : quote;
+
   const { data: brief } = useFetch<BriefResponse>(
     ['brief', activeTicker, reviewDate ?? 'live'],
     isReview
@@ -202,16 +219,23 @@ export default function DashboardPage() {
     true,
     isOpen && !isReview ? 15_000 : false,
   );
-  const { data: playbook } = useFetch<PlaybookResponse>(['playbook', activeTicker], `/api/playbook/${activeTicker}`);
+  const { data: playbook } = useFetch<PlaybookResponse>(
+    ['playbook', activeTicker, reviewDate ?? 'live'],
+    isReview ? `/api/playbook/${activeTicker}?date=${reviewDate}` : `/api/playbook/${activeTicker}`,
+  );
   const { data: signalsResp } = useFetch<SignalsResponse>(
     ['signals', activeTicker, reviewDate ?? 'live', reviewTime ?? 'eod'],
     `/api/signals/${activeTicker}?limit=20${reviewSuffix}`,
   );
+  // Catalysts: "upcoming" is relative to the as-of day in review mode, not today.
+  const catalystFrom = isReview && reviewDate ? reviewDate : todayISO();
+  const catalystTo = isReview && reviewDate ? isoPlusDaysFrom(reviewDate, 7) : isoPlusDays(7);
   const { data: catalysts } = useFetch<CatalystsResponse>(
-    ['catalysts-overview', todayISO()],
-    `/api/catalysts/events?date_from=${todayISO()}&date_to=${isoPlusDays(7)}`,
+    ['catalysts-overview', catalystFrom],
+    `/api/catalysts/events?date_from=${catalystFrom}&date_to=${catalystTo}`,
   );
-  const { data: insight } = useInsightReport(activeTicker);
+  // AI take: in review mode fetch the report as-of the review date.
+  const { data: insight } = useInsightReport(activeTicker, reviewDate ?? undefined);
 
   // Daily reference (prev close + week range) and intraday bars for the chart.
   // In review mode anchor to the selected date; else the brief's latest daily
@@ -323,18 +347,26 @@ export default function DashboardPage() {
   );
 
   const rep = insight?.report;
-  const now = new Date();
-  const dateLabel = now
-    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+  // Header date: the review date in review mode, else today. Built in UTC from
+  // the ISO date so it doesn't drift across the viewer's timezone.
+  const labelDate = isReview && reviewDate ? new Date(`${reviewDate}T00:00:00Z`) : new Date();
+  const dateLabel = labelDate
+    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: isReview ? 'UTC' : undefined })
     .toUpperCase();
+  // Time shown next to the date — selected review time, else the live ET clock.
+  const timeLabel = isReview ? (reviewTime ?? '16:00') : status?.current_time_et;
 
-  const marketPill = isOpen
-    ? { tone: 'bull' as Tone, label: 'OPEN', pulse: true }
-    : status?.session === 'pre-market'
-      ? { tone: 'warn' as Tone, label: 'PRE-MARKET', pulse: true }
-      : status?.session === 'after-hours'
-        ? { tone: 'warn' as Tone, label: 'AFTER HOURS', pulse: true }
-        : { tone: 'bear' as Tone, label: 'CLOSED', pulse: false };
+  // Status pill: explicit "historical" state in review mode so the page is
+  // never ambiguous about whether it's showing live or as-of data.
+  const marketPill = isReview
+    ? { tone: 'brand' as Tone, label: 'HISTORICAL', pulse: false }
+    : isOpen
+      ? { tone: 'bull' as Tone, label: 'OPEN', pulse: true }
+      : status?.session === 'pre-market'
+        ? { tone: 'warn' as Tone, label: 'PRE-MARKET', pulse: true }
+        : status?.session === 'after-hours'
+          ? { tone: 'warn' as Tone, label: 'AFTER HOURS', pulse: true }
+          : { tone: 'bear' as Tone, label: 'CLOSED', pulse: false };
 
   return (
     <div className="flex flex-col gap-[14px]">
@@ -344,7 +376,7 @@ export default function DashboardPage() {
           <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Overview</h1>
           <MicroLabel className="mt-1">
             {activeTicker} · {dateLabel}
-            {status?.current_time_et && ` · ${status.current_time_et} ET`}
+            {timeLabel && ` · ${timeLabel} ET`}
           </MicroLabel>
         </div>
         <div className="flex items-center gap-2">
@@ -373,7 +405,7 @@ export default function DashboardPage() {
           <div className="min-w-0">
             <div className="mb-3 flex flex-wrap items-baseline gap-3">
               <div>
-                <MicroLabel>Today · {dateLabel}</MicroLabel>
+                <MicroLabel>{isReview ? 'As of' : 'Today'} · {dateLabel}</MicroLabel>
                 <div className="mt-1 text-[19px] font-bold tracking-[-0.02em]">Pre-market brief</div>
               </div>
               <Pill tone={marketPill.tone} dot pulse={marketPill.pulse}>{marketPill.label}</Pill>
@@ -382,8 +414,8 @@ export default function DashboardPage() {
             {/* Hero ticker */}
             <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
               <span className="text-[15px] font-bold text-[var(--on-surface)]">{activeTicker}</span>
-              <Metric value={quote ? fmtPrice(quote.price) : NA} size="display" />
-              {quote && <Delta value={quote.change} pct={quote.change_pct} />}
+              <Metric value={heroQuote ? fmtPrice(heroQuote.price) : NA} size="display" />
+              {heroQuote && <Delta value={heroQuote.change} pct={heroQuote.change_pct} />}
             </div>
 
             {/* Bullets — derived from real brief fields */}
@@ -445,6 +477,12 @@ export default function DashboardPage() {
                     ))}
                   </div>
                 </div>
+                {/* Trade levels + win rate by hold window. Price falls back to
+                    the brief's latest close so levels render when market is closed. */}
+                <SetupCardDetails
+                  card={topCard}
+                  price={heroQuote?.price ?? brief?.live?.price ?? brief?.daily_indicators?.close ?? null}
+                />
               </>
             ) : (
               <div>

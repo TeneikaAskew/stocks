@@ -62,7 +62,7 @@ export function DateSelector() {
 
   return (
     <div
-      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 ${
+      className={`inline-flex max-w-full flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 ${
         isLive
           ? 'border-[var(--color-border)] bg-[var(--color-bg-secondary)]'
           : 'border-amber-500/40 bg-amber-500/10'
