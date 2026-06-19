@@ -208,38 +208,57 @@ CHECKS: list[dict] = [
     # job-spec drift, or data-quality bug — alerts within one
     # watchdog cycle. settle_hour_et=23 matches the strat-engine-daily
     # cron (Mon-Fri 23:35 ET).
+    # Codex P2 #622 — expected_lag_hours alone wouldn't flag a single
+    # missed daily run: MAX(ts) only advances ~24h per run, so a missed
+    # Tuesday run leaves Wednesday's check at ~36h which would only
+    # `warn`, not `stale`. The `min_rows_per_day` + `gap_scan_days`
+    # pattern (mirrored from market_data_intraday / etf_options_snapshots)
+    # checks "did today's expected partition land at all?" — a missed
+    # run fails IMMEDIATELY because today's row_count == 0 < min.
+    #
+    # min_rows_per_day floors (conservative RTH-only counts; the builder
+    # may emit more if extended-hours bars are configured):
+    #   5m  → 70  (RTH 6.5h × 12 bars/hr = 78, give 10% margin)
+    #   15m → 24  (RTH 26 bars, give margin)
+    #   30m → 12  (RTH 13 bars, give margin)
     {
         "name": "strat_features_5m",
         "ts_column": "ts",
         "ts_is_date": False,
-        "expected_lag_hours": 30,
+        "expected_lag_hours": 24,
         "per_ticker": True,
         "tickers": ("IWM", "SPY", "QQQ"),
         "writer_job": "strat-engine",
         "settle_hour_et": 23,
         "tolerate_holidays": True,
+        "min_rows_per_day": 70,
+        "gap_scan_days": 5,
     },
     {
         "name": "strat_features_15m",
         "ts_column": "ts",
         "ts_is_date": False,
-        "expected_lag_hours": 30,
+        "expected_lag_hours": 24,
         "per_ticker": True,
         "tickers": ("IWM", "SPY", "QQQ"),
         "writer_job": "strat-engine",
         "settle_hour_et": 23,
         "tolerate_holidays": True,
+        "min_rows_per_day": 24,
+        "gap_scan_days": 5,
     },
     {
         "name": "strat_features_30m",
         "ts_column": "ts",
         "ts_is_date": False,
-        "expected_lag_hours": 30,
+        "expected_lag_hours": 24,
         "per_ticker": True,
         "tickers": ("IWM", "SPY", "QQQ"),
         "writer_job": "strat-engine",
         "settle_hour_et": 23,
         "tolerate_holidays": True,
+        "min_rows_per_day": 12,
+        "gap_scan_days": 5,
     },
 ]
 

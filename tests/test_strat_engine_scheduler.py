@@ -103,6 +103,37 @@ def test_audit_freshness_tracks_all_three_strat_feature_tables():
         )
 
 
+def test_strat_features_check_fails_promptly_on_one_missed_run():
+    """Codex P2 #622: expected_lag_hours alone won't catch a single
+    missed daily run because MAX(ts) only advances ~24h per run. The
+    min_rows_per_day floor catches the missed partition immediately —
+    `today's row_count == 0 < min` flips status to `stale` regardless
+    of lag. Pin both fields so a future "simplification" doesn't drop
+    the prompt-fail guarantee."""
+    from scripts.audit_data_freshness import CHECKS
+    for tf, min_floor in (("5m", 70), ("15m", 24), ("30m", 12)):
+        entry = next(c for c in CHECKS if c["name"] == f"strat_features_{tf}")
+        assert "min_rows_per_day" in entry, (
+            f"strat_features_{tf} must declare min_rows_per_day so a single "
+            f"missed daily run fails promptly, not after ~3 runs (Codex P2 #622)"
+        )
+        assert entry["min_rows_per_day"] >= min_floor // 2, (
+            f"strat_features_{tf} min_rows_per_day={entry['min_rows_per_day']} "
+            f"too low; even a half-session must clear the floor"
+        )
+        assert "gap_scan_days" in entry and entry["gap_scan_days"] >= 1, (
+            f"strat_features_{tf} must declare gap_scan_days for per-day gap "
+            f"detection (Codex P2 #622)"
+        )
+        # expected_lag_hours should also be ≤ 24 — at 30 a single 24h
+        # cadence + the watchdog's hourly check window can fail to flip
+        # to `stale`.
+        assert entry["expected_lag_hours"] <= 24, (
+            f"strat_features_{tf} expected_lag_hours must be ≤ 24h to "
+            f"prompt-fail on a missed daily run (Codex P2 #622)"
+        )
+
+
 def test_audit_freshness_strat_features_check_loads():
     """The new CHECKS dicts must round-trip through the existing
     FreshnessRow construction (not break the watchdog at startup)."""
