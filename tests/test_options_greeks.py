@@ -39,18 +39,24 @@ from lib.options_greeks import (
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _bsm_price(flag, S, K, t, r, q, sigma):
-    """Reference Black-Scholes-Merton price.
+    """Reference Black-Scholes-Merton price using scipy (not py_vollib).
 
-    py_vollib_vectorized monkey-patches black_scholes_merton to return a
-    DataFrame even for scalar inputs, so we extract the scalar manually.
+    py_vollib_vectorized auto-imports at Python startup (via its .pth file)
+    and monkey-patches py_vollib.black_scholes_merton globally, routing it
+    through a numba-decorated path that raises "cannot type infer runaway
+    recursion" on Python 3.12 / numba >= 0.65. Using scipy directly avoids
+    that poisoned path entirely.  Formula is identical to the production
+    _bsm_price_scalar in lib/options_greeks.py so chain prices are
+    self-consistent with the IV solver and Greeks.
     """
-    from py_vollib.black_scholes_merton import black_scholes_merton
-    val = black_scholes_merton(flag, S, K, t, r, sigma, q)
-    if hasattr(val, "iloc"):
-        return float(val.iloc[0, 0]) if hasattr(val.iloc[0], "__len__") else float(val.iloc[0])
-    if hasattr(val, "__len__"):
-        return float(val[0])
-    return float(val)
+    from scipy.stats import norm as _norm
+    if t <= 0 or sigma <= 0:
+        return float(max(S - K, 0.0) if flag == "c" else max(K - S, 0.0))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    d2 = d1 - sigma * math.sqrt(t)
+    if flag == "c":
+        return float(S * math.exp(-q * t) * _norm.cdf(d1) - K * math.exp(-r * t) * _norm.cdf(d2))
+    return float(K * math.exp(-r * t) * _norm.cdf(-d2) - S * math.exp(-q * t) * _norm.cdf(-d1))
 
 
 def _bsm_call_price(S, K, t, r, q, sigma):
