@@ -231,25 +231,47 @@ def _score_and_persist(engine, ticker: str, tf: str,
     if features.empty:
         return 0
 
-    # NaN guard on RAW frame — drop rows where any numeric input column
-    # is NaN, BEFORE featurize() fills them with 0. A bar with NaN in
-    # the source feature table means the upstream feature builder hasn't
-    # populated this row yet (session boundary). Scoring it would silently
-    # ship a zero-filled prediction tagged as a real inference.
+    # NaN guard on the RAW frame — drop rows whose ESSENTIAL price inputs
+    # (OHLCV) are NaN, BEFORE featurize() fills the rest with 0. A settled bar
+    # always has OHLCV; a NaN there means the upstream builder hasn't populated
+    # the row (session boundary) and scoring it would ship a zero-filled
+    # prediction tagged as real inference.
+    #
+    # We deliberately guard ONLY OHLCV, not every numeric column, because:
+    #   - Engineered features (order_block, gamma/vex/vix, ORB, indicators) are
+    #     legitimately sparse or vendor-gapped and are featurize()-filled at
+    #     TRAIN time. Dropping a bar for their NaN makes inference stricter than
+    #     training and zeroes output.
+    #   - Forward-looking label columns (fwd_*) are NULL on the most-recent bars
+    #     (the future hasn't happened) and are not model inputs at all — guarding
+    #     them dropped exactly the fresh bars we exist to score.
+    #   - The old "any numeric NaN" guard was dtype-dependent: an all-NULL column
+    #     read back object-typed and was silently skipped, while a partially
+    #     populated one was float64 and enforced. So a ticker with SOME sparse
+    #     data (QQQ's order blocks: 27/156 populated) lost every bar, while one
+    #     with none (IWM: all-NULL order_block) passed — a ticker-dependent
+    #     asymmetry that produced QQQ's persistent ZERO-OUTPUT.
     import numpy as np
-    raw_numeric_cols = [
+    _ESSENTIAL_RAW = ("open", "high", "low", "close", "volume")
+    essential_cols = [
         c for c in features.columns
-        if c not in ("ts", "ticker", "tf", "bar_date")
+        if c.lower() in _ESSENTIAL_RAW
         and pd.api.types.is_numeric_dtype(features[c].dtype)
     ]
-    if raw_numeric_cols:
-        nan_mask = features[raw_numeric_cols].isna().any(axis=1).to_numpy()
-        if nan_mask.any():
-            log.info("%s:%s — %d/%d bars have NaN raw features; skipping those",
-                     ticker, tf, int(nan_mask.sum()), len(features))
-            features = features.loc[~nan_mask].reset_index(drop=True)
+    if not essential_cols:
+        # INTERNAL invariant: strat_features_<tf> always has OHLCV. An empty
+        # set means schema drift — fail loud rather than silently score every
+        # row with no guard at all.
+        raise RuntimeError(
+            f"{ticker}:{tf} — feature frame is missing the essential OHLCV "
+            f"columns {_ESSENTIAL_RAW}; cannot apply the raw NaN guard")
+    nan_mask = features[essential_cols].isna().any(axis=1).to_numpy()
+    if nan_mask.any():
+        log.info("%s:%s — %d/%d bars missing essential OHLCV; skipping those",
+                 ticker, tf, int(nan_mask.sum()), len(features))
+        features = features.loc[~nan_mask].reset_index(drop=True)
     if len(features) == 0:
-        log.warning("%s:%s — zero scorable bars after raw NaN filter", ticker, tf)
+        log.warning("%s:%s — zero scorable bars after essential NaN filter", ticker, tf)
         return 0
 
     # CRITICAL — apply the SAME preprocessing the training pipeline used
