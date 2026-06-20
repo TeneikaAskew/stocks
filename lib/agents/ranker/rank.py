@@ -72,6 +72,7 @@ def rank_tickers(
     expand_universe: bool = False,
     extras: Optional[list[str]] = None,
     persist_audit: bool = True,
+    user_id: Optional[str] = None,
 ) -> dict:
     """Rank candidates. Returns a dict with the ranked list and metadata.
 
@@ -99,6 +100,7 @@ def rank_tickers(
         catalyst_filter=catalyst_filter,
         expand_universe=expand_universe,
         extras=merged_extras or None,
+        user_id=user_id,
     )
     logger.info("rank_tickers: %d candidates from gather", len(candidates))
 

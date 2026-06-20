@@ -167,6 +167,15 @@ def load_watchlist(
     if out:
         return out
 
+    # A specific user's empty watchlist is a valid, meaningful empty result —
+    # not a system miss. The INSIGHT_TICKERS env var and the empty-list Discord
+    # alert below are a SHARED-owner emergency path: the brief / insight / signal
+    # jobs need a non-empty universe. Leaking that global list to a signed-in
+    # user (or alerting on their normal empty list) would break the per-user
+    # isolation, so for a non-default owner return the user's exact rows.
+    if user_id != DEFAULT_USER_ID:
+        return []
+
     # Layer 2 — env var (one-off override / local dev escape hatch)
     env = os.environ.get("INSIGHT_TICKERS", "")
     if env:

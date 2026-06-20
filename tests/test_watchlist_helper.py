@@ -114,6 +114,20 @@ def test_load_watchlist_falls_back_to_env_when_sql_empty(monkeypatch):
     assert load_watchlist() == ["TSLA", "AMZN"]
 
 
+def test_load_watchlist_user_scoped_empty_does_not_use_global_fallback(monkeypatch):
+    """A signed-in user's empty watchlist is a valid empty result — it must
+    NOT fall through to the global INSIGHT_TICKERS list (per-user isolation).
+    The env fallback / alert is reserved for the shared 'default' owner."""
+    _stub_cloud_sql(monkeypatch, [])
+    monkeypatch.setenv("INSIGHT_TICKERS", "tsla,amzn")  # set, but must be ignored
+    alerts = _stub_alert(monkeypatch)
+
+    from gcp.fetchers._watchlist import load_watchlist
+    assert load_watchlist(user_id="alice@example.com") == []
+    # No fallback alert for a normal empty personal watchlist.
+    assert alerts == []
+
+
 def test_load_watchlist_returns_empty_when_sql_and_env_empty(monkeypatch):
     """Both layers empty → fire alert and return []."""
     _stub_cloud_sql(monkeypatch, [])

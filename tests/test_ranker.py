@@ -530,6 +530,28 @@ def test_load_watchlist_reads_alert_config(monkeypatch):
     # Crucial: ranker calls with surface='all' to get the broad
     # research universe, not just live-monitor signals.
     assert captured["kwargs"].get("surface") == "all"
+    # No explicit user_id → the shared "default" owner.
+    assert captured["kwargs"].get("user_id") == "default"
+
+
+def test_load_watchlist_threads_user_id(monkeypatch):
+    """`_load_watchlist(user_id=...)` scopes to that owner so the per-user
+    watchlist API ranks a user's own manual tickers, not the global set."""
+    from lib.agents.ranker import candidates as cand_mod
+
+    captured: dict = {}
+    def _fake_load_watchlist(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return ["TSLA"]
+    monkeypatch.setattr(
+        "gcp.fetchers._watchlist.load_watchlist",
+        _fake_load_watchlist,
+    )
+
+    wl = cand_mod._load_watchlist(user_id="dave@example.com")
+    assert wl == ["TSLA"]
+    assert captured["kwargs"].get("user_id") == "dave@example.com"
+    assert captured["kwargs"].get("surface") == "all"
 
 
 def test_load_watchlist_falls_back_to_env_when_helper_raises(monkeypatch):
