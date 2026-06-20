@@ -260,7 +260,7 @@ def test_load_recent_features_joins_levels_table():
         captured["sql"] = sql
         return pd.DataFrame({"ts": [], "ticker": []})
 
-    with patch.object(mod, "query_to_dataframe", side_effect=fake_q):
+    with patch.object(mod, "query_to_dataframe_strict", side_effect=fake_q):
         mod._load_recent_features("IWM", "5m")
 
     sql = captured["sql"].lower()
@@ -268,6 +268,8 @@ def test_load_recent_features_joins_levels_table():
         "inference must join the levels table that carries the ORB columns"
     assert "left join" in sql
     assert "l.ticker = s.ticker" in sql and "l.ts = s.ts" in sql
+    assert "_has_levels" in sql, \
+        "must mark rows lacking a levels match so they can be skipped"
 
 
 def test_load_recent_features_dedupes_join_key_columns():
@@ -281,7 +283,7 @@ def test_load_recent_features_dedupes_join_key_columns():
          ["IWM", 2, 11.0, "IWM", 2]],
         columns=["ticker", "ts", "orb_5m_high", "ticker", "ts"],
     )
-    with patch.object(mod, "query_to_dataframe", return_value=dup):
+    with patch.object(mod, "query_to_dataframe_strict", return_value=dup):
         out = mod._load_recent_features("IWM", "5m")
 
     assert list(out.columns).count("ticker") == 1
@@ -289,24 +291,35 @@ def test_load_recent_features_dedupes_join_key_columns():
     assert "orb_5m_high" in out.columns
 
 
-def test_load_recent_features_falls_back_when_levels_missing():
-    """If the levels table doesn't exist for this tf, fall back to the plain
-    features query (no crash). A genuinely-missing ORB column is still
-    caught later by _score_and_persist's hard feature-drift raise — this is
-    a graceful degrade, NOT a silent data fallback (CLAUDE.md §3.7)."""
+def test_load_recent_features_skips_bars_without_levels_row():
+    """A bar present in strat_features_<tf> but missing from the levels
+    companion table comes back with _has_levels=False (LEFT JOIN miss). It
+    MUST be dropped — scoring it would feed the model NULL->0 ORB/level
+    features (fabricated). Refuse, don't fabricate (CLAUDE.md §3.7)."""
     from gcp.research.magnitude_engine import mag_inference as mod
-    calls = []
 
-    def fake_q(sql):
-        calls.append(sql)
-        if len(calls) == 1:
-            raise RuntimeError(
-                'relation "strat_features_levels_5m" does not exist')
-        return pd.DataFrame({"ts": [], "ticker": []})
-
-    with patch.object(mod, "query_to_dataframe", side_effect=fake_q):
+    # Row 0 has a matching levels row; row 1 does not (_has_levels=False).
+    df = pd.DataFrame({
+        "ts": [1, 2],
+        "ticker": ["IWM", "IWM"],
+        "orb_5m_high": [10.0, None],
+        "_has_levels": [True, False],
+    })
+    with patch.object(mod, "query_to_dataframe_strict", return_value=df):
         out = mod._load_recent_features("IWM", "5m")
 
-    assert len(calls) == 2, "must retry with the plain-features fallback query"
-    assert "left join" not in calls[1].lower()
-    assert out is not None
+    assert len(out) == 1, "bar without a levels row must be skipped"
+    assert int(out.iloc[0]["ts"]) == 1
+    assert "_has_levels" not in out.columns, "marker column must be dropped"
+
+
+def test_load_recent_features_uses_strict_query_helper():
+    """Must use query_to_dataframe_strict (raises) not query_to_dataframe
+    (which swallows errors into an empty frame). A missing levels table /
+    DB error has to fail LOUD, not masquerade as 'no recent bars' — the P2
+    finding on PR #631 (CLAUDE.md §3.7)."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+    with patch.object(mod, "query_to_dataframe_strict",
+                      side_effect=RuntimeError("relation does not exist")):
+        with pytest.raises(RuntimeError):
+            mod._load_recent_features("IWM", "5m")

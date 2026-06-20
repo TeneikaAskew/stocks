@@ -48,7 +48,7 @@ import pandas as pd
 # Add project root for gcp.* / lib.* imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from gcp.database import get_engine, query_to_dataframe  # noqa: E402
+from gcp.database import get_engine, query_to_dataframe_strict  # noqa: E402
 from gcp.research.magnitude_engine.mag_config import (  # noqa: E402
     LABEL_CLASSES, LABEL_TO_IDX,
 )
@@ -197,38 +197,48 @@ def _load_recent_features(ticker: str, tf: str,
     # not, featurize() can't produce those columns and _score_and_persist
     # raises "feature drift" on every cell — the bug that made this job
     # fail on 13/13 executions. Mirror strat_dataset's LEFT JOIN + dedupe.
+    #
+    # No plain-features fallback: the model REQUIRES the level columns, so a
+    # level-less frame would only re-trigger feature drift or (post-#625) let
+    # featurize() fabricate the ORB/level features as zeros — a silent §3.7
+    # violation. Use the *strict* query helper so a missing levels table or a
+    # DB error fails LOUD; query_to_dataframe() swallows errors into an empty
+    # frame that's indistinguishable from "no recent bars".
     from gcp.research.strat_engine.strat_enrich_levels import levels_table
     levels = levels_table(tf)
-    try:
-        sql = f"""
-            SELECT s.*, l.*
-              FROM {table} s
-              LEFT JOIN {levels} l
-                ON l.ticker = s.ticker AND l.ts = s.ts
-             WHERE s.ticker = '{ticker}'
-               AND s.ts >= '{cutoff.isoformat()}'
-             ORDER BY s.ts ASC
-        """
-        df = query_to_dataframe(sql)
-    except Exception as e:
-        # If the levels table doesn't exist for this tf, fall back to the
-        # plain features load (mirrors strat_dataset's same guard). This is
-        # NOT a silent data fallback — a missing ORB column will still be
-        # caught downstream by _score_and_persist's hard feature-drift raise.
-        log.warning("levels join failed (%s); falling back to plain %s",
-                    type(e).__name__, table)
-        sql = f"""
-            SELECT *
-              FROM {table}
-             WHERE ticker = '{ticker}'
-               AND ts >= '{cutoff.isoformat()}'
-             ORDER BY ts ASC
-        """
-        df = query_to_dataframe(sql)
+    sql = f"""
+        SELECT s.*, l.*, (l.ts IS NOT NULL) AS _has_levels
+          FROM {table} s
+          LEFT JOIN {levels} l
+            ON l.ticker = s.ticker AND l.ts = s.ts
+         WHERE s.ticker = '{ticker}'
+           AND s.ts >= '{cutoff.isoformat()}'
+         ORDER BY s.ts ASC
+    """
+    df = query_to_dataframe_strict(sql)
     # SELECT s.*, l.* duplicates the join keys (ticker/ts); keep the first.
     df = df.loc[:, ~df.columns.duplicated()]
+    # Skip bars with no matching strat_features_levels row. The daily
+    # strat-engine path runs strat_data_builder but NOT strat_enrich_levels
+    # (deploy.sh strat-engine default_args), so new bars can outpace the
+    # levels table. Scoring them would feed the model NULL→0 ORB/level
+    # features (fabricated, not real) — refuse rather than fabricate (§3.7).
+    # If EVERY recent bar lacks levels the frame ends up empty here and
+    # main()'s zero-output guard exits 1 (loud) — the correct signal that
+    # the levels enrichment has gone stale.
+    if "_has_levels" in df.columns:
+        has = df["_has_levels"].astype(bool)
+        n_missing = int((~has).sum())
+        if n_missing:
+            log.warning(
+                "%s:%s — %d/%d recent bars lack a %s row; skipping (model "
+                "requires ORB/level features — refusing to fabricate zeros)",
+                ticker, tf, n_missing, len(df), levels)
+            df = df[has].reset_index(drop=True)
+        df = df.drop(columns=["_has_levels"])
     if df.empty:
-        log.warning("no bars in %s for %s since %s", table, ticker, cutoff)
+        log.warning("no scorable bars (with levels) in %s for %s since %s",
+                    table, ticker, cutoff)
     return df
 
 
