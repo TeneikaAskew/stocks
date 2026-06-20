@@ -2029,7 +2029,11 @@ CREATE INDEX IF NOT EXISTS idx_news_sentiment_match_method
 -- removed_at = NULL means "active". A soft-delete column instead of a
 -- DELETE so the audit trail captures intent + history.
 CREATE TABLE IF NOT EXISTS watchlists (
-    user_id      VARCHAR(64)  NOT NULL DEFAULT 'default',
+    -- Owner key. 'default' is the shared/admin-curated list that drives the
+    -- brief/insight/signal jobs; a signed-in user's rows are owned by their
+    -- verified email (mirrors journal_entries.user_email). Sized to hold a
+    -- full RFC-max email (≤320) so long Firebase/IAP emails don't overflow.
+    user_id      VARCHAR(320) NOT NULL DEFAULT 'default',
     ticker       VARCHAR(10)  NOT NULL,
     added_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     removed_at   TIMESTAMPTZ  NULL,
@@ -2055,6 +2059,20 @@ CREATE INDEX IF NOT EXISTS idx_watchlists_active
 
 CREATE INDEX IF NOT EXISTS idx_watchlists_ticker
     ON watchlists (ticker) WHERE removed_at IS NULL;
+
+-- Migration: widen user_id for existing instances created when the column
+-- was VARCHAR(64). Per-user scoping stores the verified email as the owner,
+-- which can exceed 64 chars; widen so add/remove can't fail at insert.
+-- Idempotent (only widens when narrower than 320). Table is tiny so the
+-- PK-index rebuild is instant.
+DO $$
+BEGIN
+    IF (SELECT character_maximum_length
+          FROM information_schema.columns
+         WHERE table_name='watchlists' AND column_name='user_id') < 320 THEN
+        ALTER TABLE watchlists ALTER COLUMN user_id TYPE VARCHAR(320);
+    END IF;
+END $$;
 
 -- Live migration: add in_brief / in_insight columns idempotently for
 -- instances created before the per-surface filter shipped.
