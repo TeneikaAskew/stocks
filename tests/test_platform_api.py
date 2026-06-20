@@ -1291,6 +1291,170 @@ class TestInsightsWatchlistAPI:
         client.get("/api/insights/watchlist")
         assert called_with["expand_universe"] is False
 
+    def test_watchlist_threads_default_owner_when_no_auth(
+        self, client, monkeypatch
+    ):
+        """Open/local-dev (no auth) → ranker is scoped to the shared
+        "default" owner so existing rows keep working."""
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {"as_of": "x", "count": 0, "tickers": []}
+
+        monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+        client.get("/api/insights/watchlist")
+        assert called_with["user_id"] == "default"
+
+    def test_watchlist_threads_signed_in_user(self, client, monkeypatch):
+        """Authenticated request → ranker watchlist is scoped to the
+        signed-in user's email, never the global "default" list."""
+        from api.routers import insights as insights_module
+
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {"as_of": "x", "count": 0, "tickers": []}
+
+        monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+        monkeypatch.setattr(
+            insights_module, "current_user_email", lambda req: "alice@example.com"
+        )
+        client.get("/api/insights/watchlist")
+        assert called_with["user_id"] == "alice@example.com"
+
+
+# ── Personal watchlist mutations (per-user add / remove) ────────────────────
+
+# Hermetic: monkeypatches the late-imported `gcp.fetchers._watchlist` helpers
+# and `lib.ticker_info` lookups so no Cloud SQL / AlphaVantage round-trip
+# happens. Asserts the signed-in user's identity is threaded as `user_id`
+# into every write/read so one user can never mutate another's watchlist.
+class TestWatchlistMutationAPI:
+    """`POST /api/insights/watchlist/add` and
+    `DELETE /api/insights/watchlist/{ticker}` — must be per-user, mirroring
+    the journal. The data layer already filters by `user_id`; these tests
+    pin that the router forwards the resolved owner."""
+
+    def _patch_ticker_info(self, monkeypatch):
+        """Stub the AV/FinViz lookups the add endpoint enriches with."""
+        monkeypatch.setattr("lib.ticker_info.get_ticker_info", lambda t: None)
+        monkeypatch.setattr("lib.ticker_info.get_quote", lambda t: None)
+        monkeypatch.setattr("lib.ticker_info.get_peers", lambda t: [])
+
+    def test_add_threads_default_owner_when_no_auth(self, client, monkeypatch):
+        self._patch_ticker_info(monkeypatch)
+        captured = {}
+
+        def fake_add(ticker, **kwargs):
+            captured["add_user_id"] = kwargs.get("user_id")
+            return True
+
+        def fake_load(**kwargs):
+            captured["load_user_id"] = kwargs.get("user_id")
+            return ["NVDA"]
+
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.add_to_watchlist", fake_add
+        )
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.load_watchlist", fake_load
+        )
+
+        r = client.post("/api/insights/watchlist/add", json={"ticker": "nvda"})
+        assert r.status_code == 200
+        assert captured["add_user_id"] == "default"
+        assert captured["load_user_id"] == "default"
+
+    def test_add_scopes_to_signed_in_user(self, client, monkeypatch):
+        from api.routers import insights as insights_module
+
+        self._patch_ticker_info(monkeypatch)
+        captured = {}
+
+        def fake_add(ticker, **kwargs):
+            captured["add_user_id"] = kwargs.get("user_id")
+            return True
+
+        def fake_load(**kwargs):
+            captured["load_user_id"] = kwargs.get("user_id")
+            return ["NVDA"]
+
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.add_to_watchlist", fake_add
+        )
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.load_watchlist", fake_load
+        )
+        monkeypatch.setattr(
+            insights_module, "current_user_email", lambda req: "bob@example.com"
+        )
+
+        r = client.post("/api/insights/watchlist/add", json={"ticker": "nvda"})
+        assert r.status_code == 200
+        assert captured["add_user_id"] == "bob@example.com"
+        assert captured["load_user_id"] == "bob@example.com"
+
+    def test_remove_scopes_to_signed_in_user(self, client, monkeypatch):
+        from api.routers import insights as insights_module
+
+        captured = {}
+
+        def fake_remove(ticker, **kwargs):
+            captured["remove_user_id"] = kwargs.get("user_id")
+            return True
+
+        def fake_load(**kwargs):
+            captured["load_user_id"] = kwargs.get("user_id")
+            return []
+
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.remove_from_watchlist", fake_remove
+        )
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.load_watchlist", fake_load
+        )
+        monkeypatch.setattr(
+            insights_module, "current_user_email", lambda req: "carol@example.com"
+        )
+
+        r = client.delete("/api/insights/watchlist/NVDA")
+        assert r.status_code == 200
+        assert captured["remove_user_id"] == "carol@example.com"
+        assert captured["load_user_id"] == "carol@example.com"
+
+    def test_two_users_do_not_share_watchlist(self, client, monkeypatch):
+        """Two different identities must resolve to two different owners,
+        so the data-layer filter isolates their rows."""
+        from api.routers import insights as insights_module
+
+        self._patch_ticker_info(monkeypatch)
+        seen_owners = []
+
+        def fake_add(ticker, **kwargs):
+            seen_owners.append(kwargs.get("user_id"))
+            return True
+
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.add_to_watchlist", fake_add
+        )
+        monkeypatch.setattr(
+            "gcp.fetchers._watchlist.load_watchlist", lambda **k: []
+        )
+
+        monkeypatch.setattr(
+            insights_module, "current_user_email", lambda req: "u1@example.com"
+        )
+        client.post("/api/insights/watchlist/add", json={"ticker": "spy"})
+
+        monkeypatch.setattr(
+            insights_module, "current_user_email", lambda req: "u2@example.com"
+        )
+        client.post("/api/insights/watchlist/add", json={"ticker": "spy"})
+
+        assert seen_owners == ["u1@example.com", "u2@example.com"]
+
 
 # ── Journal API ─────────────────────────────────────────────────────────────
 

@@ -26,7 +26,7 @@ from uuid import UUID, uuid4
 
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -38,8 +38,24 @@ from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
+# Server-verified identity for per-user watchlist scoping (mirrors journal.py).
+from api.auth import current_user_email  # noqa: E402
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _watchlist_owner(request: Request) -> str:
+    """Owner key the personal watchlist is scoped by (mirrors journal.py).
+
+    In firebase/iap mode (deployed) the middleware/IAP guarantees a verified
+    identity, so this is the user's email and one user can never see another's
+    watchlist. In open/local dev there is no auth, so it falls back to the
+    shared "default" owner — which is also the admin-curated row set the
+    premarket-brief / insight-pipeline read via the in_brief/in_insight flags,
+    so local dev keeps working against the existing rows.
+    """
+    return current_user_email(request) or "default"
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +505,7 @@ async def get_ticker_peers(ticker: str):
 
 
 @router.post("/api/insights/watchlist/add")
-async def add_to_watchlist(body: WatchlistAddRequest):
+async def add_to_watchlist(body: WatchlistAddRequest, request: Request):
     """Add a ticker to the watchlist and return its info + quote.
 
     Persists to the `watchlists` Cloud SQL table (durable, per-user)
@@ -510,6 +526,7 @@ async def add_to_watchlist(body: WatchlistAddRequest):
         load_watchlist as wl_load,
     )
 
+    owner = _watchlist_owner(request)
     ticker = body.ticker.strip().upper()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker required")
@@ -517,7 +534,7 @@ async def add_to_watchlist(body: WatchlistAddRequest):
     # Persist to Cloud SQL — durable, propagates to fetcher containers.
     added = False
     try:
-        added = wl_add(ticker, source="ui")
+        added = wl_add(ticker, user_id=owner, source="ui")
     except Exception as exc:
         # If Cloud SQL is unreachable surface a 503 — the legacy file
         # write would have silently disappeared on the next restart.
@@ -529,7 +546,7 @@ async def add_to_watchlist(body: WatchlistAddRequest):
 
     # Load the freshly-updated active watchlist for the response.
     try:
-        watchlist = wl_load()
+        watchlist = wl_load(user_id=owner)
     except Exception:
         watchlist = []
 
@@ -565,7 +582,7 @@ async def add_to_watchlist(body: WatchlistAddRequest):
 
 
 @router.delete("/api/insights/watchlist/{ticker}")
-async def remove_from_watchlist(ticker: str):
+async def remove_from_watchlist(ticker: str, request: Request):
     """Soft-delete a ticker from the watchlist (sets removed_at=NOW()).
 
     Persists to the `watchlists` Cloud SQL table; the alert_config.json
@@ -575,13 +592,14 @@ async def remove_from_watchlist(ticker: str):
         load_watchlist as wl_load,
     )
 
+    owner = _watchlist_owner(request)
     ticker = ticker.strip().upper()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker required")
 
     try:
-        removed = wl_remove(ticker)
-        watchlist = wl_load()
+        removed = wl_remove(ticker, user_id=owner)
+        watchlist = wl_load(user_id=owner)
         return {"ticker": ticker, "removed": removed, "watchlist": watchlist}
     except Exception as exc:
         logger.exception("Cloud SQL watchlist remove failed: %s", exc)
@@ -598,6 +616,7 @@ async def remove_from_watchlist(ticker: str):
 
 @router.get("/api/insights/watchlist")
 async def get_watchlist(
+    request: Request,
     catalyst: Optional[str] = None,
     limit: int = 10,
     expand: bool = False,
@@ -641,6 +660,7 @@ async def get_watchlist(
         limit=max(1, min(limit, 50)),
         expand_universe=expand,
         extras=extras_list,
+        user_id=_watchlist_owner(request),
     )
 
 

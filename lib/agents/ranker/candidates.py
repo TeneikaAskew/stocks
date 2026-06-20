@@ -230,17 +230,24 @@ def _candidates_from_watchlist(
         cand.add_catalyst("watchlist")
 
 
-def _load_watchlist() -> list[str]:
+def _load_watchlist(user_id: Optional[str] = None) -> list[str]:
     """Return the active research watchlist from the centralized helper.
 
     Single source of truth: `watchlists` Cloud SQL table where
     removed_at IS NULL, with INSIGHT_TICKERS env var as the only
     fallback. The legacy alert_config.json watchlist key was removed
     in favor of this DB-backed source.
+
+    `user_id` scopes the watchlist to a single owner (the signed-in
+    user's email when called from the per-user API). `None` defers to
+    the helper's default owner — used by the brief/insight/CLI callers.
     """
     try:
-        from gcp.fetchers._watchlist import load_watchlist
-        return load_watchlist(surface="all")
+        from gcp.fetchers._watchlist import DEFAULT_USER_ID, load_watchlist
+        return load_watchlist(
+            user_id=user_id if user_id is not None else DEFAULT_USER_ID,
+            surface="all",
+        )
     except Exception as exc:
         logger.warning("watchlist load failed (%s); falling back to env", exc)
     env = os.environ.get("INSIGHT_TICKERS", "SPY,IWM,QQQ")
@@ -257,6 +264,7 @@ def gather_candidates(
     expand_universe: bool = False,
     extras: Optional[list[str]] = None,
     watchlist: Optional[list[str]] = None,
+    user_id: Optional[str] = None,
 ) -> list[CandidateTicker]:
     """Build the day's candidate list.
 
@@ -274,6 +282,8 @@ def gather_candidates(
         expand_universe: bypass the watchlist gate.
         extras: ad-hoc additions (always included regardless of gate).
         watchlist: override the configured watchlist for this call.
+        user_id: scope the loaded watchlist to a single owner (per-user
+            API). `None` uses the helper's default owner.
     """
     out: dict[str, CandidateTicker] = {}
 
@@ -283,7 +293,7 @@ def gather_candidates(
     _candidates_from_top_movers(out)
     _candidates_from_economic(out, economic_days_ahead)
 
-    wl = watchlist if watchlist is not None else _load_watchlist()
+    wl = watchlist if watchlist is not None else _load_watchlist(user_id=user_id)
     _candidates_from_watchlist(out, wl)
 
     extras_set: set[str] = {
