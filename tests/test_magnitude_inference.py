@@ -81,14 +81,23 @@ def test_parse_cells_invalid_raises():
 
 @pytest.fixture
 def fake_features():
-    """3 rows with 4 features; matches what a 5m intraday slice looks like."""
+    """3 rows mirroring a 5m intraday slice: OHLCV (the essential inputs the
+    NaN guard checks) + a few indicators + a sparse order-block column that is
+    all-NaN (as QQQ's frequently is). The sparse column must NOT cause bars to
+    be dropped — featurize() fills it, exactly as at train time."""
     return pd.DataFrame({
         "ts": pd.date_range("2026-06-02 13:25", periods=3,
                             freq="5min", tz="UTC"),
+        "open":   [100.0, 100.5, 101.0],
+        "high":   [100.6, 101.1, 101.6],
+        "low":    [99.4, 99.9, 100.4],
+        "close":  [100.2, 100.7, 101.2],
+        "volume": [1000.0, 1100.0, 1200.0],
         "rsi_14": [55.0, 60.0, 65.0],
         "atr_14": [1.0, 1.2, 1.5],
         "ema_9":  [100.0, 100.5, 101.0],
         "vwap":   [99.5, 100.0, 100.5],
+        "ob_order_block_high": [np.nan, np.nan, np.nan],
     })
 
 
@@ -135,13 +144,13 @@ def test_score_and_persist_raises_on_wrong_class_count(fake_features):
                             bad_model, feature_cols, "v1", fake_features)
 
 
-def test_score_and_persist_skips_nan_rows(fake_features):
-    """Rows with any-NaN features are filtered out before scoring (model
-    can't handle them); the count is logged but doesn't fail the job."""
+def test_score_and_persist_skips_rows_missing_essential_ohlcv(fake_features):
+    """Rows missing an ESSENTIAL input (OHLCV) are dropped before scoring — a
+    NaN there means the bar isn't a real settled bar. Logged, doesn't fail."""
     from gcp.research.magnitude_engine.mag_inference import _score_and_persist
 
-    # Inject a NaN into one feature row.
-    fake_features.loc[1, "rsi_14"] = np.nan
+    # Inject a NaN into one row's close (an essential OHLCV input).
+    fake_features.loc[1, "close"] = np.nan
 
     # Model expects to be called with only the surviving rows (2 of 3).
     proba = np.array([[0.1, 0.2, 0.3, 0.4]] * 2)
@@ -159,17 +168,57 @@ def test_score_and_persist_skips_nan_rows(fake_features):
     assert args[0].shape == (2, 4)
 
 
-def test_score_and_persist_zero_after_nan_filter(fake_features):
-    """If EVERY bar has NaN features, return 0 cleanly — don't crash on
-    empty input to model.predict_proba."""
+def test_score_and_persist_keeps_nan_in_sparse_nonessential_features(fake_features):
+    """QQQ regression (#628 follow-up): a partially-populated sparse column
+    (order_block: one bar has a level, the rest NaN) is float64 and was
+    ENFORCED by the old 'any numeric NaN' guard, dropping every bar without an
+    order block and zeroing QQQ output. It must NOT gate scoring now —
+    order_block is not an essential input; featurize() fills it as at train
+    time. (An all-NULL column read back object-typed and was silently skipped,
+    so the bug only bit tickers whose sparse column was partially populated.)"""
     from gcp.research.magnitude_engine.mag_inference import _score_and_persist
-    fake_features["rsi_14"] = np.nan
+
+    # Partially-populated sparse column -> float64 -> would trip the old guard.
+    fake_features["ob_order_block_high"] = [123.0, np.nan, np.nan]
+
+    proba = np.array([[0.1, 0.2, 0.3, 0.4]] * 3)
+    model = MagicMock()
+    model.predict_proba.return_value = proba
+
+    engine = MagicMock()
+    feature_cols = ["rsi_14", "atr_14", "ema_9", "vwap"]
+    n = _score_and_persist(engine, "IWM", "5m",
+                            model, feature_cols, "v1", fake_features)
+    # All 3 bars survive — the sparse NaN does not gate scoring.
+    assert n == 3
+    args, _ = model.predict_proba.call_args
+    assert args[0].shape == (3, 4)
+
+
+def test_score_and_persist_zero_after_essential_nan_filter(fake_features):
+    """If EVERY bar is missing essential OHLCV, return 0 cleanly — don't crash
+    on empty input to model.predict_proba."""
+    from gcp.research.magnitude_engine.mag_inference import _score_and_persist
+    fake_features["close"] = np.nan
     model = MagicMock()
     engine = MagicMock()
     n = _score_and_persist(engine, "IWM", "5m",
                             model, ["rsi_14"], "v1", fake_features)
     assert n == 0
     model.predict_proba.assert_not_called()
+
+
+def test_score_and_persist_raises_when_an_essential_ohlcv_column_missing(fake_features):
+    """Schema drift that drops even ONE OHLCV column must fail loud, not
+    silently score on a partial guard (Codex P2 on #636). featurize() drops
+    OHLCV from the model matrix, so a missing essential input would otherwise
+    pass unnoticed."""
+    from gcp.research.magnitude_engine.mag_inference import _score_and_persist
+    frame = fake_features.drop(columns=["close"])
+    with pytest.raises(RuntimeError, match="essential OHLCV"):
+        _score_and_persist(MagicMock(), "IWM", "5m",
+                            _fake_model([[0.25] * 4] * 3),
+                            ["rsi_14"], "v1", frame)
 
 
 # ──────────────────── main() exit-disposition contract ────────────────────
