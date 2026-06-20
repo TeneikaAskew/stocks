@@ -80,3 +80,73 @@ def test_coarse_tf_uses_cross_bar_shift():
     out = label_next_bar_type(df, "4h", drop_warmup=False)
     # cross-bar: 4 bars total, last has no next → 3 labeled rows
     assert len(out) == 3
+
+
+# ── shared levels-join loader (one source of truth for train + inference) ──
+
+class _Conn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _Engine:
+    def connect(self):
+        return _Conn()
+
+
+def test_shared_loader_builds_join_and_honors_per_caller_filters(monkeypatch):
+    """load_strat_features_with_levels is the ONE place the levels join lives.
+    It must LEFT JOIN strat_features_levels_{tf} and apply each caller's filters
+    so training and live inference can't drift apart (#628/#629)."""
+    from gcp.research.strat_engine import strat_dataset as ds
+
+    captured: dict = {}
+
+    def _fake_read_sql(sql, conn, params=None):
+        captured["sql"] = " ".join(str(sql).split())
+        captured["params"] = params or {}
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    monkeypatch.setattr(ds.pd, "read_sql", _fake_read_sql)
+
+    # inference-style: ts cutoff, no strat_candle requirement
+    ds.load_strat_features_with_levels(
+        _Engine(), "QQQ", "5m",
+        since_ts="2026-06-17T00:00:00+00:00", order_by="s.ts ASC")
+    assert "LEFT JOIN strat_features_levels_5m" in captured["sql"]
+    assert "s.ts >= :since_ts" in captured["sql"]
+    assert captured["params"]["since_ts"] == "2026-06-17T00:00:00+00:00"
+    assert "strat_candle IS NOT NULL" not in captured["sql"]
+
+    # training-style: strat_candle required + bar_date window
+    ds.load_strat_features_with_levels(
+        _Engine(), "IWM", "15m", since="2026-01-01", require_strat_candle=True)
+    assert "LEFT JOIN strat_features_levels_15m" in captured["sql"]
+    assert "strat_candle IS NOT NULL" in captured["sql"]
+    assert "s.bar_date >= :since" in captured["sql"]
+
+
+def test_shared_loader_falls_back_to_plain_when_levels_missing(monkeypatch):
+    """If the levels table doesn't exist, retry as a plain strat_features SELECT
+    — the fallback both callers relied on."""
+    from gcp.research.strat_engine import strat_dataset as ds
+
+    calls: list[str] = []
+
+    def _fake_read_sql(sql, conn, params=None):
+        s = " ".join(str(sql).split())
+        calls.append(s)
+        if "LEFT JOIN" in s:
+            raise RuntimeError("relation strat_features_levels_5m does not exist")
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    monkeypatch.setattr(ds.pd, "read_sql", _fake_read_sql)
+
+    ds.load_strat_features_with_levels(
+        _Engine(), "SPY", "5m", since_ts="2026-06-17T00:00:00+00:00")
+    assert any("LEFT JOIN" in s for s in calls), "should attempt the join first"
+    assert any("LEFT JOIN" not in s and "FROM strat_features_5m" in s for s in calls), \
+        "should fall back to a plain strat_features SELECT"

@@ -182,45 +182,25 @@ def _load_recent_features(ticker: str, tf: str,
                            ) -> pd.DataFrame:
     """Pull the most-recent feature rows for scoring.
 
-    MUST mirror the TRAINING loader (strat_dataset.load_labeled_dataset): the
-    model is trained on `strat_features_{tf}` LEFT JOIN
-    `strat_features_levels_{tf}` (the ORB / historical-level / order-block
-    enrichment columns). Loading strat_features ALONE drops those
-    non-categorical columns, so every cell fails the alignment check in
-    _score_and_persist with "feature drift" on e.g. orb_5m_high. Falls back to
-    plain features if the levels table is missing for this TF — same contract
-    as training.
+    Routes through strat_dataset.load_strat_features_with_levels — the SAME
+    loader training uses — so inference and training can't drift apart. Loading
+    strat_features ALONE dropped the ORB / historical-level / order-block
+    columns and made every cell fail the alignment check with "feature drift"
+    on e.g. orb_5m_high: the month-long magnitude-inference outage (#628/#629).
+    The shared loader falls back to plain features if the levels table is
+    missing for this TF — same contract as training.
     """
-    from sqlalchemy import text
-    from gcp.research.strat_engine.strat_enrich_levels import levels_table
+    from gcp.research.strat_engine.strat_dataset import (
+        load_strat_features_with_levels,
+    )
 
-    s_table = f"strat_features_{tf}"
-    l_table = levels_table(tf)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    params = {"t": ticker, "cutoff": cutoff.isoformat()}
-    engine = get_engine()
-    try:
-        sql = text(
-            f"SELECT s.*, l.* FROM {s_table} s "
-            f"LEFT JOIN {l_table} l ON l.ticker = s.ticker AND l.ts = s.ts "
-            f"WHERE s.ticker = :t AND s.ts >= :cutoff ORDER BY s.ts ASC"
-        )
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=params)
-    except Exception as e:
-        log.warning("levels join failed (%s); falling back to plain features",
-                    type(e).__name__)
-        sql = text(
-            f"SELECT * FROM {s_table} s "
-            f"WHERE s.ticker = :t AND s.ts >= :cutoff ORDER BY s.ts ASC"
-        )
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=params)
-    # Deduplicate the ticker/ts columns that `s.*, l.*` duplicates (mirror
-    # load_labeled_dataset).
-    df = df.loc[:, ~df.columns.duplicated()]
+    df = load_strat_features_with_levels(
+        get_engine(), ticker, tf,
+        since_ts=cutoff.isoformat(), include_levels=True, order_by="s.ts ASC",
+    )
     if df.empty:
-        log.warning("no bars in %s for %s since %s", s_table, ticker, cutoff)
+        log.warning("no bars in strat_features_%s for %s since %s", tf, ticker, cutoff)
     return df
 
 
