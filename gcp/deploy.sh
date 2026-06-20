@@ -3079,29 +3079,40 @@ deploy_schedulers() {
     # that catches this class of bug regardless of scheduler presence.
     _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
 
-    # Daily levels enrichment — 23:55 ET Mon-Fri, 20 min after
-    # strat-engine-daily writes the day's base strat_features_<tf>.
+    # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the
+    # strat-engine-daily base writer (23:35 ET Mon-Fri). strat_data_builder
+    # documents ~15 min/ticker × 3 = ~30-45 min sequential, so a tight gap
+    # would let this read a ticker/TF before that day's base rows land,
+    # leaving NULL levels that the 09:25 ET inference then NaN-drops — the very
+    # bug this scheduler prevents. 02:00 ET clears the base's worst-case
+    # completion (~00:20) by >1h and still lands hours before inference. (Tue-Sat
+    # because each weekday's 23:35 base run is enriched the following morning;
+    # Fri's bars wait over the closed weekend, scored Mon 09:25.)
     # strat_data_builder does NOT populate strat_features_levels_<tf>
     # (ORB / historical levels / order blocks) — that is strat_enrich_levels.
-    # Without this the levels table goes stale and magnitude-inference's
-    # LEFT JOIN returns NULL ORB columns, NaN-filtering every fresh bar
-    # (the 2026-05/06 magnitude ZERO-OUTPUT). We run the full backfill-all
-    # (idempotent ON CONFLICT upsert) rather than a windowed enrich because
-    # the historical-level columns need >1y lookback (prev-year HLOC); a
-    # short window would NULL them. Self-healing: a bar missed by a race with
-    # the base writer is recomputed by the next run. Wall-clock ~30 min,
-    # inside the strat-engine 5400s task-timeout.
+    # Full backfill-all (idempotent ON CONFLICT) rather than a windowed enrich
+    # because the historical-level columns need >1y lookback (prev-year HLOC);
+    # a short window would NULL them. create-OR-update so a re-deploy reconciles
+    # the override body / schedule / URI — drift on the args body would silently
+    # invoke the wrong module while the deploy still looks successful.
     local _ENRICH_BODY='{"overrides":{"containerOverrides":[{"args":["-m","gcp.research.strat_engine.strat_enrich_levels","--mode=backfill-all"]}]}}'
+    # Common flags shared by both branches so create and update can't drift
+    # apart. The header flag is the one asymmetry: create takes --headers,
+    # update takes --update-headers.
+    local _enrich_common=(
+        --location "${REGION}"
+        --schedule "0 2 * * 2-6"
+        --time-zone "America/New_York"
+        --uri "$(_job_uri "strat-engine")"
+        --http-method POST
+        --message-body "${_ENRICH_BODY}"
+        --oauth-service-account-email "${SA_EMAIL}"
+        --quiet
+    )
     gcloud scheduler jobs create http "strat-enrich-daily" \
-        --location "${REGION}" \
-        --schedule "55 23 * * 1-5" \
-        --time-zone "America/New_York" \
-        --uri "$(_job_uri "strat-engine")" \
-        --http-method POST \
-        --headers "Content-Type=application/json" \
-        --message-body "${_ENRICH_BODY}" \
-        --oauth-service-account-email "${SA_EMAIL}" \
-        --quiet 2>/dev/null || echo "  strat-enrich-daily: already exists"
+        "${_enrich_common[@]}" --headers "Content-Type=application/json" 2>/dev/null || \
+    gcloud scheduler jobs update http "strat-enrich-daily" \
+        "${_enrich_common[@]}" --update-headers "Content-Type=application/json"
 
     # Magnitude-inference — daily Mon-Fri at 09:25 ET, 5 min before
     # market open. _schedule passes --time-zone America/New_York, so
