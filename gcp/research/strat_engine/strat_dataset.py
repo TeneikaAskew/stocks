@@ -27,6 +27,83 @@ log = logging.getLogger(__name__)
 # (e.g. the Claude-Code-on-web sandbox running the local combo miner).
 
 
+def load_strat_features_with_levels(
+    engine, ticker: str, tf: str, *,
+    since: str | None = None,
+    until: str | None = None,
+    since_ts: str | None = None,
+    require_strat_candle: bool = False,
+    include_levels: bool = True,
+    order_by: str = "s.ts",
+) -> pd.DataFrame:
+    """THE single loader for strat_features_{tf} [LEFT JOIN
+    strat_features_levels_{tf}] — the ORB / historical-level / order-block
+    enrichment.
+
+    Both training (load_labeled_dataset) and live inference
+    (mag_inference._load_recent_features) route through here so the join can
+    NEVER drift apart again. That drift — inference SELECTing strat_features
+    ALONE while training LEFT JOINed the levels — was the root cause of the
+    month-long magnitude ZERO-OUTPUT (#628/#629).
+
+    Filters (all optional, AND-combined):
+      since / until         bar_date >= / <   (training window)
+      since_ts              s.ts >=           (inference lookback cutoff, ISO str)
+      require_strat_candle  strat_candle IS NOT NULL (training)
+
+    On a missing levels table the join is retried as a plain strat_features
+    SELECT (the fallback contract both callers relied on). Returns the column-
+    deduped frame with ts coerced to UTC; the caller adds labels / NaN guards /
+    final sorting.
+    """
+    from sqlalchemy import text
+    from gcp.research.strat_engine.strat_enrich_levels import levels_table
+
+    s_table = strat_features_table(tf)
+    where = "WHERE s.ticker = :t"
+    params: dict[str, Any] = {"t": ticker}
+    if require_strat_candle:
+        where += " AND s.strat_candle IS NOT NULL"
+    if since:
+        where += " AND s.bar_date >= :since"
+        params["since"] = since
+    if until:
+        where += " AND s.bar_date < :until"
+        params["until"] = until
+    if since_ts:
+        where += " AND s.ts >= :since_ts"
+        params["since_ts"] = since_ts
+
+    if include_levels:
+        l_table = levels_table(tf)
+        try:
+            sql = text(
+                f"SELECT s.*, l.* FROM {s_table} s "
+                f"LEFT JOIN {l_table} l ON l.ticker = s.ticker AND l.ts = s.ts "
+                f"{where} ORDER BY {order_by}"
+            )
+            log.info("loading %s LEFT JOIN %s (ticker=%s since=%s until=%s since_ts=%s)",
+                     s_table, l_table, ticker, since, until, since_ts)
+            with engine.connect() as conn:
+                df = pd.read_sql(sql, conn, params=params)
+        except Exception as e:
+            log.warning("levels join failed (%s); falling back to plain features",
+                        type(e).__name__)
+            sql = text(f"SELECT * FROM {s_table} s {where} ORDER BY {order_by}")
+            with engine.connect() as conn:
+                df = pd.read_sql(sql, conn, params=params)
+    else:
+        sql = text(f"SELECT * FROM {s_table} s {where} ORDER BY {order_by}")
+        log.info("loading %s ONLY (no levels join) (ticker=%s)", s_table, ticker)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params=params)
+
+    # SELECT s.*, l.* duplicates ticker/ts — drop the dupes.
+    df = df.loc[:, ~df.columns.duplicated()]
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    return df
+
+
 def load_labeled_dataset(engine, ticker: str, tf: str,
                           since: str | None = None,
                           until: str | None = None,
@@ -48,49 +125,16 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
     The last bar per (ticker) is dropped (no t+1 to label).
     `drop_warmup=True` also drops bars where prev3_candle is null (the first
     3 bars per ticker).
+
+    The levels join lives in load_strat_features_with_levels so training and
+    live inference share ONE definition (no train/inference skew).
     """
-    from sqlalchemy import text
-    from gcp.research.strat_engine.strat_enrich_levels import levels_table
-
-    where_s = "WHERE s.ticker = :t AND s.strat_candle IS NOT NULL"
-    params: dict[str, Any] = {"t": ticker}
-    if since:
-        where_s += " AND s.bar_date >= :s"
-        params["s"] = since
-    if until:
-        where_s += " AND s.bar_date < :u"
-        params["u"] = until
-
-    if include_levels:
-        # LEFT JOIN the enrichment table (ORB / historical levels / order
-        # blocks). If the enrichment table doesn't exist yet for this TF,
-        # fall back to plain strat_features load.
-        try:
-            sql = text(
-                f"SELECT s.*, l.* "
-                f"FROM {strat_features_table(tf)} s "
-                f"LEFT JOIN {levels_table(tf)} l "
-                f"  ON l.ticker = s.ticker AND l.ts = s.ts "
-                f"{where_s} ORDER BY s.ts"
-            )
-            log.info("loading %s LEFT JOIN %s (ticker=%s, since=%s, until=%s)",
-                     strat_features_table(tf), levels_table(tf), ticker, since, until)
-            with engine.connect() as conn:
-                df = pd.read_sql(sql, conn, params=params)
-        except Exception as e:
-            log.warning("levels join failed (%s); falling back to plain features", type(e).__name__)
-            sql = text(f"SELECT * FROM {strat_features_table(tf)} s {where_s} ORDER BY s.ts")
-            with engine.connect() as conn:
-                df = pd.read_sql(sql, conn, params=params)
-    else:
-        sql = text(f"SELECT * FROM {strat_features_table(tf)} s {where_s} ORDER BY s.ts")
-        log.info("loading %s ONLY (no levels join) (ticker=%s)", strat_features_table(tf), ticker)
-        with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params=params)
-
-    # Deduplicate columns (SELECT s.*, l.* duplicates ticker/ts if not renamed)
-    df = df.loc[:, ~df.columns.duplicated()]
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    df = load_strat_features_with_levels(
+        engine, ticker, tf,
+        since=since, until=until,
+        require_strat_candle=True,
+        include_levels=include_levels,
+    )
     df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
 
     return label_next_bar_type(
