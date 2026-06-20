@@ -236,3 +236,38 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
         rc = mod.main()
     # 2/3 cells failed -> >50% threshold -> exit 1
     assert rc == 1
+
+
+def test_load_recent_features_joins_levels_table(monkeypatch):
+    """Inference MUST LEFT JOIN strat_features_levels_{tf} like training does
+    (strat_dataset.load_labeled_dataset). Without it the ORB / level columns are
+    absent and every cell fails the feature-drift check — the month-long
+    magnitude-inference outage (issue #628)."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    captured: dict = {}
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    def _fake_read_sql(sql, conn, params=None):
+        captured["sql"] = " ".join(str(sql).split())
+        captured["params"] = params or {}
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    monkeypatch.setattr(mod, "get_engine", lambda: _Engine())
+    monkeypatch.setattr(mod.pd, "read_sql", _fake_read_sql)
+
+    mod._load_recent_features("IWM", "5m", lookback_hours=24)
+
+    assert "LEFT JOIN strat_features_levels_5m" in captured["sql"]
+    assert "FROM strat_features_5m s" in captured["sql"]
+    assert captured["params"].get("t") == "IWM"
