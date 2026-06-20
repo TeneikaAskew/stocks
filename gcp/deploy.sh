@@ -3077,6 +3077,17 @@ deploy_schedulers() {
     # had no scheduled writer for 10 days, downstream consumers stalled
     # silently. See PR description for the freshness-watchdog extension
     # that catches this class of bug regardless of scheduler presence.
+    # Gamma levels — 22:30 ET Mon-Fri. MUST run AFTER av-options-daily (21:00
+    # ET, which fetches the EOD option chains gamma is built from) and BEFORE
+    # strat-engine-daily (23:35 ET, which reads gamma_levels_eod for the
+    # gamma/vex/vix features — and gamma also drives the VEX spot_lookup). With
+    # no scheduler here, gamma_levels_eod froze on 2026-05-22 and silently
+    # NULLed ~4 weeks of gamma/vex/vix on every strat_features bar. The job's
+    # default args now build only the current year (~1 min/ticker), so this is a
+    # cheap nightly refresh; a full historical rebuild is the manual
+    # `--start-year=2015`.
+    _schedule "gamma-levels-daily" "30 22 * * 1-5" "p2-build-gamma-levels"
+
     _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
 
     # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the

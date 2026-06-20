@@ -269,8 +269,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tickers", default=",".join(TICKERS_DEFAULT),
                         help="Comma-separated ticker list (default SPY,IWM,QQQ)")
-    parser.add_argument("--start-year", type=int, default=2015)
-    parser.add_argument("--end-year", type=int, default=2026)
+    parser.add_argument("--start-year", type=int, default=_date.today().year,
+                        help="First year to (re)build. Default: current year — "
+                             "the scheduled nightly run uses default args and so "
+                             "only refreshes the current year (~1 min/ticker). "
+                             "Pass --start-year=2015 for a full historical backfill.")
+    parser.add_argument("--end-year", type=int, default=_date.today().year,
+                        help="Last year to (re)build. Default: current year "
+                             "(dynamic — no longer hardcoded).")
     parser.add_argument("--create-table-only", action="store_true",
                         help="Just create the table and exit (for testing)")
     args = parser.parse_args()
