@@ -504,6 +504,54 @@ def process_ticker(ticker: str, fetch_date: str, av_api_key: str):
         compute_and_upsert_daily_indicators(ticker, fetch_date)
 
 
+def fetch_and_upsert_vix(lookback_days: int = 7) -> int:
+    """Fetch ^VIX daily OHLC from Yahoo and upsert to market_data_daily.
+
+    AlphaVantage does NOT serve the VIX index via TIME_SERIES_DAILY (it returns
+    "Invalid API call"), so the daily VIX close — consumed by
+    strat_data_builder for the vix_close / vix_tercile features — comes from
+    Yahoo's chart API. A trailing window is fetched so short gaps self-heal; the
+    (ticker, date) upsert is idempotent. Raises on a hard fetch failure so the
+    run reports red (rule 3.7: an external outage must surface loudly, never
+    write a fabricated value).
+
+    Returns the number of settled daily rows upserted.
+    """
+    rng = max(int(lookback_days), 5)
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX"
+    params = {"interval": "1d", "range": f"{rng}d"}
+    resp = requests.get(url, params=params,
+                        headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resp.raise_for_status()
+    result = resp.json()["chart"]["result"][0]
+    timestamps = result.get("timestamp") or []
+    quote = result["indicators"]["quote"][0]
+    rows = []
+    for i, epoch in enumerate(timestamps):
+        close = quote["close"][i]
+        if close is None:
+            continue  # forming / non-settled bar — skip, do not fabricate a 0
+        d = datetime.utcfromtimestamp(epoch).date()
+        rows.append({
+            "ticker": "^VIX",
+            "date": d.strftime("%Y-%m-%d"),
+            "open": quote["open"][i],
+            "high": quote["high"][i],
+            "low": quote["low"][i],
+            "close": close,
+            "adjusted_close": close,  # index: no splits/divs → adj == close
+            "data_source": "yahoo",
+        })
+    if not rows:
+        log.warning("    ^VIX: Yahoo returned no settled bars in last %dd", rng)
+        return 0
+    df = pd.DataFrame(rows)
+    upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
+    log.info("    ✓ ^VIX: upserted %d daily rows (latest %s close=%.2f)",
+             len(df), df.iloc[-1]["date"], float(df.iloc[-1]["close"]))
+    return len(rows)
+
+
 def _earnings_tickers_in_window(
     days_back: int,
     days_ahead: int,
@@ -1024,6 +1072,16 @@ def main():
         except Exception as e:
             log.error("  ✗ %s failed: %s", ticker, e)
             errors.append(ticker)
+
+    # ^VIX daily close — Yahoo (AlphaVantage doesn't serve the index). Feeds
+    # strat_data_builder's vix_close / vix_tercile features. A trailing window
+    # self-heals short gaps; the upsert is idempotent. A failure marks the run
+    # red (appended to errors), never silently skipped.
+    try:
+        fetch_and_upsert_vix(int(os.environ.get('VIX_LOOKBACK_DAYS', '7')))
+    except Exception as e:
+        log.error("  ✗ ^VIX fetch failed: %s", e)
+        errors.append('^VIX')
 
     if errors:
         log.error("Failed tickers: %s", errors)

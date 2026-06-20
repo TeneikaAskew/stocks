@@ -286,7 +286,7 @@ def _compute_daily_vex(engine, ticker: str, spot_lookup: dict) -> pd.DataFrame:
 
     new_rows: list[dict] = []
     log.info("%s: computing daily VEX by quarter (missing dates only)...", ticker)
-    for year in range(2015, 2027):
+    for year in range(2015, _date.today().year + 1):
         for q in (1, 2, 3, 4):
             t0 = time.time()
             chain = _load_chain_quarter(engine, ticker, year, q)
@@ -667,6 +667,26 @@ def _process_ticker(engine, ticker: str, start_date: str, vix_df: pd.DataFrame,
     spot_lookup = gamma_df["spot"].dropna().to_dict()
     vex_df = _compute_daily_vex(engine, ticker, spot_lookup)
     log.info("%s: computed VEX for %d dates", ticker, len(vex_df))
+
+    # Freshness guard (rule 3.7): the gamma/vix SOURCES silently NULL the
+    # gamma/vex/vix feature columns when they lag the bars. The 2026-05-22
+    # month-long freeze went unnoticed because the NULLs were indistinguishable
+    # from normal sparse data. Surface any lag LOUDLY so a stalled source
+    # scheduler can't go undetected again. gamma_levels_eod also drives the VEX
+    # spot_lookup, so a stale gamma table NULLs vex too.
+    _today = _date.today()
+    for _src_name, _src_df in (("gamma_levels_eod", gamma_df),
+                               ("market_data_daily ^VIX", vix_df)):
+        if _src_df is None or _src_df.empty:
+            log.error("FRESHNESS: %s is EMPTY for %s — gamma/vex/vix columns "
+                      "will be NULL for every bar. Check its fetcher/scheduler.",
+                      _src_name, ticker)
+            continue
+        _lag = (_today - max(_src_df.index)).days
+        if _lag > 6:
+            log.error("FRESHNESS: %s lags %d days (latest=%s) for %s — recent "
+                      "gamma/vex/vix will be NULL. Check its scheduler.",
+                      _src_name, _lag, max(_src_df.index), ticker)
 
     # Terciles for GEX, VEX (per-ticker, full distribution)
     gex_terciles = _compute_terciles(gamma_df["total_gex"])
