@@ -3079,6 +3079,30 @@ deploy_schedulers() {
     # that catches this class of bug regardless of scheduler presence.
     _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
 
+    # Daily levels enrichment — 23:55 ET Mon-Fri, 20 min after
+    # strat-engine-daily writes the day's base strat_features_<tf>.
+    # strat_data_builder does NOT populate strat_features_levels_<tf>
+    # (ORB / historical levels / order blocks) — that is strat_enrich_levels.
+    # Without this the levels table goes stale and magnitude-inference's
+    # LEFT JOIN returns NULL ORB columns, NaN-filtering every fresh bar
+    # (the 2026-05/06 magnitude ZERO-OUTPUT). We run the full backfill-all
+    # (idempotent ON CONFLICT upsert) rather than a windowed enrich because
+    # the historical-level columns need >1y lookback (prev-year HLOC); a
+    # short window would NULL them. Self-healing: a bar missed by a race with
+    # the base writer is recomputed by the next run. Wall-clock ~30 min,
+    # inside the strat-engine 5400s task-timeout.
+    local _ENRICH_BODY='{"overrides":{"containerOverrides":[{"args":["-m","gcp.research.strat_engine.strat_enrich_levels","--mode=backfill-all"]}]}}'
+    gcloud scheduler jobs create http "strat-enrich-daily" \
+        --location "${REGION}" \
+        --schedule "55 23 * * 1-5" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "strat-engine")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${_ENRICH_BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  strat-enrich-daily: already exists"
+
     # Magnitude-inference — daily Mon-Fri at 09:25 ET, 5 min before
     # market open. _schedule passes --time-zone America/New_York, so
     # the cron expression is in ET, not UTC. (Codex P2 on PR #597:
