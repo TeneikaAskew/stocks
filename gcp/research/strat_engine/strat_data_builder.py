@@ -225,7 +225,7 @@ def _load_gamma_levels(engine, ticker: str) -> pd.DataFrame:
         gates = g[g["level_kind"] == "gate"]
         rows.append({
             "snapshot_date": d,
-            "total_gex": float(first["total_gex"] or 0.0),
+            "total_gex": float(first["total_gex"]) if pd.notna(first["total_gex"]) else None,
             "gamma_balance_price": float(first["gamma_balance_price"]) if pd.notna(first["gamma_balance_price"]) else None,
             "gamma_flip": float(first["gamma_flip"]) if pd.notna(first["gamma_flip"]) else None,
             "regime": str(first["regime"] or "unknown"),
