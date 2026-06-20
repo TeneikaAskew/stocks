@@ -253,18 +253,21 @@ def _score_and_persist(engine, ticker: str, tf: str,
     #     asymmetry that produced QQQ's persistent ZERO-OUTPUT.
     import numpy as np
     _ESSENTIAL_RAW = ("open", "high", "low", "close", "volume")
-    essential_cols = [
-        c for c in features.columns
-        if c.lower() in _ESSENTIAL_RAW
-        and pd.api.types.is_numeric_dtype(features[c].dtype)
-    ]
-    if not essential_cols:
-        # INTERNAL invariant: strat_features_<tf> always has OHLCV. An empty
-        # set means schema drift — fail loud rather than silently score every
-        # row with no guard at all.
+    present = {c.lower(): c for c in features.columns}
+    missing = [c for c in _ESSENTIAL_RAW if c not in present]
+    if missing:
+        # INTERNAL invariant: strat_features_<tf> always has all five OHLCV
+        # columns. Even a PARTIAL drift (e.g. a bad SELECT omitting `close`
+        # while `open` survives) must fail loud — featurize() drops OHLCV from
+        # the model matrix, so a missing essential input would otherwise
+        # silently score and persist past this guard.
         raise RuntimeError(
-            f"{ticker}:{tf} — feature frame is missing the essential OHLCV "
-            f"columns {_ESSENTIAL_RAW}; cannot apply the raw NaN guard")
+            f"{ticker}:{tf} — feature frame is missing essential OHLCV "
+            f"columns {missing}; cannot apply the raw NaN guard (schema drift?)")
+    # Check all five by name (not is_numeric_dtype): an all-NULL essential
+    # column reads back object-typed, and we still want its NaNs to drop the
+    # bar — isna() works regardless of dtype.
+    essential_cols = [present[c] for c in _ESSENTIAL_RAW]
     nan_mask = features[essential_cols].isna().any(axis=1).to_numpy()
     if nan_mask.any():
         log.info("%s:%s — %d/%d bars missing essential OHLCV; skipping those",

@@ -208,6 +208,19 @@ def test_score_and_persist_zero_after_essential_nan_filter(fake_features):
     model.predict_proba.assert_not_called()
 
 
+def test_score_and_persist_raises_when_an_essential_ohlcv_column_missing(fake_features):
+    """Schema drift that drops even ONE OHLCV column must fail loud, not
+    silently score on a partial guard (Codex P2 on #636). featurize() drops
+    OHLCV from the model matrix, so a missing essential input would otherwise
+    pass unnoticed."""
+    from gcp.research.magnitude_engine.mag_inference import _score_and_persist
+    frame = fake_features.drop(columns=["close"])
+    with pytest.raises(RuntimeError, match="essential OHLCV"):
+        _score_and_persist(MagicMock(), "IWM", "5m",
+                            _fake_model([[0.25] * 4] * 3),
+                            ["rsi_14"], "v1", frame)
+
+
 # ──────────────────── main() exit-disposition contract ────────────────────
 #
 # Codex P1 on PR #597: when every cell quietly returns 0 (data outage,
