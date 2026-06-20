@@ -598,8 +598,15 @@ def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
     out["vex_tercile"] = pd.cut(out["total_vex"], bins=[-np.inf, vex_terciles[0],
                                                           vex_terciles[1], np.inf],
                                  labels=["LOW", "MID", "HIGH"]).astype(object)
-    # dealer_regime = "GEX_X_VEX_Y" 9-cell label
-    out["dealer_regime"] = "GEX_" + out["gex_tercile"].astype(str) + "_VEX_" + out["vex_tercile"].astype(str)
+    # dealer_regime = "GEX_X_VEX_Y" 9-cell label. NULL it when EITHER tercile is
+    # missing — otherwise the string concat persists a malformed
+    # "GEX_nan_VEX_HIGH" (str(NaN) == "nan") that downstream null-filters would
+    # keep, contaminating the 9 regime buckets. §3.7: missing → explicit NULL,
+    # not a fabricated label. (Pre-existing on the VEX side when total_vex is
+    # NaN; now correct for both GEX and VEX.)
+    out["dealer_regime"] = ("GEX_" + out["gex_tercile"].astype(str)
+                            + "_VEX_" + out["vex_tercile"].astype(str))
+    out.loc[out["gex_tercile"].isna() | out["vex_tercile"].isna(), "dealer_regime"] = None
     return out
 
 

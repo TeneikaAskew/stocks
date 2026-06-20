@@ -67,3 +67,48 @@ def test_terciles_drop_null_gex(monkeypatch):
     # 3 dates, 1 NULL → 2 non-null feed terciles. (<30 rows → (nan, nan), but
     # the point is the series passed to _compute_terciles has the NULL dropped.)
     assert out["total_gex"].notna().sum() == 2
+
+
+def test_dealer_regime_null_when_gex_missing():
+    """_add_context must NULL dealer_regime when a tercile is missing, not
+    persist a malformed "GEX_nan_VEX_*" that downstream null-filters keep
+    (Codex review on #640)."""
+    import datetime as dt
+    import numpy as np
+
+    d15, d16, d17 = dt.date(2026, 6, 15), dt.date(2026, 6, 16), dt.date(2026, 6, 17)
+    gamma_df = pd.DataFrame([
+        {"snapshot_date": d15, "total_gex": np.nan, "gamma_balance_price": 498.0,
+         "gamma_flip": 497.0, "regime": "negative_gamma", "spot": 499.0,
+         "min_king_strike": 500.0, "min_gate_strike": 495.0},
+        {"snapshot_date": d16, "total_gex": 2e7, "gamma_balance_price": 499.0,
+         "gamma_flip": 498.0, "regime": "positive_gamma", "spot": 500.0,
+         "min_king_strike": 501.0, "min_gate_strike": 496.0},
+        {"snapshot_date": d17, "total_gex": 2.5e7, "gamma_balance_price": 500.0,
+         "gamma_flip": 499.0, "regime": "positive_gamma", "spot": 501.0,
+         "min_king_strike": 502.0, "min_gate_strike": 497.0},
+    ]).set_index("snapshot_date")
+    vex_df = pd.DataFrame([
+        {"snapshot_date": d15, "total_vex": 5e6},
+        {"snapshot_date": d16, "total_vex": 6e6},
+        {"snapshot_date": d17, "total_vex": 6.5e6},
+    ]).set_index("snapshot_date")
+    vix_df = pd.DataFrame([
+        {"date": d15, "vix_close": 17.0},
+        {"date": d16, "vix_close": 18.0},
+        {"date": d17, "vix_close": 19.0},
+    ]).set_index("date")
+    # bar on d16 → prior day d15 (NaN GEX); bar on d17 → prior day d16 (GEX present)
+    out = pd.DataFrame({"bar_date": [d16, d17], "close": [500.0, 501.0]})
+
+    res = mod._add_context(out, "SPY", vix_df, gamma_df, vex_df,
+                           gex_terciles=(1e7, 3e7), vex_terciles=(4e6, 7e6)
+                           ).set_index("bar_date")
+
+    # d16: prior GEX missing → tercile NaN → dealer_regime null (NaN/None, both
+    # write as SQL NULL) — NOT the malformed "GEX_nan_VEX_MID" string
+    assert pd.isna(res.loc[d16, "total_gex"])
+    assert pd.isna(res.loc[d16, "dealer_regime"])
+    # d17: prior GEX present → valid 9-cell label, no "nan"
+    dr = res.loc[d17, "dealer_regime"]
+    assert dr is not None and dr.startswith("GEX_") and "nan" not in dr
