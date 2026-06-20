@@ -2249,10 +2249,14 @@ deploy_fetchers() {
 #   ./gcp/deploy.sh setup-pg-dump-iam
 # 1. trading-runner SA needs roles/cloudsql.editor on the project (to invoke
 #    the export API).
-# 2. The Cloud SQL service identity
-#    (service-${PROJECT_NUMBER}@gcp-sa-cloud-sql.iam.gserviceaccount.com)
+# 2. The Cloud SQL INSTANCE's service account (trading-db's
+#    serviceAccountEmailAddress, e.g.
+#    p<PROJECT_NUMBER>-<hash>@gcp-sa-cloud-sql.iam.gserviceaccount.com)
 #    needs roles/storage.objectAdmin on the destination bucket — Cloud SQL
-#    itself writes the file, NOT the calling SA.
+#    itself writes the file, NOT the calling SA. This is the PER-INSTANCE
+#    SA, NOT the service-<num>@gcp-sa-cloud-sql project service agent;
+#    granting the service agent leaves the export failing with HTTP 412
+#    "service account does not have the required permissions for the bucket".
 deploy_weekly_pg_dump() {
     echo "Deploying cloud-sql-weekly-export job..."
 
@@ -2282,11 +2286,19 @@ deploy_weekly_pg_dump() {
 setup_pg_dump_iam() {
     echo "=== Configuring IAM for cloud-sql-weekly-export ==="
 
-    # Resolve the project number to construct the Cloud SQL service identity.
-    local project_number
-    project_number="$(gcloud projects describe "${PROJECT_ID}" \
-        --format='value(projectNumber)')"
-    local cloud_sql_sa="service-${project_number}@gcp-sa-cloud-sql.iam.gserviceaccount.com"
+    # The Cloud SQL EXPORT API writes the dump as the INSTANCE's own
+    # service account (its serviceAccountEmailAddress), NOT the project
+    # gcp-sa-cloud-sql service agent. Resolve the instance SA directly —
+    # granting the service agent leaves the export with HTTP 412
+    # "service account does not have the required permissions for the bucket".
+    local cloud_sql_sa
+    cloud_sql_sa="$(gcloud sql instances describe trading-db \
+        --project="${PROJECT_ID}" \
+        --format='value(serviceAccountEmailAddress)')"
+    if [ -z "${cloud_sql_sa}" ]; then
+        echo "ERROR: could not resolve trading-db serviceAccountEmailAddress" >&2
+        return 1
+    fi
     local bucket="${PROJECT_ID}-trading-data"
 
     echo
@@ -2298,14 +2310,11 @@ setup_pg_dump_iam() {
         --quiet 2>&1 | tail -3
 
     echo
-    echo "2) Granting roles/storage.objectAdmin to Cloud SQL service identity"
+    echo "2) Granting roles/storage.objectAdmin to the Cloud SQL instance SA"
     echo "   (${cloud_sql_sa}) on bucket gs://${bucket}/..."
-    # The Cloud SQL service identity needs to be created first for IAM bindings
-    # to stick. gcloud beta services identity create handles that idempotently.
-    gcloud beta services identity create \
-        --service=sqladmin.googleapis.com \
-        --project="${PROJECT_ID}" 2>&1 | tail -3 || true
-
+    # This is the instance's serviceAccountEmailAddress — the identity the
+    # managed export API actually writes as. It already exists (created with
+    # the instance), so no `gcloud beta services identity create` is needed.
     gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
         --member="serviceAccount:${cloud_sql_sa}" \
         --role=roles/storage.objectAdmin \
