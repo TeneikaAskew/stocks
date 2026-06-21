@@ -129,11 +129,11 @@ test.describe('Gamma Levels: OptionsFlowPage UI', () => {
     await page.waitForTimeout(3500);
     // The chip is a small badge with one of the method names
     const chip = page.locator('text=/^(parity|delta|median_strike|override)$/').first();
-    // Don't fail hard if cloud sql is empty — just verify it's not silently broken
+    // Empty backend (no Cloud SQL data) -> SKIP so it's visible, not a
+    // silent pass. A present-but-broken chip still fails. (audit 2026-06-21)
     const count = await chip.count();
-    if (count > 0) {
-      await expect(chip).toBeVisible();
-    }
+    test.skip(count === 0, 'spot method chip absent — /levels returned no data');
+    await expect(chip).toBeVisible();
   });
 
   test('options page shows King/Gate or fallback message', async ({ page }) => {
@@ -165,10 +165,11 @@ test.describe('Gamma Levels: OptionsFlowPage UI', () => {
     await page.waitForTimeout(3500);
     // If a regime is shown, it must be one of the three labels
     const regimeText = page.locator('text=/Positive gamma|Negative gamma|Regime unclear/').first();
+    // Empty backend -> SKIP so it's visible, not a silent pass. A
+    // present-but-broken regime chip still fails. (audit 2026-06-21)
     const count = await regimeText.count();
-    if (count > 0) {
-      await expect(regimeText).toBeVisible();
-    }
+    test.skip(count === 0, 'regime chip absent — /levels returned no data');
+    await expect(regimeText).toBeVisible();
   });
 });
 
