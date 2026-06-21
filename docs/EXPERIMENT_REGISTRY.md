@@ -139,7 +139,11 @@ research notes.
 - **Hyperparameters (locked):** `n_estimators=300, lr=0.05, max_depth=6,
   num_leaves=31, min_child_samples=100, seed=42`, no bagging (deterministic).
 - **ECE:** multiclass expected calibration error, 10 bins by max-proba
-  confidence; ceiling 0.05 (5m/15m), 0.075 (30m). `expected_calibration_error()`
+  confidence; ceiling **0.05 for ALL timeframes** (the single
+  `DEFAULT_ECE_CEILING = 0.05` constant in `strat_config.py`; pinned by
+  `test_ece_gate_ceiling_unchanged_at_005`). A wider "0.075 (30m)" was floated
+  in an earlier draft of this doc but was NEVER code — it must not be
+  reintroduced as a silent per-tf loosening. `expected_calibration_error()`
   in `strat_pred_train.py`.
 - **Calibration:** `"none"` (raw LightGBM softmax) — sigmoid/isotonic available
   as diagnostics; sigmoid tested and rejected (§E-20).
@@ -431,6 +435,25 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
 - **Results:** sigmoid **hurt** every cell (ECE 0.013–0.049 raw → 0.042–0.125 sigmoid) — double-calibration on an already-cross-entropy model.
 - **Verdict:** ✅ DEFAULT_CALIBRATION="none"; sigmoid/isotonic kept as diagnostics. Scope IWM — per-ticker re-verify open.
 - **Artifacts:** `strat_config.py:130`, `mag_config.py:231`.
+- **Follow-up (#646, 2026-06-21) — `isotonic_oos` + `calib_frac` sweep on TYPE 30m:**
+  `isotonic_oos` (per-class isotonic on a date-carved TRAIN slice, distinct
+  from the CV-refit path E-20 rejected) lifts the raw-`none` 30m cells: QQQ-30m
+  `none` 5/8 → `isotonic_oos@0.2` **7/8** (2025 fold ECE 0.0567, just over).
+  A full `--calib-frac` sweep through the production walk-forward harness:
+  - QQQ-30m: cf0.20 7/8 (2025=.057) · cf0.30 7/8 (2020=.054) · cf0.35 7/8
+    (2020=.056) · cf0.40 **8/8** · cf0.45 **8/8**.
+  - IWM-30m: cf0.20 **8/8** (worst .048) · cf0.40 **7/8** (2023=.057) ← REGRESS.
+  - SPY-30m: cf0.20 **8/8** · cf0.40 **8/8**.
+  **Honest verdict: STAYS-HIDDEN.** QQQ reaches 8/8 only at frac ≥ 0.40, but
+  that REGRESSES IWM-30m to 7/8, and the QQQ failing fold hops (2025→2020→2020)
+  as frac moves — the 8/8 is the frac hyperparameter being curve-fit to the
+  gate, not a robust win. No single `calib_frac` clears all three 30m cells
+  simultaneously. Production default stays `calib_frac=0.2` (IWM/SPY-30m 8/8
+  preserved); **QQQ-30m remains gated/hidden until more data accrues.** The
+  0.05 ECE gate was NOT loosened. Cost: ~$0.29 (10 walk-forward dispatches).
+  - **Artifacts:** `gs://…/research/strat_engine/qqq_30m/walk_forward_isotonic_oos_cf{20,30,35,40,45}_*.json`,
+    `…/iwm_30m/…_cf40_*.json`, `…/spy_30m/…_cf40_*.json`; `--calib-frac` flag +
+    docstring finding in `strat_walk_forward.py`.
 
 ## E-21 · Archived P7 pipeline (LightGBM + stacked regression + voter)
 - **Engine/area:** precursor (return regression / next-candle / backtests) · **Status:** abandoned/quarantined · **Date:** Jan 2026; quarantined 2026-05-26.
