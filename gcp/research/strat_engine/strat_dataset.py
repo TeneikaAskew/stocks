@@ -148,6 +148,44 @@ def load_labeled_dataset(engine, ticker: str, tf: str,
 SESSION_AWARE_TFS = {"1m", "5m", "15m", "30m", "60m"}
 
 
+def add_session_aware_lags(
+    df: pd.DataFrame,
+    tf: str,
+    *,
+    candle_col: str = "strat_candle",
+    date_col: str = "bar_date",
+) -> pd.DataFrame:
+    """Add ``prev1/2/3_candle`` using the same session-aware (intraday) or
+    cross-bar (coarse) shift training uses. PURE pandas, no SQL.
+
+    Shared between training (via ``label_next_bar_type``) and live inference
+    (via ``mag_inference._load_recent_features``) so the lag semantics CAN'T
+    drift apart. Without this, inference would load the joined frame, run
+    ``featurize()``, and every ``prev*_candle_<value>`` dummy would be missing
+    — the ``_score_and_persist`` zero-fill heuristic would treat them as
+    "absent category" and silently erase the sequence feature on every
+    prediction (verified 2026-06-20: 98% of live IWM/SPY/QQQ predictions
+    collapsed to bucket TIGHT vs. ~36% true base rate).
+
+    SHIFT STRATEGY (preserved from the inline logic in label_next_bar_type):
+      - Intraday (1m-60m): SESSION-AWARE — ``groupby(date_col).shift(N)`` so
+        prev/next never cross overnight gaps.
+      - Coarse (4h+): CROSS-BAR — 4h has only ~2-3 bars per RTH day, so
+        session-aware shifts would drop EVERY bar.
+    """
+    df = df.copy()
+    if tf in SESSION_AWARE_TFS:
+        grp_candle = df.groupby(date_col)[candle_col]
+        df["prev1_candle"] = grp_candle.shift(1)
+        df["prev2_candle"] = grp_candle.shift(2)
+        df["prev3_candle"] = grp_candle.shift(3)
+    else:
+        df["prev1_candle"] = df[candle_col].shift(1)
+        df["prev2_candle"] = df[candle_col].shift(2)
+        df["prev3_candle"] = df[candle_col].shift(3)
+    return df
+
+
 def label_next_bar_type(
     df: pd.DataFrame,
     tf: str,
@@ -167,24 +205,10 @@ def label_next_bar_type(
     ``load_labeled_dataset`` (the 2026-05-25 session-aware fix is preserved).
 
     Expects ``df`` sorted by (``date_col``, ts) with a ``candle_col`` column.
-
-    SHIFT STRATEGY by TF:
-      - Intraday (1m-60m): SESSION-AWARE — groupby(date_col).shift(N) so
-        prev/next never cross overnight gaps. Reviewer-flagged 2026-05-25:
-        previously walked across day boundaries; at 15m ~4% contaminated,
-        at 60m ~14%, at 4h ~40%.
-      - Coarse (4h+): CROSS-BAR — 4h has only ~2-3 bars per RTH day, so
-        session-aware shifts drop EVERY bar (prev3 always null inside a
-        2-3 bar day). The overnight gap is a smaller fraction of the bar's
-        own duration anyway.
     """
-    df = df.copy()
+    df = add_session_aware_lags(df, tf, candle_col=candle_col, date_col=date_col)
     if tf in SESSION_AWARE_TFS:
-        grp_candle = df.groupby(date_col)[candle_col]
-        df["prev1_candle"] = grp_candle.shift(1)
-        df["prev2_candle"] = grp_candle.shift(2)
-        df["prev3_candle"] = grp_candle.shift(3)
-        df[LABEL_COL] = grp_candle.shift(-1)
+        df[LABEL_COL] = df.groupby(date_col)[candle_col].shift(-1)
         if include_next_bar_ohlc:
             # Forward-looking — NEVER use as features. Opt-in for reporting only.
             df["next_open"] = df.groupby(date_col)["open"].shift(-1)
@@ -192,11 +216,7 @@ def label_next_bar_type(
             df["next_high"] = df.groupby(date_col)["high"].shift(-1)
             df["next_low"] = df.groupby(date_col)["low"].shift(-1)
     else:
-        # cross-bar shifts (no groupby); first 3 bars of the whole series
-        # have null lags, last bar has null label.
-        df["prev1_candle"] = df[candle_col].shift(1)
-        df["prev2_candle"] = df[candle_col].shift(2)
-        df["prev3_candle"] = df[candle_col].shift(3)
+        # cross-bar shifts (no groupby); last bar has null label.
         df[LABEL_COL] = df[candle_col].shift(-1)
         if include_next_bar_ohlc:
             df["next_open"] = df["open"].shift(-1)

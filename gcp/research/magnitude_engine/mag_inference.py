@@ -189,9 +189,22 @@ def _load_recent_features(ticker: str, tf: str,
     on e.g. orb_5m_high: the month-long magnitude-inference outage (#628/#629).
     The shared loader falls back to plain features if the levels table is
     missing for this TF — same contract as training.
+
+    ALSO recreate prev1/2/3_candle via the SAME helper training uses
+    (add_session_aware_lags). Training calls label_next_bar_type which adds
+    those columns BEFORE featurize() one-hots them, so feature_cols.txt lists
+    ~12 prev*_candle_<value> dummies per cell. Without recreating them here,
+    every dummy is missing at featurize time and the zero-fill heuristic in
+    _score_and_persist silently erases the sequence feature on every
+    prediction — verified 2026-06-20: 98% of live predictions collapsed to
+    bucket TIGHT vs ~36% true base rate.
+
+    Warmup-bar drop matches training's drop_warmup=True. Training NEVER saw
+    a row where prev3_candle was NaN; scoring those at inference would feed
+    all-zero prev*_candle_* dummies which is out-of-distribution.
     """
     from gcp.research.strat_engine.strat_dataset import (
-        load_strat_features_with_levels,
+        load_strat_features_with_levels, add_session_aware_lags,
     )
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
@@ -201,6 +214,19 @@ def _load_recent_features(ticker: str, tf: str,
     )
     if df.empty:
         log.warning("no bars in strat_features_%s for %s since %s", tf, ticker, cutoff)
+        return df
+
+    if "strat_candle" in df.columns and "bar_date" in df.columns:
+        # The shared loader returns the joined frame in s.ts order; the lag
+        # shift is bar_date-grouped so it must be sorted by (bar_date, ts)
+        # first. Matches load_labeled_dataset's pre-label sort.
+        df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
+        df = add_session_aware_lags(df, tf)
+        n_before = len(df)
+        df = df[df["prev3_candle"].notna()].reset_index(drop=True)
+        if n_before > len(df):
+            log.info("%s:%s — dropped %d session-warmup bars (prev3_candle NaN)",
+                     ticker, tf, n_before - len(df))
     return df
 
 
