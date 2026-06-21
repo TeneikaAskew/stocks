@@ -339,6 +339,30 @@ MOVEMENT_STATEMENT_TICKERS = ("IWM", "SPY", "QQQ")
 MOVEMENT_STATEMENT_TFS = ("5m", "15m")
 
 
+def _levels_block_has_non_finite(levels) -> bool:
+    """True if the levels block carries any non-finite float (NaN / inf).
+
+    Rule 3.7 safety net: Starlette's JSON renderer rejects NaN/inf and 500s the
+    whole response. The levels block is the only part of the statement that can
+    carry a price-derived float (current_price, ladder prices, distances), so a
+    cheap recursive scan of just that block lets the endpoint degrade levels to
+    an explicit UNAVAILABLE envelope instead of crashing. Walks dict/list/tuple
+    containers; any float for which math.isfinite is False trips the guard.
+    """
+    import math  # noqa: PLC0415
+
+    def _walk(node) -> bool:
+        if isinstance(node, float):
+            return not math.isfinite(node)
+        if isinstance(node, dict):
+            return any(_walk(v) for v in node.values())
+        if isinstance(node, (list, tuple)):
+            return any(_walk(v) for v in node)
+        return False
+
+    return _walk(levels)
+
+
 def _movement_statement_enabled() -> bool:
     """Feature flag — default OFF.
 
@@ -378,6 +402,19 @@ def _build_movement_level_map(ticker: str):
         close_col = "Close" if "Close" in df.columns else "Last"
         if close_col not in df.columns:
             return None
+        # Rule 3.7 — never anchor levels to a NaN/NULL close. market_data_daily
+        # can carry a same-day PREMARKET PLACEHOLDER row (close NULL/NaN) that
+        # DataLoader.load_daily keeps; float(NaN) does NOT raise, so an
+        # unfiltered df[close_col].iloc[-1] would push NaN into build_level_map →
+        # level_map.current_price = NaN → Starlette rejects NaN at JSON render →
+        # 500 on an otherwise-valid request. Filter to rows whose OHLC quad is
+        # fully real (non-null, non-NaN) and anchor to the LAST VALID close. If no
+        # valid close row remains, return None → the assembler degrades the levels
+        # block to an explicit UNAVAILABLE envelope (never a fabricated ladder).
+        ohlc_cols = [c for c in ("Open", "High", "Low", close_col) if c in df.columns]
+        df = df[df[ohlc_cols].notna().all(axis=1)]
+        if df.empty or len(df) < 2:
+            return None
         ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
         levels_df = calculate_historical_levels(
             ts, df["High"], df["Low"], df["Open"], df[close_col],
@@ -385,6 +422,10 @@ def _build_movement_level_map(ticker: str):
         for col in levels_df.columns:
             df[col] = levels_df[col].values
         current_price = float(df[close_col].iloc[-1])
+        # Defensive second guard: if the last valid close is somehow still not a
+        # finite number, refuse to build levels rather than ship NaN downstream.
+        if not pd.notna(current_price):
+            return None
         atr_col = "atr_14" if "atr_14" in df.columns else None
         atr_for_filter = None
         if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
@@ -452,4 +493,20 @@ async def movement_statement(
     # race), surface 404 rather than a null body — never fabricate a payload.
     if result is None:
         raise HTTPException(status_code=404, detail="Not Found")
+
+    # Final NaN guard (Rule 3.7): _build_movement_level_map already refuses to
+    # anchor levels to a NaN close, but belt-and-suspenders — if ANY non-finite
+    # float (NaN/inf) ever reaches the levels block, Starlette would reject it
+    # during JSON rendering and 500 an otherwise-valid request. Degrade the
+    # levels block to an explicit UNAVAILABLE envelope instead of crashing.
+    if _levels_block_has_non_finite(result.get("levels")):
+        logger.warning(
+            "movement-statement levels for %s carried a non-finite value; "
+            "degrading levels to UNAVAILABLE rather than emitting NaN",
+            ticker_u,
+        )
+        result["levels"] = {
+            "status": "UNAVAILABLE",
+            "reason": "no valid daily close to anchor levels",
+        }
     return result

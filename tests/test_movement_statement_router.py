@@ -293,3 +293,181 @@ def test_flag_on_but_assembler_returns_none_is_404(monkeypatch):
         client = TestClient(_build_app())
         r = _get(client)
     assert r.status_code == 404
+
+
+# ─── NaN-close guard — premarket placeholder must not 500 (Rule 3.7) ─────────
+#
+# `market_data_daily` can carry a same-day PREMARKET PLACEHOLDER row whose
+# `close` is NULL/NaN. DataLoader.load_daily keeps it, and `float(NaN)` does
+# NOT raise — so without a filter the NaN flows into build_level_map →
+# level_map.current_price = NaN → Starlette rejects NaN at JSON-render → 500 on
+# an otherwise-valid request while the flag is ON. These tests pin both layers
+# of the fix:
+#   (1) _build_movement_level_map FILTERS to rows with a real OHLC quad and
+#       anchors to the LAST VALID close (the placeholder is dropped);
+#   (2) the endpoint's final NaN guard degrades the levels block to an explicit
+#       UNAVAILABLE envelope if any non-finite float ever reaches it — never a
+#       fabricated number, never a 500.
+
+
+def _synthetic_daily(n: int = 40, *, nan_last: bool = False):
+    """A hermetic daily OHLC frame; optionally append a NaN-close placeholder.
+
+    Shapes the frame DataLoader.load_daily returns (Open/High/Low/Close + Time),
+    so the REAL _build_movement_level_map (calculate_historical_levels +
+    build_level_map) runs unchanged against it — no mocked production math.
+    """
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+
+    idx = pd.date_range("2026-04-01", periods=n, freq="D")
+    base = 100.0 + np.arange(n) * 0.5
+    df = pd.DataFrame(
+        {"Open": base, "High": base + 1.0, "Low": base - 1.0, "Close": base + 0.2},
+        index=idx,
+    )
+    df["Time"] = df.index
+    if nan_last:
+        nxt = idx[-1] + pd.Timedelta(days=1)
+        placeholder = pd.DataFrame(
+            {
+                "Open": [np.nan],
+                "High": [np.nan],
+                "Low": [np.nan],
+                "Close": [np.nan],
+                "Time": [nxt],
+            },
+            index=[nxt],
+        )
+        df = pd.concat([df, placeholder])
+    return df
+
+
+def test_level_map_anchors_to_last_valid_close_not_nan(monkeypatch):
+    """REAL _build_movement_level_map: a NaN-close premarket placeholder as the
+    LAST row must be dropped, and the LevelMap anchored to the last VALID close
+    — never NaN (Rule 3.7). Exercises the production level-building path; only
+    DataLoader.load_daily is stubbed to inject the placeholder frame."""
+    import math  # noqa: PLC0415
+
+    df = _synthetic_daily(nan_last=True)
+    expected_close = float(df["Close"].iloc[-2])  # last VALID close (row -1 is NaN)
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        level_map = dashboard_router._build_movement_level_map("SPY")
+
+    assert level_map is not None, "valid earlier closes exist → must build a map"
+    assert math.isfinite(level_map.current_price), "current_price must be finite"
+    assert level_map.current_price == pytest.approx(expected_close)
+
+
+def test_no_valid_close_returns_none_levels_unavailable(monkeypatch):
+    """REAL _build_movement_level_map: when NO row has a real OHLC quad (every
+    close NaN), the helper returns None → the assembler degrades the levels
+    block to UNAVAILABLE — never a fabricated/NaN ladder (Rule 3.7)."""
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+
+    idx = pd.date_range("2026-04-01", periods=5, freq="D")
+    df = pd.DataFrame(
+        {
+            "Open": [np.nan] * 5,
+            "High": [np.nan] * 5,
+            "Low": [np.nan] * 5,
+            "Close": [np.nan] * 5,
+            "Time": list(idx),
+        },
+        index=idx,
+    )
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        level_map = dashboard_router._build_movement_level_map("SPY")
+    assert level_map is None
+
+
+def test_endpoint_nan_close_does_not_500_and_carries_no_nan(monkeypatch):
+    """End-to-end: with the flag ON and a NaN-close placeholder as the latest
+    daily row, the endpoint must return 200 (not 500) and the response must
+    contain NO NaN anywhere — the levels block is either built from the last
+    valid close or an explicit UNAVAILABLE envelope (Rule 3.7).
+
+    The assembler's continuation / magnitude / gamma pieces are stubbed (they
+    hit the network); the levels block flows from the REAL level-map builder so
+    this asserts the NaN never reaches the rendered JSON."""
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "true")
+    df = _synthetic_daily(nan_last=True)
+    expected_close = float(df["Close"].iloc[-2])
+
+    # Real level map builder (DataLoader stubbed), real assembler wiring — but
+    # feed the assembler an injected query_fn / gamma_fn so no network is hit.
+    import lib.movement_statement as ms  # noqa: PLC0415
+
+    def _empty_query(_sql, _params=None):
+        import pandas as pd  # noqa: PLC0415
+
+        return pd.DataFrame()  # no resolved rows → reach-rate UNAVAILABLE (3.7)
+
+    def _no_gamma(_ticker, as_of=None):
+        return {"available": False, "reason": "no chain in test"}
+
+    class _FakeContinuation:
+        def get(self, *_a, **_k):
+            return None
+
+    real_assemble = ms.assemble_movement_statement
+
+    def _assemble_with_stubs(ticker, timeframe="15m", **kw):
+        kw.setdefault("query_fn", _empty_query)
+        kw.setdefault("gamma_fn", _no_gamma)
+        kw.setdefault("engine", object())
+        return real_assemble(ticker, timeframe, **kw)
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df), patch(
+        "gcp.research.strat_engine.strat_pred_serve.predict_one",
+        return_value={"available": False, "note": "model muted in test"},
+    ), patch(
+        "lib.movement_statement.assemble_movement_statement",
+        side_effect=_assemble_with_stubs,
+    ):
+        client = TestClient(_build_app())
+        r = _get(client)
+
+    assert r.status_code == 200, r.text
+    # No NaN/Infinity token anywhere in the raw body (Starlette would have 500'd
+    # had a non-finite float reached the renderer).
+    assert "NaN" not in r.text and "Infinity" not in r.text, r.text
+    data = r.json()
+    levels = data["levels"]
+    if levels.get("status") == "OK":
+        # Built from the last VALID close, never the NaN placeholder.
+        assert levels["current_price"] == pytest.approx(expected_close)
+    else:
+        assert levels["status"] == "UNAVAILABLE"
+        assert levels["reason"]
+
+
+def test_endpoint_degrades_nan_levels_to_unavailable(monkeypatch):
+    """Belt-and-suspenders: even if a non-finite float somehow reaches the
+    levels block, the endpoint's final guard degrades the WHOLE levels block to
+    an explicit UNAVAILABLE envelope and returns 200 — never a NaN body / 500."""
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "true")
+    poisoned = _sample_statement()
+    poisoned["levels"] = {
+        "status": "OK",
+        "calls": [],
+        "puts": [],
+        "current_price": float("nan"),  # the exact failure mode being guarded
+    }
+    with patch.object(
+        dashboard_router, "_build_movement_level_map", return_value=object()
+    ), patch(
+        "lib.movement_statement.assemble_movement_statement",
+        return_value=poisoned,
+    ):
+        client = TestClient(_build_app())
+        r = _get(client)
+    assert r.status_code == 200, r.text
+    assert "NaN" not in r.text and "Infinity" not in r.text
+    levels = r.json()["levels"]
+    assert levels["status"] == "UNAVAILABLE"
+    assert "current_price" not in levels  # no fabricated/NaN number survives
+    assert levels["reason"]

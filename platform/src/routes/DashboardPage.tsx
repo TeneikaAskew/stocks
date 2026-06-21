@@ -520,8 +520,16 @@ export default function DashboardPage() {
           404s, the hook reports `absent`, and the card renders null. No
           user-visible change until the flag is flipped on. The card only
           consults 5m/15m cells (IWM/SPY/QQQ); the dashboard's tickers are
-          exactly those, so the active ticker is always valid here. */}
-      <MovementRead ticker={activeTicker} timeframe="15m" />
+          exactly those, so the active ticker is always valid here.
+
+          Live-only: the Movement Read is a "current read" — its hook calls the
+          live /api/movement-statement (ticker/timeframe only, no as_of). In
+          REVIEW/historical mode (reviewDate set) every surrounding card is
+          keyed to the selected as-of date, so rendering this live card would
+          show TODAY's continuation/levels next to historical data
+          (point-in-time contamination). Hiding it in review mode is the
+          correct, leak-proof behaviour. */}
+      {!isReview && <MovementRead ticker={activeTicker} timeframe="15m" />}
 
       {/* ── Intraday price (candlestick default · area toggle) ──────────────── */}
       {(hourly?.candlestick?.length ?? 0) > 0 && (

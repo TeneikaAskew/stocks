@@ -129,3 +129,52 @@ describe('Language audit (source-level)', () => {
     }
   });
 });
+
+// ── Review-mode mount guard (point-in-time leak prevention) ─────────────────
+//
+// The Movement Read is a LIVE "current read": its hook calls
+// /api/movement-statement with ticker/timeframe only (no as_of). In
+// REVIEW/historical mode (reviewDate set) the surrounding cards are keyed to
+// the selected as-of date, so mounting this live card next to historical data
+// would show TODAY's continuation/levels alongside a historical dashboard —
+// point-in-time contamination. DashboardPage MUST therefore only mount
+// <MovementRead> in live (non-review) mode. The platform's frontend test style
+// avoids DOM rendering (no @testing-library/react / jsdom in devDeps), so this
+// is verified as a source-level invariant: every <MovementRead mount must be
+// guarded by the review-mode flag, and no UNGUARDED mount may exist.
+
+describe('Review-mode mount guard (DashboardPage source)', () => {
+  const dashSource = readFileSync(
+    resolve(__dirname, '../../routes/DashboardPage.tsx'),
+    'utf8',
+  );
+
+  it('mounts <MovementRead> guarded by the review-mode flag', () => {
+    // The card must be gated by `!isReview` (or `reviewDate === null`) so it is
+    // hidden in historical review. Match the JSX guard directly preceding the
+    // mount, tolerating whitespace/newlines between the guard and the element.
+    const guarded =
+      /\{\s*!isReview\s*&&\s*<MovementRead/.test(dashSource) ||
+      /reviewDate\s*===\s*null\s*&&\s*<MovementRead/.test(dashSource);
+    expect(
+      guarded,
+      '<MovementRead> must be mounted behind a review-mode guard (e.g. {!isReview && <MovementRead .../>})',
+    ).toBe(true);
+  });
+
+  it('contains no UNGUARDED <MovementRead mount', () => {
+    // An unguarded mount is one preceded immediately by `>` / `}` / newline
+    // (i.e. rendered unconditionally). The only legal occurrence is the guarded
+    // one asserted above, so the count of guarded mounts must equal the total
+    // count of mounts.
+    const totalMounts = (dashSource.match(/<MovementRead\b/g) || []).length;
+    const guardedMounts = (
+      dashSource.match(/(?:!isReview|reviewDate\s*===\s*null)\s*&&\s*<MovementRead\b/g) || []
+    ).length;
+    expect(totalMounts, 'expected exactly one <MovementRead> mount').toBe(1);
+    expect(
+      guardedMounts,
+      'every <MovementRead> mount must be review-mode-guarded',
+    ).toBe(totalMounts);
+  });
+});
