@@ -249,6 +249,52 @@ def test_high_vol_ticker_has_higher_thresholds_than_low_vol_ticker():
         )
 
 
+def test_calibrate_ticker_missing_long_tf_yields_none_not_zero():
+    """Rule 3.7 invariant: a timeframe with too few resampled bars to
+    compute ATR must produce atr_<tf>_median == None (missing), NOT a
+    silent 0.0 that downstream code can't distinguish from a real low-vol
+    reading. With only ~120 1-min bars the 240m frame resamples to <15
+    rows, so its ATR can't be computed; the short frames still can.
+    Asserts on the REAL calibrate_ticker output."""
+    bars = synthetic_bars(n=120)
+    cal = calibrate_ticker("TEST", bars, lookback_days=60)
+
+    # 240m frame: 120 1-min bars → 1 row → ATR(period=14) impossible → None
+    assert cal["atr_240m_median"] is None, (
+        "insufficient long-timeframe data must be None, not a fabricated 0"
+    )
+    # That missing frame must NOT appear in the composed thresholds — the
+    # production loop `continue`s past it rather than writing a 0 threshold.
+    clean = json.loads(cal["threshold_clean"])
+    assert "240m" not in clean, "missing-ATR timeframe must be omitted, not 0"
+    # Short frames with enough bars still compute a real, positive ATR.
+    assert cal["atr_5m_median"] is not None and cal["atr_5m_median"] > 0
+    assert clean["5m"] == pytest.approx(
+        cal["atr_5m_median"] * CLEAN_ATR_MULT, abs=1e-3)
+
+
+def test_calibrate_ticker_rvol_distribution_is_monotone_nondecreasing():
+    """The four RVOL percentiles emitted by the real pipeline must be
+    monotonically non-decreasing (P25 ≤ P50 ≤ P75 ≤ P95) and centered
+    near 1.0 for the synthetic stationary-volume bars. Invariant check on
+    real computed output — no hand-typed expected numbers."""
+    bars = synthetic_bars(n=2000)
+    cal = calibrate_ticker("TEST", bars, lookback_days=60)
+
+    p25, p50, p75, p95 = (
+        cal["rvol_p25"], cal["rvol_p50"], cal["rvol_p75"], cal["rvol_p95"])
+    assert p25 <= p50 <= p75 <= p95, (
+        f"RVOL percentiles must be monotone non-decreasing, "
+        f"got {p25}, {p50}, {p75}, {p95}")
+    # Stationary uniform-ish volume → median RVOL near 1.0.
+    assert 0.85 < p50 < 1.15
+    # RSI percentiles likewise monotone non-decreasing.
+    rsi = [cal["rsi_p10"], cal["rsi_p25"], cal["rsi_p50"],
+           cal["rsi_p75"], cal["rsi_p90"]]
+    assert rsi == sorted(rsi), f"RSI percentiles must be sorted, got {rsi}"
+    assert all(0 <= v <= 100 for v in rsi), "RSI percentiles must be in [0,100]"
+
+
 def test_calibrate_ticker_returns_empty_for_empty_bars():
     cal = calibrate_ticker("EMPTY", pd.DataFrame(columns=["ts","open","high","low","close","volume"]), 60)
     assert cal == {}, "empty bars should produce empty calibration dict (skip, not crash)"

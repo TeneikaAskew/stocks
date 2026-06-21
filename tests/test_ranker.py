@@ -52,6 +52,35 @@ def test_scoring_unavailable_signals_contribute_zero_and_dont_inflate_max():
     assert res.pct_of_max == 0.5
 
 
+def test_scoring_negative_weight_penalizes_total_and_uses_abs_for_max():
+    """Happy-path for the negative-weight branch (insider_selling). A
+    signal with a negative weight must SUBTRACT from `total` while still
+    contributing `abs(weight)` to `max_possible`, keeping `pct_of_max`
+    interpretable in [-1, 1]. Asserts on values the real function
+    computes, not hand-typed round-trips."""
+    from lib.agents.ranker.scoring import weighted_score
+
+    signal_results = {
+        "good":    {"available": True, "score_0_to_1": 1.0,
+                    "reason": "", "raw": {}},
+        "selling": {"available": True, "score_0_to_1": 1.0,
+                    "reason": "heavy disposals", "raw": {}},
+    }
+    weights = {"good": 3.0, "selling": -1.5}
+    res = weighted_score(signal_results, weights, gate_signal="liquidity")
+    # total = 1.0×3.0 + 1.0×(-1.5) = 1.5 (penalty subtracted)
+    assert res.total == 1.5
+    # max_possible uses abs(weight): 3.0 + 1.5 = 4.5
+    assert res.max_possible == 4.5
+    # pct_of_max stays in interpretable range
+    assert -1.0 <= res.pct_of_max <= 1.0
+    assert res.pct_of_max == pytest.approx(1.5 / 4.5)
+    # The penalty contribution is recorded as a negative `points` entry.
+    selling = next(c for c in res.breakdown if c.name == "selling")
+    assert selling.points == -1.5
+    assert res.excluded_reason is None
+
+
 def test_scoring_gate_signal_failure_marks_excluded():
     from lib.agents.ranker.scoring import weighted_score
 
@@ -336,6 +365,93 @@ def test_rank_tickers_sorts_descending_and_drops_excluded(monkeypatch):
     assert result["excluded_count"] == 1
     tickers_in_order = [r["ticker"] for r in result["ranked"]]
     assert tickers_in_order == ["AAA", "BBB"]
+
+
+def test_rank_tickers_real_signals_drive_descending_order(monkeypatch):
+    """Happy-path companion to the stubbed-_run_signals_for test above.
+
+    Instead of hand-canning the per-ticker signal dicts, this exercises
+    the REAL signal scoring math (signal_strat_alignment +
+    signal_liquidity) by mocking only the DB boundary (`_query` in
+    signals.py). It then asserts the ranking order is driven by the
+    ACTUAL computed weighted_score totals, and that a genuinely illiquid
+    ticker is dropped by the real liquidity gate — not a pre-baked
+    `passes:False` flag.
+    """
+    from lib.agents.ranker import rank as rank_module
+    from lib.agents.ranker import signals as sig_module
+    from lib.agents.ranker.candidates import CandidateTicker
+
+    candidates = [
+        CandidateTicker(ticker="HIGH", catalyst_types=["earnings"]),
+        CandidateTicker(ticker="MID", catalyst_types=["sec_8k"]),
+        CandidateTicker(ticker="THIN", catalyst_types=["manual"]),
+    ]
+    monkeypatch.setattr(rank_module, "gather_candidates",
+                        lambda **kw: candidates)
+    monkeypatch.setattr(rank_module, "_persist_audit",
+                        lambda run_id, result: None)
+
+    # Per-ticker DB fixtures keyed by ticker so the SAME real _query
+    # dispatches differently per candidate. The real strat-alignment and
+    # liquidity math runs on these rows.
+    per_ticker_db = {
+        "HIGH": {
+            "market_data_daily_strat": pd.DataFrame([{
+                "strat_setup": True, "ftfc_score": 1.0,
+                "ftfc_direction": "bull", "strat_combo": "2-1-2"}]),
+            "avg_vol": pd.DataFrame([{"avg_vol": 5_000_000}]),
+        },
+        "MID": {
+            "market_data_daily_strat": pd.DataFrame([{
+                "strat_setup": False, "ftfc_score": 0.5,
+                "ftfc_direction": "mixed", "strat_combo": None}]),
+            "avg_vol": pd.DataFrame([{"avg_vol": 2_000_000}]),
+        },
+        "THIN": {  # strong strat but illiquid → real gate must drop it
+            "market_data_daily_strat": pd.DataFrame([{
+                "strat_setup": True, "ftfc_score": 1.0,
+                "ftfc_direction": "bull", "strat_combo": "2-1-2"}]),
+            "avg_vol": pd.DataFrame([{"avg_vol": 10_000}]),
+        },
+    }
+
+    current = {"ticker": None}
+
+    def fake_query(sql, params=None):
+        tk = (params or {}).get("ticker", "").upper()
+        current["ticker"] = tk
+        fx = per_ticker_db.get(tk, {})
+        if "FROM market_data_daily" in sql and "strat_setup" in sql:
+            return fx.get("market_data_daily_strat", pd.DataFrame())
+        if "AVG(volume)" in sql:
+            return fx.get("avg_vol", pd.DataFrame())
+        # All other signals return no data → available handling stays real.
+        return pd.DataFrame()
+
+    monkeypatch.setattr(sig_module, "_query", fake_query)
+
+    result = rank_module.rank_tickers(
+        weights={"strat_alignment": 3.0, "liquidity": 0.0},
+        limit=10,
+        persist_audit=False,
+    )
+
+    assert result["candidate_count"] == 3
+    # THIN is illiquid (10k < 500k default min) → excluded by REAL gate.
+    assert result["excluded_count"] == 1
+    ranked = result["ranked"]
+    tickers_in_order = [r["ticker"] for r in ranked]
+    assert tickers_in_order == ["HIGH", "MID"], (
+        "ranking order must follow genuinely-computed strat_alignment "
+        "scores (HIGH=1.0 > MID=0.165)")
+    # The scores are the REAL weighted_score totals, not canned numbers.
+    # HIGH: strat 1.0 × weight 3.0 = 3.0
+    assert ranked[0]["score"] == pytest.approx(3.0)
+    # MID: strat 0.165 × weight 3.0 ≈ 0.495 (real math, no setup, ftfc 0.5)
+    assert ranked[1]["score"] == pytest.approx(0.165 * 3.0, abs=1e-2)
+    # Higher score ⇒ higher rank (strictly descending).
+    assert ranked[0]["score"] > ranked[1]["score"]
 
 
 # ──────────────────────────────────────────────────────────────────────

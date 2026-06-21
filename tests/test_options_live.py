@@ -285,3 +285,96 @@ class TestAvToContracts:
 
     def test_empty_input(self):
         assert options_router._av_to_contracts([]) == []
+
+    # ── Rule 3.7 happy-path companions ───────────────────────────────────
+    # These exercise the REAL parser against a realistically-shaped AV row
+    # and assert the financial-data invariants from CLAUDE.md §3.7:
+    # a missing/blank price or Greek must surface as None, NEVER a silent 0.
+
+    def test_full_realistic_av_row_parses_all_fields(self):
+        """A complete, realistically-shaped AlphaVantage HISTORICAL_OPTIONS
+        row (all values arrive as strings) must round-trip every field through
+        the production string→float/int coercion with the exact observed
+        value — not a fabricated number fed through a mock."""
+        rows = [{
+            "contractID": "SPY250117P00480000",
+            "symbol": "SPY",
+            "type": "put",
+            "strike": "480.00",
+            "expiration": "2025-01-17",
+            "bid": "7.35",
+            "ask": "7.45",
+            "mark": "7.40",
+            "last": "7.38",
+            "volume": "2750",
+            "open_interest": "13219",
+            "implied_volatility": "0.2034",
+            "delta": "-0.3812",
+            "gamma": "0.0061",
+            "theta": "-0.1149",
+            "vega": "0.4377",
+            "rho": "-0.0732",
+        }]
+        out = options_router._av_to_contracts(rows)
+        assert len(out) == 1
+        c = out[0]
+        # String numerics coerced to real floats/ints.
+        assert c["strike"] == 480.0 and isinstance(c["strike"], float)
+        assert c["bid"] == 7.35
+        assert c["ask"] == 7.45
+        assert c["mark"] == 7.40
+        assert c["last"] == 7.38
+        assert c["volume"] == 2750 and isinstance(c["volume"], int)
+        assert c["open_interest"] == 13219 and isinstance(c["open_interest"], int)
+        assert c["implied_volatility"] == 0.2034
+        # Put delta in the valid [-1, 0] range (mathematical invariant).
+        assert -1.0 <= c["delta"] <= 0.0
+        assert c["delta"] == -0.3812
+        assert c["gamma"] == 0.0061  # gamma is non-negative for long options
+        assert c["gamma"] >= 0.0
+        assert c["theta"] == -0.1149  # long-option theta is negative
+        assert c["vega"] == 0.4377
+        assert c["rho"] == -0.0732
+        assert c["type"] == "put"
+
+    def test_missing_numeric_fields_become_none_not_zero(self):
+        """CLAUDE.md §3.7: when AV omits price/Greek keys entirely, the
+        parser must emit None for each — a silent 0 would be
+        indistinguishable from a real zero quote and would poison every
+        downstream GEX/Greeks computation."""
+        rows = [{
+            "contractID": "IWM250117C00200000",
+            "symbol": "IWM",
+            "type": "call",
+            "strike": "200.00",
+            "expiration": "2025-01-17",
+            "bid": "1.10",
+            "ask": "1.20",
+            # mark, last, volume, open_interest, IV and ALL Greeks absent.
+        }]
+        out = options_router._av_to_contracts(rows)
+        assert len(out) == 1
+        c = out[0]
+        # Core fields still present.
+        assert c["strike"] == 200.0
+        assert c["bid"] == 1.10
+        # Every absent numeric/Greek field is None — NOT 0 / 0.0.
+        for field in ("mark", "last", "volume", "open_interest",
+                      "implied_volatility", "delta", "gamma", "theta",
+                      "vega", "rho"):
+            assert c[field] is None, f"{field} should be None when missing, got {c[field]!r}"
+
+    def test_blank_and_nan_string_greeks_become_none_not_zero(self):
+        """AV sometimes returns empty strings or the literal 'nan' for Greeks
+        it couldn't compute. Those must map to None, never 0 (§3.7)."""
+        rows = [{
+            "type": "call", "strike": "100", "expiration": "2025-01-15",
+            "bid": "2.00", "ask": "2.10",
+            "delta": "", "gamma": "nan", "theta": "NaN", "vega": None,
+            "implied_volatility": "",
+        }]
+        out = options_router._av_to_contracts(rows)
+        assert len(out) == 1
+        c = out[0]
+        for field in ("delta", "gamma", "theta", "vega", "implied_volatility"):
+            assert c[field] is None, f"{field} should be None, got {c[field]!r}"

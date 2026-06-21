@@ -19,6 +19,7 @@ import pytest
 
 from scripts.analysis.options_pnl_translation import (
     estimate_options_pnl,
+    find_atm_option,
     find_realtime_mark_at,
     load_realtime_marks,
 )
@@ -395,3 +396,191 @@ class TestLoadOptionsChainExcludesRealtime:
         assert 'market_session IS NULL' in sql, \
             "Legacy EOD rows (no market_session enum at write time) must " \
             "still be returned by the chain query"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Happy-path companions — exercise the REAL empirical Greeks-approximation
+# math and the REAL ATM picker, asserting financial invariants (sign
+# correctness, delta bounds, ATM selection) rather than only round-tripping
+# hand-typed values through a DI'd loader. The existing magnitude tests
+# (1.25, 0.00417) verify the formula's exact output; these verify the
+# direction/sign of P&L is correct across CALL/PUT × favorable/adverse moves,
+# which a magnitude-only test can pass while having the sign backwards.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _put_chain_row(strike: float = 500.0, mark: float = 2.50,
+                   delta: float = -0.50, theta: float = -0.20,
+                   expiration: date = date(2020, 8, 1)) -> pd.Series:
+    """Synthetic EOD AV PUT chain row — put delta is negative."""
+    return pd.Series({
+        'strike': strike, 'mark': mark,
+        'bid': mark - 0.05, 'ask': mark + 0.05,
+        'delta': delta, 'gamma': 0.02, 'theta': theta,
+        'vega': 0.10, 'rho': -0.05, 'expiration': expiration,
+        'type': 'put', 'implied_volatility': 0.30,
+    })
+
+
+class TestEmpiricalPnlSignCorrectness:
+    """The empirical Greeks path must get the SIGN of delta_pnl right:
+    a CALL profits when the underlying rises and loses when it falls; a PUT
+    is the mirror. Sign bugs are the classic options-P&L failure mode a
+    magnitude-only assertion misses."""
+
+    def test_call_with_up_move_is_a_win(self):
+        d = date(2020, 7, 31)
+        trade = _trade(direction='CALL', return_pct=0.02, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, delta=0.50,
+                             expiration=date(2020, 8, 1))
+        r = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert r['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK
+        assert r['delta_pnl'] > 0          # favorable move → positive delta P&L
+        assert r['net_pnl_dollar'] > 0     # net of theta+spread still a win
+        assert r['option_win'] == 1
+        assert r['underlying_win'] == 1
+
+    def test_call_with_down_move_is_a_loss(self):
+        d = date(2020, 7, 31)
+        trade = _trade(direction='CALL', return_pct=-0.02, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, delta=0.50,
+                             expiration=date(2020, 8, 1))
+        r = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert r['delta_pnl'] < 0          # adverse move → negative delta P&L
+        assert r['net_pnl_dollar'] < 0
+        assert r['option_win'] == 0
+        assert r['underlying_win'] == 0
+
+    def test_put_with_down_move_is_a_win(self):
+        """A PUT profits when the underlying FALLS. The chain row carries a
+        negative delta; the code takes |delta| and re-signs by direction —
+        the result must be a positive delta P&L for a down move."""
+        d = date(2020, 7, 31)
+        trade = _trade(direction='PUT', return_pct=-0.02, trade_date=d)
+        atm = _put_chain_row(strike=500.0, mark=2.50, delta=-0.50)
+        r = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert r['delta_pnl'] > 0
+        assert r['net_pnl_dollar'] > 0
+        assert r['option_win'] == 1
+        assert r['underlying_win'] == 0    # underlying fell, so underlying "loss"
+
+    def test_put_with_up_move_is_a_loss(self):
+        d = date(2020, 7, 31)
+        trade = _trade(direction='PUT', return_pct=0.02, trade_date=d)
+        atm = _put_chain_row(strike=500.0, mark=2.50, delta=-0.50)
+        r = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert r['delta_pnl'] < 0
+        assert r['net_pnl_dollar'] < 0
+        assert r['option_win'] == 0
+
+    def test_net_pnl_pct_is_return_on_premium(self):
+        """net_pnl_pct must equal net_pnl_dollar / mark (return on premium
+        paid) — an internal-consistency invariant, not a hand-typed number."""
+        d = date(2020, 7, 31)
+        trade = _trade(direction='CALL', return_pct=0.02, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, delta=0.50,
+                             expiration=date(2020, 8, 1))
+        r = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert r['net_pnl_pct'] == pytest.approx(
+            r['net_pnl_dollar'] / r['mark'], rel=1e-9)
+
+    def test_theta_and_spread_are_costs_not_credits(self):
+        """A flat underlying move (return_pct ~ 0) must still LOSE money to
+        theta decay + half-spread — both are costs, so net < 0."""
+        d = date(2020, 7, 31)
+        trade = _trade(direction='CALL', return_pct=0.0, hold_min=120.0,
+                       trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, delta=0.50,
+                             theta=-0.40, expiration=date(2020, 8, 1))
+        r = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert r['theta_cost'] > 0          # stored as a positive cost
+        assert r['spread_cost'] > 0
+        assert r['net_pnl_dollar'] < 0      # no move, only costs → loss
+
+
+class TestFindAtmOptionRealPicker:
+    """Exercise the REAL ATM selector against a realistic multi-strike,
+    multi-expiry chain — verifies it picks the nearest strike, the right
+    option type, and prefers the 0DTE expiry."""
+
+    def _chain(self):
+        return pd.DataFrame([
+            # 0DTE expiry (trade date)
+            {'type': 'call', 'strike': 495, 'expiration': date(2026, 5, 22),
+             'mark': 6.1, 'delta': 0.66, 'bid': 6.0, 'ask': 6.2, 'theta': -0.3},
+            {'type': 'call', 'strike': 500, 'expiration': date(2026, 5, 22),
+             'mark': 2.5, 'delta': 0.50, 'bid': 2.45, 'ask': 2.55, 'theta': -0.2},
+            {'type': 'call', 'strike': 510, 'expiration': date(2026, 5, 22),
+             'mark': 0.8, 'delta': 0.22, 'bid': 0.75, 'ask': 0.85, 'theta': -0.1},
+            {'type': 'put', 'strike': 500, 'expiration': date(2026, 5, 22),
+             'mark': 2.4, 'delta': -0.50, 'bid': 2.35, 'ask': 2.45, 'theta': -0.2},
+            # later expiry — must NOT be chosen when a 0DTE strike exists
+            {'type': 'call', 'strike': 501, 'expiration': date(2026, 5, 29),
+             'mark': 5.0, 'delta': 0.52, 'bid': 4.9, 'ask': 5.1, 'theta': -0.05},
+        ])
+
+    def test_picks_nearest_strike_call_zero_dte(self):
+        atm = find_atm_option(self._chain(), entry_price=501.5,
+                              trade_date=date(2026, 5, 22), direction='CALL')
+        assert not atm.empty
+        assert atm['type'] == 'call'
+        assert atm['strike'] == 500          # 500 is nearest to 501.5
+        assert pd.Timestamp(atm['expiration']).date() == date(2026, 5, 22)  # 0DTE
+
+    def test_picks_put_for_put_direction(self):
+        atm = find_atm_option(self._chain(), entry_price=500.0,
+                              trade_date=date(2026, 5, 22), direction='PUT')
+        assert not atm.empty
+        assert atm['type'] == 'put'
+        assert atm['delta'] < 0              # a real put delta
+
+    def test_falls_back_to_nearest_future_expiry_when_no_zero_dte(self):
+        """No 0DTE for the trade date → the picker must use the nearest
+        FUTURE expiry, never an already-expired contract."""
+        chain = pd.DataFrame([
+            {'type': 'call', 'strike': 500, 'expiration': date(2026, 5, 29),
+             'mark': 5.0, 'delta': 0.52, 'bid': 4.9, 'ask': 5.1, 'theta': -0.05},
+            {'type': 'call', 'strike': 500, 'expiration': date(2026, 6, 5),
+             'mark': 7.0, 'delta': 0.54, 'bid': 6.9, 'ask': 7.1, 'theta': -0.04},
+        ])
+        atm = find_atm_option(chain, entry_price=500.0,
+                              trade_date=date(2026, 5, 22), direction='CALL')
+        assert not atm.empty
+        assert pd.Timestamp(atm['expiration']).date() == date(2026, 5, 29)  # nearest future
+
+    def test_empty_chain_returns_empty_series(self):
+        atm = find_atm_option(pd.DataFrame(), entry_price=500.0,
+                              trade_date=date(2026, 5, 22), direction='CALL')
+        assert atm.empty
+
+
+class TestRealtimePnlSignCorrectness:
+    """Realtime mark-to-mark P&L sign must track the observed mark change,
+    and net_pnl_pct must be measured on the entry mark."""
+
+    def _marks(self, vals):
+        d = date(2026, 5, 22)
+        return _realtime_marks(d, [0, 5, 10, 15], vals)
+
+    def test_realtime_gain_when_mark_rises(self):
+        d = date(2026, 5, 22)
+        trade = _trade(entry_min=9*60+35, hold_min=10.0, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, expiration=d)
+        r = estimate_options_pnl(trade, atm,
+                                 realtime_marks=self._marks([2.50, 2.50, 2.80, 3.00]))
+        assert r['data_source'] == DATA_SOURCE_REALTIME
+        assert r['net_pnl_dollar'] > 0
+        assert r['option_win'] == 1
+        # net_pnl_pct measured on entry mark (≈2.50), not the EOD chain mark.
+        assert r['net_pnl_pct'] == pytest.approx(
+            r['net_pnl_dollar'] / r['mark'], rel=1e-9)
+
+    def test_realtime_loss_when_mark_falls(self):
+        d = date(2026, 5, 22)
+        trade = _trade(entry_min=9*60+35, hold_min=10.0, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, expiration=d)
+        r = estimate_options_pnl(trade, atm,
+                                 realtime_marks=self._marks([2.50, 2.50, 2.20, 2.00]))
+        assert r['data_source'] == DATA_SOURCE_REALTIME
+        assert r['net_pnl_dollar'] < 0
+        assert r['option_win'] == 0

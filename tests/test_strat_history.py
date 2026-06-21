@@ -111,3 +111,32 @@ class TestComputeStratHistory:
                 assert rec['is_continuation'] == ('continuation' in rec['combo'])
                 assert rec['is_reversal'] == ('reversal' in rec['combo'])
                 assert rec['is_inside'] == (rec['candle'] == '1')
+
+    def test_classification_is_non_vacuous(self, daily):
+        """Guard against a silent 'all-X' output: the daily tape on real
+        random-walk OHLCV must classify a majority of bars into the four
+        directional candle types, and fire at least one real combo. If the
+        classifier degraded to emitting only 'X' (the unclassifiable
+        sentinel), every flag-consistency check above would still pass —
+        this makes that regression visible."""
+        res = compute_strat_history('TEST', df=daily, lookback=999)
+        daily_hist = res['timeframes']['1d']['history']
+        candles = [r['candle'] for r in daily_hist]
+        non_x = [c for c in candles if c != 'X']
+        # A 260-bar random walk should classify almost everything; require
+        # the overwhelming majority to be real (not the 'X' sentinel).
+        assert len(non_x) >= 0.9 * len(candles), (
+            f"too many unclassifiable bars: {len(candles) - len(non_x)}/"
+            f"{len(candles)} are 'X'"
+        )
+        # All four directional types should appear over 260 bars.
+        assert {'1', '2U', '2D', '3'}.issubset(set(candles))
+        # At least one real combo must fire (not just empty/none strings).
+        real_combos = [
+            r['combo'] for r in daily_hist
+            if r['combo'] and r['combo'] not in ('', 'none')
+        ]
+        assert real_combos, "no strat combos detected on a 260-bar tape"
+        # The continuation/reversal flags must actually be exercised, not
+        # uniformly False (which would also pass test_flags_consistent).
+        assert any(r['is_continuation'] or r['is_reversal'] for r in daily_hist)

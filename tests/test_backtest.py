@@ -461,3 +461,86 @@ class TestBacktestEngine:
             assert isinstance(trade.orb_trend, int)
             assert -1.0 <= trade.ftfc_score <= 1.0
             assert trade.orb_trend in (-1, 0, 1)
+
+    # ── Happy-path: the engine actually GENERATES trades and computes P&L ──
+    #
+    # The existing TestBacktestEngine assertions iterate `result.trades`,
+    # so they all pass VACUOUSLY if the engine produces zero trades. These
+    # companions pin that the realistic synthetic OHLCV fixture exercises a
+    # non-empty trade path and that the derived metrics obey their
+    # mathematical invariants. No expected numbers are hand-typed — every
+    # assertion is either "> 0", a known bound (win-rate in [0,1]), or a
+    # cross-check between two independently-computed quantities.
+
+    def test_engine_generates_nonzero_trades(self, engine, intraday_data):
+        """Guard against the silent empty-trade path: the realistic fixture
+        must produce real trades, otherwise every per-trade test above is
+        a no-op."""
+        result = engine.run(intraday_data)
+        assert result.total_trades > 0, (
+            "engine produced 0 trades on realistic OHLCV — all per-trade "
+            "assertions would pass vacuously"
+        )
+        # winners + losers must partition all completed trades exactly.
+        completed = [t for t in result.trades if t.return_pct is not None]
+        assert len(result.winners) + len(result.losers) == len(completed)
+
+    def test_win_rate_in_unit_interval_and_matches_counts(self, engine,
+                                                          intraday_data):
+        """win_rate is a probability: in [0, 1], and equals
+        winners / total computed independently."""
+        result = engine.run(intraday_data)
+        assert result.total_trades > 0
+        wr = result.win_rate
+        assert 0.0 <= wr <= 1.0
+        expected = len(result.winners) / result.total_trades
+        assert wr == pytest.approx(expected)
+
+    def test_pnl_accounting_self_consistent(self, engine, intraday_data):
+        """Expectancy = mean(return_pct) over completed trades, and the
+        winner/loser split agrees with the signs of avg_win/avg_loss.
+        Cross-checks the engine's aggregates against a from-scratch
+        recompute on the raw per-trade returns (no fabricated constants)."""
+        result = engine.run(intraday_data)
+        assert result.total_trades > 0
+        returns = [t.return_pct for t in result.trades if t.return_pct is not None]
+        assert returns, "completed trades must carry a return_pct"
+        assert result.expectancy == pytest.approx(float(np.mean(returns)))
+        if result.winners:
+            assert result.avg_win > 0
+            assert result.avg_win == pytest.approx(
+                float(np.mean([t.return_pct for t in result.winners])))
+        if result.losers:
+            assert result.avg_loss <= 0
+        # daily_pnl pnl should sum to the position-weighted trade P&L the
+        # engine booked, not be an independent fabrication: total booked
+        # P&L is finite and not NaN.
+        total_daily = sum(d['pnl'] for d in result.daily_pnl)
+        assert np.isfinite(total_daily)
+
+    def test_no_look_ahead_exit_after_entry(self, engine, intraday_data):
+        """Every closed trade exits at or after it enters, and the exit
+        price is a real number — i.e. the engine cannot 'see' a future
+        bar before the entry bar. Look-ahead would manifest as an exit
+        timestamp earlier than entry."""
+        result = engine.run(intraday_data)
+        assert result.total_trades > 0
+        for t in result.trades:
+            if t.exit_time is not None:
+                assert t.exit_time >= t.entry_time, (
+                    f"exit {t.exit_time} precedes entry {t.entry_time} — "
+                    "look-ahead bug"
+                )
+                assert t.exit_price is not None and np.isfinite(t.exit_price)
+
+    def test_sharpe_and_profit_factor_finite_on_real_run(self, engine,
+                                                         intraday_data):
+        """Real multi-day run must yield finite (never NaN/inf) Sharpe and
+        profit_factor — the exact failure mode the single-day regression
+        test guards, here on the full happy path."""
+        result = engine.run(intraday_data)
+        assert result.total_trades > 0
+        assert np.isfinite(result.sharpe_ratio)
+        assert not pd.isna(result.sharpe_ratio)
+        pf = result.profit_factor
+        assert pf >= 0 and not pd.isna(pf)

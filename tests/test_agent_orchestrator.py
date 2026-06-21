@@ -1108,6 +1108,173 @@ def test_pipeline_emits_empty_supporting_signals(
     assert report.supporting_signals == []
 
 
+# ─── Headline plan = deterministic planner, NOT the LLM's numbers ─────
+
+
+def test_pipeline_headline_plan_overrides_llm_trader_numbers(
+    canned_bundle, seven_role_snapshot
+):
+    """The whole point of the trade_planner override (docstring refs the
+    ARM 4/20 $237.68 hallucination): the report's headline
+    entry_zone/stop/targets must come from the deterministic
+    `compute_persona_plans` math derived from the bundle, NOT from the
+    LLM trader/PM free-form numbers.
+
+    The mock TraderOutput AND mock PortfolioManagerOutput both hardcode
+    entry_zone=(500.0, 501.5), stop=497.5, targets=[504.0, 508.0]. If
+    the report simply round-tripped those LLM values, this would be a
+    fake plumbing test. Instead we assert the headline differs from the
+    LLM numbers and equals the neutral persona plan computed by the real
+    planner off the canned bundle (close 504, ATR 4.2, 2U bull trigger).
+    """
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # Long, normal regime → real planner produced 3 persona plans.
+    assert report.regime == "normal"
+    assert len(report.persona_plans) == 3
+    personas = {p.persona for p in report.persona_plans}
+    assert personas == {"aggressive", "neutral", "conservative"}
+
+    # The headline IS the neutral persona plan (canonical), proving the
+    # orchestrator selected it rather than echoing the LLM.
+    neutral = next(p for p in report.persona_plans if p.persona == "neutral")
+    assert report.entry_zone == neutral.entry_zone
+    assert report.stop == neutral.stop
+    assert report.targets == neutral.targets
+
+    # And it is NOT the LLM's hardcoded trade numbers — the override
+    # actually fired. (Guards against a regression that re-publishes the
+    # hallucination-prone LLM zone.)
+    llm_low, llm_high = 500.0, 501.5
+    assert not (
+        report.entry_zone.low == llm_low and report.entry_zone.high == llm_high
+    ), "headline entry_zone must be planner-derived, not the LLM's hardcoded zone"
+    assert report.stop != 497.5
+    assert report.targets != [504.0, 508.0]
+
+    # The deterministic plan is anchored off the bundle's real trigger
+    # high (502.5) for a long 2U setup — entry begins at/above trigger.
+    assert report.entry_zone.low >= 502.0
+    # Targets are strictly ascending (R-multiples) and above entry.
+    assert report.targets == sorted(report.targets)
+    assert report.targets[0] > report.entry_zone.high
+
+
+def test_pipeline_falls_back_to_llm_plan_when_direction_flat(
+    canned_bundle, seven_role_snapshot
+):
+    """Real fallback branch: a risk `block` flattens direction. The
+    deterministic planner emits no persona plans for a flat trade, so
+    the orchestrator falls back to the LLM PM's entry/stop/targets to
+    keep the report's actionable fields populated (degraded path at
+    orchestrator.py — `else: headline = pm.*`).
+
+    Verifies the documented branch instead of leaving it untested: on
+    flat the headline equals the LLM PM numbers (500.0/501.5), the
+    inverse of the happy-path override above."""
+    mock = _MockLLM(risk_block=True)
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert report.direction == "flat"
+    # Planner yields nothing for flat → fall back to LLM PM plan.
+    assert report.persona_plans == []
+    assert report.entry_zone.low == 500.0
+    assert report.entry_zone.high == 501.5
+    assert report.stop == 497.5
+    assert report.targets == [504.0, 508.0]
+
+
+# ─── Report assembly: real merge of analyst/risk/section outputs ──────
+
+
+def test_pipeline_flattens_all_risk_persona_flags(
+    canned_bundle, seven_role_snapshot
+):
+    """`report.risk_flags` must aggregate the flags from all three risk
+    personas (orchestrator flattens `r.flags` across risk_outputs). The
+    mock emits exactly one flag per persona, tagged with its persona
+    name — assert all three persona-tagged flags land in the report so a
+    regression that drops a persona's review is caught."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    personas_seen = {f.persona for f in report.risk_flags}
+    assert personas_seen == {"aggressive", "conservative", "neutral"}
+    assert len(report.risk_flags) == 3
+    # All info severity in the non-block happy path.
+    assert all(f.severity == "info" for f in report.risk_flags)
+
+
+def test_pipeline_assembles_strat_and_catalyst_sections_from_bundle(
+    canned_bundle, seven_role_snapshot
+):
+    """The report's strat_status and catalysts are built from the real
+    context bundle (via `_build_strat_snapshot` / `_build_catalysts`),
+    not from any LLM output. Assert the canned bundle's 2U bull trigger
+    and the FOMC economic event flow through into the structured report
+    fields — proves the section-extraction wiring, not just plumbing."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # Strat snapshot reflects the canned bullish 2U trigger day.
+    assert report.strat_status.last_candle == "2U"
+    assert report.strat_status.in_force_combo == "212_bull_reversal"
+    assert report.strat_status.ftfc_direction == "bullish"
+    assert report.strat_status.trigger_high == 502.5
+    assert report.strat_status.trigger_low == 497.0
+
+    # The FOMC high-impact economic event from the bundle is surfaced as
+    # a structured catalyst with its real impact/kind.
+    fomc = [c for c in report.catalysts if c.name == "FOMC"]
+    assert len(fomc) == 1
+    assert fomc[0].impact == "high"
+    assert fomc[0].kind == "economic"
+
+
+def test_pipeline_records_typed_failure_reason_not_silent(
+    canned_bundle, seven_role_snapshot
+):
+    """Rule 3.7: an analyst failure must surface a typed, non-empty
+    reason — not a silent swallow. The orchestrator records
+    `failed_section_reasons[section]` with the real exception type and
+    message. Assert the reason captures the RuntimeError the mock raised
+    rather than an empty/sentinel string."""
+    mock = _MockLLM(failing_analyst_sections=frozenset({"options"}))
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert "options" in report.failed_sections
+    reason = report.failed_section_reasons.get("options")
+    assert reason, "failed section must carry a non-empty typed reason"
+    assert "RuntimeError" in reason
+    assert "deliberately failed" in reason
+
+
 # ─── Audit 2026-05-08 G.P1.9 — thesis-vs-targets consistency validator ───
 
 

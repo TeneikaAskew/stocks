@@ -263,6 +263,77 @@ def test_normalize_coerces_numeric_greeks():
     assert out.iloc[0]["delta"] == pytest.approx(-0.23192)
 
 
+def test_normalize_full_realistic_realtime_call_preserves_values():
+    """Happy-path companion: a complete, realistically-shaped AV
+    REALTIME_OPTIONS call row must coerce every string numeric to its exact
+    float value and satisfy the Greek invariants (call delta in [0,1],
+    long-option gamma >= 0, theta <= 0)."""
+    from gcp.fetchers.fetch_av_realtime_options import _normalize_av_response
+
+    raw = pd.DataFrame([{
+        "contractID": "SPY260821C00640000",
+        "symbol": "SPY",
+        "type": "call",
+        "expiration": "2026-08-21",
+        "strike": "640.00",
+        "last": "18.40",
+        "mark": "18.55",
+        "bid": "18.45",
+        "ask": "18.65",
+        "volume": "1204",
+        "open_interest": "9876",
+        "implied_volatility": "0.14820",
+        "delta": "0.51237",
+        "gamma": "0.00911",
+        "theta": "-0.18204",
+        "vega": "0.83910",
+        "rho": "0.42118",
+    }])
+    out = _normalize_av_response(raw, "spy", _NOW)
+    assert len(out) == 1
+    r = out.iloc[0]
+    assert r["ticker"] == "SPY"
+    assert r["option_type"] == "calls"
+    assert r["market_session"] == "REALTIME"
+    assert r["strike"] == pytest.approx(640.0)
+    assert r["last_price"] == pytest.approx(18.40)
+    assert r["mark"] == pytest.approx(18.55)
+    assert int(r["open_interest"]) == 9876
+    assert r["implied_volatility"] == pytest.approx(0.14820)
+    # Mathematical Greek invariants for a long call near ATM.
+    assert 0.0 <= r["delta"] <= 1.0
+    assert r["delta"] == pytest.approx(0.51237)
+    assert r["gamma"] >= 0.0
+    assert r["theta"] <= 0.0  # long-option time decay is negative
+
+
+def test_normalize_missing_greek_values_become_nan_not_zero():
+    """CLAUDE.md §3.7: AV occasionally returns blank/None Greek values for a
+    contract it couldn't price. Those must coerce to NaN (errors='coerce'),
+    NEVER a silent 0 — a 0 delta/gamma written to etf_options_snapshots
+    would corrupt every downstream GEX computation that sums Greeks."""
+    from gcp.fetchers.fetch_av_realtime_options import _normalize_av_response
+
+    raw = pd.DataFrame([{
+        "type": "call", "expiration": "2026-05-29", "strike": "500.00",
+        "bid": "2.45", "ask": "2.55", "mark": "2.50",
+        "delta": "0.50",
+        # The remaining Greeks/IV arrive blank or None from AV.
+        "implied_volatility": "", "gamma": "", "theta": None,
+        "vega": "", "rho": "",
+    }])
+    out = _normalize_av_response(raw, "SPY", _NOW)
+    assert len(out) == 1
+    r = out.iloc[0]
+    # The one present Greek is preserved.
+    assert r["delta"] == pytest.approx(0.50)
+    # Every blank/None Greek is NaN — not 0.
+    for col in ("implied_volatility", "gamma", "theta", "vega", "rho"):
+        assert pd.isna(r[col]), f"{col} should be NaN when blank, got {r[col]!r}"
+        # Explicitly assert it is not the silent-fallback 0.
+        assert not (r[col] == 0), f"{col} silently became 0 — §3.7 violation"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # process_ticker — dedup before upsert
 # ──────────────────────────────────────────────────────────────────────
