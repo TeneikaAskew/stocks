@@ -117,6 +117,28 @@ def _ok(**fields: Any) -> dict:
     return out
 
 
+def _strict_query(sql: str, params: Optional[dict] = None):
+    """Default production query path — RAISES on any DB failure (Rule 3.7).
+
+    Delegates to ``gcp.database.query_to_dataframe_strict``, the non-swallowing
+    sibling of ``query_to_dataframe``. The plain ``_query`` /
+    ``query_to_dataframe`` wrapper catches DB exceptions and returns an EMPTY
+    DataFrame, which would make a real Cloud SQL outage / missing relation
+    read as "no resolved outcomes" / "no magnitude prediction" — the exact
+    silent fallback Rule 3.7 forbids. By raising here, a genuine query failure
+    propagates to the per-field try/except in `_fetch_reach_rates` /
+    `_build_expected_move`, which converts it into an explicit
+    `UNAVAILABLE(reason="… query failed: …")` envelope instead of a fabricated
+    "no data" result.
+
+    Import is deferred so the hermetic tests (which inject their own `query_fn`)
+    never need sqlalchemy / the Cloud SQL connector.
+    """
+    from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+
+    return query_to_dataframe_strict(sql, params or {})
+
+
 # ── Piece 1: continuation probability (the headline source) ────────────────
 
 
@@ -129,7 +151,23 @@ def _build_continuation(engine, ticker: str, tf: str, as_of) -> dict:
     """
     from gcp.research.strat_engine.strat_pred_serve import predict_one
 
-    result = predict_one(engine, ticker, tf, as_of=as_of)
+    try:
+        result = predict_one(engine, ticker, tf, as_of=as_of)
+    except Exception as e:  # noqa: BLE001 — surface, never hard-fail the stmt
+        # predict_one can raise on a Cloud SQL read, a corrupt model artifact,
+        # or a feature-building failure. Like EVERY other source in this file,
+        # surface that as a typed UNAVAILABLE envelope (Rule 3.7) rather than
+        # letting it crash the whole assemble_movement_statement call — the
+        # rest of the statement (levels, modifiers, scope) must still assemble.
+        log.warning(
+            "continuation predict_one failed for %s %s: %s", ticker, tf, e
+        )
+        return _unavailable(
+            f"structure-continuation query failed: {e}",
+            current_type=None,
+            continuation_prob=None,
+            timeframe=tf,
+        )
 
     meta = {
         "timeframe": result.get("timeframe", tf),
@@ -307,22 +345,36 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict) -> dict:
 # ── Piece 3: expected move (CONTEXT / sizing only — never the headline) ────
 
 
-def _build_expected_move(ticker: str, tf: str, query_fn) -> dict:
+def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     """Latest magnitude bucket distribution as a sizing/context modifier.
 
     Explicitly flagged "sizing/context, not the headline". Returns an
     UNAVAILABLE envelope (never a uniform 0.25 fallback) when no prediction
     exists (Rule 3.7).
+
+    `as_of` (Rule 3.6 — no as-of leakage): when provided, the magnitude query
+    is bounded to bars dated AT OR BEFORE the cutoff (`ts <= :as_of`) so a
+    replayed/historical statement does not mix the LATEST live magnitude row
+    into a point-in-time read. The cutoff is the continuation bar's `ts` when
+    available, else the caller's `as_of`. When None, behavior is unchanged
+    (the latest row in the table). `ts` is the bar timestamp column in
+    `magnitude_per_bar_predictions` (TIMESTAMPTZ).
     """
     sql = (
         "SELECT ticker, tf, ts, p_tight, p_normal, p_expanded, p_explosive, "
         "       pred_bucket, max_proba, model_version, source, computed_at "
         "FROM magnitude_per_bar_predictions "
         "WHERE ticker = :ticker AND tf = :tf "
-        "ORDER BY ts DESC, computed_at DESC LIMIT 1"
     )
+    params = {"ticker": ticker.upper(), "tf": tf}
+    if as_of is not None:
+        # Strict point-in-time bound to the bar — exclude any magnitude row
+        # newer than the as-of cutoff (future-info leak).
+        sql += "  AND ts <= :as_of "
+        params["as_of"] = as_of
+    sql += "ORDER BY ts DESC, computed_at DESC LIMIT 1"
     try:
-        df = query_fn(sql, {"ticker": ticker.upper(), "tf": tf})
+        df = query_fn(sql, params)
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
         log.warning("magnitude query failed for %s %s: %s", ticker, tf, e)
         return _unavailable(f"magnitude query failed: {e}", role="context")
@@ -470,7 +522,11 @@ def assemble_movement_statement(
         }
 
     if query_fn is None:
-        from lib.agents.summarizers import _query as query_fn  # noqa: PLC0415
+        # STRICT default (Rule 3.7): a DB failure must RAISE so the per-field
+        # try/except turns it into UNAVAILABLE(reason="query failed: …"), NOT
+        # the swallowing lib.agents.summarizers._query → query_to_dataframe
+        # path that returns an empty DataFrame and reads as "no data".
+        query_fn = _strict_query
     if gamma_fn is None:
         from lib.agents.summarizers import (  # noqa: PLC0415
             summarize_gamma_levels as gamma_fn,
@@ -499,7 +555,14 @@ def assemble_movement_statement(
     levels = _build_levels(level_map, reach_calls, reach_puts)
 
     # ── Piece 3 + 4: CONTEXT modifiers (never touch the headline) ──────────
-    expected_move = _build_expected_move(ticker, tf, query_fn)
+    # Rule 3.6 — point-in-time consistency: in REPLAY (as_of set), bound the
+    # magnitude read to the continuation bar's `ts` (so it matches the bar the
+    # headline anchors to), falling back to the caller's `as_of`. In LIVE mode
+    # (as_of is None) the cutoff stays None → latest row, behavior unchanged.
+    mag_as_of = None
+    if as_of_arg is not None:
+        mag_as_of = continuation.get("ts") or as_of_arg
+    expected_move = _build_expected_move(ticker, tf, query_fn, as_of=mag_as_of)
     regime = _build_regime(ticker, gamma_as_of, gamma_fn)
 
     # ── Headline — driven by continuation ONLY ─────────────────────────────

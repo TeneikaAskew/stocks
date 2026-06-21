@@ -358,6 +358,154 @@ def test_query_exception_surfaced_not_swallowed(monkeypatch):
         assert "connection reset" in entry["reach_rate"]["reason"]
 
 
+# ── FIX 1: the DEFAULT (strict) query path RE-RAISES on a DB outage ────────
+
+
+def test_default_query_path_is_strict_raises_on_db_error(monkeypatch):
+    """When query_fn is NOT injected, the assembler must use the STRICT path
+    (gcp.database.query_to_dataframe_strict) which RE-RAISES on a DB failure —
+    so a real Cloud SQL outage surfaces as UNAVAILABLE(reason mentions query
+    failure), NOT collapsed to a silent 'no data' empty DataFrame.
+
+    The swallowing query_to_dataframe wrapper would have returned an empty df
+    here and the field would read 'no resolved outcomes' / 'no magnitude
+    prediction' — the exact Rule 3.7 silent fallback this fix prevents.
+    """
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
+
+    # Mock the STRICT path at its source so it raises like a real DB outage
+    # (missing relation / connection reset). The default query_fn delegates
+    # to this, so if the default were the swallowing wrapper this would NOT
+    # raise and the assertions below would fail.
+    import gcp.database as gdb
+
+    def _boom_strict(sql, params=None):
+        raise RuntimeError("FATAL: connection to Cloud SQL refused")
+
+    monkeypatch.setattr(gdb, "query_to_dataframe_strict", _boom_strict)
+
+    # No query_fn passed → exercises the default strict path.
+    out = ms.assemble_movement_statement(
+        "SPY", "15m", engine=object(),
+        level_map=_sample_level_map(), gamma_fn=_gamma_ok,
+    )
+    # Reach-rate (premarket_analysis) and magnitude both ride the strict path.
+    for entry in out["levels"]["calls"]:
+        assert entry["reach_rate"]["status"] == "UNAVAILABLE"
+        assert "connection to Cloud SQL refused" in entry["reach_rate"]["reason"]
+    em = out["confidence_modifiers"]["expected_move"]
+    assert em["status"] == "UNAVAILABLE"
+    assert "query failed" in em["reason"]
+    assert "connection to Cloud SQL refused" in em["reason"]
+    # NOT collapsed to the benign no-data wording.
+    assert "no magnitude prediction" not in em["reason"]
+
+
+# ── FIX 2: predict_one raising → UNAVAILABLE, the call does NOT hard-fail ──
+
+
+def test_predict_one_raise_does_not_hard_fail(monkeypatch):
+    """If predict_one raises (Cloud SQL read / corrupt model / feature build),
+    continuation + headline are UNAVAILABLE and the OVERALL call still returns
+    a fully-assembled object (levels / modifiers / scope still populate) —
+    matching how every other source surfaces failure (Rule 3.7)."""
+    def _pred_boom(*_a, **_k):
+        raise RuntimeError("corrupt model artifact: bad pickle")
+
+    # Other sources are healthy so we can prove they still assemble.
+    out = _assemble(monkeypatch, predict=_pred_boom)
+
+    assert out is not None
+    assert out["status"] == "OK"  # the statement as a whole did NOT crash
+    assert out["continuation"]["status"] == "UNAVAILABLE"
+    assert out["continuation"]["continuation_prob"] is None  # never fabricated
+    assert "corrupt model artifact" in out["continuation"]["reason"]
+    assert out["headline"]["status"] == "UNAVAILABLE"
+    assert out["headline"]["probability"] is None
+    assert "corrupt model artifact" in out["headline"]["reason"]
+    # The rest of the statement still assembled normally.
+    assert out["levels"]["status"] == "OK"
+    assert out["levels"]["calls"][0]["reach_rate"]["status"] == "OK"
+    assert out["confidence_modifiers"]["expected_move"]["status"] == "OK"
+    assert out["confidence_modifiers"]["regime"]["status"] == "OK"
+
+
+# ── FIX 3: as_of cutoff is honored on the magnitude query (Rule 3.6) ───────
+
+
+def test_expected_move_applies_as_of_cutoff():
+    """_build_expected_move binds ts <= :as_of when an as-of is supplied so a
+    replayed statement can't leak a magnitude row newer than the cutoff."""
+    captured = {}
+
+    def _recording_qf(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return _mag_df()
+
+    cutoff = "2026-06-20T15:45:00+00:00"
+    em = ms._build_expected_move("SPY", "15m", _recording_qf, as_of=cutoff)
+    assert em["status"] == "OK"
+    # The as-of upper bound is present and bound to the cutoff value.
+    assert "ts <= :as_of" in captured["sql"]
+    assert captured["params"].get("as_of") == cutoff
+
+
+def test_expected_move_no_as_of_is_latest_row():
+    """With as_of=None the cutoff clause is absent (latest-row behavior
+    unchanged for live mode)."""
+    captured = {}
+
+    def _recording_qf(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return _mag_df()
+
+    em = ms._build_expected_move("SPY", "15m", _recording_qf, as_of=None)
+    assert em["status"] == "OK"
+    assert "ts <= :as_of" not in captured["sql"]
+    assert "as_of" not in (captured["params"] or {})
+
+
+def test_assembler_as_of_excludes_newer_magnitude_row(monkeypatch):
+    """End-to-end: assembling with as_of= must exclude a magnitude row dated
+    after the continuation bar's ts (future-info leak)."""
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)  # ts=2026-06-20T15:45
+
+    seen = {}
+
+    def _qf(sql, params=None):
+        if "premarket_analysis" in sql:
+            return _reach_df(50, 24, 18, 11)
+        if "magnitude_per_bar_predictions" in sql:
+            seen["sql"] = sql
+            seen["params"] = params
+            # Emulate the DB honoring the bound: a newer row must be filtered.
+            if params and params.get("as_of"):
+                future = pd.Timestamp("2026-06-20T16:00:00Z")
+                cutoff = pd.Timestamp(params["as_of"])
+                rows = _mag_df()
+                if future <= cutoff:
+                    return rows
+                return rows.iloc[0:0]  # newer-than-cutoff row excluded
+            return _mag_df()
+        return pd.DataFrame()
+
+    out = ms.assemble_movement_statement(
+        "SPY", "15m", as_of="2026-06-20", engine=object(),
+        level_map=_sample_level_map(), query_fn=_qf, gamma_fn=_gamma_ok,
+    )
+    # The magnitude query carried the as-of bound, anchored to the bar ts.
+    assert "ts <= :as_of" in seen["sql"]
+    assert seen["params"]["as_of"] == "2026-06-20T15:45:00+00:00"  # bar ts wins
+    # And the would-be-future row (16:00 > 15:45 cutoff) is excluded → no leak.
+    assert out["confidence_modifiers"]["expected_move"]["status"] == "UNAVAILABLE"
+
+
 # ── (e) reach-rates carry N and flag low sample ───────────────────────────
 
 
