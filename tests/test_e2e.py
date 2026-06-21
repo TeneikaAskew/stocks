@@ -21,6 +21,12 @@ from pathlib import Path
 
 import pytest
 
+# These tests need the pytest-playwright plugin (provides the `page`
+# fixture) and its browser binaries. CI's e2e job installs them; without
+# the plugin, skip the whole module cleanly rather than erroring every
+# test with "fixture 'page' not found".
+pytest.importorskip("pytest_playwright")
+
 # ---------------------------------------------------------------------------
 # Repo root and app paths
 # ---------------------------------------------------------------------------

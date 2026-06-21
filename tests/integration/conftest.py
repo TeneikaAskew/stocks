@@ -18,9 +18,20 @@ import pytest
 
 @pytest.fixture(scope="session")
 def db_engine():
-    """SQLAlchemy engine for the ephemeral test Postgres (DB_HOST branch)."""
+    """SQLAlchemy engine for the ephemeral test Postgres (DB_HOST branch).
+
+    Skip (don't error) when no Postgres is configured. The CI
+    `integration-tests` job sets DB_HOST for the ephemeral container, so
+    these run there; locally / in a sandbox without a DB they skip
+    cleanly instead of erroring with a RuntimeError that looks like a
+    broken test. A *configured-but-unreachable* DB still surfaces a real
+    connection error later (in clean_db/seed) rather than being masked.
+    """
     from gcp.database import get_engine
-    return get_engine()
+    try:
+        return get_engine()
+    except RuntimeError as e:
+        pytest.skip(f"integration tests require a configured Postgres: {e}")
 
 
 @pytest.fixture
