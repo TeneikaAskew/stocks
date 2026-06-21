@@ -1441,39 +1441,86 @@ class StaleSourceDataError(RuntimeError):
     """
 
 
+def _nyse_holidays(start, end) -> np.ndarray:
+    """NYSE market holidays in [start, end] as a ``datetime64[D]`` array.
+
+    Built from pandas' holiday primitives so it needs no extra dependency.
+    Encodes the NYSE-specific rule set (which differs from the US federal
+    set: NYSE observes Good Friday and does NOT close for Columbus Day or
+    Veterans Day) and the post-2021 Juneteenth addition.
+    """
+    from pandas.tseries.holiday import (
+        AbstractHolidayCalendar, Holiday, USMartinLutherKingJr,
+        USPresidentsDay, USMemorialDay, USLaborDay, USThanksgivingDay,
+        GoodFriday, nearest_workday,
+    )
+
+    class _NYSECalendar(AbstractHolidayCalendar):
+        rules = [
+            Holiday('NewYears', month=1, day=1, observance=nearest_workday),
+            USMartinLutherKingJr,
+            USPresidentsDay,
+            GoodFriday,
+            USMemorialDay,
+            Holiday('Juneteenth', month=6, day=19,
+                    observance=nearest_workday, start_date='2022-01-01'),
+            Holiday('IndependenceDay', month=7, day=4,
+                    observance=nearest_workday),
+            USLaborDay,
+            USThanksgivingDay,
+            Holiday('Christmas', month=12, day=25, observance=nearest_workday),
+        ]
+
+    hol = _NYSECalendar().holidays(start=start, end=end)
+    return hol.values.astype('datetime64[D]')
+
+
 def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
     """Count NYSE trading days from source_ts (exclusive) to ref_ts (inclusive).
 
-    Returns 0 when source >= ref. Honors NYSE market holidays via
-    `pandas_market_calendars.get_calendar('NYSE')`. Examples:
+    Returns 0 when source >= ref. Honors NYSE market holidays. Examples:
       Fri 5/8 close → Mon 5/11 brief = 1 trading day (Mon)
       Thu 5/22 close → Tue 5/27 (post-Memorial-Day) brief = 2 (Fri + Tue,
         skipping Memorial-Day Mon)
-      4/27 close → 5/6 (the original 5/6 freeze) = 6 trading days
+      4/27 close → 5/6 (the original 5/6 freeze) = 7 trading days
 
     The freshness guard uses business-days because that's the semantic
     intent: "no more than N trading sessions behind." Calendar days
     have to use a +3-day weekend buffer (max_age_days=4 to allow for
     Mon-after-Fri = 3 calendar days), which is implicit.
+
+    Prefers `pandas_market_calendars` (full exchange calendar incl.
+    early-close/special-closure days) when installed. When it's absent,
+    falls back to a holiday-aware `numpy.busday_count` over the
+    NYSE-specific holiday rules in `_nyse_holidays` — NOT a silent
+    calendar-day approximation. A wrong trading-day count here would
+    re-open the exact 2026-05-06 stale-cache hole this guard exists to
+    close (see StaleSourceDataError), so the fallback must be correct,
+    not "roughly right."
     """
     if source_ts >= ref_ts:
+        return 0
+    # source excluded → start the window the day after source.
+    start = (source_ts.normalize() + pd.Timedelta(days=1))
+    end = ref_ts.normalize()
+    if start > end:
         return 0
     try:
         import pandas_market_calendars as mcal
     except ImportError:
-        # Fallback: caller environment doesn't have the calendar lib.
-        # Approximate with calendar-days / 1.4 (rough business-day ratio).
-        # Defensive — production has the dep per requirements-gcp.txt.
-        return max(0, int((ref_ts - source_ts).total_seconds() / 86400.0 / 1.4))
+        # Holiday-aware fallback (no extra dependency required).
+        # busday_count's end is exclusive, so add a day to make `end` inclusive.
+        holidays = _nyse_holidays(start.strftime('%Y-%m-%d'),
+                                  end.strftime('%Y-%m-%d'))
+        return int(np.busday_count(
+            np.datetime64(start.date()),
+            np.datetime64(end.date()) + np.timedelta64(1, 'D'),
+            holidays=holidays,
+        ))
     nyse = mcal.get_calendar('NYSE')
     # `valid_days` returns DatetimeIndex of trading days in [start, end].
-    # Use source_ts.normalize() + 1 day as start so source itself is excluded.
-    start_date = (source_ts.normalize() + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-    end_date = ref_ts.normalize().strftime('%Y-%m-%d')
-    try:
-        days = nyse.valid_days(start_date=start_date, end_date=end_date)
-    except Exception:
-        return 0
+    days = nyse.valid_days(start_date=start.strftime('%Y-%m-%d'),
+                           end_date=end.strftime('%Y-%m-%d'))
     return len(days)
 
 
