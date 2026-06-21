@@ -681,9 +681,30 @@ def _side_holdout_eval(X_full, y, bar_dates, holdout_mask, last_train_end,
         pos = cls.index(1) if 1 in cls else 1
         p_calib = model.predict_proba(X_full[calib_mask])[:, pos]
         p_te_raw = model.predict_proba(X_full[te])[:, pos]
-        apply = _fit_calibrator(calibrate, p_calib, y[calib_mask])
-        p1 = np.asarray(apply(p_te_raw), dtype=float)
-        out["calib_status"] = calibrate
+        if len(p_calib) == 0:
+            # Degenerate: predict_proba returned empty for the calib slice even
+            # though calib_mask.sum() > 0 (newer sklearn/LightGBM, no split on
+            # this subset). Fail loud with a recorded reason; still report the
+            # raw locked-holdout verdict rather than aborting the probe so the
+            # settle-test always writes an outcome (Rule 3.7). Mirrors _side_fold.
+            log.warning(
+                "holdout calibrate=%s: predict_proba returned 0 predictions "
+                "for calib slice (calib_mask.sum=%d) — degenerate; falling "
+                "back to raw probabilities", calibrate, int(calib_mask.sum()),
+            )
+            p1 = p_te_raw
+            out["calib_status"] = "RAW_calib_empty_predictions"
+        else:
+            try:
+                apply = _fit_calibrator(calibrate, p_calib, y[calib_mask])
+                p1 = np.asarray(apply(p_te_raw), dtype=float)
+                out["calib_status"] = calibrate
+            except RuntimeError as e:
+                # Single-class calib slice (e.g. after the magnitude conditioner
+                # in a thin window) slipped past the fit-side guard above — report
+                # the raw holdout verdict instead of aborting the whole probe.
+                p1 = p_te_raw
+                out["calib_status"] = f"RAW_calib_failed:{e}"
     return {**out, "status": "OK", **_side_metrics(y_te, p1, base_ll)}
 
 

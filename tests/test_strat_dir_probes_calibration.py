@@ -138,6 +138,14 @@ def _import_fold_helpers():
         from gcp.research.strat_engine.strat_dir_probes import (
             _side_fold, _side_holdout_eval,
         )
+        # The fold helpers lazy-import strat_dir_walk_forward (and thus
+        # lightgbm/sklearn) only when CALLED, so the import above succeeds even
+        # when the heavy stack is absent. Force those deps here so a missing
+        # lightgbm/sklearn SKIPS (the documented contract) instead of failing
+        # mid-test with ModuleNotFoundError.
+        import lightgbm  # noqa: F401
+        import sklearn  # noqa: F401
+        from gcp.research.strat_engine import strat_dir_walk_forward  # noqa: F401
     except Exception as e:  # pragma: no cover - environment-dependent
         pytest.skip(f"heavy stack unavailable: {e}")
     return _side_fold, _side_holdout_eval
