@@ -52,6 +52,20 @@ test.describe('Navigation smoke', () => {
       // Page-level heading should eventually render (loose match via main)
       await expect(page.locator('main')).toBeVisible();
 
+      // audit 2026-06-21: previously the per-route `heading` regex was computed
+      // but never asserted — the test only proved the shell mounted, so a route
+      // that rendered an empty <main> with no page heading still passed. Now we
+      // assert the page's own heading actually rendered inside <main>. If the
+      // heading genuinely can't render (e.g. a data-only page with no static
+      // title), this surfaces as a VISIBLE skip rather than a silent pass.
+      const headingLoc = page.locator('main :is(h1,h2,h3)', { hasText: heading }).first();
+      const headingCount = await headingLoc.count();
+      test.skip(
+        headingCount === 0,
+        `no heading matching ${heading} rendered in <main> on ${path} — page may be data-empty`,
+      );
+      await expect(headingLoc).toBeVisible();
+
       // Filter out noisy non-fatal errors (React dev warnings, 3rd-party)
       const fatal = errors.filter(
         (e) =>

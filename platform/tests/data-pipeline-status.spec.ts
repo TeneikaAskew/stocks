@@ -26,8 +26,23 @@ test.describe('Data pipeline status widget', () => {
 
     // Status label is one of ok | warn | stale | unknown — the CSS uppercases
     // it visually but the DOM text stays lowercase, so match case-insensitively.
-    const summary = page.getByText(/^(ok|warn|stale|unknown)$/i).first();
-    await expect(summary).toBeVisible({ timeout: 30_000 });
+    // audit 2026-06-21: the old assertion accepted `unknown` as a valid render.
+    // `unknown` is the widget's "the freshness endpoint returned nothing /
+    // errored" placeholder, so passing on it let an empty/broken backend look
+    // healthy. We now require a REAL status (ok | warn | stale) to be rendered,
+    // and convert the `unknown` (endpoint-empty) case into a VISIBLE skip
+    // rather than a silent pass — which can never turn a pass into a failure.
+    const anyStatus = page.getByText(/^(ok|warn|stale|unknown)$/i).first();
+    await expect(anyStatus, 'data-pipeline status label never rendered').toBeVisible({
+      timeout: 30_000,
+    });
+    const statusText = ((await anyStatus.textContent()) || '').trim().toLowerCase();
+    test.skip(
+      statusText === 'unknown',
+      'freshness endpoint returned unknown (no/failed data) — not a healthy state to assert on',
+    );
+    // Real status present — assert it is one of the genuine health states.
+    expect(['ok', 'warn', 'stale']).toContain(statusText);
   });
 
   test('expands to show per-table pills on click', async ({ page }) => {

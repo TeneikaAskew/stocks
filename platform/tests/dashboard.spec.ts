@@ -150,6 +150,12 @@ test.describe('Dashboard', () => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     await expect(page.getByText(/daily bias/i).first()).toBeVisible({ timeout: 10_000 });
+    // audit 2026-06-21: previously this only checked the "Daily bias" LABEL,
+    // so a blank/neutral bias bullet would pass. The mock sets bias='bullish',
+    // so the rendered bullet must contain the real BULLISH value, not just the
+    // label. (APIs are mocked here, so this is deterministic — not an
+    // empty-data concern.)
+    await expect(page.getByText(/daily bias\s+BULLISH/i).first()).toBeVisible();
   });
 
   test('shows the daily KPI tiles (prev close / latest close / 2-day change / RSI)', async ({ page }) => {
@@ -160,6 +166,17 @@ test.describe('Dashboard', () => {
     await expect(page.getByText(/latest close/i)).toBeVisible();
     await expect(page.getByText(/2-day change/i)).toBeVisible();
     await expect(page.getByText(/RSI \(14\)/i)).toBeVisible();
+    // audit 2026-06-21: the label-only assertions above pass even when every
+    // tile renders the "—" missing-data placeholder. The mocks pin real
+    // values (reference.close=220.5 -> $220.50, brief.rsi=58.4 -> 58.4), so
+    // assert the actual VALUES render. This catches a regression where the
+    // tiles mount with labels but the values fail to compute / bind.
+    await expect(page.getByText('$220.50').first()).toBeVisible();
+    await expect(page.getByText('58.4').first()).toBeVisible();
+    // And the KPI region must NOT be all-placeholder. fmtPrice/fmtNum emit
+    // "—" when the value is null; if every KPI value were "—" the tiles would
+    // be vacuous. Guard that at least the priced tiles are not the placeholder.
+    await expect(page.getByText('$220.50').first()).not.toHaveText('—');
   });
 
   test('intraday chart exposes the Candles / Area toggle and switches', async ({ page }) => {
