@@ -22,7 +22,15 @@ import pytest
 # Same lightweight stubs as Phase A. Only insert when the real package
 # is unavailable; setdefault() poisons sys.modules for sibling tests
 # (caught 2026-06-09 in PR #597 CI). See test_magnitude_predictions_
-# persistence.py for the full rationale.
+# persistence.py for the full rationale. We TRACK what we stub and evict it
+# in a module-scoped teardown (below) so the mocks don't leak into sibling
+# tests that need the REAL lightgbm/sklearn (the strat-engine fold tests).
+# The consumer-side guards in those tests are the bulletproof layer; this
+# keeps sys.modules clean under default ordering. (When the research stack
+# is installed — see the research-test CI job — nothing is stubbed at all.)
+_STUBBED_BY_THIS_MODULE: list[str] = []
+
+
 def _stub_missing_modules(mods: list[str]) -> None:
     for m in mods:
         try:
@@ -33,6 +41,7 @@ def _stub_missing_modules(mods: list[str]) -> None:
                 key = ".".join(parts[:i])
                 if key not in sys.modules:
                     sys.modules[key] = MagicMock()
+                    _STUBBED_BY_THIS_MODULE.append(key)
 
 
 _stub_missing_modules([
@@ -46,6 +55,18 @@ if isinstance(sys.modules.get("sklearn.metrics"), MagicMock):
     sys.modules["sklearn.metrics"].log_loss = lambda *a, **k: 0.5
 if isinstance(sys.modules.get("sklearn.calibration"), MagicMock):
     sys.modules["sklearn.calibration"].CalibratedClassifierCV = MagicMock
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_stubbed_modules():
+    """Evict the MagicMock import-stubs this module inserted so they don't
+    leak into sibling test modules. Only pops keys that are still OUR mock —
+    never evicts a real module that got imported later."""
+    yield
+    for key in _STUBBED_BY_THIS_MODULE:
+        if isinstance(sys.modules.get(key), MagicMock):
+            sys.modules.pop(key, None)
+    _STUBBED_BY_THIS_MODULE.clear()
 
 
 # ──────────────────── _parse_cells ────────────────────

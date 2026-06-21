@@ -162,6 +162,104 @@ def embargo_days_for(tf: str, horizon: int) -> int:
     return int(math.ceil(horizon / max(1, bpd))) + 1
 
 
+def binary_ece(y_true: np.ndarray, p1: np.ndarray, n_bins: int = 10) -> float:
+    """Expected calibration error for a BINARY positive-class probability.
+
+    Bins bars by predicted P(positive) into n_bins equal-width [0,1] bins and
+    sums |mean(p1) − mean(y)| weighted by bin population. This is the
+    binary-specific ECE used for the long/short side heads — it measures
+    whether the predicted long-probability VALUE matches the realized
+    long-frequency, which is the quantity the flicker fails (ECE ≈ 0.10).
+
+    Pure numpy — importable hermetically (no sklearn). Distinct from
+    strat_pred_train.expected_calibration_error, which bins by the multiclass
+    max-confidence and measures argmax-accuracy calibration; for a 2-column
+    [1-p1, p1] stack that helper degenerates to confidence>=0.5 binning and
+    cannot see miscalibration in the 0.5..0.65 region the fire thresholds use.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    n = len(p1)
+    if n == 0:
+        return float("nan")
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    # digitize on the interior edges so the last bin is closed at 1.0
+    idx = np.digitize(p1, edges[1:-1])
+    ece = 0.0
+    for b in range(n_bins):
+        m = idx == b
+        nb = int(m.sum())
+        if nb == 0:
+            continue
+        ece += (nb / n) * abs(float(p1[m].mean()) - float(y_true[m].mean()))
+    return float(ece)
+
+
+def calibration_split(bar_dates: np.ndarray, train_mask: np.ndarray,
+                      calib_frac: float = 0.2):
+    """Carve a post-hoc-calibration validation slice from the TRAIN block ONLY,
+    by DATE (never random) so the calibrator is fit on the most-recent train
+    days and never peeks at the test/holdout fold.
+
+    Returns (fit_mask, calib_mask): two boolean masks over the full row index
+    that partition ``train_mask``. The newest ``calib_frac`` of distinct train
+    DATES go to the calibration slice; the rest train the base model. Splitting
+    by date (not row) prevents bars from the same day landing on both sides of
+    the split — the within-day autocorrelation leak.
+
+    If the train block has too few distinct dates to carve a slice, returns
+    (train_mask, all-False) so the caller falls back to no-calibration rather
+    than fitting a calibrator on a handful of bars.
+    """
+    if not (0.0 < calib_frac < 1.0):
+        raise ValueError(f"calib_frac must be in (0,1), got {calib_frac}")
+    tr_dates = np.unique(bar_dates[train_mask])
+    if len(tr_dates) < 5:  # too few days to carve a meaningful calib slice
+        return train_mask.copy(), np.zeros_like(train_mask)
+    n_calib = max(1, int(math.ceil(len(tr_dates) * calib_frac)))
+    cut_date = tr_dates[-n_calib]  # first date of the calibration slice
+    calib_mask = train_mask & (bar_dates >= cut_date)
+    fit_mask = train_mask & (bar_dates < cut_date)
+    # Guard: both partitions must be non-empty, else fall back to no calibration.
+    if int(fit_mask.sum()) == 0 or int(calib_mask.sum()) == 0:
+        return train_mask.copy(), np.zeros_like(train_mask)
+    return fit_mask, calib_mask
+
+
+def _fit_calibrator(method: str, p_calib: np.ndarray, y_calib: np.ndarray):
+    """Fit a 1-D post-hoc calibrator mapping raw P(positive) → calibrated
+    P(positive). ``isotonic`` = monotone non-parametric (sklearn
+    IsotonicRegression); ``platt`` = 1-feature LogisticRegression (sigmoid).
+
+    Returns a callable ``apply(p_raw) -> p_cal``. Lazy sklearn import so the
+    pure helpers above stay importable with numpy+pandas only (Rule 3.3).
+
+    Fails loud (RuntimeError) on a degenerate single-class calibration slice
+    rather than silently returning identity — a caller that can't calibrate
+    must KNOW (Rule 3.7: no silent fallback / fabricated value).
+    """
+    y_calib = np.asarray(y_calib)
+    if y_calib.min() == y_calib.max():
+        raise RuntimeError(
+            "calibration slice is single-class; cannot fit a calibrator")
+    if method == "isotonic":
+        from sklearn.isotonic import IsotonicRegression
+        ir = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+        ir.fit(np.asarray(p_calib, dtype=float), y_calib.astype(float))
+        return lambda p: np.clip(ir.predict(np.asarray(p, dtype=float)), 0.0, 1.0)
+    elif method == "platt":
+        from sklearn.linear_model import LogisticRegression
+        lr = LogisticRegression(C=1e6, solver="lbfgs")
+        lr.fit(np.asarray(p_calib, dtype=float).reshape(-1, 1), y_calib)
+        cls = list(lr.classes_)
+        pos = cls.index(1) if 1 in cls else 1
+        return lambda p: lr.predict_proba(
+            np.asarray(p, dtype=float).reshape(-1, 1))[:, pos]
+    else:
+        raise ValueError(f"unknown calibration method {method!r} "
+                         "(choices: isotonic, platt)")
+
+
 def _session_third(df: pd.DataFrame) -> pd.Series:
     """Bucket each bar into early / mid / late session by its position within
     the day (robust to TZ; matches Gao et al.'s first-vs-last framing)."""
@@ -409,15 +507,45 @@ def run_probe(engine, ticker: str, tf: str, experiment: str,
     return summary
 
 
+def _side_metrics(y_te, p1, base_ll):
+    """Shared metric block for a side head: log-loss beat, binary ECE, and the
+    decisive-fire precision ladder. ``p1`` is the (possibly calibrated)
+    P(this-side-touches-first); ``base_ll`` is the train-prior null log-loss."""
+    from sklearn.metrics import log_loss
+    proba = np.column_stack([1 - p1, p1])
+    ll = float(log_loss(y_te, proba, labels=[0, 1]))
+    ece = binary_ece(y_te, p1, n_bins=10)
+    fires = {}
+    for t in (0.55, 0.60, 0.65):
+        f = p1 >= t
+        nf = int(f.sum())
+        fires[t] = {"n": nf,
+                    "precision": float(y_te[f].mean()) if nf > 0 else None}
+    return {"base_rate": float(y_te.mean()), "logloss": ll,
+            "base_logloss": base_ll, "beat": base_ll - ll,
+            "ece": float(ece), "fires": fires}
+
+
 def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
-               cond_tr, cond_te, evaluable, n_jobs, side, train_lower=None) -> dict:
+               cond_tr, cond_te, evaluable, n_jobs, side, train_lower=None,
+               calibrate: str = "none", holdout_mask=None) -> dict:
     """One walk-forward fold for ONE side's meta-model (long-vs-rest or
     short-vs-rest), conditioned on the magnitude model's predicted-EXPLOSIVE
     mask. cond_tr is the IN-SAMPLE mag prediction (selects the train subset);
     cond_te is the OOF mag prediction (mag model never saw the test fold).
-    train_lower (optional) caps how far back training reaches (rolling window)."""
-    from sklearn.metrics import log_loss
-    from gcp.research.strat_engine.strat_pred_train import expected_calibration_error
+    train_lower (optional) caps how far back training reaches (rolling window).
+
+    calibrate ∈ {none, isotonic, platt}: when not "none", a post-hoc
+    calibrator is fit on a date-carved validation slice of THIS fold's TRAIN
+    block (never the test/holdout) and applied to the test probabilities
+    before metrics. A fresh calibrator per fold — never reused across folds
+    (the classic walk-forward harness leak; see strat_walk_forward.py).
+
+    holdout_mask (optional): a boolean row mask of bars reserved as a LOCKED
+    holdout. These bars are force-excluded from the train block here too (they
+    are also excluded globally upstream, but this is a defensive second guard)
+    so a fold's training set can never touch a holdout bar.
+    """
     from gcp.research.strat_engine.strat_dir_walk_forward import (
         make_direction_lgbm, base_rate_logloss_binary,
     )
@@ -429,10 +557,14 @@ def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
     tr = (bar_dates < embargo_cut) & cond_tr & evaluable
     if train_lower is not None:
         tr &= (bar_dates >= train_lower)
+    if holdout_mask is not None:
+        tr &= ~holdout_mask
     te = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt) & cond_te & evaluable
+    if holdout_mask is not None:
+        te &= ~holdout_mask
     n_tr, n_te = int(tr.sum()), int(te.sum())
     out = {"side": side, "fold": f"{train_end}..{test_end}",
-           "n_train": n_tr, "n_test": n_te}
+           "n_train": n_tr, "n_test": n_te, "calibrate": calibrate}
     if n_te < MIN_TEST_BARS or n_tr < MIN_TEST_BARS:
         out["status"] = "SKIP_THIN"
         return out
@@ -440,38 +572,154 @@ def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
     if y_tr.min() == y_tr.max():  # single-class train subset — undefined model
         out["status"] = "SKIP_DEGEN"
         return out
-    model = make_direction_lgbm(n_jobs=n_jobs)
-    model.fit(X_full[tr], y_tr)
-    proba = model.predict_proba(X_full[te])
-    p1 = proba[:, list(model.classes_).index(1)] if 1 in model.classes_ else np.zeros(n_te)
-    pred = (p1 >= 0.5).astype(int)
-    ll = float(log_loss(y_te, proba, labels=list(model.classes_)))
     base_ll = base_rate_logloss_binary(y_tr, y_te)
-    ece, _ = expected_calibration_error(
-        y_te, np.column_stack([1 - p1, p1]), n_bins=10)
-    # Decisive-FIRE precision: of bars where this side's model fires ≥t, what
-    # fraction actually hit this side's barrier first? This is the tradeable
-    # number — a long fire is only useful if the up barrier really comes first.
-    fires = {}
-    for t in (0.55, 0.60, 0.65):
-        f = p1 >= t
-        nf = int(f.sum())
-        fires[t] = {"n": nf,
-                    "precision": float(y_te[f].mean()) if nf > 0 else None}
-    return {**out, "status": "OK", "base_rate": float(y_te.mean()),
-            "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
-            "ece": float(ece), "fires": fires}
+
+    if calibrate == "none":
+        model = make_direction_lgbm(n_jobs=n_jobs)
+        model.fit(X_full[tr], y_tr)
+        proba = model.predict_proba(X_full[te])
+        p1 = proba[:, list(model.classes_).index(1)] \
+            if 1 in model.classes_ else np.zeros(n_te)
+        cal_status = "raw"
+    else:
+        # Carve the calibration slice from THIS fold's train block by date.
+        fit_mask, calib_mask = calibration_split(bar_dates, tr, calib_frac=0.2)
+        y_fit = y[fit_mask]
+        if int(calib_mask.sum()) == 0 or y_fit.min() == y_fit.max():
+            # Cannot calibrate honestly (thin / single-class slice). Fail loud
+            # by recording the reason; the fold still reports RAW metrics so
+            # the run isn't silently dropped, but the calibrate flag is marked
+            # not-applied so the verdict can't be over-read (Rule 3.7).
+            model = make_direction_lgbm(n_jobs=n_jobs)
+            model.fit(X_full[tr], y_tr)
+            proba = model.predict_proba(X_full[te])
+            p1 = proba[:, list(model.classes_).index(1)] \
+                if 1 in model.classes_ else np.zeros(n_te)
+            cal_status = "RAW_calib_unavailable"
+        else:
+            model = make_direction_lgbm(n_jobs=n_jobs)
+            model.fit(X_full[fit_mask], y_fit)
+            cls = list(model.classes_)
+            pos = cls.index(1) if 1 in cls else 1
+            p_calib = model.predict_proba(X_full[calib_mask])[:, pos]
+            p_te_raw = model.predict_proba(X_full[te])[:, pos]
+            if len(p_calib) == 0:
+                # Degenerate: predict_proba returned empty for the calib slice
+                # even though calib_mask.sum() > 0 — can happen in newer
+                # sklearn/LightGBM when the fitted model sees no split on this
+                # subset.  Fail loud with a recorded reason (Rule 3.7).
+                log.warning(
+                    "fold=%s..%s calibrate=%s: predict_proba returned 0 "
+                    "predictions for calib slice (calib_mask.sum=%d) — "
+                    "degenerate; falling back to raw probabilities",
+                    train_end, test_end, calibrate, int(calib_mask.sum()),
+                )
+                p1 = p_te_raw
+                cal_status = "RAW_calib_empty_predictions"
+            else:
+                try:
+                    apply = _fit_calibrator(calibrate, p_calib, y[calib_mask])
+                    p1 = np.asarray(apply(p_te_raw), dtype=float)
+                    cal_status = calibrate
+                except RuntimeError as e:
+                    # single-class calib slice slipped past the guard above
+                    p1 = p_te_raw
+                    cal_status = f"RAW_calib_failed:{e}"
+
+    out["calib_status"] = cal_status
+    return {**out, "status": "OK", **_side_metrics(y_te, p1, base_ll)}
+
+
+def _side_holdout_eval(X_full, y, bar_dates, holdout_mask, last_train_end,
+                       embargo_days, cond_full, evaluable, n_jobs, side,
+                       calibrate: str, train_lower=None) -> dict:
+    """ONE locked-holdout evaluation for a side head. Train on EVERYTHING dated
+    before the holdout (minus the embargo gap), optionally calibrate on a
+    date-carved slice of that train block, then evaluate ONCE on the locked
+    holdout bars. The holdout never enters training or the calibration slice.
+
+    ``cond_full`` is the magnitude conditioner mask computed with a model
+    trained ONLY on the pre-holdout block (so the holdout's conditioning is
+    OOF, same leak-discipline as the per-fold OOF conditioner)."""
+    from gcp.research.strat_engine.strat_dir_walk_forward import (
+        make_direction_lgbm, base_rate_logloss_binary,
+    )
+    from gcp.research.strat_engine.strat_walk_forward import MIN_TEST_BARS
+
+    embargo_cut = np.datetime64(last_train_end) - np.timedelta64(embargo_days, "D")
+    tr = (bar_dates < embargo_cut) & ~holdout_mask & cond_full & evaluable
+    if train_lower is not None:
+        tr &= (bar_dates >= train_lower)
+    te = holdout_mask & cond_full & evaluable
+    n_tr, n_te = int(tr.sum()), int(te.sum())
+    out = {"side": side, "block": "LOCKED_HOLDOUT", "n_train": n_tr,
+           "n_test": n_te, "calibrate": calibrate}
+    if n_te < MIN_TEST_BARS or n_tr < MIN_TEST_BARS:
+        out["status"] = "SKIP_THIN"
+        return out
+    y_tr, y_te = y[tr], y[te]
+    if y_tr.min() == y_tr.max():
+        out["status"] = "SKIP_DEGEN"
+        return out
+    base_ll = base_rate_logloss_binary(y_tr, y_te)
+    if calibrate == "none":
+        model = make_direction_lgbm(n_jobs=n_jobs)
+        model.fit(X_full[tr], y_tr)
+        cls = list(model.classes_)
+        pos = cls.index(1) if 1 in cls else 1
+        p1 = model.predict_proba(X_full[te])[:, pos]
+        out["calib_status"] = "raw"
+    else:
+        fit_mask, calib_mask = calibration_split(bar_dates, tr, calib_frac=0.2)
+        y_fit = y[fit_mask]
+        if int(calib_mask.sum()) == 0 or y_fit.min() == y_fit.max():
+            out["status"] = "SKIP_CALIB_UNAVAILABLE"
+            return out
+        model = make_direction_lgbm(n_jobs=n_jobs)
+        model.fit(X_full[fit_mask], y_fit)
+        cls = list(model.classes_)
+        pos = cls.index(1) if 1 in cls else 1
+        p_calib = model.predict_proba(X_full[calib_mask])[:, pos]
+        p_te_raw = model.predict_proba(X_full[te])[:, pos]
+        if len(p_calib) == 0:
+            # Degenerate: predict_proba returned empty for the calib slice even
+            # though calib_mask.sum() > 0 (newer sklearn/LightGBM, no split on
+            # this subset). Fail loud with a recorded reason; still report the
+            # raw locked-holdout verdict rather than aborting the probe so the
+            # settle-test always writes an outcome (Rule 3.7). Mirrors _side_fold.
+            log.warning(
+                "holdout calibrate=%s: predict_proba returned 0 predictions "
+                "for calib slice (calib_mask.sum=%d) — degenerate; falling "
+                "back to raw probabilities", calibrate, int(calib_mask.sum()),
+            )
+            p1 = p_te_raw
+            out["calib_status"] = "RAW_calib_empty_predictions"
+        else:
+            try:
+                apply = _fit_calibrator(calibrate, p_calib, y[calib_mask])
+                p1 = np.asarray(apply(p_te_raw), dtype=float)
+                out["calib_status"] = calibrate
+            except RuntimeError as e:
+                # Single-class calib slice (e.g. after the magnitude conditioner
+                # in a thin window) slipped past the fit-side guard above — report
+                # the raw holdout verdict instead of aborting the whole probe.
+                p1 = p_te_raw
+                out["calib_status"] = f"RAW_calib_failed:{e}"
+    return {**out, "status": "OK", **_side_metrics(y_te, p1, base_ll)}
 
 
 def _symmetric_fold(X_full, y3, bar_dates, train_end, test_end, embargo_days,
-                    cond_tr, cond_te, evaluable, n_jobs, train_lower=None) -> dict:
+                    cond_tr, cond_te, evaluable, n_jobs, train_lower=None,
+                    holdout_mask=None) -> dict:
     """One walk-forward fold for the SYMMETRIC 3-class first-touch primary
     model (0=down, 1=neutral, 2=up). This is the canonical López-de-Prado
     triple-barrier target: predict which barrier is touched first, with an
     explicit neutral class for timeouts. Metrics: 3-class log-loss vs the
     train-prior constant predictor (strong-form null), and the tradeable
     DIRECTIONAL precision — of bars the model decisively calls up/down (not
-    neutral), how often that side's barrier really comes first."""
+    neutral), how often that side's barrier really comes first.
+
+    holdout_mask (optional): locked-holdout bars force-excluded from train+test."""
     import lightgbm as lgb
     from sklearn.metrics import log_loss
     from gcp.research.strat_engine.strat_walk_forward import MIN_TEST_BARS
@@ -482,7 +730,11 @@ def _symmetric_fold(X_full, y3, bar_dates, train_end, test_end, embargo_days,
     tr = (bar_dates < embargo_cut) & cond_tr & evaluable
     if train_lower is not None:
         tr &= (bar_dates >= train_lower)
+    if holdout_mask is not None:
+        tr &= ~holdout_mask
     te = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt) & cond_te & evaluable
+    if holdout_mask is not None:
+        te &= ~holdout_mask
     n_tr, n_te = int(tr.sum()), int(te.sum())
     out = {"side": "symmetric", "fold": f"{train_end}..{test_end}",
            "n_train": n_tr, "n_test": n_te}
@@ -526,13 +778,27 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                              k_atr: float, mag_cond: str, mag_thresh: float,
                              cutoffs=None, feature_blocks: str = "",
                              window: str = "expanding",
-                             rolling_years: int = 3) -> dict:
+                             rolling_years: int = 3,
+                             holdout: str | None = None,
+                             calibrate: str = "none") -> dict:
     """E4 — the closing experiment. Triple-barrier first-touch directional
     labels (neutral band) + SEPARATE long/short meta-models, conditioned on
     the magnitude engine's PREDICTED-EXPLOSIVE flag (leak-free: in-sample for
     train selection, OOF for the test fold). Addresses the three spec levers
     the return-sign probes (E1–E3) only approximated: barrier target, neutral
-    band, magnitude-conditioning, and asymmetric model form."""
+    band, magnitude-conditioning, and asymmetric model form.
+
+    holdout (optional, YYYY-MM-DD): every bar dated >= this date is a LOCKED
+    block excluded from EVERY walk-forward training fold AND every test fold.
+    After the walk-forward, the long/short heads are trained once on all
+    pre-holdout data and evaluated ONCE on the locked block — the true
+    out-of-sample test the flicker needs (DIRECTION_RESEARCH_RESULTS §"What
+    would change this verdict" #4).
+
+    calibrate ∈ {none, isotonic, platt}: post-hoc calibration fit on a
+    date-carved slice of TRAIN only (never test/holdout). E-20 found sigmoid
+    HURT the sibling TYPE model; isotonic on this long head is UNTRIED — this
+    flag exists to TEST it, not to assume it helps."""
     from gcp.research.strat_engine.strat_config import (
         DEFAULT_ECE_CEILING, GCS_BUCKET_DEFAULT, gcs_model_prefix,
     )
@@ -631,6 +897,29 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
     y3 = np.where(y_long == 1, 2, np.where(y_short == 1, 0, 1)).astype(np.int64)
     n_jobs = max(1, os.cpu_count() or 1)
 
+    # LOCKED HOLDOUT: bars dated >= `holdout` are reserved. They are excluded
+    # from every fold (train AND test) below and evaluated exactly once at the
+    # end. all-False when no holdout requested.
+    if holdout:
+        holdout_dt = np.datetime64(holdout)
+        holdout_mask = bar_dates >= holdout_dt
+        if int(holdout_mask.sum()) == 0:
+            raise SystemExit(
+                f"--holdout {holdout} reserves 0 bars (max bar_date="
+                f"{df['bar_date'].max()}); pick an earlier holdout date")
+        log.info("LOCKED HOLDOUT >= %s: %d bars reserved (%.1f%% of %d); "
+                 "excluded from EVERY training fold",
+                 holdout, int(holdout_mask.sum()),
+                 100.0 * holdout_mask.mean(), len(bar_dates))
+        # Cap the walk-forward cutoffs so no fold tests into the holdout.
+        cutoffs = [c for c in cutoffs if np.datetime64(c) <= holdout_dt]
+    else:
+        holdout_mask = np.zeros(len(bar_dates), dtype=bool)
+
+    if calibrate not in ("none", "isotonic", "platt"):
+        raise SystemExit(f"--calibrate must be none|isotonic|platt, got {calibrate!r}")
+    log.info("calibrate=%s  holdout=%s", calibrate, holdout or "none")
+
     folds = {"symmetric": [], "long": [], "short": []}
     for i, cut in enumerate(cutoffs):
         test_end = cutoffs[i + 1] if i + 1 < len(cutoffs) else \
@@ -641,10 +930,11 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
         # the cutoff, so a stale 2019 regime can't dilute a 2025 prediction.
         train_lower = (cut_dt - np.timedelta64(int(rolling_years * 365), "D")
                        if window == "rolling" else None)
-        tr_all = (bar_dates < emb_cut) & mag_ok
+        tr_all = (bar_dates < emb_cut) & mag_ok & ~holdout_mask
         if train_lower is not None:
             tr_all &= (bar_dates >= train_lower)
-        te_all = (bar_dates >= cut_dt) & (bar_dates < np.datetime64(test_end)) & mag_ok
+        te_all = ((bar_dates >= cut_dt) & (bar_dates < np.datetime64(test_end))
+                  & mag_ok & ~holdout_mask)
         if int(tr_all.sum()) < MIN_TEST_BARS or int(te_all.sum()) < MIN_TEST_BARS:
             continue
         # Magnitude model: train on fold-train, predict EXPLOSIVE prob.
@@ -684,7 +974,8 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                  i + 1, len(cutoffs), cut, test_end,
                  int(cond_tr.sum()), int(cond_te.sum()))
         rs = _symmetric_fold(X_full, y3, bar_dates, cut, test_end, emb,
-                             cond_tr, cond_te, evaluable, n_jobs, train_lower)
+                             cond_tr, cond_te, evaluable, n_jobs, train_lower,
+                             holdout_mask=holdout_mask)
         folds["symmetric"].append(rs)
         if rs["status"] == "OK":
             d55 = rs["directional"][0.55]
@@ -696,7 +987,8 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
             log.info("  sym   %s (n_te=%d)", rs["status"], rs["n_test"])
         for side, y in (("long", y_long), ("short", y_short)):
             r = _side_fold(X_full, y, bar_dates, cut, test_end, emb,
-                           cond_tr, cond_te, evaluable, n_jobs, side, train_lower)
+                           cond_tr, cond_te, evaluable, n_jobs, side, train_lower,
+                           calibrate=calibrate, holdout_mask=holdout_mask)
             folds[side].append(r)
             if r["status"] == "OK":
                 f60 = r["fires"][0.60]
@@ -707,11 +999,87 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
             else:
                 log.info("  %-5s %s (n_te=%d)", side, r["status"], r["n_test"])
 
+    # ── LOCKED-HOLDOUT EVALUATION (once) ────────────────────────────────────
+    # Train the long/short heads on ALL pre-holdout data, optionally calibrate
+    # on a date-carved slice of that train block, evaluate ONCE on the locked
+    # block. The conditioner is computed from a magnitude model trained ONLY on
+    # pre-holdout data (OOF for the holdout), same leak-discipline as the folds.
+    holdout_eval = {}
+    if holdout:
+        holdout_dt = np.datetime64(holdout)
+        emb_cut_h = holdout_dt - np.timedelta64(emb, "D")
+        train_lower_h = (holdout_dt - np.timedelta64(int(rolling_years * 365), "D")
+                         if window == "rolling" else None)
+        tr_pre = (bar_dates < emb_cut_h) & mag_ok & ~holdout_mask
+        if train_lower_h is not None:
+            tr_pre &= (bar_dates >= train_lower_h)
+        ho_eval_mask = holdout_mask & mag_ok
+        log.info("=" * 72)
+        log.info("LOCKED-HOLDOUT EVAL  train(pre-holdout)=%d  holdout=%d  "
+                 "calibrate=%s", int(tr_pre.sum()), int(ho_eval_mask.sum()),
+                 calibrate)
+        if int(tr_pre.sum()) < MIN_TEST_BARS or int(ho_eval_mask.sum()) < MIN_TEST_BARS:
+            log.warning("holdout eval skipped — thin (tr=%d ho=%d)",
+                        int(tr_pre.sum()), int(ho_eval_mask.sum()))
+            holdout_eval = {"status": "SKIP_THIN", "n_train": int(tr_pre.sum()),
+                            "n_holdout": int(ho_eval_mask.sum())}
+        else:
+            mag_h = make_lgbm(n_jobs=n_jobs)
+            mag_h.fit(X_full[tr_pre], mag_y_int[tr_pre])
+            cols_h = list(mag_h.classes_)
+
+            def _ph(idx, mask):
+                return mag_h.predict_proba(X_full[mask])[:, cols_h.index(idx)] \
+                    if idx in cols_h else np.zeros(int(mask.sum()))
+
+            def _cond_h(mask):
+                p_expl = _ph(expl_idx, mask)
+                if mag_cond == "none":
+                    sel = np.ones(int(mask.sum()), dtype=bool)
+                elif mag_cond == "big":
+                    p_exp = _ph(exp_idx, mask)
+                    sel = (p_expl + p_exp) >= max(mag_thresh, 0.5)
+                elif mag_cond == "topq":
+                    frac = mag_thresh if 0 < mag_thresh < 1 else 0.2
+                    sel = (p_expl >= float(np.quantile(p_expl, 1 - frac))
+                           if len(p_expl) else p_expl.astype(bool))
+                else:
+                    sel = p_expl >= mag_thresh if mag_thresh > 0 else \
+                        (mag_h.predict(X_full[mask]) == expl_idx)
+                full = np.zeros(len(bar_dates), dtype=bool)
+                full[np.where(mask)[0]] = sel
+                return full
+
+            # Conditioner over the union of pre-holdout-train and holdout bars,
+            # so _side_holdout_eval can re-slice train vs holdout from one mask.
+            cond_full = _cond_h(tr_pre) | _cond_h(ho_eval_mask)
+            for side, y in (("long", y_long), ("short", y_short)):
+                hr = _side_holdout_eval(
+                    X_full, y, bar_dates, holdout_mask, holdout,
+                    emb, cond_full, evaluable, n_jobs, side, calibrate,
+                    train_lower_h)
+                holdout_eval[side] = hr
+                if hr["status"] == "OK":
+                    f60 = hr["fires"][0.60]
+                    log.info("  HOLDOUT %-5s n_tr=%d n_ho=%d base=%.3f beat=%+.4f "
+                             "ECE=%.4f(%s) fire≥.60 n=%d prec=%s lift=%s",
+                             side, hr["n_train"], hr["n_test"], hr["base_rate"],
+                             hr["beat"], hr["ece"], hr.get("calib_status", "?"),
+                             f60["n"],
+                             f"{f60['precision']:.3f}" if f60["precision"] is not None else "—",
+                             f"{f60['precision'] - hr['base_rate']:+.3f}"
+                             if f60["precision"] is not None else "—")
+                else:
+                    log.info("  HOLDOUT %-5s %s (n_ho=%d)", side, hr["status"],
+                             hr.get("n_test", 0))
+
     summary = {"experiment": "e4_triple_barrier", "ticker": ticker, "tf": tf,
                "horizon_bars": horizon, "k_atr": k_atr, "mag_cond": mag_cond,
                "mag_thresh": mag_thresh, "embargo_days": emb,
                "feature_blocks": blocks, "window": window,
                "rolling_years": rolling_years if window == "rolling" else None,
+               "holdout": holdout, "calibrate": calibrate,
+               "holdout_eval": holdout_eval,
                "target": f"first-touch sign of ±{k_atr}·ATR20 within {horizon} bars",
                "n_features": len(feature_cols), "folds": folds,
                "computed_at": pd.Timestamp.utcnow().isoformat()}
@@ -751,8 +1119,33 @@ def run_triple_barrier_probe(engine, ticker: str, tf: str, horizon: int,
                          float(np.median(bases)),
                          float(np.median(precs)) - float(np.median(bases)))
 
+    # Locked-holdout verdict line — the decisive read for the flicker.
+    if holdout and isinstance(holdout_eval, dict) and "long" in holdout_eval:
+        log.info("=" * 72)
+        log.info("LOCKED-HOLDOUT VERDICT (>= %s, calibrate=%s)", holdout, calibrate)
+        for side in ("long", "short"):
+            hr = holdout_eval.get(side, {})
+            if hr.get("status") == "OK":
+                f60 = hr["fires"][0.60]
+                lift = (f60["precision"] - hr["base_rate"]
+                        if f60["precision"] is not None else None)
+                log.info("  %-5s beat=%+.4f  ECE=%.4f (ceiling %.3f → %s)  "
+                         "fire≥.60 n=%d prec=%s base=%.3f lift=%s", side,
+                         hr["beat"], hr["ece"], DEFAULT_ECE_CEILING,
+                         "PASS" if hr["ece"] <= DEFAULT_ECE_CEILING else "FAIL",
+                         f60["n"],
+                         f"{f60['precision']:.3f}" if f60["precision"] is not None else "—",
+                         hr["base_rate"],
+                         f"{lift:+.3f}" if lift is not None else "—")
+            else:
+                log.info("  %-5s %s", side, hr.get("status", "?"))
+
     prefix = gcs_model_prefix(ticker, tf)
     vtag = ("_" + "_".join(blocks) if blocks else "") + ("_roll" if window == "rolling" else "")
+    if calibrate != "none":
+        vtag += f"_cal-{calibrate}"
+    if holdout:
+        vtag += f"_ho{holdout.replace('-', '')}"
     blob = f"{prefix}/dir_probe_e4_tb_h{horizon}_k{k_atr}_{mag_cond}{vtag}_{int(time.time())}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved: gs://%s/%s", os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
@@ -796,6 +1189,16 @@ def main():
                    help="E4: training window — anchored expanding or rolling.")
     p.add_argument("--rolling-years", type=float, default=3.0,
                    help="E4: rolling-window lookback in years (window=rolling).")
+    p.add_argument("--holdout", default=None,
+                   help="E4: YYYY-MM-DD — bars >= this date are a LOCKED holdout "
+                        "excluded from every training fold and evaluated once at "
+                        "the end (the true out-of-sample test for the flicker).")
+    p.add_argument("--calibrate", default="none",
+                   choices=["none", "isotonic", "platt"],
+                   help="E4: post-hoc calibration of the long/short head probs, "
+                        "fit on a date-carved slice of TRAIN only. E-20 found "
+                        "sigmoid HURT the TYPE model; isotonic here is UNTRIED — "
+                        "this TESTS it, does not assume it helps.")
     p.add_argument("--cutoffs", default=None)
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
@@ -806,7 +1209,9 @@ def main():
                                  args.mag_thresh, cutoffs,
                                  feature_blocks=args.feature_blocks,
                                  window=args.window,
-                                 rolling_years=args.rolling_years)
+                                 rolling_years=args.rolling_years,
+                                 holdout=args.holdout,
+                                 calibrate=args.calibrate)
     else:
         run_probe(engine, args.ticker, args.tf, args.experiment, args.horizon,
                   cutoffs, regime=args.regime)

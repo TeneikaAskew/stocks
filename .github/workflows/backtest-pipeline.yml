@@ -17,6 +17,7 @@ on:
       - "tests/**"
       - "alert_config.json"
       - "requirements.txt"
+      - "requirements-research.txt"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -46,6 +47,38 @@ jobs:
         # tests/integration/ needs a real Postgres — it runs in the
         # dedicated `integration-tests` job below, not here.
         run: python -m pytest tests/ -x -q --ignore=tests/integration
+
+  research-test:
+    name: Research Tests (heavy ML stack)
+    runs-on: ubuntu-latest
+    # The lean `test` job above installs only requirements.txt, which omits
+    # the ~250MB research stack (lightgbm). Tests that need REAL lightgbm
+    # therefore SKIP there — giving them no actual CI coverage. This job
+    # installs the full research stack so those tests RUN for real. A
+    # side-benefit: because lightgbm is present, the import-stub shim in the
+    # magnitude tests never fires, so there is no mock-poisoning of siblings.
+    # We keep this as a SEPARATE job (not folded into `test`) so the lean job
+    # stays fast and continues to verify the code runs on production-only deps.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies (production + research stack)
+        run: pip install -r requirements.txt -r requirements-research.txt
+
+      - name: Run research tests with the real ML stack
+        # The strat-engine + magnitude tests need real lightgbm/sklearn; they
+        # skip in the lean `test` job. The globs auto-include new test_strat_*
+        # and test_mag* files so this coverage doesn't silently rot.
+        run: |
+          python -m pytest -q \
+            tests/test_strat*.py \
+            tests/test_mag*.py \
+            tests/test_featurize_all_nan_robust.py
 
   integration-tests:
     name: Integration Tests (ephemeral Postgres)
