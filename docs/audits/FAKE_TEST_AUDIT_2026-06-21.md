@@ -58,6 +58,29 @@ Commit: `test(e2e): skip gamma chip tests on empty data instead of silent pass`
 
 ---
 
+### 4. CRITICAL — `featurize()` no longer blesses missing data as `0`
+Commit: `feat(magnitude): emit missing-data indicators in featurize()`
+
+Per operator decision (add a missing flag). `featurize()` now emits a
+`<col>__isna` indicator (1.0 where the source was NaN/inf) for every
+feature column with missing data, appended to feature_cols. The imputed-0
+value stays for the model's numeric contract but is no longer
+indistinguishable from a real 0. Backward-compatible (inference selects
+`enc[feature_cols]`, so existing models ignore the new columns); the model
+benefits only after a retrain, and walk-forward validation should confirm
+the added indicators help before relying on them. **Verified** with
+scikit-learn/lightgbm installed: 57 featurize-path tests pass.
+
+### 5. HIGH — api-smoke routes no longer pass on a 404
+Commit: included with the e2e batch. `api-smoke.spec.ts` core-route smoke
+tests (`/signals`, `/playbook/rules`, `/options`, `/backtest/all`) asserted
+only `status < 500`, so a 404 (router failed to mount) passed. Added
+`.not.toBe(404)` — these routes are always mounted and return `200 []` on
+empty data, so a 404 is a real regression. (CI verifies — backend can't run
+in the offline sandbox.)
+
+---
+
 ## ⏳ Remaining — NOT auto-fixed (needs a decision or domain work)
 
 These were deliberately left untouched because fixing them blindly would

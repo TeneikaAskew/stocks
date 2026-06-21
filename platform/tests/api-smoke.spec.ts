@@ -74,25 +74,33 @@ test.describe('Live / signals / options / playbook routers', () => {
     expect(json).toHaveProperty('session');
   });
 
+  // These core routes are always mounted; empty data returns 200 + [],
+  // never 404. So a 404 means the router failed to mount — a real
+  // regression that must NOT pass as "no server error". Assert both: no
+  // 5xx AND not a 404 (route-missing). (audit 2026-06-21)
   test('GET /api/signals/IWM responds without a server error', async ({ request }) => {
     const res = await request.get(API + '/api/signals/IWM?limit=5');
     expect(res.status(), `/api/signals/IWM returned ${res.status()}`).toBeLessThan(500);
+    expect(res.status(), '/api/signals/IWM router not mounted (404)').not.toBe(404);
   });
 
   test('GET /api/playbook/rules responds without a server error', async ({ request }) => {
     const res = await request.get(API + '/api/playbook/rules');
     expect(res.status()).toBeLessThan(500);
+    expect(res.status(), '/api/playbook/rules router not mounted (404)').not.toBe(404);
   });
 
   test('GET /api/options/IWM responds without a server error', async ({ request }) => {
     const res = await request.get(API + '/api/options/IWM?limit=5');
     expect(res.status()).toBeLessThan(500);
+    expect(res.status(), '/api/options/IWM router not mounted (404)').not.toBe(404);
   });
 
   test('GET /api/backtest/all/IWM responds without a server error', async ({ request }) => {
     // Real endpoint (no /runs route — that was a memory-based misconception)
     const res = await request.get(API + '/api/backtest/all/IWM');
     expect(res.status()).toBeLessThan(500);
+    expect(res.status(), '/api/backtest/all/IWM router not mounted (404)').not.toBe(404);
   });
 });
 
