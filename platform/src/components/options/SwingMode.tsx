@@ -17,6 +17,7 @@ import {
   type HSExpiration,
   type DataSource,
 } from '@/data/heatseekerMock';
+import { DemoDataBanner } from '@/components/shared/DemoDataBanner';
 
 // SwingMode — Heatseeker "Swing Mode" dealer-gamma cockpit.
 //
@@ -187,7 +188,24 @@ interface RealOverlay {
 }
 
 // ─── Data source freshness pill ───────────────────────────────
-function SourcePill({ source, asOf }: { source: DataSource; asOf: string }) {
+function SourcePill({ source, asOf, isMock }: { source: DataSource; asOf: string; isMock?: boolean }) {
+  // The Swing grid is mock, so never claim "LIVE" here — that would contradict
+  // the demo banner. Show an explicit, non-pulsing DEMO badge instead.
+  if (isMock) {
+    return (
+      <span
+        className="hs-pill"
+        title="Mock surface — not live data"
+        style={{
+          background: 'rgba(245,158,11,0.12)',
+          color: 'var(--warn)',
+          border: '1px solid rgba(245,158,11,0.40)',
+        }}
+      >
+        <span>DEMO</span>
+      </span>
+    );
+  }
   const meta =
     {
       realtime: { cls: 'realtime', label: 'LIVE', hint: 'Realtime · 5-min snapshot' },
@@ -214,6 +232,7 @@ function Toolbar({
   setMode,
   expiryFilter,
   setExpiryFilter,
+  isMock,
 }: {
   metric: Metric;
   setMetric: (m: Metric) => void;
@@ -221,6 +240,7 @@ function Toolbar({
   setMode: (m: Mode) => void;
   expiryFilter: string;
   setExpiryFilter: (f: string) => void;
+  isMock?: boolean;
 }) {
   return (
     <div className="hs-toolbar">
@@ -256,7 +276,7 @@ function Toolbar({
         </div>
       </div>
       <div className="right">
-        <SourcePill source={HS.dataSource} asOf={HS.asOf} />
+        <SourcePill source={HS.dataSource} asOf={HS.asOf} isMock={isMock} />
         <button className="icon-btn" title="Refresh" type="button">
           <RefreshCw size={15} />
         </button>
@@ -1044,18 +1064,14 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      {/* Persistent demo pill — the grid/tactical/drill-in/pivot remain mock. */}
-      <div className="hs-demo-banner">
-        <span className="dot" />
-        <span>
-          Demo data — per-expiration exposure pending backend.{' '}
-          {overlay.isReal ? (
-            <strong>Metrics chips &amp; node list show live {overlay.ticker} levels.</strong>
-          ) : (
-            <strong>Showing mock {HS.ticker} surface.</strong>
-          )}
-        </span>
-      </div>
+      {/* Demo disclaimer — the grid/tactical/drill-in/pivot remain mock. */}
+      <DemoDataBanner
+        detail={
+          overlay.isReal
+            ? `Per-expiration exposure is mock; metric chips & node list show live ${overlay.ticker} levels.`
+            : `Showing mock ${HS.ticker} surface — per-expiration exposure pending backend.`
+        }
+      />
 
       <Toolbar
         metric={metric}
@@ -1064,6 +1080,7 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         setMode={setMode}
         expiryFilter={expiryFilter}
         setExpiryFilter={setExpiryFilter}
+        isMock
       />
       <Legend overlay={overlay} />
       {selExp && <ExpTabs selExp={selExp} onSelect={setSelExp} />}

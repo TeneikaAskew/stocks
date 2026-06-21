@@ -8,8 +8,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { AlertTriangle } from 'lucide-react';
 import { CONTRACT_DRILLDOWN, type TimeBucket } from '@/data/contractDrilldownMock';
+import { DemoDataBanner } from '@/components/shared/DemoDataBanner';
 
 /** Identity of a contract drilled into from the Live Feed. */
 export interface SelectedContract {
@@ -108,11 +108,7 @@ export default function ContractDrilldown({ selected }: { selected?: SelectedCon
   return (
     <div className="space-y-4">
       {/* Demo banner */}
-      <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-[var(--warn)]">
-        <AlertTriangle size={14} className="shrink-0" />
-        <span className="font-semibold">Demo data — no contract-tape endpoint connected.</span>
-        <span className="text-[var(--warn)]/80">Placeholder drilldown until a per-contract tape exists.</span>
-      </div>
+      <DemoDataBanner detail="No contract-tape endpoint connected — placeholder drilldown until a per-contract tape exists." />
 
       {/* Header row */}
       <div className="flex flex-wrap items-center gap-3 rounded-xl bg-[var(--surface-2)] px-4 py-3">
