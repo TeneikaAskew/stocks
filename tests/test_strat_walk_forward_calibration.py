@@ -45,10 +45,29 @@ def _stub_gcs():
         sys.modules.setdefault("google.cloud.storage", st)
 
 
+def _require_real_heavy_stack():
+    """Raise (-> caller skips) if lightgbm/sklearn are absent OR mock-poisoned.
+
+    strat_walk_forward lazy-imports lightgbm only when a fold trains, so the
+    module import below succeeds even when lightgbm is a MagicMock stub leaked
+    into sys.modules by a sibling test (tests/test_magnitude_inference.py).
+    Running against that fake yields empty predictions; treat it as unavailable
+    per the documented "skip if heavy stack isn't installed" contract."""
+    import importlib
+    from unittest.mock import Mock
+    for name in ("lightgbm", "sklearn"):
+        mod = importlib.import_module(name)  # ImportError -> caller skips
+        if isinstance(mod, Mock):
+            raise RuntimeError(
+                f"{name} is a mock stub (sys.modules poisoned by a sibling "
+                "test); heavy stack effectively unavailable")
+
+
 def _wf():
     _stub_gcs()
     try:
         import gcp.research.strat_engine.strat_walk_forward as wf
+        _require_real_heavy_stack()
     except Exception as e:  # pragma: no cover - environment-dependent
         pytest.skip(f"heavy stack unavailable: {e}")
     return wf

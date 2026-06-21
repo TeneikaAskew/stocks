@@ -119,6 +119,27 @@ def test_fit_calibrator_isotonic_is_monotone():
 
 # ── Tier 2: fold-level holdout + calibration (heavy stack, stubbed GCS) ──────
 
+def _require_real_heavy_stack():
+    """Import lightgbm + sklearn and raise (-> caller skips) if either is absent
+    OR has been replaced by a unittest.mock stub.
+
+    A sibling test (tests/test_magnitude_inference.py) stubs heavy deps that
+    aren't installed with ``MagicMock`` in ``sys.modules`` at import time so it
+    can import its own module without lightgbm. That stub LEAKS to sibling
+    tests: a plain ``import lightgbm`` then SUCCEEDS but returns the fake, whose
+    fake ``LGBMClassifier`` yields empty predictions and crashes downstream in
+    real sklearn. Treat a mock-poisoned module as unavailable (the documented
+    "skip if the heavy stack isn't installed" contract)."""
+    import importlib
+    from unittest.mock import Mock
+    for name in ("lightgbm", "sklearn"):
+        mod = importlib.import_module(name)  # ImportError -> caller skips
+        if isinstance(mod, Mock):
+            raise RuntimeError(
+                f"{name} is a mock stub (sys.modules poisoned by a sibling "
+                "test); heavy stack effectively unavailable")
+
+
 def _import_fold_helpers():
     """Import the LightGBM/sklearn fold helpers, stubbing the one eager
     google.cloud.storage import that the heavy module pulls in (used only for
@@ -138,14 +159,12 @@ def _import_fold_helpers():
         from gcp.research.strat_engine.strat_dir_probes import (
             _side_fold, _side_holdout_eval,
         )
-        # The fold helpers lazy-import strat_dir_walk_forward (and thus
-        # lightgbm/sklearn) only when CALLED, so the import above succeeds even
-        # when the heavy stack is absent. Force those deps here so a missing
-        # lightgbm/sklearn SKIPS (the documented contract) instead of failing
-        # mid-test with ModuleNotFoundError.
-        import lightgbm  # noqa: F401
-        import sklearn  # noqa: F401
-        from gcp.research.strat_engine import strat_dir_walk_forward  # noqa: F401
+        # The fold helpers lazy-import strat_dir_walk_forward (-> lightgbm) only
+        # when CALLED, so the import above succeeds even when the heavy stack is
+        # absent. Require the REAL modules here so a missing — OR mock-poisoned —
+        # lightgbm/sklearn SKIPS per the documented contract instead of running
+        # against a fake model that returns empty predictions.
+        _require_real_heavy_stack()
     except Exception as e:  # pragma: no cover - environment-dependent
         pytest.skip(f"heavy stack unavailable: {e}")
     return _side_fold, _side_holdout_eval
