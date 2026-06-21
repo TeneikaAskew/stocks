@@ -337,8 +337,13 @@ def _serve():
     return sys.modules["gcp.research.strat_engine.strat_pred_serve"]
 
 
-def _patch_serve_internals(current_strat_candle):
+def _patch_serve_internals(current_strat_candle, *, frame=None):
     """Patch predict_one's GCS/SQL/featurize internals to be hermetic.
+
+    Patches `load_strat_features_with_levels` (the LIVE-INFERENCE view that
+    keeps the newest, unlabeled bar) — the same loader mag_inference uses —
+    NOT the old `load_labeled_dataset` (which drops the current bar). The real
+    `add_session_aware_lags` runs on the mocked frame, matching production.
 
     Returns a list of context managers the caller enters.
     """
@@ -346,13 +351,14 @@ def _patch_serve_internals(current_strat_candle):
 
     serve = _serve()
 
-    latest_df = pd.DataFrame(
-        {
-            "ts": [pd.Timestamp("2026-05-22T19:30:00Z")],
-            "bar_date": [pd.Timestamp("2026-05-22").date()],
-            "strat_candle": [current_strat_candle],
-        }
-    )
+    if frame is None:
+        frame = pd.DataFrame(
+            {
+                "ts": [pd.Timestamp("2026-05-22T19:30:00Z")],
+                "bar_date": [pd.Timestamp("2026-05-22").date()],
+                "strat_candle": [current_strat_candle],
+            }
+        )
 
     return [
         patch.object(serve, "_load_model", return_value=_StubModel()),
@@ -362,7 +368,7 @@ def _patch_serve_internals(current_strat_candle):
         patch.object(serve, "_load_features_list", return_value=None),
         patch.object(serve, "_load_classes_list", return_value=None),
         patch.object(serve, "_load_live_ece_snapshot", return_value={}),
-        patch.object(serve, "load_labeled_dataset", return_value=latest_df),
+        patch.object(serve, "load_strat_features_with_levels", return_value=frame),
         patch.object(serve, "featurize",
                      return_value=(pd.DataFrame({"f0": [0.0]}), ["f0"])),
     ]
@@ -392,3 +398,55 @@ def test_predict_one_no_current_type_yields_none(monkeypatch):
         result = serve.predict_one(engine=None, ticker="IWM", tf="15m")
     assert result["current_type"] is None
     assert result["continuation_prob"] is None  # NOT 0, NOT 0.5
+
+
+def test_predict_one_scores_newest_bar(monkeypatch):
+    """predict_one must score the NEWEST (current, unlabeled) bar.
+
+    Regression guard for the Codex-flagged bug: predict_one used to load via
+    load_labeled_dataset, which LEADs the label and DROPS the last bar per
+    ticker — so it scored a STALE prior bar. With the live-inference view the
+    last row of the loaded frame IS the current bar, so the row handed to
+    featurize() and the response `ts` / `current_type` must come from the
+    NEWEST row, not an earlier one.
+    """
+    import contextlib
+    import pandas as pd
+
+    serve = _serve()
+
+    # Three bars; the LAST one (19:45, 2D) is the true current bar. The old
+    # labeled-set path would have dropped it and scored 19:30 (2U) instead.
+    frame = pd.DataFrame(
+        {
+            "ts": [
+                pd.Timestamp("2026-05-22T19:15:00Z"),
+                pd.Timestamp("2026-05-22T19:30:00Z"),
+                pd.Timestamp("2026-05-22T19:45:00Z"),
+            ],
+            "bar_date": [pd.Timestamp("2026-05-22").date()] * 3,
+            "strat_candle": ["1", "2U", "2D"],
+        }
+    )
+
+    captured = {}
+
+    def _capture_featurize(df):
+        # Record the strat_candle of the row handed to featurize.
+        captured["scored_candle"] = df["strat_candle"].iloc[0]
+        captured["scored_ts"] = pd.Timestamp(df["ts"].iloc[0])
+        return (pd.DataFrame({"f0": [0.0]}), ["f0"])
+
+    with contextlib.ExitStack() as stack:
+        for cm in _patch_serve_internals(current_strat_candle="2D", frame=frame):
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch.object(serve, "featurize", side_effect=_capture_featurize)
+        )
+        result = serve.predict_one(engine=None, ticker="IWM", tf="15m")
+
+    # The NEWEST bar (19:45, 2D) is the one scored — not the stale 19:30 (2U).
+    assert captured["scored_candle"] == "2D"
+    assert captured["scored_ts"] == pd.Timestamp("2026-05-22T19:45:00Z")
+    assert result["current_type"] == "2D"
+    assert result["ts"] == "2026-05-22T19:45:00+00:00"

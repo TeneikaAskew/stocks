@@ -42,7 +42,10 @@ from gcp.research.strat_engine.strat_config import (
     GCS_BUCKET_DEFAULT,
     gcs_model_prefix,
 )
-from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
+from gcp.research.strat_engine.strat_dataset import (
+    load_strat_features_with_levels,
+    add_session_aware_lags,
+)
 from gcp.research.strat_engine.strat_pred_train import featurize
 
 log = logging.getLogger(__name__)
@@ -341,14 +344,28 @@ def predict_one(
         response["note"] = mute_reason
         return response
 
-    # Load features. We use the labeled dataset loader so the featurize
-    # pipeline matches training exactly. Then pick one row.
-    df = load_labeled_dataset(
+    # Load features via the LIVE-INFERENCE view — load_strat_features_with_levels
+    # + add_session_aware_lags — the exact path mag_inference._load_recent_features
+    # uses. This is deliberately NOT load_labeled_dataset: that loader calls
+    # label_next_bar_type, which LEADs the label by 1 and DROPS the last bar per
+    # (ticker) (no t+1 to label). The dropped bar is the TRUE current bar, so
+    # df.iloc[[-1]] over the labeled set would be one (or more) bars stale and we
+    # would score a prior bar. The unlabeled inference view keeps the newest bar,
+    # so df.iloc[[-1]] is the true current bar. add_session_aware_lags reproduces
+    # the SAME prev1/2/3_candle lag semantics training (via label_next_bar_type)
+    # and mag_inference both rely on, so there is no train/inference skew — and
+    # next_bar_type is intentionally absent (it's the label, never a feature;
+    # featurize() drops LABEL_COL regardless). Then pick one row.
+    df = load_strat_features_with_levels(
         engine, ticker, tf,
         # Cap the lookback to the most recent ~30 days of bars for
         # efficiency. We only need the latest bar (or as_of).
         since=(pd.Timestamp.utcnow() - pd.Timedelta(days=30)).date().isoformat(),
+        require_strat_candle=True,
+        include_levels=True,
     )
+    df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
+    df = add_session_aware_lags(df, tf)
     if as_of is not None:
         as_of_ts = pd.to_datetime(as_of, utc=True)
         mask = pd.to_datetime(df["ts"], utc=True) <= as_of_ts
@@ -362,8 +379,10 @@ def predict_one(
         )
         return response
 
-    # The latest row in the labeled set is the most recent fully-labeled
-    # bar — i.e. the prediction is FOR the bar after that one (next bar).
+    # The latest row in the inference view is the TRUE current (newest,
+    # unlabeled) bar — the model predicts the NEXT bar's structure type FROM
+    # this bar's features. Because we use the live-inference view (not the
+    # labeled set, which drops this bar), df.iloc[[-1]] is the freshest bar.
     latest = df.iloc[[-1]].copy()
     response["ts"] = pd.to_datetime(latest["ts"].iloc[0], utc=True).isoformat()
 
