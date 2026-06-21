@@ -1657,6 +1657,32 @@ deploy_audit_infra_drift() {
     gcloud run jobs update audit-infra-drift "${common_flags[@]}"
 }
 
+deploy_audit_magnitude_drift() {
+    echo "Deploying audit-magnitude-drift job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # Model-quality drift check is one SQL aggregate over the last
+        # 7d of magnitude_per_bar_predictions (~3300 rows/cell × 3
+        # cells = ~10k rows max). The query is partition-keyed and
+        # returns ≤16 grouped rows. Local p100 ~200ms; 180s task-timeout
+        # is the same generous tail allowance audit-infra-drift uses.
+        --task-timeout 180
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_magnitude_drift"
+        --set-secrets "DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-magnitude-drift "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-magnitude-drift "${common_flags[@]}"
+}
+
 # Per-factor walk-forward audit — CR-native replacement for the GHA
 # `.github/workflows/per-factor-walkforward.yml` workflow. Runs the
 # audit script weekly via the gcp/audit_job_runner.py wrapper which
@@ -2224,6 +2250,7 @@ deploy_fetchers() {
     deploy_db_query
     deploy_freshness_watchdog
     deploy_audit_infra_drift
+    deploy_audit_magnitude_drift
     deploy_audit_walkforward
     deploy_audit_brief_bias
     # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
@@ -3066,6 +3093,15 @@ deploy_schedulers() {
     # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
     _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
 
+    # Magnitude-engine prediction-distribution drift detector — daily
+    # at 09:55 ET (30min after magnitude-inference-daily fires at 09:25
+    # ET, giving the inference window time to write + commit). Catches
+    # the failure mode the 2026-06 cascade exposed: rows ARE being
+    # written on schedule (so freshness-watchdog is happy) but they're
+    # degenerate (98% TIGHT vs ~36% true base rate). See
+    # gcp/audit_magnitude_drift.py.
+    _schedule "audit-magnitude-drift-daily" "55 9 * * 1-5" "audit-magnitude-drift"
+
     # Strat-engine daily incremental — Mon-Fri at 23:35 ET (5 min after
     # fetch-market-data-daily's 23:30 ET settle deadline for today's
     # daily bars + intraday catch-up). Bare strat_data_builder dispatch
@@ -3582,6 +3618,7 @@ case "${1:-help}" in
     db-query)     build_image && deploy_db_query ;;
     freshness-watchdog) build_image && deploy_freshness_watchdog ;;
     audit-infra-drift) build_image && deploy_audit_infra_drift ;;
+    audit-magnitude-drift) build_image && deploy_audit_magnitude_drift ;;
     audit-walkforward) build_image && deploy_audit_walkforward ;;
     audit-brief-bias) build_image && deploy_audit_brief_bias ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
