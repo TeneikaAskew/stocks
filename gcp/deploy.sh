@@ -1660,8 +1660,15 @@ deploy_audit_infra_drift() {
 deploy_audit_magnitude_drift() {
     echo "Deploying audit-magnitude-drift job..."
 
+    # DB credentials are required — fetch_distribution() queries
+    # magnitude_per_bar_predictions via gcp.database.get_engine().
+    # Codex P1 #641 caught the original env-only-stanza which would
+    # have crashed on every scheduled run.
     local non_secret_env
-    non_secret_env="GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
 
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
@@ -1674,7 +1681,7 @@ deploy_audit_magnitude_drift() {
         --task-timeout 180
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.audit_magnitude_drift"
-        --set-secrets "DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+        --set-secrets "DB_PASS=db-trading-pass:latest,DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
         --set-env-vars "${non_secret_env}"
         --quiet
     )

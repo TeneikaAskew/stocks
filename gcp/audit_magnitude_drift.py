@@ -39,6 +39,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -66,6 +67,16 @@ LOOKBACK_DAYS = int(os.environ.get("DRIFT_LOOKBACK_DAYS", "7"))
 # Minimum sample size before any check fires — avoids false alarms on
 # the first day after a new cell is added or after a long weekend.
 MIN_SAMPLE = int(os.environ.get("DRIFT_MIN_SAMPLE", "50"))
+
+# Cell-silence freshness threshold. A cell counts as "alive" only if it
+# produced predictions within this many hours. Codex P2 caught the
+# original 7-day check: if a cell silently failed TODAY but yesterday's
+# rows were still in the 7d lookback, the outage wouldn't surface for a
+# week. 24h matches the magnitude-inference-daily cadence (one fire/day
+# Mon-Fri) with a one-day grace for weekend dispatches.
+CELL_SILENCE_THRESHOLD_HOURS = int(
+    os.environ.get("DRIFT_CELL_SILENCE_HOURS", "48")
+)
 
 
 @dataclass
@@ -126,8 +137,29 @@ def fetch_distribution() -> list[dict]:
          GROUP BY ticker, tf, model_version, pred_bucket
     """)
     with engine.connect() as conn:
-        rows = conn.execute(text=sql, parameters={"days": LOOKBACK_DAYS}).mappings().all()
+        # SQLAlchemy 2.x Connection.execute() — statement positional, params
+        # positional or as second arg. Codex P1 #641 caught an earlier
+        # `text=sql, parameters=...` keyword form that raises TypeError
+        # before any SQL is issued.
+        rows = conn.execute(sql, {"days": LOOKBACK_DAYS}).mappings().all()
     return [dict(r) for r in rows]
+
+
+def _parse_last_computed(value) -> datetime | None:
+    """Normalize the `last_computed` column to a tz-aware datetime, or
+    None if unparseable / missing. Postgres TIMESTAMPTZ comes back as
+    a datetime via SQLAlchemy; some test fixtures (and stringified
+    forms in some local-dev paths) deliver an ISO string."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _cell_key(row: dict) -> tuple[str, str, str]:
@@ -169,17 +201,32 @@ def check_modal_dominance(rows: list[dict], report: Report) -> None:
 
 
 def check_cell_silence(rows: list[dict], report: Report,
-                       expected_cells: list[tuple[str, str]]) -> None:
-    """For each expected (ticker, tf) cell, flag if zero predictions
-    landed in the lookback window. Catches the case where the inference
-    job ran but one cell silently failed."""
-    seen = {(r["ticker"], r["tf"]) for r in rows}
+                       expected_cells: list[tuple[str, str]],
+                       threshold_hours: int = CELL_SILENCE_THRESHOLD_HOURS,
+                       *,
+                       now: datetime | None = None) -> None:
+    """For each expected (ticker, tf) cell, flag if NO predictions
+    landed within `threshold_hours` of `now`. Catches the case where
+    the inference job ran but one cell silently failed today.
+
+    Codex P2 #641 caught the original ANY-row-in-7d-window check —
+    a cell stale TODAY but with yesterday's rows in the lookback
+    wouldn't surface for a week. We now require freshness vs. NOW.
+    `now` is injectable so tests can pin the comparison instant.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=threshold_hours)
+    fresh_cells: set[tuple[str, str]] = set()
+    for r in rows:
+        lc = _parse_last_computed(r.get("last_computed"))
+        if lc is not None and lc >= cutoff:
+            fresh_cells.add((r["ticker"], r["tf"]))
     for ticker, tf in expected_cells:
-        if (ticker, tf) not in seen:
+        if (ticker, tf) not in fresh_cells:
             report.add(
                 severity="HIGH", check="cell-silence",
                 target=f"{ticker}:{tf}",
-                detail=(f"zero predictions in last {LOOKBACK_DAYS}d — "
+                detail=(f"no predictions in last {threshold_hours}h — "
                         f"inference job may have skipped or failed this cell"),
             )
 

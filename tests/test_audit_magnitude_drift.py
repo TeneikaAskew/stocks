@@ -8,6 +8,7 @@ refactor can't silently weaken the detection.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,8 +29,16 @@ def _stub_missing_modules(mods: list[str]) -> None:
 _stub_missing_modules(["google.cloud.storage", "sqlalchemy"])
 
 
+# Fixed reference instant for cell-silence freshness comparisons. All
+# fixture rows default to "1 hour before NOW" so they're always fresh
+# under the default 48h threshold; tests that exercise stale rows
+# pass an older value explicitly.
+NOW = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+
+
 def _row(ticker: str, tf: str, pred_bucket: int, n: int,
-         *, avg_conf: float = 0.65, model: str = "magnitude-engine-test") -> dict:
+         *, avg_conf: float = 0.65, model: str = "magnitude-engine-test",
+         last_computed: datetime | None = None) -> dict:
     """Build a fake distribution row matching fetch_distribution()'s shape."""
     return {
         "ticker": ticker, "tf": tf, "model_version": model,
@@ -37,7 +46,7 @@ def _row(ticker: str, tf: str, pred_bucket: int, n: int,
         "avg_conf": avg_conf,
         "avg_p_tight": 0.6, "avg_p_normal": 0.25,
         "avg_p_expanded": 0.1, "avg_p_explosive": 0.05,
-        "last_computed": "2026-06-21T00:00:00+00:00",
+        "last_computed": last_computed or (NOW - timedelta(hours=1)),
     }
 
 
@@ -145,7 +154,7 @@ def test_cell_silence_flags_missing_expected_cell():
     ]
     expected = [("IWM", "5m"), ("SPY", "5m"), ("QQQ", "5m")]
     r = Report()
-    check_cell_silence(rows, r, expected)
+    check_cell_silence(rows, r, expected, now=NOW)
     assert len(r.findings) == 1
     assert r.findings[0].target == "QQQ:5m"
     assert r.findings[0].severity == "HIGH"
@@ -159,8 +168,64 @@ def test_cell_silence_no_finding_when_all_present():
     rows = [_row(t, "5m", 0, 50) for t in ("IWM", "SPY", "QQQ")]
     expected = [("IWM", "5m"), ("SPY", "5m"), ("QQQ", "5m")]
     r = Report()
-    check_cell_silence(rows, r, expected)
+    check_cell_silence(rows, r, expected, now=NOW)
     assert r.findings == []
+
+
+def test_cell_silence_flags_stale_last_computed():
+    """Codex P2 #641: a cell with rows in the lookback window but
+    last_computed older than the freshness threshold must STILL fire
+    cell-silence. Without this the original implementation would miss
+    a today-only outage for an entire week."""
+    from gcp.audit_magnitude_drift import (
+        Report, check_cell_silence,
+    )
+    rows = [
+        # IWM fresh (1h ago); SPY stale (3 days ago, well past 48h threshold)
+        _row("IWM", "5m", 0, 50, last_computed=NOW - timedelta(hours=1)),
+        _row("SPY", "5m", 0, 50, last_computed=NOW - timedelta(days=3)),
+    ]
+    expected = [("IWM", "5m"), ("SPY", "5m")]
+    r = Report()
+    check_cell_silence(rows, r, expected, threshold_hours=48, now=NOW)
+    assert len(r.findings) == 1
+    assert r.findings[0].target == "SPY:5m"
+    assert "48h" in r.findings[0].detail
+
+
+def test_cell_silence_uses_most_recent_last_computed_per_cell():
+    """A cell with multiple rows (one per bucket) is fresh if ANY of
+    its rows is within the threshold. Without this we'd false-fire on
+    cells whose modal-bucket happens to be the stalest row."""
+    from gcp.audit_magnitude_drift import (
+        Report, check_cell_silence,
+    )
+    rows = [
+        # Same cell, two buckets — one row fresh, one row stale-ish
+        _row("IWM", "5m", 0, 50, last_computed=NOW - timedelta(hours=1)),
+        _row("IWM", "5m", 1, 5, last_computed=NOW - timedelta(days=3)),
+    ]
+    r = Report()
+    check_cell_silence(rows, r, [("IWM", "5m")],
+                        threshold_hours=48, now=NOW)
+    assert r.findings == []
+
+
+def test_parse_last_computed_handles_string_and_datetime():
+    """SQLAlchemy returns datetime, but some local-dev paths emit
+    ISO strings. Both must parse to the same tz-aware datetime."""
+    from gcp.audit_magnitude_drift import _parse_last_computed
+    dt_in = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+    assert _parse_last_computed(dt_in) == dt_in
+    assert _parse_last_computed("2026-06-21T12:00:00+00:00") == dt_in
+    # 'Z' suffix is normalized
+    assert _parse_last_computed("2026-06-21T12:00:00Z") == dt_in
+    # Naive datetime gets UTC defaulted
+    naive = datetime(2026, 6, 21, 12, 0, 0)
+    assert _parse_last_computed(naive).tzinfo == timezone.utc
+    # Garbage → None (won't false-fire silence)
+    assert _parse_last_computed(None) is None
+    assert _parse_last_computed("not-a-date") is None
 
 
 def test_summary_clean_when_no_findings():
