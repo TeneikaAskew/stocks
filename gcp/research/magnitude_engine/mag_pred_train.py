@@ -80,10 +80,31 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     cols = [c for c in enc.columns
             if c not in drop and enc[c].dtype in
             (np.float64, np.int64, np.int32, np.int8, np.float32)]
-    return (
-        enc[cols].replace([np.inf, -np.inf], np.nan).fillna(0).astype(np.float32),
-        cols,
-    )
+    feat = enc[cols].replace([np.inf, -np.inf], np.nan)
+
+    # Missing-data indicators (CLAUDE.md §3.7): a value imputed to 0 must
+    # stay distinguishable from a genuine 0. For every feature column that
+    # carries any missing/inf value, emit a companion `<col>__isna` flag
+    # (1.0 where the source was NaN/inf, else 0.0) BEFORE the value column
+    # is imputed to 0. The model learns from the flag wherever missingness
+    # varies in the training window; fully-populated columns get no flag.
+    # Indicators are appended to feature_cols so a retrain adopts them;
+    # existing models simply ignore the extra columns at inference
+    # (mag_inference selects enc[feature_cols]). This replaces the prior
+    # behaviour where an all-NULL column (e.g. vix_close on a broken
+    # upstream join, 2026-06-19) silently became an all-zero "calm market"
+    # feature indistinguishable from a real reading.
+    na_mask = feat.isna()
+    miss_cols = [c for c in cols if bool(na_mask[c].any())]
+    X = feat.fillna(0).astype(np.float32)
+    if miss_cols:
+        ind = pd.DataFrame(
+            {f"{c}__isna": na_mask[c].astype(np.float32) for c in miss_cols},
+            index=X.index,
+        )
+        X = pd.concat([X, ind], axis=1)
+        cols = cols + list(ind.columns)
+    return X, cols
 
 
 def expected_calibration_error(y_true_idx: np.ndarray, y_proba: np.ndarray,

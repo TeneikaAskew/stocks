@@ -75,9 +75,42 @@ def test_featurize_includes_all_nan_object_column_as_float64():
     # The downstream fillna(0).astype(float32) should also keep it.
     assert "vix_close" in X.columns
     assert X["vix_close"].dtype == np.float32
-    # All values should be 0 (semantically: "no signal", same as training
-    # would have produced for a sparse-NULL row).
+    # The value column is imputed to 0 for the model's numeric contract...
     assert (X["vix_close"] == 0.0).all()
+    # ...but the imputed 0 must NOT be silently indistinguishable from a
+    # real zero reading (CLAUDE.md §3.7). featurize emits a companion
+    # missing-data flag so the model (and any auditor) can tell that the
+    # whole column was unavailable rather than legitimately zero.
+    assert "vix_close__isna" in cols, (
+        "all-NaN feature must carry an explicit missing-data indicator; "
+        "a bare fillna(0) hides the gap (see CLAUDE.md §3.7)"
+    )
+    assert (X["vix_close__isna"] == 1.0).all(), (
+        "the missing-data flag must be 1 wherever the source was NULL"
+    )
+
+
+def test_featurize_missing_flag_distinguishes_real_zero_from_missing():
+    """A genuine 0 reading and a missing (NULL) reading must produce
+    different feature rows — the whole point of the missing-data flag.
+    A column that is half real-zeros and half NULL gets an __isna flag
+    that is 0 on the real rows and 1 on the NULL rows."""
+    from gcp.research.magnitude_engine.mag_pred_train import featurize
+    df = _make_frame_with_all_nan_object_col()
+    # rsi_14 already present and fully populated; introduce a sparse-NULL
+    # numeric where row 0 is a real 0.0 and row 1 is missing.
+    df["sparse_feat"] = [0.0, np.nan, 2.0, 3.0]
+    X, cols = featurize(df)
+    assert "sparse_feat" in cols
+    assert "sparse_feat__isna" in cols
+    # Real 0.0 row: value 0, flag 0.  Missing row: value imputed to 0, flag 1.
+    assert X["sparse_feat"].iloc[0] == 0.0
+    assert X["sparse_feat__isna"].iloc[0] == 0.0  # real zero, not missing
+    assert X["sparse_feat"].iloc[1] == 0.0        # imputed
+    assert X["sparse_feat__isna"].iloc[1] == 1.0  # but flagged missing
+    # A fully-populated column gets NO redundant flag.
+    assert "rsi_14" in cols
+    assert "rsi_14__isna" not in cols
 
 
 def test_featurize_preserves_non_nan_columns_unchanged():
