@@ -170,6 +170,10 @@ function fmtTime(iso: string): string {
 // backend can supply replaces the mock; everything else falls back to HS.
 interface RealOverlay {
   isReal: boolean;
+  /** True only when the King/Gate taxonomy came from the real /levels endpoint.
+   *  Midpoint/Hedge nodes have no other source, so they render only when true —
+   *  never as mock next to a real grid. */
+  isLevels: boolean;
   ticker: string;
   spotPrice: number;
   spotMethod: string;
@@ -182,6 +186,7 @@ interface RealOverlay {
   flipGex: number;
   regime: string;
   totalGex: number;
+  totalVex: number;
 }
 
 // ─── Data source freshness pill ───────────────────────────────
@@ -357,17 +362,19 @@ function Legend({ overlay }: { overlay: RealOverlay }) {
           <div className="val">{overlay.flipStrike.toFixed(2)}</div>
         </div>
       </span>
-      <span className="chip hedge">
-        <span className="icon">
-          <HSIcons.hedge />
-        </span>
-        <div>
-          <div className="label">
-            <Term k="hedge">Hedge</Term>
+      {overlay.isLevels && (
+        <span className="chip hedge">
+          <span className="icon">
+            <HSIcons.hedge />
+          </span>
+          <div>
+            <div className="label">
+              <Term k="hedge">Hedge</Term>
+            </div>
+            <div className="val">{HS.nodes.hedge[0]?.strike}</div>
           </div>
-          <div className="val">{HS.nodes.hedge[0]?.strike}</div>
-        </div>
-      </span>
+        </span>
+      )}
       <span className="chip">
         <div>
           <div className="label">Regime</div>
@@ -390,7 +397,7 @@ function Legend({ overlay }: { overlay: RealOverlay }) {
             Total <Term k="vex">VEX</Term>
           </div>
           <div className="val" style={{ color: '#ef4444' }}>
-            {fmtBigGex(HS.totalVex)}
+            {fmtBigGex(overlay.totalVex)}
           </div>
         </div>
       </span>
@@ -469,12 +476,16 @@ function NodeList({ overlay }: { overlay: RealOverlay }) {
     items.push({ role: 'gate', strike: overlay.gateBelow.strike, extra: fmtBigGex(overlay.gateBelow.gex), name: 'Gate ↓' });
   items.push({ role: 'spot', strike: overlay.spotPrice, extra: 'current', name: 'Spot' });
   items.push({ role: 'flip', strike: overlay.flipStrike, extra: 'zero-gamma', name: 'Flip' });
-  HS.nodes.midpoints.forEach((m) =>
-    items.push({ role: 'midpoint', strike: m.strike, extra: fmtBigGex(m.gex), name: 'Midpoint' }),
-  );
-  HS.nodes.hedge.forEach((h) =>
-    items.push({ role: 'hedge', strike: h.strike, extra: h.linkedEvent, name: 'Hedge' }),
-  );
+  // Midpoint / Hedge nodes have no backend source — show them only alongside the
+  // real /levels taxonomy, never as mock next to a grid-derived overlay.
+  if (overlay.isLevels) {
+    HS.nodes.midpoints.forEach((m) =>
+      items.push({ role: 'midpoint', strike: m.strike, extra: fmtBigGex(m.gex), name: 'Midpoint' }),
+    );
+    HS.nodes.hedge.forEach((h) =>
+      items.push({ role: 'hedge', strike: h.strike, extra: h.linkedEvent, name: 'Hedge' }),
+    );
+  }
 
   return (
     <div className="card-i hs-nodes">
@@ -765,12 +776,14 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
   });
   const grid = gridQuery.data;
 
-  // Build the overlay — real values where the backend supplies them, else mock.
+  // Build the overlay. Priority: real /levels taxonomy → real grid-derived →
+  // mock (only when neither is available, and then the panels are hidden).
+  // No mock value is ever shown next to a real grid for the focus symbol.
   const overlay: RealOverlay = useMemo(() => {
+    // 1. Real /levels — full King/Gate taxonomy (lib.gamma is the source of math).
     if (levels && levels.levels.length > 0) {
       const king = levels.kings?.[0];
-      const spotPrice = levels.spot.price > 0 ? levels.spot.price : HS.spot.price;
-      // Split gates into above/below spot.
+      const spotPrice = levels.spot.price > 0 ? levels.spot.price : (grid?.spot.price ?? 0);
       const above = levels.gates
         .filter((g) => g.strike >= spotPrice)
         .sort((a, b) => a.strike - b.strike)[0];
@@ -780,23 +793,62 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
       const flipLvl = levels.gamma_balance_levels?.[0];
       return {
         isReal: true,
+        isLevels: true,
         ticker: sym,
         spotPrice,
         spotMethod: levels.spot.method,
         spotNote: levels.spot.note,
-        kingStrike: king?.strike ?? HS.nodes.king.strike,
-        kingGex: king?.gex ?? HS.nodes.king.gex,
+        kingStrike: king?.strike ?? spotPrice,
+        kingGex: king?.gex ?? 0,
         gateAbove: above ? { strike: above.strike, gex: above.gex } : undefined,
         gateBelow: below ? { strike: below.strike, gex: below.gex } : undefined,
-        flipStrike: levels.gamma_balance ?? HS.flip,
-        flipGex: flipLvl?.gex ?? HS.nodes.flip.gex,
+        flipStrike: levels.gamma_balance ?? grid?.gamma_flip ?? spotPrice,
+        flipGex: flipLvl?.gex ?? 0,
         regime: levels.regime,
         totalGex: levels.total_gex,
+        totalVex: grid?.total_vex ?? 0,
       };
     }
-    // Mock fallback.
+    // 2. Real grid but no /levels (e.g. on-demand ticker with no Cloud SQL dates).
+    //    Use the grid's own backend-computed fields; King = the grid's largest
+    //    |net GEX| strike (same selection as the gold King cell / pivot rail).
+    //    Gates need the /levels taxonomy, so they're omitted (not faked).
+    if (grid && grid.cells.length > 0 && grid.data_source !== 'unavailable') {
+      const byStrike = new Map<number, number>();
+      for (const c of grid.cells) byStrike.set(c.strike, (byStrike.get(c.strike) ?? 0) + c.gex);
+      let kingStrike = grid.spot.price;
+      let kingGex = 0;
+      let kingAbs = -1;
+      for (const [s, g] of byStrike) {
+        if (Math.abs(g) > kingAbs) {
+          kingAbs = Math.abs(g);
+          kingStrike = s;
+          kingGex = g;
+        }
+      }
+      return {
+        isReal: true,
+        isLevels: false,
+        ticker: grid.ticker,
+        spotPrice: grid.spot.price,
+        spotMethod: grid.spot.method,
+        spotNote: grid.spot.note,
+        kingStrike,
+        kingGex,
+        gateAbove: undefined,
+        gateBelow: undefined,
+        flipStrike: grid.gamma_flip ?? grid.spot.price,
+        flipGex: 0,
+        regime: grid.regime,
+        totalGex: grid.total_gex,
+        totalVex: grid.total_vex,
+      };
+    }
+    // 3. Nothing real — mock placeholder (the Legend / NodeList are hidden in
+    //    this state; see the render guard on overlay.isReal).
     return {
       isReal: false,
+      isLevels: false,
       ticker: HS.ticker,
       spotPrice: HS.spot.price,
       spotMethod: HS.spot.method,
@@ -809,8 +861,9 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
       flipGex: HS.nodes.flip.gex,
       regime: HS.regime,
       totalGex: HS.totalGex,
+      totalVex: HS.totalVex,
     };
-  }, [levels, sym]);
+  }, [levels, grid, sym]);
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -820,8 +873,15 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         <span>
           {grid && grid.data_source !== 'unavailable' ? (
             <>
-              Heatmap grid &amp; pivot rail show <strong>live {sym} dealer exposure</strong>. Tactical
-              read is illustrative.
+              Heatmap grid &amp; pivot rail show{' '}
+              <strong>
+                {grid.data_source === 'realtime'
+                  ? `live ${sym} dealer exposure`
+                  : grid.data_source === 'eod_fallback'
+                    ? `${sym} dealer exposure (end-of-day close)`
+                    : `${sym} dealer exposure (delayed snapshot)`}
+              </strong>
+              . Tactical read is illustrative.
             </>
           ) : (
             <>
@@ -841,7 +901,7 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         source={grid?.data_source ?? 'unavailable'}
         asOf={grid?.snapshot_ts ?? ''}
       />
-      <Legend overlay={overlay} />
+      {overlay.isReal && <Legend overlay={overlay} />}
 
       <div className="hs-stage">
         <div>
@@ -857,7 +917,7 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
           flipStrike={overlay.isReal ? overlay.flipStrike : undefined}
         />
         <div className="col" style={{ gap: 14 }}>
-          <NodeList overlay={overlay} />
+          {overlay.isReal && <NodeList overlay={overlay} />}
           <RealPivotBuild summary={grid} />
         </div>
       </div>
