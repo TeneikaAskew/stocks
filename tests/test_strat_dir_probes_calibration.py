@@ -143,8 +143,13 @@ def _import_fold_helpers():
     return _side_fold, _side_holdout_eval
 
 
-def _synthetic(n_days: int = 24, per_day: int = 50, seed: int = 0):
-    """A mildly-predictable binary fold problem with a clean day structure."""
+def _synthetic(n_days: int = 24, per_day: int = 200, seed: int = 0):
+    """A mildly-predictable binary fold problem with a clean day structure.
+
+    per_day=200 (was 50) keeps the calibration slice thick enough (≥200 rows)
+    that both classes are reliably present and LightGBM's min_child_samples=100
+    doesn't collapse the model, making the isotonic test deterministic across
+    Python / sklearn versions (CI = 3.12, local = 3.11)."""
     rng = np.random.default_rng(seed)
     n = n_days * per_day
     start = np.datetime64("2020-01-01")
@@ -252,9 +257,12 @@ def test_locked_holdout_eval_trains_only_on_preholdout():
     # The eval set size must equal the holdout-bar count (minus embargo/cond,
     # which are all-true here) — i.e. it tested on the locked block.
     assert hr["n_test"] == int(holdout.sum())
-    holdout_x0 = set(np.round(X[holdout, 0], 6).tolist())
+    # Use tobytes() on column-0 values rather than rounded floats — float32
+    # rounded to 6 decimal places collides in large arrays (4800 rows), making
+    # the set-disjoint check unreliable.  tobytes() preserves exact bit pattern.
+    holdout_x0_bytes = {v.tobytes() for v in X[holdout, 0]}
     for fit_x0 in captured["fit_x0"]:
-        assert set(np.round(fit_x0, 6).tolist()).isdisjoint(holdout_x0)
+        assert {np.float32(v).tobytes() for v in fit_x0}.isdisjoint(holdout_x0_bytes)
 
 
 # ── Tier 2: leak guard still fires on a planted forward column ───────────────

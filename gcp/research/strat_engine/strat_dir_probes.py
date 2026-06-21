@@ -603,14 +603,28 @@ def _side_fold(X_full, y, bar_dates, train_end, test_end, embargo_days,
             pos = cls.index(1) if 1 in cls else 1
             p_calib = model.predict_proba(X_full[calib_mask])[:, pos]
             p_te_raw = model.predict_proba(X_full[te])[:, pos]
-            try:
-                apply = _fit_calibrator(calibrate, p_calib, y[calib_mask])
-                p1 = np.asarray(apply(p_te_raw), dtype=float)
-                cal_status = calibrate
-            except RuntimeError as e:
-                # single-class calib slice slipped past the guard above
+            if len(p_calib) == 0:
+                # Degenerate: predict_proba returned empty for the calib slice
+                # even though calib_mask.sum() > 0 — can happen in newer
+                # sklearn/LightGBM when the fitted model sees no split on this
+                # subset.  Fail loud with a recorded reason (Rule 3.7).
+                log.warning(
+                    "fold=%s..%s calibrate=%s: predict_proba returned 0 "
+                    "predictions for calib slice (calib_mask.sum=%d) — "
+                    "degenerate; falling back to raw probabilities",
+                    train_end, test_end, calibrate, int(calib_mask.sum()),
+                )
                 p1 = p_te_raw
-                cal_status = f"RAW_calib_failed:{e}"
+                cal_status = "RAW_calib_empty_predictions"
+            else:
+                try:
+                    apply = _fit_calibrator(calibrate, p_calib, y[calib_mask])
+                    p1 = np.asarray(apply(p_te_raw), dtype=float)
+                    cal_status = calibrate
+                except RuntimeError as e:
+                    # single-class calib slice slipped past the guard above
+                    p1 = p_te_raw
+                    cal_status = f"RAW_calib_failed:{e}"
 
     out["calib_status"] = cal_status
     return {**out, "status": "OK", **_side_metrics(y_te, p1, base_ll)}
