@@ -549,3 +549,173 @@ async def admin_strat_engine_predict(
     engine = get_engine()
     result = predict_one(engine, ticker, tf, as_of=as_of)
     return StratEnginePredictResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# PHASE 1 — Structure continuation (feature-flagged, behind-the-scenes).
+#
+# Surfaces the VALIDATED Strat-TYPE continuation probability — P(next bar
+# keeps the current bar's Strat type) — as a READ-ONLY, FEATURE-FLAGGED
+# field. This is the low-risk "unlock" step of the movement-statement build
+# plan: the calibrated probability is made AVAILABLE behind the existing
+# admin gate, but nothing renders to end users until a later phase flips
+# the flag on.
+#
+# Scope guardrails baked in here, not left to the caller:
+#   - Tickers: IWM / SPY / QQQ only (the validated cells).
+#   - Timeframes: 5m and 15m ONLY. 30m is NOT cleared (QQQ 30m still fails
+#     calibration) and is intentionally NOT exposed by this endpoint.
+#   - Feature flag: STRUCTURE_CONTINUATION_ENABLED (env var, default OFF).
+#     When OFF the endpoint returns 404 so the field is genuinely absent
+#     for callers — no UI change, no behaviour change, until a later phase
+#     sets the flag to a truthy value.
+#   - Rule 3.7: when the model artifact is unavailable/unloadable, or the
+#     cell is muted, OR no real current Strat type can be anchored, the
+#     response carries status="UNAVAILABLE" + a reason and a NULL
+#     continuation_prob. We NEVER fabricate a probability, 0, or 0.5.
+# ---------------------------------------------------------------------------
+
+# The validated, exposable cells for Phase 1. 30m is deliberately excluded.
+STRUCTURE_CONTINUATION_TICKERS = ("IWM", "SPY", "QQQ")
+STRUCTURE_CONTINUATION_TFS = ("5m", "15m")
+
+
+def _structure_continuation_enabled() -> bool:
+    """Feature flag — default OFF.
+
+    Read at request time (not import time) so the flag can be flipped via
+    env var / Cloud Run config without a code change. Accepts the common
+    truthy spellings; everything else (including unset) is OFF.
+    """
+    raw = os.environ.get("STRUCTURE_CONTINUATION_ENABLED", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+class StructureContinuationRequest(BaseModel):
+    ticker: str
+    timeframe: str
+    as_of_timestamp: Optional[str] = None  # ISO-8601; defaults to latest
+
+
+class StructureContinuationResponse(BaseModel):
+    # status is the explicit envelope discriminator (Rule 3.7):
+    #   "OK"          — continuation_prob is a real calibrated probability
+    #   "UNAVAILABLE" — model/feature/mute/current-type problem; prob is null
+    status: str
+    ticker: str
+    timeframe: str
+    ts: Optional[str] = None              # bar the prediction is based on
+    current_type: Optional[str] = None    # current bar's Strat type (1/2U/2D/3)
+    continuation_prob: Optional[float] = None  # P(next bar keeps current_type)
+    model_version: Optional[str] = None
+    last_train_date: Optional[str] = None
+    live_ece: Optional[float] = None
+    scope_statement: str
+    reason: Optional[str] = None          # populated when status="UNAVAILABLE"
+
+
+@router.post(
+    "/strat-engine/structure-continuation",
+    response_model=StructureContinuationResponse,
+)
+async def admin_structure_continuation(
+    body: StructureContinuationRequest,
+    request: Request,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Read-only, feature-flagged calibrated structure-continuation probability.
+
+    Phase 1 of the movement-statement build plan. Behind the existing admin
+    gate AND behind the STRUCTURE_CONTINUATION_ENABLED feature flag (default
+    OFF). Exposes ONLY IWM/SPY/QQQ at 5m/15m. 30m is never exposed.
+
+    When the flag is OFF the endpoint returns 404 (the field does not exist
+    for callers). When ON, it returns the calibrated continuation
+    probability, or an explicit UNAVAILABLE envelope when the model can't
+    produce one — never a fabricated number (Rule 3.7).
+    """
+    _require_admin(request, x_admin_token)
+
+    # Feature flag — when OFF the endpoint behaves as if it doesn't exist.
+    if not _structure_continuation_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    ticker = body.ticker.upper().strip()
+    tf = body.timeframe.strip()
+    if ticker not in STRUCTURE_CONTINUATION_TICKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"ticker must be one of {STRUCTURE_CONTINUATION_TICKERS}; "
+                f"got {ticker!r}"
+            ),
+        )
+    if tf not in STRUCTURE_CONTINUATION_TFS:
+        # 30m (and anything else) is intentionally rejected — not cleared.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"timeframe must be one of {STRUCTURE_CONTINUATION_TFS}; "
+                f"got {tf!r} (30m is not exposed — calibration not cleared)"
+            ),
+        )
+
+    # Lazy-import the heavy predict path only when the endpoint is hit.
+    from gcp.database import get_engine  # noqa: PLC0415
+    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+    import pandas as _pd  # noqa: PLC0415
+
+    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
+    engine = get_engine()
+    result = predict_one(engine, ticker, tf, as_of=as_of)
+
+    base = {
+        "ticker": result.get("ticker", ticker),
+        "timeframe": result.get("timeframe", tf),
+        "ts": result.get("ts"),
+        "model_version": result.get("model_version"),
+        "last_train_date": result.get("last_train_date"),
+        "live_ece": result.get("live_ece"),
+        "scope_statement": result.get(
+            "scope_statement", STRUCTURE_BRIEF_SCOPE_STATEMENT
+        ),
+    }
+
+    # Rule 3.7 — every failure mode returns an explicit UNAVAILABLE envelope
+    # with a NULL continuation_prob, never a fabricated probability.
+    cont = result.get("continuation_prob")
+    current_type = result.get("current_type")
+    if not result.get("available"):
+        return StructureContinuationResponse(
+            status="UNAVAILABLE",
+            current_type=current_type,
+            continuation_prob=None,
+            reason=result.get("note") or "model unavailable",
+            **base,
+        )
+    if result.get("muted"):
+        return StructureContinuationResponse(
+            status="UNAVAILABLE",
+            current_type=current_type,
+            continuation_prob=None,
+            reason=result.get("mute_reason") or "model muted",
+            **base,
+        )
+    if current_type is None or cont is None:
+        return StructureContinuationResponse(
+            status="UNAVAILABLE",
+            current_type=current_type,
+            continuation_prob=None,
+            reason=(
+                "no current Strat type to anchor continuation probability"
+            ),
+            **base,
+        )
+
+    return StructureContinuationResponse(
+        status="OK",
+        current_type=current_type,
+        continuation_prob=float(cont),
+        reason=None,
+        **base,
+    )
