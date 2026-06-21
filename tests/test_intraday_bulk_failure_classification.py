@@ -30,6 +30,7 @@ from unittest.mock import patch, MagicMock
 
 import pandas as pd
 import pytest
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -266,7 +267,9 @@ class _MockResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise Exception(f'HTTP {self.status_code}')
+            # Mirror real requests: raise the specific HTTPError so tests
+            # can assert on the exact failure type, not a bare Exception.
+            raise requests.exceptions.HTTPError(f'HTTP {self.status_code}')
 
     def json(self):
         return self._json
@@ -349,7 +352,7 @@ def test_file_data_quality_issue_failure_doesnt_crash(monkeypatch):
                         {'GH_DATA_QUALITY_TOKEN': 'fake_token'})
     monkeypatch.setattr(fai.requests, 'get',
                         lambda *a, **kw: _MockResponse(500))
-    with pytest.raises(Exception):
+    with pytest.raises(requests.exceptions.HTTPError):
         fai._file_data_quality_issue(['YSS'])
 
 

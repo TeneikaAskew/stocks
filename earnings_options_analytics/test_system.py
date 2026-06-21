@@ -21,9 +21,7 @@ def test_data_loading():
     loader = DataLoader(config.DATA_PATH)
     data = loader.load_all_strategies(verbose=True)
 
-    if not data:
-        print("❌ FAIL: No data loaded")
-        return False
+    assert data, "No data loaded"
 
     print(f"✓ PASS: Loaded {len(data)} strategies")
 
@@ -48,9 +46,8 @@ def test_unified_dataset():
     loader.load_all_strategies(verbose=False)
     unified_df = loader.create_unified_dataset(verbose=True)
 
-    if unified_df is None or len(unified_df) == 0:
-        print("❌ FAIL: Failed to create unified dataset")
-        return False
+    assert unified_df is not None and len(unified_df) > 0, \
+        "Failed to create unified dataset"
 
     print(f"✓ PASS: Created unified dataset with {len(unified_df)} rows")
 
@@ -76,9 +73,7 @@ def test_strategy_analysis():
     loader.load_all_strategies(verbose=False)
     unified_df = loader.create_unified_dataset(verbose=False)
 
-    if unified_df is None:
-        print("❌ FAIL: No unified dataset")
-        return False
+    assert unified_df is not None, "No unified dataset"
 
     analyzer = StrategyAnalyzer(unified_df)
 
@@ -106,7 +101,7 @@ def test_strategy_analysis():
         print(f"❌ FAIL: {str(e)}")
         import traceback
         traceback.print_exc()
-        return False
+        raise
 
 
 def test_data_quality():
@@ -119,9 +114,7 @@ def test_data_quality():
     loader.load_all_strategies(verbose=False)
     unified_df = loader.create_unified_dataset(verbose=False)
 
-    if unified_df is None:
-        print("❌ FAIL: No unified dataset")
-        return False
+    assert unified_df is not None, "No unified dataset"
 
     total_rows = len(unified_df)
 
