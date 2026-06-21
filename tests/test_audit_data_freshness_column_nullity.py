@@ -23,18 +23,19 @@ def _fake_distribution(rows: list[dict]) -> pd.DataFrame:
 
 
 def _patch_query(monkeypatch, df_or_exc):
-    """Install a fake query_to_dataframe — same helper shape the
-    existing test_audit_data_freshness suite uses."""
-    from scripts import audit_data_freshness as mod
+    """Install a fake query_to_dataframe_strict — the column-nullity
+    check uses the strict variant (so SQL errors propagate rather than
+    being swallowed into a silent-fallback false-pass, per Codex P2)."""
+    from gcp import database
 
     def fake(sql, params=None):
         if isinstance(df_or_exc, BaseException):
             raise df_or_exc
         if callable(df_or_exc):
-            return df_or_exc(sql)
+            return df_or_exc(sql, params)
         return df_or_exc.copy() if isinstance(df_or_exc, pd.DataFrame) else df_or_exc
 
-    monkeypatch.setattr(mod, "query_to_dataframe", fake)
+    monkeypatch.setattr(database, "query_to_dataframe_strict", fake)
 
 
 def test_healthy_column_emits_no_finding(monkeypatch):
@@ -129,6 +130,27 @@ def test_missing_table_skips_silently(monkeypatch):
     assert out == []
 
 
+def test_real_sql_error_surfaces_unknown_not_silent_pass(monkeypatch):
+    """Codex P2 #644: a real SQL error (e.g. column dropped in a
+    schema regression) MUST surface, not silently pass. Pre-fix the
+    audit used query_to_dataframe which swallows exceptions and returns
+    empty df → df.empty → silent pass — the exact CLAUDE.md §3.7
+    silent-fallback pattern. After fix, the function emits an
+    `unknown`-status row so the operator sees it."""
+    from scripts.audit_data_freshness import _query_column_nullity
+    _patch_query(monkeypatch, Exception("column \"orb_5m_high\" does not exist"))
+    out = _query_column_nullity(datetime(2026, 6, 21, 14, 0))
+    assert len(out) > 0, (
+        "a schema regression must surface as a finding — silent pass "
+        "is the CLAUDE.md §3.7 violation the strict-query switch fixes"
+    )
+    # Every emitted finding is `unknown` status (we can't tell from a
+    # SQL failure whether the column is degraded or just missing).
+    for f in out:
+        assert f.status == "unknown"
+        assert "query failed" in (f.last_row_at or "")
+
+
 def test_empty_window_skips(monkeypatch):
     """Zero rows for any ticker in the lookback window means the table
     is being written but not for these tickers (or this is a weekend
@@ -138,6 +160,57 @@ def test_empty_window_skips(monkeypatch):
     _patch_query(monkeypatch, pd.DataFrame())
     out = _query_column_nullity(datetime(2026, 6, 21, 14, 0))
     assert out == []
+
+
+def test_window_anchors_to_settled_trading_day_not_wallclock(monkeypatch):
+    """Codex P2 #644: with a wall-clock `NOW() - INTERVAL '1 day'`
+    cutoff, a Saturday-afternoon audit (~23:30 UTC) would put the
+    cutoff at Friday 23:30 UTC — AFTER Friday RTH close (~20:00 UTC).
+    Friday's bars would fall OUTSIDE the window, df would be empty,
+    and the cascade-signature check would silently pass over the
+    weekend.
+
+    The fix anchors to the most recent SETTLED trading day. This test
+    pins that contract: a Saturday-afternoon audit MUST include
+    Friday's bars in the window (so a NULL `vix_close` on Friday's
+    bars still fires)."""
+    from scripts.audit_data_freshness import _query_column_nullity
+
+    # Capture the params the SQL is invoked with so we can assert the
+    # window covers Friday 2026-06-19.
+    captured = {}
+    def capturing(sql, params=None):
+        captured["params"] = params or {}
+        # Return the "broken" shape: 0/78 non-NULL on Friday
+        return _fake_distribution([
+            {"ticker": "IWM", "total": 78, "non_null": 0},
+        ])
+
+    _patch_query(monkeypatch, capturing)
+    # Saturday 2026-06-13 23:30 UTC = Saturday 19:30 ET. Avoids
+    # Juneteenth (Fri 2026-06-19) — picking a regular weekend so the
+    # "most recent settled trading day" is unambiguously Friday 06-12.
+    saturday_late = datetime(2026, 6, 13, 23, 30, 0)
+    out = _query_column_nullity(saturday_late)
+
+    # The window must START on or before Friday 2026-06-12 00:00 UTC
+    # (so all of Friday's RTH bars are included) and END no earlier
+    # than Saturday 00:00 UTC (one day after Friday).
+    ws = captured["params"]["window_start"]
+    we = captured["params"]["window_end"]
+    assert ws <= datetime(2026, 6, 12, 0, 0, 0), (
+        f"window_start={ws} must be on or before Fri 2026-06-12 00:00 "
+        f"UTC so Friday's bars are included on a weekend audit"
+    )
+    assert we >= datetime(2026, 6, 13, 0, 0, 0), (
+        f"window_end={we} must be on or after Sat 2026-06-13 00:00 "
+        f"UTC so Friday's full session is captured"
+    )
+    # And the broken-Friday data MUST fire (not silently pass)
+    assert len(out) > 0, (
+        "a 0% non-NULL Friday bar must fire even on a Saturday audit — "
+        "this is the bug Codex P2 caught"
+    )
 
 
 def test_zero_total_does_not_division_error(monkeypatch):
