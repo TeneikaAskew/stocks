@@ -15,36 +15,24 @@ file imports cleanly without google-cloud-* / sklearn installed.
 """
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-
-def _stub_missing_modules(mods: list[str]) -> None:
-    for m in mods:
-        try:
-            __import__(m)
-        except ImportError:
-            parts = m.split(".")
-            for i in range(1, len(parts) + 1):
-                key = ".".join(parts[:i])
-                if key not in sys.modules:
-                    sys.modules[key] = MagicMock()
-
-
-_stub_missing_modules([
-    "google.cloud.storage",
-    "sklearn.calibration",
-    "sklearn.metrics",
-    "lightgbm",
-    "joblib",
-])
-if isinstance(sys.modules.get("sklearn.metrics"), MagicMock):
-    sys.modules["sklearn.metrics"].log_loss = lambda *a, **k: 0.5
-if isinstance(sys.modules.get("sklearn.calibration"), MagicMock):
-    sys.modules["sklearn.calibration"].CalibratedClassifierCV = MagicMock
+# Skip cleanly when the heavy ML / cloud libraries aren't installed
+# (offline sandbox). Production CI installs them via requirements.txt and
+# runs these tests for real. We must NOT inject MagicMock stubs into
+# sys.modules: a stub inserted at collection time leaks into the shared
+# module cache, so a later sibling test that imports the real library
+# silently receives the fake instead (order-dependent false pass / crash;
+# caught 2026-06-09 on PR #597, re-audited 2026-06-21). importorskip is
+# the no-leak equivalent of the old lazy-stub.
+pytest.importorskip("google.cloud.storage")
+pytest.importorskip("sklearn.calibration")
+pytest.importorskip("sklearn.metrics")
+pytest.importorskip("lightgbm")
+pytest.importorskip("joblib")
 
 
 def _toy_data(n_rows: int = 100, n_features: int = 4):

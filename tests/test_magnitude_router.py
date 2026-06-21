@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -26,26 +26,17 @@ import pytest
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "platform"))
 
-# router imports gcp.database.query_to_dataframe which itself imports
-# the Cloud SQL connector. Only stub when the real package is missing
-# (setdefault would poison sys.modules for sibling tests).
-def _stub_missing_modules(mods: list[str]) -> None:
-    for m in mods:
-        try:
-            __import__(m)
-        except ImportError:
-            parts = m.split(".")
-            for i in range(1, len(parts) + 1):
-                key = ".".join(parts[:i])
-                if key not in sys.modules:
-                    sys.modules[key] = MagicMock()
-
-
-_stub_missing_modules([
-    "google.cloud.storage",
-    "google.cloud.sql.connector",
-    "pg8000.dbapi",
-])
+# router imports gcp.database.query_to_dataframe which itself imports the
+# Cloud SQL connector. Skip cleanly when those libs aren't installed
+# (offline sandbox); CI installs them and runs for real. We must NOT
+# inject MagicMock stubs into sys.modules — a stub inserted at collection
+# time leaks into the shared module cache and a later sibling test that
+# imports the real library silently receives the fake instead (order-
+# dependent false pass / crash; caught 2026-06-09 on PR #597, re-audited
+# 2026-06-21). importorskip is the no-leak equivalent of the old stub.
+pytest.importorskip("google.cloud.storage")
+pytest.importorskip("google.cloud.sql.connector")
+pytest.importorskip("pg8000.dbapi")
 
 
 # Skip the whole module if fastapi isn't installed (sandbox parity with
