@@ -230,6 +230,40 @@ def test_larger_calib_frac_carves_more_train_dates_and_never_touches_test():
     assert prev_calib_days == 6
 
 
+def test_split_rejects_out_of_range_calib_frac_at_function_boundary():
+    """Codex P2 (PR #648): calib_frac must be validated at the FUNCTION
+    boundary, not only in the CLI. _train_holdout_split_by_date is the single
+    choke point every caller (CLI, walk_forward, train_and_evaluate_fold)
+    funnels through; an out-of-range value reaching it would lie — calib_frac=1.0
+    consumes the whole train block (empty fit → RAW fallback while the artifact
+    is still tagged _cf100), <=0 silently uses one day, >1 can ERROR the fold.
+    The splitter must fail loud (Rule 3.7 — no silent fallback)."""
+    wf = _wf()
+    bd = np.repeat(
+        np.arange(np.datetime64("2020-01-01"),
+                  np.datetime64("2020-01-01") + np.timedelta64(20, "D")), 30)
+    train = bd < np.datetime64("2020-01-15")
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="calib_frac must be in"):
+            wf._train_holdout_split_by_date(bd, train, calib_frac=bad)
+    # Valid fracs are accepted and produce a non-empty, disjoint split.
+    for good in (0.2, 0.4):
+        fit, calib = wf._train_holdout_split_by_date(bd, train, calib_frac=good)
+        assert int((fit & calib).sum()) == 0
+        assert int(calib.sum()) > 0 and int(fit.sum()) > 0
+
+
+def test_walk_forward_rejects_out_of_range_calib_frac_before_load():
+    """The library entry point fails fast on a bad calib_frac BEFORE the
+    expensive dataset load — a direct caller (calibration sweep / notebook)
+    gets the same clear error the CLI gives, not a confusing one at the first
+    fold. engine=None is fine: the guard raises before engine is ever touched."""
+    wf = _wf()
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="calib_frac must be in"):
+            wf.walk_forward(None, "QQQ", "30m", calib_frac=bad)
+
+
 def test_calib_frac_threaded_through_fold_and_validated_in_cli():
     """calib_frac flows from CLI → walk_forward → train_and_evaluate_fold →
     _train_holdout_split_by_date, and the CLI rejects out-of-range fracs. The

@@ -127,7 +127,18 @@ def _train_holdout_split_by_date(bar_dates: np.ndarray, train_mask: np.ndarray,
     Returns (fit_mask, calib_mask) over the full row index. If the train block
     has < 5 distinct dates, returns (train_mask, all-False) so the caller falls
     back to raw (uncalibrated) rather than fitting on a handful of bars.
+
+    ``calib_frac`` MUST be in the open interval (0, 1). This is the single
+    choke point every caller (CLI ``main()``, ``walk_forward``,
+    ``train_and_evaluate_fold``) funnels through, so the load-bearing guard
+    lives here, not only in the CLI. An out-of-range value would otherwise
+    lie: ``1.0`` consumes the whole train block (empty fit → RAW fallback
+    while the artifact is still tagged ``_cf100``); ``<= 0`` silently
+    collapses to a one-day slice; ``> 1`` can turn the fold into an ERROR.
+    Fail loud instead (Rule 3.7 — no silent fallback).
     """
+    if not (0.0 < calib_frac < 1.0):
+        raise ValueError(f"calib_frac must be in (0, 1), got {calib_frac}")
     tr_dates = np.unique(bar_dates[train_mask])
     if len(tr_dates) < 5:
         return train_mask.copy(), np.zeros_like(train_mask)
@@ -335,6 +346,13 @@ def walk_forward(engine, ticker: str, tf: str,
                  cutoffs: list[str] = None,
                  calibration: str = DEFAULT_CALIBRATION,
                  calib_frac: float = 0.2) -> dict:
+    # Fail fast at the library boundary — a direct caller (calibration sweep,
+    # notebook) gets a clear error BEFORE the expensive dataset load, not at
+    # the first fold. The load-bearing guard is in _train_holdout_split_by_date
+    # (the single choke point); this is the friendly early check. Mirrors the
+    # CLI's p.error so library and CLI callers behave identically.
+    if not (0.0 < calib_frac < 1.0):
+        raise ValueError(f"calib_frac must be in (0, 1), got {calib_frac}")
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 70)
     log.info("WALK-FORWARD  %s %s  %d cutoffs  calibration=%s  calib_frac=%.2f",
