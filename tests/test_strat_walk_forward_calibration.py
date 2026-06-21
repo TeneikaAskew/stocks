@@ -192,3 +192,56 @@ def test_calibration_choices_include_isotonic_oos_and_default_is_none():
     import inspect
     src = inspect.getsource(wf.main)
     assert "isotonic_oos" in src
+
+
+# ── 3. The --calib-frac lever stays date-carved from TRAIN (no leak) ─────────
+
+def test_larger_calib_frac_carves_more_train_dates_and_never_touches_test():
+    """The principled 30m lever: a larger calib_frac carves MORE of the newest
+    distinct TRAIN dates into the isotonic_oos calibration slice. It must stay
+    strictly inside TRAIN — never the test fold — at any frac. This pins the
+    honesty contract for the QQQ-30m fix attempt: more calibration data, zero
+    leak, gate unchanged.
+    """
+    wf = _wf()
+    bd = np.repeat(
+        np.arange(np.datetime64("2020-01-01"),
+                  np.datetime64("2020-01-01") + np.timedelta64(20, "D")), 30)
+    train = bd < np.datetime64("2020-01-15")  # 14 distinct train days
+    test_lo = np.datetime64("2020-01-15")
+
+    prev_calib_days = 0
+    for frac in (0.2, 0.3, 0.4):
+        fit, calib = wf._train_holdout_split_by_date(bd, train, calib_frac=frac)
+        # disjoint, exhaustive over TRAIN
+        assert int((fit & calib).sum()) == 0
+        assert int((fit | calib).sum()) == int(train.sum())
+        # NEVER touches the test fold, at any frac
+        assert bd[calib].max() < test_lo
+        assert bd[fit].max() < test_lo
+        # calib strictly newer than fit (date-carved, newest dates calibrate)
+        assert bd[calib].min() > bd[fit].max()
+        # monotone: a larger frac carves at least as many calib days
+        cur_calib_days = len(np.unique(bd[calib]))
+        assert cur_calib_days >= prev_calib_days
+        prev_calib_days = cur_calib_days
+    # 0.4 of 14 distinct days = ceil(5.6) = 6 calib days, strictly more than the
+    # ceil(14*0.2)=3 of the default — the lever actually moves the split.
+    assert prev_calib_days == 6
+
+
+def test_calib_frac_threaded_through_fold_and_validated_in_cli():
+    """calib_frac flows from CLI → walk_forward → train_and_evaluate_fold →
+    _train_holdout_split_by_date, and the CLI rejects out-of-range fracs. The
+    gate is still 0.05 (the lever tunes calibration data, not the ceiling)."""
+    wf = _wf()
+    import inspect
+    fold_src = inspect.getsource(wf.train_and_evaluate_fold)
+    assert "calib_frac=calib_frac" in fold_src
+    wf_src = inspect.getsource(wf.walk_forward)
+    assert "calib_frac=calib_frac" in wf_src
+    main_src = inspect.getsource(wf.main)
+    assert "--calib-frac" in main_src
+    assert "0.0 < args.calib_frac < 1.0" in main_src
+    from gcp.research.strat_engine.strat_config import DEFAULT_ECE_CEILING
+    assert DEFAULT_ECE_CEILING == 0.05
