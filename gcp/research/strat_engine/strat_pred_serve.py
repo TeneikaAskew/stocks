@@ -275,7 +275,15 @@ def predict_one(
     `POST /api/admin/strat-engine/predict`:
       top_class, top_prob, class_probs,
       model_version, last_train_date, live_ece, muted, mute_reason,
-      scope_statement, ticker, timeframe, ts, available, note
+      scope_statement, ticker, timeframe, ts, available, note,
+      current_type, continuation_prob
+
+    `current_type` is the latest fully-labeled bar's Strat candle type
+    (1 / 2U / 2D / 3). `continuation_prob` is the calibrated probability
+    that the NEXT bar keeps that same type — i.e. ``class_probs[current_type]``.
+    Both are ``None`` when the prediction is unavailable or muted; we never
+    fabricate a continuation probability when the model can't produce one
+    (CLAUDE.md Rule 3.7).
     """
     response = {
         "ticker": ticker,
@@ -284,6 +292,8 @@ def predict_one(
         "top_class": None,
         "top_prob": None,
         "class_probs": {},
+        "current_type": None,
+        "continuation_prob": None,
         "model_version": None,
         "last_train_date": None,
         "live_ece": None,
@@ -357,6 +367,19 @@ def predict_one(
     latest = df.iloc[[-1]].copy()
     response["ts"] = pd.to_datetime(latest["ts"].iloc[0], utc=True).isoformat()
 
+    # Capture the current bar's Strat candle type. The "continuation"
+    # probability is P(next bar keeps this same type). Computed below once
+    # class_probs is assembled. If the column is missing/blank we leave
+    # current_type=None and continuation_prob=None (Rule 3.7 — never
+    # fabricate a probability we can't anchor to a real current type).
+    current_type: Optional[str] = None
+    if "strat_candle" in latest.columns:
+        raw_ct = latest["strat_candle"].iloc[0]
+        if raw_ct is not None and not pd.isna(raw_ct):
+            ct = str(raw_ct).strip()
+            if ct in LABEL_CLASSES:
+                current_type = ct
+
     X, _cols = featurize(latest)
     # Align to model's expected feature shape. The canonical list lives in
     # features.txt next to model.pkl in GCS — saved at training time. A
@@ -396,6 +419,11 @@ def predict_one(
     response["top_class"] = top_cls
     response["top_prob"] = class_probs[top_cls]
     response["class_probs"] = class_probs
+    response["current_type"] = current_type
+    # Continuation probability = calibrated P(next bar == current type).
+    # Only set when we have a real current_type to anchor it (Rule 3.7).
+    if current_type is not None:
+        response["continuation_prob"] = class_probs.get(current_type)
     return response
 
 
