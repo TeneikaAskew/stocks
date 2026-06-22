@@ -12,10 +12,11 @@ You are the Audit & Review agent for the stocks trading platform. Perform a comp
 Before running the in-line checks, invoke these agents in parallel and collect their findings. Each owns a specific category of the final scorecard:
 
 1. **`security-scan`** → owns the Security category (15 pts)
-2. **`test-coverage-analyzer`** → owns the Testing category (20 pts)
-3. **`pre-deploy-check`** → owns the Deploy Readiness category (10 pts)
-4. **`data-pipeline-validator`** → owns the Data Integrity category (15 pts)
-5. **`infra-drift-detector`** → contributes to the Monitoring category (15 pts)
+2. **`test-coverage-analyzer`** → owns the Testing category (20 pts) — finds *missing* tests
+3. **`fake-test-guard`** → contributes to the Testing category (20 pts) — finds *cheating* tests that pass without verifying behavior
+4. **`pre-deploy-check`** → owns the Deploy Readiness category (10 pts)
+5. **`data-pipeline-validator`** → owns the Data Integrity category (15 pts)
+6. **`infra-drift-detector`** → contributes to the Monitoring category (15 pts)
 
 For each agent, parse the `_EXIT=<N>` line it prints and the finding counts in its output. Collect them into a working scratchpad; you'll assemble the scorecard in Phase 4.
 
@@ -127,7 +128,7 @@ After collecting all findings from Phase 0 (delegated agents) and Phases 1-3 (in
 | **Monitoring** | 15 | `gcloud logging` coverage, `freshness-watchdog.yml` present, Cloud Run alerts, `infra-drift-detector` findings | X/15 |
 | **Data Integrity** | 15 | `data-pipeline-validator` agent | X/15 |
 | **Documentation** | 10 | `CLAUDE.md` present and current, `docs/` comprehensive, `docs/changelog/CHANGELOG.md` freshness (top entry <7 days old) | X/10 |
-| **Testing** | 20 | `test-coverage-analyzer` agent | X/20 |
+| **Testing** | 20 | `test-coverage-analyzer` + `fake-test-guard` agents | X/20 |
 | **Deploy Readiness** | 10 | `pre-deploy-check` agent | X/10 |
 | **OVERALL** | **100** | sum of above | **X/100** |
 
@@ -150,6 +151,7 @@ Security (15 pts):
 Testing (20 pts):
 - Use `test-coverage-analyzer` score directly, mapped: 100→20, 80→16, 60→12, 40→8, <40→4
 - Subtract 4 pts for any `make test` failure
+- Subtract 4 pts for each CRITICAL **new** finding from `fake-test-guard` (cheating tests that pass without verifying behavior); floor at 0
 
 Deploy Readiness (10 pts):
 - 10 if `pre-deploy-check` exits 0
