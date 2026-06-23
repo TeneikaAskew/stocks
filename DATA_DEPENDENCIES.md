@@ -1,12 +1,14 @@
 # Data Dependencies — table-level write/read graph
 
-**Generated 2026-05-01.** Audit of every Cloud SQL table in [`gcp/schema.sql`](gcp/schema.sql) (38 tables) cross-referenced against every writer / reader in `gcp/`, `lib/`, `scripts/`, `platform/api/`. Cite-driven — every claim links to a `file:line`.
+**Generated 2026-05-01. Last updated 2026-06-23.** Audit of every Cloud SQL table in [`gcp/schema.sql`](gcp/schema.sql) (57 `CREATE TABLE`) plus the runtime-built `strat_features_<tf>` / `strat_features_levels_<tf>` tables and the runtime `magnitude_per_bar_predictions` table, cross-referenced against every writer / reader in `gcp/`, `lib/`, `scripts/`, `platform/api/`. Cite-driven — every claim links to a `file:line`.
 
-This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Cloud Run Jobs by code module). Where ARCHITECTURE.md says "Job X runs Module Y," this doc answers "Module Y writes Table Z, and Tables Z is read by Modules A/B/C."
+This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the Cloud Run Jobs by code module). Where ARCHITECTURE.md says "Job X runs Module Y," this doc answers "Module Y writes Table Z, and Table Z is read by Modules A/B/C."
 
 > ⚠️ **Partition handling.** `market_data_intraday` is a Postgres LIST-partitioned table. The 5 child tables (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`) are **routed transparently** — every writer/reader targets the parent and Postgres routes by `ticker`. They appear in the inventory below for completeness but the §2/§3 entries collapse them under the parent.
 
-> 🔧 **Ad-hoc data access.** [`.github/workflows/db-query.yml`](.github/workflows/db-query.yml) (added in #235) runs arbitrary SQL inside a GitHub-Actions runner — it's the only path that works from the sandboxed Claude Code on the web environment, which can't reach Cloud SQL on TCP 5432/3307. Reads default to rolled-back transactions; writes require explicit `commit=true`. It is not enumerated as a writer/reader in §2/§3 because it can target any table — treat it as a generic operator tool, not a pipeline component. See [`CLAUDE.md`](CLAUDE.md#database-access) for invocation patterns.
+> 🔧 **Ad-hoc data access.** Use [`scripts/db_query_cr.sh`](scripts/db_query_cr.sh) — the CR-native `db-query` Cloud Run Job (entrypoint `gcp/db_query_job.py`). It runs arbitrary SQL inside GCP with full Cloud SQL access and returns results over port 443, the only path that works from the sandboxed Claude Code on the web environment (which can't reach Cloud SQL on TCP 5432/3307). The old `.github/workflows/db-query.yml` GitHub-Actions workflow was **deleted 2026-05-30** — do not look for it. Reads default to rolled-back transactions; writes require explicit `--commit`. It is not enumerated as a writer/reader in §2/§3 because it can target any table — treat it as a generic operator tool, not a pipeline component. See [`CLAUDE.md`](CLAUDE.md#database-access) for invocation patterns.
+
+> 🧱 **Runtime tables (not in `schema.sql`).** The strat-directionality engine builds `strat_features_{1m,5m,15m,30m,60m,4h}` and `strat_features_levels_{tf}` at runtime via `gcp/research/strat_engine/`; the magnitude engine builds `magnitude_per_bar_predictions` at runtime via `gcp/research/magnitude_engine/mag_inference.py`. These do not have `CREATE TABLE` statements in `schema.sql` (the engines own their DDL) but are first-class pipeline tables — see §2/§3 below.
 
 ---
 
@@ -52,8 +54,21 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 | `watchlists` | Active ticker watchlist `(user_id, ticker, source, signals/insights flags, soft-delete)`. |
 | `ticker_calibration` | Per-ticker calibrated thresholds from `scripts/calibrate_thresholds.py`; read at signal time by `lib/strategies/calibration.py` (Tier-A resolver) with Tier-B fallback to `lib/strategies/config.py` constants. |
 | `signal_metrics` | Per-`(ticker, entry_time, strategy)` quality metrics row from `signal_quality_report`. |
+| `options_daily_features` | Materialized per-`(ticker, date)` options-flow features (PCR vol/OI, 25Δ IV skew, ATM IV). Built nightly. |
+| `etf_options_daily_greeks` | Materialized per-`(ticker, date)` dealer Greeks (GEX/DEX, vanna, charm). Built nightly. |
+| `intraday_gex_15m` / `intraday_flow_15m` | 15-min intraday GEX / flow grid (legacy/derived). |
+| `realtime_gex_15m` | REAL intraday dealer GEX/DEX/flip on the 15-min strat grid, sourced from the AV options realtime feed. |
+| `premarket_analysis` outcome cols | (same table) RESOLVED brief-playbook outcome columns (`outcome_resolved_at`, `outcome_resolver_version`, per-leg CALLS/PUTS outcomes) + `data_as_of` / `data_freshness_status`. |
+| `signal_alerts` exit/insight cols | (same table) `exit_ts`/`exit_reason`/`exit_price`/`exit_return_pct`/`is_open` (EOD resolver) + `insight_direction`/`insight_conviction`/`gate_action` (insight gate). |
+| `earnings_event_outcomes` (MV) | Materialized view of resolved earnings reactions per `(ticker, reported_date)`. |
+| `earnings_ticker_lean` (MV) | Materialized view of per-ticker earnings lean/archetype rollup. |
+| `earnings_upcoming_with_history` | Upcoming earnings joined to prior-reaction history (frontend data prep). |
+| `playbook_cards` | Typed playbook cards w/ target/stop win-rate + avg-return (read by `/api/playbook`). |
+| `magnitude_per_bar_predictions` *(runtime)* | Per-`(ticker, tf, bar)` bucketed next-bar magnitude probabilities (ATR-20 multiples) from `magnitude-inference`. Read by `/api/magnitude/predictions`. |
+| `strat_features_{1m,5m,15m,30m,60m,4h}` *(runtime)* | Per-`(ticker, ts)` bar-level Strat features (candle class, combos, FTFC), built incrementally by `strat-engine`. |
+| `strat_features_levels_{tf}` *(runtime)* | Per-`(ticker, ts)` level-based enrichments (Prev_Day, ORB, order-blocks, ATR) from `strat-enrich-daily`. |
 
-**38 tables.** 5 are intraday partitions of `market_data_intraday`; the remaining 33 are independent.
+**57 `CREATE TABLE` in `schema.sql`** (5 are intraday partitions of `market_data_intraday`) **plus** the runtime-built `strat_features_<tf>`, `strat_features_levels_<tf>`, and `magnitude_per_bar_predictions` tables owned by the research engines.
 
 ---
 
@@ -196,6 +211,51 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 
 ### `signal_metrics`
 - [`scripts/signal_quality_report.py:459`](scripts/signal_quality_report.py#L459) — `INSERT … ON CONFLICT DO UPDATE`
+
+### `options_daily_features`
+- [`gcp/research/p2_*` via `build-options-daily-features` Job](gcp/deploy.sh#L1049) — nightly materialization (research image). Scheduler `options-daily-features` 22:00 ET Mon-Fri.
+
+### `etf_options_daily_greeks`
+- [`build-options-greeks` Job](gcp/deploy.sh#L1012) — nightly dealer-Greeks materialization (research image). Scheduler `gamma-levels-daily` 22:30 ET Mon-Fri.
+
+### `realtime_gex_15m`
+- [`build-realtime-gex` Job](gcp/deploy.sh#L1080) — materializes REAL intraday GEX/DEX from the AV options realtime feed (research image). Scheduler `realtime-gex-daily` 17:00 ET Mon-Fri.
+
+### `etf_options_snapshots` (realtime intraday feed)
+- [`fetch-av-options-realtime` Job](gcp/deploy.sh#L1372) — every 5 min during RTH (scheduler `av-options-realtime` `*/5 9-15 * * 1-5`); writes intraday chain rows that `build-realtime-gex` consumes. Companion to `fetch-av-options-backfill` (same image/secrets).
+
+### `etf_options_snapshots` (retention prune)
+- [`etf-options-retention` Job](gcp/deploy.sh#L1416) — DELETE prune of intraday rows older than the retention window; scheduler `options-retention-daily` 02:00 ET. **DELETE-only** — does not insert.
+
+### `earnings_event_outcomes` / `earnings_ticker_lean` / `earnings_upcoming_with_history`
+- [`refresh-earnings-views` Job](gcp/deploy.sh#L2035) — `REFRESH MATERIALIZED VIEW` (+ upcoming-with-history rebuild). Schedulers `refresh-earnings-views-daily` 07:30 ET Mon-Fri (`--mode=daily`) + `refresh-earnings-views-weekly` Sun 20:00 ET.
+
+### `magnitude_per_bar_predictions` *(runtime table)*
+- [`gcp/research/magnitude_engine/mag_inference.py`](gcp/research/magnitude_engine/mag_inference.py) via the `magnitude-inference` Job — upserts per-bar bucketed-magnitude probabilities with `source='inference'`. Scheduler `magnitude-inference-daily` 09:25 ET Mon-Fri. (Walk-forward research is `magnitude-engine`, no scheduler.)
+
+### `strat_features_{1m,5m,15m,30m,60m,4h}` *(runtime tables)*
+- [`gcp/research/strat_engine/strat_data_builder.py:318`](gcp/research/strat_engine/strat_data_builder.py#L318) — `bulk_copy_upsert` per ticker, incremental (only dates after `MAX(bar_date)`). Driven by the `strat-engine` Job (8GiB/4CPU/5400s), scheduler `strat-engine-daily` 23:35 ET Mon-Fri. **Replaces the deprecated P7b classifier** (`p7b-classifier` disabled 2026-05-25).
+
+### `strat_features_levels_{tf}` *(runtime tables)*
+- [`gcp/research/strat_engine/strat_enrich_levels.py`](gcp/research/strat_engine/strat_enrich_levels.py) — `bulk_copy_upsert` of level enrichments (Prev_Day, ORB, order-blocks, ATR). Driven by the `strat-enrich-daily` scheduler (02:00 ET Tue-Sat, `strat-engine` Job with the enrich args).
+
+### `signal_alerts` (EOD-resolved exit columns)
+- [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) via the `signal-monitor-eod-resolver` Job — `UPDATE … SET exit_ts/exit_reason/exit_price/exit_return_pct/is_open` post-close. Scheduler `signal-monitor-eod-resolver-daily` 16:30 ET Mon-Fri. (The `insight_direction`/`insight_conviction`/`gate_action` columns are written at fire time by `signal_monitor` when an insight gate applies.)
+
+### `premarket_analysis` (resolved playbook-outcome columns)
+- [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) via the `premarket-playbook-resolver` Job — `UPDATE … SET` resolved CALLS/PUTS outcome columns + `outcome_resolved_at`/`outcome_resolver_version`. Scheduler `premarket-playbook-resolver-daily` 16:30 ET Mon-Fri.
+
+### `playbook_cards`
+- Written by the playbook build path (typed target/stop win-rate cards, #613); read by [`platform/api/routers/playbook.py`](platform/api/routers/playbook.py).
+
+### `journal_entries` (per-user)
+- [`platform/api/routers/journal.py:170`](platform/api/routers/journal.py#L170) — INSERT with `user_email` = `_journal_owner(request)` = `current_user_email(request) or "local"`. Per-user scoped: every read/write filters `WHERE user_email = :owner`. Fail-closed 503 if a prod owner is resolved but Cloud SQL is unreachable.
+- [`scripts/backfill_journal_embeddings.py:79`](scripts/backfill_journal_embeddings.py#L79) — pgvector embedding backfill `UPDATE`.
+
+### `watchlists` (per-surface flags + endpoint-scoped user_id)
+- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — `/api/insights/watchlist` writes via the `_watchlist_owner` path (#635). `user_id` defaults to `'default'` (shared admin-curated list); the insights pipeline itself is still shared (`insight_reports`), a documented residual gap.
+- [`gcp/discord_interactions/main.py:598`](gcp/discord_interactions/main.py#L598) — `/watch add`; [`:634`](gcp/discord_interactions/main.py#L634) — `/watch remove` (soft-delete `removed_at`).
+- [`gcp/fetchers/_watchlist.py:249`](gcp/fetchers/_watchlist.py#L249), [`:286`](gcp/fetchers/_watchlist.py#L286) — programmatic upserts of the per-surface flags `in_brief` / `in_insight` / `signals`.
 
 ---
 
@@ -353,6 +413,29 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 - [`gcp/signal_quality_alarm.py:174`](gcp/signal_quality_alarm.py#L174) — clean-rate trailing-7d compute
 - `scripts/analyze_timeframe_heuristic.py:317`, `scripts/backfill_timeframe_tags.py:74` — heuristic analysis (one-shot)
 
+### `options_daily_features` / `etf_options_daily_greeks` / `realtime_gex_15m`
+- `platform/api/routers/options.py` + `platform/api/routers/grid.py` — Options-Flow surfaces (Profiles is real; Heatseeker-Swing + Flowseeker still render MOCK). The materialized Greeks/flow feed the GEX/DEX context. `realtime_gex_15m` is the real intraday GEX/DEX source.
+
+### `earnings_event_outcomes` / `earnings_ticker_lean` / `earnings_upcoming_with_history`
+- [`platform/api/routers/earnings.py`](platform/api/routers/earnings.py) — Catalysts/earnings surfaces read the materialized views (avoids per-request full-table scans, Rule 0).
+
+### `magnitude_per_bar_predictions` *(runtime table)*
+- [`platform/api/routers/magnitude.py:137,179`](platform/api/routers/magnitude.py#L137) — `/api/magnitude/predictions` (latest + series; 404 when a cell has no predictions). Sizing/filtering/strike-selection signal, not a directional trigger.
+
+### `strat_features_{tf}` / `strat_features_levels_{tf}` *(runtime tables)*
+- [`gcp/research/strat_engine/strat_pred_serve.py`](gcp/research/strat_engine/strat_pred_serve.py) and the strat-engine reporting/serving modules — read incrementally for directionality scoring. Also read by `strat-enrich-daily` (reads `strat_features_<tf>`, writes `strat_features_levels_<tf>`).
+
+### `playbook_cards`
+- [`platform/api/routers/playbook.py`](platform/api/routers/playbook.py) — `/api/playbook` strategy cards with live conditions + win-rate/avg-return (#613).
+
+### `signal_alerts` (exit + insight columns)
+- [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — reads open alerts (`is_open`) to resolve exits.
+- `platform/api/routers/signals.py` — 90d P&L KPIs read `exit_return_pct` / `exit_reason`.
+
+### `premarket_analysis` (resolved outcome columns)
+- [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — reads predicted-vs-resolved to backfill outcomes.
+- `platform/api/routers/dashboard.py` — brief KPI endpoint surfaces `data_freshness_status`.
+
 ---
 
 ## 4. Multi-writer tables (coordination risks)
@@ -420,7 +503,14 @@ Each row: if the **Job** stops running, the listed **downstream consumers** lose
 | **`backtest`** + **`validate-brief`** | (none) | Discord-only | None. |
 | **`signal-quality-alarm`** | (none, Discord + non-zero exit) | Reads `signal_metrics` written by `signal-quality-report`; if upstream fails → alarm reads stale and may false-pos | Medium. |
 | **`signal-quality-report`** | `signal_metrics` | `signal_quality_alarm`, eval scripts | Medium — alarm goes silent. |
-| **`apply-schema-migrations`** | (DDL only) | Gates all 38 tables | Highest blast on failure (no new column rollouts). |
+| **`apply-schema-migrations`** | (DDL only) | Gates all schema.sql tables | Highest blast on failure (no new column rollouts). Note: the runtime `strat_features_*` / `magnitude_per_bar_predictions` tables are NOT gated here — their engines own that DDL. |
+| **`strat-engine` / `strat-enrich-daily`** | `strat_features_<tf>`, `strat_features_levels_<tf>` | strat directionality serving/reporting | High — replaces the deprecated P7b classifier; directionality features go stale. |
+| **`magnitude-inference`** | `magnitude_per_bar_predictions` | `/api/magnitude/predictions` | Medium — magnitude sizing surface goes stale/empty (404). |
+| **`build-options-greeks` / `build-options-daily-features` / `build-realtime-gex`** | `etf_options_daily_greeks`, `options_daily_features`, `realtime_gex_15m` | Options-Flow Profiles + GEX/DEX context | Medium — materialized options surfaces go stale. |
+| **`refresh-earnings-views`** | `earnings_event_outcomes`, `earnings_ticker_lean`, `earnings_upcoming_with_history` (MVs) | `routers/earnings`, Catalysts | Medium — earnings panels read stale MVs until next refresh. |
+| **`signal-monitor-eod-resolver`** | `signal_alerts` (exit_* UPDATE) | `routers/signals` 90d P&L | Medium — open alerts never resolve; P&L KPIs incomplete. |
+| **`premarket-playbook-resolver`** | `premarket_analysis` (outcome UPDATE) | brief outcome tracking | Low — predicted-vs-resolved backfill stalls. |
+| **`fetch-av-options-realtime` / `etf-options-retention`** | `etf_options_snapshots` (intraday insert / prune) | `build-realtime-gex` | Medium — real intraday GEX loses its feed; prune backlog grows. |
 | **`fetch-av-options-backfill`** | `etf_options_snapshots` | Same as table's readers | Backfill-window only. |
 | **`fetch-earnings-options`** | (BROKEN — module missing per ARCHITECTURE.md:271) | (none firing) | None — already not running. |
 

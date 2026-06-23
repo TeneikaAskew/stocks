@@ -1,7 +1,50 @@
 # Infrastructure Notes
 
+**Last updated 2026-06-23.**
+
 Running log of infrastructure decisions, deferred cost/capacity upgrades, and
 performance observations that are worth revisiting but not urgent.
+
+Current scale (2026-06-23): ~62 Cloud Run Jobs, ~77 Cloud Scheduler crons, 57
+Cloud SQL tables, 3 Cloud Run Services (`trading-platform`, `discord-interactions`,
+`failure-notifier`) + an optional public `trading-platform-staging`. The platform
+service is deployed by `platform/deploy.sh` (GHA deploy workflows deleted); all
+jobs/schedulers by `gcp/deploy.sh`. Ad-hoc SQL routes through
+`scripts/db_query_cr.sh` (the `db-query` Cloud Run Job; the `db-query.yml` GHA
+workflow was deleted 2026-05-30).
+
+---
+
+## Note: materialized-view jobs added to bound query cost (2026-06-23 status)
+
+**Logged:** 2026-06-23
+**Status:** Live — these are the production mitigation for the full-table-scan
+risk on the big options tables, and they reduce (but do not remove) the pressure
+behind the deferred tier upgrade below.
+
+Per CLAUDE.md Rule 0 (no full-table scans on hot read paths), several
+"materialize once, read cheap" Cloud Run Jobs now precompute heavy aggregates so
+the API and research harness never scan the ~52 GB `etf_options_snapshots` table
+on a request:
+
+- `build-options-daily-features` (22:00 ET) → `options_daily_features` (PCR
+  vol/OI, 25Δ IV skew, ATM IV). The research walk-forward join dropped from
+  ~9-20 min to ~0.8 s.
+- `build-options-greeks` (gamma-levels, 22:30 ET) → `etf_options_daily_greeks`
+  (dealer GEX/DEX, vanna, charm).
+- `build-realtime-gex` (17:00 ET) → `realtime_gex_15m` (real intraday GEX/DEX
+  from the `fetch-av-options-realtime` 5-min feed).
+- `refresh-earnings-views` (07:30 daily + Sun) → the 3 earnings mat-views.
+- `etf-options-retention` (02:00 ET) prunes REALTIME option rows older than 30
+  days, capping the table's otherwise-unbounded ~2.6M rows/day growth (EOD rows
+  kept forever). This keeps `etf_options_snapshots` from growing without bound
+  on the current small instance.
+
+These run on the **research image** (lightgbm/sklearn/scipy/shap), sized 4Gi/2CPU
+each. Their existence is why the `db-g1-small` tier remains tolerable for current
+traffic — they move the expensive scans off the request path and onto a nightly
+cron. Revisit the tier upgrade below if any of these jobs start contending with
+the reader or themselves time out.
 
 ---
 

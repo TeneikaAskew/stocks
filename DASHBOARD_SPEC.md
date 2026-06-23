@@ -1,8 +1,64 @@
 # Dashboard Spec — Signal Quality & Backtest
 
-**Generated 2026-05-02.** Closing the visibility gap on the central operator question: *"Is my signal quality good and stable?"*
+**Generated 2026-05-02. Last updated 2026-06-23.** Closing the visibility gap on the central operator question: *"Is my signal quality good and stable?"*
 
 This is a **spec, not an implementation plan**. Every proposed query is grounded in a table that already exists per [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md). The work is sequenced so each panel ships independently — no rip-and-replace.
+
+§0 below captures the **current shipped dashboard state** (routes, auth, per-user scoping, cross-cutting features) as of 2026-06-23. §1–§5 are the original signal-quality panel spec.
+
+---
+
+## 0. Current shipped dashboard (state as of 2026-06-23)
+
+The dashboard is the React + FastAPI single-page app served by the `trading-platform` Cloud Run service. Dev runs Vite on 5173 proxying `/api` → 8000; prod serves `/api/*` + the built React dist from one FastAPI port. Stack: React 19, React Router v6, TanStack Query, Zustand, Tailwind v4, HeroUI. See [docs/PLATFORM_AUDIT_2026-06-19.md](docs/PLATFORM_AUDIT_2026-06-19.md).
+
+### 0.1 Authentication gate
+
+`platform/api/auth.py` exposes an `AUTH_MODE` middleware with three modes:
+
+| Mode | Identity source | Where used |
+|---|---|---|
+| `firebase` | Firebase ID token (`Authorization: Bearer …`) verified per gated `/api/*` request | staging service (live); prod target |
+| `iap` | IAP `X-Goog-Authenticated-User-Email` header | **prod today** |
+| `open` | no-op | local dev |
+
+Pre-auth (always reachable) prefixes: `/api/health`, `/api/me`, `/api/config/firebase`. Invalid token → **401**; disallowed account → **403** (fail-closed, CLAUDE.md Rule 3.7). Allow policy is either open self-signup (`AUTH_OPEN_SIGNUP=1`) or an allow-list (`AUTH_ALLOWED_EMAILS`).
+
+Frontend bootstrap (`main.tsx`): `GET /api/config/firebase` → init Firebase → install an authed-fetch wrapper (injects the Bearer token on same-origin `/api/*` calls) → render inside `<AuthGate>`. Components: `src/components/auth/{SignInScreen,AuthGate,SignOutButton}.tsx`, `src/lib/{firebase,authedFetch,runtimeConfig}.ts`, `src/hooks/useUser.ts`. **Status:** Firebase is live on the staging service; **prod is still on IAP** (GCIP `authorizedDomains` for the prod domain + prod `AUTH_MODE=firebase` are not flipped yet — intentional).
+
+### 0.2 Route inventory — 13 lazy routes
+
+All routes are lazy-loaded children of `<AppShell />` in `platform/src/App.tsx`, each wrapped in a per-route `RouteErrorBoundary` so one page's render crash leaves the shell intact.
+
+| # | Path | Page | Notes |
+|---|---|---|---|
+| 1 | `/` | Dashboard | Premarket-brief strip, hero ticker, intraday Candles↔Area toggle, live signals, catalysts, news-sentiment, sector rotation, review-date picker. **Movement Read card (flag-OFF — see §0.4).** |
+| 2 | `/live` | Live Market | Quote tile, 6 indicator tiles (EMA9/20/50, RSI14, StochRSI, ATR14), dual CALL/PUT 5-condition voter cards, session badge, review mode. |
+| 3 | `/charts` | Charts | Candlestick+volume w/ overlays (TP1/2/3+SL, prev-day refs, gamma King/Gate/Flip/Balance, entry/exit markers, 5-cond signals), Trades\|Analytics panel, TF buttons, JSON/CSV export, Mark-Entry mode. |
+| 4 | `/options` | Options Flow | Heatseeker (Swing/Trinity), Flowseeker (Live/Drilldown), Profiles (OI). ⚠️ **Heatseeker-Swing + Flowseeker render MOCK data; Profiles is REAL.** #600 fixed ~84× GEX inflation. |
+| 5 | `/playbook` | Playbook | Strategy cards w/ live conditions + win-rate/avg-return; #613 real target/stop win-rate via typed `playbook_cards`. |
+| 6 | `/reports` | Reports | Phase-report list + markdown viewer (GCS-backed). |
+| 7 | `/signals` | Signals | Sortable table (Time/Dir/Score/Price/RSI/EMA9/Volume), filters, 90d P&L KPIs. |
+| 8 | `/journal` | Journal | **Per-user** trade CRUD + equity curve + CSV export (see §0.3). |
+| 9 | `/insights` | AI Insights | Tabs Briefing/Agents/History/Watchlist/Chat; multi-card report; replay-as-of; streaming chat. Watchlist tab not yet per-user (gap). |
+| 10 | `/catalysts` | Catalysts | Date-grouped events + earnings + news timeline, Hot-Now, filters. |
+| 11 | `/admin` | Admin | Model-routing dashboard, on-demand predict; gated by admin token / IAP email. |
+| 12 | `/help` | Help | ~189-entry glossary + indicator config. |
+| 13 | `/settings` | **Settings (NEW)** | Theme / nav / density / accent. Zustand + localStorage only — **no API calls**. |
+
+Backing API routers (17, `platform/api/routers/`): live, dashboard, playbook, signals, options, grid (mounted before options), insights, journal, admin, catalysts, backtest, analytics, config, health, glossary, **magnitude (NEW — `/api/magnitude/predictions`)**, **earnings (NEW)**. Plus `/api/movement-statement` on the dashboard router (flag-OFF → 404).
+
+### 0.3 Per-user data scoping
+
+- **Journal** is per-user (#626). `journal.py:_journal_owner(request) = current_user_email(request) or "local"`; every read/write filters `WHERE user_email = :owner`. Index `(user_email, ticker, entry_ts DESC)`. Fail-closed 503 if a prod owner is resolved but Cloud SQL is unreachable.
+- **Watchlist** endpoint wiring uses `_watchlist_owner` (#635), writing via `/api/insights/watchlist`. The table's `user_id VARCHAR(320)` defaults to `'default'` (shared admin-curated list); per-surface flags `in_brief` / `in_insight` / `signals` (read by fetchers via `gcp/fetchers/_watchlist.py load_watchlist(user_id, surface)`); soft-delete `removed_at`. **Residual gap:** the insights pipeline itself is still shared (`insight_reports`), so the Insights → Watchlist tab is not yet per-user.
+
+### 0.4 Cross-cutting features
+
+- **As-of review-date mode** — review-aware routes (`REVIEW_AWARE_ROUTES`) accept a review date so the operator can replay any historical session; the Dashboard/Live/Insights pages expose a review-date picker. Pipelines are fully replayable (CLAUDE.md Rule 3.5/3.6).
+- **Movement Read card (flag-OFF)** — the Dashboard renders `MovementRead.tsx`, fed by `/api/movement-statement` → `lib/movement_statement.py` (single source of truth: `continuation_prob` headline; levels/expected_move/regime are context). Gated by `MOVEMENT_STATEMENT_ENABLED` + `STRUCTURE_CONTINUATION_MODEL_ENABLED` (**both default OFF**, so the endpoint returns 404 and the card is dormant). Allowed cells IWM/SPY/QQQ, 5m/15m only (30m never).
+- **Mobile hamburger nav** — the `AppShell` sidebar collapses to a hamburger menu on small viewports.
+- **⌘K command palette** for quick navigation.
 
 ---
 

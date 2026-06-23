@@ -1,5 +1,101 @@
 # Stock Market Analysis - Quick Reference Guide
 
+**Last updated 2026-06-23.** The analysis/backtest/Phase reference below is the
+research-and-backtest side of the system. For day-to-day production operations
+(querying Cloud SQL, deploying, flipping feature flags, the live Cloud Run
+job/scheduler inventory), start with the **Operations quick reference** section
+immediately below; for incident recovery see [RUNBOOK.md](RUNBOOK.md) and for
+deferred infra decisions see [INFRASTRUCTURE_NOTES.md](INFRASTRUCTURE_NOTES.md).
+
+---
+
+## Operations quick reference (production)
+
+### Query the database (the only supported path)
+
+Direct 5432/3307 connections are blocked from the web sandbox. Use the
+CR-native `db-query` job via `scripts/db_query_cr.sh` (the `db-query.yml` GHA
+workflow was deleted 2026-05-30):
+
+```bash
+./scripts/db_query_cr.sh -q "SELECT count(*) FROM signal_alerts WHERE alert_date = current_date"
+./scripts/db_query_cr.sh -f gcp/queries/check_daily_rates_nulls.sql   # file = ONE statement
+./scripts/db_query_cr.sh -q "UPDATE x SET y=1 WHERE z=2" --commit     # writes need --commit
+```
+
+Default is rollback (a write without `--commit` is a no-op). Results land in
+`gs://${PROJECT_ID}-trading-data/query-results/<exec>/`.
+
+### Deploy
+
+```bash
+./gcp/deploy.sh all          # core daily pipeline jobs + schedulers + backfill
+./gcp/deploy.sh build-research              # research image (lightgbm/sklearn/scipy/shap)
+./gcp/deploy.sh strat-engine                # strat directionality engine (replaces P7b)
+./gcp/deploy.sh magnitude-inference         # daily magnitude predictions
+./gcp/deploy.sh build-options-greeks        # etf_options_daily_greeks (gamma levels)
+./gcp/deploy.sh build-options-daily-features
+./gcp/deploy.sh build-realtime-gex
+./gcp/deploy.sh refresh-earnings-views
+./gcp/deploy.sh db-query | freshness-watchdog | audit-infra-drift | audit-walkforward | audit-brief-bias
+./gcp/deploy.sh schedulers   # (re)create all ~77 Cloud Scheduler crons
+
+# Platform service (NOT in gcp/deploy.sh) — GHA deploy workflows were deleted:
+export DB_USER=postgres DB_NAME=trading
+./platform/deploy.sh                         # prod (trading-platform, IAP)
+STAGING=1 ./platform/deploy.sh               # prod service, staging-tagged revision, no traffic
+FIREBASE_API_KEY=… FIREBASE_AUTH_DOMAIN=… FIREBASE_APP_ID=… \
+  STAGING_SERVICE=1 ./platform/deploy.sh     # public trading-platform-staging (no IAP, Firebase login)
+```
+
+### Auth modes (`platform/api/auth.py`)
+
+`AUTH_MODE` middleware: `iap` (prod today), `firebase` (public staging — verifies
+a Firebase ID token per gated `/api/*`), `open` (local). Pre-auth prefixes:
+`/api/health`, `/api/me`, `/api/config/firebase`. Allow policy: open self-signup
+(`AUTH_OPEN_SIGNUP=1`) or allow-list (`AUTH_ALLOWED_EMAILS`). **Prod is still on
+IAP**; Firebase is live only on the staging service.
+
+### Feature flags (env-var, read at call-time)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `MOVEMENT_STATEMENT_ENABLED` | OFF | Exposes `/api/movement-statement` + Dashboard "Movement Read" card |
+| `STRUCTURE_CONTINUATION_MODEL_ENABLED` | OFF | Enables the structure-continuation model behind it |
+| `RECOMMEND_LONG_ONLY` | `true` | Brief recommends LONG STRADDLE/CALL/PUT/SKIP vs iron condor |
+
+```bash
+gcloud run services update trading-platform --region us-east1 \
+  --update-env-vars MOVEMENT_STATEMENT_ENABLED=true,STRUCTURE_CONTINUATION_MODEL_ENABLED=true
+```
+
+`RECOMMEND_LONG_ONLY` is baked into every job by `gcp/deploy.sh::_env_string`;
+change it in the script and redeploy rather than patching one job.
+
+### Live job/scheduler inventory (high level, ~62 jobs / ~77 crons)
+
+- **Daily brief/insight:** `premarket-brief` (8:30 ET), `earnings-reactions-brief`
+  (8:35), `insight-pipeline` (8:45) → `insight-discord-push` (9:15),
+  `auto-refresh-top-n` (8:10).
+- **Live + EOD:** `signal-monitor` (9:25 ET, exits at close), `signal-monitor-eod-resolver`
+  + `premarket-playbook-resolver` (4:30 ET), ORB snapshots 9:45/10:00.
+- **ML / research:** `magnitude-inference` (9:25 ET) → `magnitude_per_bar_predictions`
+  → `/api/magnitude/predictions`; `strat-engine` (23:35 ET, incremental featurize →
+  `strat_features_<tf>`) + `strat-enrich-daily` (02:00 ET Tue-Sat). **`strat-engine`
+  replaces the retired `p7b-next-candle-classifier`** (disabled 2026-05-25). Plus
+  `magnitude-engine`, `direction-probe`, `regime-combo` (research, on-demand/weekly).
+- **Materialized views (perf):** `build-options-daily-features` (22:00 ET →
+  `options_daily_features`), `build-options-greeks` / gamma-levels (22:30 ET →
+  `etf_options_daily_greeks`), `build-realtime-gex` (17:00 ET → `realtime_gex_15m`),
+  `refresh-earnings-views` (07:30 daily + Sun).
+- **Options feed:** `fetch-av-options-realtime` (every 5 min RTH),
+  `etf-options-retention` (02:00 ET, prunes REALTIME rows >30d).
+- **Ops/audit (GHA-migration, 2026-05-30):** `db-query`, `freshness-watchdog`
+  (hourly + nightly), `audit-infra-drift` (08:30 ET), `audit-walkforward` (Sat),
+  `audit-brief-bias` (Sun).
+
+---
+
 ## Gamma Analytics (King / Gate / Spot / Flip)
 
 ```bash

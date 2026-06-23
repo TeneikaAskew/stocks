@@ -1,14 +1,16 @@
 # ARCHITECTURE
 
-> **Last refreshed:** 2026-05-22 — full inventory regen after the May 8 → 22 wave (PR #510 `/replay-signals`, PR #511 playbook resolver, PR #512 self-healing indicators, PR #513 backtest pipeline → GCP, PR #514 earnings-reactions brief, PR #518 INT-column coercion, PR #532 earnings $-attribution).
+> **Last refreshed:** 2026-06-23 — full inventory regen after the May 22 → June 23 wave: **Firebase auth end-to-end + per-user scoping** (#623 platform-auth, #626 per-user journal, #635 per-user watchlist), the **strat-directionality engine** replacing the deprecated P7b classifier (#622, #639, #646), the **magnitude inference pipeline** going live (#625, #629, #637), the **3-phase structure-continuation / Movement Read** rollout behind feature flags (#647 Phase 1, #649 Phase 2, #650 Phase 3), **materialized-view perf jobs** for options/GEX/earnings (#600, #613, #624), **realtime options** ingestion + 30-day retention (#ce0dcd0, #dac40f3), and the **GHA → Cloud Run** migration of db-query / freshness-watchdog / audit jobs (2026-05-30 outage response).
+>
+> _Previous refresh: 2026-05-22 (PR #510 `/replay-signals`, #511 playbook resolver, #512 self-healing indicators, #513 backtest pipeline → GCP, #514 earnings-reactions brief, #532 earnings $-attribution)._
 
 ## System overview
 
-This is a private stocks-trading research and signal-delivery platform deployed on Google Cloud (project `adept-mountain-474619-d4`, region `us-east1`). It is single-user / small-team — there is no end-user account system, no public web auth, and no per-user data partitioning. The primary delivery surface is **Discord** (now via **three routed webhook channels** — insights, signals, earnings — see Discord channel routing below); a secondary delivery surface is the **internal React + FastAPI dashboard** at the `trading-platform` Cloud Run service.
+This is a private stocks-trading research and signal-delivery platform deployed on Google Cloud (project `adept-mountain-474619-d4`, region `us-east1`). The primary delivery surface is **Discord** (via **three routed webhook channels** — insights, signals, earnings — see Discord channel routing below); a secondary delivery surface is the **React + FastAPI dashboard** at the `trading-platform` Cloud Run service. As of June 2026 the dashboard is **multi-user**: it has a real authentication layer (`platform/api/auth.py` `AUTH_MODE` middleware — `firebase` / `iap` / `open`) and **per-user data partitioning** for the trade journal (`journal_entries.user_email`) and watchlist (`watchlists.user_id`). Production is currently served behind **Cloud IAP**; **Firebase email/Google sign-in** is live on a separate public `trading-platform-staging` service and is the planned production auth once the GCIP authorized-domain flip lands. See the **Authentication** data-flow section below.
 
-The system runs as a fleet of **42 production Cloud Run Jobs** orchestrated by Cloud Scheduler (~49 cron entries in `gcp/deploy.sh` — verified 2026-05-22). Most jobs follow a common shape: pull data from an external API (AlphaVantage, FRED, EDGAR, ForexFactory, Earnings Whispers, Benzinga), upsert to Cloud SQL Postgres (`trading-db`), optionally write a parquet snapshot to GCS (`adept-mountain-474619-d4-trading-data`), and exit. A second class of jobs (premarket-brief, earnings-reactions-brief, insight-pipeline, signal-monitor, signal-monitor-eod-resolver, premarket-playbook-resolver, weekend-review, signal-quality-alarm, signal-replay, historical-signals-watchlist, calibrate-thresholds, param-sweep, earnings-sweep) reads from Cloud SQL, computes derived analytics using shared `lib/` modules, and posts results to Discord or writes back to calibration tables. The backtest pipeline (previously a GitHub Actions affair) is now fully GCP-native — see Backtest pipeline below.
+The system runs as a fleet of **~62 production Cloud Run Jobs** orchestrated by Cloud Scheduler (**~77 cron entries** in `gcp/deploy.sh` once the two hourly news loops are expanded — verified 2026-06-23). Most jobs follow a common shape: pull data from an external API (AlphaVantage, FRED, EDGAR, ForexFactory, Earnings Whispers, Benzinga), upsert to Cloud SQL Postgres (`trading-db`), optionally write a parquet snapshot to GCS (`adept-mountain-474619-d4-trading-data`), and exit. A second class of jobs (premarket-brief, earnings-reactions-brief, insight-pipeline, signal-monitor, signal-monitor-eod-resolver, premarket-playbook-resolver, weekend-review, signal-quality-alarm, signal-replay, historical-signals-watchlist, calibrate-thresholds, param-sweep, earnings-sweep) reads from Cloud SQL, computes derived analytics using shared `lib/` modules, and posts results to Discord or writes back to calibration tables. A third, newer class are **research / ML-inference jobs** — `strat-engine` (Strat directionality features → `strat_features_<tf>`), `magnitude-inference` (live per-bar magnitude predictions), and `direction-probe` (offline research) — plus **materialized-view builders** (`build-options-daily-features`, `build-options-greeks`, `build-realtime-gex`, `refresh-earnings-views`) that pre-compute heavy aggregates so request-time and signal-time paths never full-scan the large options tables (CLAUDE.md Rule 0). The backtest pipeline is fully GCP-native — see Backtest pipeline below.
 
-Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-notifier** Cloud Run service that consumes a Pub/Sub topic fed by a Cloud Logging sink filtered for Cloud Run Job ERRORs, and creates labeled GitHub issues; (2) a **Cloud Tasks queue** (`insight-pipeline-queue`) that lets the FastAPI dashboard enqueue on-demand AI-insight refreshes; (3) a **GitHub Actions** layer (19 workflows) that mirrors several jobs as backups, runs heavier integration suites (walk-forward audits, freshness audits, sheet downloads), and provides ad-hoc Cloud SQL access via [`db-query.yml`](.github/workflows/db-query.yml) for sandboxed Claude Code on the web sessions that can't reach Cloud SQL directly. Math is concentrated in `lib/` and consumed identically by Cloud Run Jobs, the FastAPI router, and CLI scripts — per `CLAUDE.md` "one source of truth for math."
+Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-notifier** Cloud Run service that consumes a Pub/Sub topic fed by a Cloud Logging sink filtered for Cloud Run Job ERRORs, and creates labeled GitHub issues; (2) a **Cloud Tasks queue** (`insight-pipeline-queue`) that lets the FastAPI dashboard enqueue on-demand AI-insight refreshes; (3) a thinned **GitHub Actions** layer that runs heavier integration suites and break-glass manual fallbacks — several formerly-GHA workloads (ad-hoc Cloud SQL access, freshness-watchdog, walk-forward and brief-bias audits) **migrated to Cloud Run Jobs on 2026-05-30** after a GHA-platform outage. Ad-hoc Cloud SQL access is now the `db-query` Cloud Run Job driven by [`scripts/db_query_cr.sh`](scripts/db_query_cr.sh) (the old `db-query.yml` workflow is deleted). Math is concentrated in `lib/` and consumed identically by Cloud Run Jobs, the FastAPI router, and CLI scripts — per `CLAUDE.md` "one source of truth for math."
 
 ## Component inventory
 
@@ -60,10 +62,16 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](gcp/fetchers/fetch_av_earnings_options_backfill.py) | code | **NEW** — mirrors `fetch_av_historical_options` but for the earnings-window symbol set; backfills `earnings_options_snapshots` | AV API, Cloud SQL `earnings_options_snapshots` | Cloud Run Job `fetch-av-earnings-options-backfill` (on-demand) |
 | [`gcp/fetchers/backfill_daily_indicators.py`](gcp/fetchers/backfill_daily_indicators.py) | code | **NEW (PR #461)** — self-healing indicator coverage: auto-discovers NULL `atr_14/rsi_14/macd/ema_*/bb_*` columns in `market_data_daily` and recomputes them | `lib.indicators`, Cloud SQL | Scheduler `backfill-indicators-daily` (2:30 AM ET Mon-Sat), `backfill-indicators-weekly` (3 AM ET Sun full sweep) |
 | [`gcp/fetchers/intraday_bulk_backfill.py`](gcp/fetchers/intraday_bulk_backfill.py) | code | Multi-day intraday bulk backfill harness for historical replay seeding | AV API, Cloud SQL `market_data_intraday_*` partitions | Cloud Run Job `intraday-bulk-backfill` (on-demand) |
-| [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry; mounts 13 routers | All `lib/`, Cloud SQL | Cloud Run service `trading-platform` |
-| [`platform/api/routers/insights.py`](platform/api/routers/insights.py) | code | AI insights CRUD; `/refresh` enqueues Cloud Tasks | Cloud Tasks `insight-pipeline-queue`, Cloud SQL | FastAPI |
-| [`platform/api/routers/*.py`](platform/api/routers/) | code | 12 other routers (live, options, playbook, backtest, signals, journal, dashboard, catalysts, admin, analytics, config, health) | Cloud SQL, `lib/` | FastAPI |
-| [`platform/src/main.tsx`](platform/src/main.tsx) | code | React app entry (renders into `#root`) | `platform/src/App.tsx` | Browser via `trading-platform` service |
+| [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry; mounts **17 routers** + installs `AUTH_MODE` auth middleware; serves the built React SPA (single-port) | All `lib/`, `platform/api/auth.py`, Cloud SQL | Cloud Run service `trading-platform` |
+| [`platform/api/auth.py`](platform/api/auth.py) | code | **NEW (#623)** — `AUTH_MODE` middleware (`firebase` verify Firebase ID token / `iap` trust `X-Goog-Authenticated-User-Email` / `open` no-op); pre-auth prefixes `/api/health`, `/api/me`, `/api/config/firebase`; `current_user_email(request)` identity accessor; 401 invalid-token / 403 disallowed (fail-closed, Rule 3.7) | Firebase Admin SDK, env `AUTH_MODE`/`AUTH_ALLOWED_EMAILS`/`AUTH_OPEN_SIGNUP` | `main.py`, every per-user router |
+| [`platform/api/routers/insights.py`](platform/api/routers/insights.py) | code | AI insights CRUD; `/refresh` enqueues Cloud Tasks; **per-user watchlist endpoints** thread `_watchlist_owner(request)` into add/remove/load (#635) | Cloud Tasks `insight-pipeline-queue`, Cloud SQL `watchlists`, `lib.agents` | FastAPI |
+| [`platform/api/routers/journal.py`](platform/api/routers/journal.py) | code | **Per-user trade journal** CRUD; `_journal_owner(request)=current_user_email() or "local"`; fail-closed 503 in prod if Cloud SQL unreachable (#626) | Cloud SQL `journal_entries` | FastAPI |
+| [`platform/api/routers/magnitude.py`](platform/api/routers/magnitude.py) | code | **NEW** — `GET /api/magnitude/predictions`; serves the live per-bar magnitude-model output written by the `magnitude-inference` Job | Cloud SQL | FastAPI |
+| [`platform/api/routers/earnings.py`](platform/api/routers/earnings.py) | code | **NEW (#624)** — earnings calendar/history endpoints backed by the earnings materialized views (`earnings_upcoming_with_history`, `earnings_event_outcomes`, `earnings_ticker_lean`) | Cloud SQL mat-views | FastAPI |
+| [`platform/api/routers/config.py`](platform/api/routers/config.py) | code | `GET /api/config/firebase` (pre-auth — bootstraps SPA + login), `/config/indicators`, `/config/market-hours` | env Firebase config, `alert_config.json` | FastAPI, `main.tsx` bootstrap |
+| [`platform/api/routers/*.py`](platform/api/routers/) | code | Remaining routers (live, dashboard incl. `/api/movement-statement`, options, grid, playbook, signals, backtest, catalysts, admin, analytics, health incl. `/health/freshness`, glossary) | Cloud SQL, `lib/` | FastAPI |
+| [`platform/src/main.tsx`](platform/src/main.tsx) | code | React app entry — bootstraps `GET /api/config/firebase`, initialises Firebase, installs the bearer-token `authedFetch` wrapper, then renders `App` inside `AuthGate` | `platform/src/App.tsx`, `src/lib/{firebase,authedFetch,runtimeConfig}.ts` | Browser via `trading-platform` service |
+| [`platform/src/components/auth/`](platform/src/components/auth/) | code | **NEW (#623)** — `SignInScreen.tsx` (Google SSO + email/password), `AuthGate.tsx` (top-level gate, firebase-mode only), `SignOutButton.tsx` | `src/lib/firebase.ts`, `hooks/useUser.ts` | React app shell |
 | [`lib/signals.py`](lib/signals.py) | code | Legacy condition-scoring entry point (live monitor's mean-reversion path post Phase 0.7 — free-score conditions dropped #229) | `lib.indicators`, `lib.strat` | `signal_monitor` (MR path), FastAPI, fetchers |
 | [`lib/strategies/`](lib/strategies/) | code | Phase 0.8 unified strategy package — `momentum.py`, `mean_reversion.py`, `agreement.py` (stacked-signal `AGREEMENT_BONUS`), `catalyst_proximity.py` (empirical multipliers per Phase 1.5), `timeframe.py` (28-bucket `EMPIRICAL_LOOKUP`, +8.2pp clean-rate vs placeholder per #223), `config.py`, `base.py` | `lib.indicators`, `alert_config.json` | `signal_monitor`, FastAPI, backtest |
 | [`lib/strategies/brief_bias.py`](lib/strategies/brief_bias.py) | code | **NEW (PR #532 — Earnings $-attribution)** — scores brief-playbook playability bias from PR-A (stock), PR-B (options), PR-C (intraday repricer) signals; consumed by `premarket_brief.py` and `earnings_reactions_brief.py` | Cloud SQL, `lib.earnings_reactions` | `premarket_brief`, `earnings_reactions_brief`, `verify-brief-bias.yml` workflow |
@@ -85,15 +93,26 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | [`lib/ticker_info.py`](lib/ticker_info.py) | code | Ticker metadata (AV OVERVIEW), peers (FinViz), news (FinViz), aliases (`ticker_info` table cache) | AV API, FinViz HTML, Cloud SQL `ticker_info`, `lib.api_client` | FastAPI [`platform/api/routers/insights.py`](platform/api/routers/insights.py), [`gcp/fetchers/fetch_rss_news.py`](gcp/fetchers/fetch_rss_news.py) |
 | [`lib/api_client.py`](lib/api_client.py) | code | Resilient HTTP helper (retry + exponential backoff) for external APIs | `requests` | `lib.ticker_info` (currently only consumer; available for fetchers) |
 | [`lib/logging_config.py`](lib/logging_config.py) | code | Cloud-Run-friendly structured-JSON logging setup | — | All Jobs / Services (single `setup_logging()` import) |
-| [`gcp/deploy.sh`](gcp/deploy.sh) | code (ops) | One-stop deploy: builds image, creates/updates 27 Jobs + 4 Services + 28+ Schedulers + Pub/Sub + Cloud Tasks queue | gcloud CLI | Manual ops |
-| [`platform/deploy.sh`](platform/deploy.sh) | code (ops) | Builds + deploys the `trading-platform` service image (Cloud Build → `gcr.io`). `STAGING=1` mode deploys a `staging`-tagged revision at 0% traffic for the two-stage deploy pipeline | gcloud CLI, Cloud Build | CI workflow `deploy-platform-staging.yml`, manual ops |
-| [`gcp/schema.sql`](gcp/schema.sql) | code (ops) | All `CREATE TABLE IF NOT EXISTS` statements (38 statements; ~27 logical user-facing tables — the rest are LIST-partition children of `market_data_intraday`, `archive_yahoo_*` archives, and `*_history` audit copies) | — | `apply_schema.py` |
+| [`lib/movement_statement.py`](lib/movement_statement.py) | code | **NEW (#649, flag-gated)** — single source of truth for the "Movement Read": assembles continuation-prob headline + levels reach-rates + expected-move + regime context; `is_enabled()` reads `MOVEMENT_STATEMENT_ENABLED` at call time; missing pieces yield explicit `status="UNAVAILABLE"` (Rule 3.7) | `gcp/research/strat_engine`, Cloud SQL | `platform/api` `/api/movement-statement`, `MovementRead.tsx` |
+| [`gcp/research/strat_engine/`](gcp/research/strat_engine/) | code | **NEW — Strat directionality engine** (replaces deprecated P7b classifier). `strat_data_builder.py` (incremental featurize → `strat_features_<tf>`), `strat_enrich_levels.py` (ORB/historical/order-block levels), `strat_pred_train.py` / `strat_walk_forward.py` / `strat_dir_probes.py` (research), `strat_pred_serve.py` (inference) | `lib.strat`, `lib.strat_levels`, `lib.indicators`, LightGBM, Cloud SQL | Jobs `strat-engine` (23:35 ET), `strat-enrich-daily` (02:00 ET), `direction-probe` (research) |
+| [`gcp/research/magnitude_engine/`](gcp/research/magnitude_engine/) | code | **NEW — Magnitude engine.** `mag_dataset.py` / `mag_pred_train.py` / `mag_walk_forward.py` / `mag_leakage_audit.py` (research; FAIL on gate-7) + `mag_inference.py` (productionized live per-bar inference, `--persist-production-model`) | LightGBM, Cloud SQL, `lib.indicators` | Job `magnitude-inference` (09:25 ET) → `/api/magnitude/predictions`; `magnitude-engine` (research, on-demand) |
+| [`gcp/fetchers/build_options_daily_features.py`](gcp/fetchers/) | code | **NEW — mat-view builder** → `options_daily_features` (PCR vol/OI, 25Δ IV skew, ATM IV). Replaces a 52 GB request-time scan with a ~2.6k-row/ticker table (Rule 0) | Cloud SQL `etf_options_snapshots` | Job `build-options-daily-features` (22:00 ET), Scheduler `options-daily-features` |
+| [`gcp/fetchers/build_options_greeks.py`](gcp/fetchers/) | code | **NEW — mat-view builder** → `etf_options_daily_greeks` (dealer GEX/DEX, short-DTE DEX, vanna, charm) | Cloud SQL, `lib.options_greeks`, `lib.gamma` | Job `build-options-greeks`, Scheduler `gamma-levels-daily` (22:30 ET) |
+| [`gcp/fetchers/build_realtime_gex.py`](gcp/fetchers/) | code | **NEW — mat-view builder** → `realtime_gex_15m` (real intraday GEX/DEX from the realtime-options feed) | Cloud SQL `realtime` options rows | Job `build-realtime-gex`, Scheduler `realtime-gex-daily` (17:00 ET) |
+| [`gcp/fetchers/fetch_av_options_realtime.py`](gcp/fetchers/) | code | **NEW** — every-5-min RTH realtime options snapshot (AV realtime tier, 600 req/min) | AV realtime API, Cloud SQL | Job `fetch-av-options-realtime`, Scheduler `av-options-realtime` (`*/5 9-15 * * 1-5`) |
+| [`gcp/fetchers/etf_options_retention.py`](gcp/fetchers/) | code | **NEW** — daily prune of REALTIME options rows >30 days old (caps ~2.6M rows/day unbounded growth) | Cloud SQL | Job `etf-options-retention`, Scheduler `options-retention-daily` (02:00 ET) |
+| [`gcp/fetchers/refresh_earnings_views.py`](gcp/fetchers/) | code | **NEW (#624)** — refreshes the 3 earnings materialized views (`earnings_event_outcomes`, `earnings_ticker_lean`, `earnings_upcoming_with_history`) | Cloud SQL | Job `refresh-earnings-views`, Schedulers `refresh-earnings-views-daily`/`-weekly` |
+| [`gcp/db_query_job.py`](gcp/db_query_job.py) | code | **NEW (2026-05-30)** — ad-hoc SQL runner Cloud Run Job (replaces deleted `db-query.yml`); runs `gcp/queries/run_query.py`, writes results to GCS; driven by `scripts/db_query_cr.sh` over 443 | Cloud SQL, GCS | Job `db-query` (dispatched on-demand) |
+| `gcp/audit_*` / freshness-watchdog | code (ops) | **NEW (2026-05-30 GHA→CR migration)** — `freshness-watchdog` (hourly + nightly data-freshness check), `audit-infra-drift` (drift vs repo, 08:30 ET), `audit-walkforward` (Sat), `audit-brief-bias` (Sun) | Cloud SQL, GCP SDKs | Jobs `freshness-watchdog`, `audit-infra-drift`, `audit-walkforward`, `audit-brief-bias` |
+| [`gcp/deploy.sh`](gcp/deploy.sh) | code (ops) | One-stop deploy: builds image(s), creates/updates **~62 Jobs + 3 Services + ~77 Scheduler crons** + Pub/Sub + Cloud Tasks queue. `deploy_*` functions + `./gcp/deploy.sh <target>` subcommands; `build-research` target builds the LightGBM/SHAP research image used by `strat-engine` / `magnitude-*` / mat-view builders | gcloud CLI | Manual ops |
+| [`platform/deploy.sh`](platform/deploy.sh) | code (ops) | Builds + deploys the `trading-platform` service image. Modes: default (prod revision), `STAGING=1` (staging-tagged revision at 0% traffic), **`STAGING_SERVICE=1`** (separate public `trading-platform-staging` service, no IAP, `AUTH_MODE=firebase`). Now the **primary platform deploy path** — the GHA `deploy-platform-staging.yml` / `promote-platform-prod.yml` workflows were deleted | gcloud CLI, Cloud Build | Manual ops |
+| [`gcp/schema.sql`](gcp/schema.sql) | code (ops) | All `CREATE TABLE IF NOT EXISTS` statements (**57 statements; ~55 logical user-facing tables** + 5 `market_data_intraday_*` LIST-partition children + `archive_yahoo_*` archives + `*_history` audit copies). Note: the runtime `strat_features_{1m,5m,15m,30m,60m,4h}` tables are **created by the `strat-engine` Job**, not by this file | — | `apply_schema.py` |
 
 ### GCP resources
 
 | Component | Type | Purpose | Depends on | Used by |
 |---|---|---|---|---|
-| `trading-db` | Cloud SQL (Postgres) | Single instance, **44 `CREATE TABLE` statements** (~33 user-facing + LIST partitions + archives + history audit copies). Recent additions: `exit_config_overrides`, `backtest_runs`, `backtest_trades`, `backtest_sweeps`, `walk_forward_results`, `earnings_calibration`, `premarket_analysis_history`, `insight_reports_history` | — | Every Cloud Run Job, FastAPI |
+| `trading-db` | Cloud SQL (Postgres) | Single instance, **57 `CREATE TABLE` statements** (~55 user-facing + 5 `market_data_intraday_*` LIST partitions + archives + history audit copies) plus the 6 runtime `strat_features_<tf>` tables built by `strat-engine`. Recent additions: `options_daily_features`, `etf_options_daily_greeks`, `realtime_gex_15m`, `earnings_upcoming_with_history`, `playbook_cards`, `ranker_runs`, `journal_entries` (per-user), per-user `watchlists.user_id`, and new outcome/llm columns on `signal_alerts` & `premarket_analysis` | — | Every Cloud Run Job, FastAPI |
 | `adept-mountain-474619-d4-trading-data` | GCS Bucket | Parquet snapshots (raw OHLCV, intraday, options) | — | `fetch_market_data`, `migrate_to_gcp` |
 | `adept-mountain-474619-d4_cloudbuild` | GCS Bucket | Cloud Build source archive (auto-managed) | — | `gcloud builds submit` |
 | `trading` Artifact Registry | Docker repo | Holds `trading-system` image (one image, all jobs) | Cloud Build | All Cloud Run Jobs + Services |
@@ -104,17 +123,18 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | `gcp-job-failures-push` | Pub/Sub Subscription | Push subscription → `failure-notifier` Cloud Run | `gcp-job-failures` topic | `failure-notifier` service |
 | `gcp-job-failures-sink` | Cloud Logging Sink | Filters `severity>=ERROR AND resource.type=cloud_run_job AND job_name!=failure-notifier` → Pub/Sub | — | Pub/Sub topic |
 | `_Default` / `_Required` Logging | Log Buckets + Sinks | GCP-managed default log retention | — | All services (auto) |
-| 19 Secret Manager secrets | Secret Manager | Credentials + config (see Resource references below) | — | Cloud Run Jobs (env injection in `deploy.sh`) |
-| `trading-platform` | Cloud Run Service | FastAPI dashboard backend; custom domain `stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, IAP-gated) | `lib/`, Cloud SQL | Browser via React app + custom domain |
+| ~21 Secret Manager secrets | Secret Manager | Credentials + config (see Resource references below) incl. the 3 Discord webhooks and the **Firebase config** (`firebase-api-key` etc.) consumed by the staging service | — | Cloud Run Jobs + Services (env injection in `deploy.sh` / `platform/deploy.sh`) |
+| `trading-platform` | Cloud Run Service | FastAPI dashboard backend serving the React SPA single-port; custom domain `stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS). **Prod runs `AUTH_MODE=iap`** (IAP-gated) | `lib/`, `platform/api/auth.py`, Cloud SQL | Browser via React app + custom domain |
+| `trading-platform-staging` | Cloud Run Service | **NEW (optional)** — public staging service (`--allow-unauthenticated`, NO IAP) running **`AUTH_MODE=firebase`** (Firebase email/Google sign-in, self-signup or allow-list). The proving ground for production Firebase auth. Deployed via `STAGING_SERVICE=1 ./platform/deploy.sh` | same image as `trading-platform`, Firebase, Cloud SQL | Browser (Firebase login) |
 | `discord-interactions` | Cloud Run Service | Discord slash-command HTTP endpoint | Discord public key, Cloud Tasks | Discord |
 | `failure-notifier` | Cloud Run Service | Pub/Sub-driven GitHub-issue creator | `github-pat`, `github-repo` secrets | Pub/Sub push subscription |
-| `signal-monitor` | Cloud Run Service | **Likely orphaned** — see Reconciliation | — | Unknown |
+| ~~`signal-monitor` Cloud Run Service~~ | — | **Deleted 2026-05-15** — the active surface is the `signal-monitor` Cloud Run **Job** | — | — |
 | `trading-runner` | Service Account | Runtime identity for Cloud Run Jobs | — | All Jobs |
 | `playwright-tester` | Service Account | E2E test runner | — | GitHub Actions |
 | `github-actions-sheets` | Service Account | Google Sheets download workflow | — | `download-google-sheets.yml` |
 | `28960574877-compute@developer` | Service Account | Default Compute SA | — | Default builds |
-| **42 Cloud Run Jobs** | Cloud Run | Scheduled / on-demand processing (all created via `gcp/deploy.sh` — verified 2026-05-22). +11 jobs since 2026-05-08: `signal-monitor-eod-resolver`, `premarket-playbook-resolver`, `earnings-reactions-brief`, `signal-replay`, `backtest-pipeline`, `param-sweep`, `earnings-sweep`, `intraday-bulk-backfill`, `fetch-av-earnings-options-backfill`, `backfill-daily-indicators`, `cloud-sql-weekly-export` | Cloud SQL, AV/FRED/EDGAR/EW/Benzinga, Discord | Cloud Scheduler (most), Cloud Tasks (insight-pipeline), Discord interactions (backtest, validate-brief, backfill-ticker, signal-replay), manual (apply-schema-migrations, compute-spx-greeks-backfill, param-sweep, earnings-sweep) |
-| ~49 Cloud Scheduler jobs | Cloud Scheduler | Cron triggers for Run Jobs (verified 2026-05-22 against `gcp/deploy.sh`). New entries since last refresh: `signal-monitor-eod-resolver-daily` (4:30 PM ET), `premarket-playbook-resolver-daily` (4:30 PM ET), `earnings-reactions-brief-daily` (8:35 AM ET), `av-options-daily` (9 PM ET — replaced GH workflow per PR #489), `news-sentiment-earnings-0600` (6 AM ET), `backfill-indicators-daily` (2:30 AM ET Mon-Sat), `backfill-indicators-weekly` (3 AM ET Sun), three-part `daily-earnings-refresh-*` chain (7/7:15/7:30 PM ET), three-part `weekly-earnings-refresh-*` (Sunday 7 PM ET), `cloud-sql-weekly-export-weekly` (Sun 04:00 UTC) | Cloud Run Jobs | Cloud Run Job invocation API |
+| **~62 Cloud Run Jobs** | Cloud Run | Scheduled / on-demand processing (all created via `gcp/deploy.sh` — verified 2026-06-23). New since 2026-05-22: `strat-engine`, `direction-probe`, `magnitude-inference`, `build-options-daily-features`, `build-options-greeks`, `build-realtime-gex`, `fetch-av-options-realtime`, `etf-options-retention`, `refresh-earnings-views`, `db-query`, `freshness-watchdog`, `audit-infra-drift`, `audit-walkforward`, `audit-brief-bias`. **Retired:** `p7b-classifier` (DEPRECATED 2026-05-25 → replaced by `strat-engine`); `fetch-earnings-options` (broken module, removed) | Cloud SQL, AV/FRED/EDGAR/EW/Benzinga, Discord | Cloud Scheduler (most), Cloud Tasks (insight-pipeline), Discord interactions (backtest, validate-brief, backfill-ticker, signal-replay), manual (apply-schema-migrations, compute-spx-greeks-backfill, param-sweep, earnings-sweep, db-query, intraday-bulk-backfill) |
+| ~77 Cloud Scheduler crons | Cloud Scheduler | Cron triggers for Run Jobs (verified 2026-06-23 against `gcp/deploy.sh` — 57 explicit `_schedule*` calls, minus the commented-out `p7b-classifier-daily`, plus 20 from the two hourly loops `news-sentiment-{08..17}00` ×10 and `news-topics-{08..17}05` ×10). New entries since last refresh: `strat-engine-daily` (23:35 ET), `strat-enrich-daily` (02:00 ET Tue–Sat), `magnitude-inference-daily` (09:25 ET), `options-daily-features` (22:00 ET), `gamma-levels-daily` (22:30 ET), `realtime-gex-daily` (17:00 ET), `av-options-realtime` (`*/5 9-15 * * 1-5`), `options-retention-daily` (02:00 ET), `refresh-earnings-views-daily`/`-weekly`, `freshness-watchdog-hourly`/`-nightly`, `audit-infra-drift-daily` (08:30 ET), `audit-walkforward-weekly` (Sat), `audit-brief-bias-weekly` (Sun) | Cloud Run Jobs | Cloud Run Job invocation API |
 | `billing_export` BigQuery Dataset | BigQuery | GCP billing export (auto-populated) | — | None in this repo (use for `/cost` analytics if added) |
 
 ## Data flow
@@ -127,6 +147,9 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 4. A parquet snapshot of the day's OHLCV is uploaded to `gs://adept-mountain-474619-d4-trading-data/raw/...` via [`gcp/gcs_utils.py`](gcp/gcs_utils.py).
 5. **9:00 PM ET (Tue–Sat)** — `av-intraday-nightly` runs an incremental pull for the prior trading day's intraday bars (separate from the monthly full-month snapshot at `av-intraday-monthly`).
 6. **1:00 AM ET (Tue–Sat)** — `historical-signals-watchlist-daily` ([`scripts/run_historical_signals.py`](scripts/run_historical_signals.py)) recomputes 90 days of `signal_alerts` for every watchlist ticker, picking up any tickers added to the watchlist that day. Quarterly (1st of Jan/Apr/Jul/Oct, 02:00 UTC) `calibrate-thresholds-quarterly` ([`scripts/calibrate_thresholds.py`](scripts/calibrate_thresholds.py)) re-derives per-ticker RSI ranges and per-strategy `MIN_CONDITIONS` thresholds from the trailing window, writing back to `ticker_calibration`.
+7. **Materialized-view builders (post-close, Rule 0).** To keep request-time and signal-time paths off the multi-GB options tables, three builders pre-aggregate after the options fetch lands: `realtime-gex-daily` (**17:00 ET** → `realtime_gex_15m`), `options-daily-features` (**22:00 ET** → `options_daily_features`), and `gamma-levels-daily` (**22:30 ET** → `etf_options_daily_greeks`). The earnings mat-views refresh via `refresh-earnings-views-daily`/`-weekly`.
+8. **11:35 PM ET (Mon–Fri)** — `strat-engine-daily` ([`gcp/research/strat_engine/strat_data_builder.py`](gcp/research/strat_engine/)) incrementally featurizes SPY/IWM/QQQ across all timeframes since each cell's cached `max(bar_date)`, writing the runtime `strat_features_<tf>` tables. Then **02:00 ET (Tue–Sat)** `strat-enrich-daily` backfills ORB / historical / order-block levels (`strat_features_levels_<tf>`) with a >1y lookback (idempotent `ON CONFLICT`).
+9. **02:00 ET (daily)** — `options-retention-daily` prunes REALTIME options rows older than 30 days, bounding the every-5-minute realtime feed's growth.
 
 ### Daily morning read path (pre-market 7-9 AM ET)
 
@@ -138,8 +161,9 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 6. **8:35 AM ET** — `earnings-reactions-brief-daily` ([`gcp/earnings_reactions_brief.py`](gcp/earnings_reactions_brief.py)) reads today's earnings reporters, ranks them by historical post-earnings playability + archetype, and posts a dedicated embed to the **earnings** Discord channel (PR #514).
 7. **8:45 AM ET** — `insight-pipeline-daily` runs the multi-agent AI pipeline for SPY/IWM/QQQ; results land in `insight_runs` + `insight_reports`.
 8. **9:15 AM ET** — `insight-discord-push-daily` reads the morning's `insight_reports` and pushes the digest to the **insights** Discord channel.
-9. **9:25 AM ET** — `signal-monitor-daily` ([`gcp/signal_monitor.py`](gcp/signal_monitor.py)) starts the rolling 60-second loop until 4:00 PM ET, polling AV intraday and posting CALL/PUT alerts to the **signals** Discord channel when conditions clear thresholds. Per-fire scoring: `total_score = (base_score + strat_bonus + agreement_bonus) × proximity_multiplier`, where `agreement_bonus` is `AGREEMENT_BONUS` (+1.0) if both momentum + mean-reversion strategies agree on a bar (#231), and `proximity_multiplier` is the empirical catalyst-window weight from `lib/strategies/catalyst_proximity.py` (#227). Raw `base_score` and `proximity_multiplier` both persist on `signal_alerts` for post-hoc analysis. ORB snapshots fire as separate scheduler invocations at 9:45 (15m) and 10:00 (30m). Exit thresholds (target/stop/hold-time) are looked up per (symbol, strategy) from `exit_config_overrides` populated by the walk-forward `param-sweep` Job (PR #532).
-10. **4:30 PM ET** — Two reconcilers run in parallel:
+9. **9:25 AM ET** — `magnitude-inference-daily` ([`gcp/research/magnitude_engine/mag_inference.py`](gcp/research/magnitude_engine/)) scores recent bars with the persisted production magnitude model and writes per-bar predictions (served read-only at `/api/magnitude/predictions`).
+10. **9:25 AM ET** — `signal-monitor-daily` ([`gcp/signal_monitor.py`](gcp/signal_monitor.py)) starts the rolling 60-second loop until 4:00 PM ET, polling AV intraday and posting CALL/PUT alerts to the **signals** Discord channel when conditions clear thresholds. Per-fire scoring: `total_score = (base_score + strat_bonus + agreement_bonus) × proximity_multiplier`, where `agreement_bonus` is `AGREEMENT_BONUS` (+1.0) if both momentum + mean-reversion strategies agree on a bar (#231), and `proximity_multiplier` is the empirical catalyst-window weight from `lib/strategies/catalyst_proximity.py` (#227). Raw `base_score` and `proximity_multiplier` both persist on `signal_alerts` for post-hoc analysis. ORB snapshots fire as separate scheduler invocations at 9:45 (15m) and 10:00 (30m). Exit thresholds (target/stop/hold-time) are looked up per (symbol, strategy) from `exit_config_overrides` populated by the walk-forward `param-sweep` Job (PR #532).
+11. **4:30 PM ET** — Two reconcilers run in parallel:
     - `signal-monitor-eod-resolver-daily` ([`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py), PR #512) walks the day's `signal_alerts`, replays intraday bars, and writes `target_hit/stop_hit/eod_close` columns — closing the resolution loop for live alerts.
     - `premarket-playbook-resolver-daily` ([`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py), PR #511) walks RTH 1-min bars for each (analysis_date, ticker) in `premarket_analysis`, records `trigger_hit/target_hit/stop_hit` outcomes to `premarket_analysis_history` for backtest expectations.
 
@@ -149,6 +173,25 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 2. Browser → `trading-platform` Cloud Run Service → [`platform/api/routers/insights.py`](platform/api/routers/insights.py) `POST /api/insights/report/{ticker}/refresh`.
 3. Router enqueues a task on `insight-pipeline-queue` (Cloud Tasks) targeting the `insight-pipeline` Job's `:run` endpoint with env vars `INSIGHT_RUN_ID` + `INSIGHT_TICKER`.
 4. Cloud Tasks delivers the task; the Job picks up the override env, runs a single-ticker pipeline, and writes one row to `insight_reports` / `insight_runs`. Max-attempts=2 guards against transient failures; max-concurrent-dispatches=5 caps parallelism.
+
+### Authentication & per-user request path
+
+The dashboard moved from "no auth, single-user" to a real authentication layer in June 2026 (#623). Identity resolution is centralized in [`platform/api/auth.py`](platform/api/auth.py), selected by the `AUTH_MODE` env var:
+
+| `AUTH_MODE` | How identity is established | Where used |
+|---|---|---|
+| `firebase` | Frontend obtains a Firebase ID token; every gated `/api/*` request carries `Authorization: Bearer <token>`; middleware verifies it (Firebase Admin SDK) and extracts the email | `trading-platform-staging` (public) |
+| `iap` | Cloud IAP gates the service; identity is the `X-Goog-Authenticated-User-Email` header IAP injects | `trading-platform` (production today) |
+| `open` | No-op; `current_user_email()` is `None` | local dev |
+
+Request flow (firebase mode):
+
+1. Browser boots: `main.tsx` fetches `GET /api/config/firebase` (a **pre-auth** prefix), initialises the Firebase JS SDK, and installs [`authedFetch`](platform/src/lib/authedFetch.ts) which injects the bearer token on every same-origin `/api/*` call.
+2. `AuthGate` shows `SignInScreen` (Google SSO or email/password) until Firebase reports a signed-in user; `useUser()` then polls `/api/me` for the server-verified `{ email, is_admin }`.
+3. On a gated request, the auth middleware verifies the token. **Invalid → 401**; **valid but not allow-listed → 403** (fail-closed per CLAUDE.md Rule 3.7 — never a silent downgrade). Allow policy is open self-signup (`AUTH_OPEN_SIGNUP=1`) or an explicit `AUTH_ALLOWED_EMAILS` list.
+4. Per-user routers scope their queries by the verified email: the **journal** (`journal.py`, `_journal_owner = current_user_email() or "local"`) reads/writes `journal_entries WHERE user_email = ?`, failing **closed with 503** in production if Cloud SQL is unreachable rather than leaking a shared local file; the **watchlist** (`insights.py`, `_watchlist_owner = current_user_email() or "default"`) reads/writes `watchlists` keyed by `user_id`, with `in_brief`/`in_insight`/`signals` surface flags that downstream fetchers honour via [`gcp/fetchers/_watchlist.py`](gcp/fetchers/_watchlist.py). **Known gap:** the insight *generation* pipeline (`insight_reports`) is still shared, so per-user watchlist scoping stops at the ranker — see Reconciliation.
+
+The `/admin` surface is gated separately by an `X-Admin-Token` header or an IAP email match, independent of the Firebase user.
 
 ### Failure notification
 
@@ -187,14 +230,15 @@ Previously a heavy GitHub Actions workflow that produced CSV artifacts; now full
 
 All four jobs write to three shared schema additions: `backtest_runs` (one row per pipeline run, rendered markdown report), `backtest_trades` (individual simulated trades), `backtest_sweeps` (per-(timeframe, combo) result vector).
 
-### Platform deploy pipeline (staging → production)
+### Platform deploy (script-driven)
 
-Added 2026-05-16. The `trading-platform` Cloud Run service deploys in two stages via GitHub Actions:
+The two-stage GitHub Actions deploy (`deploy-platform-staging.yml` + `promote-platform-prod.yml`) was **deleted**; platform deploys are now driven directly by [`platform/deploy.sh`](platform/deploy.sh), which builds the image with Cloud Build and deploys via the Cloud Run control-plane (443-safe from the sandbox). Three modes:
 
-1. **Deploy to staging** — [`deploy-platform-staging.yml`](.github/workflows/deploy-platform-staging.yml) triggers on push to `main` touching `platform/`, `lib/`, `requirements.txt`, or `gcp/database.py`. It runs `STAGING=1 ./platform/deploy.sh`, which builds the image with Cloud Build and deploys a Cloud Run revision tagged `staging` with `--no-traffic`. The revision is reachable at `https://staging---trading-platform-…run.app`; production traffic is untouched.
-2. **Promote to production** — [`promote-platform-prod.yml`](.github/workflows/promote-platform-prod.yml) is a manual `workflow_dispatch` that routes 100% of production traffic to the current `staging`-tagged revision (`gcloud run services update-traffic --to-tags=staging=100`). It shares the staging workflow's concurrency group so a deploy and a promote cannot interleave.
+1. **Default** — `./platform/deploy.sh` builds and deploys a new production revision of `trading-platform` (prod runs `AUTH_MODE=iap`).
+2. **`STAGING=1`** — deploys a `staging`-tagged revision of the prod service at 0% traffic for smoke-testing; promote by routing traffic to the tag (`gcloud run services update-traffic --to-tags=staging=100`). Service-level IAM is left untouched so the staging tag stays IAP-gated.
+3. **`STAGING_SERVICE=1`** — deploys the **separate public `trading-platform-staging` service** (`--allow-unauthenticated`, no IAP) running `AUTH_MODE=firebase`. This is where Firebase email/Google sign-in is exercised end-to-end before flipping production.
 
-Production is served at the custom domain **`stocks.insightscollective.org`** — a Cloud Run domain mapping with Google-managed TLS, gated by IAP. The generated `*.run.app` URL remains as a fallback. Both workflows authenticate with the `CLAUDE_CODE_WEB_GCP_SA_KEY` service-account secret.
+Production is served at the custom domain **`stocks.insightscollective.org`** — a Cloud Run domain mapping with Google-managed TLS, gated by IAP. The generated `*.run.app` URL remains as a fallback. The same trading-system image is built once and reused across services.
 
 ## Architecture diagram
 
@@ -209,7 +253,7 @@ flowchart LR
         DISCORD[Discord]
     end
 
-    subgraph SCHED["Cloud Scheduler (28+ cron jobs)"]
+    subgraph SCHED["Cloud Scheduler (~77 cron entries)"]
         SCH[crons → :run]
     end
 
@@ -251,6 +295,22 @@ flowchart LR
         ESW[earnings-sweep → earnings_calibration]
     end
 
+    subgraph RESEARCH["Cloud Run Jobs — Research / ML inference"]
+        STE[strat-engine → strat_features_tf]
+        STEN[strat-enrich-daily → levels]
+        MAGI[magnitude-inference → /api/magnitude]
+        DPRB[direction-probe research]
+        MVB[build-options-daily-features<br/>build-options-greeks<br/>build-realtime-gex<br/>refresh-earnings-views]
+    end
+
+    subgraph AUDIT["Cloud Run Jobs — Audit / Infra (GHA→CR 2026-05-30)"]
+        DBQ[db-query]
+        FW[freshness-watchdog]
+        AID[audit-infra-drift]
+        AWF[audit-walkforward]
+        ABB[audit-brief-bias]
+    end
+
     subgraph ONDEMAND["Cloud Run Jobs — On-Demand"]
         BFT[backfill-ticker]
         SREP[signal-replay /replay-signals]
@@ -272,13 +332,14 @@ flowchart LR
     end
 
     subgraph DATA["GCP Data Plane"]
-        SQL[("Cloud SQL trading-db<br/>~33 user-facing tables<br/>(44 CREATE TABLE total)<br/>+exit_config_overrides<br/>+backtest_runs/_trades/_sweeps<br/>+walk_forward_results<br/>+earnings_calibration<br/>+premarket_analysis_history<br/>+insight_reports_history")]
-        GCS[("GCS<br/>adept-mountain-474619-d4-trading-data<br/>raw/ + sql-dumps/")]
-        SECRETS[Secret Manager<br/>21 secrets<br/>+discord-webhook-signals<br/>+discord-webhook-earnings]
+        SQL[("Cloud SQL trading-db<br/>~55 user-facing tables<br/>(57 CREATE TABLE + 6 runtime strat_features_tf)<br/>+options_daily_features<br/>+etf_options_daily_greeks<br/>+realtime_gex_15m<br/>+earnings mat-views<br/>+playbook_cards<br/>+journal_entries (user_email)<br/>+watchlists (user_id)")]
+        GCS[("GCS<br/>adept-mountain-474619-d4-trading-data<br/>raw/ + sql-dumps/ + query-results/")]
+        SECRETS[Secret Manager<br/>~21 secrets<br/>+3 discord webhooks<br/>+firebase config]
     end
 
     subgraph SVC["Cloud Run Services"]
-        TP[trading-platform<br/>FastAPI + React<br/>stocks.insightscollective.org<br/>--no-cpu-throttling per PR #507]
+        TP[trading-platform<br/>FastAPI + React single-port<br/>stocks.insightscollective.org<br/>AUTH_MODE=iap]
+        TPS[trading-platform-staging<br/>public · AUTH_MODE=firebase<br/>Google/email sign-in]
         DI[discord-interactions<br/>3 webhook channels:<br/>insights · signals · earnings]
         FN[failure-notifier<br/>close-on-success reconciler PR #493]
     end
@@ -289,14 +350,15 @@ flowchart LR
         SINK[Logging Sink<br/>gcp-job-failures-sink]
     end
 
-    subgraph CICD["GitHub Actions"]
-        GHA[20 workflows<br/>backups · audits · deploy]
-        DEPLOYW[deploy-platform-staging<br/>+ promote-platform-prod]
+    subgraph CICD["GitHub Actions (thinned — many moved to CR)"]
+        GHA[heavier integration suites<br/>+ break-glass fallbacks]
     end
 
     SCH --> FETCH
     SCH --> COMPUTE
     SCH --> BACKTEST
+    SCH --> RESEARCH
+    SCH --> AUDIT
     AV --> FMD & FEH & FNS & FAVI & FPR & FII & FTM
     FRED --> FFR & FECON
     EDGAR --> FSEC
@@ -331,21 +393,26 @@ flowchart LR
     DI -->|trigger Job| ONDEMAND
     DI -->|trigger Job| BT
 
+    RESEARCH --> SQL
+    MAGI --> TP
+    AUDIT --> SQL
     FETCH --logs--> SINK
     COMPUTE --logs--> SINK
     BACKTEST --logs--> SINK
+    RESEARCH --logs--> SINK
+    AUDIT --logs--> SINK
     ONDEMAND --logs--> SINK
     SINK --> PST
     PST --> FN
     FN -->|create issue| GHA
-    DEPLOYW -->|Cloud Build + deploy| TP
+    TPS --> SQL
 
     classDef code fill:#dde,stroke:#557,stroke-width:1px;
     classDef gcp fill:#fec,stroke:#a83,stroke-width:1px;
     classDef ext fill:#efe,stroke:#383,stroke-width:1px;
     classDef new fill:#dfe,stroke:#383,stroke-width:2px;
-    class FMD,FEH,FEC,FECON,FFR,FSEC,FNS,FAVI,FPR,FII,FTM,PMB,IP,IDP,SM,WR,CER,EWS,SQR,SQA,BFT,VB,AR,ASM,LSIG,LIND,LSTRAT,LGAM,LER,LBT,LIN,TP,DI,FN,DEPLOYW,HSW,CAL code
-    class ERB,SMER,PPR,BT,BTP,PSW,ESW,SREP,SQLE,LSTRATS new
+    class FMD,FEH,FEC,FECON,FFR,FSEC,FNS,FAVI,FPR,FII,FTM,PMB,IP,IDP,SM,WR,CER,EWS,SQR,SQA,BFT,VB,AR,ASM,LSIG,LIND,LSTRAT,LGAM,LER,LBT,LIN,TP,DI,FN,HSW,CAL code
+    class ERB,SMER,PPR,BT,BTP,PSW,ESW,SREP,SQLE,LSTRATS,STE,STEN,MAGI,DPRB,MVB,DBQ,FW,AID,AWF,ABB,TPS new
     class SQL,GCS,SECRETS,CT,PST,SINK,SCH gcp
     class AV,FRED,EDGAR,EW,FF,DISCORD,GHA ext
 ```
@@ -353,6 +420,15 @@ flowchart LR
 ## Reconciliation flags
 
 ### Inventory resources with no clear repo reference (possibly orphaned — review)
+
+> **2026-06-23 re-audit deltas** (appended; older 2026-05-02 findings retained below for history):
+>
+> - **`p7b-classifier` / `p7b-next-candle-classifier` Job** — **RETIRED.** Deprecated 2026-05-25 (`deploy_p7b_classifier_DEPRECATED()` in `gcp/deploy.sh`; the `p7b-classifier-daily` scheduler line is commented out). Superseded by the **`strat-engine`** directionality engine. `./gcp/deploy.sh p7b-classifier` now errors with a redirect to `strat-engine`.
+> - **`fetch-earnings-options` Job** — the broken job from §3 below (missing module) was removed; the working earnings-options backfill is `fetch-av-earnings-options-backfill`.
+> - **`gcp/fetchers/fetch_rss_news.py`** — **STILL UNDEPLOYED** as of 2026-06-23 (no `deploy.sh` block, no scheduler). Status unchanged from the 2026-05-08 finding (§12 below); confirm intended status.
+> - **Per-user watchlist gap** — `journal_entries` is fully per-user (#626); the watchlist *endpoints* thread `_watchlist_owner` (#635), but the insight-*generation* pipeline (`insight_reports`) is still shared, so a user's ranked candidates are personalised while the generated reports are global. Documented follow-up.
+> - **Firebase prod flip pending** — `AUTH_MODE=firebase` runs only on `trading-platform-staging`; production is still `iap` until GCIP `authorizedDomains` includes the prod domain (per `docs/PLATFORM_AUDIT_2026-06-19.md`).
+> - **`gamma-levels-daily` scheduler → job-name drift** — the scheduler targets a job named `p2-build-gamma-levels`, but the deployable function in `gcp/deploy.sh` builds `build-options-greeks`. Verify the live job name matches the scheduler target (`gcloud run jobs list`); reconcile whichever is stale.
 
 > **Verified 2026-05-02** via `gcloud run services describe` / `jobs describe` and `gcloud scheduler jobs list`. Findings annotated below.
 
@@ -373,12 +449,22 @@ flowchart LR
 
 ### Resources the code references that are NOT in the inventory
 
-1. **Cloud Scheduler jobs** — [`gcp/deploy.sh`](gcp/deploy.sh) creates scheduler entries that are not surfaced by the default Cloud Asset Inventory dump. **Re-verified 2026-05-08 against `gcp/deploy.sh`: ~50 scheduler jobs total** (22 distinct named schedulers + 4 sec-filings hourly + 10 news-sentiment hourly + 10 news-topics hourly + 2 ORB + 2 brief variants). The 49 figure from 2026-05-02 + `historical-signals-watchlist-daily` (added in PR #280's wake) and `calibrate-thresholds-quarterly` accounts for the +1. Full listing in [`gcp_schedulers.json`](gcp_schedulers.json) (gitignored). The 50 vs the previously-estimated "28+" reflects the hourly `news-sentiment-{0800..1700}` and `news-topics-{0805..1705}` loops being expanded as 10 entries each rather than counted as one cron expression.
+1. **Cloud Scheduler jobs** — [`gcp/deploy.sh`](gcp/deploy.sh) creates scheduler entries that are not surfaced by the default Cloud Asset Inventory dump. **Re-verified 2026-06-23 against `gcp/deploy.sh`: ~77 scheduler crons total** — 57 explicit `_schedule*` calls inside `deploy_schedulers()` (minus the commented-out `p7b-classifier-daily`), plus the two hourly loops expanded as 10 entries each (`news-sentiment-{0800..1700}` and `news-topics-{0805..1705}`). The growth from the prior ~50 reflects the new research/ML and materialized-view schedulers (`strat-engine-daily`, `strat-enrich-daily`, `magnitude-inference-daily`, `options-daily-features`, `gamma-levels-daily`, `realtime-gex-daily`, `av-options-realtime`, `options-retention-daily`, `refresh-earnings-views-*`, `freshness-watchdog-*`, the three `audit-*`).
 2. **Vertex AI / Anthropic API endpoints** — `lib/insights.py` and the agents pipeline call out to either Vertex Gemini or Anthropic Claude (model routing config in `model_routing` table). These are external endpoints with no GCP resource representation; flagged so you know the dependency exists.
 3. **`google-apps-script/`** — directory exists in repo with sheet automation scripts, but Google Apps Script projects are not GCP resources; they live under script.google.com. Mentioned because [`CLAUDE.md`](CLAUDE.md) calls them out as part of the system.
 4. ~~`benzinga-api-key` secret~~ — **resolved.** Used by [`platform/api/routers/catalysts.py:79`](platform/api/routers/catalysts.py) and [`scripts/fetch_catalyst_calendar.py:112`](scripts/fetch_catalyst_calendar.py). Active.
 
 ## Open questions
+
+**2026-06-23 additions:**
+
+- **A. Prod Firebase cutover.** When does production flip from `AUTH_MODE=iap` to `firebase`? Blocked on GCIP `authorizedDomains` + prod env flip. Until then the IAP and Firebase paths are both maintained.
+- **B. Per-user insight generation.** Should the insight *pipeline* become per-user (currently only the watchlist ranker is), or is the shared `insight_reports` model intentional? Affects whether a private journal can ever leak into another user's report context.
+- **C. `gamma-levels-daily` job-name drift** (Reconciliation re-audit) — confirm the live job name and reconcile `deploy.sh`.
+- **D. Magnitude engine status.** The magnitude research verdict was FAIL on gate-7, yet `magnitude-inference` ships live predictions to `/api/magnitude/predictions`. Confirm the inference output is labelled "research / not a trade signal" wherever it surfaces.
+- **E. `fetch_rss_news.py`** still undeployed (Reconciliation §12) — ship or remove.
+
+---
 
 1. ~~`fetch-av-options-backfill` and `fetch-earnings-options` Jobs~~ — **resolved.** Backfill is real (maps to `fetch_av_historical_options.py`); earnings-options is broken (missing module).
 2. ~~Cloud Scheduler completeness~~ — **resolved.** 49 schedulers verified, all enabled.
