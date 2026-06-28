@@ -2235,7 +2235,7 @@ deploy_fetchers() {
 # pattern (which only covered 2 of ~30 tables) with a full pg_dump that
 # captures every table on every run.
 #
-# Runs as a Cloud Run Job invoked by Cloud Scheduler weekly (Sunday 04:00 UTC,
+# Runs as a Cloud Run Job invoked by Cloud Scheduler weekly (Sunday 04:00 ET,
 # wired in deploy_schedulers). Calls the Cloud SQL Admin API to trigger an
 # offload-mode SQL export — Cloud SQL itself writes the gzipped dump to GCS,
 # the calling SA only triggers + polls the operation. Combined with PITR
@@ -2263,10 +2263,14 @@ deploy_weekly_pg_dump() {
     non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
     non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
 
+    # task-timeout 10800 (3h): DB is 152 GB as of 2026-06-28; export takes ~90 min under
+    # serverless offload. 3h = 4× the 90-min wall-clock estimate per Rule 0 sizing.
+    # POLL_MAX_SECS in sql_export_to_gcs.py is 7200 (2h) so code always raises cleanly
+    # before Cloud Run kills the task.
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        --task-timeout 10800
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"
