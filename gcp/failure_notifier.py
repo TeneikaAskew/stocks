@@ -21,7 +21,9 @@ import base64
 import json
 import logging
 import os
+import random
 import sys
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -291,6 +293,11 @@ def create_or_update_github_issue(
     label_match = ["gcp-job-failure", job_name]
     body = format_issue_body(details)
 
+    # Jitter: spread concurrent handlers across a 0-2s window so that the
+    # second (and later) instances are more likely to find the issue already
+    # created by the first when they call find_existing_issue below.
+    time.sleep(random.uniform(0, 2))
+
     existing = find_existing_issue(repo, label_match, token)
     if existing:
         add_issue_comment(repo, existing, f"### Additional failure\n\n{body}", token)
@@ -301,6 +308,10 @@ def create_or_update_github_issue(
     number = create_issue(repo, title, body, labels, token)
 
     # Race-condition dedupe: re-query and detect peers created in parallel.
+    # Sleep 5s before re-querying so GitHub has time to index all concurrent
+    # creates — without this delay the list endpoint can return only this
+    # instance's own issue, making each instance believe it is the canonical.
+    time.sleep(5)
     open_matches = find_all_open_issues(repo, label_match, token)
     open_numbers = sorted(int(i["number"]) for i in open_matches)
     if len(open_numbers) > 1:

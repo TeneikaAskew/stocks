@@ -156,6 +156,78 @@ def test_create_or_update_creates_new_issue_when_none_exists(mock_get, mock_post
     assert "signal-monitor" in body["labels"]
 
 
+@patch("gcp.failure_notifier.time.sleep")
+@patch("gcp.failure_notifier.random.uniform", return_value=0.0)
+@patch("gcp.failure_notifier.requests.post")
+@patch("gcp.failure_notifier.requests.get")
+def test_create_or_update_closes_race_duplicates(mock_get, mock_post, _mock_uniform, mock_sleep):
+    """After creating an issue, if re-query finds duplicates the non-canonical
+    ones should be closed and their content routed to the canonical issue."""
+    # First GET (find_existing): no existing issue
+    # Second GET (find_all): two issues already open — #10 (ours) + #9 (peer)
+    # Third POST (close_issue comment on #10)
+    # Fourth PATCH (close #10)
+    # Fifth POST (add content from #10 to canonical #9)
+    first_get = MagicMock(status_code=200, json=lambda: [], raise_for_status=MagicMock())
+    second_get = MagicMock(
+        status_code=200,
+        json=lambda: [{"number": 10}, {"number": 9}],
+        raise_for_status=MagicMock(),
+    )
+    mock_get.side_effect = [first_get, second_get]
+
+    create_resp = MagicMock(status_code=201, json=lambda: {"number": 10}, raise_for_status=MagicMock())
+    comment_resp = MagicMock(status_code=201, json=lambda: {}, raise_for_status=MagicMock())
+    close_patch = MagicMock(status_code=200, json=lambda: {}, raise_for_status=MagicMock())
+    mock_post.side_effect = [create_resp, comment_resp, comment_resp]
+
+    with patch("gcp.failure_notifier.requests.patch", return_value=close_patch):
+        details = {
+            "job_name": "fetch-market-data",
+            "execution_name": "fmd-race-xyz",
+            "severity": "ERROR",
+            "timestamp": "2026-06-25T00:00:00Z",
+            "message": "crash",
+            "log_url": "https://example.test/logs",
+            "project_id": "p",
+            "location": "us-east1",
+        }
+        number, created = fn.create_or_update_github_issue("owner/repo", "ghp_test", details)
+
+    # Non-canonical #10 should be closed; canonical #9 returned
+    assert number == 9
+    assert created is False
+    # The 5-second dedup sleep must have been called
+    assert any(call.args == (5,) for call in mock_sleep.call_args_list)
+
+
+@patch("gcp.failure_notifier.time.sleep")
+@patch("gcp.failure_notifier.random.uniform", return_value=0.0)
+@patch("gcp.failure_notifier.requests.post")
+@patch("gcp.failure_notifier.requests.get")
+def test_jitter_sleep_called_before_initial_check(mock_get, mock_post, mock_uniform, mock_sleep):
+    """random.uniform jitter sleep must fire before find_existing_issue."""
+    mock_get.return_value = MagicMock(status_code=200, json=lambda: [{"number": 5}], raise_for_status=MagicMock())
+    mock_post.return_value = MagicMock(status_code=201, json=lambda: {}, raise_for_status=MagicMock())
+
+    details = {
+        "job_name": "some-job",
+        "execution_name": "sj-001",
+        "severity": "ERROR",
+        "timestamp": "2026-06-25T00:00:00Z",
+        "message": "err",
+        "log_url": "https://example.test/logs",
+        "project_id": "p",
+        "location": "us-east1",
+    }
+    fn.create_or_update_github_issue("owner/repo", "ghp_test", details)
+
+    # random.uniform(0, 2) was called to produce the jitter value
+    mock_uniform.assert_called_once_with(0, 2)
+    # time.sleep was called with the jitter value (0.0 in this test)
+    assert mock_sleep.call_args_list[0].args == (0.0,)
+
+
 # ── End-to-end handler ───────────────────────────────────────────────────────
 def test_handle_notification_skips_self_loop(monkeypatch):
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.test/webhook")
