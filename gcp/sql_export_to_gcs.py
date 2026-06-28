@@ -49,7 +49,12 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+# Poll cap is set 10 min below the Cloud Run task-timeout (10800s) so the
+# job exits with a clean TimeoutError before Cloud Run kills the task and
+# the failure_notifier sees a bare "Terminating task" message. The 2026-06-28
+# outage showed POLL_MAX_SECS == task-timeout = 3600 caused Cloud Run to
+# terminate the task before the Python code could detect the timeout.
+POLL_MAX_SECS = 10200  # 2h50m (task-timeout is 3h = 10800s)
 
 
 def _get_token() -> str:

@@ -2255,6 +2255,13 @@ deploy_fetchers() {
 #    itself writes the file, NOT the calling SA.
 deploy_weekly_pg_dump() {
     echo "Deploying cloud-sql-weekly-export job..."
+    # Capacity (CLAUDE.md Rule 0.2): Cloud Run polls the Cloud SQL Admin API
+    # every 15s while the DB export runs in GCS via serverless offload.
+    # The 2026-06-28 run exceeded 3600s (1h) still in progress.  Best
+    # wall-clock estimate: 60-120 min for the full trading DB (~30 tables).
+    # task-timeout = 10800s (3h) ≥ 4× 45-min median estimate.
+    # POLL_MAX_SECS in sql_export_to_gcs.py = 10200s (10 min below timeout)
+    # so the Python code raises TimeoutError before Cloud Run kills the task.
 
     local non_secret_env
     non_secret_env="GCP_PROJECT=${PROJECT_ID}"
@@ -2266,7 +2273,7 @@ deploy_weekly_pg_dump() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        --task-timeout 10800
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"
