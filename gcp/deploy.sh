@@ -2263,14 +2263,14 @@ deploy_weekly_pg_dump() {
     non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
     non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
 
-    # task-timeout 10800 (3h): DB is 152 GB as of 2026-06-28; export takes ~90 min under
-    # serverless offload. 3h = 4× the 90-min wall-clock estimate per Rule 0 sizing.
-    # POLL_MAX_SECS in sql_export_to_gcs.py is 7200 (2h) so code always raises cleanly
-    # before Cloud Run kills the task.
+    # task-timeout 21600 (6h): DB is 152 GB as of 2026-06-28; export takes ~90 min under
+    # serverless offload. 6h = 4× the 90-min wall-clock estimate per Rule 0 sizing.
+    # POLL_MAX_SECS in sql_export_to_gcs.py is 18000 (5h) so code raises TimeoutError
+    # cleanly 1h before Cloud Run kills the task.
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 10800
+        --task-timeout 21600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"

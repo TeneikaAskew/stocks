@@ -49,10 +49,11 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-# DB has grown to 152 GB (2026-06-28); export now takes ~90 min under serverless offload.
-# 7200s gives ~2h of polling headroom before raising TimeoutError cleanly.
-# Cloud Run task-timeout is 10800s (3h), so the code always exits before Cloud Run kills it.
-POLL_MAX_SECS = 7200
+# DB is 152 GB (2026-06-28); export takes ~90 min under serverless offload.
+# Cloud Run task-timeout is 21600s (6h = 4× 90-min estimate, per Rule 0).
+# POLL_MAX_SECS = 18000 (5h) lets the code raise TimeoutError cleanly 1h before
+# Cloud Run kills the task — poll cap is never the bottleneck unless export truly stalls.
+POLL_MAX_SECS = 18000
 
 
 def _get_token() -> str:
