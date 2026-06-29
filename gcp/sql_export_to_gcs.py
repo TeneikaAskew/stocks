@@ -49,7 +49,11 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+# Poll cap is 10 min below the Cloud Run task-timeout (10800s/3h) so the
+# Python process raises a clean TimeoutError before Cloud Run kills the task.
+# Root cause of 2026-06-28 outage: POLL_MAX_SECS == task-timeout caused Cloud
+# Run to SIGKILL the container mid-poll, which swallowed the error context.
+POLL_MAX_SECS = 10200  # 2h50m (task-timeout is 3h = 10800s)
 
 
 def _get_token() -> str:
