@@ -49,7 +49,7 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 14400  # 4h cap; 14+ GB exports now take ~70 min and growing
+POLL_MAX_SECS = 21600  # match task-timeout (6 h); offload exports run in Cloud SQL
 
 
 def _get_token() -> str:
