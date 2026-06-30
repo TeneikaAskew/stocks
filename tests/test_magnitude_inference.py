@@ -69,6 +69,28 @@ def _restore_stubbed_modules():
     _STUBBED_BY_THIS_MODULE.clear()
 
 
+# ──────────────────── _lookback_has_nyse_session ────────────────────
+
+def test_lookback_has_nyse_session_false_on_weekend():
+    """Monday-morning lookback covering only Sunday returns False."""
+    from datetime import datetime, timezone
+    from gcp.research.magnitude_engine.mag_inference import _lookback_has_nyse_session
+    # June 29, 2026 = Monday; June 28 = Sunday
+    now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)    # Mon 09:25 ET
+    cutoff = datetime(2026, 6, 28, 13, 25, tzinfo=timezone.utc)  # Sun 09:25 ET
+    assert _lookback_has_nyse_session(cutoff, now) is False
+
+
+def test_lookback_has_nyse_session_true_on_trading_day():
+    """Lookback window that spans a NYSE close returns True."""
+    from datetime import datetime, timezone
+    from gcp.research.magnitude_engine.mag_inference import _lookback_has_nyse_session
+    # June 24, 2026 = Wednesday; June 23 = Tuesday (NYSE open both days)
+    now = datetime(2026, 6, 24, 13, 25, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 6, 23, 13, 25, tzinfo=timezone.utc)
+    assert _lookback_has_nyse_session(cutoff, now) is True
+
+
 # ──────────────────── _parse_cells ────────────────────
 
 def test_parse_cells_default_when_empty():

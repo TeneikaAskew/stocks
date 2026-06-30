@@ -177,6 +177,27 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     return model, feature_cols, version
 
 
+def _lookback_has_nyse_session(cutoff: datetime, now: datetime) -> bool:
+    """Return True if any NYSE RTH session closed between cutoff and now.
+
+    Fails open (returns True) if pandas_market_calendars is unavailable —
+    preserving the existing fail-loud behavior rather than silently skipping.
+    """
+    try:
+        import pandas_market_calendars as mcal
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(
+            start_date=cutoff.date().isoformat(),
+            end_date=now.date().isoformat(),
+        )
+        if schedule.empty:
+            return False
+        closes = pd.to_datetime(schedule["market_close"].values, utc=True)
+        return bool(((closes >= cutoff) & (closes <= now)).any())
+    except Exception:
+        return True  # fail safe: assume bars expected if calendar unavailable
+
+
 def _load_recent_features(ticker: str, tf: str,
                            lookback_hours: int = INFERENCE_LOOKBACK_HOURS
                            ) -> pd.DataFrame:
@@ -435,6 +456,15 @@ def main() -> int:
     # silent-fallback class that F11 surfaced for historical-signals-
     # watchlist (qjllq 2026-06-02): "exit 0 while writing nothing".
     if total_written == 0:
+        if not failures:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=args.lookback_hours)
+            if not _lookback_has_nyse_session(cutoff, datetime.now(timezone.utc)):
+                log.info(
+                    "ZERO-OUTPUT but no NYSE session closed in lookback window "
+                    "(%s to now) — expected post-weekend/holiday run. Exiting 0.",
+                    cutoff.isoformat()[:16],
+                )
+                return 0
         log.error("ZERO-OUTPUT — no predictions written across any cell; "
                   "treating as failure (data outage or universal NaN filter)")
         return 1

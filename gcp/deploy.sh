@@ -2266,7 +2266,7 @@ deploy_weekly_pg_dump() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        --task-timeout 21600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"

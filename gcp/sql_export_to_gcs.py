@@ -49,7 +49,7 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+POLL_MAX_SECS = 14400  # 4h cap; 14+ GB exports now take ~70 min and growing
 
 
 def _get_token() -> str:
