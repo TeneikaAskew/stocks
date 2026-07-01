@@ -78,6 +78,46 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 INFERENCE_LOOKBACK_HOURS = 24
 
 
+def _lookback_cutoff(now: datetime, hours: int = INFERENCE_LOOKBACK_HOURS) -> datetime:
+    """NYSE-calendar-aware cutoff for pulling the prior session's bars.
+
+    A fixed `hours`-hour lookback from `now` misses the prior session
+    whenever a weekend or NYSE holiday sits between it and `now`: the
+    Monday 09:25 ET run looks back only to Sunday, which never has
+    Friday's session in it, so every Monday found zero bars in
+    strat_features_5m and exited 1 (observed 2026-06-22 and 2026-06-29
+    executions h7h6g / dmvxr — Friday's session is never re-picked-up
+    by any later run either, since Tuesday's 24h window only reaches
+    back to Monday). Anchor the cutoff to the open of the most recent
+    NYSE session strictly before `now`, with `hours` of buffer ahead of
+    that so the window fully contains the whole session regardless of
+    how many calendar days the preceding gap spans (weekend, one-day
+    holiday, or a holiday-adjacent long weekend all resolve the same
+    way — pandas_market_calendars, already a pinned dependency per
+    requirements.txt/requirements-gcp.txt, encodes the actual NYSE
+    holiday schedule so this isn't a second magic-number guess).
+    """
+    try:
+        import pandas_market_calendars as mcal
+    except ImportError:
+        # Fallback: caller environment doesn't have the calendar lib.
+        # Same fixed-window behavior as before — matches the documented
+        # fallback in lib/strat_levels.py._trading_days_between.
+        return now - timedelta(hours=hours)
+    nyse = mcal.get_calendar("NYSE")
+    start_date = (now - timedelta(days=10)).strftime("%Y-%m-%d")
+    end_date = now.strftime("%Y-%m-%d")
+    try:
+        sched = nyse.schedule(start_date=start_date, end_date=end_date)
+    except Exception:
+        return now - timedelta(hours=hours)
+    sched = sched[sched["market_open"] < now]
+    if sched.empty:
+        return now - timedelta(hours=hours)
+    last_open = sched.iloc[-1]["market_open"].to_pydatetime()
+    return last_open - timedelta(hours=hours)
+
+
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
     """'IWM:5m,SPY:5m' -> [('IWM','5m'), ('SPY','5m')].
 
@@ -207,7 +247,7 @@ def _load_recent_features(ticker: str, tf: str,
         load_strat_features_with_levels, add_session_aware_lags,
     )
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    cutoff = _lookback_cutoff(datetime.now(timezone.utc), lookback_hours)
     df = load_strat_features_with_levels(
         get_engine(), ticker, tf,
         since_ts=cutoff.isoformat(), include_levels=True, order_by="s.ts ASC",

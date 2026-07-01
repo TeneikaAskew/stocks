@@ -2263,10 +2263,16 @@ deploy_weekly_pg_dump() {
     non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
     non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
 
+    # 152 GB `trading` DB (2026-06-28 measurement) and growing. Last
+    # successful export took 46m; two 2026-06-28 attempts were both
+    # killed at ~60 min (see GH #657). 21600s (6h) is >4x a conservative
+    # 90-min wall-clock estimate; gcp/sql_export_to_gcs.py POLL_MAX_SECS
+    # is set to 21000s so the Python process exits cleanly with 600s of
+    # headroom before this hits.
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        --task-timeout 21600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"

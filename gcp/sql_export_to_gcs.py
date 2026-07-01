@@ -49,7 +49,18 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+# The `trading` DB is 152 GB (2026-06-28 measurement) and growing. The last
+# successful export (2026-06-21) took 46m; the next two attempts
+# (2026-06-28) were both killed at ~60 min — once by Cloud Run's
+# --task-timeout (then 3600s) and, after that was bumped, again by this
+# same POLL_MAX_SECS ceiling, which had drifted out of sync with the
+# Cloud Run timeout (see GH #657). POLL_MAX_SECS must always stay below
+# the deployed --task-timeout (gcp/deploy.sh deploy_weekly_pg_dump) with
+# enough headroom for a clean exit; 21000s (350 min) leaves 600s under
+# the job's 21600s (6h) --task-timeout, itself sized at >4x the true
+# wall-clock estimate per CLAUDE.md Rule 0.5 (Cloud Run only bills actual
+# runtime, so the headroom is free).
+POLL_MAX_SECS = 21000
 
 
 def _get_token() -> str:

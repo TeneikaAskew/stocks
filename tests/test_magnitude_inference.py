@@ -13,6 +13,7 @@ Tests use the same import-stub pattern as Phase A.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -306,6 +307,68 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
         rc = mod.main()
     # 2/3 cells failed -> >50% threshold -> exit 1
     assert rc == 1
+
+
+# ──────────────────── _lookback_cutoff (weekend/holiday gap) ────────────────
+#
+# Regression guard for executions h7h6g (2026-06-22, Monday) and dmvxr
+# (2026-06-29, Monday): a fixed 24h lookback from a Monday 09:25 ET run
+# only reaches back to Sunday, never Friday's session, so every Monday
+# found zero bars and exited 1 (and Friday's session was never scored
+# by any later run either — Tuesday's 24h window only reaches Monday).
+
+def test_lookback_cutoff_monday_reaches_back_to_friday():
+    """Monday 13:25 UTC run (before the 13:30 UTC open) must anchor to
+    Friday's open, not Sunday — a plain 24h subtraction lands on Sunday
+    and misses Friday's whole session."""
+    from gcp.research.magnitude_engine.mag_inference import _lookback_cutoff
+
+    monday_run = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)
+    cutoff = _lookback_cutoff(monday_run, hours=24)
+
+    # Friday 2026-06-26's session ran 13:30-20:00 UTC. The cutoff must be
+    # at or before Friday's open so every Friday bar is "since cutoff".
+    friday_open = datetime(2026, 6, 26, 13, 30, tzinfo=timezone.utc)
+    assert cutoff <= friday_open
+    # And it shouldn't reach back absurdly far (sanity bound: within the
+    # same week, not e.g. two weeks prior).
+    assert cutoff >= datetime(2026, 6, 22, tzinfo=timezone.utc)
+
+
+def test_lookback_cutoff_tuesday_reaches_back_to_monday_not_further():
+    """A normal weekday-to-weekday run behaves like the old fixed
+    24h window: reaches back to the immediately preceding session."""
+    from gcp.research.magnitude_engine.mag_inference import _lookback_cutoff
+
+    tuesday_run = datetime(2026, 6, 30, 13, 25, tzinfo=timezone.utc)
+    cutoff = _lookback_cutoff(tuesday_run, hours=24)
+
+    monday_open = datetime(2026, 6, 29, 13, 30, tzinfo=timezone.utc)
+    assert cutoff <= monday_open
+    # Doesn't reach all the way back to Friday — no gap to bridge here.
+    friday_open = datetime(2026, 6, 26, 13, 30, tzinfo=timezone.utc)
+    assert cutoff > friday_open
+
+
+def test_lookback_cutoff_falls_back_without_market_calendar_lib(monkeypatch):
+    """If pandas_market_calendars isn't installed, fall back to the
+    original fixed-hours subtraction (same behavior as before this fix,
+    matching lib/strat_levels.py._trading_days_between's fallback)."""
+    import builtins
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "pandas_market_calendars":
+            raise ImportError("simulated missing dependency")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+
+    now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)
+    cutoff = mod._lookback_cutoff(now, hours=24)
+    assert cutoff == now - pd.Timedelta(hours=24)
 
 
 def test_load_recent_features_joins_levels_table(monkeypatch):
