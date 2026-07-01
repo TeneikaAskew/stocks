@@ -317,37 +317,46 @@ def test_main_exits_1_when_majority_cells_fail(monkeypatch):
 # found zero bars and exited 1 (and Friday's session was never scored
 # by any later run either — Tuesday's 24h window only reaches Monday).
 
-def test_lookback_cutoff_monday_reaches_back_to_friday():
+def test_lookback_cutoff_monday_reaches_back_to_friday_only():
     """Monday 13:25 UTC run (before the 13:30 UTC open) must anchor to
     Friday's open, not Sunday — a plain 24h subtraction lands on Sunday
-    and misses Friday's whole session."""
+    and misses Friday's whole session. It must also NOT reach past
+    Friday into Thursday (Codex review on PR #662: subtracting a
+    further `hours` here would re-scan Thursday's already-scored bars
+    with today's model_version, an as-of-leakage risk for point-in-time
+    consumers keyed on ts + computed_at DESC)."""
     from gcp.research.magnitude_engine.mag_inference import _lookback_cutoff
 
     monday_run = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)
     cutoff = _lookback_cutoff(monday_run, hours=24)
 
     # Friday 2026-06-26's session ran 13:30-20:00 UTC. The cutoff must be
-    # at or before Friday's open so every Friday bar is "since cutoff".
+    # at or before Friday's open so every Friday bar is "since cutoff"...
     friday_open = datetime(2026, 6, 26, 13, 30, tzinfo=timezone.utc)
     assert cutoff <= friday_open
-    # And it shouldn't reach back absurdly far (sanity bound: within the
-    # same week, not e.g. two weeks prior).
-    assert cutoff >= datetime(2026, 6, 22, tzinfo=timezone.utc)
+    # ...but not by more than a few minutes — must not reach into
+    # Thursday's already-scored session.
+    thursday_close = datetime(2026, 6, 25, 20, 0, tzinfo=timezone.utc)
+    assert cutoff > thursday_close
 
 
-def test_lookback_cutoff_tuesday_reaches_back_to_monday_not_further():
-    """A normal weekday-to-weekday run behaves like the old fixed
-    24h window: reaches back to the immediately preceding session."""
+def test_lookback_cutoff_wednesday_reaches_back_to_tuesday_only():
+    """A normal weekday-to-weekday run must anchor to the immediately
+    preceding session's open, NOT an additional `hours` before that.
+    Regression guard for the Codex review on PR #662: the original
+    `last_open - timedelta(hours=hours)` reached back an extra full
+    session on every ordinary day (Wed 09:25 ET -> Mon 09:30 ET),
+    re-scoring Monday's bars under Wednesday's model_version."""
     from gcp.research.magnitude_engine.mag_inference import _lookback_cutoff
 
-    tuesday_run = datetime(2026, 6, 30, 13, 25, tzinfo=timezone.utc)
-    cutoff = _lookback_cutoff(tuesday_run, hours=24)
+    wednesday_run = datetime(2026, 7, 1, 13, 25, tzinfo=timezone.utc)
+    cutoff = _lookback_cutoff(wednesday_run, hours=24)
 
+    tuesday_open = datetime(2026, 6, 30, 13, 30, tzinfo=timezone.utc)
+    assert cutoff <= tuesday_open
+    # Must NOT reach back to Monday's session at all.
     monday_open = datetime(2026, 6, 29, 13, 30, tzinfo=timezone.utc)
-    assert cutoff <= monday_open
-    # Doesn't reach all the way back to Friday — no gap to bridge here.
-    friday_open = datetime(2026, 6, 26, 13, 30, tzinfo=timezone.utc)
-    assert cutoff > friday_open
+    assert cutoff > monday_open
 
 
 def test_lookback_cutoff_falls_back_without_market_calendar_lib(monkeypatch):

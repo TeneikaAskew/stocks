@@ -89,13 +89,24 @@ def _lookback_cutoff(now: datetime, hours: int = INFERENCE_LOOKBACK_HOURS) -> da
     executions h7h6g / dmvxr — Friday's session is never re-picked-up
     by any later run either, since Tuesday's 24h window only reaches
     back to Monday). Anchor the cutoff to the open of the most recent
-    NYSE session strictly before `now`, with `hours` of buffer ahead of
-    that so the window fully contains the whole session regardless of
-    how many calendar days the preceding gap spans (weekend, one-day
-    holiday, or a holiday-adjacent long weekend all resolve the same
-    way — pandas_market_calendars, already a pinned dependency per
-    requirements.txt/requirements-gcp.txt, encodes the actual NYSE
-    holiday schedule so this isn't a second magic-number guess).
+    NYSE session strictly before `now` (pandas_market_calendars, already
+    a pinned dependency per requirements.txt/requirements-gcp.txt,
+    encodes the actual NYSE holiday schedule so weekends, one-day
+    holidays, and holiday-adjacent long weekends all resolve the same
+    way — no second magic-number guess needed).
+
+    Returns that session's open directly (minus a tiny buffer so the
+    boundary bar isn't dropped by rounding) — NOT `hours` earlier than
+    that. Subtracting a further `hours` here (Codex review on PR #662)
+    would reach back an EXTRA full session on every normal weekday too
+    (e.g. a Wednesday 09:25 ET run would anchor to Tuesday's open, then
+    subtract another 24h and land on Monday's open), re-scoring Monday's
+    bars with whatever model_version is live on Wednesday. Point-in-time
+    consumers bound by `ts <= :as_of` and `computed_at DESC`
+    (lib/movement_statement.py:373-375) would then attach a model that
+    wasn't actually live yet to Monday's bar — the exact as-of-leakage
+    class of bug CLAUDE.md's replay-integrity discipline exists to
+    prevent, just introduced here instead of fixed.
     """
     try:
         import pandas_market_calendars as mcal
@@ -115,7 +126,7 @@ def _lookback_cutoff(now: datetime, hours: int = INFERENCE_LOOKBACK_HOURS) -> da
     if sched.empty:
         return now - timedelta(hours=hours)
     last_open = sched.iloc[-1]["market_open"].to_pydatetime()
-    return last_open - timedelta(hours=hours)
+    return last_open - timedelta(minutes=5)
 
 
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
