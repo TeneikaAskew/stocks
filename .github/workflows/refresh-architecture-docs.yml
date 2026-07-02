@@ -291,10 +291,18 @@ jobs:
           echo "meaningful=$MEANINGFUL" >> "$GITHUB_OUTPUT"
 
       # ── Open PR if meaningful ─────────────────────────────────────────────
+      # secrets.GITHUB_TOKEN cannot create pull requests unless the repo's
+      # Settings → Actions → General → "Allow GitHub Actions to create and
+      # approve pull requests" is enabled (it isn't, as of 2026-07 — see the
+      # 2026-07-01 run: "GraphQL: GitHub Actions is not permitted to create
+      # or approve pull requests"). PR_WORKFLOW_TOKEN is the same repo-scoped
+      # PAT handle-workflow-failure.yml already relies on for this exact
+      # reason. Falls back to GITHUB_TOKEN if the secret isn't set, matching
+      # today's (broken) behavior rather than failing a different way.
       - name: Open refresh PR
         if: steps.detect.outputs.meaningful == '1' && inputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           MONTH=$(date -u +%Y-%m)
           BRANCH="${PR_BRANCH_PREFIX}-${MONTH}"
@@ -349,3 +357,30 @@ jobs:
         if: steps.detect.outputs.meaningful != '1'
         run: |
           echo "::notice::No meaningful doc changes this run — exiting clean without opening a PR."
+
+  # Every workflow must wire this up per CLAUDE.md "Automated Workflow
+  # Failure Handling" — this one never had it, so the 2026-07-01 PR-creation
+  # failure went untracked (no gcp-job-failure/workflow-failure issue opened).
+  handle-failure:
+    needs: refresh
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read  # Required to read workflow run details and logs
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Monthly architecture doc refresh"
+      failure_title: "❌ Monthly architecture doc refresh failed"
+      issue_labels: "workflow-failure,architecture-docs,automated"
+      workflow_file: "refresh-architecture-docs.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false  # This workflow already opens its own PR path; avoid a second competing PR flow on failure.
