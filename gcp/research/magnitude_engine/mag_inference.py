@@ -75,6 +75,20 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 # most recent settled bars are from yesterday's close. Pull the last
 # 24h of bars and score every one that doesn't already have a
 # prediction at the same (ticker, tf, ts, model_version).
+#
+# This window is anchored to the LAST AVAILABLE BAR in strat_features_<tf>
+# (see _last_settled_ts), not to wall-clock now(). A fixed now()-24h anchor
+# broke every Monday: Friday's RTH session ends ~13:30 ET / 19:55 UTC, and
+# Monday's 09:25 ET run is ~65h later — 2.7x the 24h window — so
+# now()-24h landed on Sunday and captured zero bars for all three cells,
+# hard-failing as ZERO-OUTPUT (magnitude-inference-dmvxr 2026-06-29,
+# magnitude-inference-h7h6g 2026-06-22). Anchoring to the last settled bar
+# instead means the window always starts from the most recent trading
+# session regardless of how many calendar days a weekend/holiday spans, and
+# it silently closed a second bug: with the old anchor, Friday's session
+# was NEVER scored by any run (Monday's window missed it; Friday's own
+# pre-market run only reaches Thursday) — a permanent weekly gap in
+# magnitude_per_bar_predictions, not just a noisy failure email.
 INFERENCE_LOOKBACK_HOURS = 24
 
 
@@ -177,6 +191,31 @@ def _load_model_and_version(ticker: str, tf: str) -> tuple[object, list[str], st
     return model, feature_cols, version
 
 
+def _last_settled_ts(engine, ticker: str, tf: str) -> Optional[pd.Timestamp]:
+    """Timestamp of the most recent bar in strat_features_<tf> for ticker.
+
+    Anchors the inference lookback window to the DATA rather than
+    wall-clock time, so a weekend/holiday gap between the last settled
+    session and "now" (up to ~65h Fri->Mon) doesn't shrink the effective
+    window below one full trading session. Returns None only when the
+    ticker/tf has no bars at all — the caller's existing empty-frame
+    handling (log + 0 predictions) covers that as a genuine data gap.
+    """
+    from gcp.research.strat_engine.strat_config import strat_features_table
+    from sqlalchemy import text
+
+    s_table = strat_features_table(tf)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(f"SELECT MAX(ts) AS max_ts FROM {s_table} WHERE ticker = :t"),
+            {"t": ticker},
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    ts = pd.Timestamp(row[0])
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
 def _load_recent_features(ticker: str, tf: str,
                            lookback_hours: int = INFERENCE_LOOKBACK_HOURS
                            ) -> pd.DataFrame:
@@ -207,9 +246,11 @@ def _load_recent_features(ticker: str, tf: str,
         load_strat_features_with_levels, add_session_aware_lags,
     )
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    engine = get_engine()
+    anchor = _last_settled_ts(engine, ticker, tf) or datetime.now(timezone.utc)
+    cutoff = anchor - timedelta(hours=lookback_hours)
     df = load_strat_features_with_levels(
-        get_engine(), ticker, tf,
+        engine, ticker, tf,
         since_ts=cutoff.isoformat(), include_levels=True, order_by="s.ts ASC",
     )
     if df.empty:
