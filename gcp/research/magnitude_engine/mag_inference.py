@@ -89,7 +89,25 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 # was NEVER scored by any run (Monday's window missed it; Friday's own
 # pre-market run only reaches Thursday) — a permanent weekly gap in
 # magnitude_per_bar_predictions, not just a noisy failure email.
+#
+# The anchor is bounded by MAX_ANCHOR_STALENESS_HOURS below: an unbounded
+# anchor would defeat the ZERO-OUTPUT hard-fail for the OTHER outage this
+# job exists to catch — a stalled strat_features_<tf> writer (e.g. the
+# strat-engine-daily scheduler itself breaking, as happened 2026-06-09 ->
+# 06-19). In that case _last_settled_ts still returns a real (but stale)
+# timestamp, so anchoring to it unconditionally would keep re-scoring the
+# same old bars, upsert a positive row count, and exit 0 — silently masking
+# the outage this hard-fail exists to surface (flagged in review on PR #664).
 INFERENCE_LOOKBACK_HOURS = 24
+
+# Longest gap between two consecutive US equity trading sessions is a
+# 3-day weekend (holiday Monday or Friday): close ~19:55 UTC Thu/Fri to
+# open ~13:30 UTC the following Mon/Tue is ~89-90h. 96h gives a small
+# buffer above that without being loose enough to paper over a multi-day
+# writer outage. Beyond this, the anchor is treated as unreliable and
+# _load_recent_features falls back to wall-clock now() — the pre-fix
+# behavior, which correctly zero-outputs and hard-fails on a stalled writer.
+MAX_ANCHOR_STALENESS_HOURS = 96
 
 
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
@@ -247,7 +265,26 @@ def _load_recent_features(ticker: str, tf: str,
     )
 
     engine = get_engine()
-    anchor = _last_settled_ts(engine, ticker, tf) or datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    last_bar_ts = _last_settled_ts(engine, ticker, tf)
+    if last_bar_ts is not None and (now - last_bar_ts) <= timedelta(
+            hours=MAX_ANCHOR_STALENESS_HOURS):
+        anchor = last_bar_ts
+    else:
+        # No bars at all, or the writer has been stalled longer than any
+        # legitimate weekend/holiday gap — anchoring to a stale timestamp
+        # here would mask that outage (see MAX_ANCHOR_STALENESS_HOURS).
+        # Fall back to wall-clock now(): the pre-fix behavior, which
+        # correctly finds zero bars and hard-fails via ZERO-OUTPUT below.
+        if last_bar_ts is not None:
+            log.warning(
+                "%s:%s — last bar at %s is %.1fh stale (> %dh cap); "
+                "anchoring to now() instead of the stale bar",
+                ticker, tf, last_bar_ts,
+                (now - last_bar_ts).total_seconds() / 3600,
+                MAX_ANCHOR_STALENESS_HOURS,
+            )
+        anchor = now
     cutoff = anchor - timedelta(hours=lookback_hours)
     df = load_strat_features_with_levels(
         engine, ticker, tf,

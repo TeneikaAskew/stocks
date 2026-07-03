@@ -13,6 +13,7 @@ Tests use the same import-stub pattern as Phase A.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -422,6 +423,22 @@ def test_last_settled_ts_localizes_naive_timestamp():
     assert result == pd.Timestamp("2026-06-26 19:55:00", tz="UTC")
 
 
+class _FixedDatetime(datetime):
+    """datetime subclass whose now() always returns a fixed instant, so
+    tests can pin "the Monday run happens at this wall-clock time"
+    independent of when the test suite actually executes."""
+    _fixed_now = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._fixed_now
+
+
+def _freeze_now(monkeypatch, mod, fixed_now: pd.Timestamp):
+    frozen = type("_FixedDatetime", (_FixedDatetime,), {"_fixed_now": fixed_now})
+    monkeypatch.setattr(mod, "datetime", frozen)
+
+
 def test_load_recent_features_anchors_to_last_bar_not_wallclock(monkeypatch):
     """The Monday regression: wall-clock now() minus 24h would miss
     Friday's session entirely. Anchoring to the last settled bar (Friday
@@ -431,6 +448,7 @@ def test_load_recent_features_anchors_to_last_bar_not_wallclock(monkeypatch):
 
     friday_close = pd.Timestamp("2026-06-26 19:55:00", tz="UTC")
     friday_open = pd.Timestamp("2026-06-26 13:30:00", tz="UTC")
+    monday_run = pd.Timestamp("2026-06-29 13:25:00", tz="UTC")  # ~65.5h after friday_close
 
     captured: dict = {}
 
@@ -438,6 +456,7 @@ def test_load_recent_features_anchors_to_last_bar_not_wallclock(monkeypatch):
         captured["since_ts"] = params.get("since_ts") if params else None
         return pd.DataFrame({"ts": [], "ticker": []})
 
+    _freeze_now(monkeypatch, mod, monday_run)
     monkeypatch.setattr(mod, "get_engine", lambda: _AnchorEngine(friday_close))
     monkeypatch.setattr(mod.pd, "read_sql", _fake_read_sql)
 
@@ -453,6 +472,65 @@ def test_load_recent_features_anchors_to_last_bar_not_wallclock(monkeypatch):
     # Sanity: still anchored near the last bar (24h before Friday close),
     # not e.g. defaulting back to some unrelated far-past cutoff.
     assert cutoff == friday_close - pd.Timedelta(hours=24)
+
+
+def test_load_recent_features_falls_back_when_anchor_exceeds_staleness_cap(monkeypatch):
+    """Codex review on PR #664: if strat_features_<tf> stops updating (a
+    stalled writer, not a weekend), _last_settled_ts still returns a real
+    but very stale timestamp. Anchoring to it unconditionally would keep
+    re-scoring the same old bars, upsert a positive row count, and exit 0
+    — silently masking the exact outage the ZERO-OUTPUT hard-fail exists
+    to catch. Past MAX_ANCHOR_STALENESS_HOURS the anchor must be distrusted
+    and the cutoff must fall back to wall-clock now()."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    now = pd.Timestamp("2026-06-29 13:25:00", tz="UTC")
+    stale_bar = now - pd.Timedelta(hours=mod.MAX_ANCHOR_STALENESS_HOURS + 1)
+
+    captured: dict = {}
+
+    def _fake_read_sql(sql, conn, params=None):
+        captured["since_ts"] = params.get("since_ts") if params else None
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    _freeze_now(monkeypatch, mod, now)
+    monkeypatch.setattr(mod, "get_engine", lambda: _AnchorEngine(stale_bar))
+    monkeypatch.setattr(mod.pd, "read_sql", _fake_read_sql)
+
+    mod._load_recent_features("IWM", "5m", lookback_hours=24)
+
+    cutoff = pd.Timestamp(captured["since_ts"])
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    # Must anchor to now() (now - 24h), NOT to the stale bar.
+    assert cutoff == now - pd.Timedelta(hours=24)
+
+
+def test_load_recent_features_uses_anchor_within_staleness_cap(monkeypatch):
+    """A long-weekend gap just inside the cap must still anchor to the
+    last bar — only staleness BEYOND the cap should trigger the now()
+    fallback (guards against an off-by-one that defeats the Monday fix)."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    now = pd.Timestamp("2026-06-29 13:25:00", tz="UTC")
+    almost_stale_bar = now - pd.Timedelta(hours=mod.MAX_ANCHOR_STALENESS_HOURS - 1)
+
+    captured: dict = {}
+
+    def _fake_read_sql(sql, conn, params=None):
+        captured["since_ts"] = params.get("since_ts") if params else None
+        return pd.DataFrame({"ts": [], "ticker": []})
+
+    _freeze_now(monkeypatch, mod, now)
+    monkeypatch.setattr(mod, "get_engine", lambda: _AnchorEngine(almost_stale_bar))
+    monkeypatch.setattr(mod.pd, "read_sql", _fake_read_sql)
+
+    mod._load_recent_features("IWM", "5m", lookback_hours=24)
+
+    cutoff = pd.Timestamp(captured["since_ts"])
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    assert cutoff == almost_stale_bar - pd.Timedelta(hours=24)
 
 
 def test_load_recent_features_falls_back_to_now_when_no_prior_bars(monkeypatch):
