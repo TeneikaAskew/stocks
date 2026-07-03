@@ -2266,7 +2266,17 @@ deploy_weekly_pg_dump() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        # Was 3600 (1h), same as the script's own POLL_MAX_SECS — both hit
+        # simultaneously on 2026-06-28 (executions bcmlz, cwh72), timing
+        # out an export that completed in ~46 min just a week earlier
+        # (2026-06-21, v5cr5). 25200 (7h) sits 1h above the script's new
+        # 21600s poll cap (gcp/sql_export_to_gcs.py) so the poll loop's own
+        # TimeoutError fires first with a clear message, and this is only a
+        # backstop. The container just polls an HTTP endpoint every 15s
+        # while Cloud SQL performs the export server-side, so the extra
+        # headroom costs nothing (Rule 0: "Cloud Run charges runtime, not
+        # the cap").
+        --task-timeout 25200
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"

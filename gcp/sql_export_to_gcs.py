@@ -49,7 +49,19 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+# Was 3600 (1h) with the comment "small DB exports finish in <5 min" — no
+# longer true. trading-db has grown enough that both the 2026-06-28 runs
+# (cloud-sql-weekly-export-bcmlz, -cwh72) hit this exact cap and timed out,
+# one week after a 2026-06-21 run (v5cr5) completed cleanly in ~46 min. The
+# offloaded export runs on Cloud SQL's side, not this container's compute,
+# so a generous cap costs nothing but idle polling (CLAUDE.md Rule 0: "Cloud
+# Run charges runtime, not the cap, so headroom is free"). 21600 (6h) gives
+# ~6x headroom over the last observed successful run and room for continued
+# weekly growth; must stay below the Cloud Run task-timeout in
+# gcp/deploy.sh's deploy_weekly_pg_dump() so this raises a clear
+# TimeoutError instead of Cloud Run silently SIGKILLing the container at
+# the same instant (see the paired --task-timeout bump there).
+POLL_MAX_SECS = 21600
 
 
 def _get_token() -> str:
