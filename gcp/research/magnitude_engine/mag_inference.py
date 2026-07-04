@@ -78,6 +78,37 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 INFERENCE_LOOKBACK_HOURS = 24
 
 
+def _effective_lookback_hours(base_hours: int,
+                               now: Optional[datetime] = None) -> int:
+    """Widen the lookback window on the two run-days a fixed calendar-hours
+    cutoff structurally misses the prior trading session's bars.
+
+    The job runs Mon-Fri at 09:25 ET. On every OTHER weekday, "last
+    base_hours" safely spans back into yesterday's full trading session
+    (settled bars start arriving ~00:00-24h prior). But:
+      - Monday 09:25 ET is >48h after Friday's ~16:00 ET close, so a 24h
+        window sees zero bars from the only trading session that occurred
+        since Friday. Confirmed in production: ZERO-OUTPUT failures on
+        2026-06-22 and 2026-06-29, both Mondays (mag_inference-h7h6g,
+        mag_inference-dmvxr).
+      - Tuesday after an NYSE-observed Monday holiday has the same gap
+        one day later (last session was Friday, not Monday).
+
+    Extends to 3 (Monday) / 4 (Tuesday) calendar days rather than pulling
+    in pandas_market_calendars for this — same cheap weekday heuristic
+    already used by fetch_market_data.py's post-fetch staleness guard.
+    Both multiples are generous upper bounds (a real session is ~10h),
+    so this only ever pulls in extra already-scored bars, never fewer.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.weekday() == 0:  # Monday
+        return max(base_hours, 24 * 3)
+    if now.weekday() == 1:  # Tuesday (covers a Monday holiday)
+        return max(base_hours, 24 * 4)
+    return base_hours
+
+
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
     """'IWM:5m,SPY:5m' -> [('IWM','5m'), ('SPY','5m')].
 
@@ -207,7 +238,13 @@ def _load_recent_features(ticker: str, tf: str,
         load_strat_features_with_levels, add_session_aware_lags,
     )
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    now = datetime.now(timezone.utc)
+    effective_hours = _effective_lookback_hours(lookback_hours, now=now)
+    if effective_hours != lookback_hours:
+        log.info("%s:%s — extending lookback %dh -> %dh (weekday=%d, "
+                 "spans the last trading session across the weekend/holiday gap)",
+                 ticker, tf, lookback_hours, effective_hours, now.weekday())
+    cutoff = now - timedelta(hours=effective_hours)
     df = load_strat_features_with_levels(
         get_engine(), ticker, tf,
         since_ts=cutoff.isoformat(), include_levels=True, order_by="s.ts ASC",

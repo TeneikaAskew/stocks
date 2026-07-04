@@ -13,6 +13,7 @@ Tests use the same import-stub pattern as Phase A.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -96,6 +97,73 @@ def test_parse_cells_invalid_raises():
     from gcp.research.magnitude_engine.mag_inference import _parse_cells
     with pytest.raises(ValueError):
         _parse_cells("IWM")  # missing :tf
+
+
+# ──────────────────── _effective_lookback_hours ────────────────────
+#
+# Production ZERO-OUTPUT failures on 2026-06-22 and 2026-06-29 (both
+# Mondays, mag_inference-h7h6g / mag_inference-dmvxr): a fixed 24h
+# lookback runs at 09:25 ET Monday, >48h after Friday's ~16:00 ET
+# close, so it sees zero bars from the only session since Friday.
+
+def test_lookback_unchanged_on_regular_weekday():
+    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+    # Wed 2026-07-01 13:25 UTC — prior session (Tue) is well within 24h.
+    now = datetime(2026, 7, 1, 13, 25, tzinfo=timezone.utc)
+    assert _effective_lookback_hours(24, now=now) == 24
+
+
+def test_lookback_extended_on_monday():
+    """Mon 2026-06-29 — the actual production failure date."""
+    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+    now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)
+    assert _effective_lookback_hours(24, now=now) == 72
+
+
+def test_lookback_extended_on_tuesday_after_monday_holiday():
+    """Tue after an NYSE-observed Monday holiday has the same >24h gap
+    one day later — last session was Friday, not Monday."""
+    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+    now = datetime(2026, 5, 26, 13, 25, tzinfo=timezone.utc)  # Tue after Memorial Day
+    assert _effective_lookback_hours(24, now=now) == 96
+
+
+def test_lookback_never_shrinks_a_larger_caller_supplied_base():
+    """A caller-supplied base larger than the weekday floor is preserved."""
+    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+    now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)  # Monday
+    assert _effective_lookback_hours(200, now=now) == 200
+
+
+def test_load_recent_features_extends_cutoff_on_monday(monkeypatch):
+    """End-to-end: _load_recent_features widens the since_ts cutoff it
+    passes to the shared loader when `now` falls on a Monday."""
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    captured: dict = {}
+
+    def _fake_loader(engine, ticker, tf, since_ts=None, **kwargs):
+        captured["since_ts"] = since_ts
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        "gcp.research.strat_engine.strat_dataset.load_strat_features_with_levels",
+        _fake_loader,
+    )
+    monkeypatch.setattr(mod, "get_engine", lambda: MagicMock())
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(mod, "datetime", _FixedDatetime)
+
+    mod._load_recent_features("IWM", "5m", lookback_hours=24)
+
+    since = datetime.fromisoformat(captured["since_ts"])
+    # 72h before the fixed Monday "now", not 24h.
+    assert since == datetime(2026, 6, 26, 13, 25, tzinfo=timezone.utc)
 
 
 # ──────────────────── _score_and_persist contract ────────────────────
