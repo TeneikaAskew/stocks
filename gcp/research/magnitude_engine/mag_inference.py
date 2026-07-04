@@ -78,35 +78,69 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 INFERENCE_LOOKBACK_HOURS = 24
 
 
-def _effective_lookback_hours(base_hours: int,
-                               now: Optional[datetime] = None) -> int:
-    """Widen the lookback window on the two run-days a fixed calendar-hours
-    cutoff structurally misses the prior trading session's bars.
+def _session_aware_cutoff(base_hours: int,
+                           now: Optional[datetime] = None) -> datetime:
+    """Compute the features-window cutoff, widening it only as far back as
+    the most recently COMPLETED NYSE session actually requires.
 
-    The job runs Mon-Fri at 09:25 ET. On every OTHER weekday, "last
-    base_hours" safely spans back into yesterday's full trading session
-    (settled bars start arriving ~00:00-24h prior). But:
-      - Monday 09:25 ET is >48h after Friday's ~16:00 ET close, so a 24h
-        window sees zero bars from the only trading session that occurred
-        since Friday. Confirmed in production: ZERO-OUTPUT failures on
-        2026-06-22 and 2026-06-29, both Mondays (mag_inference-h7h6g,
-        mag_inference-dmvxr).
-      - Tuesday after an NYSE-observed Monday holiday has the same gap
-        one day later (last session was Friday, not Monday).
+    The job runs Mon-Fri at 09:25 ET. A fixed base_hours window misses the
+    prior trading session's bars whenever more than base_hours have
+    elapsed since it closed: every Monday (Friday's close is >48h before a
+    Monday run), the day after any market holiday, and a Monday following
+    a Friday holiday (e.g. Good Friday — Thursday's close is >72h before
+    the next Monday). Confirmed in production: ZERO-OUTPUT failures on
+    2026-06-22 and 2026-06-29 (both Mondays).
 
-    Extends to 3 (Monday) / 4 (Tuesday) calendar days rather than pulling
-    in pandas_market_calendars for this — same cheap weekday heuristic
-    already used by fetch_market_data.py's post-fetch staleness guard.
-    Both multiples are generous upper bounds (a real session is ~10h),
-    so this only ever pulls in extra already-scored bars, never fewer.
+    A first version of this fix used a blunt "always widen Monday 3x /
+    Tuesday 4x" weekday heuristic. Codex review on PR #666 caught two
+    real problems with that:
+      - P1: on an ORDINARY Tuesday (Monday traded normally) it still
+        reached back to Friday's already-scored bars. If Monday's own
+        session genuinely has no data (a real strat-engine outage), those
+        stale Friday rows get rescored and counted as `total_written`,
+        silently defeating the ZERO-OUTPUT guard for exactly the case it
+        exists to catch.
+      - P2: a flat 72h Monday window still misses Thursday's session when
+        Friday itself was a holiday (e.g. Good Friday) — 72h back from a
+        Monday 09:25 ET run only reaches Friday 09:25 ET, after Thursday's
+        close.
+
+    Using pandas_market_calendars (existing repo dependency — see
+    lib/strat_levels.py::_trading_days_between) to find the actual most
+    recent completed session fixes both: on an ordinary Tuesday, Monday's
+    open already falls inside the naive base_hours window, so this is a
+    no-op (no reach-back to Friday, P1 fixed). On a holiday Monday/Tuesday,
+    it extends back exactly to whichever session really closed last,
+    however many calendar days that is (P2 fixed).
     """
     if now is None:
         now = datetime.now(timezone.utc)
-    if now.weekday() == 0:  # Monday
-        return max(base_hours, 24 * 3)
-    if now.weekday() == 1:  # Tuesday (covers a Monday holiday)
-        return max(base_hours, 24 * 4)
-    return base_hours
+    naive_cutoff = now - timedelta(hours=base_hours)
+
+    try:
+        import pandas_market_calendars as mcal
+    except ImportError:
+        log.warning(
+            "pandas_market_calendars unavailable — falling back to naive "
+            "%dh lookback; weekend/holiday gaps will not self-heal",
+            base_hours)
+        return naive_cutoff
+
+    nyse = mcal.get_calendar("NYSE")
+    schedule = nyse.schedule(start_date=(now - timedelta(days=10)).date(),
+                              end_date=now.date())
+    if schedule.empty:
+        return naive_cutoff
+    completed_opens = schedule["market_open"][schedule["market_open"] < now]
+    if completed_opens.empty:
+        return naive_cutoff
+    last_session_open = completed_opens.iloc[-1].to_pydatetime()
+
+    # Only ever widen, never narrow below the caller's base_hours floor —
+    # min() picks whichever cutoff is EARLIER (naive_cutoff on an ordinary
+    # day; last_session_open, minus a small inclusive buffer, once the gap
+    # since the last session exceeds base_hours).
+    return min(naive_cutoff, last_session_open - timedelta(minutes=1))
 
 
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
@@ -239,12 +273,12 @@ def _load_recent_features(ticker: str, tf: str,
     )
 
     now = datetime.now(timezone.utc)
-    effective_hours = _effective_lookback_hours(lookback_hours, now=now)
-    if effective_hours != lookback_hours:
-        log.info("%s:%s — extending lookback %dh -> %dh (weekday=%d, "
-                 "spans the last trading session across the weekend/holiday gap)",
-                 ticker, tf, lookback_hours, effective_hours, now.weekday())
-    cutoff = now - timedelta(hours=effective_hours)
+    naive_cutoff = now - timedelta(hours=lookback_hours)
+    cutoff = _session_aware_cutoff(lookback_hours, now=now)
+    if cutoff != naive_cutoff:
+        log.info("%s:%s — extending cutoff %s -> %s (spans the last "
+                 "completed NYSE session across a weekend/holiday gap)",
+                 ticker, tf, naive_cutoff.isoformat(), cutoff.isoformat())
     df = load_strat_features_with_levels(
         get_engine(), ticker, tf,
         since_ts=cutoff.isoformat(), include_levels=True, order_by="s.ts ASC",

@@ -13,7 +13,7 @@ Tests use the same import-stub pattern as Phase A.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -99,45 +99,102 @@ def test_parse_cells_invalid_raises():
         _parse_cells("IWM")  # missing :tf
 
 
-# ──────────────────── _effective_lookback_hours ────────────────────
+# ──────────────────── _session_aware_cutoff ────────────────────
 #
 # Production ZERO-OUTPUT failures on 2026-06-22 and 2026-06-29 (both
 # Mondays, mag_inference-h7h6g / mag_inference-dmvxr): a fixed 24h
 # lookback runs at 09:25 ET Monday, >48h after Friday's ~16:00 ET
 # close, so it sees zero bars from the only session since Friday.
+#
+# A first version of this fix used a blunt "widen Monday 3x / Tuesday 4x"
+# weekday heuristic. Codex review on PR #666 caught two problems with it
+# (see docstring on _session_aware_cutoff): P1 — it over-widened on
+# ORDINARY Tuesdays, masking a genuine Monday data outage behind Friday's
+# already-scored bars; P2 — a flat 72h Monday window still missed
+# Thursday's session when Friday itself was a holiday (e.g. Good Friday).
+# These tests cover both.
 
-def test_lookback_unchanged_on_regular_weekday():
-    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+def test_cutoff_unchanged_on_regular_weekday():
+    from gcp.research.magnitude_engine.mag_inference import _session_aware_cutoff
     # Wed 2026-07-01 13:25 UTC — prior session (Tue) is well within 24h.
     now = datetime(2026, 7, 1, 13, 25, tzinfo=timezone.utc)
-    assert _effective_lookback_hours(24, now=now) == 24
+    assert _session_aware_cutoff(24, now=now) == now - timedelta(hours=24)
 
 
-def test_lookback_extended_on_monday():
-    """Mon 2026-06-29 — the actual production failure date."""
-    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+def test_cutoff_extended_on_monday_after_ordinary_weekend():
+    """Mon 2026-06-29 — the actual production failure date. Extends back
+    to Friday 2026-06-26's open (minus a 1-minute inclusive buffer), not
+    just a flat multiple of 24h."""
+    from gcp.research.magnitude_engine.mag_inference import _session_aware_cutoff
     now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)
-    assert _effective_lookback_hours(24, now=now) == 72
+    cutoff = _session_aware_cutoff(24, now=now)
+    assert cutoff == datetime(2026, 6, 26, 13, 29, tzinfo=timezone.utc)
 
 
-def test_lookback_extended_on_tuesday_after_monday_holiday():
-    """Tue after an NYSE-observed Monday holiday has the same >24h gap
-    one day later — last session was Friday, not Monday."""
-    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
-    now = datetime(2026, 5, 26, 13, 25, tzinfo=timezone.utc)  # Tue after Memorial Day
-    assert _effective_lookback_hours(24, now=now) == 96
+def test_cutoff_extended_on_tuesday_after_monday_holiday():
+    """Tue after Memorial Day (Mon 2026-05-25) — extends back to Friday
+    2026-05-22's open, skipping the holiday Monday entirely."""
+    from gcp.research.magnitude_engine.mag_inference import _session_aware_cutoff
+    now = datetime(2026, 5, 26, 13, 25, tzinfo=timezone.utc)
+    cutoff = _session_aware_cutoff(24, now=now)
+    assert cutoff == datetime(2026, 5, 22, 13, 29, tzinfo=timezone.utc)
 
 
-def test_lookback_never_shrinks_a_larger_caller_supplied_base():
-    """A caller-supplied base larger than the weekday floor is preserved."""
-    from gcp.research.magnitude_engine.mag_inference import _effective_lookback_hours
+def test_cutoff_not_widened_on_ordinary_tuesday_after_trading_monday():
+    """Codex P1 regression: Tue 2026-06-30, the day after an ORDINARY
+    trading Monday (2026-06-29 was a normal session, not a holiday).
+    Must NOT reach back to Friday — doing so would mask a genuine
+    Monday-only data outage behind Friday's already-scored bars."""
+    from gcp.research.magnitude_engine.mag_inference import _session_aware_cutoff
+    now = datetime(2026, 6, 30, 13, 25, tzinfo=timezone.utc)
+    cutoff = _session_aware_cutoff(24, now=now)
+    assert cutoff == now - timedelta(hours=24), (
+        "must not widen past the naive 24h window on an ordinary Tuesday "
+        "— Monday traded normally, so reaching back to Friday would mask "
+        "a real Monday data outage"
+    )
+
+
+def test_cutoff_extended_past_good_friday():
+    """Codex P2 regression: Mon 2026-04-06, the Monday after Good Friday
+    (2026-04-03, an NYSE holiday). A flat 72h Monday window would only
+    reach Friday 09:25 ET and still miss Thursday 2026-04-02's session —
+    this must reach all the way back to Thursday's open."""
+    from gcp.research.magnitude_engine.mag_inference import _session_aware_cutoff
+    now = datetime(2026, 4, 6, 13, 25, tzinfo=timezone.utc)
+    cutoff = _session_aware_cutoff(24, now=now)
+    assert cutoff == datetime(2026, 4, 2, 13, 29, tzinfo=timezone.utc)
+
+
+def test_cutoff_never_narrows_a_larger_caller_supplied_base():
+    """A caller-supplied base wide enough to already cover the last
+    session on its own is preserved, not narrowed by this function."""
+    from gcp.research.magnitude_engine.mag_inference import _session_aware_cutoff
     now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)  # Monday
-    assert _effective_lookback_hours(200, now=now) == 200
+    assert _session_aware_cutoff(200, now=now) == now - timedelta(hours=200)
+
+
+def test_cutoff_falls_back_to_naive_when_calendar_lib_missing(monkeypatch):
+    """If pandas_market_calendars isn't importable, degrade to the naive
+    cutoff rather than crashing — logged, not silent."""
+    import builtins
+    from gcp.research.magnitude_engine import mag_inference as mod
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *a, **k):
+        if name == "pandas_market_calendars":
+            raise ImportError("simulated missing dependency")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    now = datetime(2026, 6, 29, 13, 25, tzinfo=timezone.utc)  # Monday
+    assert mod._session_aware_cutoff(24, now=now) == now - timedelta(hours=24)
 
 
 def test_load_recent_features_extends_cutoff_on_monday(monkeypatch):
-    """End-to-end: _load_recent_features widens the since_ts cutoff it
-    passes to the shared loader when `now` falls on a Monday."""
+    """End-to-end: _load_recent_features passes the session-aware cutoff
+    through to the shared loader when `now` falls on a Monday."""
     from gcp.research.magnitude_engine import mag_inference as mod
 
     captured: dict = {}
@@ -162,8 +219,9 @@ def test_load_recent_features_extends_cutoff_on_monday(monkeypatch):
     mod._load_recent_features("IWM", "5m", lookback_hours=24)
 
     since = datetime.fromisoformat(captured["since_ts"])
-    # 72h before the fixed Monday "now", not 24h.
-    assert since == datetime(2026, 6, 26, 13, 25, tzinfo=timezone.utc)
+    # Friday 2026-06-26's open (minus buffer) before the fixed Monday
+    # "now", not a naive 24h cutoff (which would land on Sunday).
+    assert since == datetime(2026, 6, 26, 13, 29, tzinfo=timezone.utc)
 
 
 # ──────────────────── _score_and_persist contract ────────────────────
