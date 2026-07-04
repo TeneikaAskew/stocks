@@ -2263,10 +2263,18 @@ deploy_weekly_pg_dump() {
     non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
     non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
 
+    # 21600s (6h): the 3600s (1h) original value was too tight — execution
+    # cloud-sql-weekly-export-bcmlz hit it and was killed on 2026-06-28
+    # after running ~60 min (see issue #657). A manual retry the same day
+    # (cloud-sql-weekly-export-cwh72) completed in ~60 min, so 21600s gives
+    # ~6x headroom over the observed worst case. This was already hot-patched
+    # onto the live job via `gcloud run jobs update`; this line had drifted
+    # out of sync and would have silently reverted the fix on the next
+    # `./gcp/deploy.sh cloud-sql-weekly-export` run.
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        --task-timeout 21600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"
