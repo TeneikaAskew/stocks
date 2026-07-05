@@ -77,6 +77,39 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 # prediction at the same (ticker, tf, ts, model_version).
 INFERENCE_LOOKBACK_HOURS = 24
 
+# On Monday, "yesterday's close" is actually Friday's — a fixed 24h
+# window undershoots the ~65h weekend gap and the job ZERO-OUTPUTs.
+# Confirmed both as repeat incidents (2026-06-22, 2026-06-29 — see
+# gcp-job-failure history) and as a standing data gap: every single
+# Friday's session is absent from magnitude_per_bar_predictions
+# (verified via db_query_cr.sh against 5 consecutive weeks) because
+# Tuesday's 24h window starts at Monday's close and never reaches back
+# far enough to pick Friday up either. Score with a wider window on
+# Monday only, so every other weekday keeps its normal (cheaper) 24h
+# lookback. 96h reaches back to the prior Thursday 13:25 UTC, which
+# comfortably covers a plain weekend (~65h) plus a single adjacent
+# market holiday (~89h worst case).
+_MONDAY_LOOKBACK_HOURS = 96
+
+
+def _resolve_lookback_hours(cli_value: Optional[int], env_value: Optional[str],
+                             now: datetime) -> int:
+    """Pick the scoring lookback window, in priority order:
+
+    1. explicit --lookback-hours (never second-guessed)
+    2. explicit INFERENCE_LOOKBACK_HOURS env var (never second-guessed)
+    3. weekday-aware default: widened on Monday to span the weekend gap
+       that produces the ZERO-OUTPUT / missing-Friday bug (see
+       _MONDAY_LOOKBACK_HOURS), otherwise the normal 24h window.
+    """
+    if cli_value is not None:
+        return cli_value
+    if env_value is not None:
+        return int(env_value)
+    if now.weekday() == 0:  # Monday
+        return _MONDAY_LOOKBACK_HOURS
+    return INFERENCE_LOOKBACK_HOURS
+
 
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
     """'IWM:5m,SPY:5m' -> [('IWM','5m'), ('SPY','5m')].
@@ -391,14 +424,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cells", default=os.environ.get("INFERENCE_CELLS"),
                     help="Override DEFAULT_CELLS, e.g. 'IWM:5m,SPY:5m'")
-    ap.add_argument("--lookback-hours", type=int,
-                    default=int(os.environ.get("INFERENCE_LOOKBACK_HOURS",
-                                                INFERENCE_LOOKBACK_HOURS)))
+    ap.add_argument("--lookback-hours", type=int, default=None,
+                    help="Override the scoring lookback window in hours. "
+                         f"Defaults to {INFERENCE_LOOKBACK_HOURS}h, widened "
+                         f"to {_MONDAY_LOOKBACK_HOURS}h on Monday to span "
+                         "the weekend gap — see _MONDAY_LOOKBACK_HOURS.")
     args = ap.parse_args()
+
+    lookback_hours = _resolve_lookback_hours(
+        args.lookback_hours, os.environ.get("INFERENCE_LOOKBACK_HOURS"),
+        datetime.now(timezone.utc),
+    )
 
     cells = _parse_cells(args.cells)
     log.info("mag_inference starting — cells=%s lookback=%dh",
-             cells, args.lookback_hours)
+             cells, lookback_hours)
 
     engine = get_engine()
     # Ensure DDL — race-safe (CREATE TABLE IF NOT EXISTS).
@@ -412,7 +452,7 @@ def main() -> int:
     for ticker, tf in cells:
         try:
             model, feature_cols, version = _load_model_and_version(ticker, tf)
-            features = _load_recent_features(ticker, tf, args.lookback_hours)
+            features = _load_recent_features(ticker, tf, lookback_hours)
             n = _score_and_persist(engine, ticker, tf,
                                     model, feature_cols, version, features)
             log.info("%s:%s — %d predictions written (model_version=%s)",
