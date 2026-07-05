@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from gcp.research.magnitude_engine.mag_pred_train import (
-    make_lgbm, tempered_class_weight,
+    make_lgbm, tempered_class_weight, resolve_class_weight,
 )
 
 
@@ -44,6 +44,22 @@ def test_alpha_0_is_uniform():
 def test_alpha_half_is_sqrt_of_balanced():
     w = tempered_class_weight(_Y, alpha=0.5)
     assert w[2] == pytest.approx((100 / (3 * 10)) ** 0.5)
+
+
+def test_resolve_default_is_tempered_075(monkeypatch):
+    # Env unset → validated production default alpha=0.75 (a tempered dict,
+    # not 'balanced' and not None).
+    monkeypatch.delenv("MAG_CLASS_WEIGHT_POWER", raising=False)
+    w = resolve_class_weight(_Y)
+    assert isinstance(w, dict)
+    assert w[2] == pytest.approx((100 / (3 * 10)) ** 0.75)
+
+
+def test_resolve_env_override(monkeypatch):
+    monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "1.0")
+    assert resolve_class_weight(_Y) == "balanced"
+    monkeypatch.setenv("MAG_CLASS_WEIGHT_POWER", "0")
+    assert resolve_class_weight(_Y) is None
 
 
 def _imbalanced_overlapping(rng):

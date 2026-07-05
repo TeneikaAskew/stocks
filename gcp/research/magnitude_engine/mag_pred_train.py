@@ -201,16 +201,24 @@ def make_lgbm(class_weight: str | None = "balanced", n_jobs: int = -1,
     )
 
 
+MAG_CLASS_WEIGHT_POWER_DEFAULT = 0.75
+
+
 def resolve_class_weight(y):
     """Class weight for training, tuned by the MAG_CLASS_WEIGHT_POWER env var
-    (alpha, default 0.5). alpha>=1 → 'balanced'; alpha<=0 → None (unweighted);
+    (alpha, default 0.75). alpha>=1 → 'balanced'; alpha<=0 → None (unweighted);
     otherwise a tempered dict. Single seam so all four walk-forward training
-    sites stay consistent and alpha is tunable without a code change."""
+    sites stay consistent and alpha is tunable without a code change.
+
+    Default 0.75 was validated on IWM 5m: alpha=0.5 under-predicted tails
+    (85/12/2/1), alpha=1.0 over-predicted them (47/27/19/7), alpha=0.75 tracked
+    the true base rates (68/21/7/4 vs true 66/25/6/2)."""
     import os
     try:
-        alpha = float(os.environ.get("MAG_CLASS_WEIGHT_POWER", "0.5"))
+        alpha = float(os.environ.get(
+            "MAG_CLASS_WEIGHT_POWER", str(MAG_CLASS_WEIGHT_POWER_DEFAULT)))
     except ValueError:
-        alpha = 0.5
+        alpha = MAG_CLASS_WEIGHT_POWER_DEFAULT
     if alpha >= 1.0:
         return "balanced"
     if alpha <= 0.0:
