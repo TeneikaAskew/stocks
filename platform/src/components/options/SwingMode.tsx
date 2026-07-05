@@ -150,7 +150,10 @@ function cellColor(value: number, max: number): string {
 }
 
 // ─── Format helpers ───────────────────────────────────────────
-function fmtBigGex(n: number): string {
+function fmtBigGex(n: number | null | undefined): string {
+  // Missing GEX/VEX for a genuinely-absent level renders "—", never a
+  // fabricated $0 that reads as a real "flat" reading (CLAUDE.md §3.7).
+  if (n == null) return '—';
   const abs = Math.abs(n);
   const sign = n >= 0 ? '+' : '−';
   if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
@@ -179,14 +182,15 @@ interface RealOverlay {
   spotMethod: string;
   spotNote: string;
   kingStrike: number;
-  kingGex: number;
+  /** null when the level is genuinely absent — rendered as "—", not $0. */
+  kingGex: number | null;
   gateAbove?: { strike: number; gex: number };
   gateBelow?: { strike: number; gex: number };
   flipStrike: number;
-  flipGex: number;
+  flipGex: number | null;
   regime: string;
   totalGex: number;
-  totalVex: number;
+  totalVex: number | null;
 }
 
 // ─── Data source freshness pill ───────────────────────────────
@@ -799,14 +803,14 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         spotMethod: levels.spot.method,
         spotNote: levels.spot.note,
         kingStrike: king?.strike ?? spotPrice,
-        kingGex: king?.gex ?? 0,
+        kingGex: king?.gex ?? null,
         gateAbove: above ? { strike: above.strike, gex: above.gex } : undefined,
         gateBelow: below ? { strike: below.strike, gex: below.gex } : undefined,
         flipStrike: levels.gamma_balance ?? grid?.gamma_flip ?? spotPrice,
-        flipGex: flipLvl?.gex ?? 0,
+        flipGex: flipLvl?.gex ?? null,
         regime: levels.regime,
         totalGex: levels.total_gex,
-        totalVex: grid?.total_vex ?? 0,
+        totalVex: grid?.total_vex ?? null,
       };
     }
     // 2. Real grid but no /levels (e.g. on-demand ticker with no Cloud SQL dates).
@@ -838,7 +842,9 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         gateAbove: undefined,
         gateBelow: undefined,
         flipStrike: grid.gamma_flip ?? grid.spot.price,
-        flipGex: 0,
+        // The grid path has no per-level flip GEX (only the flip strike from
+        // gamma_flip); null renders "—" rather than a fabricated $0.
+        flipGex: null,
         regime: grid.regime,
         totalGex: grid.total_gex,
         totalVex: grid.total_vex,
