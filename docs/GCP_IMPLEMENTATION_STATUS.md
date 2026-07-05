@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-29 (changelog refresh + plan shipping logs for PRs #101–#145)
+**Last Updated**: 2026-07-05 (diagram refresh: ERD table shapes + icon-based Architecture/Frontend diagrams)
 
 ---
 
@@ -413,6 +413,9 @@ Pre-existing failures (unrelated to dashboard work):
 
 ## Change Log
 
+- 2026-07-05: Add Frontend-icons.drawio — 15-tab frontend diagram: Auth & Entry process flow (IAP SSO, TokenGate, dev fallback + caveats) and one data-flow tab per route (hooks → endpoints → routers → tables R/W, external-service tiles), from a fresh codebase sweep
+- 2026-07-05: Add Architecture-icons.drawio — GCP-icon + process-flow rebuild merged with repo content (ported Earnings Pipeline page as swim-lanes; Backtest page updated for PRs #519/#547/#548)
+- 2026-07-05: Fix ERD.drawio corrupt nested edge-label cells ("Could not add object for mxCell" on 3 tabs) and convert all 61 entity boxes to real drawio table shapes (PK/UQ/FK badge column + one row per field, category border colors preserved, layout reflowed)
 - 2026-04-29: Add `docs/changelog/CHANGELOG_2026-04-27_to_2026-05-03.md` covering 45 merged PRs (#101–#145) + in-flight PR #146 (`feat/replay-auto-backfill-v2`); refresh shipping logs in `docs/STRAT_IMPLEMENTATION_PLAN.md`, `docs/plans/DISCORD_INTERACTIONS_PLAN.md`, `docs/plans/INSIGHT_ZONE_HALLUCINATION_PLAN.md`, `docs/plans/PREMARKET_CONTEXT_PLAN.md` so each plan's status reflects what landed in code (Strat v2 levels engine, Discord `/replay` Slice 0 + Slice 1, premarket H/L/VWAP context, `as_of` tz-leak fix + level-aware planner)
 - 2026-04-26: Add GCP Cloud Run Job failure notifier — stdlib Cloud Run service triggered by Cloud Logging sink → Pub/Sub push; fans out to Discord webhook + GitHub issue (with dedup on repeat failures)
 - 2026-04-26: Add high-risk-gap test coverage (commit `c7ee564`) — 119 new tests across 8 HIGH-risk + 3 MEDIUM-risk gaps surfaced by post-merge audit. Suite 531 → 650 passing
