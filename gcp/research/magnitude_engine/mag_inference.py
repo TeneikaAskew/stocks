@@ -77,38 +77,41 @@ DEFAULT_CELLS: list[tuple[str, str]] = [
 # prediction at the same (ticker, tf, ts, model_version).
 INFERENCE_LOOKBACK_HOURS = 24
 
-# On Monday, "yesterday's close" is actually Friday's — a fixed 24h
-# window undershoots the ~65h weekend gap and the job ZERO-OUTPUTs.
-# Confirmed both as repeat incidents (2026-06-22, 2026-06-29 — see
+# A fixed 24h window undershoots any gap wider than one overnight — a
+# plain weekend (~65h from Friday's close to Monday's run), a Monday
+# holiday (pushes the same problem to Tuesday, since Tuesday's own 24h
+# window then starts at Monday's empty session), or a holiday-adjacent
+# weekend (~89h). A day-of-week check (e.g. "widen on Monday") only
+# covers the first case — Codex flagged on PR #668 that it still
+# ZERO-OUTPUTs (and false-pages) the Tuesday after a Monday holiday.
+# Instead, escalate the window until it actually finds bars: try the
+# normal 24h first (cheap, matches every ordinary weekday), then widen
+# until we hit the most recent real NYSE session — independent of which
+# weekday it is or why the gap exists. 168h (7 days) is the final rung,
+# generous enough for any plausible multi-day closure; if that ALSO
+# finds nothing, it's a real outage and the existing ZERO-OUTPUT check
+# fails loud as designed (CLAUDE.md §3.7 — no silent fallback).
+#
+# Confirmed both as repeat incidents (2026-06-22, 2026-06-29 —
 # gcp-job-failure history) and as a standing data gap: every single
-# Friday's session is absent from magnitude_per_bar_predictions
+# Friday's session was absent from magnitude_per_bar_predictions
 # (verified via db_query_cr.sh against 5 consecutive weeks) because
-# Tuesday's 24h window starts at Monday's close and never reaches back
-# far enough to pick Friday up either. Score with a wider window on
-# Monday only, so every other weekday keeps its normal (cheaper) 24h
-# lookback. 96h reaches back to the prior Thursday 13:25 UTC, which
-# comfortably covers a plain weekend (~65h) plus a single adjacent
-# market holiday (~89h worst case).
-_MONDAY_LOOKBACK_HOURS = 96
+# Tuesday's 24h window starts at Monday's close and never reached back
+# far enough to pick Friday up either.
+LOOKBACK_ESCALATION_HOURS: tuple[int, ...] = (INFERENCE_LOOKBACK_HOURS, 96, 168)
 
 
-def _resolve_lookback_hours(cli_value: Optional[int], env_value: Optional[str],
-                             now: datetime) -> int:
-    """Pick the scoring lookback window, in priority order:
-
-    1. explicit --lookback-hours (never second-guessed)
-    2. explicit INFERENCE_LOOKBACK_HOURS env var (never second-guessed)
-    3. weekday-aware default: widened on Monday to span the weekend gap
-       that produces the ZERO-OUTPUT / missing-Friday bug (see
-       _MONDAY_LOOKBACK_HOURS), otherwise the normal 24h window.
-    """
+def _resolve_explicit_lookback_hours(cli_value: Optional[int],
+                                      env_value: Optional[str]) -> Optional[int]:
+    """An operator-supplied --lookback-hours or INFERENCE_LOOKBACK_HOURS
+    env var is never second-guessed — CLI wins over env. Returns None
+    when neither is set, signalling the caller should use the
+    session-gap escalation ladder instead of a single fixed window."""
     if cli_value is not None:
         return cli_value
     if env_value is not None:
         return int(env_value)
-    if now.weekday() == 0:  # Monday
-        return _MONDAY_LOOKBACK_HOURS
-    return INFERENCE_LOOKBACK_HOURS
+    return None
 
 
 def _parse_cells(spec: Optional[str]) -> list[tuple[str, str]]:
@@ -420,25 +423,49 @@ def _score_and_persist(engine, ticker: str, tf: str,
     return len(df)
 
 
+def _load_recent_features_with_escalation(ticker: str, tf: str,
+                                           explicit_lookback_hours: Optional[int]
+                                           ) -> pd.DataFrame:
+    """Load recent features, escalating through LOOKBACK_ESCALATION_HOURS
+    until a rung finds bars — unless the operator supplied an explicit
+    lookback, in which case that exact value is used as-is (never
+    second-guessed). Escalating on "did we find bars" rather than "what
+    weekday is it" handles weekends, holidays, holiday-adjacent weekends,
+    and missed-run catch-up uniformly, without a hardcoded market
+    calendar (see LOOKBACK_ESCALATION_HOURS for the incident history)."""
+    if explicit_lookback_hours is not None:
+        return _load_recent_features(ticker, tf, explicit_lookback_hours)
+
+    df = pd.DataFrame()
+    for hours in LOOKBACK_ESCALATION_HOURS:
+        df = _load_recent_features(ticker, tf, hours)
+        if not df.empty:
+            if hours != LOOKBACK_ESCALATION_HOURS[0]:
+                log.warning("%s:%s — no bars within %dh, escalated to %dh lookback",
+                            ticker, tf, LOOKBACK_ESCALATION_HOURS[0], hours)
+            return df
+    return df  # every rung came up dry — caller's ZERO-OUTPUT check fails loud
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cells", default=os.environ.get("INFERENCE_CELLS"),
                     help="Override DEFAULT_CELLS, e.g. 'IWM:5m,SPY:5m'")
     ap.add_argument("--lookback-hours", type=int, default=None,
-                    help="Override the scoring lookback window in hours. "
-                         f"Defaults to {INFERENCE_LOOKBACK_HOURS}h, widened "
-                         f"to {_MONDAY_LOOKBACK_HOURS}h on Monday to span "
-                         "the weekend gap — see _MONDAY_LOOKBACK_HOURS.")
+                    help="Pin an exact scoring lookback window in hours "
+                         "(skips the auto-escalation ladder entirely). "
+                         f"Default behavior tries {LOOKBACK_ESCALATION_HOURS} "
+                         "in order until one finds bars.")
     args = ap.parse_args()
 
-    lookback_hours = _resolve_lookback_hours(
-        args.lookback_hours, os.environ.get("INFERENCE_LOOKBACK_HOURS"),
-        datetime.now(timezone.utc),
-    )
+    explicit_lookback = _resolve_explicit_lookback_hours(
+        args.lookback_hours, os.environ.get("INFERENCE_LOOKBACK_HOURS"))
 
     cells = _parse_cells(args.cells)
-    log.info("mag_inference starting — cells=%s lookback=%dh",
-             cells, lookback_hours)
+    log.info("mag_inference starting — cells=%s lookback=%s",
+             cells,
+             f"{explicit_lookback}h (explicit)" if explicit_lookback is not None
+             else f"auto-escalate {LOOKBACK_ESCALATION_HOURS}")
 
     engine = get_engine()
     # Ensure DDL — race-safe (CREATE TABLE IF NOT EXISTS).
@@ -452,7 +479,8 @@ def main() -> int:
     for ticker, tf in cells:
         try:
             model, feature_cols, version = _load_model_and_version(ticker, tf)
-            features = _load_recent_features(ticker, tf, lookback_hours)
+            features = _load_recent_features_with_escalation(
+                ticker, tf, explicit_lookback)
             n = _score_and_persist(engine, ticker, tf,
                                     model, feature_cols, version, features)
             log.info("%s:%s — %d predictions written (model_version=%s)",
