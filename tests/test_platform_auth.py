@@ -114,3 +114,44 @@ def test_firebase_allowlist_switch(monkeypatch):
     assert c.get("/api/secret", headers={"authorization": "Bearer good:two@y.com"}).status_code == 200
     r = c.get("/api/secret", headers={"authorization": "Bearer good:nope@x.com"})
     assert r.status_code == 403
+
+
+def test_verify_bearer_email_tolerates_clock_skew(monkeypatch):
+    """`_verify_bearer_email` must call verify_id_token with a clock-skew
+    tolerance so a token whose `iat` is a few seconds ahead of THIS server's
+    clock (normal, unavoidable device/server drift) isn't rejected as
+    'used too early'. Without it, any user with a slightly-off clock gets an
+    intermittent 401 and an empty app. Regression guard for PR #674."""
+    import types
+    import api.auth as a
+
+    monkeypatch.setattr(a, "_ensure_firebase", lambda: None)
+
+    captured: dict = {}
+
+    class _FakeAuth:
+        @staticmethod
+        def verify_id_token(token, **kwargs):
+            captured["kwargs"] = kwargs
+            return {"email": "Me@X.com"}
+
+    fake_mod = types.ModuleType("firebase_admin")
+    fake_mod.auth = _FakeAuth  # `from firebase_admin import auth as fb_auth`
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_mod)
+
+    from starlette.requests import Request
+
+    req = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/secret",
+        "headers": [(b"authorization", b"Bearer sometoken")],
+    })
+
+    email = a._verify_bearer_email(req)
+    assert email == "me@x.com"
+    # The behavior under test: skew tolerance is passed and is a sane, non-zero
+    # value within Firebase's allowed 0..60s range.
+    skew = captured["kwargs"].get("clock_skew_seconds")
+    assert skew is not None, "verify_id_token called with zero clock-skew tolerance"
+    assert 0 < skew <= 60
