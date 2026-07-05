@@ -4,7 +4,7 @@
 
 **Goal:** Ship the public Solyra marketing/landing page (10 sections per spec) inside `platform/`, with a public waitlist API, public route wiring, and visuals that mirror the real app's gamma/chart language.
 
-**Architecture:** The landing page is a React route (`platform/src/routes/LandingPage.tsx` + `components/landing/*`) rendered to signed-out visitors by `AuthGate` (firebase mode) and always available at `/welcome`. A new public `POST /api/waitlist` endpoint (FastAPI router + `waitlist_signups` table) captures signups with loud failures. All page numbers/visuals come from a clearly-marked marketing fixture module — no new financial math.
+**Architecture:** The landing page is the site's DEFAULT page — `/` renders `LandingPage` publicly in every auth mode; the app dashboard moves to `/dashboard`, and the whole app group is wrapped by `AuthGate` inside the router (landing → sign in → platform). A new public `POST /api/waitlist` endpoint (FastAPI router + `waitlist_signups` table) captures signups with loud failures. All page numbers/visuals come from a clearly-marked marketing fixture module — no new financial math.
 
 **Tech Stack:** React 19 + Vite 7 + TS 5.9, react-router-dom v7, plain CSS (design tokens), FastAPI + SQLAlchemy (`gcp.database.get_engine`), pytest (hermetic TestClient), vitest, Playwright.
 
@@ -318,16 +318,19 @@ git commit -m "feat: add public waitlist endpoint + waitlist_signups table"
 
 ---
 
-### Task 2: Public route wiring + LandingPage skeleton
+### Task 2: Route wiring — landing at `/`, app at `/dashboard`
 
 **Files:**
 - Create: `platform/src/routes/LandingPage.tsx` (skeleton — full content in Tasks 3–7)
 - Modify: `platform/src/App.tsx`
-- Modify: `platform/src/components/auth/AuthGate.tsx`
+- Modify: `platform/src/components/layout/navConfig.ts:40`
+- Modify: `platform/src/components/shared/RouteErrorBoundary.tsx:51`
+- Modify: e2e specs that visit the dashboard at `/` (exact list in Step 5)
+- NOT modified: `platform/src/components/auth/AuthGate.tsx` — it keeps its current behavior (signed-out firebase → `SignInScreen`), it just moves inside the router around the app group.
 
 **Interfaces:**
-- Consumes: existing `AuthGate`, `SignInScreen`, `LoadingSpinner`.
-- Produces: route `/welcome` (always public), route `/signin` (redirects to `/` when signed in; shows `SignInScreen` when signed out), and the rule "signed-out firebase visitor on any path except `/signin` sees `LandingPage`". `LandingPage` default-exports a component rendering `<main className="solyra-landing" data-testid="landing-page">`. Tasks 3–7 fill it; Task 8's e2e asserts the testid.
+- Consumes: existing `AuthGate`, `AppShell`.
+- Produces: `/` = `LandingPage`, public in EVERY auth mode (the site's default page); `/dashboard` = the app dashboard (previously `/`), inside the AuthGate-wrapped app group; `/welcome` = redirect to `/`. The user flow is landing → Sign in (`/dashboard` link; firebase mode shows `SignInScreen` there, open/iap go straight in) → platform. `LandingPage` default-exports a component rendering `<main className="solyra-landing" data-testid="landing-page">`. Tasks 3–7 fill it; Task 8's e2e asserts the testid.
 
 - [ ] **Step 1: Create the skeleton page**
 
@@ -337,8 +340,9 @@ Create `platform/src/routes/LandingPage.tsx`:
 /**
  * Solyra public landing page — spec:
  * docs/superpowers/specs/2026-07-05-solyra-landing-page-design.md
- * Rendered (a) at /welcome always, (b) by AuthGate for signed-out visitors
- * in firebase mode. Must not require auth or Firebase.
+ * The site's DEFAULT page: served publicly at `/` in every auth mode.
+ * The app lives at /dashboard behind AuthGate. Must not require auth
+ * or Firebase.
  */
 export default function LandingPage() {
   return (
@@ -349,7 +353,7 @@ export default function LandingPage() {
 }
 ```
 
-- [ ] **Step 2: Add the public routes**
+- [ ] **Step 2: Rewire the router — landing default, app gated at /dashboard**
 
 In `platform/src/App.tsx`:
 
@@ -365,22 +369,23 @@ import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 const LandingPage = lazy(() => import('@/routes/LandingPage'));
 ```
 
-3. Replace the `createBrowserRouter([...])` call (lines 44–64) with:
+3. Replace the `createBrowserRouter([...])` call (lines 44–64) AND the `App` function (lines 66–74) with:
 
 ```tsx
 const router = createBrowserRouter([
-  // Public marketing page — reachable in every auth mode (dev preview at /welcome).
+  // The site's DEFAULT page — public marketing/landing, all auth modes.
   {
-    path: '/welcome',
+    path: '/',
     element: <Suspense fallback={<PageLoader />}><LandingPage /></Suspense>,
   },
-  // Signed-in users landing on /signin (post-login) bounce into the app.
-  { path: '/signin', element: <Navigate to="/" replace /> },
+  { path: '/welcome', element: <Navigate to="/" replace /> },
+  // The app group — AuthGate wraps the shell, so in firebase mode a signed-out
+  // visitor hitting any app route sees SignInScreen, then the app on success.
   {
-    element: <AppShell />,
+    element: <AuthGate><AppShell /></AuthGate>,
     errorElement,
     children: [
-      { path: '/', errorElement, element: <Suspense fallback={<PageLoader />}><DashboardPage /></Suspense> },
+      { path: '/dashboard', errorElement, element: <Suspense fallback={<PageLoader />}><DashboardPage /></Suspense> },
       { path: '/live', errorElement, element: <Suspense fallback={<PageLoader />}><LiveMarketPage /></Suspense> },
       { path: '/charts', errorElement, element: <Suspense fallback={<PageLoader />}><ChartsPage /></Suspense> },
       { path: '/options', errorElement, element: <Suspense fallback={<PageLoader />}><OptionsFlowPage /></Suspense> },
@@ -396,81 +401,62 @@ const router = createBrowserRouter([
     ],
   },
 ]);
-```
 
-(Only the two new top-level routes are added; the AppShell group is unchanged.)
-
-- [ ] **Step 3: Make AuthGate serve the landing page to signed-out visitors**
-
-Replace the full contents of `platform/src/components/auth/AuthGate.tsx` with:
-
-```tsx
-import { lazy, Suspense, type ReactNode } from 'react';
-import { useUser } from '@/hooks/useUser';
-import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
-import { SignInScreen } from './SignInScreen';
-
-const LandingPage = lazy(() => import('@/routes/LandingPage'));
-
-/**
- * Top-level auth gate.
- *
- * Only `firebase` mode (the public app-login service) gates anything. In
- * `iap`/`open` mode the app renders directly, unchanged (keeps E2E specs
- * rendering as before).
- *
- * Signed-out firebase visitors get the PUBLIC LANDING PAGE (the product's
- * front door) on every path except /signin, which shows the login screen.
- * AuthGate renders outside the router, so the landing page uses plain
- * <a href> navigation and /signin is read from window.location.
- */
-export function AuthGate({ children }: { children: ReactNode }) {
-  const { authMode, isSignedIn, isLoading } = useUser();
-
-  if (authMode !== 'firebase') return <>{children}</>;
-
-  if (isLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[var(--surface-0)]">
-        <LoadingSpinner size={28} />
-      </div>
-    );
-  }
-
-  if (!isSignedIn) {
-    if (window.location.pathname === '/signin') return <SignInScreen />;
-    return (
-      <Suspense
-        fallback={
-          <div className="flex min-h-screen items-center justify-center bg-[var(--surface-0)]">
-            <LoadingSpinner size={28} />
-          </div>
-        }
-      >
-        <LandingPage />
-      </Suspense>
-    );
-  }
-
-  return <>{children}</>;
+function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  );
 }
 ```
 
-Post-login flow check (no code change expected): after a successful sign-in on `/signin`, `useUser().isSignedIn` flips → AuthGate renders the router → the `/signin` route `Navigate`s to `/`.
+Notes: `AuthGate` moved from wrapping `RouterProvider` into the router (around `AppShell`) so `/` renders without auth. `AuthGate` and `SignInScreen` use no router hooks, so rendering them inside the router is safe. Post-login flow: signing in at `/dashboard` flips `useUser().isSignedIn` → AuthGate re-renders its children → the dashboard appears at the same URL (no redirect needed).
 
-- [ ] **Step 4: Verify it compiles and dev-renders**
+- [ ] **Step 3: Repoint the two in-app references to the dashboard path**
+
+`platform/src/components/layout/navConfig.ts` line 40:
+
+```ts
+      { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+```
+
+`platform/src/components/shared/RouteErrorBoundary.tsx` line 51:
+
+```tsx
+                onClick={() => navigate('/dashboard')}
+```
+
+- [ ] **Step 4: Update existing e2e specs that visit the dashboard at `/`**
+
+Change `page.goto('/')` → `page.goto('/dashboard')` at these known sites:
+- `platform/tests/auth.setup.ts:21`
+- `platform/tests/phase1-charts.spec.ts:9`
+- `platform/tests/gamma-levels.spec.ts:109`
+- `platform/tests/navigation.spec.ts:67`
+- `platform/tests/dashboard.spec.ts:140,150,156,166,183`
+
+Then sweep for stragglers (URL assertions, other `'/'` literals) and fix any that refer to the dashboard:
+
+```bash
+grep -n "goto('/')\|toHaveURL('/')\|toHaveURL(/\\\\/$/)" platform/tests/*.ts
+```
+
+Expected after fixes: no remaining dashboard-at-`/` references (a `goto('/')` is only correct if that test intends the LANDING page).
+
+- [ ] **Step 5: Verify it compiles and dev-renders**
 
 Run (in `platform/`): `npm run build`
 Expected: `tsc -b && vite build` succeeds.
 
-Run: `npm run dev` then open `http://localhost:5173/welcome`
-Expected: dark page showing the "Solyra" h1 skeleton (open mode). `http://localhost:5173/` still renders the dashboard.
+Run: `npm run dev` then open `http://localhost:5173/`
+Expected: dark page showing the "Solyra" h1 skeleton (the default page in every mode). `http://localhost:5173/dashboard` renders the app dashboard; `/welcome` redirects to `/`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add platform/src/routes/LandingPage.tsx platform/src/App.tsx platform/src/components/auth/AuthGate.tsx
-git commit -m "feat: public /welcome landing route + signed-out landing front door"
+git add platform/src/routes/LandingPage.tsx platform/src/App.tsx platform/src/components/layout/navConfig.ts platform/src/components/shared/RouteErrorBoundary.tsx platform/tests
+git commit -m "feat: landing page as default route, app moves to /dashboard"
 ```
 
 ---
@@ -733,7 +719,9 @@ export function useTypingLines(total: number, intervalMs = 650): number {
 - [ ] **Step 4: Create `LandingNav.tsx`**
 
 ```tsx
-/** Section 01 — top nav. Plain anchors: AuthGate renders this outside the router. */
+/** Section 01 — top nav. Plain anchors keep the landing router-agnostic;
+ *  "Sign in" points at /dashboard — AuthGate shows the login screen there
+ *  in firebase mode and the app directly in open/iap mode. */
 export function LandingNav() {
   return (
     <nav
@@ -742,7 +730,7 @@ export function LandingNav() {
         padding: '16px 6vw', maxWidth: 1200, margin: '0 auto',
       }}
     >
-      <a href="/welcome" style={{ display: 'flex', alignItems: 'center', gap: 9, textDecoration: 'none', color: 'inherit' }}>
+      <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 9, textDecoration: 'none', color: 'inherit' }}>
         <div className="sl-sun" />
         <span style={{ fontWeight: 800, letterSpacing: '2.5px', fontSize: 15 }}>SOLYRA</span>
       </a>
@@ -752,7 +740,7 @@ export function LandingNav() {
         <a href="#faq" style={{ color: 'inherit', textDecoration: 'none' }}>FAQ</a>
       </div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        <a href="/signin" className="sl-mut" style={{ fontSize: 13, textDecoration: 'none' }}>Sign in</a>
+        <a href="/dashboard" className="sl-mut" style={{ fontSize: 13, textDecoration: 'none' }}>Sign in</a>
         <a href="#waitlist" className="sl-cta" style={{ padding: '8px 16px', fontSize: 12 }}>Request access</a>
       </div>
     </nav>
@@ -856,8 +844,9 @@ Replace `platform/src/routes/LandingPage.tsx` with:
 /**
  * Solyra public landing page — spec:
  * docs/superpowers/specs/2026-07-05-solyra-landing-page-design.md
- * Rendered (a) at /welcome always, (b) by AuthGate for signed-out visitors
- * in firebase mode. Must not require auth or Firebase.
+ * The site's DEFAULT page: served publicly at `/` in every auth mode.
+ * The app lives at /dashboard behind AuthGate. Must not require auth
+ * or Firebase.
  */
 import '@/components/landing/landing.css';
 import { LandingNav } from '@/components/landing/LandingNav';
@@ -876,7 +865,7 @@ export default function LandingPage() {
 - [ ] **Step 7: Verify build + visual check**
 
 Run (in `platform/`): `npm run build` → succeeds.
-Run: `npm run dev` → open `http://localhost:5173/welcome`: nav + hero render, terminal lines type in one-by-one; with OS reduced-motion enabled they appear instantly.
+Run: `npm run dev` → open `http://localhost:5173/`: nav + hero render, terminal lines type in one-by-one; with OS reduced-motion enabled they appear instantly.
 
 - [ ] **Step 8: Commit**
 
@@ -1043,7 +1032,7 @@ import { BentoGrid } from '@/components/landing/BentoGrid';
 
 - [ ] **Step 3: Verify**
 
-Run (in `platform/`): `npm run build` → succeeds. Dev-check `/welcome`: six tiles; gamma ladder shows the gold King bar at 592, purple bars left, red dashed spot line; proof tile shows "Results published at launch" (null fixture).
+Run (in `platform/`): `npm run build` → succeeds. Dev-check `/`: six tiles; gamma ladder shows the gold King bar at 592, purple bars left, red dashed spot line; proof tile shows "Results published at launch" (null fixture).
 
 - [ ] **Step 4: Commit**
 
@@ -1614,8 +1603,9 @@ export function LandingFAQ() {
 /**
  * Solyra public landing page — spec:
  * docs/superpowers/specs/2026-07-05-solyra-landing-page-design.md
- * Rendered (a) at /welcome always, (b) by AuthGate for signed-out visitors
- * in firebase mode. Must not require auth or Firebase.
+ * The site's DEFAULT page: served publicly at `/` in every auth mode.
+ * The app lives at /dashboard behind AuthGate. Must not require auth
+ * or Firebase.
  */
 import '@/components/landing/landing.css';
 import { LandingNav } from '@/components/landing/LandingNav';
@@ -1643,7 +1633,7 @@ export default function LandingPage() {
 }
 ```
 
-- [ ] **Step 8: Verify** — `npx vitest run` (all platform unit tests pass) and `npm run build` (passes). Dev-check `/welcome` end-to-end scroll: 10 sections in spec order; submitting a bad email shows the inline error; submitting a good one against the running dev API shows the success state.
+- [ ] **Step 8: Verify** — `npx vitest run` (all platform unit tests pass) and `npm run build` (passes). Dev-check `/` end-to-end scroll: 10 sections in spec order; submitting a bad email shows the inline error; submitting a good one against the running dev API shows the success state.
 
 - [ ] **Step 9: Commit**
 
@@ -1671,10 +1661,10 @@ Create `platform/tests/landing.spec.ts`:
 import { expect, test } from '@playwright/test';
 
 // Landing page smoke — runs against the dev server (open auth mode), where
-// /welcome is the always-public preview route.
+// the landing page is the default page at / in every auth mode.
 test.describe('Solyra landing page', () => {
-  test('renders all key sections at /welcome', async ({ page }) => {
-    await page.goto('/welcome');
+  test('renders all key sections at /', async ({ page }) => {
+    await page.goto('/');
     await expect(page.getByTestId('landing-page')).toBeVisible();
     await expect(page.getByRole('heading', { name: /know why the market moves/i })).toBeVisible();
     await expect(page.getByText('Everything that moves the market. One surface.')).toBeVisible();
@@ -1686,7 +1676,7 @@ test.describe('Solyra landing page', () => {
   });
 
   test('waitlist form rejects an invalid email with a visible error', async ({ page }) => {
-    await page.goto('/welcome');
+    await page.goto('/');
     await page.getByTestId('waitlist-email').fill('not-an-email');
     await page.getByTestId('waitlist-submit').click();
     await expect(page.getByTestId('waitlist-error')).toContainText(/valid email/i);
@@ -1722,7 +1712,7 @@ Run (in `platform/`): `npm run lint` → clean. `npm run build` → passes. `npx
 git add platform/tests/landing.spec.ts platform/src/components/landing/fixtures.ts
 git commit -m "test: landing page e2e smoke + proof tile data"
 git push -u origin feature/solyra-landing
-gh pr create --base main --title "feat: Solyra public landing page + waitlist API" --body "Implements docs/superpowers/specs/2026-07-05-solyra-landing-page-design.md — public /welcome landing route, signed-out front door, waitlist endpoint + table, 10 marketing sections with app-faithful gamma visuals. Deployment note: apply gcp/schema.sql (waitlist_signups) via the apply-schema-migrations Cloud Run job before flipping firebase-mode traffic."
+gh pr create --base main --title "feat: Solyra public landing page + waitlist API" --body "Implements docs/superpowers/specs/2026-07-05-solyra-landing-page-design.md — landing page as the default / route (app moves to /dashboard), waitlist endpoint + table, 10 marketing sections with app-faithful gamma visuals. Deployment note: apply gcp/schema.sql (waitlist_signups) via the apply-schema-migrations Cloud Run job before flipping firebase-mode traffic."
 ```
 
 PR description must include the capacity note (Rule 0): waitlist endpoint = 1 INSERT per request, rate-limited 5/10min/IP, no scheduled jobs, no new Cloud Run resources → no capacity/cost impact.

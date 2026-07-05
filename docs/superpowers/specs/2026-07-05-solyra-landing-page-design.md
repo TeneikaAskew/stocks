@@ -128,11 +128,13 @@ Landing visuals must match these app surfaces (verified in code 2026-07-05):
 
 ## 7. Architecture & implementation constraints
 
-- **Placement:** public route inside `platform/` (served to signed-out visitors; "Sign in"
-  routes into the existing AuthGate flow). Rationale: reuses the token system, fonts, and
-  primitives so landing and app can't drift; avoids a second deploy surface. The exact
-  route/auth wiring (e.g., `/` public + `/app` gated, vs `/welcome`) is decided in the
-  implementation plan.
+- **Placement:** the landing page is the SITE'S DEFAULT PAGE — `/` renders it publicly in
+  every auth mode. The app dashboard moves to `/dashboard`, and the whole app route group
+  is wrapped by AuthGate inside the router; the user flow is landing → Sign in → platform.
+  "Sign in" links to `/dashboard` (firebase mode shows the sign-in screen there; open/iap
+  go straight in). `/welcome` redirects to `/`. Rationale: living inside `platform/`
+  reuses the token system, fonts, and primitives so landing and app can't drift; avoids a
+  second deploy surface.
 - **Waitlist capture:** `POST /api/waitlist` → new `waitlist_signups` table (email,
   created_at, source, user_agent; unique on email; idempotent upsert). Basic abuse
   guards (rate limit per IP, honeypot field). No third-party form service.
