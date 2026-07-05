@@ -59,7 +59,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
                 <NavLink
                   key={path}
                   to={path}
-                  end={path === '/'}
+                  end={path === '/dashboard'}
                   title={label}
                   className={({ isActive }) =>
                     `mx-2 flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${

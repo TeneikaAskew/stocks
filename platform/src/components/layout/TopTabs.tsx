@@ -40,12 +40,12 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
           <NavLink
             key={path}
             to={path}
-            end={path === '/'}
+            end={path === '/dashboard'}
             className={({ isActive }) => `top-tab shrink-0${isActive ? ' active' : ''}`}
             title={label}
           >
-            <Icon size={path === '/' ? 15 : 13} />
-            {path !== '/' && <span>{label}</span>}
+            <Icon size={path === '/dashboard' ? 15 : 13} />
+            {path !== '/dashboard' && <span>{label}</span>}
             {badge && <span className={`nav-badge${badge.tone === 'live' ? ' live' : ''}`}>{badge.text}</span>}
           </NavLink>
         ))}
@@ -109,7 +109,7 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
                     <NavLink
                       key={path}
                       to={path}
-                      end={path === '/'}
+                      end={path === '/dashboard'}
                       onClick={() => setMenuOpen(false)}
                       className={({ isActive }) =>
                         `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
