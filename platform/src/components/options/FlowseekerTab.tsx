@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Zap, AlertTriangle } from 'lucide-react';
+import { Zap } from 'lucide-react';
+import { DemoDataBanner } from '@/components/shared/DemoDataBanner';
 import {
   FLOW_FEED,
   SCANNER_BUCKETS,
@@ -110,13 +111,7 @@ export default function FlowseekerTab({
   return (
     <div className="space-y-4">
       {/* Demo banner — make it unmistakable this isn't live */}
-      <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-[var(--warn)]">
-        <AlertTriangle size={14} className="shrink-0" />
-        <span className="font-semibold">Demo data — no live flow feed connected.</span>
-        <span className="text-[var(--warn)]/80">
-          Placeholder tape until an options flow-tape endpoint exists.
-        </span>
-      </div>
+      <DemoDataBanner detail="No live flow feed connected — placeholder tape until an options flow-tape endpoint exists." />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px] lg:items-start">
         {/* Left column: scanner strip + feed */}
