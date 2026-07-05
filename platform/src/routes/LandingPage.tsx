@@ -5,10 +5,15 @@
  * The app lives at /dashboard behind AuthGate. Must not require auth
  * or Firebase.
  */
+import '@/components/landing/landing.css';
+import { LandingNav } from '@/components/landing/LandingNav';
+import { Hero } from '@/components/landing/Hero';
+
 export default function LandingPage() {
   return (
     <main className="solyra-landing" data-testid="landing-page">
-      <h1>Solyra</h1>
+      <LandingNav />
+      <Hero />
     </main>
   );
 }

@@ -1,0 +1,53 @@
+/* Solyra landing page — scoped design tokens + shared classes.
+   Base palette matches the app's Obsidian tokens (index.css); the dawn
+   accent (amber→orange) is landing-only. Spec §3. */
+.solyra-landing {
+  --sl-bg: #0b0d11;
+  --sl-panel: #12151b;
+  --sl-border: rgba(255, 255, 255, 0.08);
+  --sl-text: #e8ecf1;
+  --sl-mut: #97a1ad;
+  --sl-dim: #6e7781;
+  --sl-amber: #ffb85c;
+  --sl-orange: #ff7a4d;
+  --sl-gold: #ffb800;
+  --sl-king: #f59e0b;
+  --sl-gate: #3b82f6;
+  --sl-bull: #34d399;
+  --sl-bear: #f87171;
+  --sl-viol: #a78bfa;
+  --sl-blue: #6ec3f2;
+  background: var(--sl-bg);
+  color: var(--sl-text);
+  min-height: 100vh;
+  font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif;
+}
+.solyra-landing * { box-sizing: border-box; }
+.sl-sec { padding: 72px 6vw; border-top: 1px solid rgba(255, 255, 255, 0.05); max-width: 1200px; margin: 0 auto; }
+.sl-panel { background: var(--sl-panel); border: 1px solid var(--sl-border); border-radius: 12px; }
+.sl-tile { background: var(--sl-panel); border: 1px solid var(--sl-border); border-radius: 12px; padding: 16px; }
+.sl-tile h4 { margin: 0 0 2px; font-size: 11px; letter-spacing: 1.2px; color: var(--sl-mut); font-weight: 600; text-transform: uppercase; }
+.sl-cta {
+  background: linear-gradient(90deg, var(--sl-amber), var(--sl-orange));
+  color: #1a1005; font-weight: 700; border: none; border-radius: 8px;
+  padding: 11px 22px; font-size: 14px; cursor: pointer; display: inline-block;
+  text-decoration: none;
+}
+.sl-cta2 { border: 1px solid rgba(255, 255, 255, 0.2); color: #cdd5de; border-radius: 8px; padding: 11px 22px; font-size: 14px; background: none; cursor: pointer; display: inline-block; text-decoration: none; }
+.sl-mut { color: var(--sl-mut); }
+.sl-dim { color: var(--sl-dim); }
+.sl-mono { font-family: Consolas, ui-monospace, monospace; }
+.sl-bull { color: var(--sl-bull); }
+.sl-bear { color: var(--sl-bear); }
+.sl-gold { color: var(--sl-gold); }
+.sl-viol { color: var(--sl-viol); }
+.sl-blue { color: var(--sl-blue); }
+.sl-h2 { font-size: clamp(22px, 3vw, 28px); font-weight: 800; margin: 0 0 6px; }
+.sl-kicker { font-size: 11px; letter-spacing: 2px; color: var(--sl-gold); text-transform: uppercase; }
+.sl-sun {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffd9a0, #ff8a4d 55%, #7a3416);
+  box-shadow: 0 0 14px rgba(255, 150, 70, 0.5);
+}
+.sl-2col { display: flex; gap: 36px; align-items: center; }
+@media (max-width: 900px) { .sl-2col { flex-direction: column; } .sl-sec { padding: 48px 5vw; } }
