@@ -1,5 +1,5 @@
 /**
- * E2E: Dashboard ("/dashboard") — landing page anchored on activeTicker.
+ * E2E: Dashboard ("/dashboard") — the app's home view anchored on activeTicker.
  *
  * Covers brief tile, latest signals, KPI grid, best/worst trades.
  * All API calls mocked; perf budget = first contentful render under 5s.

@@ -71,6 +71,10 @@ def _build(monkeypatch, mode: str, *, open_signup: str = "1", allowed: str = "")
     async def _me(request: Request):
         return {"email": a.current_user_email(request)}
 
+    @app.post("/api/waitlist")
+    async def _waitlist():
+        return {"status": "ok"}
+
     return TestClient(app), a
 
 
@@ -95,6 +99,7 @@ def test_firebase_requires_valid_token(monkeypatch):
     assert c.get("/api/secret").status_code == 401            # no token
     assert c.get("/api/health").status_code == 200            # open path
     assert c.get("/api/me").status_code == 200                # open path
+    assert c.post("/api/waitlist").status_code == 200         # open path (public signup form)
     # /api/me is open (middleware skips it) but must STILL report the verified
     # identity when a token is present — admin detection depends on it — and
     # None when anonymous.

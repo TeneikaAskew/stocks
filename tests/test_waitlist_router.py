@@ -86,6 +86,20 @@ def test_honeypot_returns_fake_success_without_db_call():
     ge.assert_not_called()
 
 
+def test_honeypot_checked_before_email_validation():
+    """A bot that fills the honeypot AND sends a malformed email must still
+    get the fake-success 200 (not the 400 that would tell the bot 'this is a
+    validation endpoint'), and must never touch the DB."""
+    with patch("gcp.database.get_engine") as ge:
+        r = _client().post(
+            "/api/waitlist",
+            json={"email": "not-an-email", "website": "http://spam"},
+        )
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+    ge.assert_not_called()
+
+
 def test_db_failure_is_loud_503():
     with patch("gcp.database.get_engine", side_effect=RuntimeError("db down")):
         r = _client().post("/api/waitlist", json={"email": "a@b.co", "website": ""})
@@ -102,6 +116,61 @@ def test_rate_limit_429_after_five_requests():
             ).status_code == 200
         r = client.post("/api/waitlist", json={"email": "a@b.co", "website": ""})
     assert r.status_code == 429
+
+
+def test_rate_limit_keys_on_x_forwarded_for_last_hop_not_socket_peer():
+    """On Cloud Run every request arrives from the proxy's socket address, so
+    keying on request.client.host would bucket every visitor together. The
+    limiter must key on the LAST X-Forwarded-For entry (the hop Google's
+    frontend itself observed) so independent visitors get independent
+    buckets, and must ignore spoofable earlier entries in the header."""
+    engine = _engine_mock()
+    client = _client()
+    with patch("gcp.database.get_engine", return_value=engine):
+        for _ in range(5):
+            assert (
+                client.post(
+                    "/api/waitlist",
+                    json={"email": "a@b.co", "website": ""},
+                    headers={"X-Forwarded-For": "1.1.1.1"},
+                ).status_code
+                == 200
+            )
+        # 6th request from the same forwarded IP is rate-limited.
+        r = client.post(
+            "/api/waitlist",
+            json={"email": "a@b.co", "website": ""},
+            headers={"X-Forwarded-For": "1.1.1.1"},
+        )
+        assert r.status_code == 429
+
+        # A different forwarded IP gets its own, independent bucket.
+        r2 = client.post(
+            "/api/waitlist",
+            json={"email": "a@b.co", "website": ""},
+            headers={"X-Forwarded-For": "2.2.2.2"},
+        )
+        assert r2.status_code == 200
+
+        # A spoofed header with extra client-supplied hops still buckets by
+        # the LAST (trustworthy) entry, "3.3.3.3" — not the spoofed prefix.
+        for _ in range(5):
+            assert (
+                client.post(
+                    "/api/waitlist",
+                    json={"email": "a@b.co", "website": ""},
+                    headers={"X-Forwarded-For": "9.9.9.9, 3.3.3.3"},
+                ).status_code
+                == 200
+            )
+        r3 = client.post(
+            "/api/waitlist",
+            json={"email": "a@b.co", "website": ""},
+            headers={"X-Forwarded-For": "9.9.9.9, 3.3.3.3"},
+        )
+        assert r3.status_code == 429
+        assert waitlist_router._hits.get("3.3.3.3") is not None
+        assert "9.9.9.9, 3.3.3.3" not in waitlist_router._hits
 
 
 def test_rate_limiter_evicts_stale_ips():

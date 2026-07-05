@@ -6,6 +6,7 @@ type Status = 'idle' | 'submitting' | 'done';
 /** Section 09 — waitlist capture. Errors are always VISIBLE (Rule 3.7). */
 export function WaitlistSection() {
   const [email, setEmail] = useState('');
+  const [website, setWebsite] = useState('');
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +19,7 @@ export function WaitlistSection() {
     }
     setStatus('submitting');
     try {
-      await submitWaitlist(email, 'landing');
+      await submitWaitlist(email, 'landing', website);
       setStatus('done');
     } catch (err) {
       setStatus('idle');
@@ -51,12 +52,23 @@ export function WaitlistSection() {
       ) : (
         <form onSubmit={onSubmit} noValidate style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
           <input
+            type="text"
+            name="website"
+            value={website}
+            onChange={(e) => setWebsite(e.target.value)}
+            tabIndex={-1}
+            autoComplete="off"
+            aria-hidden="true"
+            style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }}
+          />
+          <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@email.com"
             aria-label="Email address"
             data-testid="waitlist-email"
+            maxLength={320}
             style={{
               border: '1px solid rgba(255,255,255,.15)', background: 'var(--sl-panel)',
               borderRadius: 8, padding: '10px 18px', fontSize: 13, color: 'var(--sl-text)', minWidth: 240,

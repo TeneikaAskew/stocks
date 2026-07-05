@@ -7,13 +7,13 @@ export function validateEmail(email: string): boolean {
   return EMAIL_RE.test(email.trim());
 }
 
-export async function submitWaitlist(email: string, source: string): Promise<void> {
+export async function submitWaitlist(email: string, source: string, website = ''): Promise<void> {
   let res: Response;
   try {
     res = await fetch('/api/waitlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.trim().toLowerCase(), source, website: '' }),
+      body: JSON.stringify({ email: email.trim().toLowerCase(), source, website }),
     });
   } catch {
     throw new Error('Could not reach the server — check your connection and retry.');
@@ -21,8 +21,8 @@ export async function submitWaitlist(email: string, source: string): Promise<voi
   if (!res.ok) {
     let detail = `signup failed (${res.status})`;
     try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body.detail === 'string') detail = body.detail;
     } catch {
       // non-JSON error body — keep the status-code message
     }

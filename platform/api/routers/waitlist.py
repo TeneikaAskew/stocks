@@ -45,6 +45,19 @@ class WaitlistBody(BaseModel):
     website: str = ""  # honeypot — must stay empty
 
 
+def _client_ip(request: Request) -> str:
+    """Best client identity behind Cloud Run's proxy: the LAST entry of
+    X-Forwarded-For is the hop Google's frontend itself observed (earlier
+    entries are client-supplied and spoofable). Falls back to the socket
+    peer for local/dev."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        last = xff.split(",")[-1].strip()
+        if last:
+            return last
+    return request.client.host if request.client else "unknown"
+
+
 def _rate_limited(ip: str) -> bool:
     now = time.monotonic()
     q = _hits.setdefault(ip, deque())
@@ -63,19 +76,19 @@ def _rate_limited(ip: str) -> bool:
 
 @router.post("/api/waitlist")
 def join_waitlist(body: WaitlistBody, request: Request) -> dict:
+    if body.website:
+        # Honeypot tripped — bot traffic. Fake success, write nothing.
+        # Checked BEFORE email-format validation: a bot sending a malformed
+        # email must still get the fake-success 200, not a 400 that would
+        # signal "this is a validation endpoint" back to the bot.
+        logger.info("waitlist honeypot tripped ip=%s", _client_ip(request))
+        return {"status": "ok"}
+
     email = body.email.strip().lower()
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="enter a valid email address")
 
-    if body.website:
-        # Honeypot tripped — bot traffic. Fake success, write nothing.
-        logger.info(
-            "waitlist honeypot tripped ip=%s",
-            request.client.host if request.client else "?",
-        )
-        return {"status": "ok"}
-
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request)
     if _rate_limited(ip):
         raise HTTPException(status_code=429, detail="too many attempts — try again later")
 

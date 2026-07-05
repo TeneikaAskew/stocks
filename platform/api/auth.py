@@ -31,6 +31,10 @@ from fastapi.responses import JSONResponse
 AUTH_MODE = os.environ.get("AUTH_MODE", "open").strip().lower()
 
 # Reachable without a token so the SPA shell + login screen can boot and probe.
+# Matching is prefix-based (see _path_requires_auth: `path == p or
+# path.startswith(p)`), so each entry must be chosen narrowly enough that it
+# doesn't unintentionally open a future sibling route (e.g. "/api/me" also
+# opens "/api/me/anything" — pick exact, specific prefixes here).
 _OPEN_API_PREFIXES = ("/api/health", "/api/me", "/api/config/firebase", "/api/waitlist")
 
 _firebase_ready = False
