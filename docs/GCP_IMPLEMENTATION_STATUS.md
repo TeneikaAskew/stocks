@@ -413,6 +413,7 @@ Pre-existing failures (unrelated to dashboard work):
 
 ## Change Log
 
+- 2026-07-05: Add Frontend-icons.drawio — 15-tab frontend diagram: Auth & Entry process flow (IAP SSO, TokenGate, dev fallback + caveats) and one data-flow tab per route (hooks → endpoints → routers → tables R/W, external-service tiles), from a fresh codebase sweep
 - 2026-07-05: Add Architecture-icons.drawio — GCP-icon + process-flow rebuild merged with repo content (ported Earnings Pipeline page as swim-lanes; Backtest page updated for PRs #519/#547/#548)
 - 2026-07-05: Fix ERD.drawio corrupt nested edge-label cells ("Could not add object for mxCell" on 3 tabs) and convert all 61 entity boxes to real drawio table shapes (PK/UQ/FK badge column + one row per field, category border colors preserved, layout reflowed)
 - 2026-04-29: Add `docs/changelog/CHANGELOG_2026-04-27_to_2026-05-03.md` covering 45 merged PRs (#101–#145) + in-flight PR #146 (`feat/replay-auto-backfill-v2`); refresh shipping logs in `docs/STRAT_IMPLEMENTATION_PLAN.md`, `docs/plans/DISCORD_INTERACTIONS_PLAN.md`, `docs/plans/INSIGHT_ZONE_HALLUCINATION_PLAN.md`, `docs/plans/PREMARKET_CONTEXT_PLAN.md` so each plan's status reflects what landed in code (Strat v2 levels engine, Discord `/replay` Slice 0 + Slice 1, premarket H/L/VWAP context, `as_of` tz-leak fix + level-aware planner)
