@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 AUTH_MODE = os.environ.get("AUTH_MODE", "open").strip().lower()
 
 # Reachable without a token so the SPA shell + login screen can boot and probe.
-_OPEN_API_PREFIXES = ("/api/health", "/api/me", "/api/config/firebase")
+_OPEN_API_PREFIXES = ("/api/health", "/api/me", "/api/config/firebase", "/api/waitlist")
 
 _firebase_ready = False
 
