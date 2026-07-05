@@ -49,7 +49,11 @@ def _client_ip(request: Request) -> str:
     """Best client identity behind Cloud Run's proxy: the LAST entry of
     X-Forwarded-For is the hop Google's frontend itself observed (earlier
     entries are client-supplied and spoofable). Falls back to the socket
-    peer for local/dev."""
+    peer for local/dev.
+
+    Valid for direct run.app ingress. If a GCLB/external ALB or IAP ever
+    fronts this service, GCLB appends "<client-ip>, <lb-ip>" and last-hop
+    keying collapses to the LB address — revisit then."""
     xff = request.headers.get("x-forwarded-for", "")
     if xff:
         last = xff.split(",")[-1].strip()
