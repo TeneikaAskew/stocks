@@ -116,7 +116,7 @@ export const COUNCIL = {
 export const RHYTHM = [
   {
     time: '07:00', phase: 'LEARN', title: 'The Brief',
-    body: `Bias, the three levels that matter, today's catalysts, and the setup the playbook likes — in plain language, with every term one tap from its glossary definition. Five minutes, coffee in hand.`,
+    body: `Bias, the three levels that matter, today’s catalysts, and the setup the playbook likes — in plain language, with every term one tap from its glossary definition. Five minutes, coffee in hand.`,
   },
   {
     time: '09:30', phase: 'DO', title: 'The open — signals live',
@@ -124,14 +124,14 @@ export const RHYTHM = [
   },
   {
     time: '16:00', phase: 'ACT', title: 'The close — review & compound',
-    body: `Movement Read explains the day in one paragraph. Your journal auto-grades the signals you took against the ones you skipped. Tomorrow's you starts smarter.`,
+    body: `Movement Read explains the day in one paragraph. Your journal auto-grades the signals you took against the ones you skipped. Tomorrow’s you starts smarter.`,
   },
 ];
 
 export const FAQ = [
   {
     q: 'Is this financial advice?',
-    a: `No — Solyra is an analytics and education platform. It shows you what's happening and what has historically followed; decisions stay yours.`,
+    a: `No — Solyra is an analytics and education platform. It shows you what’s happening and what has historically followed; decisions stay yours.`,
   },
   {
     q: 'Do I need options experience?',
