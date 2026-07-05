@@ -49,7 +49,15 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+# Cloud Run task-timeout for cloud-sql-weekly-export is 21600s (6h; see
+# gcp/deploy.sh deploy_weekly_pg_dump — raised from 3600s after
+# cloud-sql-weekly-export-bcmlz was killed by Cloud Run on 2026-06-28,
+# issue #657). This app-level cap must stay BELOW that ceiling with margin
+# so a slow export raises a clear TimeoutError from inside the process
+# instead of racing Cloud Run's hard kill (which reports a generic
+# NonZeroExitCode with no export-specific diagnostics). 21000s leaves 600s
+# of margin for container startup + the export-trigger round-trip.
+POLL_MAX_SECS = int(os.environ.get("SQL_EXPORT_POLL_MAX_SECS", "21000"))
 
 
 def _get_token() -> str:
