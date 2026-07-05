@@ -9,6 +9,7 @@ import '@/components/landing/landing.css';
 import { LandingNav } from '@/components/landing/LandingNav';
 import { Hero } from '@/components/landing/Hero';
 import { BentoGrid } from '@/components/landing/BentoGrid';
+import { ChartShowcase } from '@/components/landing/ChartShowcase';
 
 export default function LandingPage() {
   return (
@@ -16,6 +17,7 @@ export default function LandingPage() {
       <LandingNav />
       <Hero />
       <BentoGrid />
+      <ChartShowcase />
     </main>
   );
 }
