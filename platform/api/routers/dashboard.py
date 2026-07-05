@@ -1,14 +1,16 @@
 """
 Dashboard aggregation router.
 GET /api/dashboard/brief/{ticker} - Daily bias / strat status from Cloud SQL
+GET /api/movement-statement       - PHASE 3 feature-flagged movement read
 """
+import os
 import sys
 import logging
 from datetime import datetime, date as _date_cls, timedelta
 from pathlib import Path
 
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -306,3 +308,205 @@ async def _apply_live_overlay(ticker: str, daily: dict) -> dict:
         "updated_at": quote.get("last_updated", ""),
         "source": "alphavantage_global_quote",
     }
+
+
+# ---------------------------------------------------------------------------
+# PHASE 3 — Movement Read (feature-flagged, behind-the-scenes until flipped).
+#
+# Surfaces the Phase 2 movement-statement assembler
+# (lib.movement_statement.assemble_movement_statement) as a read-only,
+# FEATURE-FLAGGED endpoint that the React "Movement Read" card renders.
+#
+# Architecture contract (CLAUDE.md — one source of truth):
+#   The frontend RENDERS the assembler's output and recomputes nothing.
+#   ALL math (headline probability, reach-rates, modifiers) lives in
+#   lib/movement_statement.py. This endpoint is a thin pass-through; it
+#   does NOT re-derive or alter any field.
+#
+# Scope guardrails (mirror the assembler's trustworthy-cell restriction):
+#   - Tickers: IWM / SPY / QQQ only (validated cells).
+#   - Timeframes: 5m / 15m ONLY. 30m is never consulted (calibration not
+#     cleared) and is rejected with 400.
+#   - Feature flag: MOVEMENT_STATEMENT_ENABLED (env var, default OFF). The
+#     SAME flag the assembler reads. When OFF the endpoint returns 404 so
+#     the card is genuinely absent — no UI change until the flag is ON.
+#   - Rule 3.7: every UNAVAILABLE envelope produced by the assembler is
+#     passed through VERBATIM. This endpoint NEVER fabricates a number, 0,
+#     or 0.5 to paper over a missing piece, and never strips a reason.
+# ---------------------------------------------------------------------------
+
+MOVEMENT_STATEMENT_TICKERS = ("IWM", "SPY", "QQQ")
+MOVEMENT_STATEMENT_TFS = ("5m", "15m")
+
+
+def _levels_block_has_non_finite(levels) -> bool:
+    """True if the levels block carries any non-finite float (NaN / inf).
+
+    Rule 3.7 safety net: Starlette's JSON renderer rejects NaN/inf and 500s the
+    whole response. The levels block is the only part of the statement that can
+    carry a price-derived float (current_price, ladder prices, distances), so a
+    cheap recursive scan of just that block lets the endpoint degrade levels to
+    an explicit UNAVAILABLE envelope instead of crashing. Walks dict/list/tuple
+    containers; any float for which math.isfinite is False trips the guard.
+    """
+    import math  # noqa: PLC0415
+
+    def _walk(node) -> bool:
+        if isinstance(node, float):
+            return not math.isfinite(node)
+        if isinstance(node, dict):
+            return any(_walk(v) for v in node.values())
+        if isinstance(node, (list, tuple)):
+            return any(_walk(v) for v in node)
+        return False
+
+    return _walk(levels)
+
+
+def _movement_statement_enabled() -> bool:
+    """Feature flag — default OFF.
+
+    Read at request time (not import time) so the flag can be flipped via
+    env var / Cloud Run config without a code change. Accepts the common
+    truthy spellings; everything else (including unset) is OFF. Mirrors
+    lib.movement_statement.is_enabled() exactly.
+    """
+    raw = os.environ.get("MOVEMENT_STATEMENT_ENABLED", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _build_movement_level_map(ticker: str):
+    """Best-effort LevelMap for the movement statement, or None.
+
+    The assembler degrades the levels block to an explicit UNAVAILABLE
+    envelope when level_map is None (Rule 3.7 — never a fabricated ladder),
+    so this helper is allowed to return None on any data gap. It builds the
+    SAME LevelMap the premarket brief builds (lib.strat_levels.build_level_map
+    over the daily bars + computed historical levels) so the levels-to-go
+    ladder matches the rest of the platform — no duplicated math.
+
+    Returns None (→ levels UNAVAILABLE) rather than raising, because a
+    missing LevelMap is a legitimate "data unavailable" state for ONE block
+    of the statement, not a reason to fail the whole read.
+    """
+    try:
+        import pandas as pd  # noqa: PLC0415
+        from lib.data_loader import DataLoader  # noqa: PLC0415
+        from lib.indicators import calculate_historical_levels  # noqa: PLC0415
+        from lib.strat_levels import build_level_map  # noqa: PLC0415
+
+        loader = DataLoader()
+        df = loader.load_daily(ticker, on_stale="warn")
+        if df is None or df.empty or len(df) < 2:
+            return None
+        close_col = "Close" if "Close" in df.columns else "Last"
+        if close_col not in df.columns:
+            return None
+        # Rule 3.7 — never anchor levels to a NaN/NULL close. market_data_daily
+        # can carry a same-day PREMARKET PLACEHOLDER row (close NULL/NaN) that
+        # DataLoader.load_daily keeps; float(NaN) does NOT raise, so an
+        # unfiltered df[close_col].iloc[-1] would push NaN into build_level_map →
+        # level_map.current_price = NaN → Starlette rejects NaN at JSON render →
+        # 500 on an otherwise-valid request. Filter to rows whose OHLC quad is
+        # fully real (non-null, non-NaN) and anchor to the LAST VALID close. If no
+        # valid close row remains, return None → the assembler degrades the levels
+        # block to an explicit UNAVAILABLE envelope (never a fabricated ladder).
+        ohlc_cols = [c for c in ("Open", "High", "Low", close_col) if c in df.columns]
+        df = df[df[ohlc_cols].notna().all(axis=1)]
+        if df.empty or len(df) < 2:
+            return None
+        ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
+        levels_df = calculate_historical_levels(
+            ts, df["High"], df["Low"], df["Open"], df[close_col],
+        )
+        for col in levels_df.columns:
+            df[col] = levels_df[col].values
+        current_price = float(df[close_col].iloc[-1])
+        # Defensive second guard: if the last valid close is somehow still not a
+        # finite number, refuse to build levels rather than ship NaN downstream.
+        if not pd.notna(current_price):
+            return None
+        atr_col = "atr_14" if "atr_14" in df.columns else None
+        atr_for_filter = None
+        if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
+            atr_for_filter = float(df[atr_col].iloc[-1]) or None
+        return build_level_map(
+            ticker=ticker,
+            daily_df=df,
+            current_price=current_price,
+            atr=atr_for_filter,
+        )
+    except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
+        logger.warning("movement-statement level map unavailable for %s: %s", ticker, exc)
+        return None
+
+
+@router.get("/api/movement-statement")
+async def movement_statement(
+    ticker: str = Query(..., description="One of IWM / SPY / QQQ (validated cells)."),
+    timeframe: str = Query("15m", description="5m or 15m ONLY (30m is never consulted)."),
+):
+    """PHASE 3 — read-only, feature-flagged movement statement.
+
+    Calls lib.movement_statement.assemble_movement_statement and returns its
+    dict verbatim (UNAVAILABLE envelopes included). The React "Movement Read"
+    card renders this output and recomputes nothing.
+
+    Behaviour:
+      - Flag OFF (default): 404 — the card is genuinely absent, no UI change.
+      - Flag ON, invalid ticker/timeframe: 400.
+      - Flag ON, valid cell: 200 with the assembled statement (which itself
+        carries per-field OK / UNAVAILABLE status — passed through unfabricated).
+    """
+    # Feature flag — when OFF the endpoint behaves as if it doesn't exist so
+    # the card simply does not render (no user-visible change while OFF).
+    if not _movement_statement_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    ticker_u = (ticker or "").upper().strip()
+    tf = (timeframe or "").strip()
+    if ticker_u not in MOVEMENT_STATEMENT_TICKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"ticker must be one of {MOVEMENT_STATEMENT_TICKERS} "
+                f"(validated cells); got {ticker_u!r}"
+            ),
+        )
+    if tf not in MOVEMENT_STATEMENT_TFS:
+        # 30m (and anything else) is intentionally rejected — not cleared.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"timeframe must be one of {MOVEMENT_STATEMENT_TFS}; got {tf!r} "
+                "(30m is never consulted — calibration not cleared)"
+            ),
+        )
+
+    from lib.movement_statement import assemble_movement_statement  # noqa: PLC0415
+
+    level_map = _build_movement_level_map(ticker_u)
+    result = assemble_movement_statement(ticker_u, tf, level_map=level_map)
+
+    # Defensive: the assembler returns None only when the flag is OFF, but we
+    # already gated on the flag above. If it still returns None (e.g. an env
+    # race), surface 404 rather than a null body — never fabricate a payload.
+    if result is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    # Final NaN guard (Rule 3.7): _build_movement_level_map already refuses to
+    # anchor levels to a NaN close, but belt-and-suspenders — if ANY non-finite
+    # float (NaN/inf) ever reaches the levels block, Starlette would reject it
+    # during JSON rendering and 500 an otherwise-valid request. Degrade the
+    # levels block to an explicit UNAVAILABLE envelope instead of crashing.
+    if _levels_block_has_non_finite(result.get("levels")):
+        logger.warning(
+            "movement-statement levels for %s carried a non-finite value; "
+            "degrading levels to UNAVAILABLE rather than emitting NaN",
+            ticker_u,
+        )
+        result["levels"] = {
+            "status": "UNAVAILABLE",
+            "reason": "no valid daily close to anchor levels",
+        }
+    return result

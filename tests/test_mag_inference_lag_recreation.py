@@ -67,7 +67,8 @@ def test_load_recent_features_recreates_training_lags():
     with patch(
         "gcp.research.strat_engine.strat_dataset.load_strat_features_with_levels",
         return_value=raw,
-    ), patch.object(mod, "get_engine", return_value=MagicMock()):
+    ), patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_last_settled_ts", return_value=None):
         out = mod._load_recent_features("IWM", "5m", 24)
 
     assert "prev1_candle" in out.columns
@@ -100,7 +101,8 @@ def test_load_recent_features_drops_session_warmup_bars():
     with patch(
         "gcp.research.strat_engine.strat_dataset.load_strat_features_with_levels",
         return_value=raw,
-    ), patch.object(mod, "get_engine", return_value=MagicMock()):
+    ), patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_last_settled_ts", return_value=None):
         out = mod._load_recent_features("IWM", "5m", 24)
 
     # First 3 raw bars have prev3_candle NaN → dropped.
@@ -117,7 +119,8 @@ def test_load_recent_features_handles_empty_loader_result():
     with patch(
         "gcp.research.strat_engine.strat_dataset.load_strat_features_with_levels",
         return_value=pd.DataFrame(),
-    ), patch.object(mod, "get_engine", return_value=MagicMock()):
+    ), patch.object(mod, "get_engine", return_value=MagicMock()), \
+         patch.object(mod, "_last_settled_ts", return_value=None):
         out = mod._load_recent_features("IWM", "5m", 24)
 
     assert out.empty

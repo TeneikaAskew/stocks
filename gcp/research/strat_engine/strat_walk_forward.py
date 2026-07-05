@@ -116,11 +116,95 @@ def base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float:
         y_test_idx, proba, labels=list(range(len(LABEL_CLASSES)))))
 
 
+def _train_holdout_split_by_date(bar_dates: np.ndarray, train_mask: np.ndarray,
+                                 calib_frac: float = 0.2):
+    """Carve a post-hoc-calibration validation slice from the TRAIN block ONLY,
+    by DATE (never random, never the test fold). The newest ``calib_frac`` of
+    distinct train DATES become the calibration slice; the rest fit the base
+    model. Splitting by date (not row) prevents same-day bars straddling the
+    split (within-day autocorrelation leak).
+
+    Returns (fit_mask, calib_mask) over the full row index. If the train block
+    has < 5 distinct dates, returns (train_mask, all-False) so the caller falls
+    back to raw (uncalibrated) rather than fitting on a handful of bars.
+
+    ``calib_frac`` MUST be in the open interval (0, 1). This is the single
+    choke point every caller (CLI ``main()``, ``walk_forward``,
+    ``train_and_evaluate_fold``) funnels through, so the load-bearing guard
+    lives here, not only in the CLI. An out-of-range value would otherwise
+    lie: ``1.0`` consumes the whole train block (empty fit → RAW fallback
+    while the artifact is still tagged ``_cf100``); ``<= 0`` silently
+    collapses to a one-day slice; ``> 1`` can turn the fold into an ERROR.
+    Fail loud instead (Rule 3.7 — no silent fallback).
+    """
+    if not (0.0 < calib_frac < 1.0):
+        raise ValueError(f"calib_frac must be in (0, 1), got {calib_frac}")
+    tr_dates = np.unique(bar_dates[train_mask])
+    if len(tr_dates) < 5:
+        return train_mask.copy(), np.zeros_like(train_mask)
+    n_calib = max(1, int(np.ceil(len(tr_dates) * calib_frac)))
+    cut_date = tr_dates[-n_calib]
+    calib_mask = train_mask & (bar_dates >= cut_date)
+    fit_mask = train_mask & (bar_dates < cut_date)
+    if int(fit_mask.sum()) == 0 or int(calib_mask.sum()) == 0:
+        return train_mask.copy(), np.zeros_like(train_mask)
+    return fit_mask, calib_mask
+
+
+def _isotonic_oos_proba(model, X_calib, y_calib, X_test, n_classes):
+    """Post-hoc MULTICLASS isotonic calibration fit on an out-of-train-but-
+    in-fold validation slice (NOT sklearn's per-fold-CV CalibratedClassifierCV
+    that E-20 found hurt ECE — this is a different, untried lever).
+
+    For each class k: fit a 1-D IsotonicRegression mapping the base model's
+    raw P(class=k) on the calibration slice → the realized 0/1 indicator of
+    class k. Apply to the test probabilities, then renormalize rows to sum to
+    1 (one-vs-rest isotonic is not inherently normalized).
+
+    A class absent from the calibration slice (single-value indicator) keeps
+    its raw probability for that column — calibrating a one-class column is
+    undefined, and fabricating a value would be a silent fallback (Rule 3.7).
+    Returns the calibrated, renormalized test probability matrix.
+    """
+    from sklearn.isotonic import IsotonicRegression
+    classes = list(model.classes_)
+    raw_calib = model.predict_proba(X_calib)
+    raw_test = model.predict_proba(X_test)
+    cal_test = np.empty_like(raw_test)
+    for j, cls in enumerate(classes):
+        ind = (y_calib == cls).astype(float)
+        if ind.min() == ind.max():
+            # class never (or always) appears in the calib slice — cannot fit
+            # an honest isotonic map; keep the raw column for this class.
+            cal_test[:, j] = raw_test[:, j]
+            continue
+        ir = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+        ir.fit(raw_calib[:, j], ind)
+        cal_test[:, j] = np.clip(ir.predict(raw_test[:, j]), 1e-9, 1.0)
+    # Renormalize each row to a proper distribution. Rows that underflow to ~0
+    # everywhere fall back to the raw row (cannot normalize a zero vector).
+    row_sums = cal_test.sum(axis=1, keepdims=True)
+    bad = (row_sums[:, 0] <= 1e-12)
+    cal_test[~bad] = cal_test[~bad] / row_sums[~bad]
+    cal_test[bad] = raw_test[bad]
+    # Map model-class order back to canonical 0..n_classes-1 column order.
+    if classes != list(range(n_classes)):
+        out = np.zeros((len(X_test), n_classes))
+        for j, cls in enumerate(classes):
+            out[:, int(cls)] = cal_test[:, j]
+        # renormalize again after the (possibly sparse) remap
+        s = out.sum(axis=1, keepdims=True)
+        s[s <= 1e-12] = 1.0
+        return out / s
+    return cal_test
+
+
 def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                              bar_dates: np.ndarray,
                              train_end: str, test_end: str,
                              lgbm_n_jobs: int,
-                             calibration: str = DEFAULT_CALIBRATION) -> dict:
+                             calibration: str = DEFAULT_CALIBRATION,
+                             calib_frac: float = 0.2) -> dict:
     """ONE fold of walk-forward. Full retrain (+ optional recalibrate) from scratch.
 
     Inputs are pre-featurized arrays + a bar_date array for slicing — the
@@ -144,11 +228,41 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
       - "sigmoid"/"isotonic" (diagnostic): refit base + calibrator from
         scratch per fold via CalibratedClassifierCV. Kept so the
         sigmoid-hurts comparison stays reproducible.
+      - "isotonic_oos" (principled thin-sample fix): post-hoc per-class
+        isotonic fit on a DATE-carved validation slice of THIS fold's train
+        block, NOT the sklearn CV-refit. Designed for the 30m cells whose ECE
+        misses the 0.05 ceiling on thin sample. Whether it actually HELPS is
+        an empirical question (E-20 found the CV path hurt); this branch lets
+        the walk-forward TEST it honestly. The ECE gate is NOT loosened — a
+        30m cell that still exceeds 0.05 after this stays FAILing.
+
+        ``calib_frac`` (default 0.2) governs how many of the newest DISTINCT
+        TRAIN dates are carved into that calibration slice. It is a research
+        knob, NOT a per-cell tuning dial — see the honest finding below.
+
+    ── 2026-06-21: QQQ-30m calib_frac sweep (do NOT re-chase this) ──────────
+    After #646, QQQ-30m sits 7/8 under isotonic_oos@0.2 (the 2025 fold ECE
+    0.0567, just over 0.05). A full calib_frac sweep was run through THIS
+    production harness (8 regime folds × IWM/SPY/QQQ):
+
+        QQQ-30m:  cf0.20 7/8 (2025=.0567) · cf0.30 7/8 (2020=.0545)
+                  cf0.35 7/8 (2020=.0557) · cf0.40 8/8 · cf0.45 8/8
+        IWM-30m:  cf0.20 8/8 (worst .0483) · cf0.40 7/8 (2023=.0569) ← REGRESS
+        SPY-30m:  cf0.20 8/8            · cf0.40 8/8
+
+    QQQ only reaches 8/8 at frac >= 0.40, but at 0.40 IWM-30m REGRESSES to
+    7/8 — and the QQQ failing fold hops (2025 -> 2020 -> 2020) as frac moves,
+    so the 8/8 is the frac hyperparameter being curve-fit to the gate, not a
+    robust calibration win. There is NO single calib_frac that clears QQQ-30m
+    8/8 without breaking IWM-30m. Honest verdict: the production default stays
+    calib_frac=0.2 (IWM/SPY-30m 8/8 preserved) and QQQ-30m STAYS HIDDEN/GATED
+    until more data accrues. The gate was NOT loosened to force a pass.
 
     Critical: when a calibrator IS fit, it is constructed FRESH inside this
     function. NEVER reuse a calibrator from a different fold — that leaks
     future data into past test windows.
     """
+    calib_status = calibration
     train_end_dt = np.datetime64(train_end)
     test_end_dt = np.datetime64(test_end)
     train_mask = bar_dates < train_end_dt
@@ -171,6 +285,27 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
         model = make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs)
         model.fit(X_tr, y_tr)
         proba = model.predict_proba(X_te)
+    elif calibration == "isotonic_oos":
+        # PRINCIPLED post-hoc isotonic, fit on a DATE-carved validation slice
+        # of THIS fold's train block (never the test fold). Distinct from the
+        # CV-refit CalibratedClassifierCV path E-20 rejected. This is the
+        # untried lever for the thin-sample 30m cells. Falls back to raw (and
+        # records it) when the train block is too thin to carve a slice — never
+        # silently fabricates a calibrated number (Rule 3.7).
+        fit_mask, calib_mask = _train_holdout_split_by_date(
+            bar_dates, train_mask, calib_frac=calib_frac)
+        if int(calib_mask.sum()) == 0:
+            model = make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs)
+            model.fit(X_tr, y_tr)
+            proba = model.predict_proba(X_te)
+            calib_status = "RAW_calib_unavailable"
+        else:
+            model = make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs)
+            model.fit(X_full[fit_mask], y_full[fit_mask])
+            proba = _isotonic_oos_proba(
+                model, X_full[calib_mask], y_full[calib_mask], X_te,
+                len(LABEL_CLASSES))
+            calib_status = "isotonic_oos"
     else:
         # DIAGNOSTIC — FRESH calibrated classifier; refit base + calibrator
         # from scratch. Untangled parallelism: CalibratedClassifierCV(n_jobs=cv)
@@ -202,17 +337,26 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
         "accuracy_beat_pp": (acc - base_acc) * 100,
         "ece": float(ece),
         "ece_bins": ece_bins,
+        "calib_status": calib_status,
         "status": "OK",
     }
 
 
 def walk_forward(engine, ticker: str, tf: str,
                  cutoffs: list[str] = None,
-                 calibration: str = DEFAULT_CALIBRATION) -> dict:
+                 calibration: str = DEFAULT_CALIBRATION,
+                 calib_frac: float = 0.2) -> dict:
+    # Fail fast at the library boundary — a direct caller (calibration sweep,
+    # notebook) gets a clear error BEFORE the expensive dataset load, not at
+    # the first fold. The load-bearing guard is in _train_holdout_split_by_date
+    # (the single choke point); this is the friendly early check. Mirrors the
+    # CLI's p.error so library and CLI callers behave identically.
+    if not (0.0 < calib_frac < 1.0):
+        raise ValueError(f"calib_frac must be in (0, 1), got {calib_frac}")
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 70)
-    log.info("WALK-FORWARD  %s %s  %d cutoffs  calibration=%s",
-             ticker, tf, len(cutoffs), calibration)
+    log.info("WALK-FORWARD  %s %s  %d cutoffs  calibration=%s  calib_frac=%.2f",
+             ticker, tf, len(cutoffs), calibration, calib_frac)
     log.info("=" * 70)
     log.info("cutoffs: %s", " | ".join(cutoffs))
 
@@ -265,7 +409,7 @@ def walk_forward(engine, ticker: str, tf: str,
             fold_t0 = time.time()
             r = train_and_evaluate_fold(
                 X_full, y_full, bar_dates_arr, cut, test_end, lgbm_n_jobs,
-                calibration=calibration)
+                calibration=calibration, calib_frac=calib_frac)
             r["fold_seconds"] = round(time.time() - fold_t0, 1)
             folds.append(r)
             if r["status"] == "OK":
@@ -274,9 +418,10 @@ def walk_forward(engine, ticker: str, tf: str,
                          r["logloss"], r["base_logloss"], r["beat"])
                 log.info("  accuracy=%.3f  base=%.3f  Δ=%+.1fpp",
                          r["accuracy"], r["base_accuracy"], r["accuracy_beat_pp"])
-                log.info("  ECE=%.4f  ceiling=%.3f  %s",
+                log.info("  ECE=%.4f  ceiling=%.3f  %s  (calib=%s)",
                          r["ece"], DEFAULT_ECE_CEILING,
-                         "PASS" if r["ece"] <= DEFAULT_ECE_CEILING else "FAIL")
+                         "PASS" if r["ece"] <= DEFAULT_ECE_CEILING else "FAIL",
+                         r.get("calib_status", "none"))
             else:
                 log.info("  %s (n_test=%d < %d)", r["status"], r["n_test"], MIN_TEST_BARS)
         except Exception as e:
@@ -325,12 +470,21 @@ def walk_forward(engine, ticker: str, tf: str,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration,
+        # calib_frac only governs the isotonic_oos date-carved TRAIN slice; it
+        # is a no-op for none/sigmoid/isotonic. Stamped so a non-default-frac
+        # run is reproducible and distinguishable in the artifact.
+        "calib_frac": calib_frac if calibration == "isotonic_oos" else None,
         "cv": DEFAULT_CV if calibration != "none" else None,
         "folds": folds,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
     prefix = gcs_model_prefix(ticker, tf)
-    blob = f"{prefix}/walk_forward_{calibration}_{int(time.time())}.json"
+    # The artifact name carries the calibration mode (and, for isotonic_oos, the
+    # calib_frac) so a diagnostic / larger-slice run never overwrites the
+    # production "none" report or another frac's isotonic_oos report.
+    frac_tag = (f"_cf{int(round(calib_frac * 100)):02d}"
+                if calibration == "isotonic_oos" else "")
+    blob = f"{prefix}/walk_forward_{calibration}{frac_tag}_{int(time.time())}.json"
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved: gs://%s/%s",
              os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
@@ -344,15 +498,28 @@ def main():
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD cutoffs (default: regime-spanning)")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
-                   choices=["none", "sigmoid", "isotonic"],
+                   choices=["none", "sigmoid", "isotonic", "isotonic_oos"],
                    help="none=production raw-softmax (default); sigmoid/isotonic "
-                        "are diagnostic-only (the 24-fold study proved sigmoid "
-                        "hurts ECE).")
+                        "are the diagnostic CV-refit path (the 24-fold study "
+                        "proved sigmoid hurts ECE — E-20); isotonic_oos is the "
+                        "principled post-hoc isotonic fit on a date-carved "
+                        "TRAIN slice — the thin-sample 30m fix to TEST (the ECE "
+                        "gate is NOT loosened).")
+    p.add_argument("--calib-frac", dest="calib_frac", type=float, default=0.2,
+                   help="Fraction of the newest DISTINCT TRAIN dates carved off "
+                        "as the isotonic_oos calibration slice (default 0.2). "
+                        "Only used when --calibration=isotonic_oos. The slice is "
+                        "always date-carved from TRAIN — it never touches test or "
+                        "the holdout, so a larger frac trades base-model training "
+                        "data for a better-fit calibration map but introduces NO "
+                        "leakage. The ECE gate stays 0.05.")
     args = p.parse_args()
+    if not (0.0 < args.calib_frac < 1.0):
+        p.error(f"--calib-frac must be in (0, 1), got {args.calib_frac}")
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
     walk_forward(engine, args.ticker, args.tf, cutoffs=cutoffs,
-                 calibration=args.calibration)
+                 calibration=args.calibration, calib_frac=args.calib_frac)
 
 
 if __name__ == "__main__":

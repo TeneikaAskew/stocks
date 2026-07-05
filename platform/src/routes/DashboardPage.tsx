@@ -29,6 +29,7 @@ import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
+import { MovementRead } from '@/components/dashboard/MovementRead';
 import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
@@ -513,6 +514,22 @@ export default function DashboardPage() {
           />
         </div>
       )}
+
+      {/* ── Movement Read (PHASE 3, feature-flagged) ───────────────────────
+          Self-hiding: when MOVEMENT_STATEMENT_ENABLED is OFF the endpoint
+          404s, the hook reports `absent`, and the card renders null. No
+          user-visible change until the flag is flipped on. The card only
+          consults 5m/15m cells (IWM/SPY/QQQ); the dashboard's tickers are
+          exactly those, so the active ticker is always valid here.
+
+          Live-only: the Movement Read is a "current read" — its hook calls the
+          live /api/movement-statement (ticker/timeframe only, no as_of). In
+          REVIEW/historical mode (reviewDate set) every surrounding card is
+          keyed to the selected as-of date, so rendering this live card would
+          show TODAY's continuation/levels next to historical data
+          (point-in-time contamination). Hiding it in review mode is the
+          correct, leak-proof behaviour. */}
+      {!isReview && <MovementRead ticker={activeTicker} timeframe="15m" />}
 
       {/* ── Intraday price (candlestick default · area toggle) ──────────────── */}
       {(hourly?.candlestick?.length ?? 0) > 0 && (

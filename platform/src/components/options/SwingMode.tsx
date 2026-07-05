@@ -10,31 +10,34 @@ import {
   X,
 } from 'lucide-react';
 import { useGammaLevels } from '@/hooks/useGammaLevels';
+import { useGammaGrid, type GammaGridSummary } from '@/hooks/useGammaGrid';
+import { buildGrid, selectValue, expHeader } from '@/components/options/swingGridUtils';
+import { formatGex, formatPctChange } from '@/lib/formatGex';
 import {
   HS,
   glossary,
   type NodeRole,
-  type HSExpiration,
   type DataSource,
 } from '@/data/heatseekerMock';
-import { DemoDataBanner } from '@/components/shared/DemoDataBanner';
 
 // SwingMode — Heatseeker "Swing Mode" dealer-gamma cockpit.
 //
-// A faithful port of the design's dealer-gamma.jsx: Toolbar (Live/Historical ·
-// GEX/VEX · expiry filter) + Legend strip + a 3-column stage —
+// Toolbar (Live/Historical · GEX/VEX · expiry filter) + Legend strip + a
+// 3-column stage —
 //   left:   Tactical read card
-//   center: Strike × Expiration heatmap (click a date header to drill into a
-//           per-expiration bar chart)
+//   center: Strike × Expiration heatmap
 //   right:  Nodes & pivots list + Pivot-build |GEX| bars.
 //
 // WHAT'S REAL vs MOCK:
-//   - The 2D grid, tactical read, drill-in detail and pivot-build are MOCK
-//     (there is no per-expiration dealer-exposure backend endpoint) — flagged
-//     by a persistent demo pill.
-//   - The Legend chips + NodeList are overlaid with REAL values from
-//     /api/options/{ticker}/{date}/levels via useGammaLevels when that data is
-//     available for the focus symbol, falling back to the mock otherwise.
+//   - The 2D heatmap grid is REAL — live per-(strike,expiration) GEX/VEX from
+//     /api/options/{ticker}/grid via useGammaGrid (lib.gamma is the single
+//     source of math; the frontend only renders). The source pill reflects the
+//     real data_source (realtime → eod_fallback → stale → unavailable), and the
+//     intraday Δ badge shows on the realtime path.
+//   - The Pivot rail is REAL — ranked |net GEX| aggregated per strike from the
+//     same grid. The Legend chips + NodeList are REAL via useGammaLevels.
+//   - The Tactical read card is still illustrative (no narrative backend yet) —
+//     flagged in the banner.
 
 type Metric = 'gex' | 'vex';
 type Mode = 'live' | 'historical';
@@ -147,13 +150,10 @@ function cellColor(value: number, max: number): string {
 }
 
 // ─── Format helpers ───────────────────────────────────────────
-function fmtGexK(n: number): string {
-  const sign = n >= 0 ? '+' : '−';
-  const abs = Math.abs(n);
-  if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(1)}M`;
-  return `${sign}${Math.round(abs)}K`;
-}
-function fmtBigGex(n: number): string {
+function fmtBigGex(n: number | null | undefined): string {
+  // Missing GEX/VEX for a genuinely-absent level renders "—", never a
+  // fabricated $0 that reads as a real "flat" reading (CLAUDE.md §3.7).
+  if (n == null) return '—';
   const abs = Math.abs(n);
   const sign = n >= 0 ? '+' : '−';
   if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
@@ -173,39 +173,28 @@ function fmtTime(iso: string): string {
 // backend can supply replaces the mock; everything else falls back to HS.
 interface RealOverlay {
   isReal: boolean;
+  /** True only when the King/Gate taxonomy came from the real /levels endpoint.
+   *  Midpoint/Hedge nodes have no other source, so they render only when true —
+   *  never as mock next to a real grid. */
+  isLevels: boolean;
   ticker: string;
   spotPrice: number;
   spotMethod: string;
   spotNote: string;
   kingStrike: number;
-  kingGex: number;
+  /** null when the level is genuinely absent — rendered as "—", not $0. */
+  kingGex: number | null;
   gateAbove?: { strike: number; gex: number };
   gateBelow?: { strike: number; gex: number };
   flipStrike: number;
-  flipGex: number;
+  flipGex: number | null;
   regime: string;
   totalGex: number;
+  totalVex: number | null;
 }
 
 // ─── Data source freshness pill ───────────────────────────────
-function SourcePill({ source, asOf, isMock }: { source: DataSource; asOf: string; isMock?: boolean }) {
-  // The Swing grid is mock, so never claim "LIVE" here — that would contradict
-  // the demo banner. Show an explicit, non-pulsing DEMO badge instead.
-  if (isMock) {
-    return (
-      <span
-        className="hs-pill"
-        title="Mock surface — not live data"
-        style={{
-          background: 'rgba(245,158,11,0.12)',
-          color: 'var(--warn)',
-          border: '1px solid rgba(245,158,11,0.40)',
-        }}
-      >
-        <span>DEMO</span>
-      </span>
-    );
-  }
+function SourcePill({ source, asOf }: { source: DataSource; asOf: string }) {
   const meta =
     {
       realtime: { cls: 'realtime', label: 'LIVE', hint: 'Realtime · 5-min snapshot' },
@@ -217,9 +206,11 @@ function SourcePill({ source, asOf, isMock }: { source: DataSource; asOf: string
     <span className={`hs-pill ${meta.cls}`} title={meta.hint}>
       <span className="dot pulse" />
       <span>{meta.label}</span>
-      <span style={{ opacity: 0.7, fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>
-        {fmtTime(asOf)}
-      </span>
+      {asOf ? (
+        <span style={{ opacity: 0.7, fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>
+          {fmtTime(asOf)}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -232,7 +223,8 @@ function Toolbar({
   setMode,
   expiryFilter,
   setExpiryFilter,
-  isMock,
+  source,
+  asOf,
 }: {
   metric: Metric;
   setMetric: (m: Metric) => void;
@@ -240,7 +232,8 @@ function Toolbar({
   setMode: (m: Mode) => void;
   expiryFilter: string;
   setExpiryFilter: (f: string) => void;
-  isMock?: boolean;
+  source: DataSource;
+  asOf: string;
 }) {
   return (
     <div className="hs-toolbar">
@@ -276,7 +269,7 @@ function Toolbar({
         </div>
       </div>
       <div className="right">
-        <SourcePill source={HS.dataSource} asOf={HS.asOf} isMock={isMock} />
+        <SourcePill source={source} asOf={asOf} />
         <button className="icon-btn" title="Refresh" type="button">
           <RefreshCw size={15} />
         </button>
@@ -373,17 +366,19 @@ function Legend({ overlay }: { overlay: RealOverlay }) {
           <div className="val">{overlay.flipStrike.toFixed(2)}</div>
         </div>
       </span>
-      <span className="chip hedge">
-        <span className="icon">
-          <HSIcons.hedge />
-        </span>
-        <div>
-          <div className="label">
-            <Term k="hedge">Hedge</Term>
+      {overlay.isLevels && (
+        <span className="chip hedge">
+          <span className="icon">
+            <HSIcons.hedge />
+          </span>
+          <div>
+            <div className="label">
+              <Term k="hedge">Hedge</Term>
+            </div>
+            <div className="val">{HS.nodes.hedge[0]?.strike}</div>
           </div>
-          <div className="val">{HS.nodes.hedge[0]?.strike}</div>
-        </div>
-      </span>
+        </span>
+      )}
       <span className="chip">
         <div>
           <div className="label">Regime</div>
@@ -406,7 +401,7 @@ function Legend({ overlay }: { overlay: RealOverlay }) {
             Total <Term k="vex">VEX</Term>
           </div>
           <div className="val" style={{ color: '#ef4444' }}>
-            {fmtBigGex(HS.totalVex)}
+            {fmtBigGex(overlay.totalVex)}
           </div>
         </div>
       </span>
@@ -466,391 +461,6 @@ function TacticalCard() {
   );
 }
 
-interface GridTip {
-  x: number;
-  y: number;
-  k: number;
-  exp: HSExpiration;
-  val: number;
-  roc: number;
-  role: NodeRole | null;
-}
-
-// ─── Strike × Expiration 2D heatmap (the headline) ────────────
-function HeatmapGrid({
-  metric,
-  onSelectExp,
-}: {
-  metric: Metric;
-  onSelectExp: (iso: string) => void;
-}) {
-  const grid = metric === 'vex' ? HS.vexGrid : HS.gexGrid;
-  const rocGrid = HS.rocGrid;
-  const max = Math.max(...grid.flat().map(Math.abs));
-
-  // King cell (highest |gex|) within window.
-  let kingI = 0;
-  let kingJ = 0;
-  let kingMag = 0;
-  HS.gexGrid.forEach((row, i) =>
-    row.forEach((v, j) => {
-      if (Math.abs(v) > kingMag) {
-        kingMag = Math.abs(v);
-        kingI = i;
-        kingJ = j;
-      }
-    }),
-  );
-
-  const roleByStrike: Record<number, NodeRole> = {};
-  HS.collapsed.forEach((c) => {
-    if (c.role) roleByStrike[c.strike] = c.role;
-  });
-
-  const [tip, setTip] = useState<GridTip | null>(null);
-
-  const colTpl = `auto repeat(${HS.expirations.length}, 1fr)`;
-  return (
-    <div className="card-i hs-grid-card">
-      <div className="card-h">
-        <h3>Strike × Expiration heatmap · {HS.ticker}</h3>
-        <div className="row" style={{ gap: 12, fontSize: 11, color: 'var(--on-surface-muted)', alignItems: 'baseline' }}>
-          <span>
-            <strong style={{ color: 'var(--on-surface)' }}>Cell values</strong> = dealer{' '}
-            <Term k={metric}>{metric.toUpperCase()}</Term> in $K ·{' '}
-            per 1% {metric === 'gex' ? 'spot move' : 'IV change'} ·{' '}
-            <strong style={{ color: 'var(--brand)' }}>click any date header to drill in</strong>
-          </span>
-        </div>
-      </div>
-
-      <div className="hs-grid" style={{ gridTemplateColumns: colTpl, gap: 0 }}>
-        <div />
-        {HS.expirations.map((e) => (
-          <div
-            key={e.iso}
-            className={`col-header ${e.tags.includes('opex') ? 'opex' : ''}`}
-            style={{ cursor: 'pointer' }}
-            onClick={() => onSelectExp(e.iso)}
-            title="Click to drill in"
-          >
-            {e.label}
-            <div className="dte">
-              {e.dte}d · {new Date(e.iso).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-            </div>
-          </div>
-        ))}
-
-        {HS.strikes.map((k, i) => {
-          const role = roleByStrike[k] ?? null;
-          const isSpot = role === 'spot';
-          const isFlip = role === 'flip';
-          return (
-            <div key={k} style={{ display: 'contents' }}>
-              <div className={`row-header ${role ?? ''}`}>
-                {role ? (
-                  <span className="icon">
-                    <RoleIcon role={role} />
-                  </span>
-                ) : null}
-                <span className="strike">{k}</span>
-                {role ? <span className="tag">{role}</span> : null}
-              </div>
-              {HS.expirations.map((e, j) => {
-                const val = grid[i][j];
-                const roc = rocGrid[i][j];
-                const isKing = i === kingI && j === kingJ;
-                return (
-                  <div
-                    key={e.iso}
-                    className={`hs-cell ${isKing ? 'king-here' : ''} ${isSpot ? 'spot-row' : ''} ${isFlip ? 'flip-row' : ''}`}
-                    style={{
-                      background: cellColor(val, max),
-                      height: 38,
-                      color: Math.abs(val) / max > 0.5 ? '#fff' : val >= 0 ? 'var(--bull)' : '#ef4444',
-                    }}
-                    onMouseEnter={(ev) => {
-                      const r = ev.currentTarget.getBoundingClientRect();
-                      setTip({ x: r.right + 8, y: r.top, k, exp: e, val, roc, role });
-                    }}
-                    onMouseLeave={() => setTip(null)}
-                  >
-                    {Math.abs(val) >= 40 ? (val >= 0 ? '+' : '−') + Math.round(Math.abs(val)) : ''}
-                    {Math.abs(roc) >= 20 ? (
-                      <span className="roc-tick" style={{ color: roc >= 0 ? 'var(--bull)' : '#ef4444' }}>
-                        {roc >= 0 ? '▲' : '▼'}
-                      </span>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
-      </div>
-
-      <div
-        className="row"
-        style={{
-          marginTop: 14,
-          gap: 16,
-          alignItems: 'center',
-          justifyContent: 'flex-end',
-          fontSize: 10.5,
-          color: 'var(--on-surface-muted)',
-        }}
-      >
-        <span>Sign convention:</span>
-        <span className="row" style={{ gap: 6, alignItems: 'center' }}>
-          <span style={{ width: 14, height: 14, borderRadius: 3, background: 'rgba(34,197,94,0.85)' }} />
-          <span>Call-dominant · pinning</span>
-        </span>
-        <span className="row" style={{ gap: 6, alignItems: 'center' }}>
-          <span style={{ width: 14, height: 14, borderRadius: 3, background: 'rgba(239,68,68,0.85)' }} />
-          <span>Put-dominant · trending</span>
-        </span>
-        <span style={{ marginLeft: 16 }}>▲ ▼ = Δ {metric.toUpperCase()} last hour</span>
-      </div>
-
-      {tip && (
-        <div className="hs-tip" style={{ left: tip.x, top: tip.y }}>
-          <h4>
-            {HS.ticker} · {tip.k}
-            <span className="dim" style={{ marginLeft: 8, fontWeight: 400 }}>
-              {tip.exp.label} · {tip.exp.dte}d
-            </span>
-          </h4>
-          <div className="kv">
-            <span className="k">{metric.toUpperCase()}</span>
-            <span className={`v ${tip.val >= 0 ? 'pos' : 'neg'}`}>{fmtGexK(tip.val)}</span>
-          </div>
-          <div className="kv">
-            <span className="k">Δ last hr</span>
-            <span className={`v ${tip.roc >= 0 ? 'pos' : 'neg'}`}>
-              {tip.roc >= 0 ? '+' : ''}
-              {tip.roc}K
-            </span>
-          </div>
-          {tip.role && (
-            <div className="kv">
-              <span className="k">Role</span>
-              <span className="v" style={{ color: 'var(--brand)' }}>
-                {tip.role.toUpperCase()}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Drill-in: per-expiration bar chart ────────────────────────
-function ExpirationDrillIn({
-  expIso,
-  metric,
-  onClose,
-}: {
-  expIso: string;
-  metric: Metric;
-  onClose: () => void;
-}) {
-  const exp = HS.expirations.find((e) => e.iso === expIso);
-  const rows = HS.detail[expIso];
-  if (!exp || !rows) return null;
-
-  const roleByStrike: Record<number, NodeRole> = {};
-  HS.collapsed.forEach((c) => {
-    if (c.role) roleByStrike[c.strike] = c.role;
-  });
-
-  let kingStrike: number | null = null;
-  let kingMag = 0;
-  rows.forEach((r) => {
-    if (Math.abs(r.gex) > kingMag) {
-      kingMag = Math.abs(r.gex);
-      kingStrike = r.strike;
-    }
-  });
-
-  const ordered = [...rows].sort((a, b) => b.strike - a.strike);
-  const max = Math.max(...rows.map((r) => Math.abs(metric === 'vex' ? r.vex : r.gex)));
-  const sumCallOi = rows.reduce((s, r) => s + r.callOi, 0);
-  const sumPutOi = rows.reduce((s, r) => s + r.putOi, 0);
-  const sumCallVol = rows.reduce((s, r) => s + r.callVol, 0);
-  const sumPutVol = rows.reduce((s, r) => s + r.putVol, 0);
-  const sumGex = rows.reduce((s, r) => s + (metric === 'vex' ? r.vex : r.gex), 0);
-  const avgIv = +(rows.reduce((s, r) => s + r.iv, 0) / rows.length).toFixed(1);
-
-  return (
-    <div className="card-i hs-grid-card">
-      <div className="card-h">
-        <div className="row" style={{ gap: 12, alignItems: 'baseline' }}>
-          <h3 style={{ margin: 0 }}>
-            {HS.ticker} · {exp.label} drill-in
-          </h3>
-          <span className="meta">
-            {exp.dte}d · expires{' '}
-            {new Date(exp.iso).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}
-            {exp.tags.includes('opex') ? ' · OPEX' : ''}
-          </span>
-        </div>
-        <button className="btn ghost" style={{ fontSize: 11 }} onClick={onClose} type="button">
-          <X size={11} /> Back to heatmap
-        </button>
-      </div>
-
-      <div className="hs-drill-summary">
-        <div className="stat">
-          <span className="k">Net {metric.toUpperCase()}</span>
-          <span className={`v ${sumGex >= 0 ? 'pos' : 'neg'}`}>
-            {sumGex >= 0 ? '+' : '−'}
-            {Math.round(Math.abs(sumGex))}K
-          </span>
-        </div>
-        <div className="stat">
-          <span className="k">King strike</span>
-          <span className="v" style={{ color: '#ffb800' }}>
-            {kingStrike}
-          </span>
-        </div>
-        <div className="stat">
-          <span className="k">Call OI</span>
-          <span className="v pos">{(sumCallOi / 1000).toFixed(1)}K</span>
-        </div>
-        <div className="stat">
-          <span className="k">Put OI</span>
-          <span className="v neg">{(sumPutOi / 1000).toFixed(1)}K</span>
-        </div>
-        <div className="stat">
-          <span className="k">Call vol</span>
-          <span className="v pos">{(sumCallVol / 1000).toFixed(1)}K</span>
-        </div>
-        <div className="stat">
-          <span className="k">Put vol</span>
-          <span className="v neg">{(sumPutVol / 1000).toFixed(1)}K</span>
-        </div>
-        <div className="stat">
-          <span className="k">P/C vol</span>
-          <span className="v">{(sumPutVol / Math.max(1, sumCallVol)).toFixed(2)}</span>
-        </div>
-        <div className="stat">
-          <span className="k">Avg IV</span>
-          <span className="v brand">{avgIv}%</span>
-        </div>
-      </div>
-
-      <div className="hs-bars">
-        <div className="hs-bars-head">
-          <span>Strike</span>
-          <span style={{ textAlign: 'center' }}>{metric.toUpperCase()} ($K) · dealer exposure</span>
-          <span style={{ textAlign: 'right' }}>Call OI</span>
-          <span style={{ textAlign: 'right' }}>Put OI</span>
-          <span style={{ textAlign: 'right' }}>Call vol</span>
-          <span style={{ textAlign: 'right' }}>Put vol</span>
-          <span style={{ textAlign: 'right' }}>IV</span>
-        </div>
-
-        {ordered.map((r) => {
-          const role = roleByStrike[r.strike];
-          const isKing = r.strike === kingStrike;
-          const val = metric === 'vex' ? r.vex : r.gex;
-          const pct = max > 0 ? (Math.abs(val) / max) * 50 : 0;
-          const pos = val >= 0;
-          const labelTxt = val >= 0 ? `+${Math.round(val)}K` : `−${Math.round(Math.abs(val))}K`;
-          const labelInside = pct > 16;
-          return (
-            <div className="hs-bars-row" key={r.strike}>
-              <div
-                className="hs-bar-strike"
-                style={{
-                  color:
-                    role === 'spot'
-                      ? 'var(--brand)'
-                      : role === 'king' || isKing
-                        ? '#ffb800'
-                        : role === 'flip'
-                          ? '#ef4444'
-                          : role === 'gate'
-                            ? '#ef4444'
-                            : role === 'hedge'
-                              ? '#6ec3f2'
-                              : role === 'midpoint'
-                                ? 'var(--on-surface-variant)'
-                                : 'var(--on-surface)',
-                }}
-              >
-                {role && (
-                  <span className="icon">
-                    <RoleIcon role={role} />
-                  </span>
-                )}
-                {!role && isKing && (
-                  <span className="icon" style={{ color: '#ffb800' }}>
-                    <HSIcons.king size={12} />
-                  </span>
-                )}
-                <span>{r.strike}</span>
-                {role && <span className="role-tag">{role}</span>}
-              </div>
-
-              <div className="hs-bar-track">
-                <div className="center" style={{ left: '50%' }} />
-                {pos ? (
-                  <div
-                    className="fill pos"
-                    style={{ left: '50%', width: `${pct}%`, border: isKing ? '1px solid #ffb800' : 'none' }}
-                  />
-                ) : (
-                  <div className="fill neg" style={{ right: '50%', width: `${pct}%` }} />
-                )}
-                <span
-                  className={`label ${labelInside ? '' : 'outside'}`}
-                  style={{
-                    [pos ? 'left' : 'right']: labelInside
-                      ? `calc(50% + 4px)`
-                      : `calc(50% + ${pct + 1}%)`,
-                  }}
-                >
-                  {labelTxt}
-                </span>
-              </div>
-
-              <div className="hs-oi-cell call" style={{ textAlign: 'right', alignItems: 'flex-end' }}>
-                <span className="v">{r.callOi.toLocaleString()}</span>
-                <span className="s">contracts</span>
-              </div>
-              <div className="hs-oi-cell put" style={{ textAlign: 'right', alignItems: 'flex-end' }}>
-                <span className="v">{r.putOi.toLocaleString()}</span>
-                <span className="s">contracts</span>
-              </div>
-              <div style={{ textAlign: 'right', fontWeight: 600, color: 'var(--bull)' }}>
-                {r.callVol.toLocaleString()}
-              </div>
-              <div style={{ textAlign: 'right', fontWeight: 600, color: '#ef4444' }}>
-                {r.putVol.toLocaleString()}
-              </div>
-              <div className="hs-iv-cell" style={{ justifyContent: 'flex-end' }}>
-                <span className="badge">
-                  <span className="fill" style={{ width: `${Math.min(100, r.iv * 3)}%` }} />
-                </span>
-                <span>{r.iv}%</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="row" style={{ marginTop: 14, gap: 14, fontSize: 10.5, color: 'var(--on-surface-muted)' }}>
-        <span>
-          <strong style={{ color: 'var(--on-surface)' }}>Reading this:</strong> each row is a strike for the{' '}
-          {exp.label} expiration. Bar shows dealer {metric.toUpperCase()} (call-dominant green right ·
-          put-dominant red left). Click another expiration above to switch.
-        </span>
-      </div>
-    </div>
-  );
-}
 
 // ─── Node list panel ───────────────────────────────────────────
 interface NodeItem {
@@ -870,12 +480,16 @@ function NodeList({ overlay }: { overlay: RealOverlay }) {
     items.push({ role: 'gate', strike: overlay.gateBelow.strike, extra: fmtBigGex(overlay.gateBelow.gex), name: 'Gate ↓' });
   items.push({ role: 'spot', strike: overlay.spotPrice, extra: 'current', name: 'Spot' });
   items.push({ role: 'flip', strike: overlay.flipStrike, extra: 'zero-gamma', name: 'Flip' });
-  HS.nodes.midpoints.forEach((m) =>
-    items.push({ role: 'midpoint', strike: m.strike, extra: fmtBigGex(m.gex), name: 'Midpoint' }),
-  );
-  HS.nodes.hedge.forEach((h) =>
-    items.push({ role: 'hedge', strike: h.strike, extra: h.linkedEvent, name: 'Hedge' }),
-  );
+  // Midpoint / Hedge nodes have no backend source — show them only alongside the
+  // real /levels taxonomy, never as mock next to a grid-derived overlay.
+  if (overlay.isLevels) {
+    HS.nodes.midpoints.forEach((m) =>
+      items.push({ role: 'midpoint', strike: m.strike, extra: fmtBigGex(m.gex), name: 'Midpoint' }),
+    );
+    HS.nodes.hedge.forEach((h) =>
+      items.push({ role: 'hedge', strike: h.strike, extra: h.linkedEvent, name: 'Hedge' }),
+    );
+  }
 
   return (
     <div className="card-i hs-nodes">
@@ -914,71 +528,215 @@ function NodeList({ overlay }: { overlay: RealOverlay }) {
   );
 }
 
-// ─── Pivot build / rate of change rail ─────────────────────────
-function PivotBuild() {
-  const ranked = [...HS.collapsed]
-    .map((s) => ({ ...s, abs: Math.abs(s.netGex) }))
-    .sort((a, b) => b.abs - a.abs)
-    .slice(0, 10);
-  const max = Math.max(...ranked.map((r) => r.abs));
+
+// ─── Strike × Expiration 2D heatmap (the headline) — REAL /grid data ──────────
+// Renders the live strike×expiration GEX/VEX surface from useGammaGrid in the
+// same hs-grid design as the rest of the cockpit. King cell = largest |net GEX|
+// (gold), spot/flip rows dashed. The intraday Δ badge (vs the prior snapshot)
+// shows only on the realtime path; null elsewhere.
+function RealHeatmapGrid({
+  summary,
+  loading,
+  isError,
+  metric,
+  ticker,
+  kingStrike,
+  flipStrike,
+}: {
+  summary?: GammaGridSummary;
+  loading: boolean;
+  isError: boolean;
+  metric: Metric;
+  ticker: string;
+  kingStrike?: number;
+  flipStrike?: number;
+}) {
+  const built = useMemo(
+    () => (summary && summary.cells.length > 0 ? buildGrid(summary, metric, 'net', 12) : null),
+    [summary, metric],
+  );
+
+  const Header = (
+    <div className="card-h">
+      <h3>Strike × Expiration heatmap · {ticker}</h3>
+    </div>
+  );
+
+  if (loading && !summary) {
+    return (
+      <div className="card-i hs-grid-card">
+        {Header}
+        <div style={{ padding: 48, textAlign: 'center', color: 'var(--on-surface-muted)', fontSize: 12 }}>
+          Loading live grid…
+        </div>
+      </div>
+    );
+  }
+  if (isError || !summary || summary.data_source === 'unavailable' || !built || built.columns.length === 0) {
+    const reason = summary?.reason ?? summary?.warnings?.[0] ?? 'No options grid available for this symbol.';
+    return (
+      <div className="card-i hs-grid-card">
+        {Header}
+        <div style={{ padding: 48, textAlign: 'center', color: 'var(--on-surface-muted)', fontSize: 12 }}>
+          Data unavailable — {reason}
+        </div>
+      </div>
+    );
+  }
+
+  const { cellMap, strikesDesc, columns, maxAbs, dteByExp, spotStrike, kingKey } = built;
+
+  // Robust color scale: the King is an outlier that would flatten every other
+  // cell on a linear |val|/max ramp. Scale color to the 75th-percentile non-zero
+  // magnitude so the body of the grid stays legible; King + big nodes clamp to
+  // full saturation (cellColor caps t at 1).
+  const absVals: number[] = [];
+  for (const c of cellMap.values()) {
+    const v = Math.abs(selectValue(c, metric, 'net'));
+    if (v > 0) absVals.push(v);
+  }
+  absVals.sort((a, b) => a - b);
+  const scaleMax = absVals.length ? absVals[Math.floor(absVals.length * 0.75)] || maxAbs : maxAbs;
+
+  const showChange = summary.data_source === 'realtime';
+  // Prefer the /levels King (matches the node list); else the grid's max |net GEX|.
+  const kingRowStrike = kingStrike ?? (kingKey ? Number(kingKey.split('|')[0]) : undefined);
+
+  // Strike row nearest the (real) flip level → flip dashed-row marker.
+  let flipNearest: number | null = null;
+  if (flipStrike != null) {
+    let best = Infinity;
+    for (const s of strikesDesc) {
+      const d = Math.abs(s - flipStrike);
+      if (d < best) {
+        best = d;
+        flipNearest = s;
+      }
+    }
+  }
+
+  const colTpl = `auto repeat(${columns.length}, 1fr)`;
+  return (
+    <div className="card-i hs-grid-card">
+      <div className="card-h">
+        <h3>Strike × Expiration heatmap · {ticker}</h3>
+        <div className="row" style={{ gap: 12, fontSize: 11, color: 'var(--on-surface-muted)', alignItems: 'baseline' }}>
+          <span>
+            <strong style={{ color: 'var(--on-surface)' }}>Cell values</strong> = dealer{' '}
+            <Term k={metric}>{metric.toUpperCase()}</Term> · per 1%{' '}
+            {metric === 'gex' ? 'spot move' : 'IV change'}
+            {showChange ? ' · badge = intraday Δ vs prior snapshot' : ''}
+          </span>
+        </div>
+      </div>
+
+      <div className="hs-grid" style={{ gridTemplateColumns: colTpl, gap: 0 }}>
+        <div />
+        {columns.map((exp) => {
+          const h = expHeader(exp, dteByExp.get(exp) ?? 0);
+          return (
+            <div key={exp} className="col-header">
+              {h.date}
+              <div className="dte">{h.dte}</div>
+            </div>
+          );
+        })}
+
+        {strikesDesc.map((k) => {
+          const role: NodeRole | null =
+            k === kingRowStrike ? 'king' : k === spotStrike ? 'spot' : k === flipNearest ? 'flip' : null;
+          return (
+            <div key={k} style={{ display: 'contents' }}>
+              <div className={`row-header ${role ?? ''}`}>
+                {role ? (
+                  <span className="icon">
+                    <RoleIcon role={role} />
+                  </span>
+                ) : null}
+                <span className="strike">{fmtStrike(k)}</span>
+                {role ? <span className="tag">{role}</span> : null}
+              </div>
+              {columns.map((exp) => {
+                const cell = cellMap.get(`${k}|${exp}`);
+                const isKing = kingKey === `${k}|${exp}`;
+                const val = cell ? selectValue(cell, metric, 'net') : 0;
+                const pct = cell?.pct_change ?? null;
+                const intensity = scaleMax > 0 ? Math.abs(val) / scaleMax : 0;
+                return (
+                  <div
+                    key={exp}
+                    className={`hs-cell ${isKing ? 'king-here' : ''} ${role === 'spot' ? 'spot-row' : ''} ${role === 'flip' ? 'flip-row' : ''}`}
+                    style={{
+                      background: cell ? cellColor(val, scaleMax) : 'rgba(255,255,255,0.02)',
+                      height: 38,
+                      color: intensity > 0.5 ? '#fff' : val >= 0 ? 'var(--bull)' : '#ef4444',
+                    }}
+                    title={
+                      cell
+                        ? `${ticker} ${k} · ${exp} (${cell.dte}d)\n${metric.toUpperCase()}: ${formatGex(val)}\nOI ${cell.call_oi}c / ${cell.put_oi}p${pct != null ? `\nIntraday Δ: ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` : ''}`
+                        : `${k} · ${exp} — no contracts`
+                    }
+                  >
+                    {cell && intensity >= 0.04 ? formatGex(val) : ''}
+                    {showChange && pct != null && Math.abs(pct) >= 1 ? (
+                      <span className="roc-tick" style={{ color: pct >= 0 ? 'var(--bull)' : '#ef4444' }}>
+                        {formatPctChange(pct)}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      <div
+        className="row"
+        style={{ marginTop: 14, gap: 16, alignItems: 'center', justifyContent: 'flex-end', fontSize: 10.5, color: 'var(--on-surface-muted)' }}
+      >
+        <span className="row" style={{ gap: 6, alignItems: 'center' }}>
+          <span style={{ width: 14, height: 14, borderRadius: 3, background: 'rgba(34,197,94,0.85)' }} />
+          <span>Call-dominant · pinning</span>
+        </span>
+        <span className="row" style={{ gap: 6, alignItems: 'center' }}>
+          <span style={{ width: 14, height: 14, borderRadius: 3, background: 'rgba(239,68,68,0.85)' }} />
+          <span>Put-dominant · trending</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pivot build rail — REAL: ranked by |net GEX| aggregated per strike ───────
+function RealPivotBuild({ summary }: { summary?: GammaGridSummary }) {
+  const ranked = useMemo(() => {
+    if (!summary || summary.cells.length === 0) return [];
+    const byStrike = new Map<number, number>();
+    for (const c of summary.cells) byStrike.set(c.strike, (byStrike.get(c.strike) ?? 0) + c.gex);
+    return [...byStrike.entries()]
+      .map(([strike, netGex]) => ({ strike, netGex, abs: Math.abs(netGex) }))
+      .sort((a, b) => b.abs - a.abs)
+      .slice(0, 10);
+  }, [summary]);
+  if (ranked.length === 0) return null;
+  const max = Math.max(...ranked.map((r) => r.abs)) || 1;
   return (
     <div className="card-i hs-roc-card">
       <div className="card-h">
         <h3>Pivot build · ranked</h3>
         <span className="meta">|GEX| · all expirations</span>
       </div>
-      {ranked.map((r, i) => (
-        <div key={i} className="hs-roc-bar">
-          <span
-            className="strike"
-            style={{
-              color:
-                r.role === 'spot'
-                  ? 'var(--brand)'
-                  : r.role === 'king'
-                    ? '#ffb800'
-                    : r.role === 'flip'
-                      ? '#ef4444'
-                      : 'var(--on-surface)',
-            }}
-          >
-            {r.strike}
-          </span>
+      {ranked.map((r) => (
+        <div key={r.strike} className="hs-roc-bar">
+          <span className="strike">{fmtStrike(r.strike)}</span>
           <span className="track">
             <span className={`fill ${r.netGex < 0 ? 'neg' : ''}`} style={{ width: `${(r.abs / max) * 100}%` }} />
           </span>
           <span className="val" style={{ color: r.netGex < 0 ? '#ef4444' : 'var(--bull)' }}>
-            {fmtGexK(r.netGex)}
+            {formatGex(r.netGex)}
           </span>
         </div>
-      ))}
-    </div>
-  );
-}
-
-// Expiration drill tab row (shown when an expiration is selected).
-function ExpTabs({
-  selExp,
-  onSelect,
-}: {
-  selExp: string | null;
-  onSelect: (iso: string) => void;
-}) {
-  return (
-    <div className="hs-exp-tabs">
-      <span className="label">Expiration</span>
-      {HS.expirations.map((e) => (
-        <button
-          key={e.iso}
-          className={`hs-exp-tab ${selExp === e.iso ? 'active' : ''} ${e.tags.includes('opex') ? 'opex' : ''}`}
-          onClick={() => onSelect(e.iso)}
-          type="button"
-        >
-          <span className="name">{e.label}</span>
-          <span className="meta">
-            {e.dte}d · {new Date(e.iso).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-          </span>
-        </button>
       ))}
     </div>
   );
@@ -1006,21 +764,30 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
   const [metric, setMetric] = useState<Metric>('gex');
   const [mode, setMode] = useState<Mode>('live');
   const [expiryFilter, setExpiryFilter] = useState<string>('All');
-  const [selExp, setSelExp] = useState<string | null>(null);
 
-  // Real data overlay: latest snapshot date → gamma levels for the focus symbol.
+  // Real data: latest snapshot date → gamma levels + the 2-D strike×expiration
+  // grid for the focus symbol. The grid is the centerpiece (real /grid); levels
+  // drive the legend chips, node list, and King/Spot/Flip markers.
   const sym = (focusSymbol || HS.ticker).replace(/^\^/, '');
   const datesQuery = useLatestOptionsDate(sym);
   const latestDate = datesQuery.data?.dates?.[0] ?? '';
   const levelsQuery = useGammaLevels(sym, latestDate, { enabled: !!latestDate });
   const levels = levelsQuery.data;
+  const gridQuery = useGammaGrid(sym, latestDate, {
+    windowPct: 6,
+    live: mode === 'live',
+    enabled: !!sym && (mode === 'live' || !!latestDate),
+  });
+  const grid = gridQuery.data;
 
-  // Build the overlay — real values where the backend supplies them, else mock.
+  // Build the overlay. Priority: real /levels taxonomy → real grid-derived →
+  // mock (only when neither is available, and then the panels are hidden).
+  // No mock value is ever shown next to a real grid for the focus symbol.
   const overlay: RealOverlay = useMemo(() => {
+    // 1. Real /levels — full King/Gate taxonomy (lib.gamma is the source of math).
     if (levels && levels.levels.length > 0) {
       const king = levels.kings?.[0];
-      const spotPrice = levels.spot.price > 0 ? levels.spot.price : HS.spot.price;
-      // Split gates into above/below spot.
+      const spotPrice = levels.spot.price > 0 ? levels.spot.price : (grid?.spot.price ?? 0);
       const above = levels.gates
         .filter((g) => g.strike >= spotPrice)
         .sort((a, b) => a.strike - b.strike)[0];
@@ -1030,23 +797,64 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
       const flipLvl = levels.gamma_balance_levels?.[0];
       return {
         isReal: true,
+        isLevels: true,
         ticker: sym,
         spotPrice,
         spotMethod: levels.spot.method,
         spotNote: levels.spot.note,
-        kingStrike: king?.strike ?? HS.nodes.king.strike,
-        kingGex: king?.gex ?? HS.nodes.king.gex,
+        kingStrike: king?.strike ?? spotPrice,
+        kingGex: king?.gex ?? null,
         gateAbove: above ? { strike: above.strike, gex: above.gex } : undefined,
         gateBelow: below ? { strike: below.strike, gex: below.gex } : undefined,
-        flipStrike: levels.gamma_balance ?? HS.flip,
-        flipGex: flipLvl?.gex ?? HS.nodes.flip.gex,
+        flipStrike: levels.gamma_balance ?? grid?.gamma_flip ?? spotPrice,
+        flipGex: flipLvl?.gex ?? null,
         regime: levels.regime,
         totalGex: levels.total_gex,
+        totalVex: grid?.total_vex ?? null,
       };
     }
-    // Mock fallback.
+    // 2. Real grid but no /levels (e.g. on-demand ticker with no Cloud SQL dates).
+    //    Use the grid's own backend-computed fields; King = the grid's largest
+    //    |net GEX| strike (same selection as the gold King cell / pivot rail).
+    //    Gates need the /levels taxonomy, so they're omitted (not faked).
+    if (grid && grid.cells.length > 0 && grid.data_source !== 'unavailable') {
+      const byStrike = new Map<number, number>();
+      for (const c of grid.cells) byStrike.set(c.strike, (byStrike.get(c.strike) ?? 0) + c.gex);
+      let kingStrike = grid.spot.price;
+      let kingGex = 0;
+      let kingAbs = -1;
+      for (const [s, g] of byStrike) {
+        if (Math.abs(g) > kingAbs) {
+          kingAbs = Math.abs(g);
+          kingStrike = s;
+          kingGex = g;
+        }
+      }
+      return {
+        isReal: true,
+        isLevels: false,
+        ticker: grid.ticker,
+        spotPrice: grid.spot.price,
+        spotMethod: grid.spot.method,
+        spotNote: grid.spot.note,
+        kingStrike,
+        kingGex,
+        gateAbove: undefined,
+        gateBelow: undefined,
+        flipStrike: grid.gamma_flip ?? grid.spot.price,
+        // The grid path has no per-level flip GEX (only the flip strike from
+        // gamma_flip); null renders "—" rather than a fabricated $0.
+        flipGex: null,
+        regime: grid.regime,
+        totalGex: grid.total_gex,
+        totalVex: grid.total_vex,
+      };
+    }
+    // 3. Nothing real — mock placeholder (the Legend / NodeList are hidden in
+    //    this state; see the render guard on overlay.isReal).
     return {
       isReal: false,
+      isLevels: false,
       ticker: HS.ticker,
       spotPrice: HS.spot.price,
       spotMethod: HS.spot.method,
@@ -1059,19 +867,35 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
       flipGex: HS.nodes.flip.gex,
       regime: HS.regime,
       totalGex: HS.totalGex,
+      totalVex: HS.totalVex,
     };
-  }, [levels, sym]);
+  }, [levels, grid, sym]);
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      {/* Demo disclaimer — the grid/tactical/drill-in/pivot remain mock. */}
-      <DemoDataBanner
-        detail={
-          overlay.isReal
-            ? `Per-expiration exposure is mock; metric chips & node list show live ${overlay.ticker} levels.`
-            : `Showing mock ${HS.ticker} surface — per-expiration exposure pending backend.`
-        }
-      />
+      {/* The heatmap grid + pivot rail are LIVE; the tactical read is illustrative. */}
+      <div className="hs-demo-banner">
+        <span className="dot" />
+        <span>
+          {grid && grid.data_source !== 'unavailable' ? (
+            <>
+              Heatmap grid &amp; pivot rail show{' '}
+              <strong>
+                {grid.data_source === 'realtime'
+                  ? `live ${sym} dealer exposure`
+                  : grid.data_source === 'eod_fallback'
+                    ? `${sym} dealer exposure (end-of-day close)`
+                    : `${sym} dealer exposure (delayed snapshot)`}
+              </strong>
+              . Tactical read is illustrative.
+            </>
+          ) : (
+            <>
+              Live {sym} grid unavailable — <strong>tactical read is illustrative.</strong>
+            </>
+          )}
+        </span>
+      </div>
 
       <Toolbar
         metric={metric}
@@ -1080,23 +904,27 @@ export default function SwingMode({ focusSymbol }: SwingModeProps) {
         setMode={setMode}
         expiryFilter={expiryFilter}
         setExpiryFilter={setExpiryFilter}
-        isMock
+        source={grid?.data_source ?? 'unavailable'}
+        asOf={grid?.snapshot_ts ?? ''}
       />
-      <Legend overlay={overlay} />
-      {selExp && <ExpTabs selExp={selExp} onSelect={setSelExp} />}
+      {overlay.isReal && <Legend overlay={overlay} />}
 
       <div className="hs-stage">
         <div>
           <TacticalCard />
         </div>
-        {selExp ? (
-          <ExpirationDrillIn expIso={selExp} metric={metric} onClose={() => setSelExp(null)} />
-        ) : (
-          <HeatmapGrid metric={metric} onSelectExp={setSelExp} />
-        )}
+        <RealHeatmapGrid
+          summary={grid}
+          loading={gridQuery.isLoading}
+          isError={gridQuery.isError}
+          metric={metric}
+          ticker={sym}
+          kingStrike={overlay.isReal ? overlay.kingStrike : undefined}
+          flipStrike={overlay.isReal ? overlay.flipStrike : undefined}
+        />
         <div className="col" style={{ gap: 14 }}>
-          <NodeList overlay={overlay} />
-          <PivotBuild />
+          {overlay.isReal && <NodeList overlay={overlay} />}
+          <RealPivotBuild summary={grid} />
         </div>
       </div>
     </div>

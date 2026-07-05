@@ -42,7 +42,10 @@ from gcp.research.strat_engine.strat_config import (
     GCS_BUCKET_DEFAULT,
     gcs_model_prefix,
 )
-from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
+from gcp.research.strat_engine.strat_dataset import (
+    load_strat_features_with_levels,
+    add_session_aware_lags,
+)
 from gcp.research.strat_engine.strat_pred_train import featurize
 
 log = logging.getLogger(__name__)
@@ -275,7 +278,15 @@ def predict_one(
     `POST /api/admin/strat-engine/predict`:
       top_class, top_prob, class_probs,
       model_version, last_train_date, live_ece, muted, mute_reason,
-      scope_statement, ticker, timeframe, ts, available, note
+      scope_statement, ticker, timeframe, ts, available, note,
+      current_type, continuation_prob
+
+    `current_type` is the latest fully-labeled bar's Strat candle type
+    (1 / 2U / 2D / 3). `continuation_prob` is the calibrated probability
+    that the NEXT bar keeps that same type — i.e. ``class_probs[current_type]``.
+    Both are ``None`` when the prediction is unavailable or muted; we never
+    fabricate a continuation probability when the model can't produce one
+    (CLAUDE.md Rule 3.7).
     """
     response = {
         "ticker": ticker,
@@ -284,6 +295,8 @@ def predict_one(
         "top_class": None,
         "top_prob": None,
         "class_probs": {},
+        "current_type": None,
+        "continuation_prob": None,
         "model_version": None,
         "last_train_date": None,
         "live_ece": None,
@@ -331,14 +344,28 @@ def predict_one(
         response["note"] = mute_reason
         return response
 
-    # Load features. We use the labeled dataset loader so the featurize
-    # pipeline matches training exactly. Then pick one row.
-    df = load_labeled_dataset(
+    # Load features via the LIVE-INFERENCE view — load_strat_features_with_levels
+    # + add_session_aware_lags — the exact path mag_inference._load_recent_features
+    # uses. This is deliberately NOT load_labeled_dataset: that loader calls
+    # label_next_bar_type, which LEADs the label by 1 and DROPS the last bar per
+    # (ticker) (no t+1 to label). The dropped bar is the TRUE current bar, so
+    # df.iloc[[-1]] over the labeled set would be one (or more) bars stale and we
+    # would score a prior bar. The unlabeled inference view keeps the newest bar,
+    # so df.iloc[[-1]] is the true current bar. add_session_aware_lags reproduces
+    # the SAME prev1/2/3_candle lag semantics training (via label_next_bar_type)
+    # and mag_inference both rely on, so there is no train/inference skew — and
+    # next_bar_type is intentionally absent (it's the label, never a feature;
+    # featurize() drops LABEL_COL regardless). Then pick one row.
+    df = load_strat_features_with_levels(
         engine, ticker, tf,
         # Cap the lookback to the most recent ~30 days of bars for
         # efficiency. We only need the latest bar (or as_of).
         since=(pd.Timestamp.utcnow() - pd.Timedelta(days=30)).date().isoformat(),
+        require_strat_candle=True,
+        include_levels=True,
     )
+    df = df.sort_values(["bar_date", "ts"]).reset_index(drop=True)
+    df = add_session_aware_lags(df, tf)
     if as_of is not None:
         as_of_ts = pd.to_datetime(as_of, utc=True)
         mask = pd.to_datetime(df["ts"], utc=True) <= as_of_ts
@@ -352,10 +379,25 @@ def predict_one(
         )
         return response
 
-    # The latest row in the labeled set is the most recent fully-labeled
-    # bar — i.e. the prediction is FOR the bar after that one (next bar).
+    # The latest row in the inference view is the TRUE current (newest,
+    # unlabeled) bar — the model predicts the NEXT bar's structure type FROM
+    # this bar's features. Because we use the live-inference view (not the
+    # labeled set, which drops this bar), df.iloc[[-1]] is the freshest bar.
     latest = df.iloc[[-1]].copy()
     response["ts"] = pd.to_datetime(latest["ts"].iloc[0], utc=True).isoformat()
+
+    # Capture the current bar's Strat candle type. The "continuation"
+    # probability is P(next bar keeps this same type). Computed below once
+    # class_probs is assembled. If the column is missing/blank we leave
+    # current_type=None and continuation_prob=None (Rule 3.7 — never
+    # fabricate a probability we can't anchor to a real current type).
+    current_type: Optional[str] = None
+    if "strat_candle" in latest.columns:
+        raw_ct = latest["strat_candle"].iloc[0]
+        if raw_ct is not None and not pd.isna(raw_ct):
+            ct = str(raw_ct).strip()
+            if ct in LABEL_CLASSES:
+                current_type = ct
 
     X, _cols = featurize(latest)
     # Align to model's expected feature shape. The canonical list lives in
@@ -396,6 +438,11 @@ def predict_one(
     response["top_class"] = top_cls
     response["top_prob"] = class_probs[top_cls]
     response["class_probs"] = class_probs
+    response["current_type"] = current_type
+    # Continuation probability = calibrated P(next bar == current type).
+    # Only set when we have a real current_type to anchor it (Rule 3.7).
+    if current_type is not None:
+        response["continuation_prob"] = class_probs.get(current_type)
     return response
 
 

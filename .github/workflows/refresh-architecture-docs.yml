@@ -294,7 +294,17 @@ jobs:
       - name: Open refresh PR
         if: steps.detect.outputs.meaningful == '1' && inputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The default GITHUB_TOKEN cannot create PRs when the repo/org
+          # "Allow GitHub Actions to create and approve pull requests"
+          # setting is disabled — `gh pr create` fails with "GitHub
+          # Actions is not permitted to create or approve pull requests"
+          # regardless of the `pull-requests: write` permission declared
+          # above (that's a repo Settings toggle, not a workflow
+          # permissions block). PR_WORKFLOW_TOKEN is the same PAT
+          # handle-workflow-failure.yml already uses for this exact
+          # reason — see docs/CLAUDE_CODE_ON_WEB.md "Secret naming for
+          # blast-radius isolation".
+          GH_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
         run: |
           MONTH=$(date -u +%Y-%m)
           BRANCH="${PR_BRANCH_PREFIX}-${MONTH}"
@@ -349,3 +359,31 @@ jobs:
         if: steps.detect.outputs.meaningful != '1'
         run: |
           echo "::notice::No meaningful doc changes this run — exiting clean without opening a PR."
+
+  # Standard failure handler (CLAUDE.md "Automated Workflow Failure
+  # Handling") — was missing here, so the 2026-07-01 `gh pr create`
+  # failure (PR-creation blocked, see the Open refresh PR step above)
+  # recurred silently for two monthly runs with no issue/PR trail.
+  handle-failure:
+    needs: refresh
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Monthly architecture doc refresh"
+      failure_title: "❌ Monthly architecture doc refresh failed"
+      issue_labels: "workflow-failure,architecture-docs,automated"
+      workflow_file: "refresh-architecture-docs.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true

@@ -645,6 +645,225 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
     return rows
 
 
+# ── Column-nullity checks ──────────────────────────────────────────────────────
+#
+# Freshness alone can't see "rows ARE being written but the column we
+# need is NULL." The 2026-05 → 2026-06 ^VIX/gamma cascade was exactly
+# that failure mode: strat_features_<tf> bars wrote on schedule, all
+# checks passed, but vix_close was NULL for every post-2026-05-22 row
+# because the upstream ^VIX fetcher had stopped. We didn't notice for
+# ~4 weeks because no check looked at column non-NULL rate.
+#
+# These checks pick the canonical (table, column) pairs known to silently
+# fail when an upstream source stalls. They flag stale when the non-NULL
+# rate on TODAY's bars drops below a threshold (90% by default — leaves
+# headroom for a legitimately sparse column).
+#
+# Adding a new column-nullity check:
+#  - Choose the table + column whose silent NULL would corrupt downstream
+#  - `tickers`: only check these tickers (typically IWM/SPY/QQQ — the
+#    cells the magnitude / strat models score on)
+#  - `lookback_days`: window to evaluate; 1 = today's session only
+#  - `min_non_null_rate`: 0.90 is a safe default; raise for columns that
+#    must NEVER be NULL (e.g. ohlc), lower for sparse signals
+#  - `writer_job`: the Cloud Run Job whose failure caused the NULL, so
+#    operator pages on the actual culprit
+COLUMN_NULLITY_CHECKS: list[dict] = [
+    # ── strat_features_<tf> upstream-source columns ──
+    # These were the columns that silently NULLed during the 2026-06
+    # cascade; pin them so the same outage can't take 4 weeks to surface.
+    # We check only 5m because (a) it's the only TF magnitude-inference
+    # scores live, (b) per-TF checks are redundant — the underlying
+    # upstream source (^VIX, gamma_levels_eod, vex computation) is the
+    # same for all three TFs; if 5m is missing, 15m/30m are too.
+    {
+        "name": "strat_features_5m.vix_close",
+        "table": "strat_features_5m",
+        "column": "vix_close",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "fetch-market-data",
+        "rationale": "^VIX fetcher gap surfaced 2026-06-19 — NULL for 28 days",
+    },
+    {
+        "name": "strat_features_5m.total_gex",
+        "table": "strat_features_5m",
+        "column": "total_gex",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "strat-engine",  # via gamma_levels_eod (p2_build_gamma_levels)
+        "rationale": "gamma_levels_eod missed scheduler 2026-05-22 → 06-19 cascade",
+    },
+    {
+        "name": "strat_features_5m.gamma_balance_price",
+        "table": "strat_features_5m",
+        "column": "gamma_balance_price",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "strat-engine",
+        "rationale": "same gamma_levels_eod upstream as total_gex",
+    },
+    {
+        "name": "strat_features_5m.total_vex",
+        "table": "strat_features_5m",
+        "column": "total_vex",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "strat-engine",
+        "rationale": "VEX derives from gamma_levels_eod date-list — same cascade",
+    },
+    # ── strat_features_levels_<tf> — ORB columns ──
+    # These are the columns that the magnitude-inference levels-join
+    # (#629) needs. The 2026-06-21 verification showed they were the
+    # OTHER load-bearing inputs the model expected and inference was
+    # missing.
+    {
+        "name": "strat_features_levels_5m.orb_5m_high",
+        "table": "strat_features_levels_5m",
+        "column": "orb_5m_high",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "strat-engine",  # strat_enrich_levels.py via strat-enrich-daily
+        "rationale": "ORB-tz bug fixed 2026-06-20 (#629); pin so a regression surfaces fast",
+    },
+]
+
+
+def _query_column_nullity(now_utc: datetime) -> list[FreshnessRow]:
+    """For each (table, column, ticker) declared in COLUMN_NULLITY_CHECKS,
+    compute the non-NULL rate on the most recent SETTLED trading session
+    and flag stale when it drops below the threshold.
+
+    Returns ONLY failing rows — silent when everything is healthy, same
+    contract as _query_value_sanity. Uses one GROUP BY query per check
+    (3 tickers, no per-ticker round-trip).
+
+    Codex P2 #644 fixes vs the initial draft:
+
+      * Window is anchored to the most-recent settled trading day at
+        the writer's settle hour (not a wall-clock 24h cutoff). The
+        original `NOW() - INTERVAL '1 day'` silently missed Friday's
+        bars on Saturday/Sunday/Monday audits because Friday 5m bars
+        end at ~20:00 UTC and the Saturday 23:30 UTC cutoff put them
+        outside the window — the check would `df.empty` skip the
+        cascade-signature scenario.
+
+      * Uses query_to_dataframe_strict so a schema regression (e.g.
+        orb_5m_high column dropped) RAISES instead of silently passing
+        — the swallowing query_to_dataframe variant turned the dead
+        `except` block into a CLAUDE.md §3.7 silent fallback.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    results: list[FreshnessRow] = []
+    for check in COLUMN_NULLITY_CHECKS:
+        table = check["table"]
+        column = check["column"]
+        tickers = check["tickers"]
+        lookback_days = int(check.get("lookback_days", 1))
+        min_rate = float(check.get("min_non_null_rate", 0.90))
+        writer_job = check.get("writer_job")
+        # Settle anchor — the columns we check are populated by the
+        # strat-engine nightly pipeline (23:35 ET base + 02:00 ET levels
+        # for ORB), so the relevant "settled" data is yesterday's bars
+        # after ~02:00 ET. Default to settle_hour_et=2 (post-enrich).
+        settle_hour_et = int(check.get("settle_hour_et", 2))
+
+        # Anchor on the most-recent SETTLED trading day. lookback_days
+        # then walks BACK from that day (lookback_days=1 → just the
+        # latest session; lookback_days=2 → latest two sessions, etc).
+        latest_day = most_recent_trading_day(
+            now_utc, settle_hour_et=settle_hour_et,
+        )
+        window_start = datetime.combine(
+            latest_day - timedelta(days=max(lookback_days - 1, 0)),
+            time.min,
+        )
+        # Upper bound is end-of-latest-trading-day; rows beyond that
+        # are tomorrow's intraday partial writes (if any) and shouldn't
+        # be counted against the latest session's nullity rate.
+        window_end = datetime.combine(latest_day, time.min) + timedelta(days=1)
+
+        tkr_array = "ARRAY[" + ", ".join(f"'{t}'" for t in tickers) + "]"
+        sql = f"""
+            SELECT ticker,
+                   COUNT(*) AS total,
+                   COUNT({column}) AS non_null
+              FROM {table}
+             WHERE ticker = ANY({tkr_array})
+               AND ts >= :window_start
+               AND ts <  :window_end
+             GROUP BY ticker
+        """
+        params = {"window_start": window_start, "window_end": window_end}
+        try:
+            df = query_to_dataframe_strict(sql, params=params)
+        except Exception as e:
+            # Distinguish two error classes:
+            #   - Missing TABLE (fresh deploy, legitimate): skip silently
+            #   - Missing COLUMN / any other error (schema regression /
+            #     SQL bug / connection failure): emit an `unknown` row
+            #     so the operator sees it. The previous draft caught
+            #     both via a broad "does not exist" string match, which
+            #     would silently pass through a column-dropped regression
+            #     — Codex P2 #644.
+            msg = str(e)
+            lowered = msg.lower()
+            is_missing_relation = (
+                "relation" in lowered and "does not exist" in lowered
+            ) or "UndefinedTable" in msg
+            if is_missing_relation:
+                log.info("Column-nullity check %s skipped (table absent)",
+                         check["name"])
+                continue
+            log.warning("Column-nullity check %s failed: %s", check["name"], e)
+            results.append(FreshnessRow(
+                table=check["name"], ticker=None,
+                last_row_at=f"query failed: {msg[:120]}",
+                expected_latest=f">= {min_rate:.0%} non-NULL",
+                lag_hours=None, expected_max_hours=0,
+                status="unknown", row_count_recent=0,
+                writer_job=writer_job,
+            ))
+            continue
+        if df.empty:
+            # No rows for any ticker on the latest settled trading day.
+            # Distinct from the column-NULL bug; the underlying row-
+            # freshness checks already cover "table is stale" — but
+            # because we've anchored to the most recent SETTLED day
+            # the audit can no longer false-pass by being silent on a
+            # wall-clock-miss (Codex P2 #644).
+            log.info("Column-nullity check %s: no rows on %s for %s",
+                     check["name"], latest_day, tickers)
+            continue
+        for _, row in df.iterrows():
+            ticker = row["ticker"]
+            total = int(row["total"])
+            non_null = int(row["non_null"])
+            if total == 0:
+                continue  # GROUP BY shouldn't return empty groups, defensive
+            rate = non_null / total
+            if rate < min_rate:
+                results.append(FreshnessRow(
+                    table=check["name"],
+                    ticker=ticker,
+                    last_row_at=(f"{non_null}/{total} non-NULL ({rate:.1%}) "
+                                 f"on session {latest_day}"),
+                    expected_latest=f">= {min_rate:.0%} non-NULL",
+                    lag_hours=None,
+                    expected_max_hours=0,
+                    status="stale",
+                    row_count_recent=total,
+                    writer_job=writer_job,
+                ))
+    return results
+
+
 def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
     """Hardcoded cross-table sanity checks on recent rows. Returns only
     FAILING rows; silent when everything is within range.
@@ -746,6 +965,12 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
 
     # Value sanity across tables — only reports failures
     report.rows.extend(_query_value_sanity(now))
+
+    # Column-nullity checks — flag tables whose rows ARE writing on
+    # schedule but a critical column is silently NULL because an upstream
+    # source froze (the 2026-06 ^VIX/gamma cascade signature). Only
+    # reports failures.
+    report.rows.extend(_query_column_nullity(now))
 
     return report
 
