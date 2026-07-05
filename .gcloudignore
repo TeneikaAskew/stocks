@@ -70,3 +70,11 @@ tests/
 *.key
 *-credentials.json
 service-account*.json
+
+# Git history — NOT auto-excluded once a .gcloudignore file exists; 5.6 GiB otherwise.
+# This alone was making `gcloud builds submit` upload 6.4 GiB per deploy.
+.git/
+
+# Archived old apps + large reference assets — not copied into any container image.
+archive/
+references/
