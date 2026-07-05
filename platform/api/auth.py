@@ -69,7 +69,15 @@ def _verify_bearer_email(request: Request) -> Optional[str]:
     _ensure_firebase()
     from firebase_admin import auth as fb_auth
 
-    decoded = fb_auth.verify_id_token(token)
+    # Tolerate small clock skew between the token-issuing client and this
+    # server. Firebase stamps a token's `iat`/`exp` from Google's clock; a
+    # user's device (or this server) can legitimately be a few seconds off,
+    # and with the default zero tolerance a valid, freshly-minted token is
+    # rejected as "used too early" — an intermittent, unfixable-from-our-side
+    # 401 for anyone whose clock isn't perfectly synced. Firebase permits up
+    # to 60s of skew; using the max is harmless on 1-hour tokens and is the
+    # documented, production-grade way to handle real-world clock drift.
+    decoded = fb_auth.verify_id_token(token, clock_skew_seconds=60)
     email = (decoded.get("email") or "").strip().lower()
     return email or None
 
