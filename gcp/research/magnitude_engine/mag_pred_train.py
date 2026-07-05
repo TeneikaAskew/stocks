@@ -199,3 +199,43 @@ def make_lgbm(class_weight: str | None = "balanced", n_jobs: int = -1,
         class_weight=class_weight,
         random_state=random_state, verbose=-1, n_jobs=n_jobs,
     )
+
+
+def resolve_class_weight(y):
+    """Class weight for training, tuned by the MAG_CLASS_WEIGHT_POWER env var
+    (alpha, default 0.5). alpha>=1 → 'balanced'; alpha<=0 → None (unweighted);
+    otherwise a tempered dict. Single seam so all four walk-forward training
+    sites stay consistent and alpha is tunable without a code change."""
+    import os
+    try:
+        alpha = float(os.environ.get("MAG_CLASS_WEIGHT_POWER", "0.5"))
+    except ValueError:
+        alpha = 0.5
+    if alpha >= 1.0:
+        return "balanced"
+    if alpha <= 0.0:
+        return None
+    return tempered_class_weight(y, alpha)
+
+
+def tempered_class_weight(y, alpha: float = 0.5) -> dict:
+    """LightGBM class_weight dict = (balanced_weight) ** alpha.
+
+    balanced_weight[c] = n / (k * count_c)  — the sklearn 'balanced' formula.
+    alpha=1.0 → full 'balanced'; alpha=0.0 → uniform (equivalent to None).
+
+    Full 'balanced' de-collapsed the magnitude model but OVER-corrected —
+    predicting the minority buckets too often (IWM 5m: 47/27/19/7 vs true
+    66/25/6/2). Isotonic calibration over-corrected the other way (re-collapse
+    to 100% TIGHT). Tempering with 0 < alpha < 1 is the tunable middle ground:
+    minority buckets are still learned, but the correction is damped so the
+    predicted distribution tracks the true base rates. walk_forward reads alpha
+    from MAG_CLASS_WEIGHT_POWER so it can be tuned without a code change.
+    """
+    import numpy as np
+    y = np.asarray(y)
+    classes, counts = np.unique(y, return_counts=True)
+    n = len(y)
+    k = len(classes)
+    return {int(c): float((n / (k * cnt)) ** alpha)
+            for c, cnt in zip(classes, counts)}

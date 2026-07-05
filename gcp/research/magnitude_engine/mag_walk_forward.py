@@ -45,7 +45,7 @@ from gcp.research.magnitude_engine.mag_config import (
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
 from gcp.research.magnitude_engine.mag_pred_train import (
-    featurize, make_lgbm, expected_calibration_error,
+    featurize, make_lgbm, resolve_class_weight, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
 )
 from google.cloud import storage as gcs
@@ -171,13 +171,14 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     X_tr = X_full[train_mask]; X_te = X_full[test_mask]
     y_tr = y_full[train_mask]; y_te = y_full[test_mask]
 
+    cw_tr = resolve_class_weight(y_tr)
     if calibration == "none":
-        model = make_lgbm(class_weight="balanced", n_jobs=-1)
+        model = make_lgbm(class_weight=cw_tr, n_jobs=-1)
         model.fit(X_tr, y_tr)
         proba = model.predict_proba(X_te)
     else:
         calibrated = CalibratedClassifierCV(
-            estimator=make_lgbm(class_weight="balanced", n_jobs=lgbm_n_jobs),
+            estimator=make_lgbm(class_weight=cw_tr, n_jobs=lgbm_n_jobs),
             method=calibration, cv=cv, n_jobs=cv,
         )
         calibrated.fit(X_tr, y_tr)
@@ -370,15 +371,16 @@ def _persist_production_model_artifact(
              "(%d rows × %d features, calibration=%s)",
              len(X_full), X_full.shape[1], calibration)
 
+    cw_full = resolve_class_weight(y_full)
     if calibration == "none":
-        model = make_lgbm(class_weight="balanced", n_jobs=-1)
+        model = make_lgbm(class_weight=cw_full, n_jobs=-1)
         model.fit(X_full, y_full)
     else:
         # Same wrapper as fold training. With cv=DEFAULT_CV the calibration
         # uses an internal cross-validation split for the sigmoid/isotonic
         # mapping; the underlying LightGBM still sees the full data.
         model = CalibratedClassifierCV(
-            estimator=make_lgbm(class_weight="balanced", n_jobs=cv),
+            estimator=make_lgbm(class_weight=cw_full, n_jobs=cv),
             method=calibration, cv=cv, n_jobs=cv,
         )
         model.fit(X_full, y_full)
