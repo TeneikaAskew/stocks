@@ -2266,7 +2266,16 @@ deploy_weekly_pg_dump() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 512Mi --cpu 1 --max-retries 0
-        --task-timeout 3600
+        # task-timeout: 21600s (6h). `trading` is 152 GB and growing; the
+        # last successful export (2026-06-21) took 45.8 min, and the next
+        # two attempts (2026-06-28) both exceeded the old 3600s (1h) cap
+        # without finishing (gcp-job-failure issue #657). 6h is >4x the
+        # last known-good wall-clock with headroom for continued DB
+        # growth — Cloud Run bills actual runtime, not the cap, so the
+        # extra ceiling is free. Must stay ahead of sql_export_to_gcs.py's
+        # POLL_MAX_SECS (21300s) so the script's own clean TimeoutError
+        # fires first.
+        --task-timeout 21600
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.sql_export_to_gcs"
         --set-env-vars "${non_secret_env}"

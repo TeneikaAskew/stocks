@@ -49,7 +49,14 @@ DEFAULT_BUCKET = os.environ.get(
 )
 DEFAULT_PREFIX = os.environ.get("SQL_DUMP_PREFIX", "sql-dumps")
 POLL_INTERVAL_SECS = 15
-POLL_MAX_SECS = 3600  # 1h cap; small DB exports finish in <5 min
+# `trading` is 152 GB and growing (market_data_intraday_other +
+# etf_options_snapshots alone are ~130 GB). The last successful export
+# (2026-06-21) took 45.8 min; the next two attempts (2026-06-28) both
+# exceeded the old 3600s (1h) cap without finishing — see gcp-job-failure
+# issue #657. Matched to the Cloud Run task-timeout in deploy.sh
+# (deploy_weekly_pg_dump), minus a 5-minute buffer so this raises a clean
+# TimeoutError before Cloud Run force-kills the container.
+POLL_MAX_SECS = 21300
 
 
 def _get_token() -> str:
