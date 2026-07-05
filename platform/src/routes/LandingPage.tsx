@@ -8,12 +8,14 @@
 import '@/components/landing/landing.css';
 import { LandingNav } from '@/components/landing/LandingNav';
 import { Hero } from '@/components/landing/Hero';
+import { BentoGrid } from '@/components/landing/BentoGrid';
 
 export default function LandingPage() {
   return (
     <main className="solyra-landing" data-testid="landing-page">
       <LandingNav />
       <Hero />
+      <BentoGrid />
     </main>
   );
 }
