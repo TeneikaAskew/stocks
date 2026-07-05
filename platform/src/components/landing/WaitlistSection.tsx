@@ -49,7 +49,7 @@ export function WaitlistSection() {
           You&rsquo;re on the list. One email when your cohort opens.
         </div>
       ) : (
-        <form onSubmit={onSubmit} style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <form onSubmit={onSubmit} noValidate style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
           <input
             type="email"
             value={email}
