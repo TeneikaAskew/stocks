@@ -14,10 +14,25 @@ import pytest
 
 from gcp.research.magnitude_engine.mag_pred_train import make_lgbm
 
-pytest.importorskip("lightgbm")
+
+def _require_real_lgbm():
+    """Skip unless a REAL lightgbm is importable. make_lgbm lazy-imports
+    lightgbm, so a MagicMock stub leaked into sys.modules by a sibling test
+    (tests/test_magnitude_inference.py) would otherwise make make_lgbm return a
+    mock classifier and these assertions meaningless — same contract as
+    tests/test_strat_walk_forward_calibration.py::_require_real_heavy_stack."""
+    import importlib
+    from unittest.mock import Mock
+    try:
+        mod = importlib.import_module("lightgbm")
+    except Exception as e:  # pragma: no cover - environment-dependent
+        pytest.skip(f"lightgbm unavailable: {e}")
+    if isinstance(mod, Mock):
+        pytest.skip("lightgbm is a mock stub (sys.modules poisoned by a sibling test)")
 
 
 def test_make_lgbm_defaults_to_balanced_class_weight():
+    _require_real_lgbm()
     # Contract guard: the production default must correct label imbalance.
     assert make_lgbm(random_state=0).get_params()["class_weight"] == "balanced"
 
@@ -44,6 +59,7 @@ def _imbalanced_overlapping(rng):
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_default_model_does_not_collapse_on_imbalanced_labels():
+    _require_real_lgbm()
     rng = np.random.default_rng(0)
     X, y = _imbalanced_overlapping(rng)
     model = make_lgbm(random_state=0)  # DEFAULT class_weight
