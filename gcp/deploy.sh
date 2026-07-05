@@ -1678,6 +1678,11 @@ deploy_audit_magnitude_drift() {
         # cells = ~10k rows max). The query is partition-keyed and
         # returns ≤16 grouped rows. Local p100 ~200ms; 180s task-timeout
         # is the same generous tail allowance audit-infra-drift uses.
+        #
+        # Cost (Rule 0.6): 512Mi + 1 vCPU, ~1s billable wall-clock/run.
+        # 1 vCPU-s + 0.5 GiB-s ≈ $0.000025/run. ~22 weekday runs/mo →
+        # $/run × runs/day × 30 ≈ $0.0006/mo. Effectively free; Cloud SQL
+        # query cost is $0 (instance always-on).
         --task-timeout 180
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.audit_magnitude_drift"
