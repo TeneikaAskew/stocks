@@ -162,11 +162,19 @@ def explosive_lift(y_true_idx: np.ndarray, y_proba: np.ndarray,
     }
 
 
-def make_lgbm(class_weight: str | None = None, n_jobs: int = -1,
+def make_lgbm(class_weight: str | None = "balanced", n_jobs: int = -1,
                random_state: int | None = None):
     """Base LightGBM classifier — same hyperparameters as strat_engine so
     a phase-pass is attributable to feature signal, not hyperparameter
     differences.
+
+    `class_weight` defaults to "balanced". The magnitude labels are imbalanced
+    (~66/25/6/2 TIGHT/NORMAL/EXPANDED/EXPLOSIVE); with class_weight=None the
+    learner minimised log-loss by predicting TIGHT ~99% of the time and
+    abandoning the NORMAL/EXPANDED/EXPLOSIVE bars (the collapse of the
+    magnitude-engine-rmcwj production model). "balanced" reweights the loss by
+    inverse class frequency so the minority buckets are learned. Pass None only
+    for a deliberate unweighted baseline.
 
     `random_state` override is provided so replication runs can vary the
     seed without changing any other config. Default reads MAG_SEED env

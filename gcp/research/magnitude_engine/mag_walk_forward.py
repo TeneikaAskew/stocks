@@ -172,12 +172,12 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     y_tr = y_full[train_mask]; y_te = y_full[test_mask]
 
     if calibration == "none":
-        model = make_lgbm(class_weight=None, n_jobs=-1)
+        model = make_lgbm(class_weight="balanced", n_jobs=-1)
         model.fit(X_tr, y_tr)
         proba = model.predict_proba(X_te)
     else:
         calibrated = CalibratedClassifierCV(
-            estimator=make_lgbm(class_weight=None, n_jobs=lgbm_n_jobs),
+            estimator=make_lgbm(class_weight="balanced", n_jobs=lgbm_n_jobs),
             method=calibration, cv=cv, n_jobs=cv,
         )
         calibrated.fit(X_tr, y_tr)
@@ -371,14 +371,14 @@ def _persist_production_model_artifact(
              len(X_full), X_full.shape[1], calibration)
 
     if calibration == "none":
-        model = make_lgbm(class_weight=None, n_jobs=-1)
+        model = make_lgbm(class_weight="balanced", n_jobs=-1)
         model.fit(X_full, y_full)
     else:
         # Same wrapper as fold training. With cv=DEFAULT_CV the calibration
         # uses an internal cross-validation split for the sigmoid/isotonic
         # mapping; the underlying LightGBM still sees the full data.
         model = CalibratedClassifierCV(
-            estimator=make_lgbm(class_weight=None, n_jobs=cv),
+            estimator=make_lgbm(class_weight="balanced", n_jobs=cv),
             method=calibration, cv=cv, n_jobs=cv,
         )
         model.fit(X_full, y_full)
