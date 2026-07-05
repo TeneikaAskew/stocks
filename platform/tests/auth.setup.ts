@@ -18,7 +18,7 @@ setup('authenticate to IAP', async ({ page }) => {
   fs.mkdirSync(path.dirname(authFile), { recursive: true });
 
   // Visiting any path triggers the IAP → Google OAuth redirect chain.
-  await page.goto('/');
+  await page.goto('/dashboard');
 
   // Sign-in is interactive; wait until we land back on the deployed app
   // (i.e. the URL is no longer on accounts.google.com or iap.googleapis.com).

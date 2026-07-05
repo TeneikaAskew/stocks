@@ -1,5 +1,5 @@
 /**
- * E2E: Dashboard ("/") — landing page anchored on activeTicker.
+ * E2E: Dashboard ("/dashboard") — landing page anchored on activeTicker.
  *
  * Covers brief tile, latest signals, KPI grid, best/worst trades.
  * All API calls mocked; perf budget = first contentful render under 5s.
@@ -137,7 +137,7 @@ test.describe('Dashboard', () => {
   });
 
   test('renders Overview heading + pre-market brief for the active ticker', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     // Redesigned Overview: "Overview" H1, the active ticker in the header
     // micro-label + hero, and the pre-market brief panel.
@@ -147,13 +147,13 @@ test.describe('Dashboard', () => {
   });
 
   test('shows daily bias card', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page.getByText(/daily bias/i).first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('shows the daily KPI tiles (prev close / latest close / 2-day change / RSI)', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     // Redesigned KPI row, computed from brief.daily_indicators + reference.
     await expect(page.getByText(/prev close/i)).toBeVisible();
@@ -163,7 +163,7 @@ test.describe('Dashboard', () => {
   });
 
   test('intraday chart exposes the Candles / Area toggle and switches', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page.getByText('IWM · intraday')).toBeVisible({ timeout: 10_000 });
     const candles = page.getByRole('button', { name: 'Candles' });
@@ -180,7 +180,7 @@ test.describe('Dashboard', () => {
     // playbook + live quote/history/avg-vol + reference). 7s allows for the
     // first-paint waterfall before mocks fully resolve.
     const start = Date.now();
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     expect(Date.now() - start).toBeLessThan(7000);
   });

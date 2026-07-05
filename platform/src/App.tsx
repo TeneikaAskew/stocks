@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/AppShell';
 import { AuthGate } from '@/components/auth/AuthGate';
@@ -19,6 +19,7 @@ const CatalystsPage = lazy(() => import('@/routes/CatalystsPage'));
 const AdminPage = lazy(() => import('@/routes/AdminPage'));
 const HelpPage = lazy(() => import('@/routes/HelpPage'));
 const SettingsPage = lazy(() => import('@/routes/SettingsPage'));
+const LandingPage = lazy(() => import('@/routes/LandingPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,11 +43,19 @@ function PageLoader() {
 const errorElement = <RouteErrorBoundary />;
 
 const router = createBrowserRouter([
+  // The site's DEFAULT page — public marketing/landing, all auth modes.
   {
-    element: <AppShell />,
+    path: '/',
+    element: <Suspense fallback={<PageLoader />}><LandingPage /></Suspense>,
+  },
+  { path: '/welcome', element: <Navigate to="/" replace /> },
+  // The app group — AuthGate wraps the shell, so in firebase mode a signed-out
+  // visitor hitting any app route sees SignInScreen, then the app on success.
+  {
+    element: <AuthGate><AppShell /></AuthGate>,
     errorElement,
     children: [
-      { path: '/', errorElement, element: <Suspense fallback={<PageLoader />}><DashboardPage /></Suspense> },
+      { path: '/dashboard', errorElement, element: <Suspense fallback={<PageLoader />}><DashboardPage /></Suspense> },
       { path: '/live', errorElement, element: <Suspense fallback={<PageLoader />}><LiveMarketPage /></Suspense> },
       { path: '/charts', errorElement, element: <Suspense fallback={<PageLoader />}><ChartsPage /></Suspense> },
       { path: '/options', errorElement, element: <Suspense fallback={<PageLoader />}><OptionsFlowPage /></Suspense> },
@@ -66,9 +75,7 @@ const router = createBrowserRouter([
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthGate>
-        <RouterProvider router={router} />
-      </AuthGate>
+      <RouterProvider router={router} />
     </QueryClientProvider>
   );
 }

@@ -37,7 +37,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     group: 'TRADING',
     items: [
-      { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+      { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { path: '/live', label: 'Live Market', icon: Activity, badge: { text: 'LIVE', tone: 'live' } },
       { path: '/charts', label: 'Charts', icon: CandlestickChart },
       { path: '/options', label: 'Options Flow', icon: Layers },

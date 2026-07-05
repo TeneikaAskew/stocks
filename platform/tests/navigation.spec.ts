@@ -7,7 +7,7 @@
 import { test, expect, Page } from '@playwright/test';
 
 const ROUTES: Array<{ path: string; heading: RegExp }> = [
-  { path: '/',          heading: /dashboard/i },
+  { path: '/dashboard', heading: /dashboard/i },
   { path: '/live',      heading: /live/i },
   { path: '/charts',    heading: /chart/i },
   { path: '/options',   heading: /options/i },
@@ -34,7 +34,7 @@ test.describe('Navigation smoke', () => {
     await page.route('**/api/me', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ email: null }) })
     );
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
     // Wait for nav to render before counting (don't use networkidle — slow backend stalls it)
     await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const nav = page.locator('nav a');
@@ -64,7 +64,7 @@ test.describe('Navigation smoke', () => {
   }
 
   test('can navigate between routes via sidebar clicks', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.click('a[href="/options"]');
     await page.waitForURL('**/options');
     expect(page.url()).toContain('/options');
@@ -73,7 +73,7 @@ test.describe('Navigation smoke', () => {
     await page.waitForURL('**/playbook');
     expect(page.url()).toContain('/playbook');
 
-    await page.click('a[href="/"]');
-    await page.waitForURL(/\/$/);
+    await page.click('a[href="/dashboard"]');
+    await page.waitForURL(/\/dashboard$/);
   });
 });
