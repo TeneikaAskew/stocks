@@ -10,6 +10,8 @@ import { LandingNav } from '@/components/landing/LandingNav';
 import { Hero } from '@/components/landing/Hero';
 import { BentoGrid } from '@/components/landing/BentoGrid';
 import { ChartShowcase } from '@/components/landing/ChartShowcase';
+import { ModuleDives } from '@/components/landing/ModuleDives';
+import { DailyRhythm } from '@/components/landing/DailyRhythm';
 
 export default function LandingPage() {
   return (
@@ -18,6 +20,8 @@ export default function LandingPage() {
       <Hero />
       <BentoGrid />
       <ChartShowcase />
+      <ModuleDives />
+      <DailyRhythm />
     </main>
   );
 }
