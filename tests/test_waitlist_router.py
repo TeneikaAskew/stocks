@@ -12,6 +12,8 @@ Hermetic: gcp.database.get_engine is patched — no Cloud SQL.
 from __future__ import annotations
 
 import sys
+import time
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -100,3 +102,15 @@ def test_rate_limit_429_after_five_requests():
             ).status_code == 200
         r = client.post("/api/waitlist", json={"email": "a@b.co", "website": ""})
     assert r.status_code == 429
+
+
+def test_rate_limiter_evicts_stale_ips():
+    engine = _engine_mock()
+    client = _client()
+    with patch("gcp.database.get_engine", return_value=engine):
+        # Seed a stale IP whose entire window has expired
+        waitlist_router._hits["10.0.0.9"] = deque(
+            [time.monotonic() - waitlist_router._RATE_WINDOW_S - 1]
+        )
+        client.post("/api/waitlist", json={"email": "a@b.co", "website": ""})
+    assert "10.0.0.9" not in waitlist_router._hits

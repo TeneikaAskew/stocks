@@ -53,6 +53,11 @@ def _rate_limited(ip: str) -> bool:
     if len(q) >= _RATE_LIMIT:
         return True
     q.append(now)
+    # Opportunistically evict other IPs whose windows have fully expired so
+    # the dict stays bounded to recently-active clients (public endpoint).
+    stale = [k for k, v in _hits.items() if k != ip and v and now - v[-1] > _RATE_WINDOW_S]
+    for k in stale:
+        del _hits[k]
     return False
 
 
