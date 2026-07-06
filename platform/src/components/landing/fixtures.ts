@@ -2,8 +2,10 @@
  * MARKETING FIXTURES — a representative sample trading day for the Solyra
  * landing page. These are STATIC illustrations of the product's real visual
  * language (spec §5/§6), NOT live data and NOT performance claims. The proof
- * tile ships hitRatePct: null (renders without a number) until filled from
- * walk_forward_results — see the plan Task 8 verification step.
+ * tile's number IS real: trade-weighted avg_win_rate across the latest
+ * selected walk_forward_results combo per ticker (queried 2026-07-05 via
+ * db-query: 50% over 2,980 out-of-sample trades, 3 tickers). Re-run that
+ * query and update hitRatePct + caption when republishing.
  */
 export const AGENT_LINES: { tag: string; text: string }[] = [
   { tag: '', text: '06:58:12 · waking 7 agents for SPY, QQQ, IWM…' },
@@ -47,8 +49,8 @@ export const BENTO = {
     { state: 'armed' as const, text: 'armed · king-reject fade' },
   ],
   proof: {
-    hitRatePct: null as number | null,
-    caption: 'walk-forward validated out-of-sample · every signal graded HIT / WRONG / NOISE',
+    hitRatePct: 50 as number | null,
+    caption: 'trade-weighted win rate · walk-forward validated · 2,980 out-of-sample trades',
   },
 };
 
