@@ -5,7 +5,7 @@ import { DateSelector } from '@/components/shared/DateSelector';
 import { SignOutButton } from '@/components/auth/SignOutButton';
 
 /** Routes where the global historical DateSelector is functional. */
-const REVIEW_AWARE_ROUTES = ['/', '/live', '/charts', '/signals'];
+const REVIEW_AWARE_ROUTES = ['/dashboard', '/live', '/charts', '/signals'];
 
 /**
  * Thin global utility bar: review-date control + a quick dark/light toggle.

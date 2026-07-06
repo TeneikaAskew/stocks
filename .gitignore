@@ -146,3 +146,4 @@ gcp_iam.json
 gcp_schedulers.json
 billing_90d.json
 .venv
+.superpowers/

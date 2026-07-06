@@ -28,7 +28,7 @@ test.describe('Auth gate', () => {
 
   test('open mode → app renders, no login screen', async ({ page }) => {
     await mockCommon(page); // config → { authMode: 'open' }
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     await expect(page.getByTestId('signin-screen')).toHaveCount(0);
@@ -45,7 +45,7 @@ test.describe('Auth gate', () => {
       }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     await expect(page.getByTestId('signin-screen')).toBeVisible();
     await expect(page.getByTestId('google-signin')).toBeVisible();
@@ -65,7 +65,7 @@ test.describe('Auth gate', () => {
       }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('login-submit')).toHaveText(/sign in/i);
 
     await page.getByTestId('login-toggle').click();

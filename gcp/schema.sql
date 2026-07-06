@@ -3568,3 +3568,13 @@ CREATE INDEX IF NOT EXISTS idx_euwh_recent
     ON earnings_upcoming_with_history (refresh_date DESC, earnings_date);
 CREATE INDEX IF NOT EXISTS idx_euwh_ticker
     ON earnings_upcoming_with_history (ticker, refresh_date DESC);
+
+-- ── Solyra landing page waitlist (public POST /api/waitlist) ────────────────
+CREATE TABLE IF NOT EXISTS waitlist_signups (
+    id            BIGSERIAL PRIMARY KEY,
+    email         TEXT NOT NULL UNIQUE,
+    source        TEXT,
+    user_agent    TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

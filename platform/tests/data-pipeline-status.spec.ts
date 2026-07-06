@@ -15,14 +15,14 @@ test.beforeAll(async ({ request }) => {
 
 test.describe('Data pipeline status widget', () => {
   test('renders on the dashboard', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // The widget always renders a "Data pipeline" label once the query resolves
     await expect(page.getByText(/data pipeline/i).first()).toBeVisible({ timeout: 30_000 });
   });
 
   test('shows overall status in the collapsed summary', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // Status label is one of ok | warn | stale | unknown — the CSS uppercases
     // it visually but the DOM text stays lowercase, so match case-insensitively.
@@ -31,7 +31,7 @@ test.describe('Data pipeline status widget', () => {
   });
 
   test('expands to show per-table pills on click', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // Click the widget header to expand — it's wrapped in a button
     const header = page.getByText(/data pipeline/i).first();
@@ -43,7 +43,7 @@ test.describe('Data pipeline status widget', () => {
   });
 
   test('displays a "Checked HH:MM" timestamp', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     await expect(page.getByText(/checked \d{1,2}:\d{2}/i)).toBeVisible({ timeout: 30_000 });
   });

@@ -106,7 +106,7 @@ test.describe('Gamma Levels: API contract', () => {
 test.describe('Gamma Levels: OptionsFlowPage UI', () => {
   test.beforeEach(async ({ page }) => {
     // Switch to an ETF ticker we know has chain data, then go to /options
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
   });
 

@@ -187,7 +187,7 @@ export default function DashboardPage() {
   const { data: quote } = useLiveQuote(activeTicker, true);
   const isOpen = status?.is_open ?? false;
 
-  // Review-date wiring: '/' is in REVIEW_AWARE_ROUTES, so the header shows a
+  // Review-date wiring: '/dashboard' is in REVIEW_AWARE_ROUTES, so the header shows a
   // historical date/time picker on this page. When a date is selected, every
   // data fetch below must resolve as-of that date instead of live.
   const { reviewDate, reviewTime } = useReviewDateStore();

@@ -221,7 +221,7 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     const adminLink = page.locator('nav a[href="/admin"]');
     await expect(adminLink).toBeVisible();
@@ -232,7 +232,7 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: null, is_admin: false }) }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // Wait for the nav to render (Help link is always visible)
     await expect(page.locator('nav a[href="/help"]')).toBeVisible();
@@ -245,7 +245,7 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: 'user@other.org', is_admin: false }) }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const adminLink = page.locator('nav a[href="/admin"]');
@@ -258,7 +258,7 @@ test.describe('Sidebar — Admin link visibility', () => {
     );
     await mockAdminApi(page);
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     const adminLink = page.locator('nav a[href="/admin"]');
     await expect(adminLink).toBeVisible();
@@ -274,7 +274,7 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: null, is_admin: false }) }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // Wait for nav to fully render before counting
     await expect(page.locator('nav a[href="/help"]')).toBeVisible();
@@ -287,7 +287,7 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
     // Wait for admin link to appear before counting
     await expect(page.locator('nav a[href="/admin"]')).toBeVisible();
