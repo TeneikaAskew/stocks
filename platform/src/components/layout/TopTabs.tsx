@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Search, Menu, X, Moon, Sun, ChevronDown } from 'lucide-react';
-import { Button, Kbd } from '@heroui/react';
+import { Button } from '@heroui/react';
 import { Brand } from './Brand';
 import { MarketSessionBadge } from './MarketSessionBadge';
 import { NAV_GROUPS, type NavGroup, type NavItem } from './navConfig';
+import { ReplayControl } from '@/components/shared/ReplayControl';
+import { SignOutButton } from '@/components/auth/SignOutButton';
 import { useUser } from '@/hooks/useUser';
 import { useThemeStore } from '@/stores/themeStore';
 
@@ -163,28 +165,33 @@ export function TopTabs({ onOpenSearch }: TopTabsProps) {
         })}
       </nav>
 
-      {/* Mobile: spacer pushes Search + hamburger to the right. */}
+      {/* Mobile: spacer pushes the utility cluster to the right. */}
       <div className="flex-1 sm:hidden" />
 
+      {/* Utility cluster — one row: replay · search · sign-out · theme. */}
+      <ReplayControl />
+
       <Button
+        isIconOnly
         variant="ghost"
         size="sm"
         onPress={onOpenSearch}
-        aria-label="Search"
-        className="search-trigger ml-2 w-auto shrink-0 sm:w-[170px]"
+        aria-label="Search (⌘K)"
+        className="search-trigger ml-1 shrink-0"
       >
-        <Search size={13} />
-        <span className="hidden sm:inline">Search</span>
-        <Kbd className="hidden sm:inline">⌘K</Kbd>
+        <Search size={15} />
       </Button>
 
-      {/* Mobile: theme toggle, grouped with the other top-bar chrome (it lives
-          in the utility Header on desktop, hidden there on mobile). */}
+      <div className="hidden shrink-0 sm:block">
+        <SignOutButton />
+      </div>
+
       <button
         type="button"
         onClick={toggleTheme}
         aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)] sm:hidden"
+        title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--on-surface-variant)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--on-surface)]"
       >
         {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
       </button>

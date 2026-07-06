@@ -29,7 +29,10 @@ export function AppShell() {
     <div className={`flex h-screen overflow-hidden bg-[var(--surface-0)] ${isSidebar ? 'flex-row' : 'flex-col'}`}>
       {isSidebar ? <Sidebar onOpenSearch={openSearch} /> : <TopTabs onOpenSearch={openSearch} />}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Header />
+        {/* Top-tabs mode folds the utility bar (replay, search, sign-out,
+            theme) into the single nav row; only the sidebar pattern still
+            needs the separate header strip. */}
+        {isSidebar && <Header />}
         <main className="flex-1 overflow-x-hidden overflow-y-auto">
           <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-8 sm:py-8">
             <Outlet />
