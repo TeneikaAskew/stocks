@@ -1235,3 +1235,14 @@ All models feed into a single unified trading strategy:
 8. **Strict risk parameters** (1 position, 5 trades/day, -2% stop) protect capital even when signals misfire.
 9. **297 automated tests** ensure reliability across indicators, signals, Strat classification, backtest engine, and data loading.
 
+---
+
+**2026-07-06 magnitude research note.** A forward-window (30-min) + directional
+re-probe of the magnitude engine is logged in `RESEARCH_COMPENDIUM.md` and
+`EXPERIMENT_REGISTRY.md` §2026-07-06. The findings are statistically strong
+(30-min forward-range: 50–59% top-bucket precision / 8–10× lift, generalizes,
+audited real; a generalizing up>down excursion asymmetry) but **not gate-cleared**
+— they re-tread already-priced vol (gate-7) and option skew, so no tradeability
+claim and no production-model change. Proposed/open model entry:
+`MODEL_REGISTRY.md` §C-mf.
+
