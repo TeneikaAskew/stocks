@@ -234,3 +234,25 @@ Naive DoW×30-min calendar lookup (MAG gate-6), "follow the gamma regime" (DIR-R
 Full results + self-audit story: `MODEL_RETHINK_PLANS.md` §RESULTS;
 end-to-end log: `EXPERIMENT_REGISTRY.md`; master narrative: `MODELS_END_TO_END.md`.
 
+---
+
+## C (proposed / open) — Movement-Forecast head (2026-07-06 probe)
+
+### C-mf — Forward-window magnitude + directional excursion  ·  targets: SIZE + DIRECTION (30-min horizon)
+- **Target (proposed):** over the next K=6 bars (~30 min) — (a) range bucket
+  `(max(high[t+1..t+K])−min(low[t+1..t+K]))/atr20[t]`, cuts ~1.5/3/6; and (b) up/down
+  excursion `(max(high)−next_open)/atr20` and `(next_open−min(low))/atr20`, cuts ~1/2/3.5.
+- **Key features / data:** same shared surface + `mins_since_open` (top feature); no new
+  data required. External event-calendar + options IV joins tested, only marginal (E-31).
+- **Status:** 🔬 **PROBE ONLY — NOT validated, NOT shipped.** On a weak single 70/30 split
+  (IWM/SPY/QQQ 5m) the fwd-window range hits 50–59% top-bucket precision / 8–10× lift and
+  the up-excursion 4.8–7.0× (both generalize) — but **neither has cleared the program's
+  gates**, and both re-tread already-priced ground: the range is the vol/calendar signal
+  gate-7 found priced (`MAGNITUDE_ENGINE_RESULTS.md` §2026-07-06 addendum), and the up>down
+  asymmetry is the option skew the direction program already gated as null
+  (`DIRECTION_RESEARCH_RESULTS.md` §2026-07-06 addendum).
+- **Gate to advance to B/A:** purged+embargoed 8-fold walk-forward, cost-aware EV
+  (+$0.02/sh net, ≥6/8 folds, $0.05 friction), and gate-7 (realized/implied ≥1.25) on the
+  forward-window target — net against the straddle/skew it would trade.
+- **Provenance:** scratch harness, `EXPERIMENT_REGISTRY.md` §2026-07-06 (E-28/E-30/P0.1).
+
