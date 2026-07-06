@@ -1180,6 +1180,15 @@ gate-cleared edges.**
   cleaner vol *forecast*, but the straddle/strangle that would trade it prices the
   same forecast. **Open action:** run gate-7 (implied-vs-realized) on the
   forward-window target before any tradeability claim. Prior predicts it fails.
+  **→ GATE-7 RAN (2026-07-06):** raw ratio looked like a strong PASS (30-min
+  realized range 2.43× / directional displacement 1.57× the daily-ATM-IV-√t
+  implied move, 910 bars, 5/5 quarters). **But it is a benchmark artifact.** A
+  time-of-day control shows **96% of the fwd-window-EXPLOSIVE bars are the last
+  30 min of the session**, and at **midday** (where flat daily-IV×√t scaling is
+  valid) the displacement ratio is **0.74 — below 1.0 (over-priced)**. Flat
+  daily-ATM-IV √-scaling under-states close-of-day vol that the actual 0DTE/
+  intraday options price correctly. **Verdict HOLDS: priced, not tradeable.** The
+  model's residual "signal" reduces to "it's near the close."
 - **E-30 / P0.1 (directional asymmetry) re-tread the direction program.** That
   program (purged+embargoed CV, cost-aware EV, all 3 tickers, incl. triple-barrier
   meta-labeling on the magnitude-EXPLOSIVE flag) found **no generalizable directional

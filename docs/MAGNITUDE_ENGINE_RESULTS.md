@@ -650,3 +650,16 @@ realized/implied on forward-window-EXPLOSIVE-predicted bars, ≥1.25 in ≥6/8
 purged folds) on this target. The prior verdict predicts it clears no better than
 the single-bar target. Until then E-28 is a **statistical result, tradeability
 UNPROVEN** — logged, not shipped.
+
+**Gate-7 outcome (2026-07-06) — verdict HOLDS.** Ran gate-7 on the forward-window
+target. The raw ratio *looks* like a strong pass (30-min realized range 2.43× /
+directional displacement 1.57× the daily-ATM-IV-√t implied move; 910 bars; 5/5
+quarters ≥1.25). It is a **benchmark artifact**, not an edge: a time-of-day
+control shows **96% of the fwd-window-EXPLOSIVE bars fall in the last 30 min of
+the session**, and at **midday** (where flat daily-IV × √(t/yr) scaling is a valid
+benchmark) the displacement ratio is **0.74 — below 1.0, i.e. over-priced.** Flat
+daily-ATM-IV √-scaling under-states the elevated close-of-day realized vol that
+the actual 0DTE / short-dated options price correctly. So the forward-window
+reframe is **statistically more predictable but still NOT tradeably-extractable** —
+the extractable residual is "point at the close," where a naive daily-IV benchmark
+only looks cheap. Consistent with the 2026-05-29 FAIL, on a better-posed target.
