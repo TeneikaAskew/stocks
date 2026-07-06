@@ -249,7 +249,7 @@ export default function LiveMarketPage() {
 
   return (
     <div className="space-y-4">
-      {/* Top bar (DateSelector is in Header) */}
+      {/* Top bar (the replay control lives in the top nav row) */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
           <Circle size={8} className={`fill-current ${isReview ? 'text-[var(--warn)]' : sessionColor}`} />
