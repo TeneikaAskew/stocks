@@ -200,11 +200,13 @@ export function ReplayControl() {
               maxValue={todayET}
               isDateUnavailable={(d) => isDateUnavailable(d as CalendarDate)}
             >
-              <Calendar.Header>
+              {/* w-full + justify-between + flex-1 centered heading: HeroUI's
+                  default header clusters the heading beside the left chevron. */}
+              <Calendar.Header className="flex w-full items-center justify-between">
                 <Calendar.NavButton slot="previous">
                   <ChevronLeft size={15} />
                 </Calendar.NavButton>
-                <Calendar.Heading />
+                <Calendar.Heading className="flex-1 text-center" />
                 <Calendar.NavButton slot="next">
                   <ChevronRight size={15} />
                 </Calendar.NavButton>
