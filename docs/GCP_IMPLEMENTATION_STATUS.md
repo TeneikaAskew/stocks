@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-07-05 (diagram refresh: ERD table shapes + icon-based Architecture/Frontend diagrams)
+**Last Updated**: 2026-07-05 (Solyra landing page live: public / route, /dashboard app move, waitlist API + waitlist_signups table, both services deployed)
 
 ---
 
@@ -413,6 +413,7 @@ Pre-existing failures (unrelated to dashboard work):
 
 ## Change Log
 
+- 2026-07-05: Solyra public landing page shipped (PRs #684, #686) — landing at `/` in every auth mode, app moved to `/dashboard`, public `POST /api/waitlist` + `waitlist_signups` table (applied via apply-schema-migrations before rollout), proof tile filled from walk_forward_results (50% trade-weighted win rate, 2,980 OOS trades). Deployed: trading-platform-staging rev 00021-dqx (public, firebase) + trading-platform rev 00073-cof (IAP, traffic pinned — promote explicitly after future deploys). Follow-ups: #683 (lazy app shell), #685 (rename internal Heatseeker/Flowseeker tabs before public launch)
 - 2026-07-05: Add Frontend-icons.drawio — 15-tab frontend diagram: Auth & Entry process flow (IAP SSO, TokenGate, dev fallback + caveats) and one data-flow tab per route (hooks → endpoints → routers → tables R/W, external-service tiles), from a fresh codebase sweep
 - 2026-07-05: Add Architecture-icons.drawio — GCP-icon + process-flow rebuild merged with repo content (ported Earnings Pipeline page as swim-lanes; Backtest page updated for PRs #519/#547/#548)
 - 2026-07-05: Fix ERD.drawio corrupt nested edge-label cells ("Could not add object for mxCell" on 3 tabs) and convert all 61 entity boxes to real drawio table shapes (PK/UQ/FK badge column + one row per field, category border colors preserved, layout reflowed)
