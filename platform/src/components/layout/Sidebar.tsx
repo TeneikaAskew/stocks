@@ -4,6 +4,7 @@ import { Button, Kbd } from '@heroui/react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useUser } from '@/hooks/useUser';
 import { Brand } from './Brand';
+import { MarketSessionBadge } from './MarketSessionBadge';
 import { NAV_GROUPS } from './navConfig';
 
 interface SidebarProps {
@@ -55,7 +56,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
           return (
             <div key={g.group}>
               {!sidebarCollapsed && <div className="nav-group-label">{g.group}</div>}
-              {items.map(({ path, label, icon: Icon, badge }) => (
+              {items.map(({ path, label, icon: Icon, badge, liveBadge }) => (
                 <NavLink
                   key={path}
                   to={path}
@@ -71,6 +72,7 @@ export function Sidebar({ onOpenSearch }: SidebarProps) {
                 >
                   <Icon size={18} className="shrink-0" />
                   {!sidebarCollapsed && <span className="flex-1">{label}</span>}
+                  {!sidebarCollapsed && liveBadge && <MarketSessionBadge />}
                   {!sidebarCollapsed && badge && (
                     <span className={`nav-badge${badge.tone === 'live' ? ' live' : ''}`}>{badge.text}</span>
                   )}

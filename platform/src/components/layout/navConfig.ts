@@ -21,6 +21,9 @@ export interface NavItem {
   label: string;
   icon: LucideIcon;
   badge?: { text: string; tone?: 'live' };
+  /** Render the truthful market-session chip (LIVE/PRE/AH/CLOSED) next to
+   *  this item instead of a static badge. */
+  liveBadge?: boolean;
   adminOnly?: boolean;
 }
 
@@ -32,6 +35,8 @@ export interface NavGroup {
    *  rendering its items inline (Sidebar and the mobile menu ignore this —
    *  they always show grouped items). */
   menu?: boolean;
+  /** Render the truthful market-session chip on the dropdown trigger. */
+  liveBadge?: boolean;
   items: NavItem[];
 }
 
@@ -45,7 +50,15 @@ export const NAV_GROUPS: NavGroup[] = [
     group: 'TRADING',
     items: [
       { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { path: '/live', label: 'Live Market', icon: Activity, badge: { text: 'LIVE', tone: 'live' } },
+    ],
+  },
+  {
+    group: 'MARKET',
+    menuLabel: 'Market',
+    menu: true,
+    liveBadge: true,
+    items: [
+      { path: '/live', label: 'Live', icon: Activity, liveBadge: true },
       { path: '/charts', label: 'Charts', icon: CandlestickChart },
       { path: '/options', label: 'Options Flow', icon: Layers },
       { path: '/signals', label: 'Signals', icon: Search },
