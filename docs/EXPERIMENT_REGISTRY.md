@@ -1189,6 +1189,12 @@ gate-cleared edges.**
   daily-ATM-IV √-scaling under-states close-of-day vol that the actual 0DTE/
   intraday options price correctly. **Verdict HOLDS: priced, not tradeable.** The
   model's residual "signal" reduces to "it's near the close."
+  **→ By-timeframe check (2026-07-06):** the fwd-window range's high precision is a
+  **5m-only** phenomenon — at IWM 15m and 30m (window held ≈30 min) it collapses
+  (top-bucket precision falls toward the noise floor / 0% at high confidence).
+  Consistent with the close-concentration artifact: coarser bars have fewer
+  observations near the close, so there is less priced seasonality to exploit —
+  further evidence it is not a robust cross-timeframe edge.
 - **E-30 / P0.1 (directional asymmetry) re-tread the direction program.** That
   program (purged+embargoed CV, cost-aware EV, all 3 tickers, incl. triple-barrier
   meta-labeling on the magnitude-EXPLOSIVE flag) found **no generalizable directional
