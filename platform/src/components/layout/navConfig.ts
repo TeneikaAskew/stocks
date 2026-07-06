@@ -12,6 +12,7 @@ import {
   Settings,
   SlidersHorizontal,
   HelpCircle,
+  Info,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -25,6 +26,12 @@ export interface NavItem {
 
 export interface NavGroup {
   group: string;
+  /** Human label for the group's dropdown trigger in TopTabs. */
+  menuLabel?: string;
+  /** When true, TopTabs collapses this group into a dropdown instead of
+   *  rendering its items inline (Sidebar and the mobile menu ignore this —
+   *  they always show grouped items). */
+  menu?: boolean;
   items: NavItem[];
 }
 
@@ -52,7 +59,9 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    group: 'WORKBENCH',
+    group: 'LEARN',
+    menuLabel: 'Learn',
+    menu: true,
     items: [
       { path: '/playbook', label: 'Playbook', icon: BookOpen },
       { path: '/reports', label: 'Reports', icon: BarChart3 },
@@ -60,11 +69,14 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    group: 'SYSTEM',
+    group: 'SUPPORT',
+    menuLabel: 'Support',
+    menu: true,
     items: [
       { path: '/admin', label: 'Admin', icon: Settings, adminOnly: true },
       { path: '/settings', label: 'Settings', icon: SlidersHorizontal },
       { path: '/help', label: 'Help & Glossary', icon: HelpCircle },
+      { path: '/#faq', label: 'FAQ', icon: Info },
     ],
   },
 ];

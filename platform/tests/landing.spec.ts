@@ -10,9 +10,18 @@ const FAKE_FIREBASE = {
   appId: '1:1234567890:web:abcdef0123456789',
 };
 
-// Landing page smoke — runs against the dev server (open auth mode), where
-// the landing page is the default page at / in every auth mode.
+// Landing page smoke — the landing page is the default page at / in every
+// auth mode. Hermetic: /api/config/firebase is mocked (open mode) so the
+// tests don't depend on a local backend answering the Vite proxy; the
+// firebase-mode test below registers its own route, which takes precedence
+// (Playwright matches newest-registered routes first).
 test.describe('Solyra landing page', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/api/config/firebase', (route) =>
+      route.fulfill({ status: 200, body: JSON.stringify({ authMode: 'open', firebase: null }) })
+    );
+  });
+
   test('renders all key sections at /', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByTestId('landing-page')).toBeVisible();

@@ -5,6 +5,7 @@
  * The app lives at /dashboard behind AuthGate. Must not require auth
  * or Firebase.
  */
+import { useEffect } from 'react';
 import '@/components/landing/landing.css';
 import { LandingNav } from '@/components/landing/LandingNav';
 import { Hero } from '@/components/landing/Hero';
@@ -16,6 +17,13 @@ import { WaitlistSection } from '@/components/landing/WaitlistSection';
 import { LandingFAQ } from '@/components/landing/LandingFAQ';
 
 export default function LandingPage() {
+  // SPA navigation to /#faq (e.g. the in-app Support menu) lands after the
+  // browser's native anchor pass — scroll to the target once mounted.
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash) document.getElementById(hash.slice(1))?.scrollIntoView();
+  }, []);
+
   return (
     <main className="solyra-landing" data-testid="landing-page">
       <LandingNav />
