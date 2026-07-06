@@ -37,15 +37,22 @@ test.describe('Navigation smoke', () => {
     );
   });
 
-  test('top nav renders inline tabs + Learn/Support dropdowns for non-admin', async ({ page }) => {
+  test('top nav renders inline tabs + Market/Learn/Support dropdowns for non-admin', async ({ page }) => {
     // Without IAP, /api/me returns null → Admin entry hidden from Support
     await page.route('**/api/me', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ email: null }) })
     );
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
-    // Inline: TRADING (5) + INTELLIGENCE (2); Learn/Support items live in dropdowns
+    // Inline: Dashboard + INTELLIGENCE (2); Market/Learn/Support are dropdowns
     await expect(page.locator('nav a[href="/catalysts"]')).toBeVisible();
-    await expect(page.locator('nav a')).toHaveCount(7);
+    await expect(page.locator('nav a')).toHaveCount(3);
+
+    // Market dropdown: Live, Charts, Options Flow, Signals
+    await page.getByTestId('nav-menu-market').click();
+    await expect(page.locator('a[href="/live"]')).toBeVisible();
+    await expect(page.locator('a[href="/charts"]')).toBeVisible();
+    await expect(page.locator('a[href="/options"]')).toBeVisible();
+    await expect(page.locator('a[href="/signals"]')).toBeVisible();
 
     // Support dropdown: Settings, Help & Glossary, FAQ (no Admin for anonymous)
     await page.getByTestId('nav-menu-support').click();
@@ -58,6 +65,24 @@ test.describe('Navigation smoke', () => {
     await expect(page.locator('a[href="/playbook"]')).toBeVisible();
     await expect(page.locator('a[href="/reports"]')).toBeVisible();
     await expect(page.locator('a[href="/journal"]')).toBeVisible();
+  });
+
+  test('market session badge is truthful — CLOSED when the market is closed', async ({ page }) => {
+    await page.route('**/api/live/status', (route) =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify({
+          is_open: false,
+          session: 'closed',
+          next_open: '2026-07-07T09:30:00-04:00',
+          current_time_et: '2026-07-06T12:00:00-04:00',
+        }),
+      })
+    );
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    const badge = page.getByTestId('nav-menu-market').getByTestId('market-session-badge');
+    await expect(badge).toHaveText('CLOSED');
+    await expect(badge).not.toHaveClass(/live/);
   });
 
   for (const { path } of ROUTES) {
@@ -84,11 +109,15 @@ test.describe('Navigation smoke', () => {
 
   test('can navigate between routes via top-nav clicks', async ({ page }) => {
     await page.goto('/dashboard');
+
+    // Options Flow lives in the Market dropdown
+    await page.getByTestId('nav-menu-market').click();
     await page.click('a[href="/options"]');
     await page.waitForURL('**/options');
     expect(page.url()).toContain('/options');
+    await expect(page.getByTestId('nav-menu-market')).toHaveClass(/active/);
 
-    // Playbook now lives in the Learn dropdown
+    // Playbook lives in the Learn dropdown
     await page.getByTestId('nav-menu-learn').click();
     await page.click('a[href="/playbook"]');
     await page.waitForURL('**/playbook');
