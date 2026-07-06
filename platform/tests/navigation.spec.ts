@@ -60,7 +60,7 @@ test.describe('Navigation smoke', () => {
     await expect(page.locator('a[href="/journal"]')).toBeVisible();
   });
 
-  for (const { path, heading } of ROUTES) {
+  for (const { path } of ROUTES) {
     test(`route ${path} loads without fatal errors`, async ({ page }) => {
       const errors = await collectConsoleErrors(page);
       await page.goto(path, { waitUntil: 'domcontentloaded' });
