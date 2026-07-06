@@ -1137,3 +1137,71 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 *End of registry. The B5b/E5b results row and the §0 of RESEARCH_COMPENDIUM will be
 updated when the intraday-OFI pipeline completes.*
 
+---
+
+# 2026-07-06 SESSION — Forward-window & directional re-probe (E-25 … E-31 + P0.1)
+
+**Scratch-harness re-examination of the magnitude/direction question, prompted
+by "what features or changes would make this model effective?" Read the harness
+caveat before trusting any number — these are preliminary signals, not
+gate-cleared edges.**
+
+## Harness (WEAKER than the production standard — this bounds every claim below)
+- Testbed: IWM/SPY/QQQ 5m, phase0 features (~248 cols), 2022-01→2026-06 (~79–83k bars/ticker).
+- Split: **single chronological 70/30** (train = first 70% by ts, test = last 30% OOS,
+  never shuffled). Tempered class weights α=0.75 (the shipped default). LightGBM,
+  calibration `none`.
+- Metric: OOS EXPLOSIVE (top-bucket) precision + lift over base rate + precision at
+  p_EXPLOSIVE thresholds. **No** cost/EV, **no** purged+embargoed CV, **no** gate-7
+  implied-vs-realized, **no** multiple-comparisons control.
+- ⚠️ The production standard is 8 anchored purged+embargoed walk-forward folds +
+  cost-aware EV gate + gate-7 (`MAGNITUDE_ENGINE_RESULTS.md`) + cross-ticker
+  replication (`DIRECTION_RESEARCH_RESULTS.md`). **Nothing below has cleared those.**
+- Baseline reproduced: single-bar body magnitude (current production target) OOS
+  EXPLOSIVE argmax precision ~10–12% / lift ~4.3–5.3×; p≥0.55 ~23% / ~9.8× (IWM).
+
+| E | probe | result | verdict |
+|---|---|---|---|
+| E-25 | Feature-family ablation | signal DISTRIBUTED; `prev` most load-bearing (drop −24% EXPLOSIVE lift); macd/rsi/strat/dealer/gex prunable dead weight; no slim subset beats full 248 | feature engineering near ceiling |
+| E-26 | Engineered vol-regime feats (realized vol, range-expansion, vol-of-vol) | NEUTRAL (+0.18× lift); vol-only-without-patterns HURT — existing feats already carry the vol signal | null |
+| E-27 | Time-of-day / session features | modest+ (+0.6× argmax lift); `mins_since_open` is the #1 feature in the fwd-window model; EXPLOSIVE calls enrich ~5× at open/close | small, cheap |
+| **E-28** | **Forward-window target (30-min RANGE, K=6 bars)** | **argmax precision 50–59% / 8–10× lift; p≥0.55 56–64%; generalizes IWM/SPY/QQQ.** Audited: NOT atr-denominator artifact (trivial atr-rank 3% prec / 0.5×), NOT overlap artifact (non-overlap holds 65%); driven by vol + time-of-day | ⚠️ statistically strong; see reconciliation |
+| E-29 | Regression head (continuous move/ATR + threshold) | NEGATIVE — fixed-threshold 0% (mean-reversion suppresses tail); ranking only matches the classifier | null |
+| **E-30** | **Directional excursion (single-bar call/put)** | CALL(up) 5.6–6.8× argmax lift > PUT(down) 3.5–3.7×; asymmetry generalizes | ⚠️ see reconciliation |
+| **P0.1** | **Forward-window directional (30-min up/down excursion)** | CALL(up) 4.8–7.0× > PUT(down) 3.0–4.7×; p≥0.55 up ~32–40% prec / 6–7× lift (184–581 bars); generalizes | ⚠️ see reconciliation |
+| E-31 | External data: event-calendar + options IV/skew joins | NEUTRAL (+0.4× lift combined argmax; p≥0.55 combined bump noisy, 52 bars). Limited: `economic_events.event_time` 95% NULL → no intraday event timing | marginal, data-limited |
+
+## Reconciliation to the standing verdicts (the load-bearing part)
+- **E-28 (forward-window range) is a MAGNITUDE/VOL signal.** Its audit shows it's
+  driven by vol-clustering + time-of-day — precisely the effects **gate-7 found are
+  already priced** (`MAGNITUDE_ENGINE_RESULTS.md`: EXPLOSIVE-bar realized/implied
+  ratio 0.83–0.92; magnitude closed 2026-05-29 as "statistically learnable, not
+  tradeably-extractable as a non-directional play"). A 30-min forward range is a
+  cleaner vol *forecast*, but the straddle/strangle that would trade it prices the
+  same forecast. **Open action:** run gate-7 (implied-vs-realized) on the
+  forward-window target before any tradeability claim. Prior predicts it fails.
+  **→ GATE-7 RAN (2026-07-06):** raw ratio looked like a strong PASS (30-min
+  realized range 2.43× / directional displacement 1.57× the daily-ATM-IV-√t
+  implied move, 910 bars, 5/5 quarters). **But it is a benchmark artifact.** A
+  time-of-day control shows **96% of the fwd-window-EXPLOSIVE bars are the last
+  30 min of the session**, and at **midday** (where flat daily-IV×√t scaling is
+  valid) the displacement ratio is **0.74 — below 1.0 (over-priced)**. Flat
+  daily-ATM-IV √-scaling under-states close-of-day vol that the actual 0DTE/
+  intraday options price correctly. **Verdict HOLDS: priced, not tradeable.** The
+  model's residual "signal" reduces to "it's near the close."
+- **E-30 / P0.1 (directional asymmetry) re-tread the direction program.** That
+  program (purged+embargoed CV, cost-aware EV, all 3 tickers, incl. triple-barrier
+  meta-labeling on the magnitude-EXPLOSIVE flag) found **no generalizable directional
+  edge**; the up/down asymmetry is the well-known equity **skew** (puts richer than
+  calls), already in option prices. The up-excursion "predictability" here is partly
+  the vol signal re-measured (volatile bars have large excursions both ways) plus
+  that priced skew. **Open action:** the call/put probe must clear purged+embargoed
+  walk-forward + cost-aware EV before it counts — the single 70/30 split does not.
+
+## Net
+Nothing here overturns the standing FAIL/null verdicts. The session's value is a
+sharper statement of WHERE residual signal concentrates (target-framing + an upside
+asymmetry) and a concrete gating plan (gate-7 on the fwd-window target;
+purged/embargoed cost-aware EV on the fwd-directional probe). Scratch harness +
+per-experiment result JSONs retained by the author; not committed to the repo.
+

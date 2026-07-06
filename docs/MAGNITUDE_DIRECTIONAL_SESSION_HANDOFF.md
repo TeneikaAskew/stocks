@@ -238,3 +238,19 @@ Cross-checks the excursion gate-7 PASS.
 3. If Arm B (Strat) is the chosen direction source, formalize the structural
    direction rule (currently 2U/2D/continuation heuristic) and calibrate it.
 4. Re-run call/put with a ≥40-bars/year floor to get the clean call baseline.
+
+---
+
+## 2026-07-06 follow-up — forward-window + directional re-probe
+
+Extends this handoff's directional call/put theme. A scratch-harness program
+(single chronological 70/30 split, IWM/SPY/QQQ 5m — **weaker than the
+purged/embargoed + EV + gate-7 standard**) found (a) a **30-min forward-RANGE**
+target is far more statistically predictable (50–59% top-bucket precision /
+8–10× lift, generalizes, audited real — not an atr/overlap artifact), and (b) the
+**up-excursion > down-excursion** asymmetry generalizes across all three tickers.
+Neither is gate-cleared: the range is the priced vol/calendar signal (gate-7) and
+the up>down asymmetry is the priced option skew — so this handoff's **step 1
+("land the directional gate-7 verdict") and step 2 (friction/EV)** remain the
+binding go/no-go. Full record: `EXPERIMENT_REGISTRY.md` §2026-07-06; model entry
+`MODEL_REGISTRY.md` §C-mf (PROPOSED/OPEN).

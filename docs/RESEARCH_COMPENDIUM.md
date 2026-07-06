@@ -823,3 +823,30 @@ Detail: `docs/MODEL_RETHINK_PLANS.md` §RESULTS, `docs/MODEL_CATALOG.md`.
 - Result artifacts (per-fold JSON):
   `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude}_engine/<ticker>_<tf>/`.
 
+---
+
+## 2026-07-06 — Forward-window & directional re-probe (does NOT change any verdict)
+
+Prompted by "what would make the magnitude model effective?" A scratch-harness
+program (single chronological 70/30 split, IWM/SPY/QQQ 5m, tempered α=0.75 —
+**weaker than the 8-fold purged/embargoed + EV + gate-7 standard**) tested target
+reframing, feature additions, and direction. Full record:
+`EXPERIMENT_REGISTRY.md` §2026-07-06 (E-25…E-31 + P0.1); model entry
+`MODEL_REGISTRY.md` §C-mf (PROPOSED/OPEN); addenda in
+`MAGNITUDE_ENGINE_RESULTS.md` and `DIRECTION_RESEARCH_RESULTS.md`.
+
+**Headline (all preliminary, none gate-cleared):**
+- Reframing the target to a **30-min forward range** (E-28) is far more statistically
+  predictable (50–59% top-bucket precision / 8–10× lift, generalizes, audited real —
+  not an atr-denominator or overlap artifact). But it is a magnitude/vol signal driven by
+  vol-clustering + time-of-day — the same effects **gate-7 already found priced** — so
+  tradeability is unproven; it must clear gate-7 on the forward-window target first.
+- A consistent **up>down excursion asymmetry** (E-30/P0.1) generalizes across tickers, but
+  is the priced **option skew** and hasn't cleared purged/embargoed CV + cost-aware EV; the
+  direction verdict (no confirmed cross-ticker edge) stands.
+- **Feature engineering on bar data is near ceiling** (ablation: signal distributed, no slim
+  subset beats full; engineered vol-regime and external event/options-IV joins neutral/marginal).
+
+Net: sharpens *where* residual (largely priced) predictability lives; overturns nothing.
+Concrete next gate: implied-vs-realized (gate-7) on the forward-window target.
+

@@ -6,17 +6,21 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Phase 1: Chart Viewer', () => {
   test.beforeEach(async ({ page }) => {
+    // Hermetic auth: open mode regardless of what backend answers the proxy.
+    await page.route('**/api/config/firebase', (route) =>
+      route.fulfill({ status: 200, body: JSON.stringify({ authMode: 'open', firebase: null }) })
+    );
     await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
   });
 
   // ── Layout ──────────────────────────────────────────────────────────────
-  test('sidebar renders with nav items (12 for admin, 11 otherwise)', async ({ page }) => {
-    const nav = page.locator('nav a');
-    // Admin link is conditional on /api/me returning the admin email.
-    // With the live backend behind IAP, admin sees 12; otherwise 11.
-    const count = await nav.count();
-    expect(count === 11 || count === 12).toBeTruthy();
+  test('top nav renders inline tabs + three dropdown triggers', async ({ page }) => {
+    // Inline: Dashboard + AI Insights + Catalysts; Market/Learn/Support are dropdowns.
+    await expect(page.locator('nav a')).toHaveCount(3);
+    for (const menu of ['market', 'learn', 'support']) {
+      await expect(page.getByTestId(`nav-menu-${menu}`)).toBeVisible();
+    }
   });
 
   test('header shows active ticker', async ({ page }) => {
@@ -25,22 +29,23 @@ test.describe('Phase 1: Chart Viewer', () => {
   });
 
   test('can navigate to /charts route', async ({ page }) => {
+    // Charts lives in the Market dropdown now.
+    await page.getByTestId('nav-menu-market').click();
     await page.click('a[href="/charts"]');
     await page.waitForURL('**/charts');
-    // Header date input is the canonical "we landed on charts" signal
-    await expect(page.locator('input[type="date"]').first()).toBeVisible();
+    // The replay control is the canonical "we landed on a review-aware page" signal.
+    await expect(page.getByTestId('replay-toggle')).toBeVisible();
   });
 
-  // ── Chart toolbar ────────────────────────────────────────────────────────
-  test('charts page: date input is populated', async ({ page }) => {
+  // ── Replay control ───────────────────────────────────────────────────────
+  test('charts page: replay popover has a bounded datetime picker', async ({ page }) => {
     await page.goto('/charts');
-    // DateSelector renders <input type="date"> + <input type="time"> + Apply.
-    const dateInput = page.locator('input[type="date"]').first();
-    await expect(dateInput).toBeVisible();
-    // The input is wired to the draft state; at minimum a `max` attribute is
-    // set to the latest available trading date — confirms the API resolved.
-    const max = await dateInput.getAttribute('max');
-    expect(max).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    await page.getByTestId('replay-toggle').click();
+    const dt = page.getByTestId('replay-datetime');
+    await expect(dt).toBeVisible();
+    // One-box datetime-local, clamped to "now" so future moments can't be picked.
+    const max = await dt.getAttribute('max');
+    expect(max).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
   });
 
   test('charts page: timeframe buttons render', async ({ page }) => {

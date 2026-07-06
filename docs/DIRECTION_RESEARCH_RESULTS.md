@@ -364,3 +364,38 @@ gcloud run jobs execute direction-probe --region us-east1 --async \
 ```
 Hermetic helper tests: `tests/test_flow_direction.py` (22), `tests/test_fracdiff.py`
 (11), `tests/test_information_bars.py`.
+
+---
+
+## 2026-07-06 addendum — directional-excursion re-probe (does NOT change the verdict)
+
+A scratch-harness probe (single chronological 70/30 split, IWM/SPY/QQQ 5m, tempered
+α=0.75 — **weaker than this program's purged+embargoed CV + cost-aware EV standard**;
+see `EXPERIMENT_REGISTRY.md` §2026-07-06) re-examined direction via **excursion**
+targets rather than close-sign.
+
+**Finding (E-30 single-bar; P0.1 30-min window).** The **up-excursion** (big move
+above the entry, `(max(high)−open)/atr`) is more predictable than the
+**down-excursion**, consistently across all three tickers: CALL(up) top-bucket
+lift 4.8–6.8× vs PUT(down) 3.0–4.7×; p≥0.55 up-excursion ~32–40% precision / 6–7×
+lift on 184–581 bars. The asymmetry *generalizes* — unlike the lone IWM-only
+long-tilt this program flagged as unresolved.
+
+**Why this does NOT overturn "no generalizable directional edge."**
+1. **It is an excursion target, not a tradeable direction.** A large up-excursion
+   occurs in down-closing bars too; up-excursion magnitude is correlated with overall
+   volatility (the magnitude signal), so part of the "predictability" is the priced
+   vol signal re-measured, not a sign edge.
+2. **The up>down asymmetry is the equity skew** — puts are structurally richer than
+   calls precisely because down-moves are sharper/less-anticipated. That asymmetry is
+   already in option prices; predicting it is not the same as beating it.
+3. **It has not cleared this program's gates.** No purged+embargoed walk-forward, no
+   cost-aware EV (+$0.02/sh net in ≥6/8 folds after $0.05 friction), no
+   multiple-comparisons control. The single 70/30 split is below the bar that
+   returned null for every prior direction probe.
+
+**Standing action:** re-run the up-excursion (single-bar and 30-min) under
+purged+embargoed CV with the cost-aware EV gate, and net it against the option skew
+it would trade, before it counts as a candidate. Until then it is a **preliminary
+statistical asymmetry**, logged here; the verdict (no confirmed cross-ticker
+directional edge) stands.

@@ -619,3 +619,47 @@ dispatch completes — by querying the results table via `db-query.yml`,
 not by editing during a live run. **Edits to this file during a run
 are not allowed** because they'd let post-hoc number-fitting back into
 the workflow.
+
+---
+
+## 2026-07-06 addendum — forward-window (30-min RANGE) target revisit
+
+**Does NOT reopen the project verdict.** A scratch-harness re-probe (single
+chronological 70/30 split, IWM/SPY/QQQ 5m, tempered α=0.75 — weaker than the
+8-fold purged/embargoed production standard; see
+`EXPERIMENT_REGISTRY.md` §2026-07-06) asked whether *reframing the target* helps.
+
+**Finding (E-28).** Predicting the **range over the next 30 min** (K=6 bars,
+`(max(high[t+1..t+K]) − min(low[t+1..t+K]))/atr20[t]`) instead of the single next
+bar's body is far more statistically predictable: OOS top-bucket argmax precision
+**50–59% / 8–10× lift** (vs single-bar ~10% / ~4.3×), p≥0.55 **56–64%**, generalizing
+across all three tickers. Audited as real, not artifact: a trivial `atr_20[t]`-rank
+predictor gets only ~3% precision (0.5×), and non-overlapping windows hold at 65%.
+Top features: `mins_since_open`, `atr_20`, `bb_squeeze`, `realized_vol_short` —
+i.e. **vol-clustering + time-of-day.**
+
+**Why this is consistent with the FAIL verdict, not a refutation of it.** Those
+drivers are exactly what gate-7 found the option chain already prices (EXPLOSIVE-bar
+realized/implied 0.83–0.92). A cleaner 30-min vol *forecast* is still a
+non-directional magnitude signal, and the straddle/strangle that trades it prices
+the same forecast. The improvement is in *statistical* predictability of a
+better-posed target, **not** evidence of unpriced structure.
+
+**Standing gate before any tradeability claim:** run gate-7 (aggregate
+realized/implied on forward-window-EXPLOSIVE-predicted bars, ≥1.25 in ≥6/8
+purged folds) on this target. The prior verdict predicts it clears no better than
+the single-bar target. Until then E-28 is a **statistical result, tradeability
+UNPROVEN** — logged, not shipped.
+
+**Gate-7 outcome (2026-07-06) — verdict HOLDS.** Ran gate-7 on the forward-window
+target. The raw ratio *looks* like a strong pass (30-min realized range 2.43× /
+directional displacement 1.57× the daily-ATM-IV-√t implied move; 910 bars; 5/5
+quarters ≥1.25). It is a **benchmark artifact**, not an edge: a time-of-day
+control shows **96% of the fwd-window-EXPLOSIVE bars fall in the last 30 min of
+the session**, and at **midday** (where flat daily-IV × √(t/yr) scaling is a valid
+benchmark) the displacement ratio is **0.74 — below 1.0, i.e. over-priced.** Flat
+daily-ATM-IV √-scaling under-states the elevated close-of-day realized vol that
+the actual 0DTE / short-dated options price correctly. So the forward-window
+reframe is **statistically more predictable but still NOT tradeably-extractable** —
+the extractable residual is "point at the close," where a naive daily-IV benchmark
+only looks cheap. Consistent with the 2026-05-29 FAIL, on a better-posed target.

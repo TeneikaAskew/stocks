@@ -312,3 +312,16 @@ the net edge has *more* margin than modelled.
 Of three "failures," one was structural (mine), not the market — and it was the
 flagship. A first-pass null is a hypothesis about the *test* as much as the
 signal; corrected tests are mandatory before "fail" is earned.
+
+---
+
+### 2026-07-06 addendum — the "beat IV" wall, re-confirmed on a reframed target
+A scratch re-probe reframed magnitude as a **30-min forward range** (vs the single
+next bar): statistically much stronger (50–59% precision / 8–10× lift, generalizes,
+audited real) — but the audit shows the drivers are vol-clustering + time-of-day,
+i.e. the same priced quantity this doc's "stop trying to beat IV — trade the
+underlying" insight names. The up>down excursion asymmetry (E-30/P0.1) is likewise
+the priced option skew. So the reframe sharpens the *forecast*, not an *edge over
+the option* — consistent with the unifying insight above, not a hole in it. It
+still owes gate-7 on the forward-window target. See `EXPERIMENT_REGISTRY.md`
+§2026-07-06 and `MODEL_REGISTRY.md` §C-mf.
