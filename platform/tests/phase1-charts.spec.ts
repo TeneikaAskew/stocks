@@ -38,14 +38,16 @@ test.describe('Phase 1: Chart Viewer', () => {
   });
 
   // ── Replay control ───────────────────────────────────────────────────────
-  test('charts page: replay popover has a bounded datetime picker', async ({ page }) => {
+  test('charts page: replay popover has a visual calendar + time field', async ({ page }) => {
     await page.goto('/charts');
     await page.getByTestId('replay-toggle').click();
-    const dt = page.getByTestId('replay-datetime');
-    await expect(dt).toBeVisible();
-    // One-box datetime-local, clamped to "now" so future moments can't be picked.
-    const max = await dt.getAttribute('max');
-    expect(max).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    // Visual month calendar (react-aria renders role=grid) — nothing typed free-form.
+    await expect(page.locator('[role="grid"]').first()).toBeVisible();
+    // Segmented time field (hour/minute/AM-PM spinbuttons).
+    await expect(page.locator('[role="spinbutton"]').first()).toBeVisible();
+    await expect(page.getByTestId('replay-apply')).toBeVisible();
+    // OK is disabled until a date is picked (draft-only until commit).
+    await expect(page.getByTestId('replay-apply')).toBeDisabled();
   });
 
   test('charts page: timeframe buttons render', async ({ page }) => {

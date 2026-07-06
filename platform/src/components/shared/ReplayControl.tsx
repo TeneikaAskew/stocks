@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Calendar, ChevronDown, History, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { Calendar as CalendarIcon, ChevronDown, ChevronLeft, ChevronRight, History, X } from 'lucide-react';
+import { Calendar, TimeField } from '@heroui/react';
+import { CalendarDate, Time, getDayOfWeek, parseDate, today } from '@internationalized/date';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
 
 /** Routes where historical replay is functional. */
 const REPLAY_ROUTES = ['/dashboard', '/live', '/charts', '/signals'];
+
+const ET = 'America/New_York';
+const MARKET_CLOSE = new Time(16, 0);
+
+const pad = (n: number) => String(n).padStart(2, '0');
 
 function fmtReplay(date: string, time: string): string {
   const d = new Date(`${date}T${time}`);
@@ -17,30 +25,68 @@ function fmtReplay(date: string, time: string): string {
   });
 }
 
+function fmtHeading(date: CalendarDate): string {
+  return date.toDate(ET).toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/** Most recent weekday on/before `d` (holidays are handled by the grid, not here). */
+function latestWeekday(d: CalendarDate): CalendarDate {
+  let cur = d;
+  while (getDayOfWeek(cur, 'en-US') === 0 || getDayOfWeek(cur, 'en-US') === 6) {
+    cur = cur.subtract({ days: 1 });
+  }
+  return cur;
+}
+
+/** Market holidays (dates with no session) — used to gray out calendar days. */
+function useMarketHolidays(): Set<string> {
+  const { data } = useQuery<{ holidays_2026?: string[] }>({
+    queryKey: ['market-hours'],
+    queryFn: async () => {
+      const r = await fetch('/api/config/market-hours');
+      if (!r.ok) throw new Error(`market-hours ${r.status}`);
+      return r.json();
+    },
+    staleTime: 24 * 60 * 60 * 1000,
+  });
+  return new Set(data?.holidays_2026 ?? []);
+}
+
 /**
- * Compact replay ("time travel") control for the top bar. Replaces the old
- * two-input Live-Mode/DateSelector row: live state is a quiet "Replay"
- * button (the Market chip already tells the session story); active replay
- * is an amber chip showing the pinned moment with an inline ✕ back-to-live.
- * The popover holds ONE datetime-local input (step=60 keeps the seconds
- * slot away) — draft-only until Apply, so the screen never flips modes
- * mid-edit. Times are Eastern.
+ * Compact replay ("time travel") control for the top bar. Live state is a
+ * quiet "Replay" button (the Market chip already tells the session story);
+ * active replay is an amber chip showing the pinned moment with an inline
+ * ✕ back-to-live. The popover is a TradingView-style picker: a VISUAL
+ * calendar (weekends, market holidays, and future dates disabled) plus a
+ * segmented time field — nothing is typed free-form. Draft-only until
+ * Apply, so the screen never flips modes mid-edit. Times are Eastern.
  */
 export function ReplayControl() {
   const { pathname } = useLocation();
   const { reviewDate, reviewTime, setReviewDate, setReviewTime, clearReviewDate } = useReviewDateStore();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const holidays = useMarketHolidays();
   const isLive = reviewDate === null;
 
   // Draft follows the committed store value when it changes externally —
   // render-time state adjustment (no effect → no cascading-render lint).
   const committed = reviewDate ? `${reviewDate}T${reviewTime ?? '16:00'}` : '';
   const [lastCommitted, setLastCommitted] = useState(committed);
-  const [draft, setDraft] = useState(committed);
+  const [draftDate, setDraftDate] = useState<CalendarDate | null>(reviewDate ? parseDate(reviewDate) : null);
+  const [draftTime, setDraftTime] = useState<Time>(
+    reviewTime ? new Time(Number(reviewTime.slice(0, 2)), Number(reviewTime.slice(3, 5))) : MARKET_CLOSE,
+  );
   if (committed !== lastCommitted) {
     setLastCommitted(committed);
-    setDraft(committed);
+    setDraftDate(reviewDate ? parseDate(reviewDate) : null);
+    setDraftTime(
+      reviewTime ? new Time(Number(reviewTime.slice(0, 2)), Number(reviewTime.slice(3, 5))) : MARKET_CLOSE,
+    );
   }
 
   // Outside click / Escape closes the popover.
@@ -62,35 +108,45 @@ export function ReplayControl() {
 
   if (!REPLAY_ROUTES.includes(pathname)) return null;
 
-  // No future moments.
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const maxLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const todayET = today(ET);
+  const isDateUnavailable = (d: CalendarDate) => {
+    const dow = getDayOfWeek(d, 'en-US');
+    return dow === 0 || dow === 6 || holidays.has(d.toString());
+  };
 
-  const canApply = draft !== '' && draft !== committed;
+  const draftStr = draftDate ? `${draftDate.toString()}T${pad(draftTime.hour)}:${pad(draftTime.minute)}` : '';
+  const canApply = draftStr !== '' && draftStr !== committed;
 
   const apply = () => {
-    if (!canApply) return;
-    const [d, t] = draft.split('T');
-    if (!d || !t) return;
-    setReviewDate(d);
-    setReviewTime(t.slice(0, 5));
+    if (!canApply || !draftDate) return;
+    setReviewDate(draftDate.toString());
+    setReviewTime(`${pad(draftTime.hour)}:${pad(draftTime.minute)}`);
+    setOpen(false);
+  };
+
+  const cancel = () => {
+    setDraftDate(reviewDate ? parseDate(reviewDate) : null);
+    setDraftTime(
+      reviewTime ? new Time(Number(reviewTime.slice(0, 2)), Number(reviewTime.slice(3, 5))) : MARKET_CLOSE,
+    );
     setOpen(false);
   };
 
   const clear = () => {
     clearReviewDate();
-    setDraft('');
     setOpen(false);
+  };
+
+  const jumpLatestSession = () => {
+    setDraftDate(latestWeekday(todayET));
+    setDraftTime(MARKET_CLOSE);
   };
 
   return (
     <div ref={ref} className="relative shrink-0">
       <div
         className={`flex items-center gap-1 rounded-lg border px-1 py-0.5 ${
-          isLive
-            ? 'border-transparent'
-            : 'border-amber-500/40 bg-amber-500/10'
+          isLive ? 'border-transparent' : 'border-amber-500/40 bg-amber-500/10'
         }`}
       >
         <button
@@ -106,7 +162,7 @@ export function ReplayControl() {
               : 'font-semibold text-[var(--warn)]'
           }`}
         >
-          {isLive ? <History size={13} /> : <Calendar size={13} />}
+          {isLive ? <History size={13} /> : <CalendarIcon size={13} />}
           <span className="whitespace-nowrap">
             {isLive ? 'Replay' : `Replay · ${fmtReplay(reviewDate, reviewTime ?? '16:00')}`}
           </span>
@@ -127,44 +183,97 @@ export function ReplayControl() {
       </div>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-[var(--surface-3)] bg-[var(--surface-1)] p-3 shadow-2xl">
-          <label className="text-[11px] font-medium uppercase tracking-wide text-[var(--on-surface-muted)]">
-            Replay as of (ET)
-          </label>
-          <input
-            type="datetime-local"
-            step={60}
-            value={draft}
-            max={maxLocal}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && canApply) {
-                e.preventDefault();
-                apply();
-              }
-            }}
-            data-testid="replay-datetime"
-            className="mt-1.5 w-full rounded border border-[var(--outline-variant)] bg-[var(--surface-lowest)] px-2 py-1.5 text-xs text-[var(--on-surface)] focus:border-[var(--brand)] focus:outline-none"
-          />
-          <div className="mt-2.5 flex items-center justify-end gap-2">
-            {!isLive && (
-              <button
-                type="button"
-                onClick={clear}
-                className="rounded px-2.5 py-1 text-xs font-medium text-[var(--warn)] hover:bg-amber-500/15"
-              >
-                Back to live
-              </button>
-            )}
+        <div className="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-xl border border-[var(--surface-3)] bg-[var(--surface-1)] shadow-2xl">
+          {/* Selected-moment header (TradingView style) */}
+          <div className="bg-[var(--brand)] px-4 py-3 text-[var(--on-brand)]">
+            <div className="text-[11px] font-medium opacity-80">{draftDate ? draftDate.year : 'Replay'}</div>
+            <div className="text-lg font-bold leading-tight">
+              {draftDate ? fmtHeading(draftDate) : 'Pick a session'}
+            </div>
+          </div>
+
+          <div className="p-3">
+            <Calendar
+              aria-label="Replay date"
+              value={draftDate}
+              onChange={(d) => setDraftDate(d as CalendarDate)}
+              maxValue={todayET}
+              isDateUnavailable={(d) => isDateUnavailable(d as CalendarDate)}
+            >
+              <Calendar.Header>
+                <Calendar.NavButton slot="previous">
+                  <ChevronLeft size={15} />
+                </Calendar.NavButton>
+                <Calendar.Heading />
+                <Calendar.NavButton slot="next">
+                  <ChevronRight size={15} />
+                </Calendar.NavButton>
+              </Calendar.Header>
+              <Calendar.Grid>
+                <Calendar.GridHeader>
+                  {(day) => <Calendar.HeaderCell>{day}</Calendar.HeaderCell>}
+                </Calendar.GridHeader>
+                <Calendar.GridBody>
+                  {(date) => <Calendar.Cell date={date} />}
+                </Calendar.GridBody>
+              </Calendar.Grid>
+            </Calendar>
+
             <button
               type="button"
-              onClick={apply}
-              disabled={!canApply}
-              data-testid="replay-apply"
-              className="rounded bg-[var(--brand)] px-3 py-1 text-xs font-semibold text-[var(--on-brand)] hover:bg-[var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-30"
+              onClick={jumpLatestSession}
+              className="mt-1 text-xs font-medium text-[var(--brand)] hover:underline"
             >
-              Apply
+              Latest session close
             </button>
+
+            {/* Time row */}
+            <div className="mt-2 flex items-center justify-between border-t border-[var(--outline-variant)] pt-2.5">
+              <span className="text-xs text-[var(--on-surface-variant)]">Time (ET)</span>
+              <TimeField
+                aria-label="Replay time"
+                value={draftTime}
+                onChange={(t) => t && setDraftTime(t as Time)}
+                hourCycle={12}
+              >
+                <TimeField.Group>
+                  <TimeField.InputContainer>
+                    <TimeField.Input>
+                      {(segment) => <TimeField.Segment segment={segment} />}
+                    </TimeField.Input>
+                  </TimeField.InputContainer>
+                </TimeField.Group>
+              </TimeField>
+            </div>
+
+            {/* Footer */}
+            <div className="mt-3 flex items-center justify-end gap-2">
+              {!isLive && (
+                <button
+                  type="button"
+                  onClick={clear}
+                  className="mr-auto rounded px-2.5 py-1 text-xs font-medium text-[var(--warn)] hover:bg-amber-500/15"
+                >
+                  Back to live
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={cancel}
+                className="rounded px-2.5 py-1 text-xs font-medium text-[var(--on-surface-variant)] hover:bg-[var(--surface-2)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={apply}
+                disabled={!canApply}
+                data-testid="replay-apply"
+                className="rounded bg-[var(--brand)] px-3.5 py-1 text-xs font-semibold text-[var(--on-brand)] hover:bg-[var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                OK
+              </button>
+            </div>
           </div>
         </div>
       )}
