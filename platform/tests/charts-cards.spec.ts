@@ -455,3 +455,211 @@ test.describe('Charts page — admin seed-trade teaching layer (Task 2.4)', () =
     await expect(page.getByText('Seed layer unavailable')).toBeVisible();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 3.3: "Backtest my trades" scorecard (POST /api/backtest/replay-trades
+// — platform/api/routers/backtest.py / lib/backtest.py replay_labeled_trades).
+// Button lives in the side panel Trades tab, enabled only when >=1 CLOSED
+// (non-active) trade is present for the current ticker/date; clicking it
+// opens a modal scoring the closed trades against the production benchmark.
+// ─────────────────────────────────────────────────────────────────────────
+test.describe('Charts page — backtest-my-trades scorecard (Task 3.3)', () => {
+  const CLOSED_ROW_1 = {
+    id: 'closed-1',
+    ticker: 'IWM',
+    direction: 'CALL',
+    entry_ts: '2026-04-25T09:31:00',
+    exit_ts: '2026-04-25T10:15:00',
+    entry_price: 220.0,
+    exit_price: 222.5,
+    return_pct: 1.5,
+    notes: '',
+    take_profits: [223],
+    stop_loss: 218.5,
+    status: 'win',
+    source: 'chart',
+    session_id: null,
+    created_at: '2026-04-25T09:31:01',
+  };
+  const CLOSED_ROW_2 = {
+    id: 'closed-2',
+    ticker: 'IWM',
+    direction: 'PUT',
+    entry_ts: '2026-04-25T10:30:00',
+    exit_ts: '2026-04-25T11:00:00',
+    entry_price: 221.0,
+    exit_price: 220.0,
+    return_pct: 0.45,
+    notes: '',
+    take_profits: [],
+    stop_loss: null,
+    status: 'win',
+    source: 'chart',
+    session_id: null,
+    created_at: '2026-04-25T10:30:01',
+  };
+  const ACTIVE_ROW = {
+    id: 'active-1',
+    ticker: 'IWM',
+    direction: 'CALL',
+    entry_ts: '2026-04-25T11:15:00',
+    exit_ts: null,
+    entry_price: 222.0,
+    exit_price: null,
+    return_pct: null,
+    notes: '',
+    take_profits: [],
+    stop_loss: null,
+    status: 'active',
+    source: 'chart',
+    session_id: null,
+    created_at: '2026-04-25T11:15:01',
+  };
+
+  test.beforeEach(async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/market/dates/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
+    await page.route('**/api/signals/IWM/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
+    await page.route('**/api/signals/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
+    );
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
+    );
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(
+        M.ok({
+          ticker: 'IWM',
+          source: 'cloud_sql',
+          count: 3,
+          trades: [CLOSED_ROW_1, CLOSED_ROW_2, ACTIVE_ROW],
+        })
+      )
+    );
+  });
+
+  test('button is enabled with closed trades present and POSTs only the closed trade ids', async ({ page }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedBody: any = null;
+    await page.route('**/api/backtest/replay-trades', async (route) => {
+      capturedBody = route.request().postDataJSON();
+      await route.fulfill(
+        M.ok({
+          trades: [
+            {
+              id: 'closed-1',
+              status: 'ok',
+              actual_return_pct: 1.5,
+              fill_check: 'ok',
+              system_signal_at_entry: { direction: 'CALL', score: 4 },
+              system_exit: { exit_reason: 'time_stop', return_pct: 0.3, exit_time: '2026-04-25 10:00:00' },
+              exit_edge_bps: 120.0,
+            },
+            { id: 'closed-2', status: 'unavailable', reason: 'trade still open' },
+          ],
+          aggregate: {
+            n: 2,
+            scored_n: 1,
+            win_rate: 1.0,
+            avg_return_pct: 1.5,
+            system_resolved_n: 1,
+            system_no_signal_n: 0,
+            system_agreement_rate: 1.0,
+            avg_exit_edge_bps: 120.0,
+          },
+        })
+      );
+    });
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    const btn = page.getByTestId('backtest-trades-btn');
+    await expect(btn).toBeVisible();
+    await expect(btn).toBeEnabled();
+
+    await btn.click();
+    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
+    expect(capturedBody.ticker).toBe('IWM');
+    expect(new Set(capturedBody.trade_ids)).toEqual(new Set(['closed-1', 'closed-2']));
+  });
+
+  test('modal renders per-trade rows (ok + unavailable) and an honest aggregate footer', async ({ page }) => {
+    await page.route('**/api/backtest/replay-trades', (r) =>
+      r.fulfill(
+        M.ok({
+          trades: [
+            {
+              id: 'closed-1',
+              status: 'ok',
+              actual_return_pct: 1.5,
+              fill_check: 'ok',
+              system_signal_at_entry: { direction: 'CALL', score: 4 },
+              system_exit: { exit_reason: 'time_stop', return_pct: 0.3, exit_time: '2026-04-25 10:00:00' },
+              exit_edge_bps: 120.0,
+            },
+            { id: 'closed-2', status: 'unavailable', reason: 'trade still open' },
+          ],
+          aggregate: {
+            n: 2,
+            scored_n: 1,
+            win_rate: 1.0,
+            avg_return_pct: 1.5,
+            system_resolved_n: 1,
+            system_no_signal_n: 0,
+            system_agreement_rate: 1.0,
+            avg_exit_edge_bps: 120.0,
+          },
+        })
+      )
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    await page.getByTestId('backtest-trades-btn').click();
+
+    const modal = page.getByTestId('replay-scorecard');
+    await expect(modal).toBeVisible();
+
+    const okRow = page.getByTestId('scorecard-row-closed-1');
+    await expect(okRow).toBeVisible();
+    await expect(okRow.getByText('+1.50%')).toBeVisible();
+    await expect(okRow.getByText(/time_stop/)).toBeVisible();
+    await expect(okRow.getByText(/match/i)).toBeVisible();
+    await expect(okRow.getByText(/\+120\.00\s*bps/)).toBeVisible();
+
+    const unavailableRow = page.getByTestId('scorecard-row-closed-2');
+    await expect(unavailableRow).toBeVisible();
+    await expect(unavailableRow.getByText(/trade still open/i)).toBeVisible();
+    // Unavailable rows never render numbers.
+    await expect(unavailableRow.getByText(/%/)).not.toBeVisible();
+
+    await expect(modal.getByText(/1\s*\/\s*2\s*scored.*100%/i)).toBeVisible();
+    await expect(modal.getByText(/Agreement:\s*100%/i)).toBeVisible();
+    await expect(modal.getByText(/system had a setup on 1 of 1 entries/i)).toBeVisible();
+  });
+
+  test('a 503 from the replay endpoint renders a loud inline error, never a silent failure', async ({ page }) => {
+    await page.route('**/api/backtest/replay-trades', (r) =>
+      r.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'journal database not configured' }),
+      })
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    await page.getByTestId('backtest-trades-btn').click();
+
+    const modal = page.getByTestId('replay-scorecard');
+    await expect(modal).toBeVisible();
+    await expect(modal.getByText(/journal database not configured/i)).toBeVisible();
+  });
+});

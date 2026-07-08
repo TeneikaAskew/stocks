@@ -313,6 +313,112 @@ export function useSeedTrades(ticker: string, date: string) {
   });
 }
 
+// ── Backtest replay scorecard (Task 3.3) ────────────────────────────────
+// POST /api/backtest/replay-trades (platform/api/routers/backtest.py) scores
+// the caller's own closed journal trades against the actual bars and
+// benchmarks them against the production BacktestEngine
+// (lib/backtest.py::replay_labeled_trades — see that function's docstring
+// for the exact per-trade/aggregate shape this mirrors).
+//
+// UNITS: every `*_pct` field is already TRUE PERCENT (server-side
+// conversion; see backtest.py's module docstring) — render with
+// `.toFixed(2)%` as-is. `win_rate`/`system_agreement_rate` are 0-1
+// fractions the UI multiplies by 100 itself (matches every other `_rate`
+// field already in this file, e.g. `seedBenchmark`'s `winRatePct`).
+// `exit_edge_bps`/`avg_exit_edge_bps` are basis points, already signed.
+
+export interface ReplaySystemSignal {
+  direction?: string | null;
+  score?: number;
+  status?: 'unavailable';
+}
+
+export interface ReplaySystemExit {
+  exit_reason: string | null;
+  return_pct: number | null; // PERCENT
+  exit_time: string | null;
+}
+
+/** A trade's `status` distinguishes two DIFFERENT meanings of "unavailable":
+ * this is the replay scorecard's per-trade status (missing bars / trade
+ * still open / bad data), not `TradeEntry['status']` (win/loss/active). */
+export interface ReplayTradeCard {
+  id: string;
+  status: 'ok' | 'unavailable';
+  reason?: string;
+  actual_return_pct?: number; // PERCENT
+  fill_check?: 'ok' | 'price_outside_bar_range';
+  system_signal_at_entry?: ReplaySystemSignal;
+  system_exit?: ReplaySystemExit;
+  exit_edge_bps?: number | null;
+}
+
+export interface ReplayAggregate {
+  n: number;
+  scored_n: number;
+  win_rate: number; // 0-1
+  avg_return_pct: number; // PERCENT
+  system_resolved_n: number;
+  system_no_signal_n: number;
+  system_agreement_rate: number | null; // 0-1, or null when system_resolved_n === 0 (Rule 3.7: honest null, never fabricated 0)
+  avg_exit_edge_bps: number; // bps
+}
+
+export interface ReplayTradesResponse {
+  trades: ReplayTradeCard[];
+  aggregate: ReplayAggregate;
+}
+
+export interface ReplayTradesVars {
+  ticker: string;
+  tradeIds: string[];
+}
+
+/**
+ * Scores the closed trades identified by `tradeIds` against the production
+ * benchmark. A `useMutation` (not `useQuery`) because this is a triggered
+ * analytics computation, not cached data the page reads passively — the
+ * modal calls `.mutate()` on button click and renders `isPending`/`isError`/
+ * `data` directly.
+ */
+export function useReplayTrades() {
+  return useMutation<ReplayTradesResponse, Error, ReplayTradesVars>({
+    mutationFn: async (vars) => {
+      const r = await fetch('/api/backtest/replay-trades', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: vars.ticker, trade_ids: vars.tradeIds }),
+      });
+      if (!r.ok) {
+        // Fail-loud (Rule 3.7): surface the server's `detail` message when
+        // present so the modal's inline error banner says WHY the replay
+        // failed (e.g. "journal database not configured"), not just a bare
+        // status code.
+        let detail = `replay-trades failed: ${r.status}`;
+        try {
+          const body = await r.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch {
+          // response body wasn't JSON — keep the status-code message.
+        }
+        throw new Error(detail);
+      }
+      return r.json();
+    },
+  });
+}
+
+/**
+ * Signed basis-points formatter for `exit_edge_bps`/`avg_exit_edge_bps`.
+ * `null`/`undefined` (Rule 3.7 honest-unavailable, e.g. no system exit
+ * resolved) renders as an em dash, never a fabricated "0.00 bps".
+ */
+export function formatEdgeBps(bps: number | null | undefined): string {
+  if (bps == null) return '—';
+  const sign = bps >= 0 ? '+' : '';
+  return `${sign}${bps.toFixed(2)} bps`;
+}
+
 export interface SeedBenchmark {
   count: number;
   winRatePct: number | null;

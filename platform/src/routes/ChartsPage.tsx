@@ -11,14 +11,19 @@ import {
   useCloseChartTrade,
   useDeleteChartTrade,
   useSeedTrades,
+  useReplayTrades,
   isoNaiveToEpoch,
   isSeedTradesUnavailable,
   seedBenchmark,
+  formatEdgeBps,
   type SeedTradeRow,
+  type ReplayTradeCard,
+  type ReplayAggregate,
 } from '@/hooks/useJournalChartTrades';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { Modal } from '@/components/shared/Modal';
 import BacktesterSection from '@/components/backtest/BacktesterSection';
 import { StrategyConditionsCard } from '@/components/charts/StrategyConditionsCard';
 import { SimilarSetupsCard } from '@/components/charts/SimilarSetupsCard';
@@ -42,6 +47,8 @@ import {
   Trash2,
   Zap,
   BookOpen,
+  ClipboardCheck,
+  AlertTriangle,
 } from 'lucide-react';
 
 // Tickers for which we have an options chain in Cloud SQL (matches
@@ -177,6 +184,13 @@ export default function ChartsPage() {
   const closeChartTrade = useCloseChartTrade();
   const deleteChartTrade = useDeleteChartTrade();
 
+  // "Backtest my trades" scorecard (Task 3.3) — scores the current view's
+  // CLOSED trades against the production benchmark (POST
+  // /api/backtest/replay-trades). A useMutation (triggered on click), not a
+  // useQuery — the modal's isPending/isError/data states drive the UI.
+  const [scorecardOpen, setScorecardOpen] = useState(false);
+  const replayTrades = useReplayTrades();
+
   // Admin seed-trade teaching layer (Task 2.4) — read-only pull from the
   // automated pipeline `trades` table, GET /api/journal/seed/{ticker}.
   // Kept fetching regardless of the toggle (cheap single-row/single-ticker
@@ -212,6 +226,18 @@ export default function ChartsPage() {
     return trades.filter(t => (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
   }, [trades, reviewCutoffTs]);
   const stats = useTradeAnalytics(currentTrades);
+
+  // Task 3.3: "closed" = any non-active status (win/loss/breakeven) — the
+  // replay endpoint requires exit_ts/exit_price to score a trade, which an
+  // active TradeEntry never has.
+  const closedTradeIds = useMemo(
+    () => currentTrades.filter((t) => t.status !== 'active').map((t) => t.id),
+    [currentTrades],
+  );
+  const closedTradeDirections = useMemo(
+    () => new Map(currentTrades.map((t) => [t.id, t.optionType] as const)),
+    [currentTrades],
+  );
 
   // Strategy condition evaluation: build a Bar[] from the candlestick + volume
   // arrays the API returns. Indicators + signals are computed server-side
@@ -841,6 +867,32 @@ export default function ChartsPage() {
         <div className="overflow-auto p-3" style={{ maxHeight: 'calc(100vh - 200px)' }}>
           {activeTab === 'trades' ? (
             <div className="space-y-2">
+              {/* Task 3.3: scores this view's CLOSED trades against the
+                  production benchmark. Disabled with no closed trades yet
+                  (the replay endpoint needs an exit_ts/exit_price to score
+                  against) or while a replay is already in flight. */}
+              <button
+                data-testid="backtest-trades-btn"
+                onClick={() => {
+                  setScorecardOpen(true);
+                  replayTrades.mutate({ ticker: activeTicker, tradeIds: closedTradeIds });
+                }}
+                disabled={closedTradeIds.length === 0 || replayTrades.isPending}
+                title={
+                  closedTradeIds.length === 0
+                    ? 'Close at least one trade to backtest it'
+                    : 'Score your closed trades against the production benchmark'
+                }
+                className="flex w-full items-center justify-center gap-1 rounded bg-[var(--color-accent-blue)] px-2 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {replayTrades.isPending ? (
+                  <LoadingSpinner size={12} />
+                ) : (
+                  <ClipboardCheck size={14} />
+                )}
+                Backtest my trades
+              </button>
+
               {currentTrades.length === 0 ? (
                 <p className="py-8 text-center text-xs text-[var(--color-text-muted)]">
                   No trades yet. Click "Mark Entry" to start.
@@ -933,6 +985,41 @@ export default function ChartsPage() {
 
     {/* Backtester section (merged from former /backtest page) */}
     <BacktesterSection ticker={activeTicker} />
+
+    {/* Task 3.3: "Backtest my trades" scorecard. Rendered outside the
+        tab-conditional block so switching tabs doesn't unmount it mid-replay. */}
+    <Modal
+      open={scorecardOpen}
+      onClose={() => setScorecardOpen(false)}
+      title={`Backtest my trades — ${activeTicker}`}
+    >
+      <div data-testid="replay-scorecard">
+        {replayTrades.isPending && (
+          <p className="py-4 text-center text-xs text-[var(--color-text-muted)]">
+            Scoring your trades against the system benchmark…
+          </p>
+        )}
+        {replayTrades.isError && (
+          <div className="rounded border border-[var(--color-accent-red)]/40 bg-red-500/10 p-2 text-xs text-[var(--color-accent-red)]">
+            Replay failed: {replayTrades.error.message}
+          </div>
+        )}
+        {replayTrades.data && (
+          <>
+            <div className="space-y-2">
+              {replayTrades.data.trades.map((card) => (
+                <ScorecardRow
+                  key={card.id}
+                  card={card}
+                  labeledDirection={closedTradeDirections.get(card.id) ?? null}
+                />
+              ))}
+            </div>
+            <ScorecardFooter aggregate={replayTrades.data.aggregate} />
+          </>
+        )}
+      </div>
+    </Modal>
     </div>
   );
 }
@@ -1069,6 +1156,134 @@ function SeedTradeCard({ row }: { row: SeedTradeRow }) {
           {row.return_pct.toFixed(2)}%
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One row of the "Backtest my trades" scorecard (Task 3.3). `status ==
+ * "unavailable"` trades (POST /api/backtest/replay-trades — missing bars,
+ * still-open trade, bad fill data) render ONLY the id + reason, never a
+ * fabricated number (CLAUDE.md Rule 3.7) — no return/exit/edge fields are
+ * populated on that shape.
+ *
+ * The scorecard payload doesn't carry the trade's own labeled direction
+ * (see lib/backtest.py::replay_labeled_trades — it's stripped before
+ * returning), so the caller looks it up client-side from the ticker's own
+ * TradeEntry list and passes it in for the agreement badge.
+ */
+function ScorecardRow({
+  card,
+  labeledDirection,
+}: {
+  card: ReplayTradeCard;
+  labeledDirection: TradeDirection | null;
+}) {
+  if (card.status === 'unavailable') {
+    return (
+      <div
+        data-testid={`scorecard-row-${card.id}`}
+        className="rounded border border-dashed border-[var(--color-border)] p-2 text-xs text-[var(--color-text-muted)]"
+      >
+        <span className="font-mono">{card.id}</span> — {card.reason ?? 'unavailable'}
+      </div>
+    );
+  }
+
+  // Agreement badge — four honest states (never collapsed into a binary
+  // match/no-match, per lib/backtest.py's _aggregate_scorecards docstring):
+  //   1. system_signal_at_entry.status === 'unavailable' -> indicator
+  //      warm-up hadn't completed; the system never got a chance to opine.
+  //   2. direction === null -> the benchmark ran but had no setup.
+  //   3. direction === labeledDirection -> system-resolved AND matches.
+  //   4. direction present but != labeledDirection -> system-resolved,
+  //      differed from the user's call.
+  const signal = card.system_signal_at_entry;
+  let badgeLabel: string;
+  let badgeClass: string;
+  if (!signal || signal.status === 'unavailable') {
+    badgeLabel = 'system unavailable';
+    badgeClass = 'text-[var(--color-text-muted)]';
+  } else if (signal.direction == null) {
+    badgeLabel = 'no setup';
+    badgeClass = 'text-[var(--color-text-muted)]';
+  } else if (signal.direction === labeledDirection) {
+    badgeLabel = 'match';
+    badgeClass = 'text-[var(--bull)]';
+  } else {
+    badgeLabel = 'differed';
+    badgeClass = 'text-[var(--color-accent-amber)]';
+  }
+
+  const yourReturn = card.actual_return_pct;
+  const sysExit = card.system_exit;
+
+  return (
+    <div
+      data-testid={`scorecard-row-${card.id}`}
+      className="rounded border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] p-2 text-xs"
+    >
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[var(--color-text-muted)]">{card.id}</span>
+        <div className="flex items-center gap-1">
+          {card.fill_check === 'price_outside_bar_range' && (
+            <span
+              title="Entry price was outside the entry bar's high/low range"
+              className="text-[var(--color-accent-amber)]"
+            >
+              <AlertTriangle size={12} />
+            </span>
+          )}
+          <span className={`font-medium ${badgeClass}`}>{badgeLabel}</span>
+        </div>
+      </div>
+      <div className="mt-1">
+        <span className="text-[var(--color-text-secondary)]">Your return:</span>{' '}
+        <span className={`font-medium ${yourReturn != null && yourReturn >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
+          {yourReturn != null ? `${yourReturn >= 0 ? '+' : ''}${yourReturn.toFixed(2)}%` : '—'}
+        </span>
+      </div>
+      <div className="mt-0.5">
+        <span className="text-[var(--color-text-secondary)]">System exit:</span>{' '}
+        {sysExit?.exit_reason ?? '—'}{' '}
+        <span className={sysExit?.return_pct != null && sysExit.return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
+          {sysExit?.return_pct != null ? `${sysExit.return_pct >= 0 ? '+' : ''}${sysExit.return_pct.toFixed(2)}%` : '—'}
+        </span>
+      </div>
+      <div className="mt-0.5 text-[var(--color-text-muted)]">Edge: {formatEdgeBps(card.exit_edge_bps)}</div>
+    </div>
+  );
+}
+
+/**
+ * Aggregate footer for the scorecard modal (Task 3.3). `n` counts every
+ * requested trade; `scored_n` only the ones the replay could actually
+ * price. `system_agreement_rate` is `null` when the system never resolved
+ * a direction on any scored entry — rendered as an honest em dash with the
+ * resolved/scored counts as context, never a fabricated 0% (Rule 3.7; see
+ * lib/backtest.py's `_aggregate_scorecards` docstring for the exact
+ * definition this mirrors).
+ */
+function ScorecardFooter({ aggregate }: { aggregate: ReplayAggregate }) {
+  const agreementPct =
+    aggregate.system_agreement_rate != null ? `${Math.round(aggregate.system_agreement_rate * 100)}%` : '—';
+
+  return (
+    <div className="mt-3 space-y-1 border-t border-[var(--color-border)] pt-2 text-xs text-[var(--color-text-secondary)]">
+      <div>
+        {aggregate.scored_n} / {aggregate.n} scored · Win rate {Math.round(aggregate.win_rate * 100)}%
+      </div>
+      <div>
+        Avg return:{' '}
+        <span className={aggregate.avg_return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
+          {aggregate.avg_return_pct >= 0 ? '+' : ''}
+          {aggregate.avg_return_pct.toFixed(2)}%
+        </span>{' '}
+        · Avg edge: {formatEdgeBps(aggregate.avg_exit_edge_bps)}
+      </div>
+      <div>
+        Agreement: {agreementPct} — system had a setup on {aggregate.system_resolved_n} of {aggregate.scored_n} entries
+      </div>
     </div>
   );
 }
