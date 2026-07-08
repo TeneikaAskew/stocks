@@ -1184,6 +1184,41 @@ deploy_direction_baseline() {
         --quiet
 }
 
+# ── Direction-program feature-importance / SHAP audit (one-shot) ─────────────
+# Ranks the ~75-143 baseline columns by LightGBM gain + mean|SHAP| for the
+# DIRECTION and SIZE engines, reusing each engine's exact production feature
+# path (loader -> featurize -> model factory -> same anchored cutoffs). Tells us
+# which columns carry the edge before Phase-2 adds new features. NOT scheduled.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 2 axes × 3 tickers × ~8 folds = ~48 LightGBM fits + SHAP over the
+#           test slice each. SHAP TreeExplainer is the cost driver.
+#   Wall-clock: ≤ ~60 min p100 single 4-CPU task. task-timeout 10800s (3h) headroom.
+#   Cost: ~$0.15 per manual run, on demand only. max-retries 0 (fail loud).
+deploy_direction_importance() {
+    echo "Deploying direction-importance job (feature-importance/SHAP audit)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Magnitude live-inference job ──────────────────────────────────────────────
 # Phase B of magnitude productionization. Daily cron at 09:25 ET scores
 # the most-recent settled bars from strat_features_<tf> using the
@@ -3673,6 +3708,7 @@ case "${1:-help}" in
     build-options-daily-features) deploy_build_options_daily_features ;;  # research image
     magnitude-engine) deploy_magnitude_engine ;;
     direction-baseline) deploy_direction_baseline ;;   # research image; build separately (build-research)
+    direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
     magnitude-inference) build_research_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
