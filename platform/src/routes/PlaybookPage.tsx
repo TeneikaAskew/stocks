@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { todayET } from '@/lib/dates';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
@@ -57,7 +58,7 @@ function usePlaybook(ticker: string) {
 }
 
 function useReference(ticker: string) {
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const today = todayET().replace(/-/g, '');
   return useQuery<ReferenceResponse | null>({
     queryKey: ['reference', ticker, today],
     queryFn: async () => {

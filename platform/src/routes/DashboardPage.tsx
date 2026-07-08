@@ -25,6 +25,7 @@ import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useReviewQuote } from '@/hooks/useReviewQuote';
 import { useInsightReport } from '@/hooks/useInsights';
+import { todayET } from '@/lib/dates';
 import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
@@ -151,7 +152,7 @@ export function topSetupAvgReturn(v: number | null | undefined): string {
 }
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayET();
 }
 function isoPlusDays(days: number): string {
   return isoPlusDaysFrom(todayISO(), days);
