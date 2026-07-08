@@ -1,11 +1,16 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useTradeStore } from '@/stores/tradeStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useMarketData, useAvailableDates, useReferenceLevels } from '@/hooks/useMarketData';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useGammaLevels } from '@/hooks/useGammaLevels';
+import {
+  useJournalChartTrades,
+  useCreateChartTrade,
+  useCloseChartTrade,
+  useDeleteChartTrade,
+} from '@/hooks/useJournalChartTrades';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
@@ -64,19 +69,9 @@ interface PriceLineConfig {
   lineWidth?: LineWidth;
 }
 
-function calculatePnL(entry: number, exit: number, direction: TradeDirection): number {
-  return direction === 'CALL' ? exit - entry : entry - exit;
-}
-
-function calculatePnLPercent(entry: number, exit: number, direction: TradeDirection): number {
-  const pnl = calculatePnL(entry, exit, direction);
-  return (pnl / entry) * 100;
-}
-
 export default function ChartsPage() {
   const { activeTicker } = useTickerStore();
   const { timeframe, setTimeframe } = useSettingsStore();
-  const { trades, addTrade, updateTrade, removeTrade } = useTradeStore();
   const { reviewDate, reviewTime } = useReviewDateStore();
   const isReview = reviewDate !== null;
 
@@ -148,17 +143,27 @@ export default function ChartsPage() {
   // Reference levels (prev day OHLC)
   const { data: refLevels } = useReferenceLevels(activeTicker, selectedDate);
 
-  // Gamma levels — King/Gate/Spot/Flip from lib.gamma. Only fetched for
-  // tickers we have options chains for, and only when the user toggles
-  // the overlay on. selectedDate is YYYYMMDD; the endpoint wants YYYY-MM-DD.
-  const gammaLevelsEnabled =
-    showGamma && GAMMA_LEVELS_TICKERS.has(activeTicker.toUpperCase()) && !!selectedDate;
-  const gammaIsoDate = selectedDate
+  // selectedDate is YYYYMMDD; several endpoints (gamma, journal) want YYYY-MM-DD.
+  const selectedIsoDate = selectedDate
     ? `${selectedDate.slice(0, 4)}-${selectedDate.slice(4, 6)}-${selectedDate.slice(6, 8)}`
     : '';
-  const { data: gammaLevels } = useGammaLevels(activeTicker, gammaIsoDate, {
+
+  // Gamma levels — King/Gate/Spot/Flip from lib.gamma. Only fetched for
+  // tickers we have options chains for, and only when the user toggles
+  // the overlay on.
+  const gammaLevelsEnabled =
+    showGamma && GAMMA_LEVELS_TICKERS.has(activeTicker.toUpperCase()) && !!selectedDate;
+  const { data: gammaLevels } = useGammaLevels(activeTicker, selectedIsoDate, {
     enabled: gammaLevelsEnabled,
   });
+
+  // Chart-marked trades persist through the journal API (POST/PATCH/DELETE
+  // /api/journal/trades) instead of an in-memory zustand store — the hook
+  // already filters to this ticker + selectedIsoDate.
+  const { data: trades = [] } = useJournalChartTrades(activeTicker, selectedIsoDate);
+  const createChartTrade = useCreateChartTrade();
+  const closeChartTrade = useCloseChartTrade();
+  const deleteChartTrade = useDeleteChartTrade();
 
   // Trades for current date/ticker — filter out trades after reviewTs in review mode
   const reviewCutoffTs = useMemo(() => {
@@ -169,17 +174,16 @@ export default function ChartsPage() {
   }, [isReview, reviewDate, reviewTime]);
 
   const currentTrades = useMemo(() => {
-    let filtered = trades.filter((t) => t.ticker === activeTicker);
     if (reviewCutoffTs !== null) {
-      filtered = filtered.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
+      return trades.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
     }
-    return filtered;
-  }, [trades, activeTicker, reviewCutoffTs]);
+    return trades;
+  }, [trades, reviewCutoffTs]);
 
   const hiddenTradesCount = useMemo(() => {
     if (reviewCutoffTs === null) return 0;
-    return trades.filter(t => t.ticker === activeTicker && (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
-  }, [trades, activeTicker, reviewCutoffTs]);
+    return trades.filter(t => (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
+  }, [trades, reviewCutoffTs]);
   const stats = useTradeAnalytics(currentTrades);
 
   // Strategy condition evaluation: build a Bar[] from the candlestick + volume
@@ -371,20 +375,20 @@ export default function ChartsPage() {
       } else if (drawingStep === 'exit' && exitingTradeId) {
         const trade = trades.find((t) => t.id === exitingTradeId);
         if (trade) {
-          const pnl = calculatePnL(trade.entryPrice, data.price, trade.optionType);
-          const pnlPct = calculatePnLPercent(trade.entryPrice, data.price, trade.optionType);
-          updateTrade(exitingTradeId, {
+          // PATCH persists the exit; return_pct/status come back from the
+          // server (journal.py's _return_pct/_derive_status) — no client-side
+          // pnl math here, the query invalidation refetches the closed row.
+          closeChartTrade.mutate({
+            id: exitingTradeId,
+            ticker: activeTicker,
             exitTime: data.time,
             exitPrice: data.price,
-            pnl,
-            pnlPercent: pnlPct,
-            status: pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven',
           });
         }
         cancelDrawing();
       }
     },
-    [drawingStep, tempTrade, exitingTradeId, trades, updateTrade]
+    [drawingStep, tempTrade, exitingTradeId, trades, closeChartTrade]
   );
 
   const selectOptionType = (type: TradeDirection) => {
@@ -400,20 +404,14 @@ export default function ChartsPage() {
 
   const completeTrade = (data: TempTradeData) => {
     if (!data.optionType) return;
-    const trade: TradeEntry = {
-      id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    createChartTrade.mutate({
       ticker: activeTicker,
-      optionType: data.optionType,
+      direction: data.optionType,
       entryTime: data.entryTime,
       entryPrice: data.entryPrice,
-      takeProfits: data.takeProfits.length > 0 ? data.takeProfits : [],
-      stopLoss: data.stopLoss,
-      notes: '',
-      tags: [],
-      status: 'active',
-      createdAt: Date.now(),
-    };
-    addTrade(trade);
+      stopLoss: data.stopLoss?.price,
+      takeProfits: data.takeProfits.map((tp) => tp.price),
+    });
     cancelDrawing();
   };
 
@@ -776,7 +774,7 @@ export default function ChartsPage() {
                     key={trade.id}
                     trade={trade}
                     onExit={startExitMode}
-                    onDelete={removeTrade}
+                    onDelete={(id) => deleteChartTrade.mutate({ id, ticker: activeTicker })}
                   />
                 ))
               )}
