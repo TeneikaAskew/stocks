@@ -24,13 +24,20 @@ interface JournalEntry {
   id: string;
   ticker: string;
   direction: 'CALL' | 'PUT';
-  entry_ts: string;    // ISO datetime
-  exit_ts: string;
+  entry_ts: string;          // ISO datetime
+  exit_ts: string | null;    // null for active (unexited) trades
   entry_price: number;
-  exit_price: number;
-  return_pct: number;
+  exit_price: number | null; // null for active (unexited) trades
+  return_pct: number | null; // null for active (unexited) trades
   notes: string;
   created_at?: string;
+  // Structural optionality — present on chart-marked trades, absent on
+  // manually-logged ones. Not yet rendered beyond the status chip.
+  take_profits?: number[];
+  stop_loss?: number | null;
+  status?: string;
+  source?: string;
+  session_id?: string | null;
 }
 
 interface JournalResponse {
@@ -55,7 +62,8 @@ function saveCache(ticker: string, entries: JournalEntry[]) {
 
 // ── Utility ────────────────────────────────────────────────────────────────
 
-function tsToDisplay(ts: string): { date: string; time: string } {
+export function tsToDisplay(ts: string | null): { date: string; time: string } {
+  if (ts == null) return { date: '—', time: '—' };
   const d = new Date(ts.replace('T', ' ').replace(' ', 'T'));
   return {
     date: isNaN(d.getTime()) ? ts.slice(0, 10) : d.toISOString().slice(0, 10),
@@ -63,12 +71,16 @@ function tsToDisplay(ts: string): { date: string; time: string } {
   };
 }
 
-function tradesToCsv(entries: JournalEntry[]): string {
+export function tradesToCsv(entries: JournalEntry[]): string {
   const header = 'ID,Time,Trade_Type,Exit_Time,Stop_Loss_Time,Runner_Time\n';
   const rows = entries.map((e, i) => {
     const entry = tsToDisplay(e.entry_ts);
-    const exit  = tsToDisplay(e.exit_ts);
-    return `${i + 1},${entry.date} ${entry.time}:00,${e.direction},${exit.date} ${exit.time}:00,,`;
+    // Active (null-exit) trades serialize as empty CSV cells, not "—"/"null".
+    const exitCell = e.exit_ts == null ? '' : (() => {
+      const exit = tsToDisplay(e.exit_ts);
+      return `${exit.date} ${exit.time}:00`;
+    })();
+    return `${i + 1},${entry.date} ${entry.time}:00,${e.direction},${exitCell},,`;
   });
   return header + rows.join('\n');
 }
@@ -193,7 +205,8 @@ export default function JournalPage() {
         body: JSON.stringify({
           trades: entries.map((e, i) => {
             const entry = tsToDisplay(e.entry_ts);
-            const exit  = tsToDisplay(e.exit_ts);
+            // Active (null-exit) trades send null, never a fabricated "—" date.
+            const exit  = e.exit_ts == null ? null : tsToDisplay(e.exit_ts);
             return {
               id: String(i + 1),
               ticker: e.ticker,
@@ -201,8 +214,8 @@ export default function JournalPage() {
               entry_date: entry.date,
               entry_time: entry.time,
               entry_price: e.entry_price,
-              exit_date: exit.date,
-              exit_time: exit.time,
+              exit_date: exit?.date ?? null,
+              exit_time: exit?.time ?? null,
               exit_price: e.exit_price,
               notes: e.notes,
             };
@@ -438,6 +451,7 @@ export default function JournalPage() {
                   const entry = tsToDisplay(e.entry_ts);
                   const exit  = tsToDisplay(e.exit_ts);
                   const ret   = e.return_pct;
+                  const isActive = e.status === 'active' || e.exit_ts == null;
                   return (
                     <tr key={e.id} className="hover:bg-[var(--color-bg-tertiary)]">
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-secondary)]">{entry.date}</td>
@@ -445,11 +459,22 @@ export default function JournalPage() {
                         <span className={`text-xs font-bold ${e.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                           {e.direction}
                         </span>
+                        {isActive && (
+                          <span className="ml-1.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-500/70">
+                            active
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{entry.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.entry_price.toFixed(2)}</td>
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{exit.time}</td>
-                      <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.exit_price.toFixed(2)}</td>
+                      <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
+                        {e.exit_price == null ? (
+                          <span className="text-[var(--on-surface-muted)]">—</span>
+                        ) : (
+                          `$${e.exit_price.toFixed(2)}`
+                        )}
+                      </td>
                       <td className="px-3 py-1.5">
                         {ret == null ? (
                           <span className="text-[var(--on-surface-muted)]">—</span>

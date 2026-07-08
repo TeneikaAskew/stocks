@@ -23,6 +23,45 @@ const MOCK_TRADES = {
   ],
 };
 
+// One closed trade + one ACTIVE (null-exit, chart-marked) trade — the
+// shared GET /api/journal/trades/{ticker} endpoint returns these for
+// open positions and JournalPage must render both without crashing.
+const MOCK_TRADES_WITH_ACTIVE = {
+  ticker: 'IWM',
+  count: 2,
+  trades: [
+    {
+      id: '00000000-0000-0000-0000-000000000001',
+      ticker: 'IWM',
+      direction: 'CALL',
+      entry_ts: '2026-04-24T14:00:00Z',
+      exit_ts: '2026-04-24T15:30:00Z',
+      entry_price: 220.0,
+      exit_price: 222.5,
+      return_pct: 1.14,
+      notes: 'Breakout above PD high.',
+      status: 'win',
+      source: 'manual',
+    },
+    {
+      id: '00000000-0000-0000-0000-000000000002',
+      ticker: 'IWM',
+      direction: 'PUT',
+      entry_ts: '2026-04-25T09:31:00Z',
+      exit_ts: null,
+      entry_price: 218.0,
+      exit_price: null,
+      return_pct: null,
+      notes: 'Still open — chart-marked.',
+      status: 'active',
+      source: 'chart',
+      take_profits: [216, 214],
+      stop_loss: 220,
+      session_id: null,
+    },
+  ],
+};
+
 test.describe('Trade Journal', () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
@@ -55,5 +94,18 @@ test.describe('Trade Journal', () => {
     await page.goto('/journal');
     await page.waitForLoadState('networkidle');
     expect(Date.now() - start).toBeLessThan(5000);
+  });
+
+  test('renders an active (null-exit) trade alongside a closed one without crashing', async ({ page }) => {
+    await page.route('**/api/journal/trades/IWM*', (r) => r.fulfill(M.ok(MOCK_TRADES_WITH_ACTIVE)));
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // Both trades render — the closed one and the active (null-exit) one.
+    await expect(page.getByText(/breakout above pd high/i)).toBeVisible();
+    await expect(page.getByText(/still open — chart-marked/i)).toBeVisible();
+
+    // The active row shows a status chip explaining the dashes.
+    await expect(page.getByText('active', { exact: true })).toBeVisible();
   });
 });
