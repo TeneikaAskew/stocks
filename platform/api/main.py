@@ -843,6 +843,20 @@ def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     return query_to_dataframe_strict(sql, params)
 
 
+def _is_response_json_safe(resp: dict) -> bool:
+    """Sanity check: no sector row contains a non-finite float (CLAUDE.md Rule 3.7).
+
+    Prevents cache poisoning with NaN/Inf that would crash JSON serialization.
+    Returns True if safe; False if any sector row has a non-finite float value.
+    """
+    import math
+    for sector in resp.get("sectors", []):
+        for key, val in sector.items():
+            if isinstance(val, float) and not math.isfinite(val):
+                return False
+    return True
+
+
 def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
     """Pure helper: per-sector 1d/5d % change from ticker/date/close rows.
 
@@ -865,6 +879,9 @@ def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
     for symbol, name in SECTOR_NAMES.items():
         sub = df[df["ticker"] == symbol] if has_rows else df.iloc[0:0] if df is not None else pd.DataFrame()
         sub = sub.sort_values("date")
+        # Defense in depth: drop any rows with NaN closes so NULL values in
+        # market_data_daily don't propagate as NaN in the response (CLAUDE.md Rule 3.7).
+        sub = sub.dropna(subset=["close"])
         n = len(sub)
         if n == 0:
             sectors.append({"symbol": symbol, "name": name, "status": "unavailable", "reason": "no rows"})
@@ -918,6 +935,7 @@ async def market_sectors():
             FROM market_data_daily
             WHERE ticker = ANY(:syms)
               AND date >= (SELECT max(date) FROM market_data_daily) - INTERVAL '10 days'
+              AND close IS NOT NULL
             ORDER BY ticker, date
             """,
             {"syms": list(SECTOR_NAMES.keys())},
@@ -932,7 +950,21 @@ async def market_sectors():
         resp["status"] = "unavailable"
         resp["reason"] = "sector ETFs not ingested yet — run the SPDR backfill"
 
-    _SECTORS_CACHE["sectors"] = resp
+    # Cache only after validating the response is JSON-safe (no NaN/Inf).
+    # This prevents cache poisoning if a row somehow contains a non-finite float
+    # (CLAUDE.md Rule 3.7: defense in depth).
+    if _is_response_json_safe(resp):
+        _SECTORS_CACHE["sectors"] = resp
+    else:
+        logger.error("sector rotation response contains non-finite values; not caching")
+        # Mark all sectors unavailable due to data quality issue
+        for s in resp["sectors"]:
+            if s.get("status") == "ok":
+                s["status"] = "unavailable"
+                s["reason"] = "non-finite computed value"
+        resp["status"] = "unavailable"
+        resp["reason"] = "data quality check failed"
+
     return resp
 
 

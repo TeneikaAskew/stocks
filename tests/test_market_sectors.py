@@ -141,3 +141,104 @@ def test_sectors_endpoint_all_missing_top_status(monkeypatch):
     assert body["as_of"] is None
     assert body["status"] == "unavailable"
     assert body["reason"] == "sector ETFs not ingested yet — run the SPDR backfill"
+
+
+def test_null_close_degrades_to_unavailable(monkeypatch):
+    """Regression: NULL closes dropped; endpoint must never emit NaN.
+
+    XLK has 6 rows but the last close is None. After dropna(subset=['close']),
+    5 valid rows remain. 1d change is computed from those 5; 5d requires >=6
+    so it's None. Status stays 'ok'. Most importantly: JSON must be serializable
+    (no NaN anywhere in the response).
+    """
+    _clear_cache()
+
+    def fake_query(sql, params=None):
+        rows = [
+            {"ticker": "XLK", "date": "2026-07-01", "close": 100},
+            {"ticker": "XLK", "date": "2026-07-02", "close": 101},
+            {"ticker": "XLK", "date": "2026-07-03", "close": 102},
+            {"ticker": "XLK", "date": "2026-07-04", "close": 103},
+            {"ticker": "XLK", "date": "2026-07-05", "close": 104},
+            {"ticker": "XLK", "date": "2026-07-06", "close": None},  # NULL close
+        ]
+        # Other sectors: no data
+        for other in list(main.SECTOR_NAMES.keys()):
+            if other != "XLK":
+                # Not in result; will render as unavailable by _sector_rotation_from_df
+                pass
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(main, "_sectors_query", fake_query, raising=True)
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    r = client.get("/api/market/sectors")
+
+    # Must succeed (200) and be JSON-serializable
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    body = r.json()  # Will raise if NaN is present
+
+    # XLK should degrade gracefully (not compute NaN)
+    xlk = next((s for s in body["sectors"] if s["symbol"] == "XLK"), None)
+    assert xlk is not None
+    # After dropna, 5 valid rows remain: [100, 101, 102, 103, 104]
+    # 1d = (104 - 103) / 103 * 100
+    # 5d requires 6 rows; only 5 available, so None
+    if xlk["status"] == "ok":
+        # Code successfully dropped the NULL and computed 1d from 5 rows
+        assert xlk["chg_1d_pct"] is not None
+        assert pd.notna(xlk["chg_1d_pct"])  # Not NaN
+        # 5d should be None (not enough rows) or absent
+        assert xlk.get("chg_5d_pct") is None
+    else:
+        # If not enough valid rows after dropna, it's unavailable (also acceptable)
+        assert xlk["status"] == "unavailable"
+
+    # No NaN anywhere in sectors array
+    import json as _json
+    import math
+    for sector in body["sectors"]:
+        for key, val in sector.items():
+            if isinstance(val, float):
+                assert math.isfinite(val), f"{sector['symbol']}.{key}={val} is not finite"
+
+
+def test_crash_does_not_poison_cache(monkeypatch):
+    """Regression: exception during query doesn't cache the error; next request retries.
+
+    First call: _sectors_query raises → 503. Cache should NOT contain this error.
+    Second call: _sectors_query returns good data → 200 (fresh compute, not cached error).
+    """
+    _clear_cache()
+    calls = []
+
+    def boom(sql, params=None):
+        calls.append("boom")
+        raise RuntimeError("database down")
+
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+
+    # First call: database fails
+    monkeypatch.setattr(main, "_sectors_query", boom, raising=True)
+    r1 = client.get("/api/market/sectors")
+    assert r1.status_code == 503, f"Expected 503 on failure, got {r1.status_code}"
+    assert len(calls) == 1
+
+    # Verify cache is NOT poisoned by checking _SECTORS_CACHE directly
+    assert "sectors" not in main._SECTORS_CACHE, "Error response was cached (poisoned cache)"
+
+    # Second call: database recovers
+    def recover(sql, params=None):
+        calls.append("recover")
+        rows = [
+            {"ticker": "XLK", "date": "2026-07-01", "close": 100},
+            {"ticker": "XLK", "date": "2026-07-02", "close": 101},
+        ]
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(main, "_sectors_query", recover, raising=True)
+    r2 = client.get("/api/market/sectors")
+    assert r2.status_code == 200, f"Expected 200 after recovery, got {r2.status_code}: {r2.text}"
+    # Should have called the query again (not cached the error)
+    assert len(calls) == 2, f"Expected 2 calls (boom + recover), got {len(calls)}: {calls}"
