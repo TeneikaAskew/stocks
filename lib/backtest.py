@@ -507,31 +507,35 @@ class BacktestEngine:
             day_pnl = 0.0
             active_trade: Optional[Trade] = None
 
-            for i in range(len(day_df)):
+            i = 0
+            while i < len(day_df):
                 row = day_df.iloc[i]
                 close_price = row.get(close_col, row.get('Close', row.get('Last')))
 
                 if pd.isna(close_price):
+                    i += 1
                     continue
 
                 bar_time = row.get('Time', day_df.index[i])
                 if isinstance(bar_time, str):
                     bar_time = pd.to_datetime(bar_time)
 
-                # --- Check exit conditions ---
-                if active_trade is not None:
-                    exit_result = self._check_exit(active_trade, row, bar_time, close_price)
-                    if exit_result:
-                        reason, exit_price = exit_result
-                        active_trade.exit_time = bar_time
-                        active_trade.exit_price = exit_price
-                        active_trade.exit_reason = reason
-
-                        if active_trade.direction == 'CALL':
-                            active_trade.return_pct = (exit_price - active_trade.entry_price) / active_trade.entry_price
-                        else:
-                            active_trade.return_pct = (active_trade.entry_price - exit_price) / active_trade.entry_price
-
+                # --- Check entry conditions ---
+                # active_trade is always None here: once an entry fires
+                # (below) it is immediately walked to full resolution via
+                # _simulate_exit_indexed before the loop advances, so this
+                # bar is only ever reached when no position is open —
+                # matching the original bar-by-bar "active_trade is None"
+                # gate exactly, just without an idle trade lingering
+                # across loop iterations.
+                if active_trade is None and day_trades < self.risk.max_daily_trades:
+                    entry = self._check_entry(
+                        row, bar_time, use_strat, strat_df, ftfc_series, i, day_df,
+                    )
+                    if entry:
+                        active_trade, last_idx = self._simulate_exit_indexed(
+                            entry, day_df, i, close_col=close_col,
+                        )
                         trades.append(active_trade)
                         day_trades += 1
                         day_pnl += active_trade.return_pct * active_trade.position_size
@@ -542,40 +546,11 @@ class BacktestEngine:
                             break
                         if day_pnl >= self.risk.daily_profit_target:
                             break
+
+                        i = last_idx + 1
                         continue
 
-                    # Track MAE/MFE while in position
-                    if active_trade.direction == 'CALL':
-                        unrealized = (close_price - active_trade.entry_price) / active_trade.entry_price
-                    else:
-                        unrealized = (active_trade.entry_price - close_price) / active_trade.entry_price
-                    active_trade.mae = min(active_trade.mae, unrealized)
-                    active_trade.mfe = max(active_trade.mfe, unrealized)
-
-                # --- Check entry conditions ---
-                if active_trade is None and day_trades < self.risk.max_daily_trades:
-                    entry = self._check_entry(
-                        row, bar_time, use_strat, strat_df, ftfc_series, i, day_df,
-                    )
-                    if entry:
-                        active_trade = entry
-
-            # Force-close any open position at end of day
-            if active_trade is not None:
-                last_row = day_df.iloc[-1]
-                last_price = last_row.get(close_col, last_row.get('Close', last_row.get('Last')))
-                last_time = last_row.get('Time', day_df.index[-1])
-                active_trade.exit_time = last_time
-                active_trade.exit_price = last_price
-                active_trade.exit_reason = 'eod_close'
-                if active_trade.direction == 'CALL':
-                    active_trade.return_pct = (last_price - active_trade.entry_price) / active_trade.entry_price
-                else:
-                    active_trade.return_pct = (active_trade.entry_price - last_price) / active_trade.entry_price
-                trades.append(active_trade)
-                day_trades += 1
-                day_pnl += active_trade.return_pct * active_trade.position_size
-                active_trade = None
+                i += 1
 
             daily_pnl.append({'date': day, 'trades': day_trades, 'pnl': day_pnl})
             equity.append(equity[-1] * (1 + day_pnl))
@@ -591,6 +566,122 @@ class BacktestEngine:
             annualization_factor=self.bt.annualization_factor,
             filter_counts=dict(self._filter_counts),
         )
+
+    def simulate_exit(
+        self,
+        trade: Trade,
+        bars: pd.DataFrame,
+        entry_idx: int,
+        close_col: str = 'Close',
+    ) -> Trade:
+        """Walk ``bars`` forward from an entry to resolve a trade's exit.
+
+        Extracted from the exit-handling block that used to be inline in
+        ``run()`` (Task 3.1) so it can be reused by the labeled-trade
+        replay path without re-running the full event-driven ``run()``
+        loop. For each bar after ``entry_idx``, calls the existing
+        ``_check_exit`` (target / stop / time-stop / RSI-extreme), tracks
+        MAE/MFE while the position remains open, and force-closes with
+        ``exit_reason='eod_close'`` at the LAST bar in ``bars`` if no exit
+        condition fires before bars run out.
+
+        ``_check_exit`` reads ``self._current_ticker`` for per-ticker exit
+        overrides. This method does not set that attribute itself — it
+        follows the same convention as ``run()``, which sets
+        ``self._current_ticker = ticker`` once at the top of its own body
+        before any bar processing starts. Callers invoking
+        ``simulate_exit`` directly (outside of ``run()``) are responsible
+        for setting ``self._current_ticker`` beforehand (or leaving it
+        unset/None to use the engine's ``self.exit.*`` defaults).
+
+        ``return_pct`` is filled as a RAW FRACTION (e.g. 0.003 == +0.30%),
+        sign-corrected for PUT direction — the same engine-internal
+        convention used throughout ``BacktestResult``.
+
+        Parameters
+        ----------
+        trade : a Trade with entry fields populated and exit fields None
+        bars : the bar DataFrame to walk (e.g. a single day's OHLCV slice)
+        entry_idx : positional (``iloc``) index of the entry bar within
+            ``bars`` — the walk starts at ``entry_idx + 1``
+        close_col : name of the close price column
+
+        Returns
+        -------
+        The same ``Trade`` instance, mutated in place with exit_time,
+        exit_price, exit_reason, return_pct, mae, mfe filled in.
+        """
+        resolved_trade, _last_idx = self._simulate_exit_indexed(
+            trade, bars, entry_idx, close_col=close_col,
+        )
+        return resolved_trade
+
+    def _simulate_exit_indexed(
+        self,
+        trade: Trade,
+        bars: pd.DataFrame,
+        entry_idx: int,
+        close_col: str = 'Close',
+    ) -> Tuple[Trade, int]:
+        """Core implementation shared by ``simulate_exit()`` and ``run()``.
+
+        Identical to ``simulate_exit()`` except it also returns the
+        positional index of the last bar consumed (the exit bar, or
+        ``len(bars) - 1`` on an eod_close) so ``run()`` can resume its own
+        per-bar loop immediately after the bar that closed this trade,
+        without re-deriving that position via a timestamp lookup.
+        """
+        last_idx = entry_idx
+        for i in range(entry_idx + 1, len(bars)):
+            row = bars.iloc[i]
+            close_price = row.get(close_col, row.get('Close', row.get('Last')))
+
+            if pd.isna(close_price):
+                continue
+
+            bar_time = row.get('Time', bars.index[i])
+            if isinstance(bar_time, str):
+                bar_time = pd.to_datetime(bar_time)
+
+            last_idx = i
+
+            exit_result = self._check_exit(trade, row, bar_time, close_price)
+            if exit_result:
+                reason, exit_price = exit_result
+                trade.exit_time = bar_time
+                trade.exit_price = exit_price
+                trade.exit_reason = reason
+
+                if trade.direction == 'CALL':
+                    trade.return_pct = (exit_price - trade.entry_price) / trade.entry_price
+                else:
+                    trade.return_pct = (trade.entry_price - exit_price) / trade.entry_price
+
+                return trade, last_idx
+
+            # Track MAE/MFE while in position
+            if trade.direction == 'CALL':
+                unrealized = (close_price - trade.entry_price) / trade.entry_price
+            else:
+                unrealized = (trade.entry_price - close_price) / trade.entry_price
+            trade.mae = min(trade.mae, unrealized)
+            trade.mfe = max(trade.mfe, unrealized)
+
+        # No exit triggered before bars ran out — force-close at day end,
+        # using the LAST bar in `bars` (matches the pre-extraction
+        # post-loop "Force-close any open position at end of day" block).
+        last_row = bars.iloc[-1]
+        last_price = last_row.get(close_col, last_row.get('Close', last_row.get('Last')))
+        last_time = last_row.get('Time', bars.index[-1])
+        trade.exit_time = last_time
+        trade.exit_price = last_price
+        trade.exit_reason = 'eod_close'
+        if trade.direction == 'CALL':
+            trade.return_pct = (last_price - trade.entry_price) / trade.entry_price
+        else:
+            trade.return_pct = (trade.entry_price - last_price) / trade.entry_price
+
+        return trade, len(bars) - 1
 
     def _check_entry(
         self,
