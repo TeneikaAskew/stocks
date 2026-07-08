@@ -31,9 +31,14 @@ export function StrategyConditionsCard({ signals }: Props) {
   return (
     <div className="rounded-lg bg-[var(--surface-2)] p-3">
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-          Live Strategy Conditions
-        </h3>
+        <div>
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+            Live Strategy Conditions
+          </h3>
+          <p className="text-[10px] text-[var(--color-text-muted)]">
+            Trend framework — same conditions as the Live page
+          </p>
+        </div>
         <FiringBadge firing={firing} callMet={callMet} putMet={putMet} total={call.conditions.length} />
       </div>
 

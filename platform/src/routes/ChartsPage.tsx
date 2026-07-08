@@ -245,7 +245,7 @@ export default function ChartsPage() {
   // the Sig toggle (below) so SimilarSetupsCard's "latest bar fired?"
   // read stays correct even while the overlay is hidden; the toggle only
   // gates whether markers are drawn on the chart.
-  const signalSeriesQuery = useSignalSeries(chartBars, chartBars.length >= 14);
+  const signalSeriesQuery = useSignalSeries(chartBars, `${activeTicker}:${selectedDate}`, chartBars.length >= 14);
   const signalMarkers: SeriesMarker<Time>[] = useMemo(() => {
     if (!showSignals) return [];
     const fires = signalSeriesQuery.data?.fires ?? [];
@@ -254,7 +254,7 @@ export default function ChartsPage() {
       position: f.direction === 'CALL' ? 'belowBar' : 'aboveBar',
       color: f.direction === 'CALL' ? '#22c55e' : '#ef4444',
       shape: f.direction === 'CALL' ? 'arrowUp' : 'arrowDown',
-      text: `${f.direction} ${f.score}/5`,
+      text: `${f.direction} ${f.score}`,
     }));
   }, [showSignals, signalSeriesQuery.data]);
 
@@ -585,7 +585,7 @@ export default function ChartsPage() {
 
           <button
             onClick={() => setShowSignals(!showSignals)}
-            title="Overlay 5-condition voter signals on the chart"
+            title="Production alert signals (lib/signals mean-reversion voter)"
             className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
               showSignals ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
             }`}
@@ -805,7 +805,7 @@ export default function ChartsPage() {
         setup" state when direction is null so the slot stays in the layout. */}
     {chartBars.length >= 14 && (() => {
       const fires = signalSeriesQuery.data?.fires ?? [];
-      const lastFire = lastChartBar ? fires.find((f) => f.time === lastChartBar.time) : undefined;
+      const lastFire = fires.find((f) => f.bar_index === chartBars.length - 1);
       return (
         <SimilarSetupsCard
           ticker={activeTicker}

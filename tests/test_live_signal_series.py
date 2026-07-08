@@ -68,3 +68,57 @@ def test_signal_series_contract(client):
 def test_signal_series_rejects_short_series(client):
     r = client.post("/api/live/signal-series", json={"bars": _bars(5)})
     assert r.status_code == 422  # need >= 14 bars for RSI; loud, not empty-success
+
+
+def _epoch_bars(n=40, base=1751882400):
+    """Same synthetic ramp as _bars(), but times are epoch-second digit
+    strings — what the frontend's /api/market unix-timestamp feed sends,
+    as opposed to the naive-ET datetime strings the production fetch
+    path sends."""
+    out = []
+    px = 100.0
+    for i in range(n):
+        px *= 1.001
+        out.append({
+            "time": str(base + i * 60),
+            "open": px / 1.001, "high": px * 1.001, "low": px * 0.999,
+            "close": px, "volume": 10_000 + i,
+        })
+    return out
+
+
+def test_signal_series_accepts_epoch_second_times(client):
+    """Epoch-second digit-string bar times (frontend /api/market feed) must
+    not 500 inside pd.to_datetime(...) in lib.indicators._add_vwap — see
+    CRITICAL-1. Every fire's echoed time must be one of the REQUEST's
+    original (unnormalized) time strings, with an in-range bar_index."""
+    bars = _epoch_bars()
+    request_times = {b["time"] for b in bars}
+    r = client.post("/api/live/signal-series", json={"bars": bars})
+    assert r.status_code == 200
+    body = r.json()
+    assert "fires" in body and isinstance(body["fires"], list)
+    for f in body["fires"]:
+        assert set(f) >= {"time", "direction", "bar_index"}
+        assert f["time"] in request_times
+        assert isinstance(f["bar_index"], int)
+        assert 0 <= f["bar_index"] < len(bars)
+
+
+def test_indicators_endpoint_vwap_sessionizes_epoch_times(client):
+    """CRITICAL-2: epoch-second bar times must not each become their own
+    single-bar VWAP "session" (lib.indicators._add_vwap groups by calendar
+    date). With 20 epoch-string bars all in the same ET calendar date and
+    strictly rising prices, a correctly-sessionized cumulative VWAP lags
+    the last bar's typical price. A per-bar reset would instead make VWAP
+    equal the last bar's own typical price exactly."""
+    bars = _epoch_bars(n=20)
+    r = client.post("/api/live/indicators", json={"bars": bars})
+    assert r.status_code == 200
+    body = r.json()
+    vwap = body["indicators"]["vwap"]
+    assert vwap is not None
+
+    last = bars[-1]
+    last_typical = (last["high"] + last["low"] + last["close"]) / 3
+    assert abs(vwap - last_typical) > 1e-6

@@ -48,6 +48,22 @@ from lib.signals import generate_signals
 log = logging.getLogger(__name__)
 router = APIRouter()
 
+
+def _normalize_bar_time(t: str) -> str:
+    """Bar times arrive either as naive-ET datetime strings (production
+    fetch path) or epoch-second digit strings (the frontend's /api/market
+    unix timestamps). Normalize to naive-ET datetime strings so downstream
+    date-grouping (VWAP sessions) and pd.to_datetime both work."""
+    s = str(t).strip()
+    if s.isdigit():
+        return (
+            pd.Timestamp(int(s), unit="s", tz="UTC")
+            .tz_convert("America/New_York")
+            .tz_localize(None)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+    return s
+
 AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
 AV_BASE = "https://www.alphavantage.co/query"
 
@@ -438,8 +454,12 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
     highs = pd.Series([b.high for b in bars], dtype=float)
     lows = pd.Series([b.low for b in bars], dtype=float)
     volumes = pd.Series([b.volume for b in bars], dtype=float)
-    # VWAP in lib/indicators resets per session; group bars by calendar date.
-    dates = pd.Series([b.time[:10] for b in bars])
+    # Bar times may arrive as epoch-second digit strings (frontend
+    # /api/market feed) or naive-ET datetime strings (production fetch
+    # path) — normalize BEFORE date-grouping so epoch bars don't each
+    # become their own single-bar VWAP "session" (fabricated VWAP).
+    normalized_times = [_normalize_bar_time(b.time) for b in bars]
+    dates = pd.Series([t[:10] for t in normalized_times])
 
     ema9 = calculate_ema(closes, 9)
     ema20 = calculate_ema(closes, 20)
@@ -506,8 +526,17 @@ def compute_live_signal_series(req: _IndicatorsRequest) -> dict:
     if len(bars) < 14:
         raise HTTPException(status_code=422, detail="need >= 14 bars for indicator warm-up")
 
+    # Bar times may arrive as epoch-second digit strings (frontend
+    # /api/market feed) or naive-ET datetime strings (production fetch
+    # path). Normalize for the indicator/signal pipeline (VWAP session
+    # grouping, pd.to_datetime), but echo the ORIGINAL client-sent time
+    # strings back in fires[].time so frontend chart-marker matching
+    # (which keys off the bars it sent) still works.
+    original_times = [b.time for b in bars]
+    normalized_times = [_normalize_bar_time(t) for t in original_times]
+
     df = pd.DataFrame({
-        "Time": [b.time for b in bars],
+        "Time": normalized_times,
         "Open": [b.open for b in bars],
         "High": [b.high for b in bars],
         "Low": [b.low for b in bars],
@@ -520,10 +549,12 @@ def compute_live_signal_series(req: _IndicatorsRequest) -> dict:
     fires: list[dict] = []
     if not signals_df.empty:
         for _, row in signals_df.iterrows():
+            bar_idx = int(row["bar_index"])
             fires.append({
-                "time": str(row["time"]),
+                "time": original_times[bar_idx],
                 "direction": row["direction"],
                 "score": float(row["total_score"]),
+                "bar_index": bar_idx,
             })
     return {"fires": fires}
 
