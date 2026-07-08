@@ -46,3 +46,44 @@ export function useLiveIndicators(req: IndicatorsRequest, enabled: boolean) {
     staleTime: 10_000,
   });
 }
+
+export interface SignalSeriesFire {
+  time: string;
+  direction: 'CALL' | 'PUT';
+  score: number;
+}
+
+export interface SignalSeriesResponse {
+  fires: SignalSeriesFire[];
+}
+
+/**
+ * Server-side per-bar signal fires for the Charts page "Sig" overlay.
+ *
+ * Backed by POST /api/live/signal-series, which runs lib.signals'
+ * production mean-reversion voter (the SAME per-bar logic
+ * gcp/signal_monitor.py fires live alerts from) over the supplied bar
+ * series — there is no client-side re-derivation of the voter.
+ *
+ * Keyed on bar count + last bar time so the query only refetches when the
+ * underlying series actually changes (new bar appended, or a different
+ * review slice loaded).
+ */
+export function useSignalSeries(bars: Bar[], enabled: boolean) {
+  const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
+  const key = ['live-signal-series', bars.length, lastBar?.time ?? null];
+  return useQuery<SignalSeriesResponse>({
+    queryKey: key,
+    queryFn: async () => {
+      const r = await fetch('/api/live/signal-series', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bars }),
+      });
+      if (!r.ok) throw new Error(`live-signal-series ${r.status}`);
+      return r.json();
+    },
+    enabled: enabled && bars.length >= 14,
+    staleTime: 10_000,
+  });
+}

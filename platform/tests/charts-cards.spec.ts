@@ -5,7 +5,11 @@
  *   - Sig overlay toggle in the toolbar
  *
  * Mocks the bar/reference APIs so the cards render deterministically
- * independent of the live Cloud SQL state.
+ * independent of the live Cloud SQL state. Task 10 moved both cards'
+ * math server-side (POST /api/live/indicators, POST /api/live/signal-series
+ * — lib/indicators.py + lib/signals.py); those two endpoints are mocked
+ * here too so the spec stays fully hermetic and doesn't depend on a
+ * FastAPI backend being reachable during the run.
  */
 import { test, expect } from '@playwright/test';
 import { mockCommon, M } from './helpers/mocks';
@@ -80,6 +84,64 @@ const MOCK_SIMILAR_CALL = {
   ],
 };
 
+// Server-side indicators + 10-condition strength panel (POST
+// /api/live/indicators — lib/indicators.py). CALL side deliberately fires
+// (strength >= 70) so the badge/fires-path is exercised deterministically;
+// PUT side does not.
+const MOCK_LIVE_INDICATORS = {
+  indicators: {
+    ema9: 220.5, ema20: 220.0, ema50: 219.0, rsi: 55,
+    stochK: 72, stochD: 65, atr: 1.2, vwap: 220.2, stochKPrev: 70,
+  },
+  signals: {
+    call: {
+      direction: 'CALL',
+      strength: 80,
+      fired: true,
+      conditions: [
+        { id: 'c_p_ema9', label: 'Price > EMA9', met: true, current: 221.5, threshold: 220.5, operator: '>' },
+        { id: 'c_p_ema20', label: 'Price > EMA20', met: true, current: 221.5, threshold: 220.0, operator: '>' },
+        { id: 'c_p_ema50', label: 'Price > EMA50', met: true, current: 221.5, threshold: 219.0, operator: '>' },
+        { id: 'c_p_vwap', label: 'Price > VWAP', met: true, current: 221.5, threshold: 220.2, operator: '>' },
+        { id: 'c_rsi50', label: 'RSI > 50', met: true, current: 55, threshold: 50, operator: '>' },
+        { id: 'c_rsi60', label: 'RSI > 60', met: false, current: 55, threshold: 60, operator: '>' },
+        { id: 'c_stoch70', label: 'StochRSI > 70', met: true, current: 72, threshold: 70, operator: '>' },
+        { id: 'c_rvol', label: 'RVOL > 1.0', met: true, current: 1.4, threshold: 1.0, operator: '>' },
+        { id: 'c_cross', label: 'EMA9 > EMA20', met: true, current: 220.5, threshold: 220.0, operator: '>' },
+        { id: 'c_atr', label: 'ATR > 2.0', met: false, current: 1.2, threshold: 2.0, operator: '>' },
+      ],
+    },
+    put: {
+      direction: 'PUT',
+      strength: 20,
+      fired: false,
+      conditions: [
+        { id: 'p_p_ema9', label: 'Price < EMA9', met: false, current: 221.5, threshold: 220.5, operator: '<' },
+        { id: 'p_p_ema20', label: 'Price < EMA20', met: false, current: 221.5, threshold: 220.0, operator: '<' },
+        { id: 'p_p_ema50', label: 'Price < EMA50', met: false, current: 221.5, threshold: 219.0, operator: '<' },
+        { id: 'p_p_vwap', label: 'Price < VWAP', met: false, current: 221.5, threshold: 220.2, operator: '<' },
+        { id: 'p_rsi50', label: 'RSI < 50', met: false, current: 55, threshold: 50, operator: '<' },
+        { id: 'p_rsi40', label: 'RSI < 40', met: false, current: 55, threshold: 40, operator: '<' },
+        { id: 'p_stoch30', label: 'StochRSI < 30', met: false, current: 72, threshold: 30, operator: '<' },
+        { id: 'p_rvol', label: 'RVOL > 1.0', met: true, current: 1.4, threshold: 1.0, operator: '>' },
+        { id: 'p_cross', label: 'EMA9 < EMA20', met: false, current: 220.5, threshold: 220.0, operator: '<' },
+        { id: 'p_atr', label: 'ATR > 2.0', met: false, current: 1.2, threshold: 2.0, operator: '>' },
+      ],
+    },
+  },
+};
+
+// Server-side per-bar fires (POST /api/live/signal-series — lib/signals.py).
+// One CALL fire on the LAST bar so SimilarSetupsCard's "populated" branch is
+// exercised deterministically (time must match the last CALL_BARS bar's
+// String(time) exactly — see chartBars construction in ChartsPage.tsx).
+const LAST_BAR_TIME = String(CALL_BARS[CALL_BARS.length - 1].time);
+const MOCK_SIGNAL_SERIES = {
+  fires: [
+    { time: LAST_BAR_TIME, direction: 'CALL', score: 4 },
+  ],
+};
+
 test.describe('Charts page — Phase D/4/5 cards', () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
@@ -94,16 +156,22 @@ test.describe('Charts page — Phase D/4/5 cards', () => {
     await page.route('**/api/signals/IWM*', (r) =>
       r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
     );
+    // Server-computed indicators/signals (Live Strategy Conditions panel)
+    // and per-bar fires (Sig overlay + Similar Setups direction/score).
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
   });
 
   test('Strategy Conditions card renders both CALL and PUT columns', async ({ page }) => {
     await page.goto('/charts');
     await page.waitForLoadState('networkidle');
     await expect(page.getByText('Live Strategy Conditions')).toBeVisible();
-    await expect(page.getByText(/3 consecutive up moves/i).first()).toBeVisible();
-    await expect(page.getByText(/3 consecutive down moves/i).first()).toBeVisible();
-    // The voter result badge should exist (CALL / PUT / "No setup")
-    const badge = page.getByText(/CALL · \d\/5|PUT · \d\/5|No setup/i).first();
+    await expect(page.getByText(/Price > EMA9/i).first()).toBeVisible();
+    await expect(page.getByText(/Price < EMA9/i).first()).toBeVisible();
+    // The voter result badge should exist (CALL / PUT / "No setup") — the
+    // condition count isn't pinned so the assertion survives future
+    // additions/removals from the server-side condition set.
+    const badge = page.getByText(/CALL · \d+\/\d+|PUT · \d+\/\d+|No setup/i).first();
     await expect(badge).toBeVisible();
   });
 
