@@ -718,6 +718,18 @@ async def mine_and_validate(body: MineAndValidateRequest, request: Request):
     avg_expectancy_pct = agg_percent.get("avg_expectancy_pct")
     avg_win_rate = agg_percent.get("avg_win_rate")
     total_trades = int(agg_percent.get("total_trades_all_folds", 0))
+    if total_trades == 0:
+        # The mined profile fired zero trades across all folds (common with
+        # strict all-conditions gates). Persisting a "0% win rate" card would
+        # be a fabricated result (CLAUDE.md Rule 3.7: reads as "tried and lost"
+        # when the truth is "never exercised"). Return unavailable instead.
+        return {
+            "status": "unavailable",
+            "reason": (
+                f"the mined profile fired zero trades over {total_folds} "
+                f"validation fold(s) for {ticker_upper} — nothing to validate"
+            ),
+        }
 
     profile_dict = {
         "direction": top_profile.direction,

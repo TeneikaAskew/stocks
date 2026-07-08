@@ -620,6 +620,77 @@ def test_endpoint_success_persists_percent_converted_values(client, monkeypatch)
     assert playbook_params["sample_n"] == 42
 
 
+def test_endpoint_zero_trades_across_folds_returns_unavailable(client, monkeypatch):
+    """HIGH: when validation fires ZERO trades across all folds (common with
+    strict all-conditions gates), must return unavailable instead of persisting
+    a fabricated "0% win rate" card (CLAUDE.md Rule 3.7 violation).
+
+    Uses _StubValidator but with total_trades_all_folds=0. Assert:
+    - status code 200 with {"status": "unavailable", reason contains "zero trades"}
+    - _style_exec was NOT called (no persistence happened)
+    """
+    from api.routers import backtest as backtest_router
+    from lib.style_miner import StyleProfile as _SP
+
+    def fake_journal_query(sql, params=None):
+        return pd.DataFrame(_closed_rows(10))
+
+    def fake_bar_loader(ticker_lower, date):
+        return _make_raw_loader_frame(f"2026-06-{date[-2:]}")
+
+    top_profile = _SP(direction="CALL", conditions=["below_vwap"], support=8, total=10)
+
+    def fake_mine_style(entries, bars_by_date, min_support_frac=0.6):
+        return [top_profile]
+
+    def fake_history_loader(ticker_upper):
+        raw = _make_raw_loader_frame("2026-06-01", n_bars=100)
+        return raw.rename(columns={
+            "open": "Open", "high": "High", "low": "Low",
+            "close": "Close", "volume": "Volume",
+        })
+
+    class _ZeroTradesValidator:
+        """Stub that returns zero trades across folds."""
+        def __init__(self, **kwargs):
+            pass
+
+        def run_profile(self, df, profile, close_col="Close"):
+            return WalkForwardResult(
+                fold_results=[], fold_dates=[],
+                aggregate_metrics={
+                    "avg_expectancy_pct": 0.0,
+                    "std_expectancy_pct": 0.0,
+                    "avg_win_rate": 0.0,
+                    "total_folds": 3,
+                    "total_trades_all_folds": 0,  # ZERO TRADES — THE BUG CASE
+                },
+                stability_score=0.0,
+            )
+
+    persisted_calls = []
+
+    monkeypatch.setattr(backtest_router, "_HAS_CLOUD_SQL", True, raising=False)
+    monkeypatch.setattr(backtest_router, "_replay_journal_query", fake_journal_query)
+    monkeypatch.setattr(backtest_router, "_replay_bar_loader", fake_bar_loader)
+    monkeypatch.setattr(backtest_router, "mine_style", fake_mine_style)
+    monkeypatch.setattr(backtest_router, "_style_history_bar_loader", fake_history_loader)
+    monkeypatch.setattr(backtest_router, "WalkForwardValidator", _ZeroTradesValidator)
+    monkeypatch.setattr(
+        backtest_router, "_style_exec",
+        lambda sql, params=None: persisted_calls.append((sql, params)),
+    )
+
+    resp = client.post("/api/style/mine-and-validate", json={"ticker": "SPY"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["status"] == "unavailable"
+    assert "zero trades" in body["reason"].lower()
+    # CRITICAL: persistence must NOT happen
+    assert len(persisted_calls) == 0
+
+
 def test_endpoint_503_when_cloud_sql_not_configured(client, monkeypatch):
     from api.routers import backtest as backtest_router
     monkeypatch.setattr(backtest_router, "_HAS_CLOUD_SQL", False, raising=False)
