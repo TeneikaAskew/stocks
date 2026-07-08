@@ -25,4 +25,11 @@ describe('relativeDayLabel', () => {
   it('passes through an unparseable date unchanged', () => {
     expect(relativeDayLabel('')).toBe('');
   });
+
+  it('is ET-correct at 22:30 ET when UTC has rolled to the next day', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-08T02:30:00Z')); // 2026-07-07 22:30 ET
+    expect(relativeDayLabel('2026-07-07')).toBe('today');
+    expect(relativeDayLabel('2026-07-06')).toBe('yesterday');
+  });
 });

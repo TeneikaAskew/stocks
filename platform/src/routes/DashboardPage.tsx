@@ -25,7 +25,7 @@ import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useReviewQuote } from '@/hooks/useReviewQuote';
 import { useInsightReport } from '@/hooks/useInsights';
-import { todayET } from '@/lib/dates';
+import { todayET, addDaysToISO } from '@/lib/dates';
 import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
@@ -125,18 +125,22 @@ function impactLabel(e: CatalystEvent): string {
  * Day-granularity relative label for a news event's `date` (a DATE, not a
  * timestamp — the news SQL truncates `published_ts::date`). Never fabricates
  * an hour-level "Nh ago"; only "today" / "yesterday" / "Mon D" are honest
- * given the day-only source field.
+ * given the day-only source field. Computed in ET, not UTC, to avoid the
+ * 8pm-midnight edge case where UTC has rolled to the next day.
  */
 export function relativeDayLabel(dateISO: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateISO || '');
   if (!m) return dateISO || '';
-  const target = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  const now = new Date();
-  const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const diffDays = Math.round((todayUTC - target) / 86_400_000);
-  if (diffDays === 0) return 'today';
-  if (diffDays === 1) return 'yesterday';
-  return new Date(target).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+  const today = todayET();
+  if (dateISO === today) return 'today';
+  if (dateISO === addDaysToISO(today, -1)) return 'yesterday';
+
+  // Fallback formatting for older dates: parse the ISO string and format as "Mon D"
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[month - 1]} ${day}`;
 }
 
 function rsiZone(v: number): { label: string; tone: Tone } {
