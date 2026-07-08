@@ -111,9 +111,13 @@ export default function ChartsPage() {
   const minDate = dates.length > 0 ? toInputFormat(dates[dates.length - 1]) : '';
   const maxDate = dates.length > 0 ? toInputFormat(dates[0]) : '';
 
-  // Auto-select first date (for local state)
-  if (!localSelectedDate && dates.length > 0) {
-    setLocalSelectedDate(dates[0]);
+  // Auto-select first date (for local state) — render-time adjustment
+  // (React docs pattern, mirroring ReplayControl's `lastCommitted` idiom):
+  // adopt the newest date once per dates-list identity, without an effect.
+  const [seenDates, setSeenDates] = useState<string[] | null>(null);
+  if (dates.length > 0 && seenDates !== dates) {
+    setSeenDates(dates);
+    if (!localSelectedDate) setLocalSelectedDate(dates[0]);
   }
 
   // Effective date: override with reviewDate when in review mode, snapping to nearest earlier trading day

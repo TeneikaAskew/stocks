@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
   Activity,
   Calendar,
@@ -235,6 +236,8 @@ function Toolbar({
   source: DataSource;
   asOf: string;
 }) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
   return (
     <div className="hs-toolbar">
       <div className="left">
@@ -270,10 +273,22 @@ function Toolbar({
       </div>
       <div className="right">
         <SourcePill source={source} asOf={asOf} />
-        <button className="icon-btn" title="Refresh" type="button">
+        <button
+          className="icon-btn"
+          title="Refresh"
+          aria-label="Refresh"
+          type="button"
+          onClick={() => queryClient.invalidateQueries({ queryKey: ['gamma-grid'] })}
+        >
           <RefreshCw size={15} />
         </button>
-        <button className="icon-btn" title="Glossary" type="button">
+        <button
+          className="icon-btn"
+          title="Glossary"
+          aria-label="Glossary"
+          type="button"
+          onClick={() => navigate('/help')}
+        >
           <HelpCircle size={15} />
         </button>
       </div>

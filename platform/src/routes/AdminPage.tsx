@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2, Lock, LogOut, Save } from 'lucide-react';
 import {
   clearAdminToken,
@@ -175,10 +175,17 @@ function RoutingPanel({ onLogout, showLogout = true }: { onLogout: () => void; s
   const updateMut = useUpdateAdminRoute();
   const [draft, setDraft] = useState<Record<string, { provider: string; model: string }>>({});
 
-  // Log-out on any 401 (token expired / changed on server)
+  // Log-out on any 401 (token expired / changed on server) — side effect
+  // moved out of render into an effect; logout mutates app state (clears
+  // the token, calls back up to the parent) and must not run during render.
+  useEffect(() => {
+    if (routesQuery.error?.message === 'unauthorized') {
+      clearAdminToken();
+      onLogout();
+    }
+  }, [routesQuery.error, onLogout]);
+
   if (routesQuery.error?.message === 'unauthorized') {
-    clearAdminToken();
-    onLogout();
     return null;
   }
 
