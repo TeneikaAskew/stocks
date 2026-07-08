@@ -313,18 +313,22 @@ jobs:
           git config user.email "noreply@github.com"
 
           # $BRANCH is a per-month bot branch (bot/arch-refresh-YYYY-MM)
-          # that can already exist on origin from an earlier run this month
-          # that pushed successfully but then failed at `gh pr create` (the
-          # 2026-07-01 permission failure below used to leave exactly this
-          # kind of orphan). `git checkout -b` creates a LOCAL branch with
-          # no ancestry relationship to that remote branch, so the
-          # subsequent push is rejected as non-fast-forward and the failure
-          # then repeats on every retry for the rest of the month (this
-          # recurred on 2026-07-06 — see issue #688). This branch is
-          # bot-owned and disposable — nothing else builds on it — so
-          # deleting any stale remote copy before recreating it is safe and
-          # makes the step idempotent across retries within the same month.
-          git push origin --delete "$BRANCH" 2>/dev/null || true
+          # that can already exist on origin from an earlier run this
+          # month — either (a) an orphan left by a run that pushed but
+          # then failed at `gh pr create` (the 2026-07-01 permission
+          # failure used to leave exactly this), or (b) a still-open PR
+          # from an earlier successful run this month (workflow_dispatch
+          # allows manual reruns any time). `git checkout -b` creates a
+          # LOCAL branch with no ancestry to either, so a plain push is
+          # rejected as non-fast-forward — reproduced in production on
+          # 2026-07-06 (issue #688). An earlier version of this fix used
+          # `git push origin --delete` before recreating the branch, but
+          # that breaks case (b): deleting the head branch of an open PR
+          # causes GitHub to auto-close it (caught in review on #699).
+          # Force-pushing instead updates case (b)'s PR in place — the
+          # same pattern Dependabot/Renovate use for bot branches — and
+          # still resolves case (a)'s non-fast-forward, so no delete is
+          # needed either way.
           git checkout -b "$BRANCH"
 
           # Stage only the regenerated docs. JSON dumps are gitignored
@@ -337,9 +341,19 @@ jobs:
           fi
 
           git commit -m "docs: monthly architecture doc refresh ${MONTH}"
-          git push -u origin "$BRANCH"
+          git push -u origin "$BRANCH" --force
 
           STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md)
+
+          # If an open PR for this branch already exists (case (b) above),
+          # the force-push just updated it — `gh pr create` would fail with
+          # "a pull request for branch ... already exists" since it can't
+          # open a second PR against the same head. Skip creation in that
+          # case instead of treating it as a failure.
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "::notice::PR already open for $BRANCH — force-pushed the refreshed docs onto it, nothing more to do."
+            exit 0
+          fi
 
           gh pr create \
             --base main --head "$BRANCH" \
