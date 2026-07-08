@@ -1121,6 +1121,25 @@ CREATE OR REPLACE TRIGGER set_journal_updated_at
     BEFORE UPDATE ON journal_entries
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- ── Phase 2 (2026-07): chart-marked trades unify into the journal ──────────
+-- Chart trades carry TP/SL levels, an ACTIVE (un-exited) state, a source
+-- discriminator, and (for replay-trainer sessions) a grouping id. Additive
+-- and idempotent; exit columns become nullable because active trades have
+-- no exit yet. return_pct stays NULL until a trade closes (Rule 3.7 —
+-- missing is never 0).
+ALTER TABLE journal_entries
+    ADD COLUMN IF NOT EXISTS stop_loss   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS tp1         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS tp2         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS tp3         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS status      VARCHAR(10) NOT NULL DEFAULT 'closed',
+    ADD COLUMN IF NOT EXISTS source      VARCHAR(10) NOT NULL DEFAULT 'manual',
+    ADD COLUMN IF NOT EXISTS session_id  UUID;
+ALTER TABLE journal_entries ALTER COLUMN exit_ts    DROP NOT NULL;
+ALTER TABLE journal_entries ALTER COLUMN exit_price DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
+    ON journal_entries (user_email, source, entry_ts DESC);
+
 
 -- ─────────────────────────────────────────────────────────
 -- ANALYSIS OUTPUTS
