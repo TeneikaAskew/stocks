@@ -754,6 +754,63 @@ async def get_reference_levels(ticker: str, date: str):
     }
 
 
+def _coverage_from_frames(symbols: list[str], daily_tickers: set[str], intraday_tickers: set[str]) -> dict:
+    """Shape the coverage map. Uppercases + dedupes, preserving first-seen order."""
+    out: dict[str, dict[str, bool]] = {}
+    for s in symbols:
+        u = s.strip().upper()
+        if not u or u in out:
+            continue
+        out[u] = {"intraday": u in intraday_tickers, "daily": u in daily_tickers}
+    return out
+
+
+def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    """Run a coverage SQL query, raising on failure.
+
+    Uses ``query_to_dataframe_strict`` (the RAISING helper), NOT the
+    swallowing ``query_to_dataframe`` used elsewhere in this file for
+    endpoints that have a legitimate GCS fallback. The coverage endpoint has
+    no fallback data source — a real DB error must surface as 5xx, never as
+    a silently-empty "no coverage for any symbol" result (CLAUDE.md Rule 3.7).
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
+@app.get("/api/market/coverage")
+async def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
+    """Data coverage per symbol — drives the type-ahead's full/daily/new badges.
+
+    Issues exactly two batched queries regardless of symbol count (CLAUDE.md
+    Rule 0: batch by grouping key, never per-row/per-symbol): one covering
+    market_data_daily, one covering market_data_intraday (the partitioned
+    parent table — see gcp/schema.sql:100).
+    """
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:50]
+    if not syms:
+        raise HTTPException(status_code=422, detail="symbols query param required")
+
+    try:
+        daily = _coverage_query(
+            "SELECT DISTINCT ticker FROM market_data_daily WHERE ticker = ANY(:syms)",
+            {"syms": syms},
+        )
+        intraday = _coverage_query(
+            "SELECT DISTINCT ticker FROM market_data_intraday WHERE ticker = ANY(:syms)",
+            {"syms": syms},
+        )
+    except Exception as e:
+        logger.error("market coverage query failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"database query failed: {type(e).__name__}")
+
+    return {"coverage": _coverage_from_frames(
+        syms,
+        set(daily["ticker"]) if daily is not None and not daily.empty else set(),
+        set(intraday["ticker"]) if intraday is not None and not intraday.empty else set(),
+    )}
+
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
