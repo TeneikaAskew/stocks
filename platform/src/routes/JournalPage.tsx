@@ -13,7 +13,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { KpiTile, Card, CardHeader } from '@/components/primitives';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 import { PriceAreaChart } from '@/components/charts/PriceAreaChart';
 import { fmtPct, NA } from '@/lib/format';
 import { computeJournalStats } from '@/lib/journalStats';
@@ -239,7 +239,7 @@ export default function JournalPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <TickerSelect />
+          <TickerCombobox />
           {entries.length > 0 && (
             <>
               <button

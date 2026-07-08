@@ -1,4 +1,4 @@
-export type Ticker = 'IWM' | 'SPY' | 'QQQ';
+export type Ticker = string;
 
 export type Timeframe = '1' | '5' | '15' | '30' | '60';
 

@@ -26,7 +26,7 @@ import {
 import { WatchlistPanel } from '@/components/insights/WatchlistPanel';
 import { AgentsPanel } from '@/components/insights/AgentsPanel';
 import { MicroLabel } from '@/components/primitives';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 
 type Tab = 'report' | 'agents' | 'history' | 'chat' | 'watchlist';
 
@@ -114,7 +114,7 @@ export default function InsightsPage() {
           <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">AI Insights</h1>
           <MicroLabel className="mt-1">{activeTicker} · multi-agent dossier</MicroLabel>
         </div>
-        <TickerSelect />
+        <TickerCombobox />
       </div>
 
       {/* Tab bar */}

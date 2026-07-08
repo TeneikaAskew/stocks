@@ -29,7 +29,7 @@ import { todayET } from '@/lib/dates';
 import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 import { MovementRead } from '@/components/dashboard/MovementRead';
 import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
@@ -388,7 +388,7 @@ export default function DashboardPage() {
           </MicroLabel>
         </div>
         <div className="flex items-center gap-2">
-          <TickerSelect />
+          <TickerCombobox />
           <Button
             variant="ghost"
             size="sm"
