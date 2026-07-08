@@ -332,6 +332,43 @@ class TestSimulateExit:
         assert trade.mae == pytest.approx(0.0)
         assert trade.mfe == pytest.approx(0.0005)
 
+    def test_entry_bar_excluded_under_divergent_fill_price(self, engine):
+        """Pins the entry-bar-exclusion invariant when `trade.entry_price`
+        diverges from the entry bar's own Close (e.g. next-bar-open fill,
+        slippage, or — Task 3.2's use case — a labeled trade whose entry
+        price came from the user, not from `bars`).
+
+        entry bar (idx0) Close=100.0 but trade.entry_price=100.5. If the
+        walk ever evaluated the entry bar itself, unrealized there would be
+        (100.0 - 100.5) / 100.5 = -0.4975%, which blows through the -0.15%
+        CALL stop and would wrongly stop the trade out on bar 0. Instead the
+        walk must start at entry_idx + 1 (bar1, flat at 100.50 relative to
+        entry_price), so the trade rides to bar2's +0.4975% target hit
+        instead — and MAE never reflects the entry bar's phantom -0.4975%."""
+        t0 = pd.Timestamp('2024-01-02 09:30:00')
+        bars = _bars([
+            (t0, 100.0),                              # 0: entry bar (Close != entry_price)
+            (t0 + pd.Timedelta(minutes=1), 100.50),   # 1: flat vs entry_price (0.0%)
+            (t0 + pd.Timedelta(minutes=2), 101.00),   # 2: +0.4975% vs entry_price >= target (0.30%)
+        ])
+        trade = Trade(
+            entry_time=t0, entry_price=100.5, direction='CALL',
+            base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+            conditions_met=['c1', 'c2', 'c3'],
+        )
+
+        result = engine.simulate_exit(trade, bars, entry_idx=0, close_col='Close')
+
+        assert result is trade
+        assert trade.exit_reason == 'target'
+        assert trade.exit_price == pytest.approx(101.00)
+        assert trade.exit_time == t0 + pd.Timedelta(minutes=2)
+        assert trade.return_pct == pytest.approx((101.00 - 100.5) / 100.5)
+        # MAE/MFE only ever see bar1 (0.0% unrealized) — never the entry
+        # bar's phantom -0.4975%, and never the exit bar itself (bar2).
+        assert trade.mae == pytest.approx(0.0)
+        assert trade.mfe == pytest.approx(0.0)
+
     def test_put_direction_sign_correction(self, engine):
         """return_pct is sign-corrected for PUT — price falling is a WIN."""
         t0 = pd.Timestamp('2024-01-02 09:30:00')
