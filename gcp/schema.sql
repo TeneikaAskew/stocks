@@ -3597,3 +3597,39 @@ CREATE TABLE IF NOT EXISTS waitlist_signups (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ─────────────────────────────────────────────────────────
+-- STYLE MINING
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS user_style_results (
+    id                  BIGSERIAL PRIMARY KEY,
+    user_email          TEXT         NOT NULL,
+    ticker              VARCHAR(10)  NOT NULL,
+    profile             JSONB        NOT NULL,   -- mined StyleProfile
+    trained_on_trades   INTEGER      NOT NULL,
+    avg_expectancy_pct  DOUBLE PRECISION,        -- TRUE PERCENT
+    avg_win_rate        DOUBLE PRECISION,        -- 0..1 fraction
+    stability_score     DOUBLE PRECISION,
+    total_folds         INTEGER,
+    total_trades        INTEGER,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_user_style_results_user
+    ON user_style_results (user_email, ticker, created_at DESC);
+
+-- Staging seam: playbook stays admin-only; candidates land here behind
+-- PLAYBOOK_USER_CARDS (hardcoded off) until a future program flips it.
+CREATE TABLE IF NOT EXISTS playbook_cards_staging (
+    user_email       TEXT             NOT NULL,
+    ticker           VARCHAR(10)      NOT NULL,
+    name             TEXT             NOT NULL,
+    direction        VARCHAR(8)       NOT NULL,
+    conditions       JSONB            NOT NULL DEFAULT '[]'::jsonb,
+    win_rate         DOUBLE PRECISION,
+    avg_return_bps   DOUBLE PRECISION,
+    sample_n         INTEGER,
+    status           VARCHAR(16)      NOT NULL DEFAULT 'candidate',
+    generated_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_playbook_cards_staging PRIMARY KEY (user_email, ticker, name)
+);
