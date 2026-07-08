@@ -76,7 +76,7 @@ interface MarketDataResponse {
 interface CatalystEvent {
   date: string; ticker: string; title?: string; event?: string;
   catalyst_type?: string; impact?: string; expected_impact?: string;
-  sentiment_label?: string; sentiment_score?: number;
+  sentiment_label?: string; sentiment_score?: number; source?: string;
 }
 interface CatalystsResponse { events_by_date: Record<string, CatalystEvent[]> }
 
@@ -121,6 +121,24 @@ function impactLabel(e: CatalystEvent): string {
   const r = IMPACT_RANK[(e.impact || e.expected_impact || 'medium').toLowerCase()] ?? 2;
   return r === 3 ? 'high' : r === 2 ? 'med' : 'low';
 }
+/**
+ * Day-granularity relative label for a news event's `date` (a DATE, not a
+ * timestamp — the news SQL truncates `published_ts::date`). Never fabricates
+ * an hour-level "Nh ago"; only "today" / "yesterday" / "Mon D" are honest
+ * given the day-only source field.
+ */
+export function relativeDayLabel(dateISO: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateISO || '');
+  if (!m) return dateISO || '';
+  const target = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const diffDays = Math.round((todayUTC - target) / 86_400_000);
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'yesterday';
+  return new Date(target).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
 function rsiZone(v: number): { label: string; tone: Tone } {
   if (v >= 70) return { label: 'overbought', tone: 'bear' };
   if (v <= 30) return { label: 'oversold', tone: 'bull' };
@@ -397,19 +415,27 @@ export default function DashboardPage() {
     [signalsResp],
   );
 
-  // Catalyst feed — flatten upcoming events, soonest first, top 5.
-  const catalystFeed = useMemo(() => {
+  // Full flattened event list (all dates, unsliced) — the news filter below
+  // must scan the whole set, not just the top-5 catalystFeed slice, because
+  // news is backward-dated and would otherwise get crowded out by forward
+  // (upcoming) catalyst events sorted first.
+  const allEvents = useMemo(() => {
     const byDate = catalysts?.events_by_date ?? {};
     return Object.keys(byDate)
       .sort()
-      .flatMap((d) => byDate[d].map((e) => ({ ...e, date: e.date || d })))
-      .slice(0, 5);
+      .flatMap((d) => byDate[d].map((e) => ({ ...e, date: e.date || d })));
   }, [catalysts]);
 
-  // News = catalyst events carrying a sentiment label (AlphaVantage NEWS_SENTIMENT).
+  // Catalyst feed — flatten upcoming events, soonest first, top 5.
+  const catalystFeed = useMemo(() => allEvents.slice(0, 5), [allEvents]);
+
+  // News = catalyst events sourced from AlphaVantage NEWS_SENTIMENT (the
+  // `source` field the backend already stamps on these rows). Built from
+  // the full event list so backward-dated news isn't crowded out by the
+  // forward catalystFeed slice.
   const newsFeed = useMemo(
-    () => catalystFeed.filter((e) => e.sentiment_label || e.catalyst_type === 'NEWS').slice(0, 4),
-    [catalystFeed],
+    () => allEvents.filter((e) => e.source === 'AV news').slice(0, 4),
+    [allEvents],
   );
 
   const rep = insight?.report;
@@ -777,6 +803,8 @@ export default function DashboardPage() {
         {/* News feed (from catalysts carrying sentiment) */}
         <Card interactive onClick={() => navigate('/catalysts')} className="min-w-0">
           <CardHeader title={<><Newspaper size={13} className="mr-1.5 inline align-middle" />News</>} meta={`${newsFeed.length} fresh`} />
+          {/* Card doesn't forward arbitrary props, so data-testid lives on this wrapper. */}
+          <div data-testid="news-card">
           {newsFeed.length === 0 ? (
             <Unavailable msg="No tagged news right now." />
           ) : (
@@ -788,7 +816,11 @@ export default function DashboardPage() {
                   <div key={i} className="flex items-start gap-2 border-t border-[var(--outline-variant)] py-2 first:border-t-0">
                     <div className="min-w-0 flex-1">
                       <div className="line-clamp-2 text-[12px] font-medium text-[var(--on-surface)]">{eventTitle(n)}</div>
-                      <div className="text-[11px] text-[var(--on-surface-muted)]">{n.ticker}{n.date ? ` · ${n.date.slice(5)}` : ''}</div>
+                      <div className="text-[11px] text-[var(--on-surface-muted)]">
+                        {n.ticker}
+                        {n.source ? ` · ${n.source}` : ''}
+                        {n.date ? ` · ${relativeDayLabel(n.date)}` : ''}
+                      </div>
                     </div>
                     {n.sentiment_label && <Pill tone={tone}>{n.sentiment_label}</Pill>}
                   </div>
@@ -796,6 +828,7 @@ export default function DashboardPage() {
               })}
             </div>
           )}
+          </div>
         </Card>
       </div>
     </div>

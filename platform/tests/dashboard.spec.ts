@@ -7,6 +7,21 @@
 import { test, expect } from '@playwright/test';
 import { mockCommon, M } from './helpers/mocks';
 
+// Relative-to-now ISO dates so the News card's day-granularity relative
+// label ("yesterday") and forward-event dates are deterministic regardless
+// of when the suite runs.
+const TODAY_ISO = new Date().toISOString().slice(0, 10);
+const YESTERDAY_ISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+})();
+const TOMORROW_ISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+})();
+
 // Brief shape the redesigned Overview consumes (bias bullets + KPI close/RSI).
 const MOCK_BRIEF = {
   ticker: 'IWM',
@@ -56,6 +71,75 @@ const MOCK_BACKTEST = {
       trades: 42,
     },
   ],
+};
+
+// News is backward-dated (yesterday) alongside 3 forward-dated catalyst
+// events — regression coverage for the news-card contract: the fixed
+// frontend matches on `source === 'AV news'` against the FULL events array,
+// which is robust regardless of dating or slicing. The old frontend matched
+// on `sentiment_label || catalyst_type === 'NEWS'`; the backend never emits
+// catalyst_type literally 'NEWS' (it maps to NEWS_CATALYST/EARNINGS_NEWS/
+// MERGER_ACQUISITION/IPO/ECONOMIC), so these rows — carrying an empty
+// sentiment_label, as real low-confidence articles sometimes do — pin the
+// exact match condition this fix changed: "0 fresh" on the old filter,
+// "2 fresh" once matched by `source` instead.
+const MOCK_EVENTS_WITH_NEWS = {
+  status: 'ok',
+  source: 'mock',
+  date_range: { from: YESTERDAY_ISO, to: TOMORROW_ISO },
+  total: 5,
+  events_by_date: {
+    [YESTERDAY_ISO]: [
+      {
+        date: YESTERDAY_ISO,
+        ticker: 'IWM',
+        catalyst_type: 'NEWS_CATALYST',
+        title: 'Russell 2000 constituents rally on rate-cut optimism',
+        impact: 'Medium',
+        source: 'AV news',
+        sentiment_label: '',
+        sentiment_score: 0.31,
+      },
+      {
+        date: YESTERDAY_ISO,
+        ticker: 'IWM',
+        catalyst_type: 'NEWS_CATALYST',
+        title: 'Small-cap earnings season kicks off with mixed guidance',
+        impact: 'Low',
+        source: 'AV news',
+        sentiment_label: '',
+        sentiment_score: 0.02,
+      },
+    ],
+    [TODAY_ISO]: [
+      {
+        date: TODAY_ISO,
+        ticker: 'AAPL',
+        catalyst_type: 'EARNINGS',
+        event: 'Q2 2026 Earnings',
+        expected_impact: 'high',
+        source: 'mock',
+      },
+      {
+        date: TODAY_ISO,
+        ticker: 'MSFT',
+        catalyst_type: 'CONFERENCE_CALL',
+        event: 'Investor Day',
+        expected_impact: 'medium',
+        source: 'mock',
+      },
+    ],
+    [TOMORROW_ISO]: [
+      {
+        date: TOMORROW_ISO,
+        ticker: 'MACRO',
+        catalyst_type: 'ECONOMIC',
+        title: 'CPI release',
+        impact: 'High',
+        source: 'FRED/Calendar',
+      },
+    ],
+  },
 };
 
 test.describe('Dashboard', () => {
@@ -215,6 +299,17 @@ test.describe('Dashboard', () => {
     expect(rows[1]).toContain('Technology');
     expect(rows[2]).toContain('Financials');
     expect(rows[3]).toContain('Consumer Discretionary');
+  });
+
+  test('News card counts AV-news rows dated in the past and shows both headlines', async ({ page }) => {
+    await page.route('**/api/catalysts/events**', (r) => r.fulfill(M.ok(MOCK_EVENTS_WITH_NEWS)));
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const newsCard = page.getByTestId('news-card');
+    await expect(page.getByText('2 fresh')).toBeVisible({ timeout: 10_000 });
+    await expect(newsCard.getByText('Russell 2000 constituents rally on rate-cut optimism')).toBeVisible();
+    await expect(newsCard.getByText('Small-cap earnings season kicks off with mixed guidance')).toBeVisible();
   });
 
   test('renders within 7s perf budget', async ({ page }) => {
