@@ -8,7 +8,7 @@ import { SignOutButton } from '@/components/auth/SignOutButton';
  * controls into its single row): replay control + sign-out + a quick
  * dark/light toggle. Full appearance config lives on /settings. The ticker
  * is intentionally NOT shown here — symbol focus lives in a per-page
- * <TickerSelect> dropdown. ReplayControl gates itself to review-aware routes.
+ * <TickerCombobox> dropdown. ReplayControl gates itself to review-aware routes.
  */
 export function Header() {
   const { theme, toggleTheme } = useThemeStore();

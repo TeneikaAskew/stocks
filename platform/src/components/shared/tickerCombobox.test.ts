@@ -6,7 +6,7 @@
 // badge mapping, the search-result merge, and the debounce scheduler.
 
 import { describe, expect, it, vi } from 'vitest';
-import { coverageBadge, mergeSuggestions } from './TickerCombobox';
+import { coverageBadge, dedupeSearchResults, mergeSuggestions } from './TickerCombobox';
 import { scheduleDebounce } from '@/hooks/useDebouncedValue';
 
 describe('coverageBadge', () => {
@@ -56,6 +56,41 @@ describe('mergeSuggestions', () => {
     ];
     const merged = mergeSuggestions(results, {});
     expect(merged.map((m) => m.symbol)).toEqual(['AAPL', 'MSFT']);
+  });
+});
+
+describe('dedupeSearchResults', () => {
+  const aapl = { symbol: 'AAPL', name: 'Apple Inc', type: 'Equity', region: 'United States', currency: 'USD', match_score: 0.9 };
+  const iwm = { symbol: 'IWM', name: 'iShares Russell 2000 ETF', type: 'ETF', region: 'United States', currency: 'USD', match_score: 0.95 };
+
+  it('drops a search result that duplicates a quick-pick symbol (the bug case: typing "IWM" while IWM is a quick pick)', () => {
+    const rows = dedupeSearchResults([iwm, aapl], ['IWM', 'SPY', 'QQQ'], []);
+    expect(rows.map((r) => r.symbol)).toEqual(['AAPL']);
+  });
+
+  it('drops a search result that duplicates a recent symbol', () => {
+    const rows = dedupeSearchResults([iwm, aapl], ['SPY', 'QQQ'], ['IWM']);
+    expect(rows.map((r) => r.symbol)).toEqual(['AAPL']);
+  });
+
+  it('dedupes case-insensitively', () => {
+    const rows = dedupeSearchResults(
+      [{ ...iwm, symbol: 'iwm' }, aapl],
+      ['IWM'],
+      [],
+    );
+    expect(rows.map((r) => r.symbol)).toEqual(['AAPL']);
+  });
+
+  it('keeps every result when none duplicate a quick-pick/recent', () => {
+    const rows = dedupeSearchResults([iwm, aapl], ['SPY', 'QQQ'], []);
+    expect(rows.map((r) => r.symbol)).toEqual(['IWM', 'AAPL']);
+  });
+
+  it('preserves result order for the kept rows', () => {
+    const msft = { ...aapl, symbol: 'MSFT', name: 'Microsoft Corp' };
+    const rows = dedupeSearchResults([iwm, aapl, msft], ['IWM'], []);
+    expect(rows.map((r) => r.symbol)).toEqual(['AAPL', 'MSFT']);
   });
 });
 

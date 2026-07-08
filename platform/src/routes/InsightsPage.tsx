@@ -90,13 +90,11 @@ export default function InsightsPage() {
   const onRefresh = () => refreshFor(activeTicker);
 
   // Watchlist row click: switch the active ticker, jump to Report tab,
-  // and trigger a refresh on the selected ticker. The cast widens the
-  // strict Ticker union ('IWM'|'SPY'|'QQQ') to accept any ticker the
-  // ranker surfaces — the Sidebar's typed `availableTickers` list is
-  // unaffected; downstream consumers of activeTicker treat it as a
-  // string anyway.
+  // and trigger a refresh on the selected ticker. `Ticker` (types/index.ts)
+  // is just `string` now, and the store's `setTicker` takes any symbol the
+  // ranker surfaces — no widening cast needed.
   const onWatchlistGenerate = async (ticker: string) => {
-    setTicker(ticker as import('@/types').Ticker);
+    setTicker(ticker);
     setTab('report');
     setViewingHistoricalId(null);
     // Watchlist generations always run live — point-in-time is an

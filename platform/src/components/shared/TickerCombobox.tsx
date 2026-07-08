@@ -28,6 +28,34 @@ export function mergeSuggestions(
   return results.map((r) => ({ ...r, badge: coverageBadge(coverage[r.symbol.toUpperCase()]) }));
 }
 
+/**
+ * Drops any search result whose symbol duplicates a quick-pick or recent
+ * that's already rendered above it in the popover (case-insensitive).
+ *
+ * Why: the popover renders three sections (quick picks, recents, search)
+ * from what used to be three independent `.map()` calls, each computing its
+ * row's keyboard-highlight via `flat.indexOf(symbol)` against a combined
+ * list. If a search result duplicated an existing quick-pick/recent (e.g.
+ * typing "IWM" while IWM is already a quick pick), `indexOf` always
+ * resolved to the FIRST occurrence — the later row's highlight silently
+ * never lit up, and two DOM nodes ended up sharing
+ * `data-testid="ticker-option-IWM"`. Rather than giving every row a
+ * section-qualified testid (`ticker-option-quick-IWM` vs
+ * `ticker-option-search-IWM`), we drop the redundant search row: the symbol
+ * is already reachable via its quick-pick/recent chip, so showing it twice
+ * added nothing. This keeps `flat` (the combined, keyboard-navigable list)
+ * free of duplicate symbols, so `indexOf`-based highlighting and testids
+ * are unambiguous again.
+ */
+export function dedupeSearchResults<T extends { symbol: string }>(
+  searchResults: T[],
+  quickPicks: string[],
+  recents: string[],
+): T[] {
+  const alreadyShown = new Set([...quickPicks, ...recents].map((t) => t.toUpperCase()));
+  return searchResults.filter((r) => !alreadyShown.has(r.symbol.toUpperCase()));
+}
+
 const BADGE_LABEL: Record<CoverageBadge, string> = {
   full: 'full',
   daily: 'daily',
@@ -57,8 +85,8 @@ interface TickerComboboxProps {
 }
 
 /**
- * Ticker type-ahead combobox — replaces the old fixed IWM/SPY/QQQ
- * `<TickerSelect>` dropdown. Trigger shows `activeTicker`; the popover
+ * Ticker type-ahead combobox (`TickerCombobox`) — replaces the old fixed
+ * IWM/SPY/QQQ dropdown selector. Trigger shows `activeTicker`; the popover
  * offers quick-picks, recents, and (once ≥1 char is typed) live symbol
  * search with a per-row data-coverage badge (full/daily/new) so a user
  * can tell, before picking, whether a symbol already has history.
@@ -91,11 +119,21 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
 
   const recents = recentTickers.filter((t) => !quickPicks.includes(t));
 
+  // Search rows drop anything that duplicates a quick-pick/recent symbol —
+  // see dedupeSearchResults' doc comment for why (indexOf-highlight + testid
+  // collision otherwise).
+  const searchRows = useMemo(
+    () => (searchEnabled ? dedupeSearchResults(merged, quickPicks, recents) : []),
+    [searchEnabled, merged, quickPicks, recents],
+  );
+
   // Flatten selectable rows for keyboard nav: quick-picks, then recents, then
-  // (once search is active) suggestions — mirrors CommandPalette's clamp pattern.
+  // (once search is active) suggestions — mirrors CommandPalette's clamp
+  // pattern. Every symbol appears at most once (searchRows is pre-deduped),
+  // so `flat.indexOf(symbol)` below is unambiguous.
   const flat = useMemo(
-    () => [...quickPicks, ...recents, ...(searchEnabled ? merged.map((m) => m.symbol) : [])],
-    [quickPicks, recents, searchEnabled, merged],
+    () => [...quickPicks, ...recents, ...searchRows.map((m) => m.symbol)],
+    [quickPicks, recents, searchRows],
   );
   const safeSel = Math.min(sel, Math.max(0, flat.length - 1));
 
@@ -260,13 +298,25 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
                 {!search.isError && search.isLoading && (
                   <div className="px-1.5 py-2 text-xs text-[var(--on-surface-muted)]">Searching…</div>
                 )}
-                {!search.isError && !search.isLoading && merged.length === 0 && (
+                {!search.isError && !search.isLoading && searchRows.length === 0 && (
                   <div className="px-1.5 py-2 text-xs text-[var(--on-surface-muted)]">
                     No matches for &ldquo;{debounced}&rdquo;
                   </div>
                 )}
+                {/* Coverage lookup failed but search itself succeeded — still
+                    render suggestions (badges honestly default to "new" per
+                    coverageBadge's contract) plus a subtle hint that the
+                    badges may not reflect real coverage. */}
+                {!search.isError && coverage.isError && (
+                  <div
+                    className="px-1.5 pb-1.5 text-[10px] text-[var(--on-surface-muted)]"
+                    data-testid="ticker-coverage-error"
+                  >
+                    coverage lookup unavailable — badges may be inaccurate
+                  </div>
+                )}
                 {!search.isError &&
-                  merged.map((m) => {
+                  searchRows.map((m) => {
                     const idx = flat.indexOf(m.symbol);
                     return (
                       <button

@@ -194,4 +194,48 @@ test.describe('TickerCombobox', () => {
     await page.getByTestId('ticker-combobox-input').fill('zz');
     await expect(page.getByTestId('ticker-search-error')).toBeVisible({ timeout: 5000 });
   });
+
+  test('coverage failure still renders suggestions plus an inline hint that badges may be inaccurate', async ({ page }) => {
+    await page.route('**/api/market/coverage**', (r) =>
+      r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'coverage upstream unavailable' }) })
+    );
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('aa');
+
+    // Suggestions still render — coverage failing must not blank the list.
+    const option = page.getByTestId('ticker-option-AAPL');
+    await expect(option).toBeVisible({ timeout: 5000 });
+    // Badge falls back to the honest "new" default (coverage unknown)…
+    await expect(option).toContainText('new');
+    // …and the inline hint tells the user why the badge may be wrong.
+    await expect(page.getByTestId('ticker-coverage-error')).toBeVisible();
+    await expect(page.getByTestId('ticker-coverage-error')).toContainText('coverage lookup unavailable');
+  });
+
+  test('a search result duplicating a quick pick is deduped — IWM renders exactly once', async ({ page }) => {
+    // Search returns IWM (already a quick pick) plus a novel symbol.
+    await page.route('**/api/insights/ticker/search**', (r) =>
+      r.fulfill(
+        M.ok({
+          keywords: 'iw',
+          results: [
+            { symbol: 'IWM', name: 'iShares Russell 2000 ETF', type: 'ETF', region: 'United States', currency: 'USD', match_score: 0.95 },
+            { symbol: 'IWN', name: 'iShares Russell 2000 Value ETF', type: 'ETF', region: 'United States', currency: 'USD', match_score: 0.8 },
+          ],
+        })
+      )
+    );
+    await page.route('**/api/market/coverage**', (r) =>
+      r.fulfill(M.ok({ coverage: { IWM: { intraday: true, daily: true }, IWN: { intraday: false, daily: false } } }))
+    );
+
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('iw');
+
+    // The non-duplicate search result renders…
+    await expect(page.getByTestId('ticker-option-IWN')).toBeVisible({ timeout: 5000 });
+    // …and IWM appears exactly once (the quick-pick chip; the duplicate
+    // search row was dropped, so no highlight/testid collision).
+    await expect(page.getByTestId('ticker-option-IWM')).toHaveCount(1);
+  });
 });
