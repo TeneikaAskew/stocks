@@ -357,6 +357,17 @@ class SignalConfig:
     enable_standalone_momentum: bool = False
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
+    # Task 4.3 fix (trading-logic review of 1c7a7f35): when set, restricts
+    # `lib.signals.evaluate_signal` to scoring ONLY these internal factor
+    # names (see lib.signals module for the fixed CALL/PUT factor identity
+    # list) — any factor not named here contributes 0 to both CALL and PUT
+    # scores. `None` (the default) is BYTE-IDENTICAL to today's behaviour:
+    # every factor in the fixed 5-factor set is scored, same as before this
+    # field existed. Production callers (gcp/signal_monitor.py, the live
+    # endpoints) never set this; it exists for
+    # `lib.walk_forward.profile_to_signal_config` to turn a mined
+    # `StyleProfile`'s named conditions into an exact allowlist gate.
+    enabled_conditions: Optional[List[str]] = None
 
 
 # ---------------------------------------------------------------------------

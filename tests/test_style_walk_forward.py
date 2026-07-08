@@ -70,6 +70,12 @@ class TestProfileToSignalConfig:
         assert cfg.put_rsi_range == base.put_rsi_range
         assert cfg.stoch_rsi_oversold == base.stoch_rsi_oversold
         assert cfg.stoch_rsi_overbought == base.stoch_rsi_overbought
+        # Trading-logic fix (review of 1c7a7f35): the profile's conditions
+        # are also translated to the internal factor-name allowlist, so
+        # min_conditions is an EXACT gate, not an approximation.
+        assert set(cfg.enabled_conditions) == {
+            "below_vwap", "rsi_oversold_zone", "stoch_rsi_oversold",
+        }
 
     def test_unknown_condition_raises_value_error(self):
         profile = StyleProfile(
@@ -145,6 +151,118 @@ class TestProfileToSignalConfig:
             signal_config=cfg,
         )
         assert sig2 is None
+
+    def test_enabled_conditions_gate_blocks_off_profile_factor_combo(self):
+        """Trading-logic CRITICAL fix (review of commit 1c7a7f35): before
+        this fix, `min_conditions` alone was scored against the FULL
+        5-factor set, so a bar could reach `min_conditions` via factors the
+        profile never named. Worked example from the review: CALL profile
+        {below_vwap, rsi_25_50} (min_conditions=2) used to FIRE on a bar
+        where only consecutive_down + stoch_rsi_oversold were true (neither
+        of which is below_vwap or rsi_oversold_zone). With `enabled_conditions`
+        wired through (this test passes it explicitly, mirroring how
+        `lib.backtest._check_entry` threads `self.signal.enabled_conditions`),
+        that bar must NOT fire — the two off-profile factors contribute 0."""
+        profile = StyleProfile(
+            direction="CALL", conditions=["below_vwap", "rsi_25_50"],
+            support=4, total=5,
+        )
+        cfg = profile_to_signal_config(profile)
+        assert cfg.min_conditions == 2
+
+        # consecutive_down + stoch_rsi_oversold true (the leak factors);
+        # below_vwap / rsi_oversold_zone (the NAMED factors) false.
+        leak_row = pd.Series({
+            "Consecutive_Down": 5, "Consecutive_Up": 0,
+            "RSI14": 90.0,           # outside both CALL (25-50) and PUT (50-75) bands
+            "Price_vs_VWAP": 0.0,    # neither below_vwap nor above_vwap
+            "StochRSI_K": 10.0,      # stoch_rsi_oversold true (not a named factor)
+            "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
+        })
+
+        # Sanity check: WITHOUT the gate (enabled_conditions=None, today's
+        # default for every caller that doesn't opt in), this bar reaches
+        # score 2 == min_conditions via the off-profile factors — this is
+        # the exact leak the review flagged.
+        leaked_sig = evaluate_signal(
+            leak_row,
+            min_conditions=cfg.min_conditions,
+            consecutive_periods=cfg.consecutive_periods,
+            call_rsi_range=cfg.call_rsi_range,
+            put_rsi_range=cfg.put_rsi_range,
+            signal_config=cfg,
+        )
+        assert leaked_sig is not None
+        assert leaked_sig["direction"] == "CALL"
+        assert set(leaked_sig["conditions_met"]) == {
+            "consecutive_down", "stoch_rsi_oversold",
+        }
+
+        # With the allowlist wired through (the fix), the same bar must NOT
+        # fire — below_vwap and rsi_oversold_zone are both false, and the
+        # off-profile factors that WERE true no longer count.
+        gated_sig = evaluate_signal(
+            leak_row,
+            min_conditions=cfg.min_conditions,
+            consecutive_periods=cfg.consecutive_periods,
+            call_rsi_range=cfg.call_rsi_range,
+            put_rsi_range=cfg.put_rsi_range,
+            signal_config=cfg,
+            enabled_conditions=cfg.enabled_conditions,
+        )
+        assert gated_sig is None
+
+    def test_call_profile_never_fires_put_via_enabled_conditions(self):
+        """HIGH: direction gating falls out of the allowlist for free — CALL
+        and PUT factor names never overlap (lib/signals.py), so a CALL
+        profile's `enabled_conditions` list contains zero PUT factor names
+        and `put_score` is forced to 0 on every bar, regardless of how many
+        PUT-side conditions are actually true. Crafted "run" of several bars
+        that each strongly satisfy the PUT-side factor set; zero of them may
+        ever fire PUT once the CALL profile's allowlist is wired through."""
+        profile = StyleProfile(
+            direction="CALL", conditions=["below_vwap", "stoch_oversold"],
+            support=4, total=5,
+        )
+        cfg = profile_to_signal_config(profile)
+
+        # Every row below satisfies ALL 5 PUT-side factors (consecutive_up,
+        # rsi_overbought_zone, above_vwap, stoch_rsi_overbought,
+        # level_break_pdl) and NONE of the CALL-side factors — a bar that,
+        # pre-fix, could fire PUT under a naive same-min_conditions check
+        # applied to both directions.
+        put_leaning_rows = [
+            pd.Series({
+                "Consecutive_Down": 0, "Consecutive_Up": 5,
+                "RSI14": 60.0,             # rsi_overbought_zone (50-75) true
+                "Price_vs_VWAP": 0.5,      # above_vwap true
+                "StochRSI_K": 90.0,        # stoch_rsi_overbought true
+                "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 1,
+            }),
+            pd.Series({
+                "Consecutive_Down": 0, "Consecutive_Up": 4,
+                "RSI14": 65.0,
+                "Price_vs_VWAP": 1.2,
+                "StochRSI_K": 85.0,
+                "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 1,
+            }),
+        ]
+
+        put_fires = 0
+        for row in put_leaning_rows:
+            sig = evaluate_signal(
+                row,
+                min_conditions=cfg.min_conditions,
+                consecutive_periods=cfg.consecutive_periods,
+                call_rsi_range=cfg.call_rsi_range,
+                put_rsi_range=cfg.put_rsi_range,
+                signal_config=cfg,
+                enabled_conditions=cfg.enabled_conditions,
+            )
+            if sig is not None and sig["direction"] == "PUT":
+                put_fires += 1
+
+        assert put_fires == 0
 
 
 # ---------------------------------------------------------------------------

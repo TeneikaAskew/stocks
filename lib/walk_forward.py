@@ -34,44 +34,82 @@ _DIRECT_TUNABLE_CONDITIONS = frozenset({
     'stoch_oversold', 'stoch_overbought',
 })
 
+# Vocabulary -> internal factor-identity mapping, translated ONCE here (the
+# one documented dict the trading-logic review of commit 1c7a7f35 asked for).
+# `lib.signals.check_call_conditions` / `check_put_conditions` score a fixed
+# 5-factor set per direction under these internal names — see the two
+# functions' docstrings in lib/signals.py:
+#   CALL: consecutive_down, rsi_oversold_zone, below_vwap,
+#         stoch_rsi_oversold, level_break_pdh
+#   PUT:  consecutive_up, rsi_overbought_zone, above_vwap,
+#         stoch_rsi_overbought, level_break_pdl
+# The two sets never overlap, which is what makes a CALL-only
+# `enabled_conditions` allowlist also a direction gate for free (see
+# `profile_to_signal_config`'s docstring, HIGH-severity note).
+_VOCAB_TO_INTERNAL = {
+    'rsi_25_50': 'rsi_oversold_zone',
+    'rsi_50_75': 'rsi_overbought_zone',
+    'above_vwap': 'above_vwap',
+    'below_vwap': 'below_vwap',
+    'stoch_oversold': 'stoch_rsi_oversold',
+    'stoch_overbought': 'stoch_rsi_overbought',
+}
+_CONSEC_VOCAB_TO_INTERNAL = {
+    'up': 'consecutive_up',
+    'down': 'consecutive_down',
+}
+
+
+def _translate_condition(cond: str) -> str:
+    """Translate one mined-vocabulary condition name to the internal factor
+    identity `lib.signals.check_call_conditions` / `check_put_conditions`
+    use in their `enabled_conditions` allowlist and `conditions_met` output.
+    Caller (`profile_to_signal_config`) has already validated `cond` is
+    either a `consec_(up|down)_ge_N` match or a member of
+    `_DIRECT_TUNABLE_CONDITIONS`.
+    """
+    m = _CONSEC_CONDITION_RE.match(cond)
+    if m:
+        return _CONSEC_VOCAB_TO_INTERNAL[m.group(1)]
+    return _VOCAB_TO_INTERNAL[cond]
+
 
 def profile_to_signal_config(profile: StyleProfile) -> SignalConfig:
     """Convert a mined `StyleProfile` (lib.style_miner, Task 4.2) into a
     `SignalConfig` override for `WalkForwardValidator.run_profile` (Task 4.3).
 
-    Mapping mechanics (the documented design-latitude call)
-    ---------------------------------------------------------
-    `lib.signals.evaluate_signal` / `check_call_conditions` /
-    `check_put_conditions` expose exactly four tunable levers:
-    `min_conditions`, `call_rsi_range`/`put_rsi_range`, `consecutive_periods`,
-    and `stoch_rsi_oversold`/`stoch_rsi_overbought`. There is NO lever that
-    disables one individual scoring factor while keeping the rest (e.g. "only
-    test below_vwap, not consecutive_down, for this CALL") — `SignalConfig`
-    itself has no `disabled_conditions` field. That concept exists ONLY as a
-    ticker-keyed, Cloud-SQL-backed override resolved inside
-    `evaluate_signal(ticker=...)` via
-    `lib.strategies.exit_config_overrides._latest_overrides`, which doesn't
-    fit here: a mined profile is an in-memory object produced per-request,
-    not a persisted per-ticker override row, and `run_profile` must not
-    write one just to validate a candidate profile.
+    Mapping mechanics
+    -------------------
+    `lib.signals.evaluate_signal` now exposes an `enabled_conditions`
+    allowlist (trading-logic fix, review of commit 1c7a7f35) — an exact
+    "score only these internal factor names" gate on top of the existing
+    `min_conditions`/`call_rsi_range`/`put_rsi_range`/`consecutive_periods`/
+    `stoch_rsi_oversold`/`stoch_rsi_overbought` levers. This function sets
+    BOTH: `enabled_conditions` = the profile's conditions translated to
+    internal factor names via `_translate_condition` (using the module-level
+    `_VOCAB_TO_INTERNAL` / `_CONSEC_VOCAB_TO_INTERNAL` dicts), and
+    `min_conditions = len(profile.conditions)`.
 
-    So this function uses the ONE lever signals.py actually offers for
-    "restrict to N conditions": `min_conditions = len(profile.conditions)`.
-    This is an APPROXIMATION, not a literal "fires only when exactly these
-    conditions are true" filter — `check_call_conditions`/
-    `check_put_conditions` always score against their fixed 5-factor set
-    (consecutive-move, RSI zone, VWAP side, StochRSI zone, level-break), so
-    in principle a bar could satisfy `min_conditions` via a DIFFERENT
-    combination of factors than the ones the profile named (e.g. a bar with
-    level-break + consecutive-move true but NOT the profile's RSI zone).
-    The documented interpretation — and the one
-    `tests/test_style_walk_forward.py` pins with crafted days — is:
-    "fires when at least len(profile.conditions) of the underlying 5-factor
-    set are true", which coincides EXACTLY with "all of the profile's named
-    conditions" only on bars where no other factor also fires. Callers
-    relying on an exact per-condition gate should not use this conversion
-    for anything more precise than the walk-forward sanity-check it's built
-    for.
+    With `enabled_conditions` set, `min_conditions` is no longer an
+    approximation — every factor NOT in the profile's own conditions
+    contributes 0 to the score (see `check_call_conditions` /
+    `check_put_conditions`), so `min_conditions == len(profile.conditions)`
+    is an EXACT "all of the profile's named conditions are true" gate:
+    a bar can only reach that score by having every named condition true
+    (there is nothing else left to score). This replaces the previous
+    approximate "at least N of the full 5-factor set" semantics, which
+    could fire on bars where a DIFFERENT combination of (un-named) factors
+    happened to reach the same count — the bug
+    `tests/test_style_walk_forward.py` now pins as a regression case.
+
+    HIGH-severity note (direction gating falls out of the allowlist, no
+    separate mechanism needed): CALL's and PUT's internal factor names
+    never overlap (see the module-level comment above
+    `_VOCAB_TO_INTERNAL`), so a CALL profile's `enabled_conditions` list
+    contains zero PUT factor names. `check_put_conditions` therefore scores
+    0 for every PUT factor, `put_score` is always 0, and `evaluate_signal`
+    can never select PUT for that config — a CALL profile cannot fire a PUT
+    trade, and vice versa, with no additional direction-gating code.
 
     RSI range / consecutive_periods / StochRSI thresholds are always left at
     fresh `SignalConfig()` DEFAULTS, never the caller's own `self.signal` or
@@ -112,6 +150,8 @@ def profile_to_signal_config(profile: StyleProfile) -> SignalConfig:
             f"a fresh SignalConfig())"
         )
 
+    enabled_conditions = [_translate_condition(cond) for cond in profile.conditions]
+
     return SignalConfig(
         min_conditions=len(profile.conditions),
         consecutive_periods=base.consecutive_periods,
@@ -119,6 +159,7 @@ def profile_to_signal_config(profile: StyleProfile) -> SignalConfig:
         put_rsi_range=base.put_rsi_range,
         stoch_rsi_oversold=base.stoch_rsi_oversold,
         stoch_rsi_overbought=base.stoch_rsi_overbought,
+        enabled_conditions=enabled_conditions,
     )
 
 
@@ -238,10 +279,12 @@ class WalkForwardValidator:
         Converts `profile` into a `SignalConfig` override via the
         module-level `profile_to_signal_config` (also unit-tested standalone
         in `tests/test_style_walk_forward.py` — see its docstring for
-        exactly how vocabulary conditions become `min_conditions` / range /
-        threshold tunables, and why that mapping is a documented
-        approximation rather than a literal per-condition filter) and then
-        runs the IDENTICAL anchored fold loop `run()` uses — same
+        exactly how vocabulary conditions become `min_conditions` +
+        `enabled_conditions` / range / threshold tunables — the resulting
+        gate is EXACT: it fires only when all of the profile's named
+        conditions are true, and a profile of one direction can never fire
+        the other direction) and then runs the IDENTICAL anchored fold loop
+        `run()` uses — same
         train/test slicing, same `_aggregate_metrics` / `_calculate_stability`
         — via the shared `_run_anchored_folds` helper. The only difference
         from `run()` is which `SignalConfig` each fold's `BacktestEngine` is
