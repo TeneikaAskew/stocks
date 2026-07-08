@@ -238,9 +238,122 @@ class TestReplayLabeledTradesLib:
         assert agg["win_rate"] == pytest.approx(1.0)
         assert agg["avg_return_pct"] > 0
         # Both scored trades' system_signal_at_entry lack a 'direction' key
-        # (the <14-bar 'unavailable' shape) -> 0 agreement.
-        assert agg["system_agreement_rate"] == pytest.approx(0.0)
+        # (the <14-bar 'unavailable' shape) -> neither is system-resolved,
+        # so the denominator is 0 and the rate is an honest None (never a
+        # fabricated 0.0 -- CLAUDE.md Rule 3.7).
+        assert agg["system_resolved_n"] == 0
+        assert agg["system_no_signal_n"] == 0
+        assert agg["system_agreement_rate"] is None
         assert agg["avg_exit_edge_bps"] > 0
+
+    def test_agreement_rate_counts_only_system_resolved_trades(self, monkeypatch):
+        """Finding 1 (medium): system_agreement_rate must not conflate
+        unavailable/no-signal with disagreement. Three trades on one date:
+          - t-warmup: entry_idx=5 (<14 warm-up) -> system_signal_at_entry
+            stays the deterministic 'unavailable' shape.
+          - t-match: entry_idx=20 (>=14), evaluate_signal monkeypatched to
+            return a CALL matching the labeled direction -> resolved +
+            agreement.
+          - t-nosignal: entry_idx=25 (>=14), evaluate_signal monkeypatched
+            to return None -> benchmark ran, no setup.
+        Expect: only t-match counts toward the denominator ->
+        system_resolved_n=1, system_no_signal_n=1,
+        system_agreement_rate=1/1=1.0 (not diluted by the other two)."""
+        import lib.backtest as backtest_mod
+
+        date_str = "2026-06-05"
+        prices = {5: 100.00, 20: 100.00, 25: 100.00}
+        for i in range(30, 40):
+            prices[i] = 100.50
+        bars = _make_day_bars(date_str, entry_idx=5, prices=prices)
+
+        # Marker column survives add_signal_indicators (it does `df.copy()`
+        # then only adds new indicator columns), so the monkeypatched
+        # evaluate_signal below can key off it deterministically without
+        # needing to hand-craft real indicator-triggering price action.
+        bars["_marker"] = "none"
+        bars.loc[20, "_marker"] = "match"
+        bars.loc[25, "_marker"] = "nosignal"
+
+        def fake_evaluate_signal(row, *args, **kwargs):
+            marker = row.get("_marker")
+            if marker == "match":
+                return {"direction": "CALL", "total_score": 5}
+            return None
+
+        monkeypatch.setattr(backtest_mod, "evaluate_signal", fake_evaluate_signal)
+
+        labeled = [
+            {
+                "id": "t-warmup", "direction": "CALL",
+                "entry_ts": f"{date_str} 09:35:00", "entry_price": 100.00,
+                "exit_ts": f"{date_str} 10:00:00", "exit_price": 100.50,
+            },
+            {
+                "id": "t-match", "direction": "CALL",
+                "entry_ts": f"{date_str} 09:50:00", "entry_price": 100.00,
+                "exit_ts": f"{date_str} 10:00:00", "exit_price": 100.50,
+            },
+            {
+                "id": "t-nosignal", "direction": "CALL",
+                "entry_ts": f"{date_str} 09:55:00", "entry_price": 100.00,
+                "exit_ts": f"{date_str} 10:00:00", "exit_price": 100.50,
+            },
+        ]
+
+        result = replay_labeled_trades(
+            labeled, {date_str: bars}, exit_config=_EXIT_CFG, ticker=None,
+        )
+
+        agg = result["aggregate"]
+        assert agg["scored_n"] == 3
+        assert agg["system_resolved_n"] == 1
+        assert agg["system_no_signal_n"] == 1
+        assert agg["system_agreement_rate"] == pytest.approx(1.0)
+
+    def test_ok_card_invariant_raises_on_missing_numeric_field(self):
+        """LOW finding: a status=='ok' card missing exit_edge_bps or
+        actual_return_pct must raise loudly (not silently skip) when the
+        aggregate is built."""
+        from lib.backtest import _aggregate_scorecards
+
+        bad_cards = [{
+            "id": "t-bad",
+            "status": "ok",
+            "actual_return_pct": None,
+            "fill_check": "ok",
+            "system_signal_at_entry": {"status": "unavailable"},
+            "system_exit": {"exit_reason": None, "return_pct": None, "exit_time": None},
+            "exit_edge_bps": None,
+            "_labeled_direction": "CALL",
+        }]
+        with pytest.raises(ValueError, match="t-bad"):
+            _aggregate_scorecards(bad_cards)
+
+    def test_nan_entry_price_is_unavailable(self):
+        """INFO finding: a NaN entry_price (e.g. a float NaN surviving a
+        pandas round-trip) must be treated the same as None/0 -- unavailable,
+        never a silent NaN-poisoned return calculation."""
+        date_str = "2026-06-06"
+        bars = _make_day_bars(date_str, entry_idx=5, prices={5: 100.00})
+
+        labeled = [{
+            "id": "t-nan",
+            "direction": "CALL",
+            "entry_ts": f"{date_str} 09:35:00",
+            "entry_price": float("nan"),
+            "exit_ts": f"{date_str} 09:50:00",
+            "exit_price": 101.00,
+        }]
+
+        result = replay_labeled_trades(
+            labeled, {date_str: bars}, exit_config=_EXIT_CFG, ticker=None,
+        )
+
+        card = result["trades"][0]
+        assert card["id"] == "t-nan"
+        assert card["status"] == "unavailable"
+        assert card["reason"] == "invalid entry price"
 
 
 # ---------------------------------------------------------------------------

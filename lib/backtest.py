@@ -12,6 +12,7 @@ columns from indicator data. Both can **filter** (reject) trades that
 contradict higher-timeframe context, not just add bonus points.
 """
 
+import math
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -931,8 +932,12 @@ def _score_one_trade(
     if direction not in ('CALL', 'PUT'):
         return _unavailable(trade_id, f'invalid direction: {labeled_trade.get("direction")!r}')
 
-    if entry_price is None or entry_price == 0:
-        return _unavailable(trade_id, 'invalid entry_price')
+    if (
+        entry_price is None
+        or entry_price == 0
+        or (isinstance(entry_price, float) and math.isnan(entry_price))
+    ):
+        return _unavailable(trade_id, 'invalid entry price')
 
     try:
         entry_dt = pd.to_datetime(entry_ts_raw)
@@ -1023,33 +1028,80 @@ def _score_one_trade(
 def _aggregate_scorecards(scorecards: List[dict]) -> dict:
     """Aggregate metrics over a list of per-trade scorecards. `n` counts
     every trade passed in; `scored_n` counts only status=='ok' rows — an
-    unavailable trade is never zero-filled into the average (Rule 3.7)."""
+    unavailable trade is never zero-filled into the average (Rule 3.7).
+
+    `system_agreement_rate` definition (medium finding, PR review on
+    bca2c899): a scored trade's `system_signal_at_entry` is one of three
+    shapes —
+      1. ``{"status": "unavailable"}`` — the 14-bar indicator warm-up
+         hadn't completed; the system never got a chance to opine.
+      2. ``{"direction": None, "score": 0}`` — the benchmark RAN but its
+         conditions didn't fire; the system had no setup.
+      3. ``{"direction": "CALL"|"PUT", "score": N}`` — the benchmark
+         produced an actual directional call. Only these are
+         "system-resolved".
+    Folding (1) and (2) into "disagreement" (the original implementation)
+    silently penalizes trades the system never actually took a position
+    on, understating the user's real edge whenever the system was simply
+    silent. The rate is now computed ONLY over system-resolved trades:
+    ``system_resolved_n`` is the denominator, and `system_agreement_rate`
+    is ``None`` (never 0.0) when that denominator is 0 — an honest null,
+    not a fabricated "0% agreement". `system_no_signal_n` separately
+    counts case (2) so a caller/UI can say "the system had no setup on N
+    of your entries" without conflating it with disagreement.
+    """
     n = len(scorecards)
     scored = [c for c in scorecards if c.get('status') == 'ok']
     scored_n = len(scored)
 
+    # LOW finding: an "ok" card is a promise that these two numeric
+    # fields are populated. Assert it loudly here (not a silent skip) so
+    # a future _score_one_trade regression surfaces immediately, at the
+    # trade that violated the invariant, rather than as a downstream
+    # None-arithmetic TypeError far from its cause.
+    for c in scored:
+        if c.get('exit_edge_bps') is None or c.get('actual_return_pct') is None:
+            raise ValueError(
+                f"trade {c.get('id')!r}: status=='ok' but exit_edge_bps/"
+                f"actual_return_pct is None — ok-card invariant violated"
+            )
+
     if scored_n == 0:
         return {
             'n': n, 'scored_n': 0, 'win_rate': 0.0, 'avg_return_pct': 0.0,
-            'system_agreement_rate': 0.0, 'avg_exit_edge_bps': 0.0,
+            'system_resolved_n': 0, 'system_no_signal_n': 0,
+            'system_agreement_rate': None, 'avg_exit_edge_bps': 0.0,
         }
 
     wins = [c for c in scored if c['actual_return_pct'] > 0]
     win_rate = len(wins) / scored_n
     avg_return_pct = sum(c['actual_return_pct'] for c in scored) / scored_n
 
-    # Agreement: the system's signal-at-entry direction (when computable)
-    # matches the direction the user actually traded. A trade whose
-    # system_signal_at_entry is the "unavailable" shape (no 'direction' key)
-    # or fired the opposite/no direction counts as disagreement. The
-    # labeled trade's own direction is threaded through as
+    # 'direction' key absent -> warm-up "unavailable" shape (case 1).
+    # 'direction' present and None -> benchmark ran, no setup (case 2).
+    # 'direction' present and non-None -> system-resolved (case 3).
+    resolved = [
+        c for c in scored
+        if c['system_signal_at_entry'].get('direction') is not None
+    ]
+    system_resolved_n = len(resolved)
+    no_signal = [
+        c for c in scored
+        if 'direction' in c['system_signal_at_entry']
+        and c['system_signal_at_entry']['direction'] is None
+    ]
+    system_no_signal_n = len(no_signal)
+
+    # The labeled trade's own direction is threaded through as
     # '_labeled_direction' by the caller (replay_labeled_trades) since the
     # public scorecard shape doesn't otherwise carry it.
     agreements = sum(
-        1 for c in scored
-        if c['system_signal_at_entry'].get('direction') == c.get('_labeled_direction')
+        1 for c in resolved
+        if c['system_signal_at_entry']['direction'] == c.get('_labeled_direction')
     )
-    system_agreement_rate = agreements / scored_n if scored_n else 0.0
+    system_agreement_rate = (
+        agreements / system_resolved_n if system_resolved_n else None
+    )
 
     avg_exit_edge_bps = sum(c['exit_edge_bps'] for c in scored) / scored_n
 
@@ -1058,7 +1110,12 @@ def _aggregate_scorecards(scorecards: List[dict]) -> dict:
         'scored_n': scored_n,
         'win_rate': round(win_rate, 4),
         'avg_return_pct': round(avg_return_pct, 4),
-        'system_agreement_rate': round(system_agreement_rate, 4),
+        'system_resolved_n': system_resolved_n,
+        'system_no_signal_n': system_no_signal_n,
+        'system_agreement_rate': (
+            None if system_agreement_rate is None
+            else round(system_agreement_rate, 4)
+        ),
         'avg_exit_edge_bps': round(avg_exit_edge_bps, 4),
     }
 
@@ -1111,9 +1168,25 @@ def replay_labeled_trades(
     no other fields are populated (never zero-filled; CLAUDE.md Rule 3.7).
 
     Aggregate: ``{n, scored_n, win_rate (0-1), avg_return_pct,
-    system_agreement_rate, avg_exit_edge_bps}``. ``n`` counts every input
-    trade; ``scored_n`` counts only ``status == "ok"`` trades — unavailable
-    trades never enter an average.
+    system_resolved_n, system_no_signal_n, system_agreement_rate,
+    avg_exit_edge_bps}``. ``n`` counts every input trade; ``scored_n``
+    counts only ``status == "ok"`` trades — unavailable trades never enter
+    an average.
+
+    ``system_agreement_rate`` is computed ONLY over "system-resolved"
+    scored trades — those whose ``system_signal_at_entry`` produced an
+    actual ``CALL``/``PUT`` direction. Trades where the benchmark's
+    indicator warm-up hadn't completed (``system_signal_at_entry ==
+    {"status": "unavailable"}``), or where it ran but fired no direction
+    (``{"direction": None, ...}``), are EXCLUDED from the rate's
+    denominator entirely — they are NOT folded in as "disagreement",
+    since the system never took a position to disagree with.
+    ``system_resolved_n`` is that denominator; ``system_no_signal_n``
+    separately counts the "ran but no setup" case so a caller can
+    surface "the system had no setup on N of your entries" without
+    conflating it with disagreement. When ``system_resolved_n == 0``,
+    ``system_agreement_rate`` is ``None`` — an honest null, never a
+    fabricated ``0.0`` (CLAUDE.md Rule 3.7).
 
     System signal at entry reuses ``lib.indicators.add_signal_indicators`` +
     ``lib.signals.evaluate_signal`` with plain (uncalibrated, ticker-agnostic)
