@@ -228,3 +228,48 @@ def test_seed_endpoint_unavailable_in_local_mode(monkeypatch):
         "status": "unavailable",
         "reason": "seed layer requires Cloud SQL",
     }
+
+
+# ── Regression tests: Fix #2 & #3 ────────────────────────────────────────────
+
+
+def test_patch_close_on_put_inverts_return_sign(client_local_owner):
+    """Regression: PATCH-close on a PUT trade inverts the return sign.
+
+    Entry at 620.5 on PUT, exit at 615.0 (lower price = profit for PUT).
+    Expected return_pct ≈ +0.886382 (i.e. -((615.0-620.5)/620.5*100)).
+    """
+    created = _create(client_local_owner, direction="PUT").json()
+    tid = created["id"]
+    r = client_local_owner.patch(
+        f"/api/journal/trades/{tid}",
+        json={"exit_date": "2026-07-02", "exit_time": "10:45", "exit_price": 615.0},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "win"
+    # For PUT: return = -((615.0 - 620.5) / 620.5 * 100)
+    expected_pct = -((615.0 - 620.5) / 620.5 * 100)
+    assert body["return_pct"] == pytest.approx(expected_pct, rel=1e-6)
+
+
+def test_post_with_exit_price_only_creates_active_trade(client_local_owner):
+    """Regression: POST with exit_price but NO exit_date/exit_time creates
+    active trade with null exit_price (not a stray value).
+
+    Verifies fix for: partial-exit payload leaves inconsistent row.
+    """
+    # Create with exit_price but no exit date/time
+    r = _create(client_local_owner, exit_price=625.0)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "active"
+    assert body["return_pct"] is None
+
+    # GET the list and verify exit_price is null (not stray 625.0)
+    r_list = client_local_owner.get("/api/journal/trades/SPY")
+    assert r_list.status_code == 200
+    trades = r_list.json()["trades"]
+    assert len(trades) == 1
+    assert trades[0]["exit_price"] is None
+    assert trades[0]["status"] == "active"
