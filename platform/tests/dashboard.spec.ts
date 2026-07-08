@@ -31,6 +31,18 @@ const MOCK_BRIEF = {
   live: { price: 220.45, session: 'closed' },
 };
 
+// Sector rotation: 3 ok rows (ranked distinctly for 1D vs 5D) + 1 unavailable row.
+const MOCK_SECTORS = {
+  as_of: '2026-04-25',
+  status: 'ok',
+  sectors: [
+    { symbol: 'XLK', name: 'Technology', close: 250.1, chg_1d_pct: 1.25, chg_5d_pct: 3.4, status: 'ok' },
+    { symbol: 'XLF', name: 'Financials', close: 45.2, chg_1d_pct: 2.5, chg_5d_pct: -1.1, status: 'ok' },
+    { symbol: 'XLE', name: 'Energy', close: 90.3, chg_1d_pct: -0.75, chg_5d_pct: 4.2, status: 'ok' },
+    { symbol: 'XLY', name: 'Consumer Discretionary', status: 'unavailable', reason: 'stale data' },
+  ],
+};
+
 const MOCK_BACKTEST = {
   ticker: 'IWM',
   runs: [
@@ -173,6 +185,36 @@ test.describe('Dashboard', () => {
     // Switching to Area renders the Recharts area surface without crashing.
     await area.click();
     await expect(page.locator('svg.recharts-surface').first()).toBeVisible({ timeout: 5_000 });
+  });
+
+  test('sector rotation card ranks sectors, shows an em-dash row, and 1D/5D toggle switches values', async ({ page }) => {
+    await page.route('**/api/market/sectors', (r) => r.fulfill(M.ok(MOCK_SECTORS)));
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const card = page.getByTestId('sector-rotation-card');
+    await expect(card).toBeVisible({ timeout: 10_000 });
+
+    // as-of caption in the header meta.
+    await expect(card).toContainText('as of 2026-04-25');
+
+    // 1D (default): ranked desc by chg_1d_pct — XLF (2.5) > XLK (1.25) > XLE (-0.75),
+    // unavailable XLY sinks to the bottom.
+    let rows = await card.getByTestId('sector-row').allTextContents();
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toContain('Financials');
+    expect(rows[1]).toContain('Technology');
+    expect(rows[2]).toContain('Energy');
+    expect(rows[3]).toContain('Consumer Discretionary');
+    expect(rows[3]).toContain('—');
+
+    // Toggle to 5D — ranked desc by chg_5d_pct — XLE (4.2) > XLK (3.4) > XLF (-1.1).
+    await card.getByRole('button', { name: '5D' }).click();
+    rows = await card.getByTestId('sector-row').allTextContents();
+    expect(rows[0]).toContain('Energy');
+    expect(rows[1]).toContain('Technology');
+    expect(rows[2]).toContain('Financials');
+    expect(rows[3]).toContain('Consumer Discretionary');
   });
 
   test('renders within 7s perf budget', async ({ page }) => {
