@@ -310,4 +310,78 @@ test.describe('TickerCombobox', () => {
     // search row was dropped, so no highlight/testid collision).
     await expect(page.getByTestId('ticker-option-IWM')).toHaveCount(1);
   });
+
+  test('coverage error → NO auto-add, ticker still set', async ({ page }) => {
+    // Simulate coverage lookup failure (503).
+    // The implementation gate is `!coverage.isError` in TickerCombobox.tsx:205,
+    // so auto-ingest must NOT fire when coverage fails, even if the search row
+    // badge falls back to "new".
+    await page.unroute('**/api/market/coverage**');
+    await page.route('**/api/market/coverage**', (r) =>
+      r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'coverage upstream unavailable' }) })
+    );
+
+    let addCalled = false;
+    await page.route('**/api/insights/watchlist/add', (r) => {
+      addCalled = true;
+      return r.fulfill(
+        M.ok({ ticker: 'AAPL', added: true, info: null, quote: null, peers: null, watchlist: ['AAPL'] })
+      );
+    });
+
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('aa');
+
+    // AAPL renders with fallback "new" badge because coverage failed.
+    const option = page.getByTestId('ticker-option-AAPL');
+    await expect(option).toBeVisible({ timeout: 5000 });
+    await expect(option).toContainText('new');
+
+    // Wait for the coverage error hint to appear, confirming the hook has
+    // detected the coverage error and set isError to true.
+    await expect(page.getByTestId('ticker-coverage-error')).toBeVisible({ timeout: 5000 });
+
+    // Now click the "new"-badged option. Since coverage errored (isError=true),
+    // the gate `!coverage.isError` will be false, so auto-ingest should NOT fire.
+    await option.click();
+
+    // Assertions: no auto-add occurred, ticker still updated, no ingest notice.
+    await expect(page.getByTestId('ticker-combobox-panel')).not.toBeVisible();
+    await expect(page.getByTestId('ticker-combobox')).toContainText('AAPL');
+    await expect(page.getByTestId('ticker-ingest-notice')).not.toBeVisible();
+    expect(addCalled).toBe(false);
+  });
+
+  test('keyboard path: type, arrow-down, enter triggers watchlist auto-add', async ({ page }) => {
+    // AAPL has no coverage entry → badge is "new" → auto-ingest should fire on selection.
+    await page.route('**/api/market/coverage**', (r) => r.fulfill(M.ok({ coverage: {} })));
+
+    let addRequestBody: unknown = null;
+    await page.route('**/api/insights/watchlist/add', (r) => {
+      addRequestBody = JSON.parse(r.request().postData() ?? '{}');
+      return r.fulfill(
+        M.ok({ ticker: 'AAPL', added: true, info: null, quote: null, peers: null, watchlist: ['AAPL'] })
+      );
+    });
+
+    await page.getByTestId('ticker-combobox').click();
+    const input = page.getByTestId('ticker-combobox-input');
+    await input.fill('aa');
+    await expect(page.getByTestId('ticker-option-AAPL')).toBeVisible({ timeout: 5000 });
+
+    // Navigate: 3 quick picks (IWM, SPY, QQQ) + 0 recents precede the search row.
+    // ArrowDown 3 times lands on AAPL search row (index 3).
+    await input.press('ArrowDown');
+    await input.press('ArrowDown');
+    await input.press('ArrowDown');
+    await input.press('Enter');
+
+    // The selection → auto-ingest flow fires the watchlist POST.
+    await expect(page.getByTestId('ticker-ingest-notice')).toBeVisible();
+    await expect(page.getByTestId('ticker-ingest-notice')).toContainText(
+      "Tracking AAPL — daily data lands after tonight's fetch"
+    );
+    expect(addRequestBody).toEqual({ ticker: 'AAPL' });
+    await expect(page.getByTestId('ticker-combobox')).toContainText('AAPL');
+  });
 });
