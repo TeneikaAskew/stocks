@@ -320,6 +320,14 @@ function TradeTable({ trades }: { trades: TradeRow[] }) {
 export default function BacktesterSection({ ticker }: { ticker: string }) {
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
 
+  // Render-time adjustment: a run selection belongs to one ticker — reset it
+  // when the ticker prop changes (component is mounted unkeyed in ChartsPage).
+  const [lastTicker, setLastTicker] = useState(ticker);
+  if (lastTicker !== ticker) {
+    setLastTicker(ticker);
+    setSelectedRun(null);
+  }
+
   const { data: listData, isLoading: listLoading, isError: listError } = useBacktestList(ticker);
   const runs = listData?.runs ?? [];
   const hasData = runs.length > 0;
