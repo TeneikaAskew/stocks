@@ -551,7 +551,7 @@ export default function DashboardPage() {
             </div>
           </div>
           {chartStyle === 'candle' ? (
-            <div style={{ height: 260 }}>
+            <div data-testid="intraday-chart-slot" className="overflow-hidden" style={{ height: 260 }}>
               <CandlestickChart
                 candlestick={hourly?.candlestick ?? []}
                 volume={(hourly?.volume ?? []).map((v) => ({ ...v, color: 'rgba(139,206,255,0.3)' }))}

@@ -694,6 +694,7 @@ export default function ChartsPage() {
               priceLines={priceLines}
               onChartClick={drawingActive ? handleChartClick : undefined}
               onCrosshairMove={setCrosshairData}
+              minHeight={400}
             />
           ) : marketData ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-[var(--color-text-muted)]">
