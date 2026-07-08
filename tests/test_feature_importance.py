@@ -1,6 +1,30 @@
 import numpy as np
 
-from gcp.research.direction_program.feature_importance import aggregate_importance
+from gcp.research.direction_program.feature_importance import (
+    aggregate_importance, _reduce_shap_to_features,
+)
+
+
+def test_reduce_shap_binary_2d():
+    # binary: (n_samples=5, n_features=3)
+    sv = np.arange(15, dtype=float).reshape(5, 3)
+    out = _reduce_shap_to_features(sv, nfeat=3)
+    assert out.shape == (3,)
+    assert np.allclose(out, np.abs(sv).mean(axis=0))
+
+
+def test_reduce_shap_multiclass_3d():
+    # newer SHAP multiclass: (n_samples=5, n_features=3, n_classes=4)
+    sv = np.random.default_rng(0).normal(size=(5, 3, 4))
+    out = _reduce_shap_to_features(sv, nfeat=3)
+    assert out.shape == (3,)                      # collapsed to per-feature, no crash
+
+
+def test_reduce_shap_multiclass_list():
+    # older SHAP multiclass: list of 4 arrays, each (n_samples=5, n_features=3)
+    sv = [np.random.default_rng(i).normal(size=(5, 3)) for i in range(4)]
+    out = _reduce_shap_to_features(sv, nfeat=3)
+    assert out.shape == (3,)
 
 
 def test_aggregate_ranks_by_mean_gain_and_averages_shap():

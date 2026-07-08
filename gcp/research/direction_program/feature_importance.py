@@ -77,18 +77,32 @@ def _fold_masks(bar_dates: np.ndarray, train_end: str, test_end: str):
     return tr, te
 
 
+def _reduce_shap_to_features(sv, nfeat: int) -> np.ndarray:
+    """Collapse any SHAP output to a length-nfeat mean|SHAP| vector.
+
+    shap.TreeExplainer.shap_values returns different shapes by model/version:
+      - binary      -> ndarray (n_samples, n_features)
+      - multiclass  -> ndarray (n_samples, n_features, n_classes)  [newer]
+                       OR list of n_classes arrays each (n_samples, n_features)
+    We take |shap|, find the feature axis by matching nfeat, and average over
+    every other axis (samples and, for multiclass, classes). Rank-preserving.
+    """
+    if isinstance(sv, list):
+        sv = np.stack([np.asarray(a) for a in sv])       # (k, n, f)
+    absv = np.abs(np.asarray(sv, dtype=float))
+    feat_ax = next((ax for ax in reversed(range(absv.ndim))
+                    if absv.shape[ax] == nfeat), absv.ndim - 1)
+    return np.moveaxis(absv, feat_ax, -1).reshape(-1, nfeat).mean(axis=0)
+
+
 def _mean_abs_shap(model, X: np.ndarray):
-    """mean over rows of sum over classes of |shap|, per feature. Returns None
-    (logged) if SHAP raises for this fold — never a fabricated zero."""
+    """Length-nfeat mean|SHAP| for this fold. Returns None (logged) if SHAP
+    raises — never a fabricated zero (Rule 3.7)."""
     try:
         import shap
         expl = shap.TreeExplainer(model.booster_)
         sv = expl.shap_values(X)
-        if isinstance(sv, list):                 # multiclass -> per-class arrays
-            stacked = np.sum([np.abs(a) for a in sv], axis=0)
-        else:                                    # binary -> single (n, f) array
-            stacked = np.abs(sv)
-        return stacked.mean(axis=0).astype(float).tolist()
+        return _reduce_shap_to_features(sv, X.shape[1]).tolist()
     except Exception as e:                       # analysis enrichment — log loud, don't fabricate
         log.warning("SHAP failed for this fold, recording None: %s", e)
         return None
