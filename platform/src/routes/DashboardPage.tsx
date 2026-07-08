@@ -25,11 +25,11 @@ import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useReviewQuote } from '@/hooks/useReviewQuote';
 import { useInsightReport } from '@/hooks/useInsights';
-import { todayET } from '@/lib/dates';
+import { todayET, addDaysToISO } from '@/lib/dates';
 import {
   Pill, Metric, MicroLabel, Delta, ScoreStars, DirTag, Card, CardHeader, KpiTile,
 } from '@/components/primitives';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 import { MovementRead } from '@/components/dashboard/MovementRead';
 import { SetupCardDetails, type SetupHorizon } from '@/components/playbook/SetupCardDetails';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
@@ -76,9 +76,22 @@ interface MarketDataResponse {
 interface CatalystEvent {
   date: string; ticker: string; title?: string; event?: string;
   catalyst_type?: string; impact?: string; expected_impact?: string;
-  sentiment_label?: string; sentiment_score?: number;
+  sentiment_label?: string; sentiment_score?: number; source?: string;
 }
 interface CatalystsResponse { events_by_date: Record<string, CatalystEvent[]> }
+
+interface SectorRowOk {
+  symbol: string; name: string; close: number;
+  chg_1d_pct: number; chg_5d_pct: number | null; status: 'ok';
+}
+interface SectorRowUnavailable {
+  symbol: string; name: string; status: 'unavailable'; reason: string;
+}
+type SectorRow = SectorRowOk | SectorRowUnavailable;
+interface SectorsResponse {
+  as_of: string | null; status: 'ok' | 'unavailable'; reason?: string;
+  sectors: SectorRow[];
+}
 
 // ── Small fetch helper ───────────────────────────────────────────────────────
 function useFetch<T>(key: unknown[], url: string, enabled = true, refetchInterval: number | false = false) {
@@ -108,6 +121,28 @@ function impactLabel(e: CatalystEvent): string {
   const r = IMPACT_RANK[(e.impact || e.expected_impact || 'medium').toLowerCase()] ?? 2;
   return r === 3 ? 'high' : r === 2 ? 'med' : 'low';
 }
+/**
+ * Day-granularity relative label for a news event's `date` (a DATE, not a
+ * timestamp — the news SQL truncates `published_ts::date`). Never fabricates
+ * an hour-level "Nh ago"; only "today" / "yesterday" / "Mon D" are honest
+ * given the day-only source field. Computed in ET, not UTC, to avoid the
+ * 8pm-midnight edge case where UTC has rolled to the next day.
+ */
+export function relativeDayLabel(dateISO: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateISO || '');
+  if (!m) return dateISO || '';
+
+  const today = todayET();
+  if (dateISO === today) return 'today';
+  if (dateISO === addDaysToISO(today, -1)) return 'yesterday';
+
+  // Fallback formatting for older dates: parse the ISO string and format as "Mon D"
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[month - 1]} ${day}`;
+}
+
 function rsiZone(v: number): { label: string; tone: Tone } {
   if (v >= 70) return { label: 'overbought', tone: 'bear' };
   if (v <= 30) return { label: 'oversold', tone: 'bull' };
@@ -149,6 +184,25 @@ function briefBullets(b: BriefResponse): { text: string; tone: Tone }[] {
 export function topSetupAvgReturn(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '—';
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+}
+
+/**
+ * Horizontal-bar width (0-100) for the sector rotation card, scaled by
+ * magnitude against the largest |change| in the active period. Sign is
+ * conveyed by bar color, not width, so this only ever returns a magnitude.
+ * Guards against a zero/invalid `maxAbs` (e.g. every row unavailable) so the
+ * bar renders 0-width instead of NaN.
+ */
+export function sectorBarWidthPct(chg: number, maxAbs: number): number {
+  if (!Number.isFinite(chg) || !Number.isFinite(maxAbs) || maxAbs <= 0) return 0;
+  const pct = (Math.abs(chg) / maxAbs) * 100;
+  return Math.min(100, Math.max(0, pct));
+}
+
+/** Pull the active-period pct off a sector row; null for unavailable rows or a missing 5D value. */
+function sectorMetric(row: SectorRow, period: '1d' | '5d'): number | null {
+  if (row.status !== 'ok') return null;
+  return period === '1d' ? row.chg_1d_pct : row.chg_5d_pct;
 }
 
 function todayISO(): string {
@@ -245,6 +299,32 @@ export default function DashboardPage() {
   // AI take: in review mode fetch the report as-of the review date.
   const { data: insight } = useInsightReport(activeTicker, reviewDate ?? undefined);
 
+  // Sector rotation — market-wide (not ticker-scoped), 1D/5D toggle.
+  const { data: sectorsResp, isLoading: sectorsLoading } = useFetch<SectorsResponse>(
+    ['market-sectors'],
+    '/api/market/sectors',
+  );
+  const [sectorPeriod, setSectorPeriod] = useState<'1d' | '5d'>('1d');
+  const sectorRows = useMemo(() => {
+    const rows = sectorsResp?.sectors ?? [];
+    return [...rows].sort((a, b) => {
+      const av = sectorMetric(a, sectorPeriod);
+      const bv = sectorMetric(b, sectorPeriod);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return bv - av;
+    });
+  }, [sectorsResp, sectorPeriod]);
+  const sectorMaxAbs = useMemo(
+    () =>
+      sectorRows.reduce((max, r) => {
+        const v = sectorMetric(r, sectorPeriod);
+        return v == null ? max : Math.max(max, Math.abs(v));
+      }, 0),
+    [sectorRows, sectorPeriod],
+  );
+
   // Daily reference (prev close + week range) and intraday bars for the chart.
   // In review mode anchor to the selected date; else the brief's latest daily
   // date when available, else today. This makes reference + the hourly month
@@ -339,19 +419,27 @@ export default function DashboardPage() {
     [signalsResp],
   );
 
-  // Catalyst feed — flatten upcoming events, soonest first, top 5.
-  const catalystFeed = useMemo(() => {
+  // Full flattened event list (all dates, unsliced) — the news filter below
+  // must scan the whole set, not just the top-5 catalystFeed slice, because
+  // news is backward-dated and would otherwise get crowded out by forward
+  // (upcoming) catalyst events sorted first.
+  const allEvents = useMemo(() => {
     const byDate = catalysts?.events_by_date ?? {};
     return Object.keys(byDate)
       .sort()
-      .flatMap((d) => byDate[d].map((e) => ({ ...e, date: e.date || d })))
-      .slice(0, 5);
+      .flatMap((d) => byDate[d].map((e) => ({ ...e, date: e.date || d })));
   }, [catalysts]);
 
-  // News = catalyst events carrying a sentiment label (AlphaVantage NEWS_SENTIMENT).
+  // Catalyst feed — flatten upcoming events, soonest first, top 5.
+  const catalystFeed = useMemo(() => allEvents.slice(0, 5), [allEvents]);
+
+  // News = catalyst events sourced from AlphaVantage NEWS_SENTIMENT (the
+  // `source` field the backend already stamps on these rows). Built from
+  // the full event list so backward-dated news isn't crowded out by the
+  // forward catalystFeed slice.
   const newsFeed = useMemo(
-    () => catalystFeed.filter((e) => e.sentiment_label || e.catalyst_type === 'NEWS').slice(0, 4),
-    [catalystFeed],
+    () => allEvents.filter((e) => e.source === 'AV news').slice(0, 4),
+    [allEvents],
   );
 
   const rep = insight?.report;
@@ -388,7 +476,7 @@ export default function DashboardPage() {
           </MicroLabel>
         </div>
         <div className="flex items-center gap-2">
-          <TickerSelect />
+          <TickerCombobox />
           <Button
             variant="ghost"
             size="sm"
@@ -636,10 +724,65 @@ export default function DashboardPage() {
 
       {/* ── 3. Sector rotation · AI take · News ──────────────────────────── */}
       <div className="grid grid-cols-1 gap-[14px] md:grid-cols-2 lg:grid-cols-3">
-        {/* Sector rotation — no data source yet (see REDESIGN.md §1) */}
+        {/* Sector rotation — ranked SPDR daily closes, fed by /api/market/sectors */}
         <Card className="min-w-0">
-          <CardHeader title={<><Grid3x3 size={13} className="mr-1.5 inline align-middle" />Sector rotation</>} meta="SPDRs · 1D" />
-          <Unavailable msg="Sector rotation unavailable — needs AV SECTOR_PERFORMANCE (not yet fetched)." />
+          {/* Card doesn't forward arbitrary props, so data-testid lives on this wrapper. */}
+          <div data-testid="sector-rotation-card">
+          <CardHeader
+            title={<><Grid3x3 size={13} className="mr-1.5 inline align-middle" />Sector rotation</>}
+            meta={
+              <div className="flex items-center gap-2">
+                <span>SPDRs{sectorsResp?.as_of ? ` · as of ${sectorsResp.as_of}` : ''}</span>
+                <div className="segctrl">
+                  <button className={sectorPeriod === '1d' ? 'active' : ''} onClick={() => setSectorPeriod('1d')}>1D</button>
+                  <button className={sectorPeriod === '5d' ? 'active' : ''} onClick={() => setSectorPeriod('5d')}>5D</button>
+                </div>
+              </div>
+            }
+          />
+          {sectorsLoading ? (
+            <div className="py-4 text-center text-[12px] text-[var(--on-surface-muted)]">Loading sector data…</div>
+          ) : !sectorsResp || sectorsResp.status === 'unavailable' ? (
+            <Unavailable msg={sectorsResp?.reason || 'Sector rotation unavailable.'} />
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {sectorRows.map((row) => {
+                if (row.status === 'unavailable') {
+                  return (
+                    <div key={row.symbol} data-testid="sector-row" className="flex items-center gap-2 py-1" title={row.reason}>
+                      <span className="w-[92px] shrink-0 truncate text-[11.5px] text-[var(--on-surface-muted)]">{row.name}</span>
+                      <div className="h-2 flex-1" />
+                      <span className="w-14 shrink-0 text-right text-[12px] text-[var(--on-surface-muted)]">—</span>
+                    </div>
+                  );
+                }
+                const v = sectorMetric(row, sectorPeriod);
+                const width = v == null ? 0 : sectorBarWidthPct(v, sectorMaxAbs);
+                return (
+                  <div key={row.symbol} data-testid="sector-row" className="flex items-center gap-2 py-1">
+                    <span className="w-[92px] shrink-0 truncate text-[11.5px] text-[var(--on-surface-variant)]">{row.name}</span>
+                    <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-[var(--surface-3)]">
+                      <div
+                        className="absolute inset-y-0 left-0 rounded-full"
+                        style={{
+                          width: `${width}%`,
+                          background: v == null ? 'var(--outline)' : v >= 0 ? 'var(--bull)' : 'var(--bear)',
+                        }}
+                      />
+                    </div>
+                    <span
+                      className={`w-14 shrink-0 text-right text-[12px] font-semibold tabular-nums ${
+                        v == null ? 'text-[var(--on-surface-muted)]' : v >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'
+                      }`}
+                    >
+                      {fmtPct(v)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          </div>
         </Card>
 
         {/* AI take */}
@@ -664,6 +807,8 @@ export default function DashboardPage() {
         {/* News feed (from catalysts carrying sentiment) */}
         <Card interactive onClick={() => navigate('/catalysts')} className="min-w-0">
           <CardHeader title={<><Newspaper size={13} className="mr-1.5 inline align-middle" />News</>} meta={`${newsFeed.length} fresh`} />
+          {/* Card doesn't forward arbitrary props, so data-testid lives on this wrapper. */}
+          <div data-testid="news-card">
           {newsFeed.length === 0 ? (
             <Unavailable msg="No tagged news right now." />
           ) : (
@@ -675,7 +820,11 @@ export default function DashboardPage() {
                   <div key={i} className="flex items-start gap-2 border-t border-[var(--outline-variant)] py-2 first:border-t-0">
                     <div className="min-w-0 flex-1">
                       <div className="line-clamp-2 text-[12px] font-medium text-[var(--on-surface)]">{eventTitle(n)}</div>
-                      <div className="text-[11px] text-[var(--on-surface-muted)]">{n.ticker}{n.date ? ` · ${n.date.slice(5)}` : ''}</div>
+                      <div className="text-[11px] text-[var(--on-surface-muted)]">
+                        {n.ticker}
+                        {n.source ? ` · ${n.source}` : ''}
+                        {n.date ? ` · ${relativeDayLabel(n.date)}` : ''}
+                      </div>
                     </div>
                     {n.sentiment_label && <Pill tone={tone}>{n.sentiment_label}</Pill>}
                   </div>
@@ -683,6 +832,7 @@ export default function DashboardPage() {
               })}
             </div>
           )}
+          </div>
         </Card>
       </div>
     </div>

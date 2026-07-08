@@ -26,7 +26,11 @@ interface CommandPaletteProps {
 /** ⌘K / Ctrl-K command palette — jump to any page, ticker, or action. */
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const navigate = useNavigate();
-  const { availableTickers, setTicker } = useTickerStore();
+  const { quickPicks, recentTickers, setTicker } = useTickerStore();
+  const tickerOptions = useMemo(
+    () => [...quickPicks, ...recentTickers.filter((t) => !quickPicks.includes(t))],
+    [quickPicks, recentTickers],
+  );
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -39,7 +43,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       },
       {
         group: 'Tickers',
-        items: availableTickers.map((t) => ({
+        items: tickerOptions.map((t) => ({
           label: `${t} · open in Charts`,
           hint: 'chart',
           to: '/charts',
@@ -59,7 +63,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     return base
       .map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(needle)) }))
       .filter((g) => g.items.length > 0);
-  }, [q, availableTickers, setTicker]);
+  }, [q, tickerOptions, setTicker]);
 
   // Flatten for keyboard selection. Clamp the highlighted index to the current
   // result set so a shrinking list can never leave `sel` out of range.

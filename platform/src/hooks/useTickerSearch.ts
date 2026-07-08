@@ -61,6 +61,29 @@ export function useTickerSearch(keywords: string, enabled = true) {
 }
 
 // ---------------------------------------------------------------------------
+// Data coverage per symbol (Task 1's /api/market/coverage) — drives the
+// TickerCombobox full/daily/new badges.
+// ---------------------------------------------------------------------------
+
+export interface TickerCoverage {
+  intraday: boolean;
+  daily: boolean;
+}
+
+export function useTickerCoverage(symbolsCsv: string, enabled = true) {
+  return useQuery<{ coverage: Record<string, TickerCoverage> }>({
+    queryKey: ['ticker-coverage', symbolsCsv],
+    queryFn: async () => {
+      const r = await fetch(`/api/market/coverage?symbols=${encodeURIComponent(symbolsCsv)}`);
+      if (!r.ok) throw new Error(`coverage ${r.status}`);
+      return r.json();
+    },
+    enabled: enabled && symbolsCsv.length > 0,
+    staleTime: 60_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Add ticker to watchlist (POST, returns info + quote)
 // ---------------------------------------------------------------------------
 
@@ -72,7 +95,19 @@ export function useAddToWatchlist() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker }),
       });
-      if (!r.ok) throw new Error(`add ${r.status}`);
+      if (!r.ok) {
+        // Surface the backend's actual detail (e.g. "Cloud SQL unreachable")
+        // rather than a bare status code — callers (TickerCombobox's
+        // auto-ingest notice) need the honest reason, not just "add 503".
+        let detail = r.statusText;
+        try {
+          const body = await r.json();
+          if (body?.detail) detail = body.detail;
+        } catch {
+          // response body wasn't JSON — fall back to statusText
+        }
+        throw new Error(`HTTP ${r.status}: ${detail}`);
+      }
       return r.json();
     },
   });

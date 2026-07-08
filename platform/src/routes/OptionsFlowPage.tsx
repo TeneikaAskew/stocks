@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Layers, Activity, BarChart3 } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 import HeatseekerSection from '@/components/options/HeatseekerSection';
 import FlowseekerSection from '@/components/options/FlowseekerSection';
 import ProfilesTab from '@/components/options/ProfilesTab';
@@ -15,7 +15,7 @@ import ProfilesTab from '@/components/options/ProfilesTab';
 //                Contract Drilldown (mock per-contract tape)
 //   Profiles   → original Options Flow body, verbatim (REAL data).
 //
-// The shared <TickerSelect /> drives symbol focus across views; the global
+// The shared <TickerCombobox /> drives symbol focus across views; the global
 // header no longer pins a ticker.
 
 type TabId = 'heatseeker' | 'flowseeker' | 'profiles';
@@ -37,7 +37,7 @@ export default function OptionsFlowPage() {
         <span className="text-xs font-semibold uppercase tracking-wider text-[var(--on-surface-label)]">
           Symbol
         </span>
-        <TickerSelect />
+        <TickerCombobox />
 
         {/* View switcher — single horizontal segmented control */}
         <div className="ml-auto inline-flex gap-0.5 rounded-lg bg-[var(--surface-2)] p-1 ring-1 ring-[var(--outline-variant)]">

@@ -61,6 +61,49 @@ WSH_ONLY_TYPES = {
     "SALES_UPDATE": {"label": "Sales Update", "color": "#27ae60", "icon": "BarChart"},
 }
 
+# News is inherently backward-looking (an article published yesterday is
+# still "fresh"), unlike the rest of _db_catalyst_events which is forward
+# (upcoming earnings, econ prints, etc). Sharing the caller's [d_from, d_to]
+# window against `published_ts::date` silently returned 0 rows whenever
+# d_from was today-or-later — DB-verified 2026-07-08 (exec db-query-vjfwb):
+# 0 rows under the old shared-window filter vs. 1,681 articles in the
+# trailing 48h. NEWS_LOOKBACK_HOURS decouples news from that window.
+NEWS_LOOKBACK_HOURS = 48
+# Lowercase — AlphaVantage NEWS_SENTIMENT topics carry mixed casing across
+# sources, so matching is done via lower(t) = ANY(:topics) in _news_sql().
+NEWS_TOPICS = [
+    "mergers_and_acquisitions",
+    "earnings",
+    "ipo",
+    "economy_monetary",
+    "technology",
+    "financial_markets",
+    "life_sciences",
+]
+
+
+def _news_sql() -> str:
+    """SQL for catalyst-tagged news: backward-looking (last NEWS_LOOKBACK_HOURS
+    hours from now), case-insensitive topic match, decoupled from the
+    forward [d_from, d_to] event window used by the rest of _db_catalyst_events.
+
+    Uses EXISTS + unnest + lower() rather than a plain `topics && ARRAY[...]`
+    overlap so mixed-case topics from different feeds still match NEWS_TOPICS
+    (which is stored lowercase).
+    """
+    return (
+        "SELECT ticker, published_ts::date AS date, title, "
+        "       overall_sentiment_label, sentiment_score, "
+        "       relevance_score, topics, url "
+        "FROM news_sentiment "
+        "WHERE published_ts >= NOW() - (:lookback_hours || ' hours')::interval "
+        "  AND relevance_score >= 0.7 "
+        "  AND EXISTS ("
+        "    SELECT 1 FROM unnest(topics) AS t "
+        "    WHERE lower(t) = ANY(:topics)"
+        "  )"
+    )
+
 
 def _load_cached_events():
     """Load catalyst events from the local JSON cache."""
@@ -194,20 +237,12 @@ def _db_catalyst_events(
     out: list[dict] = []
 
     # ── 1. News with catalyst-tagged topics ───────────────────────────
-    news_sql = (
-        "SELECT ticker, published_ts::date AS date, title, "
-        "       overall_sentiment_label, sentiment_score, "
-        "       relevance_score, topics, url "
-        "FROM news_sentiment "
-        "WHERE published_ts::date BETWEEN CAST(:d_from AS date) "
-        "                              AND CAST(:d_to AS date) "
-        "  AND relevance_score >= 0.7 "
-        "  AND topics && ARRAY['mergers_and_acquisitions','earnings',"
-        "                      'ipo','economy_monetary']::TEXT[]"
-    )
+    # News is backward-looking (NEWS_LOOKBACK_HOURS from now), decoupled
+    # from the forward [d_from, d_to] event window — see _news_sql().
     params = {"d_from": d_from, "d_to": d_to}
+    news_params = {"lookback_hours": NEWS_LOOKBACK_HOURS, "topics": NEWS_TOPICS}
     try:
-        news_df = query_to_dataframe(news_sql, params)
+        news_df = query_to_dataframe(_news_sql(), news_params)
     except Exception as exc:
         logger.warning("news catalyst lookup failed: %s", exc)
         news_df = None
@@ -228,15 +263,17 @@ def _db_catalyst_events(
                 continue
             seen.add(key)
             topics = list(r.get("topics") or [])
+            topics_lower = [str(t).lower() for t in topics]
             # Map AV topic to a Benzinga-compatible catalyst_type so
-            # the existing TYPE_CONFIG renders a badge cleanly.
-            if "mergers_and_acquisitions" in topics:
+            # the existing TYPE_CONFIG renders a badge cleanly. Matched
+            # case-insensitively — topics carry mixed casing across sources.
+            if "mergers_and_acquisitions" in topics_lower:
                 cat_type = "MERGER_ACQUISITION"
-            elif "ipo" in topics:
+            elif "ipo" in topics_lower:
                 cat_type = "IPO"
-            elif "economy_monetary" in topics:
+            elif "economy_monetary" in topics_lower:
                 cat_type = "ECONOMIC"
-            elif "earnings" in topics:
+            elif "earnings" in topics_lower:
                 cat_type = "EARNINGS_NEWS"
             else:
                 cat_type = "NEWS_CATALYST"

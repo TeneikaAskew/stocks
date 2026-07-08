@@ -15,7 +15,7 @@ import {
 import { ChevronUp, ChevronDown, Filter, AlertTriangle } from 'lucide-react';
 import { useTradeSummary } from '@/hooks/useTradeAnalytics';
 import { KpiTile, MicroLabel } from '@/components/primitives';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 import { fmtPct, fmtNum } from '@/lib/format';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -184,7 +184,7 @@ export default function SignalsPage() {
             {data && filtered.length !== allSignals.length ? ` · ${filtered.length.toLocaleString()} shown` : ''}
           </MicroLabel>
         </div>
-        <TickerSelect />
+        <TickerCombobox />
       </div>
 
       {/* ── Performance summary (90-day backtest) ───────────────────────── */}

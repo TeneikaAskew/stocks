@@ -7,6 +7,21 @@
 import { test, expect } from '@playwright/test';
 import { mockCommon, M } from './helpers/mocks';
 
+// Relative-to-now ISO dates so the News card's day-granularity relative
+// label ("yesterday") and forward-event dates are deterministic regardless
+// of when the suite runs.
+const TODAY_ISO = new Date().toISOString().slice(0, 10);
+const YESTERDAY_ISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+})();
+const TOMORROW_ISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+})();
+
 // Brief shape the redesigned Overview consumes (bias bullets + KPI close/RSI).
 const MOCK_BRIEF = {
   ticker: 'IWM',
@@ -31,6 +46,18 @@ const MOCK_BRIEF = {
   live: { price: 220.45, session: 'closed' },
 };
 
+// Sector rotation: 3 ok rows (ranked distinctly for 1D vs 5D) + 1 unavailable row.
+const MOCK_SECTORS = {
+  as_of: '2026-04-25',
+  status: 'ok',
+  sectors: [
+    { symbol: 'XLK', name: 'Technology', close: 250.1, chg_1d_pct: 1.25, chg_5d_pct: 3.4, status: 'ok' },
+    { symbol: 'XLF', name: 'Financials', close: 45.2, chg_1d_pct: 2.5, chg_5d_pct: -1.1, status: 'ok' },
+    { symbol: 'XLE', name: 'Energy', close: 90.3, chg_1d_pct: -0.75, chg_5d_pct: 4.2, status: 'ok' },
+    { symbol: 'XLY', name: 'Consumer Discretionary', status: 'unavailable', reason: 'stale data' },
+  ],
+};
+
 const MOCK_BACKTEST = {
   ticker: 'IWM',
   runs: [
@@ -44,6 +71,75 @@ const MOCK_BACKTEST = {
       trades: 42,
     },
   ],
+};
+
+// News is backward-dated (yesterday) alongside 3 forward-dated catalyst
+// events — regression coverage for the news-card contract: the fixed
+// frontend matches on `source === 'AV news'` against the FULL events array,
+// which is robust regardless of dating or slicing. The old frontend matched
+// on `sentiment_label || catalyst_type === 'NEWS'`; the backend never emits
+// catalyst_type literally 'NEWS' (it maps to NEWS_CATALYST/EARNINGS_NEWS/
+// MERGER_ACQUISITION/IPO/ECONOMIC), so these rows — carrying an empty
+// sentiment_label, as real low-confidence articles sometimes do — pin the
+// exact match condition this fix changed: "0 fresh" on the old filter,
+// "2 fresh" once matched by `source` instead.
+const MOCK_EVENTS_WITH_NEWS = {
+  status: 'ok',
+  source: 'mock',
+  date_range: { from: YESTERDAY_ISO, to: TOMORROW_ISO },
+  total: 5,
+  events_by_date: {
+    [YESTERDAY_ISO]: [
+      {
+        date: YESTERDAY_ISO,
+        ticker: 'IWM',
+        catalyst_type: 'NEWS_CATALYST',
+        title: 'Russell 2000 constituents rally on rate-cut optimism',
+        impact: 'Medium',
+        source: 'AV news',
+        sentiment_label: '',
+        sentiment_score: 0.31,
+      },
+      {
+        date: YESTERDAY_ISO,
+        ticker: 'IWM',
+        catalyst_type: 'NEWS_CATALYST',
+        title: 'Small-cap earnings season kicks off with mixed guidance',
+        impact: 'Low',
+        source: 'AV news',
+        sentiment_label: '',
+        sentiment_score: 0.02,
+      },
+    ],
+    [TODAY_ISO]: [
+      {
+        date: TODAY_ISO,
+        ticker: 'AAPL',
+        catalyst_type: 'EARNINGS',
+        event: 'Q2 2026 Earnings',
+        expected_impact: 'high',
+        source: 'mock',
+      },
+      {
+        date: TODAY_ISO,
+        ticker: 'MSFT',
+        catalyst_type: 'CONFERENCE_CALL',
+        event: 'Investor Day',
+        expected_impact: 'medium',
+        source: 'mock',
+      },
+    ],
+    [TOMORROW_ISO]: [
+      {
+        date: TOMORROW_ISO,
+        ticker: 'MACRO',
+        catalyst_type: 'ECONOMIC',
+        title: 'CPI release',
+        impact: 'High',
+        source: 'FRED/Calendar',
+      },
+    ],
+  },
 };
 
 test.describe('Dashboard', () => {
@@ -173,6 +269,47 @@ test.describe('Dashboard', () => {
     // Switching to Area renders the Recharts area surface without crashing.
     await area.click();
     await expect(page.locator('svg.recharts-surface').first()).toBeVisible({ timeout: 5_000 });
+  });
+
+  test('sector rotation card ranks sectors, shows an em-dash row, and 1D/5D toggle switches values', async ({ page }) => {
+    await page.route('**/api/market/sectors', (r) => r.fulfill(M.ok(MOCK_SECTORS)));
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const card = page.getByTestId('sector-rotation-card');
+    await expect(card).toBeVisible({ timeout: 10_000 });
+
+    // as-of caption in the header meta.
+    await expect(card).toContainText('as of 2026-04-25');
+
+    // 1D (default): ranked desc by chg_1d_pct — XLF (2.5) > XLK (1.25) > XLE (-0.75),
+    // unavailable XLY sinks to the bottom.
+    let rows = await card.getByTestId('sector-row').allTextContents();
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toContain('Financials');
+    expect(rows[1]).toContain('Technology');
+    expect(rows[2]).toContain('Energy');
+    expect(rows[3]).toContain('Consumer Discretionary');
+    expect(rows[3]).toContain('—');
+
+    // Toggle to 5D — ranked desc by chg_5d_pct — XLE (4.2) > XLK (3.4) > XLF (-1.1).
+    await card.getByRole('button', { name: '5D' }).click();
+    rows = await card.getByTestId('sector-row').allTextContents();
+    expect(rows[0]).toContain('Energy');
+    expect(rows[1]).toContain('Technology');
+    expect(rows[2]).toContain('Financials');
+    expect(rows[3]).toContain('Consumer Discretionary');
+  });
+
+  test('News card counts AV-news rows dated in the past and shows both headlines', async ({ page }) => {
+    await page.route('**/api/catalysts/events**', (r) => r.fulfill(M.ok(MOCK_EVENTS_WITH_NEWS)));
+    await page.goto('/dashboard');
+    await page.waitForLoadState('networkidle');
+
+    const newsCard = page.getByTestId('news-card');
+    await expect(page.getByText('2 fresh')).toBeVisible({ timeout: 10_000 });
+    await expect(newsCard.getByText('Russell 2000 constituents rally on rate-cut optimism')).toBeVisible();
+    await expect(newsCard.getByText('Small-cap earnings season kicks off with mixed guidance')).toBeVisible();
   });
 
   test('renders within 7s perf budget', async ({ page }) => {

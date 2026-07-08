@@ -26,7 +26,7 @@ import {
 import { WatchlistPanel } from '@/components/insights/WatchlistPanel';
 import { AgentsPanel } from '@/components/insights/AgentsPanel';
 import { MicroLabel } from '@/components/primitives';
-import { TickerSelect } from '@/components/shared/TickerSelect';
+import { TickerCombobox } from '@/components/shared/TickerCombobox';
 
 type Tab = 'report' | 'agents' | 'history' | 'chat' | 'watchlist';
 
@@ -90,13 +90,11 @@ export default function InsightsPage() {
   const onRefresh = () => refreshFor(activeTicker);
 
   // Watchlist row click: switch the active ticker, jump to Report tab,
-  // and trigger a refresh on the selected ticker. The cast widens the
-  // strict Ticker union ('IWM'|'SPY'|'QQQ') to accept any ticker the
-  // ranker surfaces — the Sidebar's typed `availableTickers` list is
-  // unaffected; downstream consumers of activeTicker treat it as a
-  // string anyway.
+  // and trigger a refresh on the selected ticker. `Ticker` (types/index.ts)
+  // is just `string` now, and the store's `setTicker` takes any symbol the
+  // ranker surfaces — no widening cast needed.
   const onWatchlistGenerate = async (ticker: string) => {
-    setTicker(ticker as import('@/types').Ticker);
+    setTicker(ticker);
     setTab('report');
     setViewingHistoricalId(null);
     // Watchlist generations always run live — point-in-time is an
@@ -114,7 +112,7 @@ export default function InsightsPage() {
           <h1 className="text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">AI Insights</h1>
           <MicroLabel className="mt-1">{activeTicker} · multi-agent dossier</MicroLabel>
         </div>
-        <TickerSelect />
+        <TickerCombobox />
       </div>
 
       {/* Tab bar */}
