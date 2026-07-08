@@ -18,11 +18,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time
 from typing import List, Dict, Optional, Tuple
 
-from lib.indicators import add_all_indicators
+from lib.indicators import add_all_indicators, add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.config import (
     RiskConfig, ExitConfig, SignalConfig, StratConfig, BacktestConfig,
-    IndicatorConfig, get_position_size, get_signal_strength_label,
+    IndicatorConfig, get_position_size, get_signal_strength_label, load_config,
 )
 from lib.strat import StratClassifier
 from lib.data_loader import RESAMPLE_RULES
@@ -885,3 +885,283 @@ class BacktestEngine:
             return 'rsi_extreme', close_price
 
         return None
+
+
+# ---------------------------------------------------------------------------
+# Task 3.2: labeled-trade replay — score a user's journal trades against
+# actual bars and benchmark them against the system.
+# ---------------------------------------------------------------------------
+
+# Minimum bars (inclusive of the entry bar) required before `evaluate_signal`
+# is trusted — mirrors platform/api/routers/live.py's `compute_live_signal_series`
+# 14-bar warm-up gate (that endpoint 422s below this; here we degrade a single
+# trade's `system_signal_at_entry` to the "unavailable" shape instead, since
+# the rest of the scorecard — fill_check, system_exit, actual_return_pct — is
+# independent of indicator warm-up and shouldn't be thrown away with it).
+_SIGNAL_WARMUP_BARS = 14
+
+
+def _unavailable(trade_id, reason: str) -> dict:
+    """An 'unavailable' scorecard — CLAUDE.md Rule 3.7: never zero-fill a
+    trade we can't actually score. Deliberately omits actual_return_pct /
+    fill_check / system_signal_at_entry / system_exit / exit_edge_bps so a
+    caller can't mistake an unavailable row for a scored one."""
+    return {'id': trade_id, 'status': 'unavailable', 'reason': reason}
+
+
+def _score_one_trade(
+    labeled_trade: dict,
+    bars_by_date: Dict[str, pd.DataFrame],
+    engine: 'BacktestEngine',
+    signal_cache: Dict[str, pd.DataFrame],
+) -> dict:
+    """Score a single labeled trade. See `replay_labeled_trades` for the
+    scorecard shape and unit conventions."""
+    trade_id = labeled_trade.get('id')
+    direction = str(labeled_trade.get('direction') or '').upper()
+    entry_ts_raw = labeled_trade.get('entry_ts')
+    entry_price = labeled_trade.get('entry_price')
+    exit_ts_raw = labeled_trade.get('exit_ts')
+    exit_price = labeled_trade.get('exit_price')
+
+    # An active (still-open) trade has no exit yet — nothing to benchmark.
+    if exit_ts_raw is None or exit_price is None:
+        return _unavailable(trade_id, 'trade still open')
+
+    if direction not in ('CALL', 'PUT'):
+        return _unavailable(trade_id, f'invalid direction: {labeled_trade.get("direction")!r}')
+
+    if entry_price is None or entry_price == 0:
+        return _unavailable(trade_id, 'invalid entry_price')
+
+    try:
+        entry_dt = pd.to_datetime(entry_ts_raw)
+    except (ValueError, TypeError):
+        return _unavailable(trade_id, 'invalid entry_ts')
+
+    date_key = entry_dt.strftime('%Y-%m-%d')
+    day_bars = bars_by_date.get(date_key)
+    if day_bars is None or day_bars.empty:
+        return _unavailable(trade_id, 'no bars for date')
+
+    # Reconcile formats: the journal's entry_ts wall-clock (minute precision)
+    # against the bars' 'Time' strings — sort + reset so `entry_idx` below is
+    # a valid positional (iloc) index into the frame we actually walk.
+    day_bars = day_bars.sort_values('Time').reset_index(drop=True)
+    entry_minute_key = entry_dt.strftime('%Y-%m-%d %H:%M')
+    bar_minutes = pd.to_datetime(day_bars['Time']).dt.strftime('%Y-%m-%d %H:%M')
+    matches = day_bars.index[bar_minutes == entry_minute_key]
+    if len(matches) == 0:
+        return _unavailable(trade_id, 'entry bar not found')
+    entry_idx = int(matches[0])
+    entry_bar = day_bars.iloc[entry_idx]
+
+    fill_check = 'ok'
+    if not (entry_bar['Low'] <= entry_price <= entry_bar['High']):
+        fill_check = 'price_outside_bar_range'
+
+    # User's actual return — TRUE PERCENT, sign-corrected for PUT (journal
+    # convention; mirrors platform/api/routers/journal.py's `_return_pct`).
+    raw_pct = (exit_price - entry_price) / entry_price * 100.0
+    actual_return_pct = raw_pct if direction == 'CALL' else -raw_pct
+
+    # --- System signal at entry: the exact production path
+    # /api/live/signal-series uses (add_signal_indicators + evaluate_signal,
+    # ticker-agnostic default configs — see live.py's compute_live_signal_series
+    # docstring). Below the warm-up floor the indicators aren't trustworthy,
+    # so the field degrades to the explicit "unavailable" shape rather than
+    # silently reporting a spurious no-signal result.
+    if entry_idx + 1 < _SIGNAL_WARMUP_BARS:
+        system_signal_at_entry: dict = {'status': 'unavailable'}
+    else:
+        if date_key not in signal_cache:
+            signal_cache[date_key] = add_signal_indicators(day_bars, close_col='Close')
+        sig_row = signal_cache[date_key].iloc[entry_idx]
+        sig = evaluate_signal(sig_row)
+        if sig is not None:
+            system_signal_at_entry = {'direction': sig['direction'], 'score': sig['total_score']}
+        else:
+            system_signal_at_entry = {'direction': None, 'score': 0}
+
+    # --- System exit: walk the SAME day's bars forward from the entry bar
+    # via Task 3.1's simulate_exit(), using the LABEL's entry_price (that's
+    # what we're benchmarking) and entry_time from the matched bar.
+    system_trade = Trade(
+        entry_time=pd.to_datetime(entry_bar['Time']),
+        entry_price=float(entry_price),
+        direction=direction,
+        base_score=0, strat_bonus=0, total_score=0, position_size=1.0,
+        conditions_met=[],
+    )
+    resolved = engine.simulate_exit(system_trade, day_bars, entry_idx, close_col='Close')
+    system_return_pct = None if resolved.return_pct is None else resolved.return_pct * 100.0  # fraction -> percent
+    system_exit = {
+        'exit_reason': resolved.exit_reason,
+        'return_pct': system_return_pct,
+        'exit_time': None if resolved.exit_time is None else str(resolved.exit_time),
+    }
+
+    exit_edge_bps = None
+    if system_return_pct is not None:
+        # (user_return_pct - system_return_pct) * 100 -- percent -> bps.
+        exit_edge_bps = (actual_return_pct - system_return_pct) * 100.0
+
+    return {
+        'id': trade_id,
+        'status': 'ok',
+        'actual_return_pct': round(actual_return_pct, 4),
+        'fill_check': fill_check,
+        'system_signal_at_entry': system_signal_at_entry,
+        'system_exit': {
+            **system_exit,
+            'return_pct': None if system_return_pct is None else round(system_return_pct, 4),
+        },
+        'exit_edge_bps': None if exit_edge_bps is None else round(exit_edge_bps, 4),
+    }
+
+
+def _aggregate_scorecards(scorecards: List[dict]) -> dict:
+    """Aggregate metrics over a list of per-trade scorecards. `n` counts
+    every trade passed in; `scored_n` counts only status=='ok' rows — an
+    unavailable trade is never zero-filled into the average (Rule 3.7)."""
+    n = len(scorecards)
+    scored = [c for c in scorecards if c.get('status') == 'ok']
+    scored_n = len(scored)
+
+    if scored_n == 0:
+        return {
+            'n': n, 'scored_n': 0, 'win_rate': 0.0, 'avg_return_pct': 0.0,
+            'system_agreement_rate': 0.0, 'avg_exit_edge_bps': 0.0,
+        }
+
+    wins = [c for c in scored if c['actual_return_pct'] > 0]
+    win_rate = len(wins) / scored_n
+    avg_return_pct = sum(c['actual_return_pct'] for c in scored) / scored_n
+
+    # Agreement: the system's signal-at-entry direction (when computable)
+    # matches the direction the user actually traded. A trade whose
+    # system_signal_at_entry is the "unavailable" shape (no 'direction' key)
+    # or fired the opposite/no direction counts as disagreement. The
+    # labeled trade's own direction is threaded through as
+    # '_labeled_direction' by the caller (replay_labeled_trades) since the
+    # public scorecard shape doesn't otherwise carry it.
+    agreements = sum(
+        1 for c in scored
+        if c['system_signal_at_entry'].get('direction') == c.get('_labeled_direction')
+    )
+    system_agreement_rate = agreements / scored_n if scored_n else 0.0
+
+    avg_exit_edge_bps = sum(c['exit_edge_bps'] for c in scored) / scored_n
+
+    return {
+        'n': n,
+        'scored_n': scored_n,
+        'win_rate': round(win_rate, 4),
+        'avg_return_pct': round(avg_return_pct, 4),
+        'system_agreement_rate': round(system_agreement_rate, 4),
+        'avg_exit_edge_bps': round(avg_exit_edge_bps, 4),
+    }
+
+
+def replay_labeled_trades(
+    labeled: List[dict],
+    bars_by_date: Dict[str, pd.DataFrame],
+    exit_config: Optional[ExitConfig] = None,
+    ticker: Optional[str] = None,
+) -> dict:
+    """Score user-labeled trades against actual bars + benchmark vs the system.
+
+    Parameters
+    ----------
+    labeled : list of ``{id, direction (CALL|PUT), entry_ts (ISO string),
+        entry_price, exit_ts (ISO string or None), exit_price (or None)}``.
+        A trade with ``exit_ts``/``exit_price`` of None (still open) is
+        scored as ``unavailable`` / ``"trade still open"`` — never
+        zero-filled.
+    bars_by_date : ``{"YYYY-MM-DD": DataFrame}`` — each frame must carry
+        uppercase ``Open``/``High``/``Low``/``Close``/``Volume`` columns
+        plus a ``Time`` column (string or datetime-like) at 1-minute
+        resolution for that date. A date missing from this dict (or an
+        empty frame) marks every trade on that date ``unavailable`` /
+        ``"no bars for date"``.
+    exit_config : optional override for the engine's exit thresholds
+        (target/stop/time-stop). When omitted, ``load_config(ticker=ticker)``
+        supplies them (per-ticker ``alert_config.json`` overrides apply).
+    ticker : when provided, set on the engine as ``_current_ticker`` — the
+        SAME per-ticker Tier-A DB override contract ``BacktestEngine.run()``
+        uses (see ``simulate_exit``'s docstring, Task 3.1). When ``None``,
+        the engine uses ``exit_config``/``cfg.exit`` directly with no DB
+        round-trip — the path every hermetic test in this module exercises.
+
+    Returns
+    -------
+    ``{"trades": [...per-trade scorecards...], "aggregate": {...}}``.
+
+    UNITS: every ``*_pct`` field is TRUE PERCENT (0.3-style values, e.g.
+    +0.30, not the engine's raw-fraction 0.003) — the conversion happens
+    here, once, at the fraction -> percent boundary. ``exit_edge_bps =
+    (user_return_pct - system_return_pct) * 100`` (percent -> bps).
+
+    Per-trade scorecard (``status == "ok"``):
+    ``{id, status: "ok", actual_return_pct, fill_check: "ok"|
+    "price_outside_bar_range", system_signal_at_entry: {direction, score} |
+    {"status": "unavailable"}, system_exit: {exit_reason, return_pct,
+    exit_time}, exit_edge_bps}``.
+    ``status == "unavailable"``: ``{id, status: "unavailable", reason}`` —
+    no other fields are populated (never zero-filled; CLAUDE.md Rule 3.7).
+
+    Aggregate: ``{n, scored_n, win_rate (0-1), avg_return_pct,
+    system_agreement_rate, avg_exit_edge_bps}``. ``n`` counts every input
+    trade; ``scored_n`` counts only ``status == "ok"`` trades — unavailable
+    trades never enter an average.
+
+    System signal at entry reuses ``lib.indicators.add_signal_indicators`` +
+    ``lib.signals.evaluate_signal`` with plain (uncalibrated, ticker-agnostic)
+    default configs — the exact path
+    ``platform/api/routers/live.py::compute_live_signal_series`` (the
+    ``/api/live/signal-series`` endpoint) uses, so the benchmark can't drift
+    from what the Charts page's "Sig" overlay already shows. System exit
+    reuses ``BacktestEngine.simulate_exit`` (Task 3.1) with configs from
+    ``load_config(ticker=ticker)`` — the SAME engine construction
+    ``scripts/run_backtest.py`` uses (Rule 3.6: no re-derived math).
+
+    Capacity: one in-memory pandas pass per trade over its day's bars
+    (<=~390 rows/day); indicator computation is cached per date so trades
+    sharing a day only pay for it once. No DB writes. No new DB reads beyond
+    what the caller already loaded into ``bars_by_date``.
+    """
+    cfg = load_config(ticker=ticker)
+    engine = BacktestEngine(
+        risk_config=cfg.risk,
+        exit_config=exit_config or cfg.exit,
+        signal_config=cfg.signal,
+        strat_config=cfg.strat,
+        backtest_config=cfg.backtest,
+        indicator_config=cfg.indicator,
+    )
+    # Matches BacktestEngine.run()'s own convention (sets this once at the
+    # top of its body, even when ticker is None) — see simulate_exit's
+    # docstring (Task 3.1) for the full contract.
+    engine._current_ticker = ticker
+
+    signal_cache: Dict[str, pd.DataFrame] = {}
+    scorecards = [
+        _score_one_trade(t, bars_by_date, engine, signal_cache)
+        for t in labeled
+    ]
+
+    # system_agreement_rate needs each scorecard compared against ITS OWN
+    # trade's labeled direction (the scorecard itself doesn't carry
+    # 'direction' — only the input labeled dict does), so thread it through
+    # as a parallel list rather than mutating the public scorecard shape.
+    directions_by_id = {t.get('id'): str(t.get('direction') or '').upper() for t in labeled}
+    for c in scorecards:
+        c['_labeled_direction'] = directions_by_id.get(c.get('id'))
+
+    aggregate = _aggregate_scorecards(scorecards)
+
+    # Strip the internal bookkeeping key before returning.
+    for c in scorecards:
+        c.pop('_labeled_direction', None)
+
+    return {'trades': scorecards, 'aggregate': aggregate}
