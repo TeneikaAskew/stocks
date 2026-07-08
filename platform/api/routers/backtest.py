@@ -23,6 +23,15 @@ Cache TTLs:
   * `/results/{ticker}`  — 1h (backtest runs rarely; data is immutable once written)
   * `/equity/{ticker}`   — 1h
   * `/all/{ticker}`      — 10m (listing can change as new runs land)
+
+Units
+-----
+The BacktestEngine writes `return_pct` as a raw fraction (0.003 = 0.3%).
+Every `*_pct` field this router emits — `avg_return_pct`, `avg_win_pct`,
+`avg_loss_pct`, `total_return_pct`, per-trade `return_pct` — is converted
+to TRUE PERCENT units (fraction * 100) so the frontend can render
+`${v.toFixed(2)}%` without unit knowledge. `win_rate` is the only
+exception: it stays a 0-1 fraction (the UI multiplies by 100 itself).
 """
 import logging
 import re
@@ -48,10 +57,14 @@ router = APIRouter()
 GCS_PREFIX = "data/backtest_results/"
 
 # Filename patterns — anchored and escaped
-def _backtest_pattern(ticker_upper: str) -> str:
+def _backtest_pattern(ticker_upper: str, run: str | None = None) -> str:
+    if run:
+        return rf"^backtest_{re.escape(ticker_upper)}_{re.escape(run)}\.csv$"
     return rf"^backtest_{re.escape(ticker_upper)}_\d{{8}}_\d{{6}}\.csv$"
 
-def _equity_pattern(ticker_upper: str) -> str:
+def _equity_pattern(ticker_upper: str, run: str | None = None) -> str:
+    if run:
+        return rf"^equity_{re.escape(ticker_upper)}_{re.escape(run)}\.csv$"
     return rf"^equity_{re.escape(ticker_upper)}_\d{{8}}_\d{{6}}\.csv$"
 
 # ── Caches ──────────────────────────────────────────────────────────────────
@@ -78,10 +91,13 @@ def _dataframe_to_records(df: pd.DataFrame) -> list[dict]:
 
 
 def _summarize_returns(df: pd.DataFrame) -> dict:
+    """Summary stats. UNITS: the engine writes return_pct as a raw fraction
+    (0.003 = 0.3%). Every *_pct field emitted here is converted to TRUE
+    PERCENT; win_rate stays a 0-1 fraction (UI renders *100)."""
     summary: dict = {}
     if "return_pct" not in df.columns:
         return summary
-    returns = df["return_pct"].dropna().astype(float)
+    returns = df["return_pct"].dropna().astype(float) * 100.0  # fraction -> percent
     if len(returns) == 0:
         return summary
     wins = returns[returns > 0]
@@ -99,17 +115,33 @@ def _summarize_returns(df: pd.DataFrame) -> dict:
     return summary
 
 
+def _trades_to_percent_records(df: pd.DataFrame) -> list[dict]:
+    """Per-trade records with return_pct converted fraction -> percent."""
+    df = df.copy()
+    if "return_pct" in df.columns:
+        df["return_pct"] = df["return_pct"].astype(float) * 100.0
+    return _dataframe_to_records(df)
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
+def _validate_run(run: str | None) -> None:
+    if run and not re.fullmatch(r"\d{8}_\d{6}", run):
+        raise HTTPException(status_code=422, detail="run must be YYYYMMDD_HHMMSS")
+
+
 @router.get("/api/backtest/results/{ticker}")
-async def get_backtest_results(ticker: str):
-    """Return trades from the most recent backtest CSV for the given ticker."""
+async def get_backtest_results(ticker: str, run: str | None = None):
+    """Return trades from the most recent backtest CSV for the given ticker,
+    or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
+    _validate_run(run)
+    cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if ticker_upper in _RESULTS_CACHE:
-        return _RESULTS_CACHE[ticker_upper]
+    if cache_key in _RESULTS_CACHE:
+        return _RESULTS_CACHE[cache_key]
 
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper))
+    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
     if not blobs:
         raise HTTPException(
             status_code=404,
@@ -132,11 +164,11 @@ async def get_backtest_results(ticker: str):
             "summary": {},
             "trades": [],
         }
-        _RESULTS_CACHE[ticker_upper] = resp
+        _RESULTS_CACHE[cache_key] = resp
         return resp
 
     summary = _summarize_returns(df)
-    trades = _dataframe_to_records(df)
+    trades = _trades_to_percent_records(df)
     resp = {
         "ticker": ticker_upper,
         "filename": filename,
@@ -144,19 +176,22 @@ async def get_backtest_results(ticker: str):
         "summary": summary,
         "trades": trades,
     }
-    _RESULTS_CACHE[ticker_upper] = resp
+    _RESULTS_CACHE[cache_key] = resp
     return resp
 
 
 @router.get("/api/backtest/equity/{ticker}")
-async def get_equity_curve(ticker: str):
-    """Return equity curve from the most recent equity CSV for the given ticker."""
+async def get_equity_curve(ticker: str, run: str | None = None):
+    """Return equity curve from the most recent equity CSV for the given ticker,
+    or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
+    _validate_run(run)
+    cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if ticker_upper in _EQUITY_CACHE:
-        return _EQUITY_CACHE[ticker_upper]
+    if cache_key in _EQUITY_CACHE:
+        return _EQUITY_CACHE[cache_key]
 
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper))
+    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
     if not blobs:
         raise HTTPException(
             status_code=404,
@@ -173,7 +208,7 @@ async def get_equity_curve(ticker: str):
 
     if df.empty:
         resp = {"ticker": ticker_upper, "filename": filename, "summary": {}, "dates": [], "values": []}
-        _EQUITY_CACHE[ticker_upper] = resp
+        _EQUITY_CACHE[cache_key] = resp
         return resp
 
     # Equity CSVs have: "Unnamed: 0" (date index) and "0" (equity value)
@@ -220,7 +255,7 @@ async def get_equity_curve(ticker: str):
         "dates": dates,
         "values": values,
     }
-    _EQUITY_CACHE[ticker_upper] = resp
+    _EQUITY_CACHE[cache_key] = resp
     return resp
 
 
@@ -271,7 +306,7 @@ async def list_all_backtests(ticker: str):
                 info["trade_count"] = len(returns)
                 info["row_count"] = len(returns)
                 info["win_rate"] = round(len(wins) / len(returns), 4) if len(returns) else None
-                info["avg_return_pct"] = round(returns.mean(), 4) if len(returns) else None
+                info["avg_return_pct"] = round(returns.mean() * 100.0, 4) if len(returns) else None
             else:
                 info["trade_count"] = len(df)
                 info["row_count"] = len(df)
