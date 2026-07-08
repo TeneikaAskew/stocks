@@ -1,11 +1,21 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useTradeStore } from '@/stores/tradeStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useMarketData, useAvailableDates, useReferenceLevels } from '@/hooks/useMarketData';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useGammaLevels } from '@/hooks/useGammaLevels';
+import {
+  useJournalChartTrades,
+  useCreateChartTrade,
+  useCloseChartTrade,
+  useDeleteChartTrade,
+  useSeedTrades,
+  isoNaiveToEpoch,
+  isSeedTradesUnavailable,
+  seedBenchmark,
+  type SeedTradeRow,
+} from '@/hooks/useJournalChartTrades';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
@@ -31,12 +41,18 @@ import {
   Download,
   Trash2,
   Zap,
+  BookOpen,
 } from 'lucide-react';
 
 // Tickers for which we have an options chain in Cloud SQL (matches
 // VALID_TICKERS in platform/api/routers/options.py). The Gamma toggle
 // is hidden for any other ticker because the /levels endpoint will 400.
 const GAMMA_LEVELS_TICKERS = new Set(['SPY', 'IWM', 'QQQ', 'SPX']);
+
+// Muted/distinct color for the admin seed-trade teaching layer (Task 2.4) —
+// deliberately gray, never the bull/bear green/red the user's own trades use,
+// so the two layers are visually unmistakable at a glance.
+const SEED_MARKER_COLOR = '#8a8f98';
 
 const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '1', label: '1m' },
@@ -64,19 +80,9 @@ interface PriceLineConfig {
   lineWidth?: LineWidth;
 }
 
-function calculatePnL(entry: number, exit: number, direction: TradeDirection): number {
-  return direction === 'CALL' ? exit - entry : entry - exit;
-}
-
-function calculatePnLPercent(entry: number, exit: number, direction: TradeDirection): number {
-  const pnl = calculatePnL(entry, exit, direction);
-  return (pnl / entry) * 100;
-}
-
 export default function ChartsPage() {
   const { activeTicker } = useTickerStore();
   const { timeframe, setTimeframe } = useSettingsStore();
-  const { trades, addTrade, updateTrade, removeTrade } = useTradeStore();
   const { reviewDate, reviewTime } = useReviewDateStore();
   const isReview = reviewDate !== null;
 
@@ -86,6 +92,7 @@ export default function ChartsPage() {
   const [showRefLevels, setShowRefLevels] = useState(false);
   const [showGamma, setShowGamma] = useState(false);
   const [showSignals, setShowSignals] = useState(false);
+  const [showSeedTrades, setShowSeedTrades] = useState(true);
   const [activeTab, setActiveTab] = useState<'trades' | 'analytics'>('trades');
 
   // Drawing mode state
@@ -148,17 +155,42 @@ export default function ChartsPage() {
   // Reference levels (prev day OHLC)
   const { data: refLevels } = useReferenceLevels(activeTicker, selectedDate);
 
-  // Gamma levels — King/Gate/Spot/Flip from lib.gamma. Only fetched for
-  // tickers we have options chains for, and only when the user toggles
-  // the overlay on. selectedDate is YYYYMMDD; the endpoint wants YYYY-MM-DD.
-  const gammaLevelsEnabled =
-    showGamma && GAMMA_LEVELS_TICKERS.has(activeTicker.toUpperCase()) && !!selectedDate;
-  const gammaIsoDate = selectedDate
+  // selectedDate is YYYYMMDD; several endpoints (gamma, journal) want YYYY-MM-DD.
+  const selectedIsoDate = selectedDate
     ? `${selectedDate.slice(0, 4)}-${selectedDate.slice(4, 6)}-${selectedDate.slice(6, 8)}`
     : '';
-  const { data: gammaLevels } = useGammaLevels(activeTicker, gammaIsoDate, {
+
+  // Gamma levels — King/Gate/Spot/Flip from lib.gamma. Only fetched for
+  // tickers we have options chains for, and only when the user toggles
+  // the overlay on.
+  const gammaLevelsEnabled =
+    showGamma && GAMMA_LEVELS_TICKERS.has(activeTicker.toUpperCase()) && !!selectedDate;
+  const { data: gammaLevels } = useGammaLevels(activeTicker, selectedIsoDate, {
     enabled: gammaLevelsEnabled,
   });
+
+  // Chart-marked trades persist through the journal API (POST/PATCH/DELETE
+  // /api/journal/trades) instead of an in-memory zustand store — the hook
+  // already filters to this ticker + selectedIsoDate.
+  const { data: trades = [] } = useJournalChartTrades(activeTicker, selectedIsoDate);
+  const createChartTrade = useCreateChartTrade();
+  const closeChartTrade = useCloseChartTrade();
+  const deleteChartTrade = useDeleteChartTrade();
+
+  // Admin seed-trade teaching layer (Task 2.4) — read-only pull from the
+  // automated pipeline `trades` table, GET /api/journal/seed/{ticker}.
+  // Kept fetching regardless of the toggle (cheap single-row/single-ticker
+  // query) so flipping `showSeedTrades` back on doesn't re-trigger a fetch.
+  const seedTradesQuery = useSeedTrades(activeTicker, selectedIsoDate);
+  const seedUnavailable =
+    seedTradesQuery.isError ||
+    (seedTradesQuery.data !== undefined && isSeedTradesUnavailable(seedTradesQuery.data));
+  const seedTradesData = seedTradesQuery.data;
+  const seedRows: SeedTradeRow[] = useMemo(
+    () => (seedTradesData && !isSeedTradesUnavailable(seedTradesData) ? seedTradesData.trades : []),
+    [seedTradesData],
+  );
+  const seedBench = useMemo(() => seedBenchmark(seedRows), [seedRows]);
 
   // Trades for current date/ticker — filter out trades after reviewTs in review mode
   const reviewCutoffTs = useMemo(() => {
@@ -169,17 +201,16 @@ export default function ChartsPage() {
   }, [isReview, reviewDate, reviewTime]);
 
   const currentTrades = useMemo(() => {
-    let filtered = trades.filter((t) => t.ticker === activeTicker);
     if (reviewCutoffTs !== null) {
-      filtered = filtered.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
+      return trades.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
     }
-    return filtered;
-  }, [trades, activeTicker, reviewCutoffTs]);
+    return trades;
+  }, [trades, reviewCutoffTs]);
 
   const hiddenTradesCount = useMemo(() => {
     if (reviewCutoffTs === null) return 0;
-    return trades.filter(t => t.ticker === activeTicker && (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
-  }, [trades, activeTicker, reviewCutoffTs]);
+    return trades.filter(t => (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
+  }, [trades, reviewCutoffTs]);
   const stats = useTradeAnalytics(currentTrades);
 
   // Strategy condition evaluation: build a Bar[] from the candlestick + volume
@@ -262,11 +293,49 @@ export default function ChartsPage() {
     }));
   }, [showSignals, signalSeriesQuery.data]);
 
-  // Trade markers on top of signal markers so user trades win the visual
-  // priority (and re-render last in the chart's marker plugin).
+  // Seed-trade markers (Task 2.4) — muted/dashed-feel styling, distinct from
+  // both the signal overlay and the user's own trades. Entry_time/exit_time
+  // strings use the same naive-ET wall-clock convention as journal_entries
+  // (see isoNaiveToEpoch's doc comment), so the same mapper applies as-is.
+  const seedMarkers: SeriesMarker<Time>[] = useMemo(() => {
+    if (!showSeedTrades) return [];
+    return seedRows.flatMap((row) => {
+      const m: SeriesMarker<Time>[] = [];
+      if (row.entry_time && row.entry_price != null) {
+        const entryEpoch = isoNaiveToEpoch(row.entry_time);
+        if (!Number.isNaN(entryEpoch)) {
+          m.push({
+            time: entryEpoch as Time,
+            position: row.direction === 'CALL' ? 'belowBar' : 'aboveBar',
+            color: SEED_MARKER_COLOR,
+            shape: row.direction === 'CALL' ? 'arrowUp' : 'arrowDown',
+            text: `SEED ${row.direction} @ $${row.entry_price.toFixed(2)}`,
+          });
+        }
+      }
+      if (row.exit_time && row.exit_price != null) {
+        const exitEpoch = isoNaiveToEpoch(row.exit_time);
+        if (!Number.isNaN(exitEpoch)) {
+          m.push({
+            time: exitEpoch as Time,
+            position: 'aboveBar',
+            color: SEED_MARKER_COLOR,
+            shape: 'circle',
+            text: `SEED exit @ $${row.exit_price.toFixed(2)}`,
+          });
+        }
+      }
+      return m;
+    });
+  }, [showSeedTrades, seedRows]);
+
+  // Trade markers on top of seed/signal markers so the user's own trades
+  // win the visual priority (and re-render last in the chart's marker
+  // plugin). Seed markers sit above the signal overlay but below the
+  // user's trades.
   const markers: SeriesMarker<Time>[] = useMemo(
-    () => [...signalMarkers, ...tradeMarkers],
-    [signalMarkers, tradeMarkers],
+    () => [...signalMarkers, ...seedMarkers, ...tradeMarkers],
+    [signalMarkers, seedMarkers, tradeMarkers],
   );
 
   // Build price lines from trades (TP/SL) + reference levels
@@ -371,20 +440,20 @@ export default function ChartsPage() {
       } else if (drawingStep === 'exit' && exitingTradeId) {
         const trade = trades.find((t) => t.id === exitingTradeId);
         if (trade) {
-          const pnl = calculatePnL(trade.entryPrice, data.price, trade.optionType);
-          const pnlPct = calculatePnLPercent(trade.entryPrice, data.price, trade.optionType);
-          updateTrade(exitingTradeId, {
+          // PATCH persists the exit; return_pct/status come back from the
+          // server (journal.py's _return_pct/_derive_status) — no client-side
+          // pnl math here, the query invalidation refetches the closed row.
+          closeChartTrade.mutate({
+            id: exitingTradeId,
+            ticker: activeTicker,
             exitTime: data.time,
             exitPrice: data.price,
-            pnl,
-            pnlPercent: pnlPct,
-            status: pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven',
           });
         }
         cancelDrawing();
       }
     },
-    [drawingStep, tempTrade, exitingTradeId, trades, updateTrade]
+    [drawingStep, tempTrade, exitingTradeId, trades, closeChartTrade]
   );
 
   const selectOptionType = (type: TradeDirection) => {
@@ -400,20 +469,14 @@ export default function ChartsPage() {
 
   const completeTrade = (data: TempTradeData) => {
     if (!data.optionType) return;
-    const trade: TradeEntry = {
-      id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    createChartTrade.mutate({
       ticker: activeTicker,
-      optionType: data.optionType,
+      direction: data.optionType,
       entryTime: data.entryTime,
       entryPrice: data.entryPrice,
-      takeProfits: data.takeProfits.length > 0 ? data.takeProfits : [],
-      stopLoss: data.stopLoss,
-      notes: '',
-      tags: [],
-      status: 'active',
-      createdAt: Date.now(),
-    };
-    addTrade(trade);
+      stopLoss: data.stopLoss?.price,
+      takeProfits: data.takeProfits.map((tp) => tp.price),
+    });
     cancelDrawing();
   };
 
@@ -598,6 +661,18 @@ export default function ChartsPage() {
             Sig
           </button>
 
+          <button
+            onClick={() => setShowSeedTrades(!showSeedTrades)}
+            data-testid="seed-toggle"
+            title="Show seed trades — read-only admin trades from the automated pipeline"
+            className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
+              showSeedTrades ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
+            }`}
+          >
+            <BookOpen size={14} />
+            Seed
+          </button>
+
           <div className="flex-1" />
 
           {/* Export buttons */}
@@ -776,9 +851,45 @@ export default function ChartsPage() {
                     key={trade.id}
                     trade={trade}
                     onExit={startExitMode}
-                    onDelete={removeTrade}
+                    onDelete={(id) => deleteChartTrade.mutate({ id, ticker: activeTicker })}
                   />
                 ))
+              )}
+
+              {/* Playbook seed (Task 2.4) — read-only teaching layer from the
+                  automated pipeline. Silent while loading (non-blocking);
+                  once settled, an honest muted line replaces the section
+                  body on unavailable/error rather than fabricating stats. */}
+              {showSeedTrades && !seedTradesQuery.isLoading && (
+                <div className="mt-4 border-t border-[var(--color-border)] pt-3">
+                  <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-[var(--color-text-secondary)]">
+                    <BookOpen size={12} />
+                    Playbook seed
+                  </div>
+                  {seedUnavailable ? (
+                    <p className="text-xs text-[var(--color-text-muted)]">Seed layer unavailable</p>
+                  ) : (
+                    <>
+                      <p className="mb-2 text-xs text-[var(--color-text-muted)]">
+                        {seedBench.count === 0 ? (
+                          'Seed: —'
+                        ) : (
+                          <>
+                            Seed: {seedBench.count} trade{seedBench.count === 1 ? '' : 's'}
+                            {seedBench.winRatePct != null && ` · ${seedBench.winRatePct.toFixed(0)}% win`}
+                            {seedBench.avgReturnPct != null &&
+                              ` · avg ${seedBench.avgReturnPct >= 0 ? '+' : ''}${seedBench.avgReturnPct.toFixed(2)}%`}
+                          </>
+                        )}
+                      </p>
+                      <div className="space-y-2">
+                        {seedRows.map((row) => (
+                          <SeedTradeCard key={row.id} row={row} />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           ) : (
@@ -896,6 +1007,66 @@ function TradeCard({
       {trade.pnl !== undefined && trade.pnl !== null && (
         <div className={`mt-1 text-xs font-medium ${trade.pnl >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
           {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)} ({trade.pnlPercent?.toFixed(2)}%)
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Read-only card for one admin seed trade (Task 2.4) — dashed border + muted
+ * background distinguishes it from TradeCard at a glance. No exit/delete
+ * controls: this is a teaching overlay from the automated pipeline `trades`
+ * table, never editable from the chart.
+ */
+function SeedTradeCard({ row }: { row: SeedTradeRow }) {
+  const isCall = row.direction === 'CALL';
+  const formatClock = (iso: string | null) => {
+    if (!iso) return null;
+    const epoch = isoNaiveToEpoch(iso);
+    if (Number.isNaN(epoch)) return null;
+    const d = new Date(epoch * 1000);
+    return `${d.getUTCHours().toString().padStart(2, '0')}:${d.getUTCMinutes().toString().padStart(2, '0')}`;
+  };
+  const entryClock = formatClock(row.entry_time);
+  const exitClock = formatClock(row.exit_time);
+
+  return (
+    <div className="rounded border border-dashed border-[var(--color-border)] bg-[var(--color-bg-tertiary)]/60 p-2">
+      <div className="flex items-center justify-between">
+        <span
+          className={`rounded px-1.5 py-0.5 text-xs font-bold ${
+            isCall ? 'bg-green-500/10 text-[var(--bull)]' : 'bg-red-500/10 text-[var(--bear)]'
+          }`}
+        >
+          SEED {row.direction}
+        </span>
+        {entryClock && <span className="text-xs text-[var(--color-text-muted)]">{entryClock}</span>}
+      </div>
+      {row.entry_price != null && (
+        <div className="mt-1 text-xs">
+          <span className="text-[var(--color-text-secondary)]">Entry:</span>{' '}
+          <span className="font-mono">${row.entry_price.toFixed(2)}</span>
+        </div>
+      )}
+      {row.exit_price != null && (
+        <div className="mt-0.5 text-xs">
+          <span className="text-[var(--color-text-secondary)]">Exit:</span>{' '}
+          <span className="font-mono">${row.exit_price.toFixed(2)}</span>
+          {exitClock && <span className="ml-1 text-[var(--color-text-muted)]">({exitClock})</span>}
+        </div>
+      )}
+      {row.strat_combo && (
+        <div className="mt-1 inline-block rounded bg-[var(--color-bg-hover)] px-1.5 py-0.5 text-xs text-[var(--color-text-secondary)]">
+          {row.strat_combo}
+        </div>
+      )}
+      {row.return_pct != null && (
+        <div
+          className={`mt-1 text-xs font-medium ${row.return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}
+        >
+          {row.return_pct >= 0 ? '+' : ''}
+          {row.return_pct.toFixed(2)}%
         </div>
       )}
     </div>
