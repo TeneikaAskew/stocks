@@ -791,6 +791,7 @@ async def market_coverage(symbols: str = Query(..., description="Comma-separated
     if not syms:
         raise HTTPException(status_code=422, detail="symbols query param required")
 
+    # no _CLOUD_SQL gate needed: get_engine() raises RuntimeError, caught below -> 503
     try:
         daily = _coverage_query(
             "SELECT DISTINCT ticker FROM market_data_daily WHERE ticker = ANY(:syms)",

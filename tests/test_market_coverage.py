@@ -58,3 +58,15 @@ def test_coverage_endpoint_batches_queries(monkeypatch):
     body = r.json()
     assert body["coverage"]["SPY"] == {"intraday": True, "daily": True}
     assert body["coverage"]["AAPL"] == {"intraday": False, "daily": False}
+
+
+def test_coverage_endpoint_503s_loud_on_db_failure(monkeypatch):
+    """Regression: DB errors surface as 503, never fabricate all-false coverage."""
+    def boom(sql, params=None):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(main, "_coverage_query", boom, raising=True)
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    r = client.get("/api/market/coverage", params={"symbols": "SPY"})
+    assert r.status_code == 503
+    assert "coverage" not in r.json()  # never fabricate all-false coverage
