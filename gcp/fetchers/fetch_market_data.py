@@ -977,7 +977,9 @@ def _verify_post_fetch_rows(fetch_date: str, tickers: list[str],
         sys.exit(5)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser for this fetcher. Factored out of main() so it
+    can be exercised in tests without invoking main()'s side effects."""
     parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
@@ -1017,6 +1019,15 @@ def main():
                               'between AV outputsize=full (bootstrap) and compact (catch-up) '
                               'so we do not waste bandwidth on already-current tickers. '
                               'Skips the intraday + indicator path; only writes daily bars.'))
+    parser.add_argument('--allow-stale-date', action='store_true', default=False,
+                        help=('Bypass the fetch-date freshness guard for DELIBERATE '
+                              'historical backfills of specific --tickers; never set '
+                              'this in scheduled jobs.'))
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.backfill:
@@ -1032,7 +1043,14 @@ def main():
     from zoneinfo import ZoneInfo
     _ET = ZoneInfo("America/New_York")
     fetch_date = args.date or datetime.now(_ET).date().strftime('%Y-%m-%d')
-    _assert_fetch_date_fresh(fetch_date, today_et=datetime.now(_ET).date())
+    if args.allow_stale_date:
+        log.warning(
+            "--allow-stale-date set: SKIPPING fetch-date freshness guard for "
+            "date=%s tickers=%s. This must only be used for a deliberate "
+            "historical backfill of specific --tickers, never in a scheduled "
+            "job.", fetch_date, args.tickers)
+    else:
+        _assert_fetch_date_fresh(fetch_date, today_et=datetime.now(_ET).date())
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
