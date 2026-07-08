@@ -19,6 +19,20 @@ def _read_schema() -> str:
     return SCHEMA.read_text(encoding="utf-8")
 
 
+def _table_body(sql: str, table: str) -> str:
+    """Extract a single table's column definition body bounded by CREATE TABLE and closing );
+
+    Uses non-greedy matching to prevent cross-table pollution when multiple tables are present.
+    """
+    m = re.search(
+        rf"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+{table}\s*\((.*?)\);",
+        sql,
+        re.DOTALL
+    )
+    assert m, f"table {table} not found in schema"
+    return m.group(1)
+
+
 def test_user_style_results_table_created():
     """user_style_results table must exist with idempotent CREATE TABLE IF NOT EXISTS."""
     sql = _read_schema()
@@ -39,88 +53,96 @@ def test_user_style_results_primary_key():
 def test_user_style_results_user_email_column():
     """user_style_results must have user_email TEXT NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*user_email\s+TEXT\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"user_email\s+TEXT\s+NOT\s+NULL",
+        body_normalized
     ), "user_style_results must have user_email TEXT NOT NULL"
 
 
 def test_user_style_results_ticker_column():
     """user_style_results must have ticker VARCHAR(10) NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*ticker\s+VARCHAR\(10\)\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"ticker\s+VARCHAR\(10\)\s+NOT\s+NULL",
+        body_normalized
     ), "user_style_results must have ticker VARCHAR(10) NOT NULL"
 
 
 def test_user_style_results_profile_jsonb():
     """user_style_results must have profile JSONB NOT NULL for mined StyleProfile."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*profile\s+JSONB\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"profile\s+JSONB\s+NOT\s+NULL",
+        body_normalized
     ), "user_style_results must have profile JSONB NOT NULL"
 
 
 def test_user_style_results_trained_on_trades():
     """user_style_results must have trained_on_trades INTEGER NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*trained_on_trades\s+INTEGER\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"trained_on_trades\s+INTEGER\s+NOT\s+NULL",
+        body_normalized
     ), "user_style_results must have trained_on_trades INTEGER NOT NULL"
 
 
 def test_user_style_results_avg_expectancy_pct():
-    """user_style_results must have avg_expectancy_pct DOUBLE PRECISION (nullable)."""
+    """user_style_results must have avg_expectancy_pct DOUBLE PRECISION (nullable) with TRUE PERCENT unit comment."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*avg_expectancy_pct\s+DOUBLE\s+PRECISION",
-        sql_normalized,
-        re.DOTALL
+        r"avg_expectancy_pct\s+DOUBLE\s+PRECISION",
+        body_normalized
     ), "user_style_results must have avg_expectancy_pct DOUBLE PRECISION"
+    assert re.search(
+        r"avg_expectancy_pct\s+DOUBLE\s+PRECISION.*?--\s*TRUE\s+PERCENT",
+        body_normalized
+    ), "avg_expectancy_pct must have unit comment '-- TRUE PERCENT'"
 
 
 def test_user_style_results_avg_win_rate():
-    """user_style_results must have avg_win_rate DOUBLE PRECISION (nullable)."""
+    """user_style_results must have avg_win_rate DOUBLE PRECISION (nullable) with 0..1 fraction unit comment."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*avg_win_rate\s+DOUBLE\s+PRECISION",
-        sql_normalized,
-        re.DOTALL
+        r"avg_win_rate\s+DOUBLE\s+PRECISION",
+        body_normalized
     ), "user_style_results must have avg_win_rate DOUBLE PRECISION"
+    assert re.search(
+        r"avg_win_rate\s+DOUBLE\s+PRECISION.*?--\s*0\.\.1\s+fraction",
+        body_normalized
+    ), "avg_win_rate must have unit comment '-- 0..1 fraction'"
 
 
 def test_user_style_results_stability_score():
     """user_style_results must have stability_score DOUBLE PRECISION (nullable)."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*stability_score\s+DOUBLE\s+PRECISION",
-        sql_normalized,
-        re.DOTALL
+        r"stability_score\s+DOUBLE\s+PRECISION",
+        body_normalized
     ), "user_style_results must have stability_score DOUBLE PRECISION"
 
 
 def test_user_style_results_created_at_default():
     """user_style_results must have created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "user_style_results")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+user_style_results.*created_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+NOW\(\)",
-        sql_normalized,
-        re.DOTALL
+        r"created_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+NOW\(\)",
+        body_normalized
     ), "user_style_results must have created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
 
 
@@ -146,86 +168,86 @@ def test_playbook_cards_staging_table_created():
 def test_playbook_cards_staging_primary_key():
     """playbook_cards_staging must have composite PRIMARY KEY (user_email, ticker, name)."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*CONSTRAINT\s+pk_playbook_cards_staging\s+PRIMARY\s+KEY\s+\(user_email,\s*ticker,\s*name\)",
-        sql_normalized,
-        re.DOTALL
+        r"CONSTRAINT\s+pk_playbook_cards_staging\s+PRIMARY\s+KEY\s+\(user_email,\s*ticker,\s*name\)",
+        body_normalized
     ), "playbook_cards_staging must have composite PK: pk_playbook_cards_staging (user_email, ticker, name)"
 
 
 def test_playbook_cards_staging_user_email_column():
     """playbook_cards_staging must have user_email TEXT NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*user_email\s+TEXT\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"user_email\s+TEXT\s+NOT\s+NULL",
+        body_normalized
     ), "playbook_cards_staging must have user_email TEXT NOT NULL"
 
 
 def test_playbook_cards_staging_ticker_column():
     """playbook_cards_staging must have ticker VARCHAR(10) NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*ticker\s+VARCHAR\(10\)\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"ticker\s+VARCHAR\(10\)\s+NOT\s+NULL",
+        body_normalized
     ), "playbook_cards_staging must have ticker VARCHAR(10) NOT NULL"
 
 
 def test_playbook_cards_staging_name_column():
     """playbook_cards_staging must have name TEXT NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*name\s+TEXT\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"name\s+TEXT\s+NOT\s+NULL",
+        body_normalized
     ), "playbook_cards_staging must have name TEXT NOT NULL"
 
 
 def test_playbook_cards_staging_direction_column():
     """playbook_cards_staging must have direction VARCHAR(8) NOT NULL."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*direction\s+VARCHAR\(8\)\s+NOT\s+NULL",
-        sql_normalized,
-        re.DOTALL
+        r"direction\s+VARCHAR\(8\)\s+NOT\s+NULL",
+        body_normalized
     ), "playbook_cards_staging must have direction VARCHAR(8) NOT NULL"
 
 
 def test_playbook_cards_staging_conditions_jsonb_default():
     """playbook_cards_staging must have conditions JSONB NOT NULL DEFAULT '[]'::jsonb."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*conditions\s+JSONB\s+NOT\s+NULL\s+DEFAULT\s+'\[\]'::jsonb",
-        sql_normalized,
-        re.DOTALL
+        r"conditions\s+JSONB\s+NOT\s+NULL\s+DEFAULT\s+'\[\]'::jsonb",
+        body_normalized
     ), "playbook_cards_staging must have conditions JSONB NOT NULL DEFAULT '[]'::jsonb"
 
 
 def test_playbook_cards_staging_status_default():
     """playbook_cards_staging must have status VARCHAR(16) NOT NULL DEFAULT 'candidate'."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*status\s+VARCHAR\(16\)\s+NOT\s+NULL\s+DEFAULT\s+'candidate'",
-        sql_normalized,
-        re.DOTALL
+        r"status\s+VARCHAR\(16\)\s+NOT\s+NULL\s+DEFAULT\s+'candidate'",
+        body_normalized
     ), "playbook_cards_staging must have status VARCHAR(16) NOT NULL DEFAULT 'candidate'"
 
 
 def test_playbook_cards_staging_generated_at_default():
     """playbook_cards_staging must have generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()."""
     sql = _read_schema()
-    sql_normalized = re.sub(r"\s+", " ", sql)
+    body = _table_body(sql, "playbook_cards_staging")
+    body_normalized = re.sub(r"\s+", " ", body)
     assert re.search(
-        r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+playbook_cards_staging.*generated_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+NOW\(\)",
-        sql_normalized,
-        re.DOTALL
+        r"generated_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+NOW\(\)",
+        body_normalized
     ), "playbook_cards_staging must have generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
