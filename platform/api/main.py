@@ -11,6 +11,7 @@ from typing import Optional
 
 import httpx
 import pandas as pd
+from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -810,6 +811,129 @@ async def market_coverage(symbols: str = Query(..., description="Comma-separated
         set(daily["ticker"]) if daily is not None and not daily.empty else set(),
         set(intraday["ticker"]) if intraday is not None and not intraday.empty else set(),
     )}
+
+
+# ── Sector rotation (SPDR daily closes) ──────────────────────────────────────
+
+SECTOR_NAMES = {
+    "XLK": "Technology",
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLV": "Health Care",
+    "XLI": "Industrials",
+    "XLY": "Cons. Discretionary",
+    "XLP": "Cons. Staples",
+    "XLU": "Utilities",
+    "XLB": "Materials",
+    "XLRE": "Real Estate",
+    "XLC": "Communication",
+}
+
+_SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
+
+
+def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    """Run the sector-rotation SQL query, raising on failure.
+
+    Same rationale as ``_coverage_query``: uses ``query_to_dataframe_strict``
+    (the RAISING helper) so a real DB error surfaces as a 503, never as a
+    silently-empty "all sectors unavailable" result (CLAUDE.md Rule 3.7).
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
+def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
+    """Pure helper: per-sector 1d/5d % change from ticker/date/close rows.
+
+    ``df`` is expected to hold up to the last ~6 trading days of closes per
+    ticker (see the query in ``market_sectors``). Change is computed only
+    from real prior closes — a symbol with 0 or 1 rows gets no fabricated
+    chg_1d_pct (CLAUDE.md Rule 3.7: no silent 0-fallback on a financial
+    field). ``chg_5d_pct`` requires >=6 rows; otherwise it's omitted (None)
+    but the row still reports "ok" as long as chg_1d_pct is available.
+
+    Returns (as_of, sectors) where as_of is the max date across all rows
+    (as an ISO string) or None if df is empty.
+    """
+    sectors: list = []
+    as_of = None
+    has_rows = df is not None and not df.empty
+    if has_rows:
+        as_of = str(df["date"].max())
+
+    for symbol, name in SECTOR_NAMES.items():
+        sub = df[df["ticker"] == symbol] if has_rows else df.iloc[0:0] if df is not None else pd.DataFrame()
+        sub = sub.sort_values("date")
+        n = len(sub)
+        if n == 0:
+            sectors.append({"symbol": symbol, "name": name, "status": "unavailable", "reason": "no rows"})
+            continue
+        if n < 2:
+            sectors.append({
+                "symbol": symbol, "name": name, "status": "unavailable",
+                "reason": "insufficient rows for 1d change",
+            })
+            continue
+
+        closes = sub["close"].astype(float).tolist()
+        last = closes[-1]
+        prev = closes[-2]
+        chg_1d_pct = (last - prev) / prev * 100.0
+        chg_5d_pct = None
+        if n >= 6:
+            first = closes[-6]
+            chg_5d_pct = (last - first) / first * 100.0
+
+        sectors.append({
+            "symbol": symbol,
+            "name": name,
+            "close": last,
+            "chg_1d_pct": chg_1d_pct,
+            "chg_5d_pct": chg_5d_pct,
+            "status": "ok",
+        })
+
+    return as_of, sectors
+
+
+@app.get("/api/market/sectors")
+async def market_sectors():
+    """Sector rotation snapshot computed from SPDR sector ETF daily closes.
+
+    One batched query (CLAUDE.md Rule 0: batch by grouping key, never
+    per-symbol) pulls the last ~10 calendar days of closes for the 11
+    SECTOR_NAMES tickers from market_data_daily, which covers >=6 trading
+    days per ticker in the common case. Cached 10 minutes since sector
+    closes only update once per trading day.
+    """
+    if "sectors" in _SECTORS_CACHE:
+        return _SECTORS_CACHE["sectors"]
+
+    # no _CLOUD_SQL gate needed: get_engine() raises RuntimeError, caught below -> 503
+    try:
+        df = _sectors_query(
+            """
+            SELECT ticker, date, close
+            FROM market_data_daily
+            WHERE ticker = ANY(:syms)
+              AND date >= (SELECT max(date) FROM market_data_daily) - INTERVAL '10 days'
+            ORDER BY ticker, date
+            """,
+            {"syms": list(SECTOR_NAMES.keys())},
+        )
+    except Exception as e:
+        logger.error("sector rotation query failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"database query failed: {type(e).__name__}")
+
+    as_of, sectors = _sector_rotation_from_df(df)
+    resp = {"as_of": as_of, "sectors": sectors, "status": "ok"}
+    if all(s["status"] == "unavailable" for s in sectors):
+        resp["status"] = "unavailable"
+        resp["reason"] = "sector ETFs not ingested yet — run the SPDR backfill"
+
+    _SECTORS_CACHE["sectors"] = resp
+    return resp
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
