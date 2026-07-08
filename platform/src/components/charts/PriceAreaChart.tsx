@@ -29,6 +29,12 @@ export interface PricePoint {
   label: string;
 }
 
+/** Default dollar tick with range-adaptive decimals (never repeated ticks). */
+export function defaultPriceTick(v: number, range: number): string {
+  const dec = range > 5 ? 0 : range > 0.5 ? 1 : 2;
+  return `$${Number(v).toFixed(dec)}`;
+}
+
 interface PriceAreaChartProps {
   data: PricePoint[];
   height?: number;
@@ -41,6 +47,10 @@ interface PriceAreaChartProps {
   sessionBoundary?: { time: number; label: string } | null;
   /** Show dots at every point. Automatically disabled when data.length > 40. */
   showDots?: boolean;
+  /** Y-axis tick formatter. Default: dollar with range-adaptive decimals. */
+  valueFormatter?: (v: number) => string;
+  /** Tooltip value formatter. Default: `$X.XX`. */
+  tooltipFormatter?: (v: number) => string;
 }
 
 interface TooltipEntry { value?: number | string }
@@ -48,13 +58,16 @@ interface PriceTooltipProps {
   active?: boolean;
   payload?: TooltipEntry[];
   label?: string;
+  format?: (v: number) => string;
 }
 
 /** Custom tooltip matching the Obsidian Analyst design system (theme-aware). */
-function PriceTooltip({ active, payload, label }: PriceTooltipProps) {
+function PriceTooltip({ active, payload, label, format }: PriceTooltipProps) {
   const theme = useChartTheme();
   if (!active || !payload || !payload.length) return null;
   const value = payload[0].value;
+  const defaultFormat = (v: number) => `$${v.toFixed(2)}`;
+  const formattedValue = value == null ? '—' : (format ?? defaultFormat)(Number(value));
   return (
     <div
       className="rounded-lg px-3 py-2 text-xs"
@@ -66,7 +79,7 @@ function PriceTooltip({ active, payload, label }: PriceTooltipProps) {
     >
       <div style={{ color: theme.textMuted, marginBottom: 2 }}>{label}</div>
       <div style={{ color: theme.tooltipText, fontWeight: 600 }}>
-        ${Number(value ?? 0).toFixed(2)}
+        {formattedValue}
       </div>
     </div>
   );
@@ -78,6 +91,8 @@ export function PriceAreaChart({
   seriesLabel = 'Close price',
   sessionBoundary = null,
   showDots = true,
+  valueFormatter,
+  tooltipFormatter,
 }: PriceAreaChartProps) {
   const theme = useChartTheme();
   // Compute Y-axis domain with 2% padding so the line doesn't hug the card edges
@@ -89,6 +104,8 @@ export function PriceAreaChart({
     const pad = (max - min) * 0.08 || 1;
     return [min - pad, max + pad];
   }, [data]);
+
+  const range = yDomain[1] - yDomain[0];
 
   // Auto-disable dots when there are too many points (would look cluttered)
   const renderDots = showDots && data.length <= 40;
@@ -151,11 +168,11 @@ export function PriceAreaChart({
             axisLine={false}
             tickLine={false}
             width={56}
-            tickFormatter={(v) => `$${Number(v).toFixed(0)}`}
+            tickFormatter={(v) => (valueFormatter ?? ((x: number) => defaultPriceTick(x, range)))(Number(v))}
           />
 
           <Tooltip
-            content={<PriceTooltip />}
+            content={<PriceTooltip format={tooltipFormatter ?? ((v) => `$${v.toFixed(2)}`)} />}
             cursor={{
               stroke: theme.brand,
               strokeWidth: 1,
