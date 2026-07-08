@@ -30,7 +30,8 @@ from lib.logging_config import setup_logging
 setup_logging()
 log = logging.getLogger(__name__)
 
-TICKERS = ['IWM', 'SPY', 'QQQ', 'SPX']
+SECTOR_ETFS = ['XLK', 'XLF', 'XLE', 'XLV', 'XLI', 'XLY', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC']
+TICKERS = ['IWM', 'SPY', 'QQQ', 'SPX'] + SECTOR_ETFS
 AV_BASE_URL = 'https://www.alphavantage.co/query'
 
 # AV symbols mapping (same symbol for daily and intraday).
@@ -39,6 +40,17 @@ AV_SYMBOL_MAP = {
     'IWM': 'IWM',
     'QQQ': 'QQQ',
     'SPX': 'SPX',
+    'XLK': 'XLK',
+    'XLF': 'XLF',
+    'XLE': 'XLE',
+    'XLV': 'XLV',
+    'XLI': 'XLI',
+    'XLY': 'XLY',
+    'XLP': 'XLP',
+    'XLU': 'XLU',
+    'XLB': 'XLB',
+    'XLRE': 'XLRE',
+    'XLC': 'XLC',
 }
 
 
