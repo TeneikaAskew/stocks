@@ -212,6 +212,78 @@ test.describe('TickerCombobox', () => {
     await expect(page.getByTestId('ticker-coverage-error')).toContainText('coverage lookup unavailable');
   });
 
+  test('picking a "new"-badged suggestion auto-adds it to the watchlist with an honest ingest notice', async ({ page }) => {
+    // AAPL has no coverage entry at all → badge is the honest "new" default.
+    await page.route('**/api/market/coverage**', (r) => r.fulfill(M.ok({ coverage: {} })));
+
+    let addRequestBody: unknown = null;
+    await page.route('**/api/insights/watchlist/add', (r) => {
+      addRequestBody = JSON.parse(r.request().postData() ?? '{}');
+      return r.fulfill(
+        M.ok({ ticker: 'AAPL', added: true, info: null, quote: null, peers: null, watchlist: ['AAPL'] })
+      );
+    });
+
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('aa');
+    const option = page.getByTestId('ticker-option-AAPL');
+    await expect(option).toContainText('new', { timeout: 5000 });
+    await option.click();
+
+    await expect(page.getByTestId('ticker-ingest-notice')).toBeVisible();
+    await expect(page.getByTestId('ticker-ingest-notice')).toContainText(
+      "Tracking AAPL — daily data lands after tonight's fetch"
+    );
+    expect(addRequestBody).toEqual({ ticker: 'AAPL' });
+  });
+
+  test('picking a "full"-badged suggestion does NOT auto-add to the watchlist', async ({ page }) => {
+    await page.route('**/api/market/coverage**', (r) =>
+      r.fulfill(M.ok({ coverage: { AAPL: { intraday: true, daily: true } } }))
+    );
+
+    let addCalled = false;
+    await page.route('**/api/insights/watchlist/add', (r) => {
+      addCalled = true;
+      return r.fulfill(
+        M.ok({ ticker: 'AAPL', added: true, info: null, quote: null, peers: null, watchlist: ['AAPL'] })
+      );
+    });
+
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('aa');
+    const option = page.getByTestId('ticker-option-AAPL');
+    await expect(option).toContainText('full', { timeout: 5000 });
+    await option.click();
+
+    await expect(page.getByTestId('ticker-combobox-panel')).not.toBeVisible();
+    await expect(page.getByTestId('ticker-combobox')).toContainText('AAPL');
+    await expect(page.getByTestId('ticker-ingest-notice')).not.toBeVisible();
+    expect(addCalled).toBe(false);
+  });
+
+  test('watchlist-add failure shows a loud inline error but still sets the active ticker', async ({ page }) => {
+    await page.route('**/api/market/coverage**', (r) => r.fulfill(M.ok({ coverage: {} })));
+    await page.route('**/api/insights/watchlist/add', (r) =>
+      r.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'watchlist write to Cloud SQL failed: connection refused' }),
+      })
+    );
+
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('aa');
+    await page.getByTestId('ticker-option-AAPL').click();
+
+    const notice = page.getByTestId('ticker-ingest-notice');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('503');
+    await expect(notice).toContainText('connection refused');
+    // Browsing is allowed even when ingest fails — the active ticker still updates.
+    await expect(page.getByTestId('ticker-combobox')).toContainText('AAPL');
+  });
+
   test('a search result duplicating a quick pick is deduped — IWM renders exactly once', async ({ page }) => {
     // Search returns IWM (already a quick pick) plus a novel symbol.
     await page.route('**/api/insights/ticker/search**', (r) =>

@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Clock, Search } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
-import { useTickerSearch, useTickerCoverage, type SearchMatch, type TickerCoverage } from '@/hooks/useTickerSearch';
+import {
+  useTickerSearch,
+  useTickerCoverage,
+  useAddToWatchlist,
+  type SearchMatch,
+  type TickerCoverage,
+} from '@/hooks/useTickerSearch';
 
 export type CoverageBadge = 'full' | 'daily' | 'new';
 export type Coverage = TickerCoverage;
@@ -80,9 +86,16 @@ function BadgeChip({ badge }: { badge: CoverageBadge }) {
 
 interface TickerComboboxProps {
   className?: string;
-  /** Called whenever a symbol is picked — Task 3 hooks this to auto-ingest never-before-seen tickers. */
+  /** Called whenever a symbol is picked (any badge). Auto-ingest for
+   *  never-before-seen ("new"-badged) tickers is handled internally —
+   *  see the `choose` handler below — this prop is for extra page-level
+   *  side effects, if a consumer ever needs one. */
   onPickNew?: (symbol: string) => void;
 }
+
+type IngestNotice = { kind: 'success' | 'error'; message: string };
+
+const INGEST_NOTICE_MS = 8_000;
 
 /**
  * Ticker type-ahead combobox (`TickerCombobox`) — replaces the old fixed
@@ -101,6 +114,9 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
   const [sel, setSel] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [ingestNotice, setIngestNotice] = useState<IngestNotice | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const addToWatchlist = useAddToWatchlist();
 
   const debounced = useDebouncedValue(query.trim(), 300);
   const searchEnabled = debounced.length >= 1;
@@ -168,12 +184,48 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
     if (open) inputRef.current?.focus();
   }, [open]);
 
+  // Clear any pending auto-clear timer on unmount so it never fires setState
+  // against an unmounted component.
+  useEffect(() => () => clearTimeout(noticeTimerRef.current), []);
+
+  const showIngestNotice = (notice: IngestNotice) => {
+    clearTimeout(noticeTimerRef.current);
+    setIngestNotice(notice);
+    noticeTimerRef.current = setTimeout(() => setIngestNotice(null), INGEST_NOTICE_MS);
+  };
+
   const choose = (symbol: string) => {
     const upper = symbol.toUpperCase();
+
+    // Auto-ingest only fires for a SEARCH row badged "new" — quick-picks and
+    // recents never carry a badge (no coverage was queried for them), and if
+    // the coverage lookup itself errored, badges are unreliable so we must
+    // not trust a "new" reading enough to write to the watchlist.
+    const searchRow = searchRows.find((r) => r.symbol.toUpperCase() === upper);
+    const shouldAutoIngest = !!searchRow && searchRow.badge === 'new' && !coverage.isError;
+
     setTicker(upper);
     pushRecent(upper);
     onPickNew?.(upper);
     close();
+
+    if (shouldAutoIngest) {
+      addToWatchlist.mutate(upper, {
+        onSuccess: () =>
+          showIngestNotice({
+            kind: 'success',
+            message: `Tracking ${upper} — daily data lands after tonight's fetch`,
+          }),
+        onError: (err) =>
+          // Never swallow the failure — browsing is still allowed (setTicker
+          // above already ran), but the user must know the watchlist write
+          // didn't happen so pages can't silently look "tracked".
+          showIngestNotice({
+            kind: 'error',
+            message: `couldn't add ${upper} to tracking — ${err.message}`,
+          }),
+      });
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -343,6 +395,24 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Auto-ingest notice — success or failure of the watchlist-add fired
+          from `choose()` above. Renders below the trigger (popover is
+          already closed by the time this can appear) and self-clears after
+          INGEST_NOTICE_MS, mirroring JournalPage's exportStatus toast. */}
+      {ingestNotice && (
+        <div
+          data-testid="ticker-ingest-notice"
+          role={ingestNotice.kind === 'error' ? 'alert' : 'status'}
+          className={`absolute left-0 top-full z-40 mt-2 w-72 rounded-lg border px-3 py-2 text-xs ${
+            ingestNotice.kind === 'error'
+              ? 'border-[var(--bear)]/40 bg-[var(--bear)]/10 text-[var(--bear)]'
+              : 'border-[var(--bull)]/40 bg-[var(--bull)]/10 text-[var(--bull)]'
+          }`}
+        >
+          {ingestNotice.message}
         </div>
       )}
     </div>

@@ -95,7 +95,19 @@ export function useAddToWatchlist() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker }),
       });
-      if (!r.ok) throw new Error(`add ${r.status}`);
+      if (!r.ok) {
+        // Surface the backend's actual detail (e.g. "Cloud SQL unreachable")
+        // rather than a bare status code — callers (TickerCombobox's
+        // auto-ingest notice) need the honest reason, not just "add 503".
+        let detail = r.statusText;
+        try {
+          const body = await r.json();
+          if (body?.detail) detail = body.detail;
+        } catch {
+          // response body wasn't JSON — fall back to statusText
+        }
+        throw new Error(`HTTP ${r.status}: ${detail}`);
+      }
       return r.json();
     },
   });
