@@ -6,9 +6,11 @@ import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
 import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
 import { useLiveIndicators } from '@/hooks/useLiveIndicators';
+import { useReferenceLevels } from '@/hooks/useMarketData';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { EMPTY_INDICATORS, EMPTY_SIGNALS } from '@/lib/indicators';
 import type { Bar } from '@/lib/indicators';
+import { buildReviewQuote } from '@/lib/reviewQuote';
 import { to12h } from '@/lib/time';
 import {
   Activity,
@@ -158,6 +160,13 @@ export default function LiveMarketPage() {
   const { data: liveHistory } = useLiveHistory(activeTicker, livePolling);
   const { data: histDay } = useHistoricalDay(activeTicker, reviewDate);
   const { data: avgVolData } = useAvgVolume(activeTicker);
+  // Prior session close for the review-mode quote — same reference endpoint
+  // ChartsPage uses, so "change" means the same thing in review mode as it
+  // does live (vs prior close), not vs the day's open.
+  const { data: refLevels } = useReferenceLevels(
+    activeTicker,
+    isReview && reviewDate ? reviewDate.replace(/-/g, '') : '',
+  );
 
   // Bars: live → last 100 1-min bars; review → bars from historical day, sliced to review time
   // Live API returns `time` as a string (e.g. "2026-04-25 15:30:00"); review API returns unix
@@ -177,28 +186,20 @@ export default function LiveMarketPage() {
     return liveHistory?.bars ?? [];
   }, [isReview, histDay, liveHistory, reviewTs]);
 
-  // Quote: live → live quote; review → synthetic quote from historical bars
+  // Quote: live → live quote; review → synthetic quote from historical bars,
+  // change/change_pct rebased to the PRIOR SESSION CLOSE (refLevels.close) —
+  // the same baseline the live quote uses — via the shared buildReviewQuote
+  // builder (lib/reviewQuote.ts). Honestly null (renders "—") when the prior
+  // close can't be resolved, never silently rebased to the day's open.
   const quote: Quote | undefined = useMemo(() => {
     if (!isReview) return liveQuote;
-    if (bars.length === 0) return undefined;
-    const first = bars[0];
-    const last = bars[bars.length - 1];
-    const high = Math.max(...bars.map(b => b.high));
-    const low = Math.min(...bars.map(b => b.low));
-    const volume = bars.reduce((s, b) => s + b.volume, 0);
-    return {
-      ticker: activeTicker,
-      price: last.close,
-      open: first.open,
-      high,
-      low,
-      volume,
-      change: last.close - first.open,
-      change_pct: ((last.close - first.open) / first.open) * 100,
-      prev_close: first.open,
-      last_updated: reviewTime ? `${reviewDate} ${reviewTime} ET` : (reviewDate ?? ''),
-    };
-  }, [isReview, bars, liveQuote, activeTicker, reviewDate, reviewTime]);
+    return buildReviewQuote(
+      bars,
+      refLevels?.close ?? null,
+      activeTicker,
+      reviewTime ? `${reviewDate} ${reviewTime} ET` : (reviewDate ?? ''),
+    );
+  }, [isReview, bars, liveQuote, activeTicker, reviewDate, reviewTime, refLevels]);
 
   // Indicators and signals are computed server-side (lib/indicators.py).
   // The app never duplicates this math — there is no client-side fallback.
@@ -304,9 +305,15 @@ export default function LiveMarketPage() {
               <div className="text-3xl font-bold font-mono text-[var(--color-text-primary)]">
                 ${quote.price.toFixed(2)}
               </div>
-              <div className={`text-sm font-mono ${quote.change >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
-                {quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)}
-                {' '}({quote.change_pct >= 0 ? '+' : ''}{quote.change_pct.toFixed(2)}%)
+              <div className={`text-sm font-mono ${(quote.change ?? 0) >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
+                {quote.change != null && quote.change_pct != null ? (
+                  <>
+                    {quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)}
+                    {' '}({quote.change_pct >= 0 ? '+' : ''}{quote.change_pct.toFixed(2)}%)
+                  </>
+                ) : '—'}
+                {' '}
+                <span className="text-[10px] font-sans text-[var(--color-text-muted)]">vs prior close</span>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
@@ -317,7 +324,7 @@ export default function LiveMarketPage() {
                 High: <span className="font-mono text-[var(--bull)]">${quote.high.toFixed(2)}</span>
               </span>
               <span className="text-[var(--color-text-muted)]">
-                Prev: <span className="font-mono text-[var(--color-text-primary)]">${quote.prev_close.toFixed(2)}</span>
+                Prev: <span className="font-mono text-[var(--color-text-primary)]">{quote.prev_close != null ? `$${quote.prev_close.toFixed(2)}` : '—'}</span>
               </span>
               <span className="text-[var(--color-text-muted)]">
                 Low: <span className="font-mono text-[var(--bear)]">${quote.low.toFixed(2)}</span>
