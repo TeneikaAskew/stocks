@@ -311,6 +311,20 @@ jobs:
 
           git config user.name  "arch-refresh-bot"
           git config user.email "noreply@github.com"
+
+          # $BRANCH is a per-month bot branch (bot/arch-refresh-YYYY-MM)
+          # that can already exist on origin from an earlier run this month
+          # that pushed successfully but then failed at `gh pr create` (the
+          # 2026-07-01 permission failure below used to leave exactly this
+          # kind of orphan). `git checkout -b` creates a LOCAL branch with
+          # no ancestry relationship to that remote branch, so the
+          # subsequent push is rejected as non-fast-forward and the failure
+          # then repeats on every retry for the rest of the month (this
+          # recurred on 2026-07-06 — see issue #688). This branch is
+          # bot-owned and disposable — nothing else builds on it — so
+          # deleting any stale remote copy before recreating it is safe and
+          # makes the step idempotent across retries within the same month.
+          git push origin --delete "$BRANCH" 2>/dev/null || true
           git checkout -b "$BRANCH"
 
           # Stage only the regenerated docs. JSON dumps are gitignored
