@@ -344,3 +344,114 @@ test.describe('Charts page — journal-backed trade persistence (Task 2.3)', () 
     expect(expectedPairs.has(`${capturedBody.entry_date}|${capturedBody.entry_time}`)).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 2.4: admin seed-trade teaching layer (GET /api/journal/seed/{ticker}).
+// Read-only overlay — muted markers, a "Playbook seed" panel section, a
+// client-side benchmark line, and a `Show seed trades` toggle that gates
+// both. Unavailable/error responses render an honest muted line, never
+// fabricated stats (CLAUDE.md Rule 3.7).
+// ─────────────────────────────────────────────────────────────────────────
+const SEED_TRADES = [
+  {
+    id: 'seed-1',
+    direction: 'CALL',
+    entry_time: '2026-04-25 09:35:00+00:00',
+    entry_price: 220.1,
+    exit_time: '2026-04-25 09:50:00+00:00',
+    exit_price: 221.1,
+    return_pct: 0.45,
+    strat_combo: '2U-2U',
+    exit_reason: 'take_profit',
+  },
+  {
+    id: 'seed-2',
+    direction: 'PUT',
+    entry_time: '2026-04-25 10:05:00+00:00',
+    entry_price: 221.5,
+    exit_time: '2026-04-25 10:20:00+00:00',
+    exit_price: 221.94,
+    return_pct: -0.2,
+    strat_combo: '3-2D',
+    exit_reason: 'stop_loss',
+  },
+];
+
+test.describe('Charts page — admin seed-trade teaching layer (Task 2.4)', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockCommon(page);
+    // Dates come back as YYYYMMDD in production — see the Task 2.3 block
+    // above for why this format matters (selectedIsoDate conversion).
+    await page.route('**/api/market/dates/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
+    await page.route('**/api/signals/IWM/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
+    await page.route('**/api/signals/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
+    );
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] }))
+    );
+  });
+
+  test('renders Playbook seed section with read-only rows and a benchmark line; toggle hides section + markers', async ({ page }) => {
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 2, trades: SEED_TRADES }))
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    // Section + benchmark line (default ON).
+    await expect(page.getByText('Playbook seed')).toBeVisible();
+    await expect(page.getByText(/2 trades · 50% win/)).toBeVisible();
+
+    // Two read-only rows — direction chips + signed percents, no exit/delete
+    // controls (those only exist on TradeCard, the user-trade component).
+    await expect(page.getByText('SEED CALL')).toBeVisible();
+    await expect(page.getByText('SEED PUT')).toBeVisible();
+    await expect(page.getByText('+0.45%')).toBeVisible();
+    await expect(page.getByText('-0.20%')).toBeVisible();
+    await expect(page.getByText('2U-2U')).toBeVisible();
+    await expect(page.getByText('3-2D')).toBeVisible();
+
+    // Toggle off — section (and its markers) disappear.
+    const toggle = page.getByTestId('seed-toggle');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    await expect(page.getByText('Playbook seed')).not.toBeVisible();
+
+    // Toggle back on — section reappears (proves it's pure client state,
+    // not a one-shot unmount).
+    await toggle.click();
+    await expect(page.getByText('Playbook seed')).toBeVisible();
+  });
+
+  test('unavailable seed layer renders an honest muted line, never fabricated stats', async ({ page }) => {
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ status: 'unavailable', reason: 'seed layer requires Cloud SQL' }))
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await expect(page.getByText('Seed layer unavailable')).toBeVisible();
+    // No benchmark numbers should render alongside the honest line.
+    await expect(page.getByText(/\d+% win/)).not.toBeVisible();
+  });
+
+  test('seed query error (503) renders the same honest muted line', async ({ page }) => {
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'seed query failed' }) })
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await expect(page.getByText('Seed layer unavailable')).toBeVisible();
+  });
+});

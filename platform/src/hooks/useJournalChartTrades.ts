@@ -44,6 +44,43 @@ interface JournalDeleteResponse {
   deleted: string;
 }
 
+// ── Seed layer (Task 2.4) ────────────────────────────────────────────────
+// GET /api/journal/seed/{ticker}?date= (platform/api/routers/journal.py
+// seed_trades). Read-only admin pull from the automated pipeline `trades`
+// table — a teaching layer overlaid on the user's own journal, never
+// editable from the chart. return_pct here is already TRUE PERCENT
+// (server converts the pipeline's raw fraction ×100 — see the router's
+// in-line comment), same units as journal_entries.return_pct.
+export interface SeedTradeRow {
+  id: string;
+  direction: string; // 'CALL' | 'PUT'
+  entry_time: string | null;
+  entry_price: number | null;
+  exit_time: string | null;
+  exit_price: number | null;
+  return_pct: number | null; // PERCENT
+  strat_combo: string | null;
+  exit_reason: string | null;
+}
+
+interface SeedTradesOk {
+  ticker: string;
+  date: string;
+  count: number;
+  trades: SeedTradeRow[];
+}
+
+interface SeedTradesUnavailable {
+  status: 'unavailable';
+  reason: string;
+}
+
+export type SeedTradesResponse = SeedTradesOk | SeedTradesUnavailable;
+
+export function isSeedTradesUnavailable(resp: SeedTradesResponse): resp is SeedTradesUnavailable {
+  return 'status' in resp && resp.status === 'unavailable';
+}
+
 // ── Pure mappers (exported, unit-tested in journalChartTrades.test.ts) ────
 
 /**
@@ -247,4 +284,63 @@ export function useDeleteChartTrade() {
       qc.invalidateQueries({ queryKey: chartTradesKey(vars.ticker) });
     },
   });
+}
+
+/**
+ * Admin seed trades (Task 2.4) — read-only teaching overlay for one
+ * ticker+day. A real backend error (503) surfaces through TanStack Query's
+ * `isError`/`error` state; an honest `{status:"unavailable"}` envelope
+ * (open/local dev with no Cloud SQL) comes back as a normal 200 and is
+ * distinguished via `isSeedTradesUnavailable`. Neither path fabricates
+ * rows or stats (CLAUDE.md Rule 3.7) — the caller renders a muted "Seed
+ * layer unavailable" line for both.
+ */
+export function useSeedTrades(ticker: string, date: string) {
+  return useQuery<SeedTradesResponse, Error>({
+    queryKey: ['journal-seed-trades', ticker, date] as const,
+    queryFn: async () => {
+      const r = await fetch(`/api/journal/seed/${ticker}?date=${date}`);
+      if (!r.ok) throw new Error(`journal seed ${r.status}`);
+      return r.json();
+    },
+    enabled: !!ticker && !!date,
+    staleTime: 10_000,
+    // A 503 here is a real backend failure the UI must surface promptly as
+    // "Seed layer unavailable" (Rule 3.7) rather than silently retrying —
+    // matches useGammaLevels'/useGammaGrid's `retry: false` for the same
+    // "unavailable is a legitimate, fast-surfacing state" reason.
+    retry: false,
+  });
+}
+
+export interface SeedBenchmark {
+  count: number;
+  winRatePct: number | null;
+  avgReturnPct: number | null;
+}
+
+/**
+ * Display-only aggregation of the seed layer's own server-computed
+ * `return_pct` values — COUNTING, not financial math. Win = return_pct > 0
+ * (0/breakeven does not count as a win). Rows with a null return_pct (no
+ * exit recorded yet) are excluded from the win-rate/average but still
+ * counted in `count` so the "N trades" figure matches what's rendered
+ * below it. Empty input -> nulls, never a fabricated 0% (Rule 3.7).
+ */
+export function seedBenchmark(rows: SeedTradeRow[]): SeedBenchmark {
+  const count = rows.length;
+  if (count === 0) {
+    return { count: 0, winRatePct: null, avgReturnPct: null };
+  }
+  const withReturn = rows.filter((r) => r.return_pct != null);
+  if (withReturn.length === 0) {
+    return { count, winRatePct: null, avgReturnPct: null };
+  }
+  const wins = withReturn.filter((r) => (r.return_pct as number) > 0).length;
+  const sum = withReturn.reduce((acc, r) => acc + (r.return_pct as number), 0);
+  return {
+    count,
+    winRatePct: (wins / withReturn.length) * 100,
+    avgReturnPct: sum / withReturn.length,
+  };
 }

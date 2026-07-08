@@ -3,7 +3,9 @@ import {
   epochToJournalDateTime,
   isoNaiveToEpoch,
   journalRowToTradeEntry,
+  seedBenchmark,
   type JournalRow,
+  type SeedTradeRow,
 } from './useJournalChartTrades';
 
 describe('epochToJournalDateTime', () => {
@@ -162,5 +164,46 @@ describe('journalRowToTradeEntry', () => {
     };
     const t = journalRowToTradeEntry(row);
     expect(t.entryTime).toBe(originalEntryTime);
+  });
+});
+
+describe('seedBenchmark', () => {
+  const seedBase: SeedTradeRow = {
+    id: 'seed-1',
+    direction: 'CALL',
+    entry_time: '2026-04-25 09:35:00+00:00',
+    entry_price: 220.1,
+    exit_time: '2026-04-25 09:50:00+00:00',
+    exit_price: 221.1,
+    return_pct: 0.45,
+    strat_combo: '2U-2U',
+    exit_reason: 'take_profit',
+  };
+
+  it('counts wins (return_pct > 0) and averages the server-computed percents', () => {
+    const rows: SeedTradeRow[] = [
+      { ...seedBase, id: '1', return_pct: 0.45 },
+      { ...seedBase, id: '2', direction: 'PUT', return_pct: -0.2 },
+    ];
+    const b = seedBenchmark(rows);
+    expect(b.count).toBe(2);
+    expect(b.winRatePct).toBeCloseTo(50, 6);
+    expect(b.avgReturnPct).toBeCloseTo(0.125, 6);
+  });
+
+  it('excludes null-return rows from win-rate/average but keeps them in count', () => {
+    const rows: SeedTradeRow[] = [
+      { ...seedBase, id: '1', return_pct: 0.3 },
+      { ...seedBase, id: '2', return_pct: 0 }, // breakeven — not a win
+      { ...seedBase, id: '3', return_pct: null }, // no exit yet
+    ];
+    const b = seedBenchmark(rows);
+    expect(b.count).toBe(3);
+    expect(b.winRatePct).toBeCloseTo(50, 6); // 1 win / 2 rows with a return
+    expect(b.avgReturnPct).toBeCloseTo(0.15, 6);
+  });
+
+  it('returns nulls (never a fabricated 0%) for an empty row set', () => {
+    expect(seedBenchmark([])).toEqual({ count: 0, winRatePct: null, avgReturnPct: null });
   });
 });
