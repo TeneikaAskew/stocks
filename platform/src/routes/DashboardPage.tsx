@@ -144,6 +144,12 @@ function briefBullets(b: BriefResponse): { text: string; tone: Tone }[] {
   return out.slice(0, 5);
 }
 
+/** Playbook avg_return arrives in PERCENT units (playbook.py _pct). Render as-is. */
+export function topSetupAvgReturn(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—';
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+}
+
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -464,7 +470,7 @@ export default function DashboardPage() {
                   </div>
                   <div>
                     <MicroLabel>Avg return</MicroLabel>
-                    <Metric value={fmtPct(topCard.avg_return * 100)} tone={topCard.avg_return >= 0 ? 'bull' : 'bear'} />
+                    <Metric value={topSetupAvgReturn(topCard.avg_return)} tone={(topCard.avg_return ?? 0) >= 0 ? 'bull' : 'bear'} />
                   </div>
                 </div>
                 <div className="flex flex-1 flex-col gap-1.5">
@@ -570,7 +576,7 @@ export default function DashboardPage() {
         <Card interactive onClick={() => navigate('/signals')} className="min-w-0">
           <CardHeader
             title={<><Bell size={13} className="mr-1.5 inline align-middle" />Live signals</>}
-            meta={`${activeTicker} · ${signalsResp?.count?.toLocaleString() ?? 0}`}
+            meta={`${activeTicker} · ${signalsResp?.count != null ? signalsResp.count.toLocaleString() : '—'}`}
           />
           {recentSignals.length === 0 ? (
             <Unavailable msg="No signals yet for this ticker." />
