@@ -17,3 +17,11 @@ export function toETDateString(d: Date): string {
 export function todayET(): string {
   return toETDateString(new Date());
 }
+
+/** Add days to a YYYY-MM-DD string with UTC-anchored arithmetic — immune to
+ * the browser's timezone (local-midnight round-trips shift a day east of UTC). */
+export function addDaysToISO(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}

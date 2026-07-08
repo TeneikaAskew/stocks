@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { todayET, toETDateString } from './dates';
+import { addDaysToISO, todayET, toETDateString } from './dates';
 
 afterEach(() => vi.useRealTimers());
 
@@ -20,5 +20,13 @@ describe('todayET', () => {
 describe('toETDateString', () => {
   it('formats an arbitrary Date in ET', () => {
     expect(toETDateString(new Date('2026-01-01T03:00:00Z'))).toBe('2025-12-31');
+  });
+});
+
+describe('addDaysToISO', () => {
+  it('adds days without timezone drift', () => {
+    expect(addDaysToISO('2026-07-07', 1)).toBe('2026-07-08');
+    expect(addDaysToISO('2026-07-07', -3)).toBe('2026-07-04');
+    expect(addDaysToISO('2026-12-31', 1)).toBe('2027-01-01');
   });
 });
