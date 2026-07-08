@@ -4,6 +4,7 @@ import {
   isoNaiveToEpoch,
   journalRowToTradeEntry,
   seedBenchmark,
+  formatEdgeBps,
   type JournalRow,
   type SeedTradeRow,
 } from './useJournalChartTrades';
@@ -205,5 +206,24 @@ describe('seedBenchmark', () => {
 
   it('returns nulls (never a fabricated 0%) for an empty row set', () => {
     expect(seedBenchmark([])).toEqual({ count: 0, winRatePct: null, avgReturnPct: null });
+  });
+});
+
+describe('formatEdgeBps', () => {
+  it('signs a positive value with a leading +', () => {
+    expect(formatEdgeBps(120)).toBe('+120.00 bps');
+  });
+
+  it('keeps the native minus sign for a negative value (no double sign)', () => {
+    expect(formatEdgeBps(-45.3)).toBe('-45.30 bps');
+  });
+
+  it('renders exactly zero as +0.00 bps (0 is a real edge value, not "missing")', () => {
+    expect(formatEdgeBps(0)).toBe('+0.00 bps');
+  });
+
+  it('renders null/undefined as an em dash, never a fabricated 0.00 (Rule 3.7)', () => {
+    expect(formatEdgeBps(null)).toBe('—');
+    expect(formatEdgeBps(undefined)).toBe('—');
   });
 });

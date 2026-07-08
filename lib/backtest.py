@@ -12,17 +12,18 @@ columns from indicator data. Both can **filter** (reject) trades that
 contradict higher-timeframe context, not just add bonus points.
 """
 
+import math
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time
 from typing import List, Dict, Optional, Tuple
 
-from lib.indicators import add_all_indicators
+from lib.indicators import add_all_indicators, add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.config import (
     RiskConfig, ExitConfig, SignalConfig, StratConfig, BacktestConfig,
-    IndicatorConfig, get_position_size, get_signal_strength_label,
+    IndicatorConfig, get_position_size, get_signal_strength_label, load_config,
 )
 from lib.strat import StratClassifier
 from lib.data_loader import RESAMPLE_RULES
@@ -507,31 +508,35 @@ class BacktestEngine:
             day_pnl = 0.0
             active_trade: Optional[Trade] = None
 
-            for i in range(len(day_df)):
+            i = 0
+            while i < len(day_df):
                 row = day_df.iloc[i]
                 close_price = row.get(close_col, row.get('Close', row.get('Last')))
 
                 if pd.isna(close_price):
+                    i += 1
                     continue
 
                 bar_time = row.get('Time', day_df.index[i])
                 if isinstance(bar_time, str):
                     bar_time = pd.to_datetime(bar_time)
 
-                # --- Check exit conditions ---
-                if active_trade is not None:
-                    exit_result = self._check_exit(active_trade, row, bar_time, close_price)
-                    if exit_result:
-                        reason, exit_price = exit_result
-                        active_trade.exit_time = bar_time
-                        active_trade.exit_price = exit_price
-                        active_trade.exit_reason = reason
-
-                        if active_trade.direction == 'CALL':
-                            active_trade.return_pct = (exit_price - active_trade.entry_price) / active_trade.entry_price
-                        else:
-                            active_trade.return_pct = (active_trade.entry_price - exit_price) / active_trade.entry_price
-
+                # --- Check entry conditions ---
+                # active_trade is always None here: once an entry fires
+                # (below) it is immediately walked to full resolution via
+                # _simulate_exit_indexed before the loop advances, so this
+                # bar is only ever reached when no position is open —
+                # matching the original bar-by-bar "active_trade is None"
+                # gate exactly, just without an idle trade lingering
+                # across loop iterations.
+                if active_trade is None and day_trades < self.risk.max_daily_trades:
+                    entry = self._check_entry(
+                        row, bar_time, use_strat, strat_df, ftfc_series, i, day_df,
+                    )
+                    if entry:
+                        active_trade, last_idx = self._simulate_exit_indexed(
+                            entry, day_df, i, close_col=close_col,
+                        )
                         trades.append(active_trade)
                         day_trades += 1
                         day_pnl += active_trade.return_pct * active_trade.position_size
@@ -542,40 +547,11 @@ class BacktestEngine:
                             break
                         if day_pnl >= self.risk.daily_profit_target:
                             break
+
+                        i = last_idx + 1
                         continue
 
-                    # Track MAE/MFE while in position
-                    if active_trade.direction == 'CALL':
-                        unrealized = (close_price - active_trade.entry_price) / active_trade.entry_price
-                    else:
-                        unrealized = (active_trade.entry_price - close_price) / active_trade.entry_price
-                    active_trade.mae = min(active_trade.mae, unrealized)
-                    active_trade.mfe = max(active_trade.mfe, unrealized)
-
-                # --- Check entry conditions ---
-                if active_trade is None and day_trades < self.risk.max_daily_trades:
-                    entry = self._check_entry(
-                        row, bar_time, use_strat, strat_df, ftfc_series, i, day_df,
-                    )
-                    if entry:
-                        active_trade = entry
-
-            # Force-close any open position at end of day
-            if active_trade is not None:
-                last_row = day_df.iloc[-1]
-                last_price = last_row.get(close_col, last_row.get('Close', last_row.get('Last')))
-                last_time = last_row.get('Time', day_df.index[-1])
-                active_trade.exit_time = last_time
-                active_trade.exit_price = last_price
-                active_trade.exit_reason = 'eod_close'
-                if active_trade.direction == 'CALL':
-                    active_trade.return_pct = (last_price - active_trade.entry_price) / active_trade.entry_price
-                else:
-                    active_trade.return_pct = (active_trade.entry_price - last_price) / active_trade.entry_price
-                trades.append(active_trade)
-                day_trades += 1
-                day_pnl += active_trade.return_pct * active_trade.position_size
-                active_trade = None
+                i += 1
 
             daily_pnl.append({'date': day, 'trades': day_trades, 'pnl': day_pnl})
             equity.append(equity[-1] * (1 + day_pnl))
@@ -591,6 +567,122 @@ class BacktestEngine:
             annualization_factor=self.bt.annualization_factor,
             filter_counts=dict(self._filter_counts),
         )
+
+    def simulate_exit(
+        self,
+        trade: Trade,
+        bars: pd.DataFrame,
+        entry_idx: int,
+        close_col: str = 'Close',
+    ) -> Trade:
+        """Walk ``bars`` forward from an entry to resolve a trade's exit.
+
+        Extracted from the exit-handling block that used to be inline in
+        ``run()`` (Task 3.1) so it can be reused by the labeled-trade
+        replay path without re-running the full event-driven ``run()``
+        loop. For each bar after ``entry_idx``, calls the existing
+        ``_check_exit`` (target / stop / time-stop / RSI-extreme), tracks
+        MAE/MFE while the position remains open, and force-closes with
+        ``exit_reason='eod_close'`` at the LAST bar in ``bars`` if no exit
+        condition fires before bars run out.
+
+        ``_check_exit`` reads ``self._current_ticker`` for per-ticker exit
+        overrides. This method does not set that attribute itself — it
+        follows the same convention as ``run()``, which sets
+        ``self._current_ticker = ticker`` once at the top of its own body
+        before any bar processing starts. Callers invoking
+        ``simulate_exit`` directly (outside of ``run()``) are responsible
+        for setting ``self._current_ticker`` beforehand (or leaving it
+        unset/None to use the engine's ``self.exit.*`` defaults).
+
+        ``return_pct`` is filled as a RAW FRACTION (e.g. 0.003 == +0.30%),
+        sign-corrected for PUT direction — the same engine-internal
+        convention used throughout ``BacktestResult``.
+
+        Parameters
+        ----------
+        trade : a Trade with entry fields populated and exit fields None
+        bars : the bar DataFrame to walk (e.g. a single day's OHLCV slice)
+        entry_idx : positional (``iloc``) index of the entry bar within
+            ``bars`` — the walk starts at ``entry_idx + 1``
+        close_col : name of the close price column
+
+        Returns
+        -------
+        The same ``Trade`` instance, mutated in place with exit_time,
+        exit_price, exit_reason, return_pct, mae, mfe filled in.
+        """
+        resolved_trade, _last_idx = self._simulate_exit_indexed(
+            trade, bars, entry_idx, close_col=close_col,
+        )
+        return resolved_trade
+
+    def _simulate_exit_indexed(
+        self,
+        trade: Trade,
+        bars: pd.DataFrame,
+        entry_idx: int,
+        close_col: str = 'Close',
+    ) -> Tuple[Trade, int]:
+        """Core implementation shared by ``simulate_exit()`` and ``run()``.
+
+        Identical to ``simulate_exit()`` except it also returns the
+        positional index of the last bar consumed (the exit bar, or
+        ``len(bars) - 1`` on an eod_close) so ``run()`` can resume its own
+        per-bar loop immediately after the bar that closed this trade,
+        without re-deriving that position via a timestamp lookup.
+        """
+        last_idx = entry_idx
+        for i in range(entry_idx + 1, len(bars)):
+            row = bars.iloc[i]
+            close_price = row.get(close_col, row.get('Close', row.get('Last')))
+
+            if pd.isna(close_price):
+                continue
+
+            bar_time = row.get('Time', bars.index[i])
+            if isinstance(bar_time, str):
+                bar_time = pd.to_datetime(bar_time)
+
+            last_idx = i
+
+            exit_result = self._check_exit(trade, row, bar_time, close_price)
+            if exit_result:
+                reason, exit_price = exit_result
+                trade.exit_time = bar_time
+                trade.exit_price = exit_price
+                trade.exit_reason = reason
+
+                if trade.direction == 'CALL':
+                    trade.return_pct = (exit_price - trade.entry_price) / trade.entry_price
+                else:
+                    trade.return_pct = (trade.entry_price - exit_price) / trade.entry_price
+
+                return trade, last_idx
+
+            # Track MAE/MFE while in position
+            if trade.direction == 'CALL':
+                unrealized = (close_price - trade.entry_price) / trade.entry_price
+            else:
+                unrealized = (trade.entry_price - close_price) / trade.entry_price
+            trade.mae = min(trade.mae, unrealized)
+            trade.mfe = max(trade.mfe, unrealized)
+
+        # No exit triggered before bars ran out — force-close at day end,
+        # using the LAST bar in `bars` (matches the pre-extraction
+        # post-loop "Force-close any open position at end of day" block).
+        last_row = bars.iloc[-1]
+        last_price = last_row.get(close_col, last_row.get('Close', last_row.get('Last')))
+        last_time = last_row.get('Time', bars.index[-1])
+        trade.exit_time = last_time
+        trade.exit_price = last_price
+        trade.exit_reason = 'eod_close'
+        if trade.direction == 'CALL':
+            trade.return_pct = (last_price - trade.entry_price) / trade.entry_price
+        else:
+            trade.return_pct = (trade.entry_price - last_price) / trade.entry_price
+
+        return trade, len(bars) - 1
 
     def _check_entry(
         self,
@@ -794,3 +886,355 @@ class BacktestEngine:
             return 'rsi_extreme', close_price
 
         return None
+
+
+# ---------------------------------------------------------------------------
+# Task 3.2: labeled-trade replay — score a user's journal trades against
+# actual bars and benchmark them against the system.
+# ---------------------------------------------------------------------------
+
+# Minimum bars (inclusive of the entry bar) required before `evaluate_signal`
+# is trusted — mirrors platform/api/routers/live.py's `compute_live_signal_series`
+# 14-bar warm-up gate (that endpoint 422s below this; here we degrade a single
+# trade's `system_signal_at_entry` to the "unavailable" shape instead, since
+# the rest of the scorecard — fill_check, system_exit, actual_return_pct — is
+# independent of indicator warm-up and shouldn't be thrown away with it).
+_SIGNAL_WARMUP_BARS = 14
+
+
+def _unavailable(trade_id, reason: str) -> dict:
+    """An 'unavailable' scorecard — CLAUDE.md Rule 3.7: never zero-fill a
+    trade we can't actually score. Deliberately omits actual_return_pct /
+    fill_check / system_signal_at_entry / system_exit / exit_edge_bps so a
+    caller can't mistake an unavailable row for a scored one."""
+    return {'id': trade_id, 'status': 'unavailable', 'reason': reason}
+
+
+def _score_one_trade(
+    labeled_trade: dict,
+    bars_by_date: Dict[str, pd.DataFrame],
+    engine: 'BacktestEngine',
+    signal_cache: Dict[str, pd.DataFrame],
+) -> dict:
+    """Score a single labeled trade. See `replay_labeled_trades` for the
+    scorecard shape and unit conventions."""
+    trade_id = labeled_trade.get('id')
+    direction = str(labeled_trade.get('direction') or '').upper()
+    entry_ts_raw = labeled_trade.get('entry_ts')
+    entry_price = labeled_trade.get('entry_price')
+    exit_ts_raw = labeled_trade.get('exit_ts')
+    exit_price = labeled_trade.get('exit_price')
+
+    # An active (still-open) trade has no exit yet — nothing to benchmark.
+    if exit_ts_raw is None or exit_price is None:
+        return _unavailable(trade_id, 'trade still open')
+
+    if direction not in ('CALL', 'PUT'):
+        return _unavailable(trade_id, f'invalid direction: {labeled_trade.get("direction")!r}')
+
+    if (
+        entry_price is None
+        or entry_price == 0
+        or (isinstance(entry_price, float) and math.isnan(entry_price))
+    ):
+        return _unavailable(trade_id, 'invalid entry price')
+
+    try:
+        entry_dt = pd.to_datetime(entry_ts_raw)
+    except (ValueError, TypeError):
+        return _unavailable(trade_id, 'invalid entry_ts')
+
+    date_key = entry_dt.strftime('%Y-%m-%d')
+    day_bars = bars_by_date.get(date_key)
+    if day_bars is None or day_bars.empty:
+        return _unavailable(trade_id, 'no bars for date')
+
+    # Reconcile formats: the journal's entry_ts wall-clock (minute precision)
+    # against the bars' 'Time' strings — sort + reset so `entry_idx` below is
+    # a valid positional (iloc) index into the frame we actually walk.
+    day_bars = day_bars.sort_values('Time').reset_index(drop=True)
+    entry_minute_key = entry_dt.strftime('%Y-%m-%d %H:%M')
+    bar_minutes = pd.to_datetime(day_bars['Time']).dt.strftime('%Y-%m-%d %H:%M')
+    matches = day_bars.index[bar_minutes == entry_minute_key]
+    if len(matches) == 0:
+        return _unavailable(trade_id, 'entry bar not found')
+    entry_idx = int(matches[0])
+    entry_bar = day_bars.iloc[entry_idx]
+
+    fill_check = 'ok'
+    if not (entry_bar['Low'] <= entry_price <= entry_bar['High']):
+        fill_check = 'price_outside_bar_range'
+
+    # User's actual return — TRUE PERCENT, sign-corrected for PUT (journal
+    # convention; mirrors platform/api/routers/journal.py's `_return_pct`).
+    raw_pct = (exit_price - entry_price) / entry_price * 100.0
+    actual_return_pct = raw_pct if direction == 'CALL' else -raw_pct
+
+    # --- System signal at entry: the exact production path
+    # /api/live/signal-series uses (add_signal_indicators + evaluate_signal,
+    # ticker-agnostic default configs — see live.py's compute_live_signal_series
+    # docstring). Below the warm-up floor the indicators aren't trustworthy,
+    # so the field degrades to the explicit "unavailable" shape rather than
+    # silently reporting a spurious no-signal result.
+    if entry_idx + 1 < _SIGNAL_WARMUP_BARS:
+        system_signal_at_entry: dict = {'status': 'unavailable'}
+    else:
+        if date_key not in signal_cache:
+            signal_cache[date_key] = add_signal_indicators(day_bars, close_col='Close')
+        sig_row = signal_cache[date_key].iloc[entry_idx]
+        sig = evaluate_signal(sig_row)
+        if sig is not None:
+            system_signal_at_entry = {'direction': sig['direction'], 'score': sig['total_score']}
+        else:
+            system_signal_at_entry = {'direction': None, 'score': 0}
+
+    # --- System exit: walk the SAME day's bars forward from the entry bar
+    # via Task 3.1's simulate_exit(), using the LABEL's entry_price (that's
+    # what we're benchmarking) and entry_time from the matched bar.
+    system_trade = Trade(
+        entry_time=pd.to_datetime(entry_bar['Time']),
+        entry_price=float(entry_price),
+        direction=direction,
+        base_score=0, strat_bonus=0, total_score=0, position_size=1.0,
+        conditions_met=[],
+    )
+    resolved = engine.simulate_exit(system_trade, day_bars, entry_idx, close_col='Close')
+    system_return_pct = None if resolved.return_pct is None else resolved.return_pct * 100.0  # fraction -> percent
+    system_exit = {
+        'exit_reason': resolved.exit_reason,
+        'return_pct': system_return_pct,
+        'exit_time': None if resolved.exit_time is None else str(resolved.exit_time),
+    }
+
+    exit_edge_bps = None
+    if system_return_pct is not None:
+        # (user_return_pct - system_return_pct) * 100 -- percent -> bps.
+        exit_edge_bps = (actual_return_pct - system_return_pct) * 100.0
+
+    return {
+        'id': trade_id,
+        'status': 'ok',
+        'actual_return_pct': round(actual_return_pct, 4),
+        'fill_check': fill_check,
+        'system_signal_at_entry': system_signal_at_entry,
+        'system_exit': {
+            **system_exit,
+            'return_pct': None if system_return_pct is None else round(system_return_pct, 4),
+        },
+        'exit_edge_bps': None if exit_edge_bps is None else round(exit_edge_bps, 4),
+    }
+
+
+def _aggregate_scorecards(scorecards: List[dict]) -> dict:
+    """Aggregate metrics over a list of per-trade scorecards. `n` counts
+    every trade passed in; `scored_n` counts only status=='ok' rows — an
+    unavailable trade is never zero-filled into the average (Rule 3.7).
+
+    `system_agreement_rate` definition (medium finding, PR review on
+    bca2c899): a scored trade's `system_signal_at_entry` is one of three
+    shapes —
+      1. ``{"status": "unavailable"}`` — the 14-bar indicator warm-up
+         hadn't completed; the system never got a chance to opine.
+      2. ``{"direction": None, "score": 0}`` — the benchmark RAN but its
+         conditions didn't fire; the system had no setup.
+      3. ``{"direction": "CALL"|"PUT", "score": N}`` — the benchmark
+         produced an actual directional call. Only these are
+         "system-resolved".
+    Folding (1) and (2) into "disagreement" (the original implementation)
+    silently penalizes trades the system never actually took a position
+    on, understating the user's real edge whenever the system was simply
+    silent. The rate is now computed ONLY over system-resolved trades:
+    ``system_resolved_n`` is the denominator, and `system_agreement_rate`
+    is ``None`` (never 0.0) when that denominator is 0 — an honest null,
+    not a fabricated "0% agreement". `system_no_signal_n` separately
+    counts case (2) so a caller/UI can say "the system had no setup on N
+    of your entries" without conflating it with disagreement.
+    """
+    n = len(scorecards)
+    scored = [c for c in scorecards if c.get('status') == 'ok']
+    scored_n = len(scored)
+
+    # LOW finding: an "ok" card is a promise that these two numeric
+    # fields are populated. Assert it loudly here (not a silent skip) so
+    # a future _score_one_trade regression surfaces immediately, at the
+    # trade that violated the invariant, rather than as a downstream
+    # None-arithmetic TypeError far from its cause.
+    for c in scored:
+        if c.get('exit_edge_bps') is None or c.get('actual_return_pct') is None:
+            raise ValueError(
+                f"trade {c.get('id')!r}: status=='ok' but exit_edge_bps/"
+                f"actual_return_pct is None — ok-card invariant violated"
+            )
+
+    if scored_n == 0:
+        return {
+            'n': n, 'scored_n': 0, 'win_rate': 0.0, 'avg_return_pct': 0.0,
+            'system_resolved_n': 0, 'system_no_signal_n': 0,
+            'system_agreement_rate': None, 'avg_exit_edge_bps': 0.0,
+        }
+
+    wins = [c for c in scored if c['actual_return_pct'] > 0]
+    win_rate = len(wins) / scored_n
+    avg_return_pct = sum(c['actual_return_pct'] for c in scored) / scored_n
+
+    # 'direction' key absent -> warm-up "unavailable" shape (case 1).
+    # 'direction' present and None -> benchmark ran, no setup (case 2).
+    # 'direction' present and non-None -> system-resolved (case 3).
+    resolved = [
+        c for c in scored
+        if c['system_signal_at_entry'].get('direction') is not None
+    ]
+    system_resolved_n = len(resolved)
+    no_signal = [
+        c for c in scored
+        if 'direction' in c['system_signal_at_entry']
+        and c['system_signal_at_entry']['direction'] is None
+    ]
+    system_no_signal_n = len(no_signal)
+
+    # The labeled trade's own direction is threaded through as
+    # '_labeled_direction' by the caller (replay_labeled_trades) since the
+    # public scorecard shape doesn't otherwise carry it.
+    agreements = sum(
+        1 for c in resolved
+        if c['system_signal_at_entry']['direction'] == c.get('_labeled_direction')
+    )
+    system_agreement_rate = (
+        agreements / system_resolved_n if system_resolved_n else None
+    )
+
+    avg_exit_edge_bps = sum(c['exit_edge_bps'] for c in scored) / scored_n
+
+    return {
+        'n': n,
+        'scored_n': scored_n,
+        'win_rate': round(win_rate, 4),
+        'avg_return_pct': round(avg_return_pct, 4),
+        'system_resolved_n': system_resolved_n,
+        'system_no_signal_n': system_no_signal_n,
+        'system_agreement_rate': (
+            None if system_agreement_rate is None
+            else round(system_agreement_rate, 4)
+        ),
+        'avg_exit_edge_bps': round(avg_exit_edge_bps, 4),
+    }
+
+
+def replay_labeled_trades(
+    labeled: List[dict],
+    bars_by_date: Dict[str, pd.DataFrame],
+    exit_config: Optional[ExitConfig] = None,
+    ticker: Optional[str] = None,
+) -> dict:
+    """Score user-labeled trades against actual bars + benchmark vs the system.
+
+    Parameters
+    ----------
+    labeled : list of ``{id, direction (CALL|PUT), entry_ts (ISO string),
+        entry_price, exit_ts (ISO string or None), exit_price (or None)}``.
+        A trade with ``exit_ts``/``exit_price`` of None (still open) is
+        scored as ``unavailable`` / ``"trade still open"`` — never
+        zero-filled.
+    bars_by_date : ``{"YYYY-MM-DD": DataFrame}`` — each frame must carry
+        uppercase ``Open``/``High``/``Low``/``Close``/``Volume`` columns
+        plus a ``Time`` column (string or datetime-like) at 1-minute
+        resolution for that date. A date missing from this dict (or an
+        empty frame) marks every trade on that date ``unavailable`` /
+        ``"no bars for date"``.
+    exit_config : optional override for the engine's exit thresholds
+        (target/stop/time-stop). When omitted, ``load_config(ticker=ticker)``
+        supplies them (per-ticker ``alert_config.json`` overrides apply).
+    ticker : when provided, set on the engine as ``_current_ticker`` — the
+        SAME per-ticker Tier-A DB override contract ``BacktestEngine.run()``
+        uses (see ``simulate_exit``'s docstring, Task 3.1). When ``None``,
+        the engine uses ``exit_config``/``cfg.exit`` directly with no DB
+        round-trip — the path every hermetic test in this module exercises.
+
+    Returns
+    -------
+    ``{"trades": [...per-trade scorecards...], "aggregate": {...}}``.
+
+    UNITS: every ``*_pct`` field is TRUE PERCENT (0.3-style values, e.g.
+    +0.30, not the engine's raw-fraction 0.003) — the conversion happens
+    here, once, at the fraction -> percent boundary. ``exit_edge_bps =
+    (user_return_pct - system_return_pct) * 100`` (percent -> bps).
+
+    Per-trade scorecard (``status == "ok"``):
+    ``{id, status: "ok", actual_return_pct, fill_check: "ok"|
+    "price_outside_bar_range", system_signal_at_entry: {direction, score} |
+    {"status": "unavailable"}, system_exit: {exit_reason, return_pct,
+    exit_time}, exit_edge_bps}``.
+    ``status == "unavailable"``: ``{id, status: "unavailable", reason}`` —
+    no other fields are populated (never zero-filled; CLAUDE.md Rule 3.7).
+
+    Aggregate: ``{n, scored_n, win_rate (0-1), avg_return_pct,
+    system_resolved_n, system_no_signal_n, system_agreement_rate,
+    avg_exit_edge_bps}``. ``n`` counts every input trade; ``scored_n``
+    counts only ``status == "ok"`` trades — unavailable trades never enter
+    an average.
+
+    ``system_agreement_rate`` is computed ONLY over "system-resolved"
+    scored trades — those whose ``system_signal_at_entry`` produced an
+    actual ``CALL``/``PUT`` direction. Trades where the benchmark's
+    indicator warm-up hadn't completed (``system_signal_at_entry ==
+    {"status": "unavailable"}``), or where it ran but fired no direction
+    (``{"direction": None, ...}``), are EXCLUDED from the rate's
+    denominator entirely — they are NOT folded in as "disagreement",
+    since the system never took a position to disagree with.
+    ``system_resolved_n`` is that denominator; ``system_no_signal_n``
+    separately counts the "ran but no setup" case so a caller can
+    surface "the system had no setup on N of your entries" without
+    conflating it with disagreement. When ``system_resolved_n == 0``,
+    ``system_agreement_rate`` is ``None`` — an honest null, never a
+    fabricated ``0.0`` (CLAUDE.md Rule 3.7).
+
+    System signal at entry reuses ``lib.indicators.add_signal_indicators`` +
+    ``lib.signals.evaluate_signal`` with plain (uncalibrated, ticker-agnostic)
+    default configs — the exact path
+    ``platform/api/routers/live.py::compute_live_signal_series`` (the
+    ``/api/live/signal-series`` endpoint) uses, so the benchmark can't drift
+    from what the Charts page's "Sig" overlay already shows. System exit
+    reuses ``BacktestEngine.simulate_exit`` (Task 3.1) with configs from
+    ``load_config(ticker=ticker)`` — the SAME engine construction
+    ``scripts/run_backtest.py`` uses (Rule 3.6: no re-derived math).
+
+    Capacity: one in-memory pandas pass per trade over its day's bars
+    (<=~390 rows/day); indicator computation is cached per date so trades
+    sharing a day only pay for it once. No DB writes. No new DB reads beyond
+    what the caller already loaded into ``bars_by_date``.
+    """
+    cfg = load_config(ticker=ticker)
+    engine = BacktestEngine(
+        risk_config=cfg.risk,
+        exit_config=exit_config or cfg.exit,
+        signal_config=cfg.signal,
+        strat_config=cfg.strat,
+        backtest_config=cfg.backtest,
+        indicator_config=cfg.indicator,
+    )
+    # Matches BacktestEngine.run()'s own convention (sets this once at the
+    # top of its body, even when ticker is None) — see simulate_exit's
+    # docstring (Task 3.1) for the full contract.
+    engine._current_ticker = ticker
+
+    signal_cache: Dict[str, pd.DataFrame] = {}
+    scorecards = [
+        _score_one_trade(t, bars_by_date, engine, signal_cache)
+        for t in labeled
+    ]
+
+    # system_agreement_rate needs each scorecard compared against ITS OWN
+    # trade's labeled direction (the scorecard itself doesn't carry
+    # 'direction' — only the input labeled dict does), so thread it through
+    # as a parallel list rather than mutating the public scorecard shape.
+    directions_by_id = {t.get('id'): str(t.get('direction') or '').upper() for t in labeled}
+    for c in scorecards:
+        c['_labeled_direction'] = directions_by_id.get(c.get('id'))
+
+    aggregate = _aggregate_scorecards(scorecards)
+
+    # Strip the internal bookkeeping key before returning.
+    for c in scorecards:
+        c.pop('_labeled_direction', None)
+
+    return {'trades': scorecards, 'aggregate': aggregate}

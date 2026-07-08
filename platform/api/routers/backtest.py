@@ -34,13 +34,16 @@ to TRUE PERCENT units (fraction * 100) so the frontend can render
 exception: it stays a 0-1 fraction (the UI multiplies by 100 itself).
 """
 import logging
+import math
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 # Project root so we can import from sibling packages
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -49,6 +52,23 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Import the shared GCS reader. The `api` package is platform/api/.
 from api import gcs_reader  # noqa: E402
+
+# Single source of truth for the labeled-trade replay math (Task 3.2) — the
+# router only loads data and shapes the HTTP contract; all scoring/benchmark
+# math lives in lib/backtest.py (CLAUDE.md: "lib/ is the shared backend spine").
+from lib.backtest import replay_labeled_trades  # noqa: E402
+
+# Owner scoping — the SAME per-user Cloud SQL scoping journal_entries reads
+# use elsewhere (platform/api/routers/journal.py). Imported rather than
+# duplicated so the two routers can never drift on what "owner" means.
+from .journal import _journal_owner  # noqa: E402
+
+try:
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
+except Exception:
+    _HAS_CLOUD_SQL = False
+    query_to_dataframe = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -327,3 +347,139 @@ async def list_all_backtests(ticker: str):
     }
     _ALL_RUNS_CACHE[ticker_upper] = resp
     return resp
+
+
+# ── POST /api/backtest/replay-trades (Task 3.2) ──────────────────────────────
+#
+# Scores the caller's own labeled journal trades against actual bars and
+# benchmarks them against BacktestEngine.simulate_exit (Task 3.1). Capacity
+# (CLAUDE.md Rule 0): per-request pandas over <= trades x 390 bars; one SELECT
+# for the matched journal rows + one SELECT per distinct entry date for bars
+# (via main.py's _load_date_data — Cloud SQL primary, GCS fallback); no DB
+# writes. All scoring math lives in lib.backtest.replay_labeled_trades.
+
+
+class ReplayTradesRequest(BaseModel):
+    ticker: str
+    trade_ids: Optional[list[str]] = None
+    session_id: Optional[str] = None
+
+
+def _replay_bar_loader(ticker_lower: str, date: str) -> pd.DataFrame:
+    """Indirection over main.py's `_load_date_data` (Cloud SQL primary, GCS
+    fallback — the same loader /api/market/data uses) so tests can
+    monkeypatch bar loading without touching the network. Deferred import
+    avoids a circular import: main.py imports this router at app startup."""
+    from api.main import _load_date_data
+    return _load_date_data(ticker_lower, date)
+
+
+def _replay_journal_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    """Indirection over the Cloud SQL query helper, mirroring journal.py's
+    `_journal_query` pattern (forwards to the module-global name at CALL
+    time so tests can monkeypatch this wrapper directly)."""
+    return query_to_dataframe(sql, params)
+
+
+def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
+    """`_load_date_data` returns lowercase open/high/low/close/volume columns
+    with a DatetimeIndex (no 'Time' column) — main.py's /api/market/data
+    endpoint does its own column normalization inline for the chart;
+    lib.backtest / lib.signals need the same uppercase OHLCV columns PLUS a
+    'Time' column (VWAP session grouping, entry-bar minute matching) with a
+    plain positional (0..n-1) index so `entry_idx` from the minute-match
+    lookup is a valid `.iloc` position."""
+    out = df.copy()
+    col_map = {c: c.capitalize() for c in out.columns
+               if c.lower() in ("open", "high", "low", "close", "volume")}
+    out = out.rename(columns=col_map)
+    if not isinstance(out.index, pd.DatetimeIndex):
+        out.index = pd.to_datetime(out.index)
+    out = out.sort_index()
+    out["Time"] = out.index.astype(str)
+    return out.reset_index(drop=True)
+
+
+@router.post("/api/backtest/replay-trades")
+async def replay_trades(body: ReplayTradesRequest, request: Request):
+    """Score the signed-in user's labeled journal trades against actual bars
+    and benchmark them against the system (Task 3.2). 422 if neither
+    `trade_ids` nor `session_id` is given; 404 if nothing matches; strict
+    fail-loud (uncaught exception -> 500) on any Cloud SQL error loading the
+    journal rows or the bars — never a silent empty/zero-filled result
+    (CLAUDE.md Rule 3.7)."""
+    if not body.trade_ids and not body.session_id:
+        raise HTTPException(status_code=422, detail="trade_ids or session_id is required")
+
+    if not _HAS_CLOUD_SQL:
+        raise HTTPException(status_code=503, detail="journal database not configured")
+
+    ticker_upper = body.ticker.upper()
+    owner = _journal_owner(request)
+
+    conditions = []
+    params: dict = {"ticker": ticker_upper, "user_email": owner}
+    if body.trade_ids:
+        conditions.append("id::text = ANY(:trade_ids)")
+        params["trade_ids"] = list(body.trade_ids)
+    if body.session_id:
+        conditions.append("session_id::text = :session_id")
+        params["session_id"] = body.session_id
+    where_clause = " OR ".join(conditions)
+
+    df = _replay_journal_query(
+        f"""
+        SELECT id::text, direction,
+               entry_ts AT TIME ZONE 'UTC' AS entry_ts,
+               exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
+               entry_price, exit_price
+        FROM journal_entries
+        WHERE ticker = :ticker AND user_email = :user_email AND ({where_clause})
+        ORDER BY entry_ts
+        """,
+        params,
+    )
+
+    if df.empty:
+        raise HTTPException(status_code=404, detail="no matching trades found")
+
+    for col in ("entry_ts", "exit_ts"):
+        df[col] = df[col].apply(lambda v: None if pd.isna(v) else str(v))
+
+    labeled: list[dict] = []
+    for rec in df.to_dict(orient="records"):
+        exit_price = rec.get("exit_price")
+        if isinstance(exit_price, float) and math.isnan(exit_price):
+            exit_price = None
+        labeled.append({
+            "id": rec["id"],
+            "direction": rec["direction"],
+            "entry_ts": rec["entry_ts"],
+            "entry_price": rec["entry_price"],
+            "exit_ts": rec["exit_ts"],
+            "exit_price": exit_price,
+        })
+
+    # Load bars for every distinct entry date. A date with genuinely no data
+    # (FileNotFoundError from _load_date_data) is NOT a DB failure — it's
+    # left out of bars_by_date so replay_labeled_trades marks that date's
+    # trades "unavailable" / "no bars for date" (never zero-filled). Any
+    # OTHER exception (real Cloud SQL/GCS failure) propagates — fail loud.
+    ticker_lower = ticker_upper.lower()
+    distinct_dates = sorted({
+        pd.to_datetime(t["entry_ts"]).strftime("%Y-%m-%d")
+        for t in labeled if t["entry_ts"]
+    })
+
+    bars_by_date: dict[str, pd.DataFrame] = {}
+    for date_key in distinct_dates:
+        try:
+            raw_df = _replay_bar_loader(ticker_lower, date_key.replace("-", ""))
+        except FileNotFoundError:
+            log.info("replay-trades: no bars for %s on %s", ticker_upper, date_key)
+            continue
+        if raw_df is None or raw_df.empty:
+            continue
+        bars_by_date[date_key] = _normalize_bars_for_replay(raw_df)
+
+    return replay_labeled_trades(labeled, bars_by_date, ticker=ticker_upper)
