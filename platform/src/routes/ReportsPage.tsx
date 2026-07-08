@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { useTickerStore } from '@/stores/tickerStore';
 import { FileText, AlertTriangle } from 'lucide-react';
 
@@ -52,12 +53,18 @@ function useReportContent(ticker: string, phase: string, enabled: boolean) {
 // Configure marked for GFM (tables, strikethrough, etc.)
 marked.setOptions({ gfm: true, breaks: false });
 
+/** Markdown -> sanitized HTML. Reports are pipeline-generated, but embedded
+ * third-party text (news headlines etc.) must never execute in the app. */
+export function renderReportHtml(markdown: string): string {
+  return DOMPurify.sanitize(marked.parse(markdown) as string);
+}
+
 function ReportViewer({ ticker, phase }: { ticker: string; phase: string }) {
   const { data: content, isLoading, isError } = useReportContent(ticker, phase, true);
 
   const html = useMemo(() => {
     if (!content) return '';
-    return marked.parse(content) as string;
+    return renderReportHtml(content);
   }, [content]);
 
   if (isLoading) {

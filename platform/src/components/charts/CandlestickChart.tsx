@@ -41,6 +41,12 @@ interface CandlestickChartProps {
   priceLines?: PriceLineConfig[];
   onChartClick?: (data: ChartClickData) => void;
   onCrosshairMove?: (data: { time: number; price: number; ohlc?: CandlestickBar } | null) => void;
+  /** Optional minimum height (px) for the chart container. Undefined = no
+   *  floor, so the caller's own wrapper controls sizing (e.g. a dashboard
+   *  card that must clip at a fixed height). Callers that need a chart to
+   *  never shrink below a comfortable reading height (e.g. /charts) should
+   *  pass an explicit value. */
+  minHeight?: number;
 }
 
 // RTH window comes from /api/config/market-hours via useMarketHours().
@@ -80,6 +86,7 @@ export function CandlestickChart({
   priceLines,
   onChartClick,
   onCrosshairMove,
+  minHeight,
 }: CandlestickChartProps) {
   // Server-sourced market hours so the RTH filter mirrors Python.
   // Falls back to standard NYSE 09:30-16:00 ET when the config query is
@@ -307,7 +314,7 @@ export function CandlestickChart({
     <div
       ref={containerRef}
       className="h-full w-full"
-      style={{ minHeight: 400 }}
+      style={minHeight != null ? { minHeight } : undefined}
     />
   );
 }

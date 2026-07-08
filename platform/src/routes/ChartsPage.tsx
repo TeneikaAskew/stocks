@@ -12,7 +12,8 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import BacktesterSection from '@/components/backtest/BacktesterSection';
 import { StrategyConditionsCard } from '@/components/charts/StrategyConditionsCard';
 import { SimilarSetupsCard } from '@/components/charts/SimilarSetupsCard';
-import { computeIndicators, calculateVWAP, computeStrategySignals, computeStrategySignalsForSeries, type Bar } from '@/lib/indicators';
+import { useLiveIndicators, useSignalSeries } from '@/hooks/useLiveIndicators';
+import { EMPTY_INDICATORS, EMPTY_SIGNALS, type Bar } from '@/lib/indicators';
 import type { Timeframe, TradeEntry, TradeDirection } from '@/types';
 import type { CandlestickBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
@@ -110,9 +111,13 @@ export default function ChartsPage() {
   const minDate = dates.length > 0 ? toInputFormat(dates[dates.length - 1]) : '';
   const maxDate = dates.length > 0 ? toInputFormat(dates[0]) : '';
 
-  // Auto-select first date (for local state)
-  if (!localSelectedDate && dates.length > 0) {
-    setLocalSelectedDate(dates[0]);
+  // Auto-select first date (for local state) — render-time adjustment
+  // (React docs pattern, mirroring ReplayControl's `lastCommitted` idiom):
+  // adopt the newest date once per dates-list identity, without an effect.
+  const [seenDates, setSeenDates] = useState<string[] | null>(null);
+  if (dates.length > 0 && seenDates !== dates) {
+    setSeenDates(dates);
+    if (!localSelectedDate) setLocalSelectedDate(dates[0]);
   }
 
   // Effective date: override with reviewDate when in review mode, snapping to nearest earlier trading day
@@ -178,11 +183,13 @@ export default function ChartsPage() {
   const stats = useTradeAnalytics(currentTrades);
 
   // Strategy condition evaluation: build a Bar[] from the candlestick + volume
-  // arrays the API returns and compute indicators + VWAP. Need ≥14 bars before
-  // RSI is meaningful, so dependent UI hides itself below that threshold.
-  const strategyState = useMemo(() => {
-    if (!marketData || marketData.candlestick.length < 14) return null;
-    const bars: Bar[] = marketData.candlestick.map((c, i) => ({
+  // arrays the API returns. Indicators + signals are computed server-side
+  // (lib/indicators.py, lib/signals.py) — the app never duplicates this math.
+  // Need ≥14 bars before RSI is meaningful, so dependent UI hides itself
+  // below that threshold.
+  const chartBars: Bar[] = useMemo(() => {
+    if (!marketData) return [];
+    return marketData.candlestick.map((c, i) => ({
       time: String(c.time),
       open: c.open,
       high: c.high,
@@ -190,10 +197,24 @@ export default function ChartsPage() {
       close: c.close,
       volume: marketData.volume[i]?.value ?? 0,
     }));
-    const indicators = computeIndicators(bars);
-    const vwap = calculateVWAP(bars);
-    return { bars, indicators, vwap };
   }, [marketData]);
+
+  // Live Strategy Conditions panel — mirrors LiveMarketPage.tsx's
+  // useLiveIndicators usage exactly so the same 10-condition strength
+  // readout (POST /api/live/indicators, lib/indicators.py) drives every
+  // page in the app.
+  const lastChartBar = chartBars.length > 0 ? chartBars[chartBars.length - 1] : null;
+  const indicatorsQuery = useLiveIndicators(
+    {
+      bars: chartBars,
+      current_price: lastChartBar?.close ?? null,
+      current_volume: lastChartBar?.volume ?? null,
+      avg_volume_20d: null,
+    },
+    chartBars.length >= 14,
+  );
+  const chartIndicators = indicatorsQuery.data?.indicators ?? EMPTY_INDICATORS;
+  const chartSignals = indicatorsQuery.data?.signals ?? EMPTY_SIGNALS;
 
   // Build chart markers from trades
   const tradeMarkers: SeriesMarker<Time>[] = useMemo(() => {
@@ -221,19 +242,25 @@ export default function ChartsPage() {
   }, [currentTrades]);
 
   // Strategy signal overlay — green up triangles for CALL fires, red down
-  // for PUT fires. Computed client-side from the loaded bars via the same
-  // 5-condition voter as trading_analysis.py. Toggled by the Sig button.
+  // for PUT fires. Computed server-side via POST /api/live/signal-series,
+  // which runs the SAME production mean-reversion voter
+  // (lib/signals.py:evaluate_signal) gcp/signal_monitor.py fires live
+  // alerts from — no client-side re-derivation. Fetched independently of
+  // the Sig toggle (below) so SimilarSetupsCard's "latest bar fired?"
+  // read stays correct even while the overlay is hidden; the toggle only
+  // gates whether markers are drawn on the chart.
+  const signalSeriesQuery = useSignalSeries(chartBars, `${activeTicker}:${selectedDate}`, chartBars.length >= 14);
   const signalMarkers: SeriesMarker<Time>[] = useMemo(() => {
-    if (!showSignals || !strategyState) return [];
-    const fires = computeStrategySignalsForSeries(strategyState.bars);
-    return fires.map((s) => ({
-      time: Number(s.time) as Time,
-      position: s.direction === 'CALL' ? 'belowBar' : 'aboveBar',
-      color: s.direction === 'CALL' ? '#22c55e' : '#ef4444',
-      shape: s.direction === 'CALL' ? 'arrowUp' : 'arrowDown',
-      text: `${s.direction} ${s.metCount}/5`,
+    if (!showSignals) return [];
+    const fires = signalSeriesQuery.data?.fires ?? [];
+    return fires.map((f) => ({
+      time: Number(f.time) as Time,
+      position: f.direction === 'CALL' ? 'belowBar' : 'aboveBar',
+      color: f.direction === 'CALL' ? '#22c55e' : '#ef4444',
+      shape: f.direction === 'CALL' ? 'arrowUp' : 'arrowDown',
+      text: `${f.direction} ${f.score}`,
     }));
-  }, [showSignals, strategyState]);
+  }, [showSignals, signalSeriesQuery.data]);
 
   // Trade markers on top of signal markers so user trades win the visual
   // priority (and re-render last in the chart's marker plugin).
@@ -562,7 +589,7 @@ export default function ChartsPage() {
 
           <button
             onClick={() => setShowSignals(!showSignals)}
-            title="Overlay 5-condition voter signals on the chart"
+            title="Production alert signals (lib/signals mean-reversion voter)"
             className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
               showSignals ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
             }`}
@@ -694,6 +721,7 @@ export default function ChartsPage() {
               priceLines={priceLines}
               onChartClick={drawingActive ? handleChartClick : undefined}
               onCrosshairMove={setCrosshairData}
+              minHeight={400}
             />
           ) : marketData ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-[var(--color-text-muted)]">
@@ -769,27 +797,25 @@ export default function ChartsPage() {
       </div>
     </div>
 
-    {/* Live strategy conditions — actionable readout matching trading_analysis.py voter */}
-    {strategyState && (
-      <StrategyConditionsCard
-        bars={strategyState.bars}
-        indicators={strategyState.indicators}
-        vwap={strategyState.vwap}
-      />
+    {/* Live strategy conditions — server-computed (POST /api/live/indicators,
+        lib/indicators.py), same panel LiveMarketPage/PlaybookPage render. */}
+    {chartBars.length >= 14 && (
+      <StrategyConditionsCard signals={chartSignals} />
     )}
 
-    {/* Like-this-bar similar past setups — only meaningful once the voter
-        has fired; the card itself renders a "waits for setup" state when
-        firing is null so the slot stays in the layout. */}
-    {strategyState && (() => {
-      const v = computeStrategySignals(strategyState.bars, strategyState.indicators, strategyState.vwap);
-      const score = v.firing === 'CALL' ? v.call.metCount : v.firing === 'PUT' ? v.put.metCount : null;
+    {/* Like-this-bar similar past setups — only meaningful once the
+        production voter (POST /api/live/signal-series, lib/signals.py)
+        has fired on the LATEST bar; the card itself renders a "waits for
+        setup" state when direction is null so the slot stays in the layout. */}
+    {chartBars.length >= 14 && (() => {
+      const fires = signalSeriesQuery.data?.fires ?? [];
+      const lastFire = fires.find((f) => f.bar_index === chartBars.length - 1);
       return (
         <SimilarSetupsCard
           ticker={activeTicker}
-          direction={v.firing}
-          rsi={strategyState.indicators.rsi}
-          score={score}
+          direction={lastFire?.direction ?? null}
+          rsi={chartIndicators.rsi}
+          score={lastFire?.score ?? null}
         />
       );
     })()}

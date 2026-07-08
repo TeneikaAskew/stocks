@@ -7,9 +7,13 @@ export interface LiveQuote {
   high: number;
   low: number;
   volume: number;
-  change: number;
-  change_pct: number;
-  prev_close: number;
+  // Nullable: review mode reconstructs this quote from historical bars and
+  // is honest when the prior session close can't be resolved (see
+  // lib/reviewQuote.ts buildReviewQuote) rather than silently rebasing to
+  // the day's open (CLAUDE.md §3.7).
+  change: number | null;
+  change_pct: number | null;
+  prev_close: number | null;
   last_updated: string;
   market_session?: string;
   market_open?: boolean;

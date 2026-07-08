@@ -14,8 +14,9 @@ import {
 } from 'lucide-react';
 import { KpiTile, Card, CardHeader } from '@/components/primitives';
 import { TickerSelect } from '@/components/shared/TickerSelect';
-import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
+import { PriceAreaChart } from '@/components/charts/PriceAreaChart';
 import { fmtPct, NA } from '@/lib/format';
+import { computeJournalStats } from '@/lib/journalStats';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -166,23 +167,13 @@ export default function JournalPage() {
   const entries = data?.trades ?? [];
   const source = data?.source ?? 'local';
 
-  const returns = entries.map(e => e.return_pct ?? 0);
-  const wins = returns.filter(r => r > 0);
-  const winRate = returns.length > 0 ? (wins.length / returns.length) * 100 : null;
-  const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : null;
-  const totalReturn = returns.reduce((a, b) => a + b, 0);
-  const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + b, 0) / wins.length : null;
-  // Equity curve: cumulative return % across closed trades, oldest → newest.
-  const equityPoints: PricePoint[] = [...entries]
-    .sort((a, b) => (a.exit_ts || a.entry_ts).localeCompare(b.exit_ts || b.entry_ts))
-    .reduce<{ pts: PricePoint[]; cum: number }>(
-      (acc, e, i) => {
-        acc.cum += e.return_pct ?? 0;
-        acc.pts.push({ time: i, price: acc.cum, label: (e.exit_ts || e.entry_ts).slice(0, 10) });
-        return acc;
-      },
-      { pts: [], cum: 0 },
-    ).pts;
+  const stats = computeJournalStats(entries);
+  const { closedCount, totalCount, winRate, avgReturn, totalReturn, avgWin, equityPoints } = stats;
+  // Compute closed wins count for the Trades tile sub-label
+  const wins = entries
+    .filter((e): e is JournalEntry & { return_pct: number } =>
+      typeof e.return_pct === 'number' && !Number.isNaN(e.return_pct) && e.return_pct > 0)
+    .length;
 
   const handleAdd = () => {
     const ep = parseFloat(String(form.entryPrice));
@@ -288,20 +279,33 @@ export default function JournalPage() {
 
       {/* Summary KPIs */}
       {entries.length > 0 && (
-        <div className="grid grid-cols-2 gap-[14px] md:grid-cols-3 lg:grid-cols-5">
-          <KpiTile label="Trades" value={String(entries.length)} sub={`${wins.length}W / ${entries.length - wins.length}L`} />
-          <KpiTile label="Win rate" value={winRate !== null ? `${winRate.toFixed(0)}%` : NA} tone={(winRate ?? 0) >= 50 ? 'bull' : 'bear'} />
-          <KpiTile label="Total P&L" value={fmtPct(totalReturn)} tone={totalReturn >= 0 ? 'bull' : 'bear'} />
-          <KpiTile label="Avg / trade" value={fmtPct(avgReturn)} tone={(avgReturn ?? 0) >= 0 ? 'bull' : 'bear'} />
-          <KpiTile label="Avg win" value={fmtPct(avgWin)} tone="bull" />
-        </div>
+        <>
+          <div className="grid grid-cols-2 gap-[14px] md:grid-cols-3 lg:grid-cols-5">
+            <KpiTile label="Trades" value={String(totalCount)} sub={`${wins}W / ${closedCount - wins}L`} />
+            <KpiTile label="Win rate" value={winRate !== null ? `${winRate.toFixed(0)}%` : NA} tone={(winRate ?? 0) >= 50 ? 'bull' : 'bear'} />
+            <KpiTile label="Total P&L" value={fmtPct(totalReturn)} tone={(totalReturn ?? 0) >= 0 ? 'bull' : 'bear'} />
+            <KpiTile label="Avg / trade" value={fmtPct(avgReturn)} tone={(avgReturn ?? 0) >= 0 ? 'bull' : 'bear'} />
+            <KpiTile label="Avg win" value={fmtPct(avgWin)} tone="bull" />
+          </div>
+          {closedCount < totalCount && (
+            <p className="text-[11px] text-[var(--on-surface-muted)]">
+              {totalCount - closedCount} open/unreturned trade(s) excluded from stats
+            </p>
+          )}
+        </>
       )}
 
       {/* Equity curve — cumulative P&L across closed trades */}
       {equityPoints.length > 1 && (
         <Card>
           <CardHeader title={`${activeTicker} equity curve`} meta="cumulative P&L %" />
-          <PriceAreaChart data={equityPoints} seriesLabel="Cumulative P&L" height={240} />
+          <PriceAreaChart
+            data={equityPoints}
+            seriesLabel="Cumulative P&L"
+            height={240}
+            valueFormatter={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`}
+            tooltipFormatter={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`}
+          />
         </Card>
       )}
 
@@ -433,7 +437,7 @@ export default function JournalPage() {
                 {entries.map(e => {
                   const entry = tsToDisplay(e.entry_ts);
                   const exit  = tsToDisplay(e.exit_ts);
-                  const ret   = e.return_pct ?? 0;
+                  const ret   = e.return_pct;
                   return (
                     <tr key={e.id} className="hover:bg-[var(--color-bg-tertiary)]">
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-secondary)]">{entry.date}</td>
@@ -447,9 +451,13 @@ export default function JournalPage() {
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{exit.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.exit_price.toFixed(2)}</td>
                       <td className="px-3 py-1.5">
-                        <span className={`font-mono text-xs font-medium ${ret >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
-                          {ret >= 0 ? '+' : ''}{ret.toFixed(2)}%
-                        </span>
+                        {ret == null ? (
+                          <span className="text-[var(--on-surface-muted)]">—</span>
+                        ) : (
+                          <span className={`font-mono text-xs font-medium ${ret >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
+                            {ret >= 0 ? '+' : ''}{ret.toFixed(2)}%
+                          </span>
+                        )}
                       </td>
                       <td className="max-w-[200px] truncate px-3 py-1.5 text-xs text-[var(--color-text-muted)]">{e.notes || '—'}</td>
                       <td className="px-3 py-1.5">

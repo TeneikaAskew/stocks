@@ -10,6 +10,7 @@ import {
 import { useThemeStore } from '@/stores/themeStore';
 import { useTickerStore } from '@/stores/tickerStore';
 import type { Ticker } from '@/types';
+import { addDaysToISO, todayET } from '@/lib/dates';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -179,7 +180,7 @@ function formatDate(dateStr: string): string {
 }
 
 function getRelativeLabel(dateStr: string): string | null {
-  const today = new Date();
+  const today = new Date(`${todayET()}T00:00:00`);
   today.setHours(0, 0, 0, 0);
   const target = new Date(dateStr + 'T00:00:00');
   const diff = Math.round((target.getTime() - today.getTime()) / 86400000);
@@ -365,23 +366,11 @@ function WSHUpgradeBanner({ types }: { types: CatalystTypesResponse | undefined 
 
 export default function CatalystsPage() {
   const theme = useThemeStore((s) => s.theme);
-  const today = new Date();
-  const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date(today);
-    d.setDate(d.getDate() - 3);
-    return d.toISOString().slice(0, 10);
-  });
-  const [dateTo, setDateTo] = useState(() => {
-    const d = new Date(today);
-    d.setDate(d.getDate() + 14);
-    return d.toISOString().slice(0, 10);
-  });
+  const [dateFrom, setDateFrom] = useState(() => addDaysToISO(todayET(), -3));
+  const [dateTo, setDateTo] = useState(() => addDaysToISO(todayET(), 14));
   const resetDates = () => {
-    const t = new Date();
-    const from = new Date(t); from.setDate(from.getDate() - 3);
-    const to   = new Date(t); to.setDate(to.getDate() + 14);
-    setDateFrom(from.toISOString().slice(0, 10));
-    setDateTo(to.toISOString().slice(0, 10));
+    setDateFrom(addDaysToISO(todayET(), -3));
+    setDateTo(addDaysToISO(todayET(), 14));
   };
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
@@ -427,11 +416,8 @@ export default function CatalystsPage() {
   // Today's hot catalysts: high-impact items in today + tomorrow.
   // This is the "actionable" panel — the user lands here, sees what
   // could move price in the next 24-48h, clicks straight to /insights.
-  const isoToday = today.toISOString().slice(0, 10);
-  const isoTomorrow = (() => {
-    const t = new Date(today); t.setDate(t.getDate() + 1);
-    return t.toISOString().slice(0, 10);
-  })();
+  const isoToday = todayET();
+  const isoTomorrow = addDaysToISO(isoToday, 1);
   const hotEvents: CatalystEvent[] = useMemo(() => {
     return allEvents
       .filter(e => (e.date === isoToday || e.date === isoTomorrow))

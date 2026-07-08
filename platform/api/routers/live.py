@@ -31,6 +31,7 @@ except Exception:
 
 # Canonical indicator implementations — single source of truth.
 from lib.indicators import (
+    add_signal_indicators,
     calculate_atr,
     calculate_ema,
     calculate_rsi,
@@ -38,8 +39,28 @@ from lib.indicators import (
     calculate_vwap,
 )
 
+# Canonical per-bar signal voter — the SAME function gcp/signal_monitor.py
+# calls (mean-reversion, 3-of-5 condition scoring) so the Charts "Sig"
+# overlay fires from the identical Python code path production alerting
+# uses. See lib/signals.py module docstring.
+from lib.signals import generate_signals
+
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _normalize_bar_time(t: str) -> str:
+    """Bar times arrive either as naive-ET datetime strings (production
+    fetch path) or epoch-second digit strings from /api/market, whose
+    epochs encode NAIVE ET WALL-CLOCK time (main.py strips the tz before
+    epoch conversion) — NOT true UTC. Formatting the epoch without any
+    timezone conversion therefore yields the ET wall-clock string.
+    Normalize to naive-ET datetime strings so downstream date-grouping
+    (VWAP sessions) and pd.to_datetime both work."""
+    s = str(t).strip()
+    if s.isdigit():
+        return pd.Timestamp(int(s), unit="s").strftime("%Y-%m-%d %H:%M:%S")
+    return s
 
 AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
 AV_BASE = "https://www.alphavantage.co/query"
@@ -431,8 +452,12 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
     highs = pd.Series([b.high for b in bars], dtype=float)
     lows = pd.Series([b.low for b in bars], dtype=float)
     volumes = pd.Series([b.volume for b in bars], dtype=float)
-    # VWAP in lib/indicators resets per session; group bars by calendar date.
-    dates = pd.Series([b.time[:10] for b in bars])
+    # Bar times may arrive as epoch-second digit strings (frontend
+    # /api/market feed) or naive-ET datetime strings (production fetch
+    # path) — normalize BEFORE date-grouping so epoch bars don't each
+    # become their own single-bar VWAP "session" (fabricated VWAP).
+    normalized_times = [_normalize_bar_time(b.time) for b in bars]
+    dates = pd.Series([t[:10] for t in normalized_times])
 
     ema9 = calculate_ema(closes, 9)
     ema20 = calculate_ema(closes, 20)
@@ -468,6 +493,68 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
 
     signals = _build_signals(price, indicators, rvol)
     return {"indicators": indicators, "signals": signals}
+
+
+@router.post("/api/live/signal-series")
+def compute_live_signal_series(req: _IndicatorsRequest) -> dict:
+    """Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay.
+
+    Reuses the SAME Python code path ``gcp/signal_monitor.py`` drives for
+    live alerting — no re-derived TS math:
+      * ``lib.indicators.add_signal_indicators`` — the exact indicator
+        engine ``SignalMonitor.calculate_indicators`` calls (ATR, RSI,
+        EMAs, VWAP, RVOL, OBV, StochRSI, MACD, consecutive moves, price
+        levels).
+      * ``lib.signals.generate_signals`` — batches ``evaluate_signal``
+        (the mean-reversion 3-of-5 condition voter
+        ``SignalMonitor._evaluate_strategies_for_bar`` calls per live bar)
+        across every eligible row.
+
+    Uses default (uncalibrated) ``IndicatorConfig``/``SignalConfig`` — this
+    endpoint is ticker-agnostic (no ``ticker`` in the request body) so it
+    can't resolve the per-ticker Tier-A calibration
+    (``lib.strategies.calibration.get_consecutive_periods`` /
+    ``get_call_rsi_range`` / ``get_put_rsi_range``) production uses, which
+    also requires a DB round-trip this endpoint deliberately avoids (Rule
+    0: one request = one in-memory pandas pass over <= ~400 rows, no DB,
+    no external calls). This matches the previous client-side TS voter,
+    which was likewise not per-ticker-calibrated.
+    """
+    bars = req.bars
+    if len(bars) < 14:
+        raise HTTPException(status_code=422, detail="need >= 14 bars for indicator warm-up")
+
+    # Bar times may arrive as epoch-second digit strings (frontend
+    # /api/market feed) or naive-ET datetime strings (production fetch
+    # path). Normalize for the indicator/signal pipeline (VWAP session
+    # grouping, pd.to_datetime), but echo the ORIGINAL client-sent time
+    # strings back in fires[].time so frontend chart-marker matching
+    # (which keys off the bars it sent) still works.
+    original_times = [b.time for b in bars]
+    normalized_times = [_normalize_bar_time(t) for t in original_times]
+
+    df = pd.DataFrame({
+        "Time": normalized_times,
+        "Open": [b.open for b in bars],
+        "High": [b.high for b in bars],
+        "Low": [b.low for b in bars],
+        "Close": [b.close for b in bars],
+        "Volume": [b.volume for b in bars],
+    })
+    df = add_signal_indicators(df, close_col="Close")
+    signals_df = generate_signals(df)
+
+    fires: list[dict] = []
+    if not signals_df.empty:
+        for _, row in signals_df.iterrows():
+            bar_idx = int(row["bar_index"])
+            fires.append({
+                "time": original_times[bar_idx],
+                "direction": row["direction"],
+                "score": float(row["total_score"]),
+                "bar_index": bar_idx,
+            })
+    return {"fires": fires}
 
 
 def _empty_signals() -> dict:

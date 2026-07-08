@@ -1,34 +1,45 @@
 /**
  * Live strategy conditions checklist for the Charts page.
  *
- * Mirrors the 5-condition voter that `trading_analysis.py:generate_technical_signals`
- * runs over historical bars — same rules, evaluated on whatever bars are
- * currently on the chart (live during market hours, replay during review).
+ * Renders the SAME server-computed 10-condition strength readout
+ * (POST /api/live/indicators, lib/indicators.py) LiveMarketPage and
+ * PlaybookPage render — no client-side re-derivation of the voter.
  *
  * Two columns: CALL conditions and PUT conditions. Each row is a checkmark
- * with a one-line "current value" so the user can see why a condition is
- * unmet without flipping panes.
+ * with a one-line "current vs threshold" readout so the user can see why a
+ * condition is unmet without flipping panes.
  */
 import { Check, X, TrendingUp, TrendingDown, MinusCircle } from 'lucide-react';
-import type { Bar, Indicators } from '@/lib/indicators';
-import { computeStrategySignals } from '@/lib/indicators';
+import type { Signal, SignalCondition } from '@/lib/indicators';
 
 interface Props {
-  bars: Bar[];
-  indicators: Indicators;
-  vwap: number | null;
+  signals: { call: Signal; put: Signal };
 }
 
-export function StrategyConditionsCard({ bars, indicators, vwap }: Props) {
-  const { call, put, firing } = computeStrategySignals(bars, indicators, vwap);
+export function StrategyConditionsCard({ signals }: Props) {
+  const { call, put } = signals;
+  // Independent 70%-strength thresholds per side (Signal.fired) — a firing
+  // tie (both sides cross 70%) picks the stronger side for the badge.
+  const firing: 'CALL' | 'PUT' | null = call.fired && (!put.fired || call.strength >= put.strength)
+    ? 'CALL'
+    : put.fired
+      ? 'PUT'
+      : null;
+  const callMet = call.conditions.filter((c) => c.met).length;
+  const putMet = put.conditions.filter((c) => c.met).length;
 
   return (
     <div className="rounded-lg bg-[var(--surface-2)] p-3">
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-          Live Strategy Conditions
-        </h3>
-        <FiringBadge firing={firing} callMet={call.metCount} putMet={put.metCount} />
+        <div>
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+            Live Strategy Conditions
+          </h3>
+          <p className="text-[10px] text-[var(--color-text-muted)]">
+            Trend framework — same conditions as the Live page
+          </p>
+        </div>
+        <FiringBadge firing={firing} callMet={callMet} putMet={putMet} total={call.conditions.length} />
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -37,9 +48,8 @@ export function StrategyConditionsCard({ bars, indicators, vwap }: Props) {
           title="CALL"
           tone="bull"
           icon={<TrendingUp size={12} />}
-          metCount={call.metCount}
-          totalCount={call.totalCount}
-          fires={call.fires}
+          strength={call.strength}
+          fired={call.fired}
           conditions={call.conditions}
         />
 
@@ -48,9 +58,8 @@ export function StrategyConditionsCard({ bars, indicators, vwap }: Props) {
           title="PUT"
           tone="bear"
           icon={<TrendingDown size={12} />}
-          metCount={put.metCount}
-          totalCount={put.totalCount}
-          fires={put.fires}
+          strength={put.strength}
+          fired={put.fired}
           conditions={put.conditions}
         />
       </div>
@@ -64,22 +73,24 @@ function FiringBadge({
   firing,
   callMet,
   putMet,
+  total,
 }: {
   firing: 'CALL' | 'PUT' | null;
   callMet: number;
   putMet: number;
+  total: number;
 }) {
   if (firing === 'CALL') {
     return (
       <span className="inline-flex items-center gap-1 rounded bg-[var(--bull)] px-2 py-0.5 text-[10px] font-bold text-black">
-        <TrendingUp size={11} /> CALL · {callMet}/5
+        <TrendingUp size={11} /> CALL · {callMet}/{total}
       </span>
     );
   }
   if (firing === 'PUT') {
     return (
       <span className="inline-flex items-center gap-1 rounded bg-[var(--bear)] px-2 py-0.5 text-[10px] font-bold text-white">
-        <TrendingDown size={11} /> PUT · {putMet}/5
+        <TrendingDown size={11} /> PUT · {putMet}/{total}
       </span>
     );
   }
@@ -94,20 +105,21 @@ function SideColumn({
   title,
   tone,
   icon,
-  metCount,
-  totalCount,
-  fires,
+  strength,
+  fired,
   conditions,
 }: {
   title: string;
   tone: 'bull' | 'bear';
   icon: React.ReactNode;
-  metCount: number;
-  totalCount: number;
-  fires: boolean;
-  conditions: { id: string; label: string; met: boolean; detail: string }[];
+  strength: number;
+  fired: boolean;
+  conditions: SignalCondition[];
 }) {
   const toneVar = tone === 'bull' ? 'var(--bull)' : 'var(--bear)';
+  const metCount = conditions.filter((c) => c.met).length;
+  const fmt = (v: number | null) => (v == null || !Number.isFinite(v) ? '--' : v.toFixed(2));
+
   return (
     <div className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-2">
       <div className="mb-2 flex items-center justify-between">
@@ -119,10 +131,10 @@ function SideColumn({
         </span>
         <span
           className={`text-[10px] font-semibold ${
-            fires ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
+            fired ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
           }`}
         >
-          {metCount}/{totalCount} {fires ? '✓ fires' : ''}
+          {metCount}/{conditions.length} · {strength}% {fired ? '✓ fires' : ''}
         </span>
       </div>
       <ul className="space-y-1">
@@ -142,7 +154,7 @@ function SideColumn({
                 {c.label}
               </span>
               <span className="ml-1 font-mono text-[10px] text-[var(--color-text-muted)]">
-                {c.detail}
+                {fmt(c.current)} {c.operator} {fmt(c.threshold)}
               </span>
             </span>
           </li>

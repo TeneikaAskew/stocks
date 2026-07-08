@@ -105,11 +105,11 @@ function useBacktestList(ticker: string) {
   });
 }
 
-function useBacktestResults(ticker: string, enabled: boolean) {
+function useBacktestResults(ticker: string, enabled: boolean, run?: string | null) {
   return useQuery<BacktestResultsResponse>({
-    queryKey: ['backtest-results', ticker],
+    queryKey: ['backtest-results', ticker, run],
     queryFn: async () => {
-      const r = await fetch(`/api/backtest/results/${ticker}`);
+      const r = await fetch(`/api/backtest/results/${ticker}${run ? `?run=${run}` : ''}`);
       if (!r.ok) throw new Error('Failed');
       return r.json();
     },
@@ -118,11 +118,11 @@ function useBacktestResults(ticker: string, enabled: boolean) {
   });
 }
 
-function useEquity(ticker: string, enabled: boolean) {
+function useEquity(ticker: string, enabled: boolean, run?: string | null) {
   return useQuery<EquityResponse>({
-    queryKey: ['backtest-equity', ticker],
+    queryKey: ['backtest-equity', ticker, run],
     queryFn: async () => {
-      const r = await fetch(`/api/backtest/equity/${ticker}`);
+      const r = await fetch(`/api/backtest/equity/${ticker}${run ? `?run=${run}` : ''}`);
       if (!r.ok) throw new Error('Failed');
       return r.json();
     },
@@ -133,12 +133,31 @@ function useEquity(ticker: string, enabled: boolean) {
 
 // ── Equity Chart ──────────────────────────────────────────────────────────
 
+/** Adaptive-decimal equity tick: enough decimals for the visible range. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, colocated for unit testing; no HMR impact
+export function fmtEquityTick(v: number, range: number): string {
+  const dec = range > 50 ? 0 : range > 5 ? 1 : range > 0.5 ? 2 : 3;
+  return `$${Number(v).toFixed(dec)}`;
+}
+
+/** YYYY-MM-DD -> MM/DD/YY (keeps year; fixes the jumbled multi-year axis). */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, colocated for unit testing; no HMR impact
+export function fmtRunDate(d: string): string {
+  const s = String(d);
+  return `${s.slice(5, 7)}/${s.slice(8, 10)}/${s.slice(2, 4)}`;
+}
+
 function EquityCurve({ equity }: { equity: EquityResponse }) {
   const theme = useChartTheme();
   const chartData = equity.dates.map((d, i) => ({
     date: String(d).slice(0, 10),
     value: equity.values[i],
   }));
+
+  const nonNullValues = equity.values.filter((v): v is number => v != null);
+  const range = nonNullValues.length > 0
+    ? Math.max(...nonNullValues) - Math.min(...nonNullValues)
+    : 0;
 
   const { total_return_pct, max_drawdown_pct, peak_value } = equity.summary;
 
@@ -167,18 +186,18 @@ function EquityCurve({ equity }: { equity: EquityResponse }) {
           <XAxis
             dataKey="date"
             tick={{ fontSize: theme.axisSize, fill: theme.axis }}
-            tickFormatter={d => String(d).slice(5)}
+            tickFormatter={fmtRunDate}
             interval="preserveStartEnd"
           />
           <YAxis
             tick={{ fontSize: theme.axisSize, fill: theme.axis }}
-            tickFormatter={v => `$${Number(v).toFixed(0)}`}
+            tickFormatter={v => fmtEquityTick(Number(v), range)}
           />
           <Tooltip
             contentStyle={{ background: theme.tooltipBg, border: `1px solid ${theme.border}`, fontSize: 11, color: theme.tooltipText }}
             labelStyle={{ color: theme.textMuted }}
             itemStyle={{ color: theme.tooltipText }}
-            formatter={(v) => [`$${(Number(v) || 0).toFixed(2)}`, 'Value' as const]}
+            formatter={(v) => [v == null ? '—' : `$${Number(v).toFixed(2)}`, 'Value' as const]}
           />
           <ReferenceLine y={peak_value} stroke={theme.warn} strokeDasharray="4 2" strokeWidth={1} />
           <Area
@@ -299,33 +318,62 @@ function TradeTable({ trades }: { trades: TradeRow[] }) {
 // ── Section ────────────────────────────────────────────────────────────────
 
 export default function BacktesterSection({ ticker }: { ticker: string }) {
+  const [selectedRun, setSelectedRun] = useState<string | null>(null);
+
+  // Render-time adjustment: a run selection belongs to one ticker — reset it
+  // when the ticker prop changes (component is mounted unkeyed in ChartsPage).
+  const [lastTicker, setLastTicker] = useState(ticker);
+  if (lastTicker !== ticker) {
+    setLastTicker(ticker);
+    setSelectedRun(null);
+  }
+
   const { data: listData, isLoading: listLoading, isError: listError } = useBacktestList(ticker);
   const runs = listData?.runs ?? [];
   const hasData = runs.length > 0;
   const latestRun = runs[0];
+  const activeRun = selectedRun ?? latestRun?.timestamp ?? null;
+  const activeRunMeta = runs.find(r => r.timestamp === activeRun);
 
   const { data: results, isLoading: resultsLoading, isError: resultsError } = useBacktestResults(
     ticker,
     !listLoading,
+    activeRun,
   );
   const { data: equity } = useEquity(
     ticker,
-    hasData && (latestRun?.has_equity_curve ?? false),
+    hasData && (activeRunMeta?.has_equity_curve ?? false),
+    activeRun,
   );
 
   const summary = results?.summary;
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-bold text-[var(--color-text-primary)]">
-          {ticker} Backtester
-        </h2>
-        <p className="text-xs text-[var(--color-text-muted)]">
-          {hasData
-            ? `${runs.length} backtest run${runs.length > 1 ? 's' : ''} — most recent: ${latestRun?.timestamp ?? ''}`
-            : 'No backtest results found'}
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-bold text-[var(--color-text-primary)]">
+            {ticker} Backtester
+          </h2>
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {hasData
+              ? `${runs.length} backtest run${runs.length > 1 ? 's' : ''} — viewing: ${selectedRun ?? latestRun?.timestamp ?? ''}`
+              : 'No backtest results found'}
+          </p>
+        </div>
+        {runs.length > 1 && (
+          <select
+            value={activeRun ?? ''}
+            onChange={e => setSelectedRun(e.target.value)}
+            className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
+          >
+            {runs.map(r => (
+              <option key={r.timestamp} value={r.timestamp}>
+                {r.timestamp}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {(listError || resultsError) && (
