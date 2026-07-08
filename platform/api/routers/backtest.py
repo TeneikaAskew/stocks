@@ -33,6 +33,7 @@ to TRUE PERCENT units (fraction * 100) so the frontend can render
 `${v.toFixed(2)}%` without unit knowledge. `win_rate` is the only
 exception: it stays a 0-1 fraction (the UI multiplies by 100 itself).
 """
+import json
 import logging
 import math
 import re
@@ -58,17 +59,26 @@ from api import gcs_reader  # noqa: E402
 # math lives in lib/backtest.py (CLAUDE.md: "lib/ is the shared backend spine").
 from lib.backtest import replay_labeled_trades  # noqa: E402
 
+# Task 4.2/4.3 — style mining + labeled walk-forward. Same "lib/ is the
+# shared backend spine" rule: the router only loads data, filters to closed
+# trades, and shapes the HTTP contract; all mining/scoring math lives in
+# lib/style_miner.py and lib/walk_forward.py.
+from lib.style_miner import mine_style  # noqa: E402
+from lib.walk_forward import WalkForwardValidator  # noqa: E402
+from lib.config import load_config  # noqa: E402
+
 # Owner scoping — the SAME per-user Cloud SQL scoping journal_entries reads
 # use elsewhere (platform/api/routers/journal.py). Imported rather than
 # duplicated so the two routers can never drift on what "owner" means.
 from .journal import _journal_owner  # noqa: E402
 
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe, execute_sql
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception:
     _HAS_CLOUD_SQL = False
     query_to_dataframe = None  # type: ignore[assignment]
+    execute_sql = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -483,3 +493,319 @@ async def replay_trades(body: ReplayTradesRequest, request: Request):
         bars_by_date[date_key] = _normalize_bars_for_replay(raw_df)
 
     return replay_labeled_trades(labeled, bars_by_date, ticker=ticker_upper)
+
+
+# ── POST /api/style/mine-and-validate (Task 4.3) ─────────────────────────────
+#
+# Mines the caller's own closed chart/manual journal trades into a condition
+# profile (lib.style_miner, Task 4.2), walk-forward validates the top profile
+# against the ticker's own recent bar history (lib.walk_forward.
+# WalkForwardValidator.run_profile, Task 4.3), and stages the result: one
+# archival row in `user_style_results` + one upserted candidate card in
+# `playbook_cards_staging`. Runs synchronously per request; see
+# `_style_history_bar_loader` for the 6-month scope that keeps wall-clock
+# inside Cloud Run's request budget (measured wall-clock reported in the PR
+# description per the Task 4.3 capacity note).
+#
+# Playbook staging seam (spec §8 / schema.sql comment on
+# playbook_cards_staging): candidates land in the STAGING table only. The
+# admin-facing playbook UI reads `playbook_cards`, never `playbook_cards_staging`
+# — flipping that is a later program's decision, gated by this flag.
+PLAYBOOK_USER_CARDS = False
+
+
+class MineAndValidateRequest(BaseModel):
+    ticker: str
+
+
+def _style_history_bar_loader(ticker_upper: str) -> pd.DataFrame:
+    """Bar history for the walk-forward validation step of Task 4.3.
+
+    Reuses `lib.data_loader.DataLoader.load_best_available` — the SAME
+    loader `scripts/run_backtest.py`'s `--walk-forward` CLI path uses
+    (`scripts/run_backtest.py:129`; Cloud SQL `market_data_intraday`
+    primary, local-parquet fallback via `DataLoader.load_intraday` ->
+    `load_daily`). Scoped to the last 6 months (Task 4.3 capacity note: a
+    synchronous per-request endpoint can't afford a full-history
+    walk-forward within Cloud Run's request budget) — module-level
+    indirection so tests can monkeypatch bar loading without touching Cloud
+    SQL, mirroring `_replay_bar_loader` (Task 3.2).
+    """
+    from lib.data_loader import DataLoader
+    end = pd.Timestamp.utcnow().normalize()
+    start = end - pd.DateOffset(months=6)
+    return DataLoader().load_best_available(
+        ticker_upper, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+    )
+
+
+def _style_exec(sql: str, params: Optional[dict] = None) -> None:
+    """Indirection over `gcp.database.execute_sql` for the
+    `user_style_results` / `playbook_cards_staging` writes, mirroring
+    journal.py's `_journal_exec` — lets tests monkeypatch persistence
+    without touching Cloud SQL. Forwards to the module-global
+    `execute_sql` name at CALL time (not definition time)."""
+    execute_sql(sql, params)
+
+
+def _is_closed_journal_entry(row: dict) -> bool:
+    """CLOSED = status in {win, loss, breakeven} AND exit_ts is present.
+
+    Applied in PYTHON, independent of any SQL-layer filtering, per Task 4.3's
+    hard seam: `lib.style_miner.mine_style` trusts its caller completely —
+    it does NOT re-derive "closed" from exit fields (see its module
+    docstring). An 'active' row slipping through here would poison the
+    mined profile with a trade that never resolved. Never zero-filled or
+    assumed-closed on a NULL status (CLAUDE.md Rule 3.7): a missing/unknown
+    status is treated as NOT closed.
+    """
+    status = str(row.get("status") or "").lower()
+    return status in ("win", "loss", "breakeven") and bool(row.get("exit_ts"))
+
+
+def _select_top_style_profile(profiles: list):
+    """Highest support fraction wins; ties broken by MORE conditions (a
+    richer, more specific condition set beats a sparser one at equal support)
+    — Task 4.3 spec: 'walk-forwards the TOP profile (highest support
+    fraction; tie -> more conditions)'."""
+    return max(
+        profiles,
+        key=lambda p: (p.support / p.total if p.total else 0.0, len(p.conditions)),
+    )
+
+
+def _walk_forward_metrics_to_percent(agg: dict) -> dict:
+    """Convert every `_aggregate_metrics` key ending in `_pct` from the
+    engine's raw-fraction convention to TRUE PERCENT (fraction * 100) — the
+    same convention this router's `_summarize_returns` / module docstring
+    document. Win-rate-derived keys (e.g. `avg_win_rate`) are already a 0-1
+    fraction and are left untouched; only keys literally ending in `_pct`
+    are converted."""
+    out = dict(agg)
+    for k, v in agg.items():
+        if k.endswith("_pct") and isinstance(v, (int, float)):
+            out[k] = v * 100.0
+    return out
+
+
+@router.post("/api/style/mine-and-validate")
+async def mine_and_validate(body: MineAndValidateRequest, request: Request):
+    """Mine the caller's closed journal trades into a condition profile,
+    walk-forward validate the top one, and stage the result (Task 4.3).
+
+    200 `{"status": "unavailable", "reason": ...}` (never a 4xx/5xx) for
+    every "not enough signal yet" case — too few closed trades, or mining
+    produced no profile for either direction — since these are expected,
+    recoverable states for a user early in their journal history, not
+    errors. A genuine Cloud SQL failure still propagates as a 5xx (Rule
+    3.7 — INTERNAL failures fail loud, never a fabricated empty result).
+    """
+    if not _HAS_CLOUD_SQL:
+        raise HTTPException(status_code=503, detail="journal database not configured")
+
+    ticker_upper = body.ticker.upper()
+    owner = _journal_owner(request)
+
+    # Chart/manual only (spec: "closed chart/manual journal trades") —
+    # replay-trainer sessions are simulated practice, not the user's actual
+    # trading style, so they're excluded from the mining input.
+    df = _replay_journal_query(
+        """
+        SELECT id::text, direction, status, source,
+               entry_ts AT TIME ZONE 'UTC' AS entry_ts,
+               exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
+               entry_price, exit_price
+        FROM journal_entries
+        WHERE ticker = :ticker AND user_email = :user_email
+          AND source IN ('manual', 'chart')
+        ORDER BY entry_ts
+        """,
+        {"ticker": ticker_upper, "user_email": owner},
+    )
+
+    records: list[dict] = [] if df.empty else df.to_dict(orient="records")
+    for rec in records:
+        for col in ("entry_ts", "exit_ts"):
+            rec[col] = None if pd.isna(rec.get(col)) else str(rec[col])
+
+    closed_entries = [r for r in records if _is_closed_journal_entry(r)]
+
+    if len(closed_entries) < 10:
+        return {
+            "status": "unavailable",
+            "reason": f"need >= 10 closed trades, have {len(closed_entries)}",
+        }
+
+    # Snapshot indicator/condition state at each closed entry's bar via the
+    # existing Task 3.2 intraday-bar-loading pattern (same loader + reshape
+    # `/api/backtest/replay-trades` uses — see `_replay_bar_loader` /
+    # `_normalize_bars_for_replay` above).
+    ticker_lower = ticker_upper.lower()
+    distinct_dates = sorted({
+        pd.to_datetime(e["entry_ts"]).strftime("%Y-%m-%d")
+        for e in closed_entries if e["entry_ts"]
+    })
+
+    bars_by_date: dict[str, pd.DataFrame] = {}
+    for date_key in distinct_dates:
+        try:
+            raw_df = _replay_bar_loader(ticker_lower, date_key.replace("-", ""))
+        except FileNotFoundError:
+            log.info("mine-and-validate: no bars for %s on %s", ticker_upper, date_key)
+            continue
+        if raw_df is None or raw_df.empty:
+            continue
+        bars_by_date[date_key] = _normalize_bars_for_replay(raw_df)
+
+    profiles = mine_style(closed_entries, bars_by_date)
+    if not profiles:
+        return {
+            "status": "unavailable",
+            "reason": "no condition profile cleared the mining threshold for either direction",
+        }
+
+    top_profile = _select_top_style_profile(profiles)
+
+    # Ticker's own calibrated risk/exit/strat/indicator config (same config
+    # `scripts/run_backtest.py` loads) so validation reflects the real
+    # targets/stops a live trade would experience. The SIGNAL config is the
+    # one exception — `WalkForwardValidator.run_profile` always overrides it
+    # via `profile_to_signal_config`'s fresh `SignalConfig()` base (hard seam
+    # #2: the miner mined at defaults, so validating against a per-ticker
+    # signal override would score the profile against a vocabulary it was
+    # never mined against). See `lib.walk_forward.profile_to_signal_config`.
+    cfg = load_config(ticker=ticker_upper)
+
+    bars_df = _style_history_bar_loader(ticker_upper)
+    if bars_df is None or bars_df.empty:
+        return {
+            "status": "unavailable",
+            "reason": f"no market data available for {ticker_upper}",
+        }
+    close_col = "Close" if "Close" in bars_df.columns else "Last"
+
+    # train_months=3/test_months=1 (rather than WalkForwardConfig's 6/1
+    # default): the endpoint scopes bar history to the last 6 months (see
+    # `_style_history_bar_loader`), and a 6-month train window would consume
+    # the ENTIRE scoped window as training, leaving zero out-of-sample test
+    # folds. 3/1 guarantees multiple folds within the 6-month scope.
+    validator = WalkForwardValidator(
+        risk_config=cfg.risk,
+        exit_config=cfg.exit,
+        strat_config=cfg.strat,
+        backtest_config=cfg.backtest,
+        indicator_config=cfg.indicator,
+        walk_forward_config=cfg.walk_forward,
+        train_months=3,
+        test_months=1,
+    )
+    wf_result = validator.run_profile(bars_df, top_profile, close_col=close_col)
+
+    agg_percent = _walk_forward_metrics_to_percent(wf_result.aggregate_metrics)
+    total_folds = int(agg_percent.get("total_folds", 0))
+    if total_folds == 0:
+        # Empty fold_results (e.g. the ticker's scoped 6-month bar history
+        # is too short for even one 3mo-train/1mo-test fold) means NO
+        # validation actually ran — persisting a "staged: true" candidate
+        # off zero folds would be a fabricated result (CLAUDE.md Rule 3.7).
+        return {
+            "status": "unavailable",
+            "reason": (
+                f"insufficient bar history for {ticker_upper} to "
+                "walk-forward validate the mined profile"
+            ),
+        }
+    avg_expectancy_pct = agg_percent.get("avg_expectancy_pct")
+    avg_win_rate = agg_percent.get("avg_win_rate")
+    total_trades = int(agg_percent.get("total_trades_all_folds", 0))
+    if total_trades == 0:
+        # The mined profile fired zero trades across all folds (common with
+        # strict all-conditions gates). Persisting a "0% win rate" card would
+        # be a fabricated result (CLAUDE.md Rule 3.7: reads as "tried and lost"
+        # when the truth is "never exercised"). Return unavailable instead.
+        return {
+            "status": "unavailable",
+            "reason": (
+                f"the mined profile fired zero trades over {total_folds} "
+                f"validation fold(s) for {ticker_upper} — nothing to validate"
+            ),
+        }
+
+    profile_dict = {
+        "direction": top_profile.direction,
+        "conditions": top_profile.conditions,
+        "support": top_profile.support,
+        "total": top_profile.total,
+    }
+
+    # One archival row per mine-and-validate run — an append-only history of
+    # what was mined/validated over time (idx_user_style_results_user is
+    # ordered `created_at DESC`), so this is a plain INSERT, not an upsert.
+    _style_exec(
+        """
+        INSERT INTO user_style_results
+            (user_email, ticker, profile, trained_on_trades,
+             avg_expectancy_pct, avg_win_rate, stability_score,
+             total_folds, total_trades)
+        VALUES
+            (:user_email, :ticker, :profile::jsonb, :trained_on_trades,
+             :avg_expectancy_pct, :avg_win_rate, :stability_score,
+             :total_folds, :total_trades)
+        """,
+        {
+            "user_email": owner,
+            "ticker": ticker_upper,
+            "profile": json.dumps(profile_dict),
+            "trained_on_trades": len(closed_entries),
+            "avg_expectancy_pct": avg_expectancy_pct,
+            "avg_win_rate": avg_win_rate,
+            "stability_score": wf_result.stability_score,
+            "total_folds": total_folds,
+            "total_trades": total_trades,
+        },
+    )
+
+    # Candidate playbook card — conflict-safe upsert keyed on
+    # (user_email, ticker, name) so re-running mine-and-validate for the same
+    # ticker/direction updates the existing candidate in place rather than
+    # accumulating stale duplicates. `name` is deterministic per direction so
+    # a user has at most one staged candidate per (ticker, direction).
+    card_name = f"Mined {top_profile.direction} Style"
+    _style_exec(
+        """
+        INSERT INTO playbook_cards_staging
+            (user_email, ticker, name, direction, conditions,
+             win_rate, avg_return_bps, sample_n, status, generated_at)
+        VALUES
+            (:user_email, :ticker, :name, :direction, :conditions::jsonb,
+             :win_rate, :avg_return_bps, :sample_n, 'candidate', NOW())
+        ON CONFLICT (user_email, ticker, name) DO UPDATE SET
+            direction      = EXCLUDED.direction,
+            conditions     = EXCLUDED.conditions,
+            win_rate       = EXCLUDED.win_rate,
+            avg_return_bps = EXCLUDED.avg_return_bps,
+            sample_n       = EXCLUDED.sample_n,
+            status         = 'candidate',
+            generated_at   = NOW()
+        """,
+        {
+            "user_email": owner,
+            "ticker": ticker_upper,
+            "name": card_name,
+            "direction": top_profile.direction,
+            "conditions": json.dumps(top_profile.conditions),
+            "win_rate": avg_win_rate,
+            # percent -> bps: 1% == 100 bps, and avg_expectancy_pct is
+            # already TRUE PERCENT (converted above), so *100 again.
+            "avg_return_bps": (avg_expectancy_pct * 100.0
+                                if avg_expectancy_pct is not None else None),
+            "sample_n": total_trades,
+        },
+    )
+
+    return {
+        "profile": profile_dict,
+        "aggregate_metrics": agg_percent,
+        "stability_score": wf_result.stability_score,
+        "staged": True,
+    }

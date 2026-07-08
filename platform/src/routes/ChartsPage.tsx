@@ -12,13 +12,17 @@ import {
   useDeleteChartTrade,
   useSeedTrades,
   useReplayTrades,
+  useMineMyStyle,
   isoNaiveToEpoch,
   isSeedTradesUnavailable,
+  isMineStyleUnavailable,
   seedBenchmark,
   formatEdgeBps,
+  styleConditionLabel,
   type SeedTradeRow,
   type ReplayTradeCard,
   type ReplayAggregate,
+  type MineStyleSuccess,
 } from '@/hooks/useJournalChartTrades';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
@@ -190,6 +194,12 @@ export default function ChartsPage() {
   // useQuery — the modal's isPending/isError/data states drive the UI.
   const [scorecardOpen, setScorecardOpen] = useState(false);
   const replayTrades = useReplayTrades();
+
+  // "My style" panel (Task 4.4) — mines the caller's own closed journal
+  // trades into a condition profile and walk-forward validates it (POST
+  // /api/style/mine-and-validate). A useMutation triggered from the
+  // Analytics tab's "Mine my style" button, mirroring replayTrades above.
+  const mineMyStyle = useMineMyStyle();
 
   // Admin seed-trade teaching layer (Task 2.4) — read-only pull from the
   // automated pipeline `trades` table, GET /api/journal/seed/{ticker}.
@@ -945,16 +955,58 @@ export default function ChartsPage() {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2">
-              <MetricCard label="Trades" value={stats.totalTrades} />
-              <MetricCard label="Win Rate" value={stats.closedTrades > 0 ? `${stats.winRate.toFixed(0)}%` : '--'} />
-              <MetricCard label="Total P&L" value={stats.closedTrades > 0 ? `$${stats.totalPnL.toFixed(2)}` : '--'} />
-              <MetricCard label="Profit Factor" value={stats.closedTrades > 0 && stats.profitFactor != null ? (stats.profitFactor === Infinity ? '---' : stats.profitFactor.toFixed(2)) : '--'} />
-              <MetricCard label="CALL" value={stats.callCount} />
-              <MetricCard label="PUT" value={stats.putCount} />
-              <MetricCard label="Max Win" value={stats.maxWin > 0 ? `$${stats.maxWin.toFixed(2)}` : '--'} />
-              <MetricCard label="Max Loss" value={stats.maxLoss > 0 ? `-$${stats.maxLoss.toFixed(2)}` : '--'} />
-            </div>
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <MetricCard label="Trades" value={stats.totalTrades} />
+                <MetricCard label="Win Rate" value={stats.closedTrades > 0 ? `${stats.winRate.toFixed(0)}%` : '--'} />
+                <MetricCard label="Total P&L" value={stats.closedTrades > 0 ? `$${stats.totalPnL.toFixed(2)}` : '--'} />
+                <MetricCard label="Profit Factor" value={stats.closedTrades > 0 && stats.profitFactor != null ? (stats.profitFactor === Infinity ? '---' : stats.profitFactor.toFixed(2)) : '--'} />
+                <MetricCard label="CALL" value={stats.callCount} />
+                <MetricCard label="PUT" value={stats.putCount} />
+                <MetricCard label="Max Win" value={stats.maxWin > 0 ? `$${stats.maxWin.toFixed(2)}` : '--'} />
+                <MetricCard label="Max Loss" value={stats.maxLoss > 0 ? `-$${stats.maxLoss.toFixed(2)}` : '--'} />
+              </div>
+
+              {/* "My style" panel (Task 4.4) — mines the user's own closed
+                  journal trades into a walk-forward validated condition
+                  profile (POST /api/style/mine-and-validate). */}
+              <div className="mt-4 border-t border-[var(--color-border)] pt-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="flex items-center gap-1 text-xs font-semibold text-[var(--color-text-secondary)]">
+                    <Zap size={12} />
+                    My style
+                  </div>
+                  <button
+                    data-testid="mine-my-style-btn"
+                    onClick={() => mineMyStyle.mutate({ ticker: activeTicker })}
+                    disabled={mineMyStyle.isPending}
+                    className="flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-2 py-1 text-xs font-medium text-[var(--on-brand)] hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {mineMyStyle.isPending && <LoadingSpinner size={12} />}
+                    {mineMyStyle.isPending ? 'Mining…' : 'Mine my style'}
+                  </button>
+                </div>
+
+                {mineMyStyle.isError && (
+                  <div
+                    data-testid="mine-my-style-error"
+                    className="rounded border border-[var(--color-accent-red)]/40 bg-red-500/10 p-2 text-xs text-[var(--color-accent-red)]"
+                  >
+                    {mineMyStyle.error.message}
+                  </div>
+                )}
+
+                {mineMyStyle.data && (
+                  isMineStyleUnavailable(mineMyStyle.data) ? (
+                    <p data-testid="mine-my-style-unavailable" className="text-xs text-[var(--color-text-muted)]">
+                      {mineMyStyle.data.reason}
+                    </p>
+                  ) : (
+                    <MyStyleResult result={mineMyStyle.data} />
+                  )
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -1284,6 +1336,61 @@ function ScorecardFooter({ aggregate }: { aggregate: ReplayAggregate }) {
       <div>
         Agreement: {agreementPct} — system had a setup on {aggregate.system_resolved_n} of {aggregate.scored_n} entries
       </div>
+    </div>
+  );
+}
+
+/**
+ * "My style" panel success rendering (Task 4.4) — direction + condition
+ * chips (human labels via `styleConditionLabel`), the mining support
+ * fraction, and the walk-forward validated stats WITH their sample sizes
+ * (total trades across folds, fold count) so a win-rate/expectancy figure
+ * is never shown without the N it was computed from. `total_folds` is
+ * optional on the aggregate shape — when absent, the fold-count clause is
+ * dropped and only the stability percentage renders (never a fabricated
+ * "0 folds").
+ */
+function MyStyleResult({ result }: { result: MineStyleSuccess }) {
+  const { profile, aggregate_metrics: agg, stability_score } = result;
+  const isCall = profile.direction === 'CALL';
+
+  const winRatePct = agg.avg_win_rate != null ? agg.avg_win_rate * 100 : null;
+  const expectancyPct = agg.avg_expectancy_pct;
+  const stabilityPct = stability_score * 100;
+  const totalFolds = agg.total_folds;
+  const totalTrades = agg.total_trades_all_folds;
+
+  return (
+    <div data-testid="mine-my-style-result" className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1">
+        <span
+          className={`rounded px-1.5 py-0.5 text-xs font-bold ${
+            isCall ? 'bg-green-500/20 text-[var(--bull)]' : 'bg-red-500/20 text-[var(--bear)]'
+          }`}
+        >
+          {profile.direction}
+        </span>
+        {profile.conditions.map((c) => (
+          <span
+            key={c}
+            className="rounded bg-[var(--color-bg-hover)] px-1.5 py-0.5 text-xs text-[var(--color-text-secondary)]"
+          >
+            {styleConditionLabel(c)}
+          </span>
+        ))}
+      </div>
+      <p className="text-xs text-[var(--color-text-muted)]">
+        Based on {profile.support}/{profile.total} of your entries
+      </p>
+      <p className="text-xs text-[var(--color-text-secondary)]">
+        {winRatePct != null ? `Win rate ${winRatePct.toFixed(0)}%` : 'Win rate —'}
+        {expectancyPct != null &&
+          ` · expectancy ${expectancyPct >= 0 ? '+' : ''}${expectancyPct.toFixed(2)}%`}
+        {' · across '}
+        {totalTrades} trade{totalTrades === 1 ? '' : 's'}
+        {totalFolds != null && `, ${totalFolds} fold${totalFolds === 1 ? '' : 's'}`}
+        {` · stability ${stabilityPct.toFixed(0)}%`}
+      </p>
     </div>
   );
 }

@@ -720,6 +720,7 @@ class BacktestEngine:
             put_rsi_range=self.signal.put_rsi_range,
             signal_config=self.signal,
             indicator_config=self.ind,
+            enabled_conditions=self.signal.enabled_conditions,
         )
 
         if sig is None:

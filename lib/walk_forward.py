@@ -5,6 +5,8 @@ Implements anchored walk-forward: expanding training window with fixed
 test window, sliding forward one test period at a time.
 """
 
+import re
+
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
@@ -16,6 +18,149 @@ from lib.config import (
     RiskConfig, ExitConfig, SignalConfig, StratConfig,
     BacktestConfig, IndicatorConfig, WalkForwardConfig,
 )
+from lib.style_miner import StyleProfile
+
+# ---------------------------------------------------------------------------
+# Task 4.3: StyleProfile -> SignalConfig conversion
+# ---------------------------------------------------------------------------
+
+_CONSEC_CONDITION_RE = re.compile(r'^consec_(up|down)_ge_(\d+)$')
+
+# Every mined vocabulary condition (lib.style_miner module docstring) EXCEPT
+# the consec_(up|down)_ge_N pair, which is parsed via _CONSEC_CONDITION_RE
+# instead of a static membership check (the N is data, not part of the name).
+_DIRECT_TUNABLE_CONDITIONS = frozenset({
+    'rsi_25_50', 'rsi_50_75', 'above_vwap', 'below_vwap',
+    'stoch_oversold', 'stoch_overbought',
+})
+
+# Vocabulary -> internal factor-identity mapping, translated ONCE here (the
+# one documented dict the trading-logic review of commit 1c7a7f35 asked for).
+# `lib.signals.check_call_conditions` / `check_put_conditions` score a fixed
+# 5-factor set per direction under these internal names — see the two
+# functions' docstrings in lib/signals.py:
+#   CALL: consecutive_down, rsi_oversold_zone, below_vwap,
+#         stoch_rsi_oversold, level_break_pdh
+#   PUT:  consecutive_up, rsi_overbought_zone, above_vwap,
+#         stoch_rsi_overbought, level_break_pdl
+# The two sets never overlap, which is what makes a CALL-only
+# `enabled_conditions` allowlist also a direction gate for free (see
+# `profile_to_signal_config`'s docstring, HIGH-severity note).
+_VOCAB_TO_INTERNAL = {
+    'rsi_25_50': 'rsi_oversold_zone',
+    'rsi_50_75': 'rsi_overbought_zone',
+    'above_vwap': 'above_vwap',
+    'below_vwap': 'below_vwap',
+    'stoch_oversold': 'stoch_rsi_oversold',
+    'stoch_overbought': 'stoch_rsi_overbought',
+}
+_CONSEC_VOCAB_TO_INTERNAL = {
+    'up': 'consecutive_up',
+    'down': 'consecutive_down',
+}
+
+
+def _translate_condition(cond: str) -> str:
+    """Translate one mined-vocabulary condition name to the internal factor
+    identity `lib.signals.check_call_conditions` / `check_put_conditions`
+    use in their `enabled_conditions` allowlist and `conditions_met` output.
+    Caller (`profile_to_signal_config`) has already validated `cond` is
+    either a `consec_(up|down)_ge_N` match or a member of
+    `_DIRECT_TUNABLE_CONDITIONS`.
+    """
+    m = _CONSEC_CONDITION_RE.match(cond)
+    if m:
+        return _CONSEC_VOCAB_TO_INTERNAL[m.group(1)]
+    return _VOCAB_TO_INTERNAL[cond]
+
+
+def profile_to_signal_config(profile: StyleProfile) -> SignalConfig:
+    """Convert a mined `StyleProfile` (lib.style_miner, Task 4.2) into a
+    `SignalConfig` override for `WalkForwardValidator.run_profile` (Task 4.3).
+
+    Mapping mechanics
+    -------------------
+    `lib.signals.evaluate_signal` now exposes an `enabled_conditions`
+    allowlist (trading-logic fix, review of commit 1c7a7f35) — an exact
+    "score only these internal factor names" gate on top of the existing
+    `min_conditions`/`call_rsi_range`/`put_rsi_range`/`consecutive_periods`/
+    `stoch_rsi_oversold`/`stoch_rsi_overbought` levers. This function sets
+    BOTH: `enabled_conditions` = the profile's conditions translated to
+    internal factor names via `_translate_condition` (using the module-level
+    `_VOCAB_TO_INTERNAL` / `_CONSEC_VOCAB_TO_INTERNAL` dicts), and
+    `min_conditions = len(profile.conditions)`.
+
+    With `enabled_conditions` set, `min_conditions` is no longer an
+    approximation — every factor NOT in the profile's own conditions
+    contributes 0 to the score (see `check_call_conditions` /
+    `check_put_conditions`), so `min_conditions == len(profile.conditions)`
+    is an EXACT "all of the profile's named conditions are true" gate:
+    a bar can only reach that score by having every named condition true
+    (there is nothing else left to score). This replaces the previous
+    approximate "at least N of the full 5-factor set" semantics, which
+    could fire on bars where a DIFFERENT combination of (un-named) factors
+    happened to reach the same count — the bug
+    `tests/test_style_walk_forward.py` now pins as a regression case.
+
+    HIGH-severity note (direction gating falls out of the allowlist, no
+    separate mechanism needed): CALL's and PUT's internal factor names
+    never overlap (see the module-level comment above
+    `_VOCAB_TO_INTERNAL`), so a CALL profile's `enabled_conditions` list
+    contains zero PUT factor names. `check_put_conditions` therefore scores
+    0 for every PUT factor, `put_score` is always 0, and `evaluate_signal`
+    can never select PUT for that config — a CALL profile cannot fire a PUT
+    trade, and vice versa, with no additional direction-gating code.
+
+    RSI range / consecutive_periods / StochRSI thresholds are always left at
+    fresh `SignalConfig()` DEFAULTS, never the caller's own `self.signal` or
+    a per-ticker override — Task 4.3 hard seam: `style_miner.mine_style`
+    snapshots conditions using a fresh `SignalConfig()` (never a per-ticker
+    override, see `snapshot_entry_conditions`), so validating against any
+    other thresholds would score the profile against a vocabulary it was
+    never mined against.
+
+    Raises
+    ------
+    ValueError
+        If a condition name isn't in the mined vocabulary, or if a
+        `consec_(up|down)_ge_N` condition's `N` doesn't match
+        `SignalConfig().consecutive_periods` — a stale profile mined under a
+        since-changed default is never silently honored.
+    """
+    base = SignalConfig()
+    consec_values: set = set()
+
+    for cond in profile.conditions:
+        m = _CONSEC_CONDITION_RE.match(cond)
+        if m:
+            consec_values.add(int(m.group(2)))
+            continue
+        if cond not in _DIRECT_TUNABLE_CONDITIONS:
+            raise ValueError(
+                f"unknown style condition {cond!r} — not in the mined "
+                f"vocabulary (see lib.style_miner module docstring)"
+            )
+
+    if consec_values and consec_values != {base.consecutive_periods}:
+        raise ValueError(
+            f"profile condition(s) reference consecutive-move threshold(s) "
+            f"{sorted(consec_values)}, but SignalConfig().consecutive_periods "
+            f"= {base.consecutive_periods} — the mined profile is stale "
+            f"against the current default (style_miner always mines against "
+            f"a fresh SignalConfig())"
+        )
+
+    enabled_conditions = [_translate_condition(cond) for cond in profile.conditions]
+
+    return SignalConfig(
+        min_conditions=len(profile.conditions),
+        consecutive_periods=base.consecutive_periods,
+        call_rsi_range=base.call_rsi_range,
+        put_rsi_range=base.put_rsi_range,
+        stoch_rsi_oversold=base.stoch_rsi_oversold,
+        stoch_rsi_overbought=base.stoch_rsi_overbought,
+        enabled_conditions=enabled_conditions,
+    )
 
 
 def _rebuild_consecutive(
@@ -119,6 +264,54 @@ class WalkForwardValidator:
         - Fold 2: Train [0, train_months+test_months) -> Test [train+test, train+2*test)
         - ... until data runs out
         """
+        return self._run_anchored_folds(
+            df, signal_config=self.signal, use_strat=use_strat, close_col=close_col,
+        )
+
+    def run_profile(
+        self,
+        df: pd.DataFrame,
+        profile: StyleProfile,
+        close_col: str = 'Close',
+    ) -> WalkForwardResult:
+        """Walk-forward validate a mined `StyleProfile` (Task 4.3).
+
+        Converts `profile` into a `SignalConfig` override via the
+        module-level `profile_to_signal_config` (also unit-tested standalone
+        in `tests/test_style_walk_forward.py` — see its docstring for
+        exactly how vocabulary conditions become `min_conditions` +
+        `enabled_conditions` / range / threshold tunables — the resulting
+        gate is EXACT: it fires only when all of the profile's named
+        conditions are true, and a profile of one direction can never fire
+        the other direction) and then runs the IDENTICAL anchored fold loop
+        `run()` uses — same
+        train/test slicing, same `_aggregate_metrics` / `_calculate_stability`
+        — via the shared `_run_anchored_folds` helper. The only difference
+        from `run()` is which `SignalConfig` each fold's `BacktestEngine` is
+        built from; `risk`/`exit`/`strat`/`backtest`/`indicator` configs
+        still come from `self.*` (set at validator construction), and
+        `use_strat` is always False — a mined profile is about ENTRY
+        conditions only, not the Strat FTFC/ORB overlay.
+        """
+        signal_config = profile_to_signal_config(profile)
+        return self._run_anchored_folds(
+            df, signal_config=signal_config, use_strat=False, close_col=close_col,
+        )
+
+    def _run_anchored_folds(
+        self,
+        df: pd.DataFrame,
+        signal_config: SignalConfig,
+        use_strat: bool,
+        close_col: str,
+    ) -> WalkForwardResult:
+        """Shared anchored walk-forward fold loop for `run()` and
+        `run_profile()` (Task 4.3) — extracted so the two callers can never
+        drift on fold construction / train-test slicing. The only per-call
+        variable is which `SignalConfig` each fold's `BacktestEngine` is
+        built from; every other engine config (`risk`/`exit`/`strat`/
+        `backtest`/`indicator`) always comes from `self.*`.
+        """
         if 'Time' in df.columns:
             dates = pd.to_datetime(df['Time'])
         else:
@@ -157,7 +350,7 @@ class WalkForwardValidator:
             engine = BacktestEngine(
                 risk_config=self.risk,
                 exit_config=self.exit,
-                signal_config=self.signal,
+                signal_config=signal_config,
                 strat_config=self.strat,
                 backtest_config=self.bt_config,
                 indicator_config=self.ind_config,

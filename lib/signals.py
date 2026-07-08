@@ -13,6 +13,19 @@ from typing import List, Tuple, Optional
 from lib.config import IndicatorConfig, SignalConfig
 
 
+def _factor_allowed(name: str, enabled_conditions: Optional[List[str]]) -> bool:
+    """Return True if `name` (an internal factor identity — see the module
+    docstring / CALL and PUT factor lists below) should be scored.
+
+    `enabled_conditions is None` (the default everywhere in production —
+    gcp/signal_monitor.py and the live endpoints never pass this) means
+    "score everything", i.e. today's behaviour, byte-identical. When set,
+    it's an exact allowlist: a factor not named in it contributes 0
+    regardless of whether its underlying indicator condition is true.
+    """
+    return enabled_conditions is None or name in enabled_conditions
+
+
 def check_call_conditions(
     row: pd.Series,
     consecutive_periods: int = 3,
@@ -20,29 +33,39 @@ def check_call_conditions(
     ema_proximity: float = 0.1,
     stoch_rsi_threshold: float = 30.0,
     indicator_config: IndicatorConfig = None,
+    enabled_conditions: Optional[List[str]] = None,
 ) -> Tuple[int, List[str]]:
     """Evaluate CALL signal conditions for a single bar.
 
     Returns (score, list_of_conditions_met) where score is 0-5.
+
+    `enabled_conditions`: when provided, only factors whose internal name
+    appears in the list are scored — see `_factor_allowed`. CALL's factor
+    names are `consecutive_down`, `rsi_oversold_zone`, `below_vwap`,
+    `stoch_rsi_oversold`, `level_break_pdh`. Default `None` scores all of
+    them, matching pre-existing behaviour exactly.
     """
     ind = indicator_config or IndicatorConfig()
     score = 0
     conditions = []
 
     # 1. Consecutive down periods (contrarian — buy after selling pressure)
-    if row.get('Consecutive_Down', 0) >= consecutive_periods:
+    if (_factor_allowed('consecutive_down', enabled_conditions)
+            and row.get('Consecutive_Down', 0) >= consecutive_periods):
         score += 1
         conditions.append('consecutive_down')
 
     # 2. RSI in bullish zone (oversold but not extreme)
     rsi = row.get(ind.rsi_col, 50.0)
-    if rsi_range[0] < rsi < rsi_range[1]:
+    if (_factor_allowed('rsi_oversold_zone', enabled_conditions)
+            and rsi_range[0] < rsi < rsi_range[1]):
         score += 1
         conditions.append('rsi_oversold_zone')
 
     # 3. Price below VWAP (contrarian — buying under fair value)
     price_vs_vwap = row.get('Price_vs_VWAP', 0.0)
-    if price_vs_vwap < 0:
+    if (_factor_allowed('below_vwap', enabled_conditions)
+            and price_vs_vwap < 0):
         score += 1
         conditions.append('below_vwap')
 
@@ -53,13 +76,15 @@ def check_call_conditions(
 
     # 5. Stochastic RSI oversold
     stoch_k = row.get('StochRSI_K', 50.0)
-    if stoch_k < stoch_rsi_threshold:
+    if (_factor_allowed('stoch_rsi_oversold', enabled_conditions)
+            and stoch_k < stoch_rsi_threshold):
         score += 1
         conditions.append('stoch_rsi_oversold')
 
     # 6. Level break aligned with direction (Strat v2 — see methodology §6).
     # Reads Broke_Prev_Day_High from market_data_daily / calculate_historical_levels.
-    if int(row.get('Broke_Prev_Day_High', 0) or 0) == 1:
+    if (_factor_allowed('level_break_pdh', enabled_conditions)
+            and int(row.get('Broke_Prev_Day_High', 0) or 0) == 1):
         score += 1
         conditions.append('level_break_pdh')
 
@@ -73,29 +98,42 @@ def check_put_conditions(
     ema_proximity: float = 0.1,
     stoch_rsi_threshold: float = 70.0,
     indicator_config: IndicatorConfig = None,
+    enabled_conditions: Optional[List[str]] = None,
 ) -> Tuple[int, List[str]]:
     """Evaluate PUT signal conditions for a single bar.
 
     Returns (score, list_of_conditions_met) where score is 0-5.
+
+    `enabled_conditions`: when provided, only factors whose internal name
+    appears in the list are scored — see `_factor_allowed`. PUT's factor
+    names are `consecutive_up`, `rsi_overbought_zone`, `above_vwap`,
+    `stoch_rsi_overbought`, `level_break_pdl`. Default `None` scores all of
+    them, matching pre-existing behaviour exactly. Note these names never
+    overlap with CALL's factor names, so passing a CALL profile's
+    (CALL-only) allowlist here naturally zeroes every PUT factor — see
+    `lib.walk_forward.profile_to_signal_config`.
     """
     ind = indicator_config or IndicatorConfig()
     score = 0
     conditions = []
 
     # 1. Consecutive up periods (contrarian — sell after buying pressure)
-    if row.get('Consecutive_Up', 0) >= consecutive_periods:
+    if (_factor_allowed('consecutive_up', enabled_conditions)
+            and row.get('Consecutive_Up', 0) >= consecutive_periods):
         score += 1
         conditions.append('consecutive_up')
 
     # 2. RSI in bearish zone (overbought but not extreme)
     rsi = row.get(ind.rsi_col, 50.0)
-    if rsi_range[0] < rsi < rsi_range[1]:
+    if (_factor_allowed('rsi_overbought_zone', enabled_conditions)
+            and rsi_range[0] < rsi < rsi_range[1]):
         score += 1
         conditions.append('rsi_overbought_zone')
 
     # 3. Price above VWAP (contrarian — selling over fair value)
     price_vs_vwap = row.get('Price_vs_VWAP', 0.0)
-    if price_vs_vwap > 0:
+    if (_factor_allowed('above_vwap', enabled_conditions)
+            and price_vs_vwap > 0):
         score += 1
         conditions.append('above_vwap')
 
@@ -104,12 +142,14 @@ def check_put_conditions(
 
     # 5. Stochastic RSI overbought
     stoch_k = row.get('StochRSI_K', 50.0)
-    if stoch_k > stoch_rsi_threshold:
+    if (_factor_allowed('stoch_rsi_overbought', enabled_conditions)
+            and stoch_k > stoch_rsi_threshold):
         score += 1
         conditions.append('stoch_rsi_overbought')
 
     # 6. Level break aligned with direction (Strat v2 — see methodology §6).
-    if int(row.get('Broke_Prev_Day_Low', 0) or 0) == 1:
+    if (_factor_allowed('level_break_pdl', enabled_conditions)
+            and int(row.get('Broke_Prev_Day_Low', 0) or 0) == 1):
         score += 1
         conditions.append('level_break_pdl')
 
@@ -126,6 +166,7 @@ def evaluate_signal(
     signal_config: SignalConfig = None,
     indicator_config: IndicatorConfig = None,
     ticker: Optional[str] = None,
+    enabled_conditions: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """Evaluate both CALL and PUT conditions for a single bar.
 
@@ -134,6 +175,19 @@ def evaluate_signal(
 
     If `signal_config` is provided its values override the individual
     parameters for EMA proximity and StochRSI thresholds.
+
+    `enabled_conditions` (trading-logic fix, Task 4.3 follow-up, review of
+    commit 1c7a7f35): an exact allowlist of internal factor names (see
+    `check_call_conditions` / `check_put_conditions` for the fixed CALL/PUT
+    factor-name lists) passed straight through to both. `None` (the
+    default; every production caller — gcp/signal_monitor.py, the live
+    endpoints, `lib.backtest` unless a profile-restricted `SignalConfig` is
+    used) scores the full 5-factor set on both sides, byte-identical to
+    behaviour before this parameter existed. When set, a factor absent
+    from the list contributes 0 regardless of the underlying indicator
+    value, and — because CALL's and PUT's factor names never overlap — a
+    CALL-only allowlist forces `put_score` to 0 and vice versa, so a
+    direction with zero enabled factors can never fire.
 
     `ticker` (Track A G.P0.12 + G.P0.13 + G.P1.19): when provided,
     consults `lib.strategies.exit_config_overrides` for two per-ticker
@@ -161,11 +215,13 @@ def evaluate_signal(
         row, consecutive_periods, call_rsi_range,
         ema_proximity=ema_prox, stoch_rsi_threshold=stoch_oversold,
         indicator_config=indicator_config,
+        enabled_conditions=enabled_conditions,
     )
     put_score, put_conds = check_put_conditions(
         row, consecutive_periods, put_rsi_range,
         ema_proximity=ema_prox, stoch_rsi_threshold=stoch_overbought,
         indicator_config=indicator_config,
+        enabled_conditions=enabled_conditions,
     )
 
     # Per-ticker overrides — strip disabled conditions and gate

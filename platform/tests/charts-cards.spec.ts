@@ -663,3 +663,125 @@ test.describe('Charts page — backtest-my-trades scorecard (Task 3.3)', () => {
     await expect(modal.getByText(/journal database not configured/i)).toBeVisible();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 4.4: "My style" panel (POST /api/style/mine-and-validate —
+// platform/api/routers/backtest.py / lib/style_miner.py + lib/walk_forward.py).
+// Lives in the side panel's Analytics tab. Always a 200 from the endpoint —
+// the "not enough signal yet" cases come back as `{status: "unavailable",
+// reason}` and must render the reason verbatim in muted text, never as an
+// error; a genuine backend failure (503/500) is a loud inline error.
+// ─────────────────────────────────────────────────────────────────────────
+test.describe('Charts page — "My style" panel (Task 4.4)', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/market/dates/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
+    await page.route('**/api/signals/IWM/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
+    await page.route('**/api/signals/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
+    );
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
+    );
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] }))
+    );
+  });
+
+  async function openAnalyticsTab(page: import('@playwright/test').Page) {
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: /^Analytics$/ }).click();
+  }
+
+  test('unavailable response renders the reason verbatim in muted text, never as an error', async ({ page }) => {
+    await page.route('**/api/style/mine-and-validate', (r) =>
+      r.fulfill(M.ok({ status: 'unavailable', reason: 'need >= 10 closed trades, have 3' }))
+    );
+
+    await openAnalyticsTab(page);
+    await page.getByTestId('mine-my-style-btn').click();
+
+    const unavailable = page.getByTestId('mine-my-style-unavailable');
+    await expect(unavailable).toBeVisible();
+    await expect(unavailable).toHaveText('need >= 10 closed trades, have 3');
+    // Never rendered as an error banner.
+    await expect(page.getByTestId('mine-my-style-error')).not.toBeVisible();
+  });
+
+  test('success response renders direction + condition chips and the validated stats line with correctly-converted units', async ({ page }) => {
+    await page.route('**/api/style/mine-and-validate', (r) =>
+      r.fulfill(
+        M.ok({
+          profile: {
+            direction: 'CALL',
+            conditions: ['above_vwap', 'rsi_25_50'],
+            support: 4,
+            total: 5,
+          },
+          aggregate_metrics: {
+            avg_expectancy_pct: 0.42,
+            avg_win_rate: 0.6,
+            total_trades_all_folds: 23,
+            total_folds: 4,
+          },
+          stability_score: 0.75,
+          staged: true,
+        })
+      )
+    );
+
+    await openAnalyticsTab(page);
+    await page.getByTestId('mine-my-style-btn').click();
+
+    const result = page.getByTestId('mine-my-style-result');
+    await expect(result).toBeVisible();
+    await expect(result.getByText('CALL', { exact: true })).toBeVisible();
+    await expect(result.getByText('RSI 25-50')).toBeVisible();
+    await expect(result.getByText('Above VWAP')).toBeVisible();
+    await expect(result.getByText('Based on 4/5 of your entries')).toBeVisible();
+
+    // win_rate 0.6 -> "60%", avg_expectancy_pct 0.42 -> "+0.42%",
+    // stability 0.75 -> "75%", plus sample sizes (23 trades, 4 folds).
+    await expect(
+      result.getByText(/Win rate 60%.*expectancy \+0\.42%.*across 23 trades, 4 folds.*stability 75%/)
+    ).toBeVisible();
+  });
+
+  test('a 503 from the endpoint renders a loud inline error, never a silent failure', async ({ page }) => {
+    await page.route('**/api/style/mine-and-validate', (r) =>
+      r.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'journal database not configured' }),
+      })
+    );
+
+    await openAnalyticsTab(page);
+    await page.getByTestId('mine-my-style-btn').click();
+
+    const error = page.getByTestId('mine-my-style-error');
+    await expect(error).toBeVisible();
+    await expect(error).toHaveText(/journal database not configured/i);
+    await expect(page.getByTestId('mine-my-style-unavailable')).not.toBeVisible();
+  });
+
+  test('button shows "Mining…" while the mutation is pending', async ({ page }) => {
+    await page.route('**/api/style/mine-and-validate', async (r) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await r.fulfill(M.ok({ status: 'unavailable', reason: 'need >= 10 closed trades, have 0' }));
+    });
+
+    await openAnalyticsTab(page);
+    const btn = page.getByTestId('mine-my-style-btn');
+    await btn.click();
+    await expect(btn).toHaveText(/Mining…/);
+    await expect(page.getByTestId('mine-my-style-unavailable')).toBeVisible();
+  });
+});
