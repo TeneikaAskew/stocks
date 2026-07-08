@@ -51,17 +51,15 @@ router = APIRouter()
 
 def _normalize_bar_time(t: str) -> str:
     """Bar times arrive either as naive-ET datetime strings (production
-    fetch path) or epoch-second digit strings (the frontend's /api/market
-    unix timestamps). Normalize to naive-ET datetime strings so downstream
-    date-grouping (VWAP sessions) and pd.to_datetime both work."""
+    fetch path) or epoch-second digit strings from /api/market, whose
+    epochs encode NAIVE ET WALL-CLOCK time (main.py strips the tz before
+    epoch conversion) — NOT true UTC. Formatting the epoch without any
+    timezone conversion therefore yields the ET wall-clock string.
+    Normalize to naive-ET datetime strings so downstream date-grouping
+    (VWAP sessions) and pd.to_datetime both work."""
     s = str(t).strip()
     if s.isdigit():
-        return (
-            pd.Timestamp(int(s), unit="s", tz="UTC")
-            .tz_convert("America/New_York")
-            .tz_localize(None)
-            .strftime("%Y-%m-%d %H:%M:%S")
-        )
+        return pd.Timestamp(int(s), unit="s").strftime("%Y-%m-%d %H:%M:%S")
     return s
 
 AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")

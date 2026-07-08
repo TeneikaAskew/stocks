@@ -138,7 +138,7 @@ const MOCK_LIVE_INDICATORS = {
 const LAST_BAR_TIME = String(CALL_BARS[CALL_BARS.length - 1].time);
 const MOCK_SIGNAL_SERIES = {
   fires: [
-    { time: LAST_BAR_TIME, direction: 'CALL', score: 4 },
+    { time: LAST_BAR_TIME, direction: 'CALL', score: 4, bar_index: CALL_BARS.length - 1 },
   ],
 };
 
