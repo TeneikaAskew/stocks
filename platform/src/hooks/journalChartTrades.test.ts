@@ -5,6 +5,7 @@ import {
   journalRowToTradeEntry,
   seedBenchmark,
   formatEdgeBps,
+  styleConditionLabel,
   type JournalRow,
   type SeedTradeRow,
 } from './useJournalChartTrades';
@@ -225,5 +226,32 @@ describe('formatEdgeBps', () => {
   it('renders null/undefined as an em dash, never a fabricated 0.00 (Rule 3.7)', () => {
     expect(formatEdgeBps(null)).toBe('—');
     expect(formatEdgeBps(undefined)).toBe('—');
+  });
+});
+
+describe('styleConditionLabel', () => {
+  // Task 4.4 vocabulary map — mirrors lib/style_miner.py's module docstring
+  // table 1:1. Pinned individually so a vocabulary drift shows up as a
+  // failing assertion here, not a silently-wrong chip in the UI.
+  it('maps every fixed vocabulary condition to its human label', () => {
+    expect(styleConditionLabel('rsi_25_50')).toBe('RSI 25-50');
+    expect(styleConditionLabel('rsi_50_75')).toBe('RSI 50-75');
+    expect(styleConditionLabel('above_vwap')).toBe('Above VWAP');
+    expect(styleConditionLabel('below_vwap')).toBe('Below VWAP');
+    expect(styleConditionLabel('stoch_oversold')).toBe('StochRSI oversold');
+    expect(styleConditionLabel('stoch_overbought')).toBe('StochRSI overbought');
+  });
+
+  it('maps the parameterized consec_{up,down}_ge_{N} conditions using the actual N', () => {
+    expect(styleConditionLabel('consec_up_ge_3')).toBe('3+ up moves');
+    expect(styleConditionLabel('consec_down_ge_3')).toBe('3+ down moves');
+    // N tracks SignalConfig.consecutive_periods, not a fixed constant —
+    // the regex must generalize past the default of 3.
+    expect(styleConditionLabel('consec_up_ge_5')).toBe('5+ up moves');
+    expect(styleConditionLabel('consec_down_ge_2')).toBe('2+ down moves');
+  });
+
+  it('falls back to a humanized raw string for an unknown condition (vocabulary drift), never throws', () => {
+    expect(styleConditionLabel('some_future_condition')).toBe('some future condition');
   });
 });

@@ -450,3 +450,133 @@ export function seedBenchmark(rows: SeedTradeRow[]): SeedBenchmark {
     avgReturnPct: sum / withReturn.length,
   };
 }
+
+// ── "My style" panel (Task 4.4) ───────────────────────────────────────────
+// POST /api/style/mine-and-validate (platform/api/routers/backtest.py /
+// lib/style_miner.py, Task 4.2-4.3). Mines the user's own closed
+// chart/manual journal trades into a condition profile and walk-forward
+// validates it. Always a 200 — the "not enough signal yet" cases (< 10
+// closed trades, zero mined profile, zero folds, zero fires) come back as
+// `{status: "unavailable", reason}`, never a 4xx (Rule 3.7: these are
+// expected, recoverable states, not errors). A genuine backend failure
+// (Cloud SQL down, etc.) is still a real HTTP error status and surfaces as
+// a loud inline error via the mutation's `isError`.
+
+/** A mined per-direction condition profile — mirrors
+ * `lib.style_miner.StyleProfile` field-for-field. */
+export interface MineStyleProfile {
+  direction: string; // 'CALL' | 'PUT'
+  conditions: string[]; // vocabulary strings — see styleConditionLabel below
+  support: number;
+  total: number;
+}
+
+/** Walk-forward aggregate metrics (`lib.walk_forward`'s `_aggregate_metrics`,
+ * percent-converted server-side by `_walk_forward_metrics_to_percent`). Only
+ * the keys this panel renders are declared; the endpoint returns more
+ * (std_* variants) that this UI doesn't need. `total_folds` may be absent on
+ * older/partial payloads — the panel falls back to stability-only text when
+ * it's missing rather than fabricating a fold count. */
+export interface MineStyleAggregateMetrics {
+  avg_expectancy_pct: number | null; // TRUE PERCENT (e.g. 0.42 == +0.42%)
+  avg_win_rate: number | null; // 0-1 fraction
+  total_trades_all_folds: number;
+  total_folds?: number;
+}
+
+export interface MineStyleSuccess {
+  profile: MineStyleProfile;
+  aggregate_metrics: MineStyleAggregateMetrics;
+  stability_score: number; // 0-1 fraction, render as %
+  staged: boolean;
+}
+
+export interface MineStyleUnavailable {
+  status: 'unavailable';
+  reason: string;
+}
+
+export type MineStyleResponse = MineStyleSuccess | MineStyleUnavailable;
+
+export function isMineStyleUnavailable(
+  data: MineStyleResponse
+): data is MineStyleUnavailable {
+  return (data as MineStyleUnavailable).status === 'unavailable';
+}
+
+/**
+ * Human labels for the style-miner's SMALL, fixed condition vocabulary
+ * (`lib/style_miner.py` module docstring table). Kept as an explicit map
+ * (not derived) so a vocabulary change is a visible diff here, plus regexes
+ * for the two parameterized `consec_{up,down}_ge_{N}` conditions since `N`
+ * tracks `SignalConfig.consecutive_periods` and isn't a fixed string.
+ */
+const STYLE_CONDITION_LABELS: Record<string, string> = {
+  rsi_25_50: 'RSI 25-50',
+  rsi_50_75: 'RSI 50-75',
+  above_vwap: 'Above VWAP',
+  below_vwap: 'Below VWAP',
+  stoch_oversold: 'StochRSI oversold',
+  stoch_overbought: 'StochRSI overbought',
+};
+
+const CONSEC_UP_RE = /^consec_up_ge_(\d+)$/;
+const CONSEC_DOWN_RE = /^consec_down_ge_(\d+)$/;
+
+/**
+ * Maps one style-miner condition string to its human label. Unknown
+ * conditions (vocabulary drift between backend and frontend) fall back to a
+ * humanized version of the raw string rather than throwing — this is a
+ * display label, not a financial value, so CLAUDE.md Rule 3.7's
+ * no-silent-fallback rule doesn't apply (nothing numeric is being
+ * fabricated).
+ */
+export function styleConditionLabel(condition: string): string {
+  const known = STYLE_CONDITION_LABELS[condition];
+  if (known) return known;
+
+  const upMatch = condition.match(CONSEC_UP_RE);
+  if (upMatch) return `${upMatch[1]}+ up moves`;
+
+  const downMatch = condition.match(CONSEC_DOWN_RE);
+  if (downMatch) return `${downMatch[1]}+ down moves`;
+
+  return condition.replace(/_/g, ' ');
+}
+
+export interface MineMyStyleVars {
+  ticker: string;
+}
+
+/**
+ * Mines + walk-forward validates the caller's own closed trades for
+ * `ticker`. A `useMutation` (triggered on the "Mine my style" button click,
+ * not a passive query) mirroring `useReplayTrades`'s shape exactly — this
+ * is a multi-second backend job (mining + a fold-loop backtest), not cached
+ * page data.
+ */
+export function useMineMyStyle() {
+  return useMutation<MineStyleResponse, Error, MineMyStyleVars>({
+    mutationFn: async (vars) => {
+      const r = await fetch('/api/style/mine-and-validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: vars.ticker }),
+      });
+      if (!r.ok) {
+        // Fail-loud (Rule 3.7): surface the server's `detail` message so the
+        // panel's inline error banner says WHY mining failed, not just a
+        // bare status code.
+        let detail = `mine-and-validate failed: ${r.status}`;
+        try {
+          const body = await r.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch {
+          // response body wasn't JSON — keep the status-code message.
+        }
+        throw new Error(detail);
+      }
+      return r.json();
+    },
+  });
+}
