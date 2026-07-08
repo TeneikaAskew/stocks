@@ -51,3 +51,42 @@ def run_baseline(engine, tf: str = "5m",
         per = {tk: run_axis(engine, axis, tk, tf, ledger) for tk in TICKERS}
         out[axis] = slice_predictable(per)
     return out
+
+
+def main():
+    """CLI entrypoint — run the 3-axis baseline against Cloud SQL and log the
+    pre-registered verdict. Executed one-shot via the `direction-baseline`
+    Cloud Run Job (the only path with Cloud SQL + ML-engine access)."""
+    import argparse
+    import json
+    import logging
+    from gcp.database import get_engine
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    log = logging.getLogger("direction.baseline")
+
+    p = argparse.ArgumentParser(description="Run the 3-axis pure-prediction "
+                                            "baseline (direction/size/type) and "
+                                            "print the pre-registered verdict.")
+    p.add_argument("--tf", default="5m", help="timeframe (default 5m)")
+    p.add_argument("--ledger-path",
+                   default="docs/research/direction_program_ledger.jsonl",
+                   help="slice-ledger JSONL path (written inside the container)")
+    args = p.parse_args()
+
+    engine = get_engine()
+    result = run_baseline(engine, tf=args.tf, ledger_path=args.ledger_path)
+
+    # One greppable line per axis for Cloud Run logs, then the full result.
+    for axis, v in result.items():
+        log.info("BASELINE_VERDICT axis=%s tf=%s predictable=%s "
+                 "n_tickers_pass=%d per_ticker=%s",
+                 axis, args.tf, v["predictable"], v["n_tickers_pass"],
+                 v["per_ticker_pass"])
+    log.info("BASELINE_RESULT_JSON %s", json.dumps(result))
+    return result
+
+
+if __name__ == "__main__":
+    main()
