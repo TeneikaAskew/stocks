@@ -7,6 +7,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from lib.features.experimental.options_derived import add_options_features
+
 
 def prune_feature_cols(feature_cols: list[str], drop_set: set) -> list[str]:
     return [c for c in feature_cols if c not in drop_set]
@@ -64,4 +66,22 @@ def cross_asset_features(df: pd.DataFrame, peers: dict) -> pd.DataFrame:
         # bar) to NaN, overriding whatever the clipped lookup produced.
         vals = np.where(idx >= 0, p_ret.values[np.clip(idx, 0, len(p) - 1)], np.nan)
         out[f"xa_{pk}_ret_1"] = vals.astype(np.float32)
+    return out
+
+
+_FAMILY_COLS = {
+    "positioning": ["pcr_volume_d1", "pcr_oi_d1", "iv_skew_25d_d1"],
+    "options_iv": ["atm_iv_d1", "iv_term_slope_d1"],
+}
+
+
+def options_features(df: pd.DataFrame, ticker: str, engine,
+                     families: set) -> pd.DataFrame:
+    joined = add_options_features(df, ticker, engine)
+    want = [c for fam in families for c in _FAMILY_COLS[fam]]
+    out = pd.DataFrame(index=df.index)
+    for c in want:
+        # explicit-missing if the joiner didn't produce this column
+        out[c] = (joined[c].to_numpy(dtype=np.float32) if c in joined.columns
+                  else np.full(len(df), np.nan, dtype=np.float32))
     return out
