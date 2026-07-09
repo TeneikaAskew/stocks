@@ -21,9 +21,20 @@ def test_cross_asset_uses_strictly_prior_peer_bar():
 
 
 def test_cross_asset_missing_peer_is_nan():
+    # Peer has >=2 bars, ALL strictly AFTER the base bar's ts, with distinct
+    # close prices so the peer's own shift(1) return on its LAST row is a
+    # REAL, non-NaN number (0.10). This makes the test able to distinguish
+    # the correct explicit-NaN guard from a regression that lets idx == -1
+    # wrap (numpy negative indexing) to the peer's last bar: with a
+    # single-row peer fixture, that wraparound would coincidentally also be
+    # NaN (a fresh series' first shift(1) is always NaN) and the test would
+    # pass for the wrong reason.
     base = pd.DataFrame({
         "ts": pd.to_datetime(["2026-01-05 09:30"], utc=True), "close": [100.0]})
     peer = pd.DataFrame({
-        "ts": pd.to_datetime(["2026-01-05 10:00"], utc=True), "close": [50.0]})
+        "ts": pd.to_datetime(
+            ["2026-01-05 10:00", "2026-01-05 10:05"], utc=True),
+        "close": [50.0, 55.0],  # last-row return = 55/50 - 1 = 0.10 (real, non-NaN)
+    })
     out = cross_asset_features(base, {"SPY": peer})
     assert np.isnan(out.iloc[0]["xa_SPY_ret_1"])  # no strictly-prior peer bar

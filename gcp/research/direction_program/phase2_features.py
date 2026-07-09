@@ -59,8 +59,9 @@ def cross_asset_features(df: pd.DataFrame, peers: dict) -> pd.DataFrame:
         # For each base bar, take the peer return of the last peer bar
         # STRICTLY before the base bar's ts (searchsorted 'left' - 1).
         idx = np.searchsorted(p_ts.values, base_ts.values, side="left") - 1
+        # clip avoids negative-index wraparound during the lookup; the
+        # np.where guard is what actually maps idx == -1 (no prior peer
+        # bar) to NaN, overriding whatever the clipped lookup produced.
         vals = np.where(idx >= 0, p_ret.values[np.clip(idx, 0, len(p) - 1)], np.nan)
-        # idx == -1 -> no prior peer bar -> NaN
-        vals = np.where(idx >= 0, vals, np.nan)
         out[f"xa_{pk}_ret_1"] = vals.astype(np.float32)
     return out
