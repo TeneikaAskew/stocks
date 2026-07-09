@@ -47,3 +47,20 @@ def calendar_features(df: pd.DataFrame) -> pd.DataFrame:
         "cal_is_fomc_week": is_fomc,
     }, index=df.index)
     return out
+
+
+def cross_asset_features(df: pd.DataFrame, peers: dict) -> pd.DataFrame:
+    base_ts = pd.to_datetime(df["ts"], utc=True)
+    out = pd.DataFrame(index=df.index)
+    for pk, pdf in peers.items():
+        p = pdf.sort_values("ts").reset_index(drop=True)
+        p_ts = pd.to_datetime(p["ts"], utc=True)
+        p_ret = p["close"].astype(float) / p["close"].astype(float).shift(1) - 1.0
+        # For each base bar, take the peer return of the last peer bar
+        # STRICTLY before the base bar's ts (searchsorted 'left' - 1).
+        idx = np.searchsorted(p_ts.values, base_ts.values, side="left") - 1
+        vals = np.where(idx >= 0, p_ret.values[np.clip(idx, 0, len(p) - 1)], np.nan)
+        # idx == -1 -> no prior peer bar -> NaN
+        vals = np.where(idx >= 0, vals, np.nan)
+        out[f"xa_{pk}_ret_1"] = vals.astype(np.float32)
+    return out
