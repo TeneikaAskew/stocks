@@ -409,7 +409,12 @@ export default function ChartsPage() {
   // strings use the same naive-ET wall-clock convention as journal_entries
   // (see isoNaiveToEpoch's doc comment), so the same mapper applies as-is.
   const seedMarkers: SeriesMarker<Time>[] = useMemo(() => {
-    if (!showSeedTrades) return [];
+    // Replay leakage guard: seed rows carry full-day entry/exit/return data
+    // from the automated pipeline — a seed exit at 15:45 would leak future
+    // price action while the reveal is still at, say, 10:00. Full gate
+    // (matching the Sig overlay pattern above): [] whenever `replay.active`,
+    // regardless of showSeedTrades.
+    if (!showSeedTrades || replay.active) return [];
     return seedRows.flatMap((row) => {
       const m: SeriesMarker<Time>[] = [];
       if (row.entry_time && row.entry_price != null) {
@@ -438,7 +443,7 @@ export default function ChartsPage() {
       }
       return m;
     });
-  }, [showSeedTrades, seedRows]);
+  }, [showSeedTrades, seedRows, replay.active]);
 
   // Trade markers on top of seed/signal markers so the user's own trades
   // win the visual priority (and re-render last in the chart's marker
@@ -560,13 +565,21 @@ export default function ChartsPage() {
       } else if (drawingStep === 'exit' && exitingTradeId) {
         const trade = trades.find((t) => t.id === exitingTradeId);
         if (trade) {
+          // Clamp exit time to the last REVEALED bar during replay (mirrors
+          // the Mark Entry pin above) — a raw click time has no such clamp
+          // and could otherwise persist a future-bar epoch, leaking how far
+          // the reveal will eventually go.
+          const exitTime =
+            replay.active && replay.revealedBars.length > 0
+              ? replay.revealedBars[replay.revealedBars.length - 1].time
+              : data.time;
           // PATCH persists the exit; return_pct/status come back from the
           // server (journal.py's _return_pct/_derive_status) — no client-side
           // pnl math here, the query invalidation refetches the closed row.
           closeChartTrade.mutate({
             id: exitingTradeId,
             ticker: activeTicker,
-            exitTime: data.time,
+            exitTime,
             exitPrice: data.price,
           });
         }
@@ -790,10 +803,15 @@ export default function ChartsPage() {
           <button
             onClick={() => setShowSeedTrades(!showSeedTrades)}
             data-testid="seed-toggle"
-            title="Show seed trades — read-only admin trades from the automated pipeline"
+            disabled={replay.active}
+            title={
+              replay.active
+                ? 'unavailable during replay'
+                : 'Show seed trades — read-only admin trades from the automated pipeline'
+            }
             className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
               showSeedTrades ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
-            }`}
+            } disabled:cursor-not-allowed disabled:opacity-40`}
           >
             <BookOpen size={14} />
             Seed
@@ -1040,7 +1058,15 @@ export default function ChartsPage() {
                     <BookOpen size={12} />
                     Playbook seed
                   </div>
-                  {seedUnavailable ? (
+                  {replay.active ? (
+                    // Replay leakage guard: seedBench/seedRows carry full-day
+                    // entry/exit/return_pct — even a partial filter would still
+                    // leak the return_pct of a seed trade entered before the
+                    // reveal cutoff. Full gate: no rows, no summary, honest
+                    // muted line instead (matches the seedMarkers/toggle gate
+                    // above).
+                    <p className="text-xs text-[var(--color-text-muted)]">unavailable during replay</p>
+                  ) : seedUnavailable ? (
                     <p className="text-xs text-[var(--color-text-muted)]">Seed layer unavailable</p>
                   ) : (
                     <>
@@ -1135,7 +1161,13 @@ export default function ChartsPage() {
         has fired on the LATEST bar; the card itself renders a "waits for
         setup" state when direction is null so the slot stays in the layout. */}
     {chartBars.length >= 14 && (() => {
-      const fires = signalSeriesQuery.data?.fires ?? [];
+      // Replay leakage guard: signalSeriesQuery's `enabled` flag stops new
+      // fetches during a session, but a disabled useQuery still serves
+      // whatever `.data` it cached before the session started — that's
+      // incidental protection, not a guarantee against a stale full-day
+      // cache entry. Force fires to [] explicitly so SimilarSetupsCard
+      // always falls back to its no-setup state during replay.
+      const fires = replay.active ? [] : signalSeriesQuery.data?.fires ?? [];
       const lastFire = fires.find((f) => f.bar_index === chartBars.length - 1);
       return (
         <SimilarSetupsCard

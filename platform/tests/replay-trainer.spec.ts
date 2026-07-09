@@ -106,6 +106,25 @@ const LATE_TRADE = {
   created_at: '2026-04-25T09:56:01',
 };
 
+// Admin seed-trade layer (Task 2.4) row timed LATE in the day — same
+// leakage shape as LATE_TRADE above, but this is the read-only pipeline
+// teaching layer, not a user-marked trade. Entry AND exit sit at/after bar
+// 25 (09:56 / 09:58), past both the warm-start cutoff (bar 14, 09:45) and
+// the post-step cutoff (bar 16, 09:47) exercised below — the exact
+// scenario the leakage audit flagged: a seed exit/return_pct rendering
+// while the reveal hasn't reached it yet.
+const LATE_SEED_TRADE = {
+  id: 'seed-late-1',
+  direction: 'CALL',
+  entry_time: '2026-04-25T09:56:00',
+  entry_price: 220.9,
+  exit_time: '2026-04-25T09:58:00',
+  exit_price: 221.4,
+  return_pct: 0.23,
+  strat_combo: '2U-2U',
+  exit_reason: 'tp1',
+};
+
 test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
@@ -125,7 +144,7 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
     await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
     await page.route('**/api/journal/seed/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 1, trades: [LATE_SEED_TRADE] }))
     );
     await page.route('**/api/journal/trades/IWM', (r) =>
       r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 2, trades: [EARLY_TRADE, LATE_TRADE] }))
@@ -236,5 +255,43 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     await expect(page.getByText('Trades (2)')).toBeVisible();
     const sigButton = page.getByRole('button', { name: /^Sig$/ });
     await expect(sigButton).toBeEnabled();
+  });
+
+  test('admin seed layer is gated off during replay (leakage audit)', async ({ page }) => {
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    // Pre-replay: the seed panel renders the LATE seed trade's row and
+    // summary in full — this is the pre-existing, correct behavior outside
+    // a replay session.
+    await expect(page.getByText('Playbook seed')).toBeVisible();
+    await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
+    await expect(page.getByText('SEED CALL')).toBeVisible();
+
+    const seedToggle = page.getByTestId('seed-toggle');
+    await expect(seedToggle).toBeEnabled();
+
+    // Start replay -> warm-start reveal (bar 14, 09:45) is before the seed
+    // trade's entry (bar 25, 09:56) — the exact scenario the leakage audit
+    // flagged: a seed exit/return_pct rendering ahead of the reveal cutoff.
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-revealed-count')).toHaveText('15/30');
+
+    // The seed panel row and summary are gone; an honest muted line
+    // replaces the section body instead of a partially-filtered leak.
+    await expect(page.getByText('SEED CALL')).not.toBeVisible();
+    await expect(page.getByText(/Seed: 1 trade/)).not.toBeVisible();
+    await expect(page.getByText('unavailable during replay').first()).toBeVisible();
+
+    // The Show-seed-trades toggle is disabled for the duration of the
+    // session, mirroring the Sig overlay toggle.
+    await expect(seedToggle).toBeDisabled();
+    await expect(seedToggle).toHaveAttribute('title', 'unavailable during replay');
+
+    // Stop -> both the row and toggle come back.
+    await page.getByTestId('replay-stop-btn').click();
+    await expect(seedToggle).toBeEnabled();
+    await expect(page.getByText('SEED CALL')).toBeVisible();
+    await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
   });
 });
