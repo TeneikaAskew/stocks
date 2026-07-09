@@ -998,6 +998,70 @@ deploy_direction_probe() {
         --quiet
 }
 
+# ── Direction Program: Baseline / Feature-Importance (Cloud Run Jobs,
+#    research image) ────────────────────────────────────────────────────────
+# Phase 2 of the directionality research program: gcp/research/direction_program/
+# runs the pure-prediction 3-axis baseline (direction/size/type) and a
+# feature-importance/SHAP audit through the SAME production walk-forward
+# engines direction-probe uses. Research only — NO production hooks, NO
+# scheduler. Same image as direction-probe/strat-engine (build with
+# `build-research`).
+#
+# These two jobs were originally created ad hoc via `gcloud run jobs create`
+# (2026-07 direction-importance incident, issue #704) and their source
+# (gcp/research/direction_program/) was never committed — the deployed image
+# had code the repo didn't track. Recovered from the running image and
+# committed alongside this deploy.sh entry so the two stay in sync going
+# forward: redeploy with `./gcp/deploy.sh direction-baseline` /
+# `./gcp/deploy.sh direction-importance` after `build-research`.
+deploy_direction_baseline() {
+    echo "Deploying direction-baseline job (Phase 2 pure-prediction baseline)..."
+    local research_image="${IMAGE}:research"
+    # 4 CPU / 8Gi + 10800s timeout mirrors direction-probe: 3 axes x 3
+    # tickers x 8-fold walk-forward through the shared engines.
+    gcloud run jobs create direction-baseline \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-baseline \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
+        --task-timeout 10800 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+deploy_direction_importance() {
+    echo "Deploying direction-importance job (Phase 2 feature-importance/SHAP audit)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        --task-timeout 10800 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Build Options Daily Greeks (Cloud Run Job, research image) ──────────────
 # Materializes etf_options_daily_greeks (daily DEX/vanna/charm per ticker) so
 # the flow-direction feature loader never re-scans the ~14M-row
@@ -3629,6 +3693,8 @@ case "${1:-help}" in
     phase6-playbook) build_image && deploy_phase6_playbook ;;
     strat-engine) deploy_strat_engine ;;
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
+    direction-baseline) deploy_direction_baseline ;;   # research image; build separately (build-research)
+    direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
     build-realtime-gex) deploy_build_realtime_gex ;;      # research image
     build-options-daily-features) deploy_build_options_daily_features ;;  # research image
