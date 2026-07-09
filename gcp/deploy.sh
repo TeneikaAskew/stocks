@@ -1219,6 +1219,38 @@ deploy_direction_importance() {
         --quiet
 }
 
+# ── Direction-program Phase-2 ablation (task-parallel, one task per config) ──
+# Volume: 14 configs (2 axes × [baseline + 5 isolation + 1 stack]) × 3 tickers
+#         × 8 folds. Velocity: 1 batched feature SELECT per (ticker,cfg); daily
+#         options read from the materialized options_daily_features table.
+# Wall-clock: one config ≈ baseline (~40 min); task-parallel => ~40 min total.
+# task-timeout 10800s (4×). max-retries 0 (fail loud). ~$0.15/run, on demand.
+# PREREQUISITE (run once, not in this job): materialize options daily features
+#   python -c "from gcp.database import get_engine; \
+#     from lib.features.experimental.options_derived import build_materialized; \
+#     e=get_engine(); [build_materialized(e,t,'2015-01-01','2026-07-08') \
+#       for t in ('IWM','SPY','QQQ')]"
+deploy_direction_phase2() {
+    echo "Deploying direction-phase2 ablation job (task-parallel)..."
+    local research_image="${IMAGE}:research"
+    local n=14
+    gcloud run jobs create direction-phase2 \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${n} --parallelism ${n} \
+        --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.phase2_ablation" \
+        ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet 2>/dev/null || \
+    gcloud run jobs update direction-phase2 \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${n} --parallelism ${n} \
+        --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.phase2_ablation" \
+        ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet
+}
+
 # ── Magnitude live-inference job ──────────────────────────────────────────────
 # Phase B of magnitude productionization. Daily cron at 09:25 ET scores
 # the most-recent settled bars from strat_features_<tf> using the
@@ -3709,6 +3741,7 @@ case "${1:-help}" in
     magnitude-engine) deploy_magnitude_engine ;;
     direction-baseline) deploy_direction_baseline ;;   # research image; build separately (build-research)
     direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
+    direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
     magnitude-inference) build_research_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
