@@ -78,7 +78,8 @@ jobs:
           python -m pytest -q \
             tests/test_strat*.py \
             tests/test_mag*.py \
-            tests/test_featurize_all_nan_robust.py
+            tests/test_featurize_all_nan_robust.py \
+            tests/test_direction*.py
 
   integration-tests:
     name: Integration Tests (ephemeral Postgres)

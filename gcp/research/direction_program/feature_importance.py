@@ -29,11 +29,6 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from gcp.database import get_engine
-from gcp.research.strat_engine.strat_walk_forward import (
-    DEFAULT_CUTOFFS, MIN_TEST_BARS, _gcs_upload,
-)
-
 log = logging.getLogger("direction.importance")
 
 TICKERS = ("IWM", "SPY", "QQQ")
@@ -180,6 +175,13 @@ def _load_axis(engine, axis: str, ticker: str, tf: str):
 
 def importance_for_axis(engine, axis: str, ticker: str, tf: str,
                         cutoffs=None) -> dict:
+    # Lazy: strat_walk_forward pulls in the full research ML stack
+    # (lightgbm via strat_pred_train). Deferring this import keeps
+    # aggregate_importance() and the other pure helpers above importable
+    # (and unit-testable) in a lean environment without lightgbm installed.
+    from gcp.research.strat_engine.strat_walk_forward import (
+        DEFAULT_CUTOFFS, MIN_TEST_BARS,
+    )
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     X_full, y_full, bar_dates, cols, make = _load_axis(engine, axis, ticker, tf)
     log.info("[%s %s %s] %d rows × %d cols", axis, ticker, tf, X_full.shape[0], len(cols))
@@ -208,7 +210,13 @@ def importance_for_axis(engine, axis: str, ticker: str, tf: str,
             "n_folds_ok": n_ok, "n_features": len(cols), "ranking": ranking}
 
 
-def main():
+def main() -> int:
+    # Lazy for the same reason as importance_for_axis's import: keeps this
+    # module importable (aggregate_importance in particular) without the
+    # research ML stack installed.
+    from gcp.database import get_engine
+    from gcp.research.strat_engine.strat_walk_forward import _gcs_upload
+
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description="Feature-importance/SHAP audit of the "
@@ -222,22 +230,24 @@ def main():
     engine = get_engine()
     axes = [a.strip() for a in args.axes.split(",") if a.strip()]
     tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
+    cells = [(axis, tk) for axis in axes for tk in tickers]
 
     results = []
-    for axis in axes:
-        for tk in tickers:
-            try:
-                res = importance_for_axis(engine, axis, tk, args.tf)
-            except Exception as e:
-                log.exception("importance failed for %s %s: %s", axis, tk, e)
-                continue
-            results.append(res)
-            log.info("=== TOP %d  %s %s %s  (%d folds, %d feats) ===",
-                     args.top, axis, tk, args.tf, res["n_folds_ok"], res["n_features"])
-            for r in res["ranking"][:args.top]:
-                shap_s = "n/a" if r["mean_abs_shap"] is None else f"{r['mean_abs_shap']:.4f}"
-                log.info("  %2d. gain=%12.1f shap=%8s  %s",
-                         r["rank"], r["mean_gain"], shap_s, r["feature"])
+    failures: list[tuple[str, str, str]] = []
+    for axis, tk in cells:
+        try:
+            res = importance_for_axis(engine, axis, tk, args.tf)
+        except Exception as e:
+            log.exception("importance failed for %s %s: %s", axis, tk, e)
+            failures.append((axis, tk, str(e)))
+            continue
+        results.append(res)
+        log.info("=== TOP %d  %s %s %s  (%d folds, %d feats) ===",
+                 args.top, axis, tk, args.tf, res["n_folds_ok"], res["n_features"])
+        for r in res["ranking"][:args.top]:
+            shap_s = "n/a" if r["mean_abs_shap"] is None else f"{r['mean_abs_shap']:.4f}"
+            log.info("  %2d. gain=%12.1f shap=%8s  %s",
+                     r["rank"], r["mean_gain"], shap_s, r["feature"])
 
     payload = json.dumps({"tf": args.tf, "results": results}, default=str)
     blob = f"direction-program/importance/importance_{args.tf}_{int(time.time())}.json"
@@ -247,9 +257,24 @@ def main():
                  os.environ.get("GCS_BUCKET", "adept-mountain-474619-d4-trading-data"), blob)
     except Exception as e:
         log.warning("GCS upload failed (results still in logs): %s", e)
-    log.info("IMPORTANCE_DONE axes=%s tickers=%s cells=%d", axes, tickers, len(results))
-    return results
+    log.info("IMPORTANCE_DONE axes=%s tickers=%s cells=%d failures=%d",
+             axes, tickers, len(results), len(failures))
+
+    # No silent success (CLAUDE.md Rule 3.7 — same class as the
+    # ZERO-OUTPUT guard in mag_inference.py): a malformed gain/SHAP shape,
+    # or any other per-cell exception, must not let the job exit 0 while
+    # producing nothing (or producing less than it silently claimed to).
+    if not results:
+        log.error("ZERO-OUTPUT — no cell produced an importance ranking; "
+                  "treating as failure (%d/%d cells failed: %s)",
+                  len(failures), len(cells), failures)
+        return 1
+    if failures and len(failures) > len(cells) // 2:
+        log.error("TOO-MANY-FAILURES — %d/%d cells failed: %s",
+                  len(failures), len(cells), failures)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
