@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from lib.features.experimental.options_derived import add_options_features
+from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
 
 
 def prune_feature_cols(feature_cols: list[str], drop_set: set) -> list[str]:
@@ -85,3 +86,45 @@ def options_features(df: pd.DataFrame, ticker: str, engine,
         out[c] = (joined[c].to_numpy(dtype=np.float32) if c in joined.columns
                   else np.full(len(df), np.nan, dtype=np.float32))
     return out
+
+
+# All three tickers both engines walk-forward over. Kept local (not
+# imported from strat_config/mag_config) so this module has no
+# import-time dependency on either engine's config beyond the dataset
+# loader itself.
+_ALL_TICKERS = ("IWM", "SPY", "QQQ")
+
+
+def _load_peers(engine, ticker: str, tf: str) -> dict:
+    """Load the OTHER two of (IWM, SPY, QQQ) for cross_asset_features,
+    returning only `ts`+`close` per peer. Shared by both the DIRECTION
+    and SIZE engines via the common base loader (load_labeled_dataset —
+    the SIZE engine's load_magnitude_dataset itself wraps this same
+    loader for OHLCV), so peer bars are identical regardless of which
+    axis is asking. Leak-safe by construction: cross_asset_features
+    only reads peer bars strictly before the base bar's ts."""
+    peers = {}
+    for pk in _ALL_TICKERS:
+        if pk == ticker:
+            continue
+        pdf = load_labeled_dataset(engine, pk, tf, include_next_bar_ohlc=False)
+        peers[pk] = pdf[["ts", "close"]]
+    return peers
+
+
+def build_family_columns(df, families, axis, ticker, tf, engine, peers=None):
+    """Assemble the additive Phase-2 families into one NaN-preserving frame
+    aligned to df's row order. `prune` is NOT handled here — it filters the
+    base feature_cols in the engine, before this is called."""
+    parts = []
+    if {"options_iv", "positioning"} & families:
+        parts.append(options_features(
+            df, ticker, engine, families & {"options_iv", "positioning"}))
+    if "cross_asset" in families:
+        parts.append(cross_asset_features(df, peers or {}))
+    if "calendar" in families:
+        parts.append(calendar_features(df))
+    if not parts:
+        return pd.DataFrame(index=df.index), []
+    new_df = pd.concat([p.reset_index(drop=True) for p in parts], axis=1)
+    return new_df, list(new_df.columns)
