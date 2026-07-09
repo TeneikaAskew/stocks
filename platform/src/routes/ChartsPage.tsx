@@ -31,10 +31,12 @@ import { Modal } from '@/components/shared/Modal';
 import BacktesterSection from '@/components/backtest/BacktesterSection';
 import { StrategyConditionsCard } from '@/components/charts/StrategyConditionsCard';
 import { SimilarSetupsCard } from '@/components/charts/SimilarSetupsCard';
+import { ReplaySessionControls } from '@/components/charts/ReplaySessionControls';
+import { useReplaySession } from '@/hooks/useReplaySession';
 import { useLiveIndicators, useSignalSeries } from '@/hooks/useLiveIndicators';
 import { EMPTY_INDICATORS, EMPTY_SIGNALS, type Bar } from '@/lib/indicators';
 import type { Timeframe, TradeEntry, TradeDirection } from '@/types';
-import type { CandlestickBar } from '@/hooks/useMarketData';
+import type { CandlestickBar, VolumeBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
 import {
   Eye,
@@ -163,6 +165,33 @@ export default function ChartsPage() {
     isReview ? reviewTime : null
   );
 
+  // Bar-replay trainer session (Task 5.2) — reveals `marketData.candlestick`
+  // bar-by-bar. `revealedBars` is the ONLY slice of the day anything
+  // downstream (chart, indicators, signal overlay) sees while active; that's
+  // the whole leakage-free contract.
+  const replay = useReplaySession<CandlestickBar>(marketData?.candlestick ?? []);
+
+  // Volume slice for the replay reveal, bound to the SAME candle count as
+  // replay.revealedBars (never a separately-tracked volume cursor). Handoff
+  // from Task 5.1's review: if the natural slice comes back shorter than the
+  // candle count, the two arrays /api/market/data returned aren't in
+  // lockstep — a structural anomaly, not a financial one, so it's a
+  // console.warn (observability) rather than a silent `?? 0` fill.
+  const revealedVolume: VolumeBar[] = useMemo(() => {
+    if (!marketData) return [];
+    if (!replay.active) return marketData.volume;
+    const candleCount = replay.revealedBars.length;
+    const sliced = marketData.volume.slice(0, candleCount);
+    if (sliced.length !== candleCount) {
+      console.warn(
+        'replay: revealed volume length (%d) does not match revealed candle count (%d); slicing volume by candle count',
+        sliced.length,
+        candleCount,
+      );
+    }
+    return sliced;
+  }, [marketData, replay.active, replay.revealedBars]);
+
   // Reference levels (prev day OHLC)
   const { data: refLevels } = useReferenceLevels(activeTicker, selectedDate);
 
@@ -224,17 +253,37 @@ export default function ChartsPage() {
     return Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
   }, [isReview, reviewDate, reviewTime]);
 
+  // Replay leakage guard: while a session is active, any of the user's OWN
+  // historical trades timed AFTER the last revealed bar are information
+  // leakage about where price goes next — hide them the same way review
+  // mode hides post-cutoff trades. The last revealed bar's time IS the
+  // cutoff (also what Mark Entry pins new replay trades' entry epoch to,
+  // below), so a trade created during the current session always survives
+  // this filter (entryTime === replayCutoffTs, not >).
+  const replayCutoffTs = useMemo(() => {
+    if (!replay.active || replay.revealedBars.length === 0) return null;
+    return replay.revealedBars[replay.revealedBars.length - 1].time;
+  }, [replay.active, replay.revealedBars]);
+
   const currentTrades = useMemo(() => {
+    let list = trades;
     if (reviewCutoffTs !== null) {
-      return trades.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
+      list = list.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
     }
-    return trades;
-  }, [trades, reviewCutoffTs]);
+    if (replayCutoffTs !== null) {
+      list = list.filter(t => (t.exitTime ?? t.entryTime) <= replayCutoffTs);
+    }
+    return list;
+  }, [trades, reviewCutoffTs, replayCutoffTs]);
 
   const hiddenTradesCount = useMemo(() => {
-    if (reviewCutoffTs === null) return 0;
-    return trades.filter(t => (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
-  }, [trades, reviewCutoffTs]);
+    let cutoff: number | null = reviewCutoffTs;
+    if (replayCutoffTs !== null) {
+      cutoff = cutoff !== null ? Math.min(cutoff, replayCutoffTs) : replayCutoffTs;
+    }
+    if (cutoff === null) return 0;
+    return trades.filter(t => (t.exitTime ?? t.entryTime) > cutoff).length;
+  }, [trades, reviewCutoffTs, replayCutoffTs]);
   const stats = useTradeAnalytics(currentTrades);
 
   // Task 3.3: "closed" = any non-active status (win/loss/breakeven) — the
@@ -254,17 +303,32 @@ export default function ChartsPage() {
   // (lib/indicators.py, lib/signals.py) — the app never duplicates this math.
   // Need ≥14 bars before RSI is meaningful, so dependent UI hides itself
   // below that threshold.
+  //
+  // Replay leakage guard: while a session is active this is built from
+  // ONLY replay.revealedBars (+ its lockstep revealedVolume), never the
+  // full day's marketData.candlestick — the Strategy Conditions panel and
+  // the Sig overlay/Similar Setups lookup below all derive from chartBars,
+  // so pinning the source here is what keeps them leakage-free without
+  // needing separate replay-aware branches at every call site.
+  const effectiveCandlestick: CandlestickBar[] = replay.active
+    ? replay.revealedBars
+    : marketData?.candlestick ?? [];
+  const effectiveVolume: VolumeBar[] = replay.active ? revealedVolume : marketData?.volume ?? [];
   const chartBars: Bar[] = useMemo(() => {
-    if (!marketData) return [];
-    return marketData.candlestick.map((c, i) => ({
+    if (effectiveCandlestick.length === 0) return [];
+    return effectiveCandlestick.map((c, i) => ({
       time: String(c.time),
       open: c.open,
       high: c.high,
       low: c.low,
       close: c.close,
-      volume: marketData.volume[i]?.value ?? 0,
+      // Pre-existing `?? 0` on a financial field (volume), carried over
+      // unchanged from before this task — not introduced or extended here,
+      // just re-sourced from effectiveVolume for replay leakage-safety.
+      // Flagged for remediation per CLAUDE.md Rule 3.7.
+      volume: effectiveVolume[i]?.value ?? 0,
     }));
-  }, [marketData]);
+  }, [effectiveCandlestick, effectiveVolume]);
 
   // Live Strategy Conditions panel — mirrors LiveMarketPage.tsx's
   // useLiveIndicators usage exactly so the same 10-condition strength
@@ -316,9 +380,20 @@ export default function ChartsPage() {
   // the Sig toggle (below) so SimilarSetupsCard's "latest bar fired?"
   // read stays correct even while the overlay is hidden; the toggle only
   // gates whether markers are drawn on the chart.
-  const signalSeriesQuery = useSignalSeries(chartBars, `${activeTicker}:${selectedDate}`, chartBars.length >= 14);
+  //
+  // Replay leakage guard: `!replay.active` gates BOTH the fetch (chartBars
+  // is already only revealed bars during replay, so this isn't strictly a
+  // leakage vector, but the brief's hard constraint is "not fetched with
+  // future bars" — the safest reading is "not fetched at all" during a
+  // session) and, independently, signalMarkers below forces `[]` regardless
+  // of any stale cached data from before the session started.
+  const signalSeriesQuery = useSignalSeries(
+    chartBars,
+    `${activeTicker}:${selectedDate}`,
+    chartBars.length >= 14 && !replay.active,
+  );
   const signalMarkers: SeriesMarker<Time>[] = useMemo(() => {
-    if (!showSignals) return [];
+    if (!showSignals || replay.active) return [];
     const fires = signalSeriesQuery.data?.fires ?? [];
     return fires.map((f) => ({
       time: Number(f.time) as Time,
@@ -327,7 +402,7 @@ export default function ChartsPage() {
       shape: f.direction === 'CALL' ? 'arrowUp' : 'arrowDown',
       text: `${f.direction} ${f.score}`,
     }));
-  }, [showSignals, signalSeriesQuery.data]);
+  }, [showSignals, replay.active, signalSeriesQuery.data]);
 
   // Seed-trade markers (Task 2.4) — muted/dashed-feel styling, distinct from
   // both the signal overlay and the user's own trades. Entry_time/exit_time
@@ -457,8 +532,17 @@ export default function ChartsPage() {
   const handleChartClick = useCallback(
     (data: { time: number; price: number }) => {
       if (drawingStep === 'entry') {
+        // Mid-playback Mark Entry (Task 5.2): the entry EPOCH is pinned to
+        // the last REVEALED bar's time, not wherever on the chart the user
+        // clicked — clicking anywhere is just how the entry PRICE gets
+        // chosen. Outside a replay session this is identical to before
+        // (data.time from the click).
+        const entryTime =
+          replay.active && replay.revealedBars.length > 0
+            ? replay.revealedBars[replay.revealedBars.length - 1].time
+            : data.time;
         setTempTrade({
-          entryTime: data.time,
+          entryTime,
           entryPrice: data.price,
           takeProfits: [],
         });
@@ -489,7 +573,7 @@ export default function ChartsPage() {
         cancelDrawing();
       }
     },
-    [drawingStep, tempTrade, exitingTradeId, trades, closeChartTrade]
+    [drawingStep, tempTrade, exitingTradeId, trades, closeChartTrade, replay.active, replay.revealedBars]
   );
 
   const selectOptionType = (type: TradeDirection) => {
@@ -512,6 +596,11 @@ export default function ChartsPage() {
       entryPrice: data.entryPrice,
       stopLoss: data.stopLoss?.price,
       takeProfits: data.takeProfits.map((tp) => tp.price),
+      // Trades drawn during a bar-replay trainer session (Task 5.2) are
+      // tagged `source: 'replay'` + the session's UUID so Task 5.3's
+      // post-session review can group them apart from ordinary chart trades.
+      source: replay.active ? 'replay' : 'chart',
+      sessionId: replay.active ? (replay.sessionId ?? undefined) : undefined,
     });
     cancelDrawing();
   };
@@ -688,10 +777,11 @@ export default function ChartsPage() {
 
           <button
             onClick={() => setShowSignals(!showSignals)}
-            title="Production alert signals (lib/signals mean-reversion voter)"
+            disabled={replay.active}
+            title={replay.active ? 'unavailable during replay' : 'Production alert signals (lib/signals mean-reversion voter)'}
             className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
               showSignals ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
-            }`}
+            } disabled:cursor-not-allowed disabled:opacity-40`}
           >
             <Activity size={14} />
             Sig
@@ -708,6 +798,21 @@ export default function ChartsPage() {
             <BookOpen size={14} />
             Seed
           </button>
+
+          {/* Bar-replay trainer session controls (Task 5.2) */}
+          <ReplaySessionControls
+            active={replay.active}
+            playing={replay.playing}
+            speed={replay.speed}
+            revealedCount={replay.revealedCount}
+            total={replay.total}
+            onStart={replay.start}
+            onPlay={replay.play}
+            onPause={replay.pause}
+            onStep={replay.step}
+            onStop={replay.stop}
+            onSpeedChange={replay.setSpeed}
+          />
 
           <div className="flex-1" />
 
@@ -824,8 +929,14 @@ export default function ChartsPage() {
             </div>
           ) : marketData && marketData.count > 0 ? (
             <CandlestickChart
-              candlestick={marketData.candlestick}
-              volume={marketData.volume}
+              // Remount on session start/stop (Task 5.1 review handoff):
+              // appendMode flipping false->true on an already-mounted
+              // instance does NOT re-fit, so a fresh key per session (and
+              // back to a stable 'live' key once stopped) forces the first
+              // reveal to frame correctly.
+              key={`chart-${replay.active ? replay.sessionId : 'live'}`}
+              candlestick={replay.active ? replay.revealedBars : marketData.candlestick}
+              volume={replay.active ? revealedVolume : marketData.volume}
               showVolume={showVolume}
               rthOnly={rthOnly}
               markers={markers}
@@ -833,6 +944,7 @@ export default function ChartsPage() {
               onChartClick={drawingActive ? handleChartClick : undefined}
               onCrosshairMove={setCrosshairData}
               minHeight={400}
+              appendMode={replay.active}
             />
           ) : marketData ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-[var(--color-text-muted)]">

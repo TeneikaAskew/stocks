@@ -254,6 +254,18 @@ export function CandlestickChart({
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       markersPluginRef.current = null;
+      // Bug found while building the replay trainer (Task 5.2): without this
+      // reset, a chart teardown+recreate (React 18 StrictMode's dev-mode
+      // mount->cleanup->mount double-invoke, OR any real remount that reuses
+      // this same component instance's refs) leaves prevDataRef pointing at
+      // bookkeeping for the now-destroyed chart/series. The data effect's
+      // appendMode "nothing changed, skip setData" fast path then compares
+      // against that stale bookkeeping, sees no diff, and skips setData()
+      // entirely on the BRAND NEW (empty) series — leaving the actually
+      // -rendered chart with zero candles and a degenerate fitContent()
+      // range. Resetting here forces the next data effect run to treat the
+      // recreated chart as a genuine first render.
+      prevDataRef.current = null;
     };
   }, []);
 

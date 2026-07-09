@@ -205,6 +205,14 @@ export interface CreateChartTradeVars {
   entryPrice: number;
   stopLoss?: number;
   takeProfits?: number[];
+  /** 'chart' (default — drawn directly on /charts) vs 'replay' (drawn during
+   *  a bar-replay trainer session, Task 5.2). Mirrors the server's `source`
+   *  column (platform/api/routers/journal.py: manual | chart | replay). */
+  source?: 'chart' | 'replay';
+  /** Replay-trainer session grouping (Task 5.2) — a real UUID minted by
+   *  useReplaySession's start() via crypto.randomUUID(). Only meaningful
+   *  when source === 'replay'. */
+  sessionId?: string;
 }
 
 // Mutations below invalidate-on-success rather than doing optimistic
@@ -227,7 +235,8 @@ export function useCreateChartTrade() {
           entry_price: vars.entryPrice,
           stop_loss: vars.stopLoss,
           take_profits: vars.takeProfits && vars.takeProfits.length > 0 ? vars.takeProfits : undefined,
-          source: 'chart',
+          source: vars.source ?? 'chart',
+          session_id: vars.sessionId,
         }),
       });
       if (!r.ok) throw new Error(`create trade failed: ${r.status}`);
