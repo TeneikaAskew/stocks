@@ -295,3 +295,135 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
   });
 });
+
+// ── Task 5.3: post-replay-session scorecard ─────────────────────────────
+// `useReplaySession.start()` mints the session id via `crypto.randomUUID()`
+// internally, so these tests stub `window.crypto.randomUUID` (via
+// `addInitScript`, before any app code runs) to a fixed value — that lets
+// the GET /api/journal/trades/IWM mock pre-seed a trade tagged with the
+// EXACT session id the session-under-test will use, without needing to
+// drive the full Mark-Entry canvas-click flow just to create one.
+const FIXED_SESSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+const CLOSED_REPLAY_TRADE = {
+  id: 'replay-closed-1',
+  ticker: 'IWM',
+  direction: 'CALL',
+  entry_ts: '2026-04-25T09:36:00',
+  exit_ts: '2026-04-25T09:40:00',
+  entry_price: 220.25,
+  exit_price: 220.75,
+  return_pct: 0.23,
+  notes: '',
+  take_profits: [],
+  stop_loss: null,
+  status: 'win',
+  source: 'replay',
+  session_id: FIXED_SESSION_ID,
+  created_at: '2026-04-25T09:36:01',
+};
+
+const MOCK_SCORECARD_RESPONSE = {
+  trades: [
+    {
+      id: 'replay-closed-1',
+      status: 'ok',
+      actual_return_pct: 0.23,
+      fill_check: 'ok',
+      system_signal_at_entry: { direction: 'CALL', score: 3 },
+      system_exit: { exit_reason: 'time_stop', return_pct: 0.1, exit_time: '2026-04-25 09:39:00' },
+      exit_edge_bps: 13.0,
+    },
+  ],
+  aggregate: {
+    n: 1,
+    scored_n: 1,
+    win_rate: 1.0,
+    avg_return_pct: 0.23,
+    system_resolved_n: 1,
+    system_no_signal_n: 0,
+    system_agreement_rate: 1.0,
+    avg_exit_edge_bps: 13.0,
+  },
+};
+
+test.describe('Charts page — replay session scorecard (Task 5.3)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((sessionId) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window.crypto as any).randomUUID = () => sessionId;
+    }, FIXED_SESSION_ID);
+    await mockCommon(page);
+    await page.route('**/api/market/dates/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
+    await page.route('**/api/signals/IWM/similar*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', direction: 'CALL', rsi: 35, score: 4, rsi_band: 5, stats: null, matches: [] }))
+    );
+    await page.route('**/api/signals/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
+    );
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
+    );
+  });
+
+  test('stop() with >=1 closed session trade POSTs {ticker, session_id} and opens the Task 3.3 scorecard modal', async ({ page }) => {
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 1, trades: [CLOSED_REPLAY_TRADE] }))
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedBody: any = null;
+    await page.route('**/api/backtest/replay-trades', async (route) => {
+      capturedBody = route.request().postDataJSON();
+      await route.fulfill(M.ok(MOCK_SCORECARD_RESPONSE));
+    });
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-controls')).toBeVisible();
+
+    await page.getByTestId('replay-stop-btn').click();
+
+    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
+    expect(capturedBody.ticker).toBe('IWM');
+    expect(capturedBody.session_id).toBe(FIXED_SESSION_ID);
+    expect(capturedBody.trade_ids).toBeUndefined();
+
+    const modal = page.getByTestId('replay-scorecard');
+    await expect(modal).toBeVisible();
+    await expect(page.getByTestId('scorecard-row-replay-closed-1')).toBeVisible();
+  });
+
+  test('stop() with zero closed session trades does not POST and shows an end-of-session note instead of the modal', async ({ page }) => {
+    // The trade in the journal is still ACTIVE — not eligible to score.
+    const ACTIVE_REPLAY_TRADE = { ...CLOSED_REPLAY_TRADE, id: 'replay-active-1', status: 'active', exit_ts: null, exit_price: null, return_pct: null };
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 1, trades: [ACTIVE_REPLAY_TRADE] }))
+    );
+    let replayTradesCalled = false;
+    await page.route('**/api/backtest/replay-trades', async (route) => {
+      replayTradesCalled = true;
+      await route.fulfill(M.ok(MOCK_SCORECARD_RESPONSE));
+    });
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-controls')).toBeVisible();
+
+    await page.getByTestId('replay-stop-btn').click();
+
+    await expect(page.getByTestId('replay-session-end-note')).toBeVisible();
+    await expect(page.getByTestId('replay-session-end-note')).toHaveText(/no closed trades to score/i);
+    await expect(page.getByTestId('replay-scorecard')).not.toBeVisible();
+    expect(replayTradesCalled).toBe(false);
+  });
+});

@@ -29,6 +29,15 @@ export interface TradeEntry {
   pnl?: number;
   pnlPercent?: number;
   createdAt: number;
+  /** 'chart' | 'manual' | 'replay' (server's journal_entries.source column).
+   *  'replay' marks a trade drawn during a bar-replay-trainer session
+   *  (Task 5.2) — Task 5.3's analytics hygiene filters these out of
+   *  stats by default. */
+  source?: string;
+  /** Replay-trainer session grouping (Task 5.2) — a UUID shared by every
+   *  trade drawn during the same session. Only meaningful when source
+   *  === 'replay'. */
+  sessionId?: string;
 }
 
 export interface Signal {

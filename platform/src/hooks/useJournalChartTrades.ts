@@ -167,6 +167,12 @@ export function journalRowToTradeEntry(row: JournalRow): TradeEntry {
     pnl,
     pnlPercent,
     createdAt: row.created_at ? isoNaiveToEpoch(row.created_at) * 1000 : Date.now(),
+    // Structural passthrough (Task 5.3) — feeds the replay-session scorecard
+    // trigger (filter by sessionId) and the practice-trade analytics
+    // exclusion (filter by source==='replay'). Absent on legacy rows, same
+    // as take_profits/stop_loss above.
+    source: row.source ?? undefined,
+    sessionId: row.session_id ?? undefined,
   };
 }
 
@@ -380,14 +386,22 @@ export interface ReplayTradesResponse {
 
 export interface ReplayTradesVars {
   ticker: string;
-  tradeIds: string[];
+  /** Task 3.3's "Backtest my trades" button path — scores specific trade
+   *  ids. Mutually usable alongside sessionId (the server accepts either or
+   *  both); the two callers in this repo only ever supply one. */
+  tradeIds?: string[];
+  /** Task 5.3's post-replay-session scorecard path — scores every trade
+   *  tagged with this bar-replay-trainer session id (source==='replay'),
+   *  regardless of which ticker view is currently open. */
+  sessionId?: string;
 }
 
 /**
- * Scores the closed trades identified by `tradeIds` against the production
- * benchmark. A `useMutation` (not `useQuery`) because this is a triggered
- * analytics computation, not cached data the page reads passively — the
- * modal calls `.mutate()` on button click and renders `isPending`/`isError`/
+ * Scores the closed trades identified by `tradeIds` and/or `sessionId`
+ * against the production benchmark. A `useMutation` (not `useQuery`)
+ * because this is a triggered analytics computation, not cached data the
+ * page reads passively — the modal calls `.mutate()` on button click (or,
+ * for Task 5.3, on replay-session stop) and renders `isPending`/`isError`/
  * `data` directly.
  */
 export function useReplayTrades() {
@@ -396,7 +410,10 @@ export function useReplayTrades() {
       const r = await fetch('/api/backtest/replay-trades', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: vars.ticker, trade_ids: vars.tradeIds }),
+        // JSON.stringify drops `undefined` keys, so omitting one of
+        // tradeIds/sessionId naturally omits it from the request body
+        // rather than sending an explicit null.
+        body: JSON.stringify({ ticker: vars.ticker, trade_ids: vars.tradeIds, session_id: vars.sessionId }),
       });
       if (!r.ok) {
         // Fail-loud (Rule 3.7): surface the server's `detail` message when

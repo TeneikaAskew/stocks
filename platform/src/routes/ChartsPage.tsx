@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
@@ -107,6 +107,14 @@ export default function ChartsPage() {
   const [showSignals, setShowSignals] = useState(false);
   const [showSeedTrades, setShowSeedTrades] = useState(true);
   const [activeTab, setActiveTab] = useState<'trades' | 'analytics'>('trades');
+  // Task 5.3: Analytics tab's "Include practice sessions" toggle — default
+  // excludes source==='replay' trades from what's fed to useTradeAnalytics,
+  // same semantics as JournalPage's toggle of the same name/testid (one
+  // shared toggle STATE per page, not shared across pages).
+  const [includeReplayAnalytics, setIncludeReplayAnalytics] = useState(false);
+  // Task 5.3: end-of-session note when stop() found no closed trades to
+  // score (so no scorecard POST/modal fires) — cleared on the next session.
+  const [sessionEndNote, setSessionEndNote] = useState<string | null>(null);
 
   // Drawing mode state
   const [drawingStep, setDrawingStep] = useState<DrawingStep>('idle');
@@ -224,6 +232,37 @@ export default function ChartsPage() {
   const [scorecardOpen, setScorecardOpen] = useState(false);
   const replayTrades = useReplayTrades();
 
+  // Task 5.3: post-replay-session scorecard. Fires exactly once per finished
+  // bar-replay-trainer session (guarded by scoredSessionIdRef so a re-render
+  // — e.g. `trades` refetching — never double-fires) once useReplaySession's
+  // stop() lands a summary: if the session tagged >=1 CLOSED trade
+  // (status !== 'active', matching Task 3.3's closedTradeIds definition),
+  // POST /api/backtest/replay-trades with {ticker, session_id} and reuse
+  // the EXACT Task 3.3 scorecard modal (scorecardOpen + replayTrades) — no
+  // duplicate UI. Zero closed trades -> no POST, just an end-of-session note.
+  const scoredSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const summary = replay.summary;
+    if (!summary || scoredSessionIdRef.current === summary.sessionId) return;
+    scoredSessionIdRef.current = summary.sessionId;
+    const sessionClosedCount = trades.filter(
+      (t) => t.sessionId === summary.sessionId && t.status !== 'active',
+    ).length;
+    if (sessionClosedCount === 0) {
+      setSessionEndNote('Session ended — no closed trades to score');
+      return;
+    }
+    setSessionEndNote(null);
+    setScorecardOpen(true);
+    replayTrades.mutate({ ticker: activeTicker, sessionId: summary.sessionId });
+  }, [replay.summary, trades, activeTicker, replayTrades]);
+
+  // Clear a stale end-of-session note the instant a NEW session starts, so
+  // it doesn't linger on screen through an unrelated live replay.
+  useEffect(() => {
+    if (replay.active) setSessionEndNote(null);
+  }, [replay.active]);
+
   // "My style" panel (Task 4.4) — mines the caller's own closed journal
   // trades into a condition profile and walk-forward validates it (POST
   // /api/style/mine-and-validate). A useMutation triggered from the
@@ -284,7 +323,17 @@ export default function ChartsPage() {
     if (cutoff === null) return 0;
     return trades.filter(t => (t.exitTime ?? t.entryTime) > cutoff).length;
   }, [trades, reviewCutoffTs, replayCutoffTs]);
-  const stats = useTradeAnalytics(currentTrades);
+
+  // Task 5.3: practice (bar-replay-trainer) trades are excluded from the
+  // Analytics tab's stats by default — same "Include practice sessions"
+  // semantics as JournalPage's toggle. Only the analytics input is scoped;
+  // the Trades tab / chart markers / TP-SL lines still show every trade
+  // regardless of this toggle (a session's trades stay visible/manageable).
+  const analyticsTrades = useMemo(
+    () => (includeReplayAnalytics ? currentTrades : currentTrades.filter((t) => t.source !== 'replay')),
+    [currentTrades, includeReplayAnalytics],
+  );
+  const stats = useTradeAnalytics(analyticsTrades);
 
   // Task 3.3: "closed" = any non-active status (win/loss/breakeven) — the
   // replay endpoint requires exit_ts/exit_price to score a trade, which an
@@ -724,6 +773,11 @@ export default function ChartsPage() {
               {hiddenTradesCount} trade{hiddenTradesCount > 1 ? 's' : ''} hidden
             </span>
           )}
+          {sessionEndNote && (
+            <span data-testid="replay-session-end-note" className="text-xs text-[var(--color-text-muted)]">
+              {sessionEndNote}
+            </span>
+          )}
 
           {/* Timeframe buttons */}
           <div className="flex rounded border border-[var(--color-border)]">
@@ -1094,6 +1148,16 @@ export default function ChartsPage() {
             </div>
           ) : (
             <>
+              <label className="mb-2 flex w-fit items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+                <input
+                  type="checkbox"
+                  data-testid="include-replay-toggle"
+                  checked={includeReplayAnalytics}
+                  onChange={(e) => setIncludeReplayAnalytics(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-[var(--color-border)]"
+                />
+                Include practice sessions
+              </label>
               <div className="grid grid-cols-2 gap-2">
                 <MetricCard label="Trades" value={stats.totalTrades} />
                 <MetricCard label="Win Rate" value={stats.closedTrades > 0 ? `${stats.winRate.toFixed(0)}%` : '--'} />
