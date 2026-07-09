@@ -1,4 +1,10 @@
 import numpy as np
+import pytest
+
+# feature_importance imports strat_walk_forward -> lightgbm at module load, so
+# skip cleanly on the lightweight test runner (lightgbm is only in the research
+# image / "Research Tests" CI job).
+pytest.importorskip("lightgbm")
 
 from gcp.research.direction_program.feature_importance import (
     aggregate_importance, _reduce_shap_to_features,
