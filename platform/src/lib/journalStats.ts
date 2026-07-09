@@ -4,6 +4,17 @@ export interface JournalStatEntry {
   return_pct?: number | null;
   entry_ts: string;
   exit_ts?: string | null;
+  /** 'chart' | 'manual' | 'replay' (server's journal_entries.source column).
+   *  Absent on legacy rows — treated as non-practice, same as 'chart'/'manual'. */
+  source?: string | null;
+}
+
+export interface JournalStatsOptions {
+  /** Practice (bar-replay-trainer) trades are EXCLUDED from every aggregate
+   *  by default (Task 5.3) — a mined "win rate" that's secretly half replay
+   *  drills isn't the user's real trading performance. Pass true (wired to
+   *  the "Include practice sessions" toggle) to fold them back in. */
+  includeReplay?: boolean;
 }
 
 export interface JournalStats {
@@ -14,12 +25,28 @@ export interface JournalStats {
   totalReturn: number | null;  // percent units
   avgWin: number | null;       // percent units
   equityPoints: PricePoint[];  // cumulative % across entries WITH returns
+  /** Count of source==='replay' entries filtered out of the aggregates
+   *  above. Always 0 when includeReplay is true. Drives the "N practice
+   *  trade(s) excluded from stats" note, kept separate from the existing
+   *  open/unreturned-trade exclusion note. */
+  replayExcludedCount: number;
 }
 
 /** Aggregate journal stats. Entries with null/undefined return_pct are
- * excluded from every aggregate — a missing return is NOT a 0% trade. */
-export function computeJournalStats(entries: JournalStatEntry[]): JournalStats {
-  const withRet = entries.filter((e): e is JournalStatEntry & { return_pct: number } =>
+ * excluded from every aggregate — a missing return is NOT a 0% trade.
+ * Entries with source==='replay' (bar-replay-trainer practice trades) are
+ * ALSO excluded by default — pass {includeReplay: true} to fold them in. */
+export function computeJournalStats(
+  entries: JournalStatEntry[],
+  options: JournalStatsOptions = {},
+): JournalStats {
+  const includeReplay = options.includeReplay ?? false;
+  const replayExcludedCount = includeReplay
+    ? 0
+    : entries.filter((e) => e.source === 'replay').length;
+  const scoped = includeReplay ? entries : entries.filter((e) => e.source !== 'replay');
+
+  const withRet = scoped.filter((e): e is JournalStatEntry & { return_pct: number } =>
     typeof e.return_pct === 'number' && !Number.isNaN(e.return_pct));
   const returns = withRet.map((e) => e.return_pct);
   const wins = returns.filter((r) => r > 0);
@@ -33,11 +60,12 @@ export function computeJournalStats(entries: JournalStatEntry[]): JournalStats {
   });
   return {
     closedCount: withRet.length,
-    totalCount: entries.length,
+    totalCount: scoped.length,
     winRate: returns.length ? (wins.length / returns.length) * 100 : null,
     avgReturn: returns.length ? sum / returns.length : null,
     totalReturn: returns.length ? sum : null,
     avgWin: wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : null,
     equityPoints,
+    replayExcludedCount,
   };
 }

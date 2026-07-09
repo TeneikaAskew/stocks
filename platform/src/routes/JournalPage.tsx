@@ -179,10 +179,19 @@ export default function JournalPage() {
   const entries = data?.trades ?? [];
   const source = data?.source ?? 'local';
 
-  const stats = computeJournalStats(entries);
-  const { closedCount, totalCount, winRate, avgReturn, totalReturn, avgWin, equityPoints } = stats;
+  // Practice (bar-replay-trainer) trades are excluded from every stats
+  // aggregate by default (Task 5.3) — "Include practice sessions" folds
+  // them back in. Same scoping predicate as computeJournalStats internally
+  // uses, so the Trades-tile win count below stays in lockstep with
+  // closedCount/totalCount rather than drifting from a separately-scoped
+  // filter.
+  const [includeReplay, setIncludeReplay] = useState(false);
+  const scopedEntries = includeReplay ? entries : entries.filter((e) => e.source !== 'replay');
+
+  const stats = computeJournalStats(entries, { includeReplay });
+  const { closedCount, totalCount, winRate, avgReturn, totalReturn, avgWin, equityPoints, replayExcludedCount } = stats;
   // Compute closed wins count for the Trades tile sub-label
-  const wins = entries
+  const wins = scopedEntries
     .filter((e): e is JournalEntry & { return_pct: number } =>
       typeof e.return_pct === 'number' && !Number.isNaN(e.return_pct) && e.return_pct > 0)
     .length;
@@ -293,6 +302,16 @@ export default function JournalPage() {
       {/* Summary KPIs */}
       {entries.length > 0 && (
         <>
+          <label className="flex w-fit items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
+            <input
+              type="checkbox"
+              data-testid="include-replay-toggle"
+              checked={includeReplay}
+              onChange={(e) => setIncludeReplay(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-[var(--color-border)]"
+            />
+            Include practice sessions
+          </label>
           <div className="grid grid-cols-2 gap-[14px] md:grid-cols-3 lg:grid-cols-5">
             <KpiTile label="Trades" value={String(totalCount)} sub={`${wins}W / ${closedCount - wins}L`} />
             <KpiTile label="Win rate" value={winRate !== null ? `${winRate.toFixed(0)}%` : NA} tone={(winRate ?? 0) >= 50 ? 'bull' : 'bear'} />
@@ -303,6 +322,12 @@ export default function JournalPage() {
           {closedCount < totalCount && (
             <p className="text-[11px] text-[var(--on-surface-muted)]">
               {totalCount - closedCount} open/unreturned trade(s) excluded from stats
+            </p>
+          )}
+          {!includeReplay && replayExcludedCount > 0 && (
+            <p data-testid="replay-exclusion-note" className="text-[11px] text-[var(--on-surface-muted)]">
+              {replayExcludedCount} practice trade{replayExcludedCount === 1 ? '' : 's'} excluded from stats — toggle
+              "Include practice sessions" to include them.
             </p>
           )}
         </>

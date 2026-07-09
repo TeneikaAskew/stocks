@@ -1,0 +1,429 @@
+/**
+ * E2E for the bar-replay trainer session mode on /charts (Task 5.2).
+ *
+ * Mocks a full trading day of 1-minute bars (all inside the default RTH
+ * window, encoded as naive-ET-as-UTC epochs per this repo's convention —
+ * see useJournalChartTrades.ts's isoNaiveToEpoch doc comment) and drives:
+ *   Start replay -> warm-start reveal -> Step x2 -> Sig disabled ->
+ *   Mark Entry mid-replay POSTs source:'replay' + a real session UUID with
+ *   the entry pinned to the LAST REVEALED bar's epoch -> a future-timed
+ *   existing trade is hidden from both the side-panel count and the
+ *   "N hidden" toolbar readout while the reveal hasn't reached it yet.
+ */
+import { test, expect } from '@playwright/test';
+import { mockCommon, M } from './helpers/mocks';
+
+// 30 one-minute bars starting 09:31 "ET" (naive-ET-as-UTC epoch, matching
+// this repo's chart-time convention), so every bar falls inside the default
+// 09:30-16:00 RTH window without needing to toggle RTH off.
+const START_EPOCH = Math.floor(Date.UTC(2026, 3, 25, 9, 31, 0) / 1000);
+function buildDayBars(n = 30, base = 220, step = 0.05) {
+  const bars = [];
+  for (let i = 0; i < n; i += 1) {
+    const close = base + i * step;
+    bars.push({
+      time: START_EPOCH + i * 60,
+      open: close - step,
+      high: close + 0.01,
+      low: close - step - 0.01,
+      close,
+    });
+  }
+  return bars;
+}
+
+const DAY_BARS = buildDayBars(30);
+const DAY_VOLUME = DAY_BARS.map((c) => ({ time: c.time, value: 100_000, color: '#089981' }));
+
+const MOCK_MARKET_DATA = {
+  ticker: 'IWM',
+  date: '2026-04-25',
+  count: DAY_BARS.length,
+  candlestick: DAY_BARS,
+  volume: DAY_VOLUME,
+};
+
+const MOCK_REFERENCE = {
+  ticker: 'IWM',
+  date: '2026-04-25',
+  source: 'mock',
+  open: 219.8,
+  high: 222.0,
+  low: 218.0,
+  close: 220.0,
+};
+
+// Structurally valid but inert (no fires / no strength) — the Strategy
+// Conditions panel and the Sig overlay aren't under test here, only that
+// the latter is force-disabled during a replay session.
+const MOCK_LIVE_INDICATORS = {
+  indicators: {
+    ema9: null, ema20: null, ema50: null, rsi: null,
+    stochK: null, stochD: null, atr: null, vwap: null, stochKPrev: null,
+  },
+  signals: {
+    call: { direction: 'CALL', strength: 0, fired: false, conditions: [] },
+    put: { direction: 'PUT', strength: 0, fired: false, conditions: [] },
+  },
+};
+const MOCK_SIGNAL_SERIES = { fires: [] };
+
+// One trade inside the warm-start reveal (bar index 5, 09:36) and one AFTER
+// the reveal will ever reach during this test (bar index 25, 09:56) — the
+// latter is the information-leakage case the replay cutoff must hide.
+const EARLY_TRADE = {
+  id: 'early-trade-1',
+  ticker: 'IWM',
+  direction: 'CALL',
+  entry_ts: '2026-04-25T09:36:00',
+  exit_ts: null,
+  entry_price: 220.25,
+  exit_price: null,
+  return_pct: null,
+  notes: '',
+  take_profits: [],
+  stop_loss: null,
+  status: 'active',
+  source: 'chart',
+  session_id: null,
+  created_at: '2026-04-25T09:36:01',
+};
+const LATE_TRADE = {
+  id: 'late-trade-1',
+  ticker: 'IWM',
+  direction: 'PUT',
+  entry_ts: '2026-04-25T09:56:00',
+  exit_ts: null,
+  entry_price: 221.5,
+  exit_price: null,
+  return_pct: null,
+  notes: '',
+  take_profits: [],
+  stop_loss: null,
+  status: 'active',
+  source: 'chart',
+  session_id: null,
+  created_at: '2026-04-25T09:56:01',
+};
+
+// Admin seed-trade layer (Task 2.4) row timed LATE in the day — same
+// leakage shape as LATE_TRADE above, but this is the read-only pipeline
+// teaching layer, not a user-marked trade. Entry AND exit sit at/after bar
+// 25 (09:56 / 09:58), past both the warm-start cutoff (bar 14, 09:45) and
+// the post-step cutoff (bar 16, 09:47) exercised below — the exact
+// scenario the leakage audit flagged: a seed exit/return_pct rendering
+// while the reveal hasn't reached it yet.
+const LATE_SEED_TRADE = {
+  id: 'seed-late-1',
+  direction: 'CALL',
+  entry_time: '2026-04-25T09:56:00',
+  entry_price: 220.9,
+  exit_time: '2026-04-25T09:58:00',
+  exit_price: 221.4,
+  return_pct: 0.23,
+  strat_combo: '2U-2U',
+  exit_reason: 'tp1',
+};
+
+test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockCommon(page);
+    // Dates come back as YYYYMMDD in production — see charts-cards.spec.ts's
+    // Task 2.3 block for why this format matters (selectedIsoDate conversion).
+    await page.route('**/api/market/dates/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
+    await page.route('**/api/signals/IWM/similar*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', direction: 'CALL', rsi: 35, score: 4, rsi_band: 5, stats: null, matches: [] }))
+    );
+    await page.route('**/api/signals/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
+    );
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 1, trades: [LATE_SEED_TRADE] }))
+    );
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 2, trades: [EARLY_TRADE, LATE_TRADE] }))
+    );
+  });
+
+  test('start -> warm-start reveal -> step x2 -> Sig disabled -> future trade hidden -> Mark Entry POSTs source:replay pinned to the last revealed bar', async ({ page }) => {
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    // Pre-replay: both trades visible (no cutoff in effect yet).
+    await expect(page.getByText('Trades (2)')).toBeVisible();
+
+    // Start replay -> warm-start reveal (REPLAY_WARM_START_BARS = 15 of 30).
+    const startBtn = page.getByTestId('replay-start-btn');
+    await expect(startBtn).toBeVisible();
+    await startBtn.click();
+
+    const revealedCount = page.getByTestId('replay-revealed-count');
+    await expect(revealedCount).toHaveText('15/30');
+
+    // Future-timed trade (09:56, bar 25) is now hidden — reveal cutoff is
+    // bar 14 (09:45). Only the early trade (09:36, bar 5) remains visible.
+    await expect(page.getByText('Trades (1)')).toBeVisible();
+    await expect(page.getByText(/1 trade hidden/)).toBeVisible();
+
+    // Sig overlay is force-disabled for the duration of the session.
+    const sigButton = page.getByRole('button', { name: /^Sig$/ });
+    await expect(sigButton).toBeDisabled();
+    await expect(sigButton).toHaveAttribute('title', 'unavailable during replay');
+
+    // Step twice: 15 -> 16 -> 17.
+    const stepBtn = page.getByTestId('replay-step-btn');
+    await stepBtn.click();
+    await stepBtn.click();
+    await expect(revealedCount).toHaveText('17/30');
+
+    // Still hidden — cutoff is now bar 16 (09:47), still before 09:56.
+    await expect(page.getByText('Trades (1)')).toBeVisible();
+    await expect(page.getByText(/1 trade hidden/)).toBeVisible();
+
+    // Let the appendMode extension's chart-canvas repaint settle before
+    // clicking it (the two Step clicks each trigger a React re-render ->
+    // series.update() in a passive effect that lags a beat behind the DOM).
+    await page.waitForTimeout(500);
+
+    // Mark Entry mid-playback.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedBody: any = null;
+    await page.route('**/api/journal/trades', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      capturedBody = route.request().postDataJSON();
+      await route.fulfill(M.ok({ source: 'cloud_sql', id: 'replay-trade-1', return_pct: null, status: 'active' }));
+    });
+
+    await page.getByRole('button', { name: /Mark Entry/ }).click();
+    await expect(page.getByText('Click chart to set entry price')).toBeVisible();
+
+    const canvas = page.locator('canvas').first();
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+
+    await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    await expect(page.getByText('Select CALL or PUT')).toBeVisible();
+
+    await page.getByRole('button', { name: 'CALL' }).click();
+    await expect(page.getByText(/Click TP1/)).toBeVisible();
+    // See charts-cards.spec.ts's mark-entry test for why this wait is
+    // needed: CandlestickChart's click-subscription effect re-subscribes
+    // via a passive useEffect that lags a beat behind the drawingStep text.
+    await page.waitForTimeout(1500);
+
+    await page.mouse.click(box!.x + box!.width * 0.6, box!.y + box!.height * 0.3);
+    await expect(page.getByText(/Click TP2/)).toBeVisible();
+    await page.waitForTimeout(500);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByText(/Click Stop Loss/)).toBeVisible();
+    await page.waitForTimeout(500);
+    await page.keyboard.press('Escape');
+
+    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
+
+    expect(capturedBody.ticker).toBe('IWM');
+    expect(capturedBody.direction).toBe('CALL');
+    expect(capturedBody.source).toBe('replay');
+    expect(capturedBody.session_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    );
+    // Entry epoch pinned to the LAST REVEALED bar (index 16, 09:31 + 16min
+    // = 09:47) regardless of where on the canvas the entry click landed.
+    expect(capturedBody.entry_date).toBe('2026-04-25');
+    expect(capturedBody.entry_time).toBe('09:47');
+  });
+
+  test('Stop resets to the idle "Start replay" button and re-fits the full day', async ({ page }) => {
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-controls')).toBeVisible();
+
+    await page.getByTestId('replay-stop-btn').click();
+    await expect(page.getByTestId('replay-start-btn')).toBeVisible();
+    await expect(page.getByTestId('replay-controls')).not.toBeVisible();
+
+    // Both trades visible again — the replay cutoff no longer applies.
+    await expect(page.getByText('Trades (2)')).toBeVisible();
+    const sigButton = page.getByRole('button', { name: /^Sig$/ });
+    await expect(sigButton).toBeEnabled();
+  });
+
+  test('admin seed layer is gated off during replay (leakage audit)', async ({ page }) => {
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    // Pre-replay: the seed panel renders the LATE seed trade's row and
+    // summary in full — this is the pre-existing, correct behavior outside
+    // a replay session.
+    await expect(page.getByText('Playbook seed')).toBeVisible();
+    await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
+    await expect(page.getByText('SEED CALL')).toBeVisible();
+
+    const seedToggle = page.getByTestId('seed-toggle');
+    await expect(seedToggle).toBeEnabled();
+
+    // Start replay -> warm-start reveal (bar 14, 09:45) is before the seed
+    // trade's entry (bar 25, 09:56) — the exact scenario the leakage audit
+    // flagged: a seed exit/return_pct rendering ahead of the reveal cutoff.
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-revealed-count')).toHaveText('15/30');
+
+    // The seed panel row and summary are gone; an honest muted line
+    // replaces the section body instead of a partially-filtered leak.
+    await expect(page.getByText('SEED CALL')).not.toBeVisible();
+    await expect(page.getByText(/Seed: 1 trade/)).not.toBeVisible();
+    await expect(page.getByText('unavailable during replay').first()).toBeVisible();
+
+    // The Show-seed-trades toggle is disabled for the duration of the
+    // session, mirroring the Sig overlay toggle.
+    await expect(seedToggle).toBeDisabled();
+    await expect(seedToggle).toHaveAttribute('title', 'unavailable during replay');
+
+    // Stop -> both the row and toggle come back.
+    await page.getByTestId('replay-stop-btn').click();
+    await expect(seedToggle).toBeEnabled();
+    await expect(page.getByText('SEED CALL')).toBeVisible();
+    await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
+  });
+});
+
+// ── Task 5.3: post-replay-session scorecard ─────────────────────────────
+// `useReplaySession.start()` mints the session id via `crypto.randomUUID()`
+// internally, so these tests stub `window.crypto.randomUUID` (via
+// `addInitScript`, before any app code runs) to a fixed value — that lets
+// the GET /api/journal/trades/IWM mock pre-seed a trade tagged with the
+// EXACT session id the session-under-test will use, without needing to
+// drive the full Mark-Entry canvas-click flow just to create one.
+const FIXED_SESSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+const CLOSED_REPLAY_TRADE = {
+  id: 'replay-closed-1',
+  ticker: 'IWM',
+  direction: 'CALL',
+  entry_ts: '2026-04-25T09:36:00',
+  exit_ts: '2026-04-25T09:40:00',
+  entry_price: 220.25,
+  exit_price: 220.75,
+  return_pct: 0.23,
+  notes: '',
+  take_profits: [],
+  stop_loss: null,
+  status: 'win',
+  source: 'replay',
+  session_id: FIXED_SESSION_ID,
+  created_at: '2026-04-25T09:36:01',
+};
+
+const MOCK_SCORECARD_RESPONSE = {
+  trades: [
+    {
+      id: 'replay-closed-1',
+      status: 'ok',
+      actual_return_pct: 0.23,
+      fill_check: 'ok',
+      system_signal_at_entry: { direction: 'CALL', score: 3 },
+      system_exit: { exit_reason: 'time_stop', return_pct: 0.1, exit_time: '2026-04-25 09:39:00' },
+      exit_edge_bps: 13.0,
+    },
+  ],
+  aggregate: {
+    n: 1,
+    scored_n: 1,
+    win_rate: 1.0,
+    avg_return_pct: 0.23,
+    system_resolved_n: 1,
+    system_no_signal_n: 0,
+    system_agreement_rate: 1.0,
+    avg_exit_edge_bps: 13.0,
+  },
+};
+
+test.describe('Charts page — replay session scorecard (Task 5.3)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((sessionId) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window.crypto as any).randomUUID = () => sessionId;
+    }, FIXED_SESSION_ID);
+    await mockCommon(page);
+    await page.route('**/api/market/dates/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
+    await page.route('**/api/signals/IWM/similar*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', direction: 'CALL', rsi: 35, score: 4, rsi_band: 5, stats: null, matches: [] }))
+    );
+    await page.route('**/api/signals/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
+    );
+    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
+    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
+    await page.route('**/api/journal/seed/IWM*', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
+    );
+  });
+
+  test('stop() with >=1 closed session trade POSTs {ticker, session_id} and opens the Task 3.3 scorecard modal', async ({ page }) => {
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 1, trades: [CLOSED_REPLAY_TRADE] }))
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedBody: any = null;
+    await page.route('**/api/backtest/replay-trades', async (route) => {
+      capturedBody = route.request().postDataJSON();
+      await route.fulfill(M.ok(MOCK_SCORECARD_RESPONSE));
+    });
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-controls')).toBeVisible();
+
+    await page.getByTestId('replay-stop-btn').click();
+
+    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
+    expect(capturedBody.ticker).toBe('IWM');
+    expect(capturedBody.session_id).toBe(FIXED_SESSION_ID);
+    expect(capturedBody.trade_ids).toBeUndefined();
+
+    const modal = page.getByTestId('replay-scorecard');
+    await expect(modal).toBeVisible();
+    await expect(page.getByTestId('scorecard-row-replay-closed-1')).toBeVisible();
+  });
+
+  test('stop() with zero closed session trades does not POST and shows an end-of-session note instead of the modal', async ({ page }) => {
+    // The trade in the journal is still ACTIVE — not eligible to score.
+    const ACTIVE_REPLAY_TRADE = { ...CLOSED_REPLAY_TRADE, id: 'replay-active-1', status: 'active', exit_ts: null, exit_price: null, return_pct: null };
+    await page.route('**/api/journal/trades/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 1, trades: [ACTIVE_REPLAY_TRADE] }))
+    );
+    let replayTradesCalled = false;
+    await page.route('**/api/backtest/replay-trades', async (route) => {
+      replayTradesCalled = true;
+      await route.fulfill(M.ok(MOCK_SCORECARD_RESPONSE));
+    });
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByTestId('replay-start-btn').click();
+    await expect(page.getByTestId('replay-controls')).toBeVisible();
+
+    await page.getByTestId('replay-stop-btn').click();
+
+    await expect(page.getByTestId('replay-session-end-note')).toBeVisible();
+    await expect(page.getByTestId('replay-session-end-note')).toHaveText(/no closed trades to score/i);
+    await expect(page.getByTestId('replay-scorecard')).not.toBeVisible();
+    expect(replayTradesCalled).toBe(false);
+  });
+});

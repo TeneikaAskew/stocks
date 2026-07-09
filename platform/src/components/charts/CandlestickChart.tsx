@@ -47,6 +47,14 @@ interface CandlestickChartProps {
    *  never shrink below a comfortable reading height (e.g. /charts) should
    *  pass an explicit value. */
   minHeight?: number;
+  /** Foundation for the bar-replay trainer. When true, the data effect diffs
+   *  the incoming `candlestick`/`volume` arrays against what was last
+   *  rendered: a pure tail extension is applied via `series.update()` per
+   *  new bar (zoom preserved, no `fitContent()`), and only a genuine reset
+   *  (divergent or shorter data) falls back to a full `setData()`. Defaults
+   *  to false, which preserves the exact prior behavior (always `setData` +
+   *  `fitContent`) for every existing caller. */
+  appendMode?: boolean;
 }
 
 // RTH window comes from /api/config/market-hours via useMarketHours().
@@ -77,6 +85,79 @@ function filterRTHVolume(bars: VolumeBar[], rthTimes: Set<number>): VolumeBar[] 
   return bars.filter((bar) => rthTimes.has(bar.time));
 }
 
+/** Minimal OHLC-bar shape the append/extension diff operates on. Structurally
+ *  compatible with `CandlestickBar` (and with `CandlestickData` once its
+ *  `time` field is narrowed to `number`), so callers can pass either without
+ *  a cast. */
+interface OhlcBar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+interface VolumeComparableBar {
+  time: number;
+  value: number;
+  color: string;
+}
+
+function ohlcBarEquals(a: OhlcBar, b: OhlcBar): boolean {
+  return (
+    a.time === b.time &&
+    a.open === b.open &&
+    a.high === b.high &&
+    a.low === b.low &&
+    a.close === b.close
+  );
+}
+
+function volumeBarEquals(a: VolumeComparableBar, b: VolumeComparableBar): boolean {
+  return a.time === b.time && a.value === b.value && a.color === b.color;
+}
+
+/**
+ * Determines whether `next` is `prev` plus one or more new bars appended at
+ * the tail: every bar in `prev` has an identical (time + OHLC) counterpart at
+ * the same index in `next`, and `next` is strictly longer.
+ *
+ * Returns `false` for:
+ * - a shrink (`next.length <= prev.length`, which also covers the identical
+ *   case where the arrays are the same length) — an equal-length array is
+ *   NOT treated as "extend by 0 bars"; the caller must special-case equality
+ *   separately (see `isOhlcArrayUnchanged` below) because "identical" means
+ *   "nothing changed, skip all work" while "extension" means "append the new
+ *   tail bars via `series.update()`". Conflating the two would either skip a
+ *   real append or redundantly re-render unchanged data.
+ * - any divergence (time or OHLC mismatch) in a shared leading bar — this
+ *   means the underlying data was edited/replaced, not purely appended, and
+ *   must go through a full `setData()`.
+ */
+export function isAppendExtension(prev: OhlcBar[], next: OhlcBar[]): boolean {
+  if (next.length <= prev.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (!ohlcBarEquals(prev[i], next[i])) return false;
+  }
+  return true;
+}
+
+function isOhlcArrayUnchanged(prev: OhlcBar[], next: OhlcBar[]): boolean {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (!ohlcBarEquals(prev[i], next[i])) return false;
+  }
+  return true;
+}
+
+function isVolumeArrayUnchanged(prev: VolumeComparableBar[], next: VolumeComparableBar[]): boolean {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (!volumeBarEquals(prev[i], next[i])) return false;
+  }
+  return true;
+}
+
 export function CandlestickChart({
   candlestick,
   volume,
@@ -87,6 +168,7 @@ export function CandlestickChart({
   onChartClick,
   onCrosshairMove,
   minHeight,
+  appendMode = false,
 }: CandlestickChartProps) {
   // Server-sourced market hours so the RTH filter mirrors Python.
   // Falls back to standard NYSE 09:30-16:00 ET when the config query is
@@ -100,6 +182,11 @@ export function CandlestickChart({
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  // appendMode bookkeeping: the last *rendered* (post-RTH-filter) bars, so
+  // the extension diff compares apples to apples — a reveal that crosses the
+  // RTH boundary must not mis-detect as a divergence. `null` means "nothing
+  // rendered yet" and is distinct from an empty array (see effect below).
+  const prevDataRef = useRef<{ candles: OhlcBar[]; volume: VolumeComparableBar[] } | null>(null);
 
   // Create chart once
   useEffect(() => {
@@ -167,6 +254,18 @@ export function CandlestickChart({
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       markersPluginRef.current = null;
+      // Bug found while building the replay trainer (Task 5.2): without this
+      // reset, a chart teardown+recreate (React 18 StrictMode's dev-mode
+      // mount->cleanup->mount double-invoke, OR any real remount that reuses
+      // this same component instance's refs) leaves prevDataRef pointing at
+      // bookkeeping for the now-destroyed chart/series. The data effect's
+      // appendMode "nothing changed, skip setData" fast path then compares
+      // against that stale bookkeeping, sees no diff, and skips setData()
+      // entirely on the BRAND NEW (empty) series — leaving the actually
+      // -rendered chart with zero candles and a degenerate fitContent()
+      // range. Resetting here forces the next data effect run to treat the
+      // recreated chart as a genuine first render.
+      prevDataRef.current = null;
     };
   }, []);
 
@@ -197,10 +296,64 @@ export function CandlestickChart({
       color: v.color,
     }));
 
-    candleSeriesRef.current.setData(candleData);
-    volumeSeriesRef.current.setData(volumeData);
-    chartRef.current?.timeScale().fitContent();
-  }, [candlestick, volume, rthOnly, rthStart, rthEnd]);
+    if (!appendMode) {
+      // Prior (and only) behavior for every existing caller: always a full
+      // reset + fit. Untouched so this stays byte-identical when the prop
+      // is omitted.
+      candleSeriesRef.current.setData(candleData);
+      volumeSeriesRef.current.setData(volumeData);
+      chartRef.current?.timeScale().fitContent();
+      prevDataRef.current = { candles: displayCandles, volume: displayVolume };
+      return;
+    }
+
+    const prev = prevDataRef.current;
+    // The very first data this component ever renders (mount, or the first
+    // tick after appendMode flips on) gets one fitContent so the initial
+    // reveal frames the data. Every subsequent render — append OR reset —
+    // preserves whatever pan/zoom the user (or the replay trainer) has set.
+    const isFirstRender = prev === null;
+
+    if (
+      prev &&
+      isOhlcArrayUnchanged(prev.candles, displayCandles) &&
+      isVolumeArrayUnchanged(prev.volume, displayVolume)
+    ) {
+      // Identical to what's already on screen: not an extension (0 new
+      // bars), not a reset — genuinely nothing to do. Skip setData/update
+      // entirely so an unrelated re-render (e.g. a sibling prop changing)
+      // doesn't touch the series or the ref bookkeeping.
+      return;
+    }
+
+    if (prev && isAppendExtension(prev.candles, displayCandles)) {
+      // Tail extension: append only the new bars via update(), which in
+      // lightweight-charts v5 replaces/appends the LAST bar of the series
+      // per call. No fitContent — this is the whole point of appendMode,
+      // preserving the viewer's zoom during bar-by-bar replay.
+      for (const bar of candleData.slice(prev.candles.length)) {
+        candleSeriesRef.current.update(bar);
+      }
+      // Volume mirrors the candle series: same new-bar count, same
+      // update-not-setData treatment, driven by the candle extension
+      // decision (the two arrays are derived from the same source + RTH
+      // filter, so they extend in lockstep).
+      for (const bar of volumeData.slice(prev.volume.length)) {
+        volumeSeriesRef.current.update(bar);
+      }
+    } else {
+      // Not an extension (divergent bar, shrink, or ticker/date reset):
+      // fall back to a full setData. fitContent only on the very first
+      // render — see isFirstRender comment above.
+      candleSeriesRef.current.setData(candleData);
+      volumeSeriesRef.current.setData(volumeData);
+      if (isFirstRender) {
+        chartRef.current?.timeScale().fitContent();
+      }
+    }
+
+    prevDataRef.current = { candles: displayCandles, volume: displayVolume };
+  }, [candlestick, volume, rthOnly, rthStart, rthEnd, appendMode]);
 
   // Toggle volume visibility
   useEffect(() => {
