@@ -21,10 +21,10 @@ def test_options_families_select_expected_columns(monkeypatch):
     assert np.isnan(pos.iloc[1]["pcr_volume_d1"])  # NaN preserved, not 0
 
     iv = p2.options_features(df, "IWM", engine=None, families={"options_iv"})
-    assert list(iv.columns) == ["atm_iv_d1", "iv_term_slope_d1"]
+    assert list(iv.columns) == ["atm_iv_d1"]
 
     both = p2.options_features(df, "IWM", engine=None,
                                families={"positioning", "options_iv"})
     assert set(both.columns) == {
         "pcr_volume_d1", "pcr_oi_d1", "iv_skew_25d_d1",
-        "atm_iv_d1", "iv_term_slope_d1"}
+        "atm_iv_d1"}

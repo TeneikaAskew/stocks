@@ -4,19 +4,28 @@ hit featurize's fillna(0) — CLAUDE.md Rule 3.7). Feature math is reused from
 lib/; this module only orchestrates and shapes."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
 from lib.features.experimental.options_derived import add_options_features
 from gcp.research.strat_engine.strat_dataset import load_labeled_dataset
 
+log = logging.getLogger(__name__)
+
 
 def prune_feature_cols(feature_cols: list[str], drop_set: set) -> list[str]:
     return [c for c in feature_cols if c not in drop_set]
 
 
-# FOMC meeting weeks (Mon–Fri containing a scheduled FOMC decision), 2015-2026.
-# Static table — derived from the Fed calendar; extend as new years publish.
+# FOMC meeting weeks (Mon–Fri containing a scheduled FOMC decision).
+# Coverage = 2024-2026 ONLY. The engines train back to ~2015, but we do not
+# have a verified FOMC calendar before 2024, so `cal_is_fomc_week` is emitted
+# as NaN ("unknown") for any bar dated outside the covered years rather than a
+# false 0 (CLAUDE.md Rule 3.7 — honest missing, never a fabricated negative).
+# Extend both the table and _FOMC_COVERED_YEARS as new years are verified.
+_FOMC_COVERED_YEARS = {2024, 2025, 2026}
 _FOMC_WEEKS = {
     # 2024
     "2024-01-31", "2024-03-20", "2024-05-01", "2024-06-12",
@@ -41,7 +50,13 @@ def calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     quarter_end = (d.dt.is_month_end & d.dt.month.isin([3, 6, 9, 12])
                    ).astype(np.float32)
     week_start = (d - pd.to_timedelta(d.dt.weekday, unit="D")).dt.date
-    is_fomc = week_start.map(lambda x: x in _FOMC_WEEK_STARTS).astype(np.float32)
+    # 0/1 for years we have a verified FOMC calendar; NaN ("unknown") outside
+    # the covered range so a pre-2024 bar is never labeled a false 0.
+    covered = d.dt.year.isin(_FOMC_COVERED_YEARS).to_numpy()
+    is_fomc_bool = week_start.map(lambda x: x in _FOMC_WEEK_STARTS).to_numpy()
+    is_fomc = pd.Series(
+        np.where(covered, is_fomc_bool.astype(np.float32), np.nan),
+        index=df.index, dtype=np.float32)
     out = pd.DataFrame({
         "cal_dow": d.dt.weekday.astype(np.float32),
         "cal_week_of_month": week_of_month,
@@ -72,7 +87,9 @@ def cross_asset_features(df: pd.DataFrame, peers: dict) -> pd.DataFrame:
 
 _FAMILY_COLS = {
     "positioning": ["pcr_volume_d1", "pcr_oi_d1", "iv_skew_25d_d1"],
-    "options_iv": ["atm_iv_d1", "iv_term_slope_d1"],
+    # iv_term_slope_d1 excluded — atm_back_iv is NULL upstream (options_derived.py)
+    # so the slope is structurally always-NaN.
+    "options_iv": ["atm_iv_d1"],
 }
 
 
@@ -85,6 +102,16 @@ def options_features(df: pd.DataFrame, ticker: str, engine,
         # explicit-missing if the joiner didn't produce this column
         out[c] = (joined[c].to_numpy(dtype=np.float32) if c in joined.columns
                   else np.full(len(df), np.nan, dtype=np.float32))
+    # Coverage visibility: a 100%-NaN requested column means the joiner
+    # produced nothing (e.g. a missing materialized run) — surface it loudly
+    # instead of letting it read as a silent all-false-negative downstream.
+    n = len(out)
+    if n:
+        for c in want:
+            non_nan = int(out[c].notna().sum())
+            if non_nan == 0:
+                log.warning("options_features: ticker=%s column=%s is 100%% NaN "
+                            "(%d rows) — missing materialized run?", ticker, c, n)
     return out
 
 

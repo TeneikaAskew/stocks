@@ -2,7 +2,8 @@
 (resolved from CLOUD_RUN_TASK_INDEX). Reuses the production engines via their
 --features path; records every slice in the slice_ledger."""
 from __future__ import annotations
-import logging, os
+import json, logging, os
+import pandas as pd
 from gcp.database import get_engine
 from gcp.research.direction_program.slice_ledger import SliceLedger
 from gcp.research.direction_program.gate import slice_predictable
@@ -27,22 +28,49 @@ def run_config(engine, cfg, ledger_path="docs/research/direction_program_ledger.
     ledger = SliceLedger(ledger_path)
     per = {}
     for tk in TICKERS:
-        if cfg["axis"] == "direction":
-            from gcp.research.strat_engine.strat_dir_walk_forward import walk_forward_direction
-            wf = walk_forward_direction(engine, tk, "5m", features=cfg["features"])
-        else:
-            from gcp.research.magnitude_engine.mag_walk_forward import walk_forward
-            wf = walk_forward(engine, "phase0", tk, "5m", features=cfg["features"])
-        beats = extract_fold_beats(wf)
+        try:
+            if cfg["axis"] == "direction":
+                from gcp.research.strat_engine.strat_dir_walk_forward import walk_forward_direction
+                wf = walk_forward_direction(engine, tk, "5m", features=cfg["features"])
+            else:
+                from gcp.research.magnitude_engine.mag_walk_forward import walk_forward
+                wf = walk_forward(engine, "phase0", tk, "5m", features=cfg["features"])
+            beats = extract_fold_beats(wf)
+        except Exception:
+            # One ticker failing (e.g. options INFEASIBLE RuntimeError) must not
+            # abort the whole config under --max-retries 0. Empty beats → the
+            # gate counts this ticker as a non-pass (honest), and the config
+            # still produces a verdict from the surviving tickers.
+            log.exception("run_config: ticker=%s axis=%s features=%s failed — "
+                          "recording empty beats and continuing",
+                          tk, cfg["axis"], cfg["features"] or "baseline")
+            beats = []
         per[tk] = beats
         ledger.record(f"phase2:{cfg['axis']}:{cfg['features'] or 'baseline'}",
                       lever="phase2", target=cfg["axis"], conditioning="none",
                       feature_set="phase2:" + (cfg["features"] or "baseline"),
                       ticker=tk, fold_beats=beats, meta={"tf": "5m"})
     v = slice_predictable(per)
-    log.info("PHASE2_VERDICT axis=%s features=%s predictable=%s n_tickers_pass=%d",
+    log.info("PHASE2_VERDICT axis=%s features=%s predictable=%s n_tickers_pass=%d "
+             "per_ticker_beats=%s",
              cfg["axis"], cfg["features"] or "baseline",
-             v["predictable"], v["n_tickers_pass"])
+             v["predictable"], v["n_tickers_pass"], per)
+    # Durable, config-attributable result: the per-task ledger file is ephemeral
+    # (lost on container exit), so persist a small JSON to GCS keyed by config.
+    features_tag = cfg["features"].replace(",", "-") if cfg["features"] else "baseline"
+    ts = int(pd.Timestamp.utcnow().timestamp())
+    blob = f"direction-program/phase2/{cfg['axis']}_{features_tag}_{ts}.json"
+    try:
+        from gcp.research.strat_engine.strat_walk_forward import _gcs_upload
+        payload = {"axis": cfg["axis"], "features": cfg["features"] or "baseline",
+                   "per_ticker_beats": per, "verdict": v}
+        uri = _gcs_upload(json.dumps(payload, default=str).encode(), blob)
+        log.info("PHASE2_RESULT_UPLOAD uri=%s", uri)
+    except Exception:
+        # Allowed cleanup catch — results are already durable in Cloud Run logs
+        # (PHASE2_VERDICT with per_ticker_beats); the GCS copy is best-effort.
+        log.warning("run_config: GCS result upload failed for blob=%s — results "
+                    "still recoverable from logs", blob, exc_info=True)
     return v
 
 
