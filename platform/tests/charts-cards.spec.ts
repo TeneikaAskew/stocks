@@ -742,6 +742,9 @@ test.describe('Charts page — "My style" panel (Task 4.4)', () => {
 
     const result = page.getByTestId('mine-my-style-result');
     await expect(result).toBeVisible();
+    // Scroll-into-view on success: the result sits at the bottom of the
+    // scrollable side panel and must be brought into the viewport.
+    await expect(result).toBeInViewport();
     await expect(result.getByText('CALL', { exact: true })).toBeVisible();
     await expect(result.getByText('RSI 25-50')).toBeVisible();
     await expect(result.getByText('Above VWAP')).toBeVisible();
@@ -752,6 +755,26 @@ test.describe('Charts page — "My style" panel (Task 4.4)', () => {
     await expect(
       result.getByText(/Win rate 60%.*expectancy \+0\.42%.*across 23 trades, 4 folds.*stability 75%/)
     ).toBeVisible();
+  });
+
+  test('a stats-endpoint failure dashes every analytics tile with a loud note (no fabricated zeros)', async ({ page }) => {
+    await page.route('**/api/analytics/trade-stats', (r) =>
+      r.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'stats service down' }),
+      })
+    );
+
+    await openAnalyticsTab(page);
+
+    await expect(page.getByTestId('analytics-unavailable')).toBeVisible();
+    // The Trades count must dash out, not read "0" — a failed fetch is
+    // indistinguishable from an empty journal otherwise (Rule 3.7).
+    const tradesTile = page.getByText('Trades', { exact: true }).locator('..').locator('.metric-value');
+    await expect(tradesTile).toHaveText('--');
+    const callTile = page.getByText('CALL', { exact: true }).locator('..').locator('.metric-value');
+    await expect(callTile).toHaveText('--');
   });
 
   test('a 503 from the endpoint renders a loud inline error, never a silent failure', async ({ page }) => {
