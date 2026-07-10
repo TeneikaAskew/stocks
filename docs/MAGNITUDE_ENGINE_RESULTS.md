@@ -663,3 +663,32 @@ the actual 0DTE / short-dated options price correctly. So the forward-window
 reframe is **statistically more predictable but still NOT tradeably-extractable** —
 the extractable residual is "point at the close," where a naive daily-IV benchmark
 only looks cheap. Consistent with the 2026-05-29 FAIL, on a better-posed target.
+
+
+---
+
+## Phase-2 pure-prediction re-test (2026-07-09) — the gate is CALIBRATION, not features
+
+The 2026-05-29 FAIL was in the **implied-vs-realized cost** frame (gate 7). The
+2026-07 reframe drops options costs entirely and asks only: is size (magnitude
+bucket) predictable by **log-loss beat vs the base-rate constant** under the
+pre-registered gate (>=6/8 folds AND all 3 tickers)?
+
+**Baseline (`direction-phase2-sswwj`, phase0 5m, calibration=none):** median
+log-loss beat ≈ **−0.148** — the model is *worse* than predicting the class
+prior. This is the `class_weight='balanced'` trade-off: it lifts minority-class
+(EXPLOSIVE) recall at the cost of probability calibration, and these runs used
+`calibration=none`.
+
+**Feature families add negligibly** (options_iv +0.0025, positioning +0.0018,
+full stack +0.0055; all still 0/3 tickers) — a +0.005 nudge cannot close a
+−0.148 gap. This matches the prior "adding features nudges 0.92→0.93" finding,
+now in the pure-prediction frame: **SIZE's problem is not missing features, it
+is calibration.**
+
+**Actionable next experiment (dispatched, `magnitude-recal-j5lfv`):** phase0
+--all-cells with `--calibration=isotonic` to test whether isotonic recalibration
+turns the log-loss beat positive. If it does, the pure-prediction SIZE verdict
+should be revisited with a calibrated, possibly un-class-weighted model before
+any further feature work. Result to be appended here on completion. Full
+ablation: EXPERIMENT_REGISTRY.md E-25.

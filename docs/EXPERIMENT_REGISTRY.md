@@ -1211,3 +1211,46 @@ asymmetry) and a concrete gating plan (gate-7 on the fwd-window target;
 purged/embargoed cost-aware EV on the fwd-directional probe). Scratch harness +
 per-experiment result JSONs retained by the author; not committed to the repo.
 
+
+
+---
+
+## E-25 — Direction-Predictability Program Phase 2: pure-prediction feature-lever ablation (2026-07-09)
+
+**Frame:** PURE PREDICTION (log-loss beat vs base-rate constant over purged
+walk-forward), options costs explicitly out of scope (per 2026-07 reframe).
+Distinct lens from the gate-7 implied-vs-realized cost verdict.
+
+**Pre-registered gate:** a slice is PREDICTABLE iff it beats base-rate log-loss
+in >=6/8 folds AND on all 3 tickers (IWM,SPY,QQQ).
+
+**Baseline anchor** (`direction-baseline-4pq6g`, 5m): TYPE ✅ 3/3, SIZE ❌ 0/3,
+DIRECTION ❌ 0/3. Harness-trust check passed (direction reproduced the 0/72
+close-sign control).
+
+**Importance audit** (`direction-importance`, gain+SHAP over the production
+engines): DIRECTION diffuse (top feature 4.6% of gain, 116/259 near-dead);
+SIZE concentrated (mins_since_open 9.9% + rvol_10 8.4%, 156/254 near-dead).
+Options positioning / IV-skew / ATM-IV entirely absent from the 259-col surface.
+
+**Phase 2 ablation** (`direction-phase2-sswwj`, 14 configs, 5m): 5 feature
+families (prune / options_iv / positioning / cross_asset / calendar) tested in
+isolation + full stack, on the real engines via a `--features` flag.
+
+| axis | best config | tickers pass | best median-beat Δ vs baseline |
+|---|---|---|---|
+| SIZE | full stack | 0/3 | +0.0055 (baseline median beat −0.148) |
+| DIRECTION | options_iv | 0/3 | +0.0006 (baseline median beat −0.0026) |
+
+**Verdict:** no family, nor the full stack, clears the gate on either axis.
+Options families (options_iv, positioning, full stack) are the ONLY consistently
+positive deltas on both axes — thesis-consistent but a rounding error. Calendar
+is the only family that hurts both. **Key new finding:** SIZE's −0.148 baseline
+beat is a *calibration* deficit (class_weight=balanced + calibration=none), not a
+feature deficit — no feature nudge closes 0.15 log-loss. Follow-up isotonic
+recalibration dispatched (`magnitude-recal`). DIRECTION remains null under the
+new options/cross-asset/calendar levers (best any ticker: 3/8 folds; needs 6/8) —
+consistent with the standing verdict; the missing signal class (order-flow/book)
+is unavailable from the current vendor. See DIRECTION_RESEARCH_RESULTS.md and
+MAGNITUDE_ENGINE_RESULTS.md Phase-2 sections. Code: PR #698
+(gcp/research/direction_program/, phase2_features.py, phase2_ablation.py).

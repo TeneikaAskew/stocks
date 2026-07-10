@@ -399,3 +399,30 @@ purged+embargoed CV with the cost-aware EV gate, and net it against the option s
 it would trade, before it counts as a candidate. Until then it is a **preliminary
 statistical asymmetry**, logged here; the verdict (no confirmed cross-ticker
 directional edge) stands.
+
+
+---
+
+## Phase-2 update (2026-07-09): options positioning + cross-asset + calendar — still null
+
+Re-tested direction in the **pure-prediction** frame (log-loss beat, no cost
+gate) with feature families the earlier probes lacked, wired into the production
+direction walk-forward via a `--features` flag and measured against the
+pre-registered gate (>=6/8 folds AND all 3 tickers):
+
+- **positioning** (put/call ratio vol+OI, 25Δ IV-skew — daily d-1, leak-safe)
+- **options_iv** (ATM-IV, from the materialized options_daily_features table)
+- **cross_asset** (other two ETFs' strictly-prior intraday returns; VIX regime)
+- **calendar** (day-of-week, week-of-month, month/quarter-end, FOMC week)
+- **prune** (drop the 116 near-dead columns from the 2026-07-08 importance audit)
+
+**Result (`direction-phase2-sswwj`, 5m):** every config still **0/3 tickers**.
+Baseline folds-beat per ticker 3/2/0 (IWM/SPY/QQQ); best any single ticker
+reached is 3/8, gate needs 6/8. Median-beat deltas vs baseline are all within
+noise: options_iv +0.0006 (best), calendar −0.0004 (worst). QQQ never exceeds
+1/8. **The already-built daily options positioning/IV signal does not move
+intraday directional sign** — consistent with this doc's standing verdict and
+with the literature (the directional signal lives in order-flow/limit-order-book
+data, unavailable from the current bar+daily-options vendor). Direction is, on
+this evidence, not predictable from available data; reopen only on tick/book
+acquisition. Full ablation: EXPERIMENT_REGISTRY.md E-25.
