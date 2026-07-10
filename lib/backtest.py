@@ -67,11 +67,11 @@ class BacktestResult:
 
     @property
     def winners(self) -> List[Trade]:
-        return [t for t in self.trades if t.return_pct and t.return_pct > 0]
+        return [t for t in self.trades if t.return_pct is not None and t.return_pct > 0]
 
     @property
     def losers(self) -> List[Trade]:
-        return [t for t in self.trades if t.return_pct and t.return_pct <= 0]
+        return [t for t in self.trades if t.return_pct is not None and t.return_pct <= 0]
 
     @property
     def win_rate(self) -> float:

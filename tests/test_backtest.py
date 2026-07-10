@@ -210,6 +210,32 @@ class TestBacktestResult:
         assert len(result.winners) == 1
         assert len(result.losers) == 1
 
+    def test_breakeven_trade_counts_as_loser_not_dropped(self):
+        """REGRESSION: `winners`/`losers` used `t.return_pct and ...`, and
+        in Python `0.0 and anything` short-circuits to the falsy `0.0` —
+        so an exact-breakeven trade (return_pct == 0.0) satisfied NEITHER
+        the winners filter NOR the losers filter and was silently dropped
+        from both. total_trades still counted it, so win_rate's numerator
+        (winners) undercounted while a breakeven trade should count as a
+        loss — matching platform/api/routers/analytics.py::_compute_stats
+        (`"win" if pnl > 0 else "loss"`)."""
+        trades = [
+            Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
+                  base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+                  conditions_met=[], return_pct=0.01),
+            Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
+                  base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+                  conditions_met=[], return_pct=0.0),
+            Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
+                  base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+                  conditions_met=[], return_pct=-0.01),
+        ]
+        result = BacktestResult(trades=trades, daily_pnl=[])
+        assert len(result.winners) == 1
+        assert result.winners[0].return_pct == 0.01
+        assert len(result.losers) == 2
+        assert {t.return_pct for t in result.losers} == {0.0, -0.01}
+
     def test_profit_factor(self):
         trades = [
             Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
