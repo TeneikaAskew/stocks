@@ -85,6 +85,15 @@ export function tradesToCsv(entries: JournalEntry[]): string {
   return header + rows.join('\n');
 }
 
+// The `/api/journal/export/{ticker}` endpoint's `JournalTradeExportItem`
+// model requires exit_date/exit_time/exit_price (server-side 422 pinned in
+// tests/test_journal_phase2.py::test_export_endpoint_422s_for_active_shaped_item),
+// so an active (unexited) trade has nothing to export — filter it out before
+// the pipeline POST, never send a partial row and rely on the server to reject it.
+export function exportableTrades(entries: JournalEntry[]): JournalEntry[] {
+  return entries.filter((e) => e.status !== 'active' && e.exit_ts != null);
+}
+
 function downloadCsv(content: string, filename: string) {
   const blob = new Blob([content], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -206,16 +215,20 @@ export default function JournalPage() {
   };
 
   const exportPipeline = async () => {
-    const csv = tradesToCsv(entries);
+    // Active (unexited) trades have no exit_* to export and the server 422s
+    // on them — filter locally so the request only ever carries closed
+    // trades, and tell the user how many were left out.
+    const closed = exportableTrades(entries);
+    const skippedCount = entries.length - closed.length;
+    const csv = tradesToCsv(closed);
     try {
       const r = await fetch(`/api/journal/export/${activeTicker}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          trades: entries.map((e, i) => {
+          trades: closed.map((e, i) => {
             const entry = tsToDisplay(e.entry_ts);
-            // Active (null-exit) trades send null, never a fabricated "—" date.
-            const exit  = e.exit_ts == null ? null : tsToDisplay(e.exit_ts);
+            const exit  = tsToDisplay(e.exit_ts);
             return {
               id: String(i + 1),
               ticker: e.ticker,
@@ -223,8 +236,8 @@ export default function JournalPage() {
               entry_date: entry.date,
               entry_time: entry.time,
               entry_price: e.entry_price,
-              exit_date: exit?.date ?? null,
-              exit_time: exit?.time ?? null,
+              exit_date: exit.date,
+              exit_time: exit.time,
               exit_price: e.exit_price,
               notes: e.notes,
             };
@@ -233,7 +246,8 @@ export default function JournalPage() {
       });
       if (r.ok) {
         const d = await r.json();
-        setExportStatus(`Exported ${d.trades_exported} trades → ${d.filename}`);
+        const skippedNote = skippedCount > 0 ? ` · ${skippedCount} active skipped` : '';
+        setExportStatus(`Exported ${d.trades_exported} closed trades${skippedNote} → ${d.filename}`);
       } else {
         downloadCsv(csv, `${activeTicker.toLowerCase()}_journal.csv`);
         setExportStatus('API unavailable — downloaded CSV locally');
