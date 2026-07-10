@@ -144,8 +144,8 @@ class BacktestResult:
         if not durations:
             return {}
         s = pd.Series(durations)
-        winners = [d for d, t in zip(durations, self.trades) if t.return_pct and t.return_pct > 0]
-        losers = [d for d, t in zip(durations, self.trades) if t.return_pct and t.return_pct <= 0]
+        winners = [d for d, t in zip(durations, self.trades) if t.return_pct is not None and t.return_pct > 0]
+        losers = [d for d, t in zip(durations, self.trades) if t.return_pct is not None and t.return_pct <= 0]
         result = {
             'avg_duration_min': s.mean(), 'median_duration_min': s.median(),
             'p25_duration_min': s.quantile(0.25), 'p75_duration_min': s.quantile(0.75),
