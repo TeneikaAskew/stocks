@@ -22,28 +22,20 @@ export interface TradeStats {
   putCount: number;
 }
 
-const EMPTY_STATS: TradeStats = {
-  totalTrades: 0,
-  closedTrades: 0,
-  activeTrades: 0,
-  winCount: 0,
-  lossCount: 0,
-  winRate: 0,
-  totalPnL: 0,
-  avgPnL: 0,
-  maxWin: 0,
-  maxLoss: 0,
-  profitFactor: null,
-  callCount: 0,
-  putCount: 0,
-};
-
 /**
  * Compute stats for an ad-hoc trades array (typically ChartsPage annotation
  * trades). Posts to the server so the aggregation matches the DB-backed
  * summary endpoint — no duplicate TS math.
+ *
+ * Returns `stats: null` while loading OR on error — never a zero-filled
+ * object (Rule 3.7: a fabricated "Trades 0" tile is indistinguishable from
+ * a genuinely empty journal). `isError` lets the caller render an explicit
+ * "analytics unavailable" state instead.
  */
-export function useTradeAnalytics(trades: TradeEntry[]): TradeStats {
+export function useTradeAnalytics(trades: TradeEntry[]): {
+  stats: TradeStats | null;
+  isError: boolean;
+} {
   // Include a compact signature in the queryKey so React Query refetches
   // when the user adds/removes/updates a trade without posting on every render.
   const signature = trades
@@ -69,7 +61,7 @@ export function useTradeAnalytics(trades: TradeEntry[]): TradeStats {
     enabled: true,
     staleTime: 60_000,
   });
-  return query.data ?? EMPTY_STATS;
+  return { stats: query.data ?? null, isError: query.isError };
 }
 
 /**

@@ -333,7 +333,11 @@ export default function ChartsPage() {
     () => (includeReplayAnalytics ? currentTrades : currentTrades.filter((t) => t.source !== 'replay')),
     [currentTrades, includeReplayAnalytics],
   );
-  const stats = useTradeAnalytics(analyticsTrades);
+  const { stats, isError: statsUnavailable } = useTradeAnalytics(analyticsTrades);
+
+  // My-style result renders at the bottom of the side panel — scroll it into
+  // view once mining succeeds so the user doesn't have to know to scroll.
+  const myStyleResultRef = useRef<HTMLDivElement>(null);
 
   // Task 3.3: "closed" = any non-active status (win/loss/breakeven) — the
   // replay endpoint requires exit_ts/exit_price to score a trade, which an
@@ -1158,15 +1162,23 @@ export default function ChartsPage() {
                 />
                 Include practice sessions
               </label>
+              {/* stats is null while loading or on error — every tile dashes
+                  out rather than fabricating "0 trades" (Rule 3.7). The note
+                  distinguishes a failed stats call from a quiet load. */}
+              {statsUnavailable && (
+                <p data-testid="analytics-unavailable" className="mb-2 text-xs text-[var(--warn)]">
+                  Analytics unavailable — the stats service didn't respond.
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-2">
-                <MetricCard label="Trades" value={stats.totalTrades} />
-                <MetricCard label="Win Rate" value={stats.closedTrades > 0 ? `${stats.winRate.toFixed(0)}%` : '--'} />
-                <MetricCard label="Total P&L" value={stats.closedTrades > 0 ? `$${stats.totalPnL.toFixed(2)}` : '--'} />
-                <MetricCard label="Profit Factor" value={stats.closedTrades > 0 && stats.profitFactor != null ? (stats.profitFactor === Infinity ? '---' : stats.profitFactor.toFixed(2)) : '--'} />
-                <MetricCard label="CALL" value={stats.callCount} />
-                <MetricCard label="PUT" value={stats.putCount} />
-                <MetricCard label="Max Win" value={stats.maxWin > 0 ? `$${stats.maxWin.toFixed(2)}` : '--'} />
-                <MetricCard label="Max Loss" value={stats.maxLoss > 0 ? `-$${stats.maxLoss.toFixed(2)}` : '--'} />
+                <MetricCard label="Trades" value={stats ? stats.totalTrades : '--'} />
+                <MetricCard label="Win Rate" value={stats && stats.closedTrades > 0 ? `${stats.winRate.toFixed(0)}%` : '--'} />
+                <MetricCard label="Total P&L" value={stats && stats.closedTrades > 0 ? `$${stats.totalPnL.toFixed(2)}` : '--'} />
+                <MetricCard label="Profit Factor" value={stats && stats.closedTrades > 0 && stats.profitFactor != null ? (stats.profitFactor === Infinity ? '---' : stats.profitFactor.toFixed(2)) : '--'} />
+                <MetricCard label="CALL" value={stats ? stats.callCount : '--'} />
+                <MetricCard label="PUT" value={stats ? stats.putCount : '--'} />
+                <MetricCard label="Max Win" value={stats && stats.maxWin > 0 ? `$${stats.maxWin.toFixed(2)}` : '--'} />
+                <MetricCard label="Max Loss" value={stats && stats.maxLoss > 0 ? `-$${stats.maxLoss.toFixed(2)}` : '--'} />
               </div>
 
               {/* "My style" panel (Task 4.4) — mines the user's own closed
@@ -1204,7 +1216,18 @@ export default function ChartsPage() {
                       {mineMyStyle.data.reason}
                     </p>
                   ) : (
-                    <MyStyleResult result={mineMyStyle.data} />
+                    <div
+                      ref={(el) => {
+                        // Result lives at the bottom of a scrollable panel —
+                        // bring it into view the render it first appears.
+                        if (el && myStyleResultRef.current !== el) {
+                          myStyleResultRef.current = el;
+                          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        }
+                      }}
+                    >
+                      <MyStyleResult result={mineMyStyle.data} />
+                    </div>
                   )
                 )}
               </div>
