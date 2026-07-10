@@ -1230,6 +1230,18 @@ deploy_direction_importance() {
 #     from lib.features.experimental.options_derived import build_materialized; \
 #     e=get_engine(); [build_materialized(e,t,'2015-01-01','2026-07-08') \
 #       for t in ('IWM','SPY','QQQ')]"
+# ── Magnitude recalibration experiment (one-shot) ──────────────────────────
+# Phase-2 ablation found the SIZE baseline log-loss beat is ~-0.148 (worse than
+# the base-rate constant) with calibration=none + class_weight=balanced. Tests
+# whether isotonic calibration closes that gap. Runs phase0 --all-cells (3
+# tickers x 3 tfs) with --calibration=isotonic. Compare the 5m cells to the
+# phase-2 size baseline. One-shot, not scheduled. max-retries 0.
+deploy_magnitude_recal() {
+    echo "Deploying magnitude-recal job (isotonic calibration experiment)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --service-account "${SA_EMAIL}"         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet 2>/dev/null ||     gcloud run jobs update magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet
+}
+
 deploy_direction_phase2() {
     echo "Deploying direction-phase2 ablation job (task-parallel)..."
     local research_image="${IMAGE}:research"
@@ -3742,6 +3754,7 @@ case "${1:-help}" in
     direction-baseline) deploy_direction_baseline ;;   # research image; build separately (build-research)
     direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
+    magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
     magnitude-inference) build_research_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;
