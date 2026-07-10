@@ -426,6 +426,9 @@ export default function ChartsPage() {
         text: `${trade.optionType} @ $${trade.entryPrice.toFixed(2)}`,
       });
       if (trade.exitTime) {
+        // AUDIT-2026-05-13: silent fallback — pre-existing; only reachable
+        // via manual DB writes (server always sets return_pct on close).
+        // See docs/audits/FALLBACK_AUDIT_2026-05-13.md
         const pnl = trade.pnl ?? 0;
         m.push({
           time: trade.exitTime as Time,

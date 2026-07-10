@@ -252,18 +252,19 @@ def _delete_null_close_rows(ticker: str) -> int:
     if not is_cloud_sql_configured():
         return 0
     try:
-        execute_sql(
+        deleted = execute_sql(
             "DELETE FROM market_data_daily "
             "WHERE ticker = :t AND close IS NULL",
             {'t': ticker.upper()},
         )
-        # execute_sql doesn't return rowcount via the helper signature.
-        # Log unconditionally — caller already gated on dropped > 0.
+        # execute_sql returns the driver rowcount as of commit 1b6b2067 —
+        # use the real count instead of a hardcoded "did the cleanup
+        # attempt" sentinel.
         logger.info(
-            "[brief:%s] cleaned up NULL-close rows in market_data_daily",
-            ticker,
+            "[brief:%s] cleaned up %d NULL-close row(s) in market_data_daily",
+            ticker, deleted,
         )
-        return 1  # signal "did the cleanup attempt"
+        return deleted
     except Exception as exc:
         logger.warning(
             "[brief:%s] NULL-row cleanup failed (non-fatal): %s",

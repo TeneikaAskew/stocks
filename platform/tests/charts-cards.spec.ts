@@ -907,7 +907,7 @@ test.describe('Charts page — "My style" panel (Task 4.4)', () => {
   // ticker's result is on screen must reset it, not leave IWM's mined
   // profile displayed under SPY's data. ChartsPage has no per-page
   // <TickerCombobox> of its own (symbol focus for /charts is driven by the
-  // global ⌘K command palette — see components/layout/Header.tsx's
+  // global ⌘K command palette — see routes/DashboardPage.tsx's
   // "sidebar/⌘K ticker switcher" comment), so the switch goes through
   // Ctrl+K rather than a combobox click.
   test('switching ticker resets the mined "My style" result and re-idles the button', async ({ page }) => {

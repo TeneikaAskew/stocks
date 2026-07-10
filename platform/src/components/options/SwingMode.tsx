@@ -216,7 +216,7 @@ function SourcePill({ source, asOf }: { source: DataSource; asOf: string }) {
   );
 }
 
-// ─── Toolbar (no ticker input — page owns the symbol via TickerSelect) ──
+// ─── Toolbar (no ticker input — page owns the symbol via TickerCombobox) ──
 function Toolbar({
   metric,
   setMetric,
@@ -758,7 +758,7 @@ function RealPivotBuild({ summary }: { summary?: GammaGridSummary }) {
 }
 
 interface SwingModeProps {
-  /** Focus symbol from the page toolbar (TickerSelect). */
+  /** Focus symbol from the page toolbar (TickerCombobox). */
   focusSymbol: string;
 }
 

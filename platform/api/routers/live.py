@@ -210,6 +210,8 @@ async def get_live_quote(ticker: str):
         raise HTTPException(status_code=status_code, detail=f"No quote data returned for {ticker_upper}")
 
     def _float(val: str) -> float:
+        # AUDIT-2026-05-13: silent fallback — pre-existing 0.0-on-parse-failure.
+        # See docs/audits/FALLBACK_AUDIT_2026-05-13.md
         try:
             return float(val)
         except (TypeError, ValueError):

@@ -34,9 +34,13 @@ export interface JournalStats {
    *  same as every other aggregate here (replay-excluded unless
    *  includeReplay). winCount + lossCount === closedCount always. */
   winCount: number;
-  /** Closed entries with return_pct <= 0 — matches lib/backtest.py's
-   *  `t.return_pct <= 0` losers convention (a scratch/breakeven trade at
-   *  exactly 0% counts as a loss, never silently dropped). */
+  /** Closed entries with return_pct <= 0 — matches the `<=0`-is-loss
+   *  convention in platform/api/routers/analytics.py::_compute_stats
+   *  (`"win" if pnl > 0 else "loss"`), the primary source for this
+   *  convention. lib/backtest.py's `BacktestResult.losers` now agrees too
+   *  (fixed in #702 to use `return_pct is not None and return_pct <= 0`
+   *  instead of a falsy-zero `and` check that silently dropped exact-0.0
+   *  breakeven trades from both winners and losers). */
   lossCount: number;
 }
 
