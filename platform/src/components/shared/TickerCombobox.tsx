@@ -52,6 +52,12 @@ export function mergeSuggestions(
  * added nothing. This keeps `flat` (the combined, keyboard-navigable list)
  * free of duplicate symbols, so `indexOf`-based highlighting and testids
  * are unambiguous again.
+ *
+ * Also self-dedupes WITHIN `searchResults` (first occurrence wins) — the
+ * search API can itself return the same symbol twice (e.g. matched on both
+ * ticker and name fields), which produced the same `indexOf`/testid
+ * collision this function was written to prevent, just between two search
+ * rows instead of a search row and a chip.
  */
 export function dedupeSearchResults<T extends { symbol: string }>(
   searchResults: T[],
@@ -59,7 +65,37 @@ export function dedupeSearchResults<T extends { symbol: string }>(
   recents: string[],
 ): T[] {
   const alreadyShown = new Set([...quickPicks, ...recents].map((t) => t.toUpperCase()));
-  return searchResults.filter((r) => !alreadyShown.has(r.symbol.toUpperCase()));
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const r of searchResults) {
+    const upper = r.symbol.toUpperCase();
+    if (alreadyShown.has(upper) || seen.has(upper)) continue;
+    seen.add(upper);
+    out.push(r);
+  }
+  return out;
+}
+
+/**
+ * Pure selection-index rule for "where should the keyboard highlight land
+ * when a fresh results set arrives and the user hasn't manually navigated
+ * (arrowed) since typing." Enter should act on what the user typed a query
+ * for — the top SEARCH hit — not on `flat[0]` (the first quick-pick), which
+ * previously landed a bare Enter-after-typing on an unrelated symbol.
+ *
+ * `quickCount`/`recentCount`/`searchCount` are the lengths of the three
+ * sections that make up `flat` (quick-picks, recents, search rows), in that
+ * order, so `quickCount + recentCount` is exactly the flat index of the
+ * first search row.
+ */
+export function defaultSelectionIndex(
+  quickCount: number,
+  recentCount: number,
+  searchCount: number,
+  queryNonEmpty: boolean,
+): number {
+  if (queryNonEmpty && searchCount > 0) return quickCount + recentCount;
+  return 0;
 }
 
 const BADGE_LABEL: Record<CoverageBadge, string> = {
@@ -112,6 +148,11 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [sel, setSel] = useState(0);
+  // True once the user has pressed ArrowUp/ArrowDown since the last query
+  // change. While false, `sel` is driven by defaultSelectionIndex below —
+  // see that effect for why (Enter should hit the top search result, not
+  // flat[0], when the user hasn't navigated away from it).
+  const [userNavigated, setUserNavigated] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [ingestNotice, setIngestNotice] = useState<IngestNotice | null>(null);
@@ -153,6 +194,17 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
   );
   const safeSel = Math.min(sel, Math.max(0, flat.length - 1));
 
+  // Whenever a fresh results set arrives (searchRows changes) or the query
+  // becomes empty again, and the user hasn't manually navigated since the
+  // last query change, drive `sel` to the top SEARCH hit (once one exists)
+  // per defaultSelectionIndex. This is what makes a bare Enter-after-typing
+  // pick the thing the user typed for, instead of leaving the highlight on
+  // flat[0] (the first quick-pick) from before they started typing.
+  useEffect(() => {
+    if (userNavigated) return;
+    setSel(defaultSelectionIndex(quickPicks.length, recents.length, searchRows.length, debounced.length > 0));
+  }, [searchRows, quickPicks.length, recents.length, debounced, userNavigated]);
+
   // Closes the popover AND resets its draft state. Routed through a single
   // helper (rather than a setState-on-close effect keyed on `open`) so
   // closing never triggers a cascading render — see React docs on avoiding
@@ -161,6 +213,7 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
     setOpen(false);
     setQuery('');
     setSel(0);
+    setUserNavigated(false);
   };
 
   // Outside click / Escape closes the popover — same idiom as ReplayControl.
@@ -233,9 +286,11 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
       close();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
+      setUserNavigated(true);
       setSel((s) => Math.min(s + 1, flat.length - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      setUserNavigated(true);
       setSel((s) => Math.max(s - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
@@ -270,6 +325,10 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
+                  // A fresh query re-claims the default-selection behavior —
+                  // the auto-selection effect above will drive `sel` to the
+                  // new results' top hit once they arrive.
+                  setUserNavigated(false);
                   setSel(0);
                 }}
                 onKeyDown={onKeyDown}
@@ -350,9 +409,26 @@ export function TickerCombobox({ className, onPickNew }: TickerComboboxProps) {
                 {!search.isError && search.isLoading && (
                   <div className="px-1.5 py-2 text-xs text-[var(--on-surface-muted)]">Searching…</div>
                 )}
-                {!search.isError && !search.isLoading && searchRows.length === 0 && (
-                  <div className="px-1.5 py-2 text-xs text-[var(--on-surface-muted)]">
+                {/* Two distinct empty states: a truly empty raw response
+                    ("no matches") vs. a non-empty raw response that
+                    dedupeSearchResults dropped entirely because every hit
+                    already renders as a quick-pick/recent chip above
+                    ("matches shown above"). Reusing "no matches" for the
+                    latter would be a lie — the API DID find matches. */}
+                {!search.isError && !search.isLoading && searchRows.length === 0 && merged.length === 0 && (
+                  <div
+                    className="px-1.5 py-2 text-xs text-[var(--on-surface-muted)]"
+                    data-testid="ticker-search-no-matches"
+                  >
                     No matches for &ldquo;{debounced}&rdquo;
+                  </div>
+                )}
+                {!search.isError && !search.isLoading && searchRows.length === 0 && merged.length > 0 && (
+                  <div
+                    className="px-1.5 py-2 text-xs text-[var(--on-surface-muted)]"
+                    data-testid="ticker-search-deduped"
+                  >
+                    Matches shown above
                   </div>
                 )}
                 {/* Coverage lookup failed but search itself succeeded — still

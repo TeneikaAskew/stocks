@@ -167,6 +167,21 @@ test.describe('TickerCombobox', () => {
     await expect(trigger).toContainText('AAPL');
   });
 
+  test('Enter with no arrow-navigation picks the top search hit, not the first quick pick', async ({ page }) => {
+    const trigger = page.getByTestId('ticker-combobox');
+    await trigger.click();
+    const input = page.getByTestId('ticker-combobox-input');
+    await input.fill('aa');
+    await expect(page.getByTestId('ticker-option-AAPL')).toBeVisible({ timeout: 5000 });
+
+    // No ArrowDown — user typed a query and hit Enter directly. Should land
+    // on the top search hit (AAPL), not flat[0] (the IWM quick pick).
+    await input.press('Enter');
+
+    await expect(page.getByTestId('ticker-combobox-panel')).not.toBeVisible();
+    await expect(trigger).toContainText('AAPL');
+  });
+
   test('clicking the AAPL result directly sets the header ticker', async ({ page }) => {
     const trigger = page.getByTestId('ticker-combobox');
     await trigger.click();
@@ -309,6 +324,32 @@ test.describe('TickerCombobox', () => {
     // …and IWM appears exactly once (the quick-pick chip; the duplicate
     // search row was dropped, so no highlight/testid collision).
     await expect(page.getByTestId('ticker-option-IWM')).toHaveCount(1);
+  });
+
+  test('a search that raw-matched but deduped to zero rows shows "Matches shown above", not "No matches"', async ({ page }) => {
+    // Search returns only IWM — already a quick pick, so dedupe drops it
+    // entirely, leaving zero search rows even though the raw response was
+    // non-empty. Copy must say the match is shown above (as the IWM chip),
+    // not lie that there were no matches for the query.
+    await page.route('**/api/insights/ticker/search**', (r) =>
+      r.fulfill(
+        M.ok({
+          keywords: 'iw',
+          results: [
+            { symbol: 'IWM', name: 'iShares Russell 2000 ETF', type: 'ETF', region: 'United States', currency: 'USD', match_score: 0.95 },
+          ],
+        })
+      )
+    );
+    await page.route('**/api/market/coverage**', (r) =>
+      r.fulfill(M.ok({ coverage: { IWM: { intraday: true, daily: true } } }))
+    );
+
+    await page.getByTestId('ticker-combobox').click();
+    await page.getByTestId('ticker-combobox-input').fill('iw');
+
+    await expect(page.getByText('Matches shown above')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/No matches for/)).not.toBeVisible();
   });
 
   test('coverage error → NO auto-add, ticker still set', async ({ page }) => {
