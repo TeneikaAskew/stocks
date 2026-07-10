@@ -6,7 +6,7 @@
  * those banners so they can't vanish while the tabs stay mock.
  */
 import { test, expect } from '@playwright/test';
-import { mockCommon, M } from './helpers/mocks';
+import { mockCommon, M, MOCK_GRID, MOCK_LEVELS } from './helpers/mocks';
 
 test.describe('Mock data surfaces stay banner-honest', () => {
   test.beforeEach(async ({ page }) => {
@@ -14,39 +14,6 @@ test.describe('Mock data surfaces stay banner-honest', () => {
 
     // Options page needs grid/levels/dates endpoints to avoid infinite loading
     const MOCK_DATES = { ticker: 'IWM', dates: ['2026-04-25', '2026-04-24'] };
-    const MOCK_LEVELS = {
-      ticker: 'IWM',
-      snapshot_date: '2026-04-25',
-      spot: { price: 220, method: 'parity', note: '' },
-      gamma_balance: 220,
-      gamma_flip: 220,
-      regime: 'positive_gamma',
-      total_gex: 1_000_000,
-      levels: [],
-      kings: [],
-      gates: [],
-      gamma_balance_levels: [],
-      window_pct: 6,
-      warnings: [],
-      chain_size: 0,
-    };
-    const MOCK_GRID = {
-      ticker: 'IWM',
-      snapshot_date: '2026-04-25',
-      snapshot_ts: null,
-      data_source: 'realtime',
-      spot: { price: 220, method: 'parity', note: '' },
-      gamma_balance: 220,
-      gamma_flip: 220,
-      regime: 'positive_gamma',
-      total_gex: 1_000_000,
-      total_vex: 0,
-      cells: [],
-      expirations: [],
-      strikes: [],
-      window_pct: 6,
-      warnings: [],
-    };
 
     await page.route('**/api/options/dates/IWM', (r) => r.fulfill(M.ok(MOCK_DATES)));
     await page.route('**/api/options/IWM/*/levels', (r) => r.fulfill(M.ok(MOCK_LEVELS)));

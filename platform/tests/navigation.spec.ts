@@ -5,7 +5,7 @@
  * Runs against live dev server (port 5173) + FastAPI backend (port 8000).
  */
 import { test, expect, Page } from '@playwright/test';
-import { mockCommon, M } from './helpers/mocks';
+import { mockCommon, M, MOCK_GRID, MOCK_LEVELS } from './helpers/mocks';
 
 const ROUTES: Array<{ path: string; heading: RegExp }> = [
   { path: '/dashboard', heading: /dashboard/i },
@@ -136,39 +136,6 @@ test.describe('Navigation smoke', () => {
 // and default Heatseeker/Swing mode drive the /api/options/IWM/grid live path.
 test.describe('SwingMode toolbar', () => {
   const MOCK_DATES = { ticker: 'IWM', dates: ['2026-04-25', '2026-04-24'] };
-  const MOCK_LEVELS = {
-    ticker: 'IWM',
-    snapshot_date: '2026-04-25',
-    spot: { price: 220, method: 'parity', note: '' },
-    gamma_balance: 220,
-    gamma_flip: 220,
-    regime: 'positive_gamma',
-    total_gex: 1_000_000,
-    levels: [],
-    kings: [],
-    gates: [],
-    gamma_balance_levels: [],
-    window_pct: 6,
-    warnings: [],
-    chain_size: 0,
-  };
-  const MOCK_GRID = {
-    ticker: 'IWM',
-    snapshot_date: '2026-04-25',
-    snapshot_ts: null,
-    data_source: 'realtime',
-    spot: { price: 220, method: 'parity', note: '' },
-    gamma_balance: 220,
-    gamma_flip: 220,
-    regime: 'positive_gamma',
-    total_gex: 1_000_000,
-    total_vex: 0,
-    cells: [],
-    expirations: [],
-    strikes: [],
-    window_pct: 6,
-    warnings: [],
-  };
 
   test('Refresh refetches the grid and Glossary navigates to /help', async ({ page }) => {
     await mockCommon(page);
