@@ -692,3 +692,34 @@ turns the log-loss beat positive. If it does, the pure-prediction SIZE verdict
 should be revisited with a calibrated, possibly un-class-weighted model before
 any further feature work. Result to be appended here on completion. Full
 ablation: EXPERIMENT_REGISTRY.md E-25.
+
+
+### Isotonic recal RESULT (2026-07-10, `magnitude-recal-j5lfv`) — calibration alone fails at 5m, but 15m+isotonic WORKS
+
+Ran phase0 --all-cells with `--calibration=isotonic`. The 5m calibration
+hypothesis is **refuted**, but the timeframe sweep found a genuinely working,
+well-calibrated size model at 15m:
+
+| tf  | IWM (folds_beat, med_beat, ECE) | SPY | QQQ |
+|-----|---|---|---|
+| 5m  | 0/8, -0.138, 0.106 | 0/8, -0.128, 0.102 | 0/8, -0.148, 0.101 |
+| 15m | 5/8, +0.0031, 0.036 | **6/8, +0.0084, 0.042** | 4/8, +0.0032, 0.043 |
+| 30m | 2/8, -0.0103, 0.041 | 4/8, +0.0002, 0.047 | 4/8, +0.0028, 0.042 |
+
+**Findings:**
+1. **At 5m, isotonic does NOT rescue size** — beat stays ≈ -0.13, 0/8 folds,
+   ECE ≈ 0.10. Calibration alone is not the fix at 5m.
+2. **At 15m + isotonic, size flips positive and well-calibrated** — median beat
+   +0.003 to +0.008, ECE ≈ 0.04 (vs 0.10 at 5m). **SPY clears the per-ticker
+   gate (6/8 folds)**, IWM one fold short (5/8), QQQ 4/8.
+3. 30m is worse than 15m (IWM goes negative). **15m is the sweet spot.**
+
+**Verdict update:** the pure-prediction SIZE story is NOT "not predictable" — it
+is **predictable and well-calibrated at 15m with isotonic calibration**, a
+strong near-miss on the full 3-ticker gate (SPY passes, IWM 5/8). The 5m failure
+was a joint timeframe+calibration problem, not a feature problem. **Recommended
+next experiment:** re-run the Phase-2 feature ablation at **15m with
+calibration=isotonic** (esp. `options_iv` + `prune`) to test whether IWM/QQQ
+cross 6/8 — the first realistic shot at a full gate pass in the program.
+This does NOT overturn the 2026-05-29 gate-7 (cost) FAIL — it is the
+pure-prediction lens, where the user's reframe explicitly drops costs.

@@ -1254,3 +1254,10 @@ consistent with the standing verdict; the missing signal class (order-flow/book)
 is unavailable from the current vendor. See DIRECTION_RESEARCH_RESULTS.md and
 MAGNITUDE_ENGINE_RESULTS.md Phase-2 sections. Code: PR #698
 (gcp/research/direction_program/, phase2_features.py, phase2_ablation.py).
+
+
+**E-25 follow-up (2026-07-10, isotonic recal `magnitude-recal-j5lfv`):** SIZE
+calibration hypothesis partly confirmed — isotonic fails at 5m (beat still ≈
+-0.13, ECE 0.10) but at **15m** produces positive, well-calibrated beats (ECE
+0.04) with SPY 6/8, IWM 5/8, QQQ 4/8 — a strong near-miss on the full gate.
+15m+isotonic is the recommended next ablation target. See MAGNITUDE_ENGINE_RESULTS.md.
