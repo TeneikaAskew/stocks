@@ -1541,31 +1541,44 @@ function ScorecardRow({
 /**
  * Aggregate footer for the scorecard modal (Task 3.3). `n` counts every
  * requested trade; `scored_n` only the ones the replay could actually
- * price. `system_agreement_rate` is `null` when the system never resolved
- * a direction on any scored entry — rendered as an honest em dash with the
- * resolved/scored counts as context, never a fabricated 0% (Rule 3.7; see
- * lib/backtest.py's `_aggregate_scorecards` docstring for the exact
- * definition this mirrors).
+ * price. `win_rate`/`avg_return_pct`/`avg_exit_edge_bps` are `null` when
+ * `scored_n === 0` — rendered as honest em dashes (the "X / N scored"
+ * context line still shows 0/N), never a fabricated "0%" (Rule 3.7,
+ * #702 follow-ups Task 2 item 1). `system_agreement_rate` is `null` when
+ * the system never resolved a direction on any scored entry — rendered as
+ * an honest em dash with the resolved/scored counts as context, never a
+ * fabricated 0% (Rule 3.7; see lib/backtest.py's `_aggregate_scorecards`
+ * docstring for the exact definition this mirrors). `system_no_signal_n`
+ * (Task 2 item 2) surfaces separately as "no setup on Y" so the copy
+ * distinguishes "the system disagreed" from "the system never had a
+ * setup" whenever Y > 0.
  */
 function ScorecardFooter({ aggregate }: { aggregate: ReplayAggregate }) {
   const agreementPct =
     aggregate.system_agreement_rate != null ? `${Math.round(aggregate.system_agreement_rate * 100)}%` : '—';
+  const winRatePct = aggregate.win_rate != null ? `${Math.round(aggregate.win_rate * 100)}%` : '—';
+  const avgReturnDisplay =
+    aggregate.avg_return_pct != null
+      ? `${aggregate.avg_return_pct >= 0 ? '+' : ''}${aggregate.avg_return_pct.toFixed(2)}%`
+      : '—';
+  const avgReturnIsPositive = aggregate.avg_return_pct != null && aggregate.avg_return_pct >= 0;
+  const noSetupClause = aggregate.system_no_signal_n > 0 ? ` · no setup on ${aggregate.system_no_signal_n}` : '';
 
   return (
     <div className="mt-3 space-y-1 border-t border-[var(--color-border)] pt-2 text-xs text-[var(--color-text-secondary)]">
       <div>
-        {aggregate.scored_n} / {aggregate.n} scored · Win rate {Math.round(aggregate.win_rate * 100)}%
+        {aggregate.scored_n} / {aggregate.n} scored · Win rate {winRatePct}
       </div>
       <div>
         Avg return:{' '}
-        <span className={aggregate.avg_return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
-          {aggregate.avg_return_pct >= 0 ? '+' : ''}
-          {aggregate.avg_return_pct.toFixed(2)}%
+        <span className={avgReturnIsPositive ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
+          {avgReturnDisplay}
         </span>{' '}
         · Avg edge: {formatEdgeBps(aggregate.avg_exit_edge_bps)}
       </div>
       <div>
-        Agreement: {agreementPct} — system had a setup on {aggregate.system_resolved_n} of {aggregate.scored_n} entries
+        Agreement: {agreementPct} — system had a setup on {aggregate.system_resolved_n} of {aggregate.scored_n}{' '}
+        entries{noSetupClause}
       </div>
     </div>
   );

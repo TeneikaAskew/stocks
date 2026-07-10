@@ -1068,10 +1068,14 @@ def _aggregate_scorecards(scorecards: List[dict]) -> dict:
             )
 
     if scored_n == 0:
+        # Null-honest, not zero-filled (Rule 3.7, #702 follow-ups Task 2
+        # item 1): win_rate/avg_return_pct/avg_exit_edge_bps are None when
+        # nothing was ever scored -- a 0.0 here reads as "0% win rate" when
+        # the truth is "no trade could be priced at all".
         return {
-            'n': n, 'scored_n': 0, 'win_rate': 0.0, 'avg_return_pct': 0.0,
+            'n': n, 'scored_n': 0, 'win_rate': None, 'avg_return_pct': None,
             'system_resolved_n': 0, 'system_no_signal_n': 0,
-            'system_agreement_rate': None, 'avg_exit_edge_bps': 0.0,
+            'system_agreement_rate': None, 'avg_exit_edge_bps': None,
         }
 
     wins = [c for c in scored if c['actual_return_pct'] > 0]

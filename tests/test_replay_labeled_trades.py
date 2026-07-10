@@ -355,6 +355,59 @@ class TestReplayLabeledTradesLib:
         assert card["status"] == "unavailable"
         assert card["reason"] == "invalid entry price"
 
+    def test_all_unavailable_aggregate_is_null_not_zero(self):
+        """Item 1 (#702 follow-ups Task 2): when every labeled trade is
+        unavailable (scored_n == 0), win_rate/avg_return_pct/avg_exit_edge_bps
+        must be honest `None`, never a fabricated `0.0` (Rule 3.7) — a 0.0
+        here reads as "0% win rate" when the truth is "nothing was ever
+        scored". `_aggregate_scorecards` is exercised directly (mirrors
+        `test_ok_card_invariant_raises_on_missing_numeric_field` above) so
+        this pins the aggregate's own contract independent of how a card
+        became unavailable."""
+        from lib.backtest import _aggregate_scorecards
+
+        unavailable_cards = [
+            {"id": "t-x", "status": "unavailable", "reason": "no bars for this date"},
+            {"id": "t-y", "status": "unavailable", "reason": "trade still open"},
+        ]
+        agg = _aggregate_scorecards(unavailable_cards)
+
+        assert agg["n"] == 2
+        assert agg["scored_n"] == 0
+        assert agg["win_rate"] is None
+        assert agg["avg_return_pct"] is None
+        assert agg["avg_exit_edge_bps"] is None
+        assert agg["system_agreement_rate"] is None
+        assert agg["system_resolved_n"] == 0
+        assert agg["system_no_signal_n"] == 0
+
+    def test_all_unavailable_replay_end_to_end_aggregate_is_null(self):
+        """Same null-honest contract exercised through the full
+        `replay_labeled_trades` pipeline (not just `_aggregate_scorecards`
+        directly) -- every labeled trade's date is missing from
+        `bars_by_date`, so all cards come back `status == 'unavailable'`
+        and the aggregate must be null-honest end to end."""
+        labeled = [
+            {
+                "id": "t-c1", "direction": "CALL",
+                "entry_ts": "2026-06-07 09:35:00", "entry_price": 100.00,
+                "exit_ts": "2026-06-07 09:50:00", "exit_price": 101.00,
+            },
+            {
+                "id": "t-c2", "direction": "PUT",
+                "entry_ts": "2026-06-08 09:35:00", "entry_price": 100.00,
+                "exit_ts": "2026-06-08 09:50:00", "exit_price": 99.00,
+            },
+        ]
+        result = replay_labeled_trades(labeled, {}, exit_config=_EXIT_CFG, ticker=None)
+
+        agg = result["aggregate"]
+        assert agg["n"] == 2
+        assert agg["scored_n"] == 0
+        assert agg["win_rate"] is None
+        assert agg["avg_return_pct"] is None
+        assert agg["avg_exit_edge_bps"] is None
+
 
 # ---------------------------------------------------------------------------
 # Endpoint: POST /api/backtest/replay-trades

@@ -371,12 +371,12 @@ export interface ReplayTradeCard {
 export interface ReplayAggregate {
   n: number;
   scored_n: number;
-  win_rate: number; // 0-1
-  avg_return_pct: number; // PERCENT
+  win_rate: number | null; // 0-1, or null when scored_n === 0 (Rule 3.7: honest null, never fabricated 0.0)
+  avg_return_pct: number | null; // PERCENT, or null when scored_n === 0
   system_resolved_n: number;
   system_no_signal_n: number;
   system_agreement_rate: number | null; // 0-1, or null when system_resolved_n === 0 (Rule 3.7: honest null, never fabricated 0)
-  avg_exit_edge_bps: number; // bps
+  avg_exit_edge_bps: number | null; // bps, or null when scored_n === 0
 }
 
 export interface ReplayTradesResponse {
@@ -482,9 +482,9 @@ export function seedBenchmark(rows: SeedTradeRow[]): SeedBenchmark {
 // lib/style_miner.py, Task 4.2-4.3). Mines the user's own closed
 // chart/manual journal trades into a condition profile and walk-forward
 // validates it. Always a 200 — the "not enough signal yet" cases (< 10
-// closed trades, zero mined profile, zero folds, zero fires) come back as
-// `{status: "unavailable", reason}`, never a 4xx (Rule 3.7: these are
-// expected, recoverable states, not errors). A genuine backend failure
+// closed trades, zero mined profile, no market data, zero folds, zero
+// fires) come back as `{status: "unavailable", reason}`, never a 4xx
+// (Rule 3.7: these are expected, recoverable states, not errors). A genuine backend failure
 // (Cloud SQL down, etc.) is still a real HTTP error status and surfaces as
 // a loud inline error via the mutation's `isError`.
 

@@ -122,3 +122,59 @@ def test_indicators_endpoint_vwap_sessionizes_epoch_times(client):
     last = bars[-1]
     last_typical = (last["high"] + last["low"] + last["close"]) / 3
     assert abs(vwap - last_typical) > 1e-6
+
+
+def _ms_epoch_bars(n=40, base=1751882400_000):
+    """Epoch-MILLISECOND digit strings (13+ digits) -- what a client would
+    send if it forgot to convert JS `Date.now()`-style millisecond epochs
+    to seconds before hitting these endpoints."""
+    out = []
+    px = 100.0
+    for i in range(n):
+        px *= 1.001
+        out.append({
+            "time": str(base + i * 60_000),
+            "open": px / 1.001, "high": px * 1.001, "low": px * 0.999,
+            "close": px, "volume": 10_000 + i,
+        })
+    return out
+
+
+def test_normalize_bar_time_rejects_ms_epoch_accepts_seconds_epoch():
+    """Item 4 (#702 follow-ups Task 2): `_normalize_bar_time` must raise a
+    422 on epoch-MILLISECOND digit strings (>12 digits) instead of silently
+    parsing them as epoch-seconds via `pd.Timestamp(int(s), unit="s")`,
+    which lands in the year ~57000 rather than erroring. A 10-digit
+    epoch-second string must keep working unchanged."""
+    import re
+
+    from fastapi import HTTPException
+
+    from api.routers.live import _normalize_bar_time
+
+    ok = _normalize_bar_time("1751882400")  # 10 digits -- epoch-seconds
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ok)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _normalize_bar_time("1751882400000")  # 13 digits -- epoch-ms
+    assert exc_info.value.status_code == 422
+    assert "millisecond" in exc_info.value.detail.lower()
+
+
+def test_signal_series_rejects_ms_epoch_bar_times(client):
+    """Endpoint-level: the 422 from `_normalize_bar_time` must propagate
+    through `compute_live_signal_series`, not get swallowed by a broader
+    except somewhere in the handler."""
+    bars = _ms_epoch_bars()
+    r = client.post("/api/live/signal-series", json={"bars": bars})
+    assert r.status_code == 422
+    assert "millisecond" in r.json()["detail"].lower()
+
+
+def test_indicators_endpoint_rejects_ms_epoch_bar_times(client):
+    """Same propagation check for the other `_normalize_bar_time` caller,
+    `compute_live_indicators`."""
+    bars = _ms_epoch_bars(n=20)
+    r = client.post("/api/live/indicators", json={"bars": bars})
+    assert r.status_code == 422
+    assert "millisecond" in r.json()["detail"].lower()

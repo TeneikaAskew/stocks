@@ -59,6 +59,23 @@ def _normalize_bar_time(t: str) -> str:
     (VWAP sessions) and pd.to_datetime both work."""
     s = str(t).strip()
     if s.isdigit():
+        # #702 follow-ups Task 2 item 4: a 10-digit epoch-SECOND string is
+        # the only shape this endpoint's callers ever send. A ms-epoch (or
+        # longer) digit string parsed with unit="s" doesn't error -- it
+        # silently lands in the year ~57000, which then blows up later
+        # with an opaque pandas NotImplementedError (or worse, silently
+        # poisons VWAP date-grouping). Fail loud at the boundary instead
+        # (Rule 3.7): >12 digits is unambiguously not an epoch-second
+        # value (epoch-seconds won't hit 13 digits until the year 33658).
+        if len(s) > 12:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "bar time looks like a milliseconds epoch "
+                    f"({len(s)}-digit value {s!r}) — milliseconds epoch "
+                    "not supported, send seconds"
+                ),
+            )
         return pd.Timestamp(int(s), unit="s").strftime("%Y-%m-%d %H:%M:%S")
     return s
 

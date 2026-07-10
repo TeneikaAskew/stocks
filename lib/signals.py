@@ -329,6 +329,13 @@ def generate_signals(
             put_rsi_range=put_rsi_range,
             signal_config=signal_config,
             indicator_config=indicator_config,
+            # #702 follow-ups Task 2 item 3: was previously omitted here,
+            # an inert asymmetry with lib/backtest.py:723's `_check_entry`
+            # (which threads `self.signal.enabled_conditions`) -- a
+            # profile-restricted SignalConfig passed through
+            # generate_signals silently scored the full 5-factor set
+            # instead of the profile's own allowlist.
+            enabled_conditions=signal_config.enabled_conditions if signal_config else None,
         )
 
         if sig:

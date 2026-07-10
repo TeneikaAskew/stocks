@@ -645,6 +645,100 @@ test.describe('Charts page — backtest-my-trades scorecard (Task 3.3)', () => {
     await expect(modal.getByText(/system had a setup on 1 of 1 entries/i)).toBeVisible();
   });
 
+  test('all-unavailable replay shows em dashes in the footer, never a fabricated 0%', async ({ page }) => {
+    // #702 follow-ups Task 2 item 1: scored_n === 0 -> win_rate /
+    // avg_return_pct / avg_exit_edge_bps come back null from the server;
+    // the footer must render '—' for each, not a fabricated "0%"/"0.00%".
+    await page.route('**/api/backtest/replay-trades', (r) =>
+      r.fulfill(
+        M.ok({
+          trades: [
+            { id: 'closed-1', status: 'unavailable', reason: 'no bars for this date' },
+            { id: 'closed-2', status: 'unavailable', reason: 'trade still open' },
+          ],
+          aggregate: {
+            n: 2,
+            scored_n: 0,
+            win_rate: null,
+            avg_return_pct: null,
+            system_resolved_n: 0,
+            system_no_signal_n: 0,
+            system_agreement_rate: null,
+            avg_exit_edge_bps: null,
+          },
+        })
+      )
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    await page.getByTestId('backtest-trades-btn').click();
+
+    const modal = page.getByTestId('replay-scorecard');
+    await expect(modal).toBeVisible();
+
+    // The "0/N scored" context line stays, but every numeric field is a
+    // dash: Win rate, Avg return, Avg edge, Agreement.
+    await expect(modal.getByText(/0\s*\/\s*2\s*scored/i)).toBeVisible();
+    await expect(modal.getByText(/Win rate\s*—/)).toBeVisible();
+    await expect(modal.getByText(/Avg return:\s*—/)).toBeVisible();
+    await expect(modal.getByText(/Avg edge:\s*—/)).toBeVisible();
+    await expect(modal.getByText(/Agreement:\s*—/)).toBeVisible();
+    // Never a fabricated zero anywhere in the footer.
+    await expect(modal.getByText(/0%|0\.00%|NaN/)).not.toBeVisible();
+  });
+
+  test('footer surfaces system_no_signal_n as "no setup on Y" when the system had no setup on some entries', async ({
+    page,
+  }) => {
+    // #702 follow-ups Task 2 item 2: when system_no_signal_n > 0, the
+    // agreement clause gains a "· no setup on Y" suffix.
+    await page.route('**/api/backtest/replay-trades', (r) =>
+      r.fulfill(
+        M.ok({
+          trades: [
+            {
+              id: 'closed-1',
+              status: 'ok',
+              actual_return_pct: 0.8,
+              fill_check: 'ok',
+              system_signal_at_entry: { direction: null, score: 0 },
+              system_exit: { exit_reason: 'time_stop', return_pct: 0.2, exit_time: '2026-04-25 10:00:00' },
+              exit_edge_bps: 60.0,
+            },
+            {
+              id: 'closed-2',
+              status: 'ok',
+              actual_return_pct: -0.5,
+              fill_check: 'ok',
+              system_signal_at_entry: { direction: 'CALL', score: 4 },
+              system_exit: { exit_reason: 'stop_loss', return_pct: -0.3, exit_time: '2026-04-25 11:00:00' },
+              exit_edge_bps: -20.0,
+            },
+          ],
+          aggregate: {
+            n: 2,
+            scored_n: 2,
+            win_rate: 0.5,
+            avg_return_pct: 0.15,
+            system_resolved_n: 1,
+            system_no_signal_n: 1,
+            system_agreement_rate: 0.0,
+            avg_exit_edge_bps: 20.0,
+          },
+        })
+      )
+    );
+
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    await page.getByTestId('backtest-trades-btn').click();
+
+    const modal = page.getByTestId('replay-scorecard');
+    await expect(modal).toBeVisible();
+    await expect(modal.getByText(/system had a setup on 1 of 2 entries.*no setup on 1/i)).toBeVisible();
+  });
+
   test('a 503 from the replay endpoint renders a loud inline error, never a silent failure', async ({ page }) => {
     await page.route('**/api/backtest/replay-trades', (r) =>
       r.fulfill({

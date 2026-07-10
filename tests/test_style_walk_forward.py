@@ -35,7 +35,7 @@ import pytest
 
 from lib.backtest import BacktestResult
 from lib.config import SignalConfig
-from lib.signals import evaluate_signal
+from lib.signals import evaluate_signal, generate_signals
 from lib.style_miner import StyleProfile
 from lib.walk_forward import (
     WalkForwardResult, WalkForwardValidator, profile_to_signal_config,
@@ -263,6 +263,63 @@ class TestProfileToSignalConfig:
                 put_fires += 1
 
         assert put_fires == 0
+
+    def test_generate_signals_threads_enabled_conditions(self):
+        """#702 follow-ups Task 2 item 3: `lib.signals.generate_signals`
+        batches `evaluate_signal` across a DataFrame but, before this fix,
+        never passed `signal_config.enabled_conditions` through -- an inert
+        asymmetry with `lib.backtest`'s `_check_entry` (backtest.py:723),
+        which DOES thread it. This is the same leak
+        `test_enabled_conditions_gate_blocks_off_profile_factor_combo`
+        pins directly against `evaluate_signal`, exercised one layer up
+        through `generate_signals` (the code path
+        `platform/api/routers/live.py`'s /api/live/signal-series endpoint
+        and any other DataFrame-batch caller actually uses)."""
+        profile = StyleProfile(
+            direction="CALL", conditions=["below_vwap", "rsi_25_50"],
+            support=4, total=5,
+        )
+        cfg = profile_to_signal_config(profile)
+        assert cfg.min_conditions == 2
+
+        leak_idx = cfg.consecutive_periods  # first index generate_signals scans
+        neutral_row = {
+            "Close": 100.0,
+            "Consecutive_Down": 0, "Consecutive_Up": 0,
+            "RSI14": 50.0,
+            "Price_vs_VWAP": 0.0,
+            "StochRSI_K": 50.0,
+            "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
+        }
+        # Same leak_row as the evaluate_signal-level test: consecutive_down
+        # + stoch_rsi_oversold true (off-profile factors), below_vwap /
+        # rsi_oversold_zone (the profile's NAMED factors) false. Pre-fix,
+        # this reaches score 2 == min_conditions via the off-profile
+        # factors and fires CALL.
+        leak_row = {
+            "Close": 100.0,
+            "Consecutive_Down": 5, "Consecutive_Up": 0,
+            "RSI14": 90.0,
+            "Price_vs_VWAP": 0.0,
+            "StochRSI_K": 10.0,
+            "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
+        }
+        rows = [neutral_row] * leak_idx + [leak_row] + [neutral_row] * 2
+        df = pd.DataFrame(rows)
+
+        signals = generate_signals(
+            df,
+            min_conditions=cfg.min_conditions,
+            consecutive_periods=cfg.consecutive_periods,
+            call_rsi_range=cfg.call_rsi_range,
+            put_rsi_range=cfg.put_rsi_range,
+            signal_config=cfg,
+        )
+        assert signals.empty, (
+            "generate_signals must thread signal_config.enabled_conditions "
+            "into evaluate_signal -- the leak row should not fire once the "
+            "profile's allowlist is honored"
+        )
 
 
 # ---------------------------------------------------------------------------
