@@ -901,4 +901,67 @@ test.describe('Charts page — "My style" panel (Task 4.4)', () => {
     await expect(btn).toHaveText(/Mining…/);
     await expect(page.getByTestId('mine-my-style-unavailable')).toBeVisible();
   });
+
+  // #702 follow-ups Task 4 item 6: the mined "My style" result is a
+  // per-ticker artifact — switching the active ticker while a prior
+  // ticker's result is on screen must reset it, not leave IWM's mined
+  // profile displayed under SPY's data. ChartsPage has no per-page
+  // <TickerCombobox> of its own (symbol focus for /charts is driven by the
+  // global ⌘K command palette — see components/layout/Header.tsx's
+  // "sidebar/⌘K ticker switcher" comment), so the switch goes through
+  // Ctrl+K rather than a combobox click.
+  test('switching ticker resets the mined "My style" result and re-idles the button', async ({ page }) => {
+    await page.route('**/api/style/mine-and-validate', (r) =>
+      r.fulfill(
+        M.ok({
+          profile: { direction: 'CALL', conditions: ['above_vwap'], support: 4, total: 5 },
+          aggregate_metrics: {
+            avg_expectancy_pct: 0.42, avg_win_rate: 0.6, total_trades_all_folds: 23, total_folds: 4,
+          },
+          stability_score: 0.75,
+          staged: true,
+        })
+      )
+    );
+
+    // Second ticker's minimal routes so the switch doesn't 404/hang.
+    // /api/live/indicators and /api/live/signal-series are ticker-agnostic
+    // POST endpoints already mocked in beforeEach.
+    await page.route('**/api/market/dates/SPY', (r) =>
+      r.fulfill(M.ok({ ticker: 'SPY', dates: ['20260425'] }))
+    );
+    await page.route('**/api/market/data/SPY/*', (r) =>
+      r.fulfill(M.ok({ ...MOCK_MARKET_DATA, ticker: 'SPY' }))
+    );
+    await page.route('**/api/market/reference/SPY/*', (r) =>
+      r.fulfill(M.ok({ ...MOCK_REFERENCE, ticker: 'SPY' }))
+    );
+    await page.route('**/api/signals/SPY/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
+    await page.route('**/api/signals/SPY*', (r) =>
+      r.fulfill(M.ok({ ticker: 'SPY', count: 0, signals: [] }))
+    );
+    await page.route('**/api/journal/seed/SPY*', (r) =>
+      r.fulfill(M.ok({ ticker: 'SPY', date: '2026-04-25', count: 0, trades: [] }))
+    );
+    await page.route('**/api/journal/trades/SPY', (r) =>
+      r.fulfill(M.ok({ ticker: 'SPY', source: 'cloud_sql', count: 0, trades: [] }))
+    );
+
+    await openAnalyticsTab(page);
+    await page.getByTestId('mine-my-style-btn').click();
+
+    const result = page.getByTestId('mine-my-style-result');
+    await expect(result).toBeVisible();
+
+    // Switch ticker via the ⌘K command palette's "Tickers" group.
+    await page.keyboard.press('Control+k');
+    await page.getByText('SPY · open in Charts').click();
+    await page.waitForLoadState('networkidle');
+
+    await expect(page.getByTestId('mine-my-style-result')).not.toBeVisible();
+    const btn = page.getByTestId('mine-my-style-btn');
+    await expect(btn).toBeVisible();
+    await expect(btn).toBeEnabled();
+    await expect(btn).toHaveText('Mine my style');
+  });
 });

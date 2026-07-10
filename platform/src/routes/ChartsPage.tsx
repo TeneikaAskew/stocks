@@ -269,6 +269,20 @@ export default function ChartsPage() {
   // Analytics tab's "Mine my style" button, mirroring replayTrades above.
   const mineMyStyle = useMineMyStyle();
 
+  // #702 follow-ups Task 4 item 6: a mined "My style" result and an open
+  // replay-trades scorecard are per-ticker artifacts — mirror
+  // BacktesterSection's `lastTicker` render-time-adjustment idiom (this
+  // component is mounted unkeyed, so switching the ticker doesn't remount
+  // it) so a stale prior ticker's mined profile / scorecard rows never
+  // linger on screen under the new symbol.
+  const [lastMineTicker, setLastMineTicker] = useState(activeTicker);
+  if (lastMineTicker !== activeTicker) {
+    setLastMineTicker(activeTicker);
+    mineMyStyle.reset();
+    setScorecardOpen(false);
+    replayTrades.reset();
+  }
+
   // Admin seed-trade teaching layer (Task 2.4) — read-only pull from the
   // automated pipeline `trades` table, GET /api/journal/seed/{ticker}.
   // Kept fetching regardless of the toggle (cheap single-row/single-ticker

@@ -101,6 +101,27 @@ export function Metric({
 }
 
 // ── Delta (signed change) ────────────────────────────────────────────────────
+/**
+ * Pure text-content logic for <Delta>, extracted so the '—' contract is
+ * testable without DOM rendering (this platform's established test style —
+ * see MovementRead.test.tsx / StructureBrief.test.tsx). Rule 3.7: when
+ * neither `value` nor `pct` is a real number, this must render an explicit
+ * em-dash, never a blank string a caller could mistake for "loading" or
+ * "zero change".
+ */
+export function deltaText(value?: number | null, pct?: number | null, prefix = ''): string {
+  const hasVal = typeof value === 'number' && Number.isFinite(value);
+  const hasPct = typeof pct === 'number' && Number.isFinite(pct);
+  if (!hasVal && !hasPct) return '—';
+  const basis = value ?? pct ?? 0;
+  const sign = basis >= 0 ? '+' : '';
+  let out = '';
+  if (hasVal) out += `${prefix}${sign}${value!.toFixed(2)}`;
+  if (hasVal && hasPct) out += ' ';
+  if (hasPct) out += `${hasVal ? '(' : ''}${sign}${pct!.toFixed(2)}%${hasVal ? ')' : ''}`;
+  return out;
+}
+
 export function Delta({
   value,
   pct,
@@ -112,18 +133,18 @@ export function Delta({
   prefix?: string;
   className?: string;
 }) {
-  const basis = value ?? pct ?? 0;
-  const up = basis >= 0;
-  const sign = up ? '+' : '';
   const hasVal = typeof value === 'number' && Number.isFinite(value);
   const hasPct = typeof pct === 'number' && Number.isFinite(pct);
+  const isUnavailable = !hasVal && !hasPct;
+  const basis = value ?? pct ?? 0;
+  const up = basis >= 0;
   return (
     <span
-      className={`text-xs font-semibold tabular-nums ${up ? 'text-[var(--bull)]' : 'text-[var(--bear)]'} ${className}`}
+      className={`text-xs font-semibold tabular-nums ${
+        isUnavailable ? 'text-[var(--on-surface-muted)]' : up ? 'text-[var(--bull)]' : 'text-[var(--bear)]'
+      } ${className}`}
     >
-      {hasVal && `${prefix}${sign}${value!.toFixed(2)}`}
-      {hasVal && hasPct && ' '}
-      {hasPct && `${hasVal ? '(' : ''}${sign}${pct!.toFixed(2)}%${hasVal ? ')' : ''}`}
+      {deltaText(value, pct, prefix)}
     </span>
   );
 }
