@@ -224,6 +224,12 @@ export default function JournalPage() {
   const [drawingStep, setDrawingStep] = useState<DrawingStep>('idle');
   const tradeMarkingRef = useRef<TradeMarkingChartHandle>(null);
 
+  // Rail-card hover → chart highlight (design spec Option B, Task 5 gap):
+  // "Hovering a card highlights its markers on the chart." Single source of
+  // truth shared by both rail-card lists (Examples + My journal render the
+  // same railTrades array) and the chart.
+  const [hoveredTradeId, setHoveredTradeId] = useState<string | null>(null);
+
   const createChartTrade = useCreateChartTrade();
   const closeChartTrade = useCloseChartTrade();
   const deleteChartTrade = useDeleteChartTrade();
@@ -551,6 +557,7 @@ export default function JournalPage() {
                 rthOnly={rthOnly}
                 minHeight={400}
                 onDrawingStepChange={setDrawingStep}
+                highlightedTradeId={hoveredTradeId}
               />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-[var(--color-text-muted)]">
@@ -582,6 +589,8 @@ export default function JournalPage() {
                 example={isExamples}
                 onExit={(id) => tradeMarkingRef.current?.startExitMode(id)}
                 onDelete={(id) => deleteChartTrade.mutate({ id, ticker: activeTicker })}
+                onHover={setHoveredTradeId}
+                highlighted={hoveredTradeId === trade.id}
               />
             ))
           )}

@@ -20,6 +20,21 @@ export interface PriceLineConfig {
 // "two layers must be unmistakable at a glance" reason.
 const EXAMPLE_MARKER_COLOR = '#8a8f98';
 
+// Rail-card hover → chart highlight (design spec Option B, Task 5 gap):
+// "Hovering a card highlights its markers on the chart." Markers/price-lines
+// keep their base hex color for the highlighted trade and drop to this
+// reduced opacity for every other trade's artifacts, so the hovered trade
+// visually pops without changing hue (colors stay bull/bear-meaningful).
+const DIMMED_ALPHA = 0.25;
+
+function withAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
  * Imperative surface exposed to a host page's OWN toolbar/rail-card markup
  * (ChartsPage today; a future Journal page). The state machine lives inside
@@ -85,6 +100,14 @@ export interface TradeMarkingChartProps {
    *  tree (e.g. hiding an export-trades button while marking is active, or
    *  swapping toolbar copy). Optional; omit if the host has no such need. */
   onDrawingStepChange?: (step: DrawingStep) => void;
+  /** Rail-card hover → chart highlight (design spec Option B, Task 5 gap).
+   *  When set, that trade's markers/price-lines render at full color and
+   *  every other trade's dims to `DIMMED_ALPHA`; `null`/undefined (default)
+   *  renders every trade at full color — i.e. no behavior change when
+   *  nothing is hovered. The host (JournalPage) tracks a single
+   *  hoveredTradeId from TradeRailCard's onHover and passes it straight
+   *  through; ChartsPage doesn't pass this prop and stays unaffected. */
+  highlightedTradeId?: string | null;
 }
 
 /**
@@ -116,6 +139,7 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
       replayRevealedBars = [],
       replaySessionId = null,
       onDrawingStepChange,
+      highlightedTradeId = null,
     },
     ref,
   ) {
@@ -158,15 +182,19 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
     const isExamples = markersStyle === 'examples';
     const tradeMarkers: SeriesMarker<Time>[] = useMemo(() => {
       return trades.flatMap((trade) => {
+        const dimmed = highlightedTradeId != null && trade.id !== highlightedTradeId;
+        const tint = (hex: string) => (dimmed ? withAlpha(hex, DIMMED_ALPHA) : hex);
         const m: SeriesMarker<Time>[] = [];
         m.push({
           time: trade.entryTime as Time,
           position: trade.optionType === 'CALL' ? 'belowBar' : 'aboveBar',
-          color: isExamples
-            ? EXAMPLE_MARKER_COLOR
-            : trade.optionType === 'CALL'
-              ? '#089981'
-              : '#f23645',
+          color: tint(
+            isExamples
+              ? EXAMPLE_MARKER_COLOR
+              : trade.optionType === 'CALL'
+                ? '#089981'
+                : '#f23645',
+          ),
           shape: trade.optionType === 'CALL' ? 'arrowUp' : 'arrowDown',
           text: `${isExamples ? 'EX ' : ''}${trade.optionType} @ $${trade.entryPrice.toFixed(2)}`,
         });
@@ -178,14 +206,14 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
           m.push({
             time: trade.exitTime as Time,
             position: pnl >= 0 ? 'aboveBar' : 'belowBar',
-            color: isExamples ? EXAMPLE_MARKER_COLOR : pnl >= 0 ? '#089981' : '#f23645',
+            color: tint(isExamples ? EXAMPLE_MARKER_COLOR : pnl >= 0 ? '#089981' : '#f23645'),
             shape: 'circle',
             text: `${isExamples ? 'EX ' : ''}Exit ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`,
           });
         }
         return m;
       });
-    }, [trades, isExamples]);
+    }, [trades, isExamples, highlightedTradeId]);
 
     const markers: SeriesMarker<Time>[] = useMemo(
       () => [...(extraMarkers ?? []), ...tradeMarkers],
@@ -199,25 +227,34 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
       const lines: PriceLineConfig[] = [];
       for (const trade of trades) {
         if (trade.status !== 'active') continue;
+        const dimmed = highlightedTradeId != null && trade.id !== highlightedTradeId;
+        const tint = (hex: string) => (dimmed ? withAlpha(hex, DIMMED_ALPHA) : hex);
+        // Highlighted trade's lines get a thicker weight so the hover effect
+        // is visible even for readers who don't distinguish the opacity
+        // difference on the dimmed siblings; untouched (no hover) case keeps
+        // the original unset lineWidth (CandlestickChart defaults to 1).
+        const lineWidth = highlightedTradeId === trade.id ? (3 as LineWidth) : undefined;
         trade.takeProfits.forEach((tp, i) => {
           lines.push({
             price: tp.price,
-            color: isExamples ? EXAMPLE_MARKER_COLOR : '#089981',
+            color: tint(isExamples ? EXAMPLE_MARKER_COLOR : '#089981'),
             title: isExamples ? `EX TP${i + 1}` : `TP${i + 1}`,
             lineStyle: isExamples ? 1 : 2, // examples: Dashed; own: Dotted
+            lineWidth,
           });
         });
         if (trade.stopLoss) {
           lines.push({
             price: trade.stopLoss.price,
-            color: isExamples ? EXAMPLE_MARKER_COLOR : '#f23645',
+            color: tint(isExamples ? EXAMPLE_MARKER_COLOR : '#f23645'),
             title: isExamples ? 'EX SL' : 'SL',
             lineStyle: isExamples ? 1 : 2,
+            lineWidth,
           });
         }
       }
       return lines;
-    }, [trades, isExamples]);
+    }, [trades, isExamples, highlightedTradeId]);
 
     const priceLines: PriceLineConfig[] = useMemo(
       () => [...tradePriceLines, ...(extraPriceLines ?? [])],
@@ -225,19 +262,29 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
     );
 
     return (
-      <CandlestickChart
-        key={chartKey}
-        candlestick={bars}
-        volume={volume}
-        showVolume={showVolume}
-        rthOnly={rthOnly}
-        markers={markers}
-        priceLines={priceLines}
-        onChartClick={marking.drawingActive ? marking.handleChartClick : undefined}
-        onCrosshairMove={onCrosshairMove}
-        minHeight={minHeight}
-        appendMode={appendMode}
-      />
+      // data-highlighted-trade mirrors highlightedTradeId into the DOM so
+      // the rail-card-hover → chart-highlight link (design spec Option B,
+      // Task 5 gap) is e2e-testable — lightweight-charts renders to canvas,
+      // which Playwright can't pixel-inspect.
+      <div
+        data-testid="trade-marking-chart"
+        data-highlighted-trade={highlightedTradeId ?? undefined}
+        className="h-full w-full"
+      >
+        <CandlestickChart
+          key={chartKey}
+          candlestick={bars}
+          volume={volume}
+          showVolume={showVolume}
+          rthOnly={rthOnly}
+          markers={markers}
+          priceLines={priceLines}
+          onChartClick={marking.drawingActive ? marking.handleChartClick : undefined}
+          onCrosshairMove={onCrosshairMove}
+          minHeight={minHeight}
+          appendMode={appendMode}
+        />
+      </div>
     );
   },
 );

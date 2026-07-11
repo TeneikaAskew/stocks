@@ -337,4 +337,24 @@ test.describe('Journal one-stop cockpit — My journal view', () => {
     await page.getByTestId('clear-date').click();
     await expect(label).toHaveText(/overview — all dates/i);
   });
+
+  test('hovering a rail card highlights its markers on the chart, and mouseleave clears it', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const card = page.getByTestId('trade-rail-card').first();
+    const chart = page.getByTestId('trade-marking-chart');
+
+    // No hover yet — neither side reflects a highlight.
+    await expect(chart).not.toHaveAttribute('data-highlighted-trade', /.+/);
+
+    await card.hover();
+    await expect(card).toHaveAttribute('data-highlighted', 'true');
+    await expect(chart).toHaveAttribute('data-highlighted-trade', 'own-1');
+
+    // Mouseleave clears both sides.
+    await page.mouse.move(0, 0);
+    await expect(card).not.toHaveAttribute('data-highlighted', 'true');
+    await expect(chart).not.toHaveAttribute('data-highlighted-trade', /.+/);
+  });
 });

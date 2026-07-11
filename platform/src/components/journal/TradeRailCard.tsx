@@ -11,6 +11,11 @@ export interface TradeRailCardProps {
   onExit?: (id: string) => void;
   onDelete?: (id: string) => void;
   onHover?: (id: string | null) => void;
+  /** True when this card's trade is the one currently hovered (host tracks
+   *  a single hoveredTradeId and compares it against `trade.id`) — renders a
+   *  visible ring so the hover→chart-highlight link (design spec Option B,
+   *  Task 5 gap) is confirmable from the rail side, not just the chart. */
+  highlighted?: boolean;
 }
 
 /**
@@ -22,7 +27,14 @@ export interface TradeRailCardProps {
  * segment rendering "—" when its plan leg is missing (Rule 3.7 — never a
  * fabricated value).
  */
-export function TradeRailCard({ trade, example = false, onExit, onDelete, onHover }: TradeRailCardProps) {
+export function TradeRailCard({
+  trade,
+  example = false,
+  onExit,
+  onDelete,
+  onHover,
+  highlighted = false,
+}: TradeRailCardProps) {
   const isCall = trade.optionType === 'CALL';
   const formatTime = (ts: number) => {
     const d = new Date(ts * 1000);
@@ -39,7 +51,12 @@ export function TradeRailCard({ trade, example = false, onExit, onDelete, onHove
   return (
     <div
       data-testid="trade-rail-card"
-      className="rounded border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] p-2"
+      data-highlighted={highlighted ? 'true' : undefined}
+      className={`rounded border bg-[var(--color-bg-tertiary)] p-2 transition-shadow ${
+        highlighted
+          ? 'border-[var(--color-accent-blue)] ring-2 ring-[var(--color-accent-blue)]'
+          : 'border-[var(--color-border)]'
+      }`}
       onMouseEnter={() => onHover?.(trade.id)}
       onMouseLeave={() => onHover?.(null)}
     >
