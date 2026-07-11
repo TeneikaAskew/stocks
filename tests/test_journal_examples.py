@@ -73,6 +73,17 @@ _ALL_ROWS = pd.DataFrame([
         "user_email": ADMIN_EMAIL,
     },
     {
+        "id": "admin-null-source-1", "ticker": "SPY", "direction": "PUT",
+        "entry_ts": pd.Timestamp("2026-07-01T10:30:00"),
+        "exit_ts": pd.Timestamp("2026-07-01T10:45:00"),
+        "entry_price": 612.0, "exit_price": 611.0, "return_pct": 0.16,
+        "notes": "NULL source row (test IS DISTINCT FROM)", "stop_loss": None,
+        "tp1": None, "tp2": None, "tp3": None,
+        "status": "win", "source": None, "session_id": None,
+        "created_at": pd.Timestamp("2026-07-01T10:30:00"),
+        "user_email": ADMIN_EMAIL,
+    },
+    {
         "id": "other-user-1", "ticker": "SPY", "direction": "CALL",
         "entry_ts": pd.Timestamp("2026-07-01T11:00:00"),
         "exit_ts": pd.Timestamp("2026-07-01T11:30:00"),
@@ -88,19 +99,49 @@ _ALL_ROWS = pd.DataFrame([
 
 def _make_fake_query(calls: list):
     """Fake `_journal_query`: filters `_ALL_ROWS` by bound params, and applies
-    the `source != 'replay'` exclusion only when the literal SQL text carries
-    it (i.e. only the examples endpoint's query, not the trades GET's)."""
+    the `source IS DISTINCT FROM 'replay'` exclusion only when the literal SQL
+    text carries it (i.e. only the examples endpoint's query, not the trades
+    GET's).
+
+    For the examples query (which has "replay" in the SQL), also asserts that
+    the SQL text contains both the user_email and ticker predicates — this
+    catches mutations that drop those WHERE clauses.
+    """
 
     def fake_query(sql, params=None):
         calls.append((sql, params or {}))
-        df = _ALL_ROWS
+        df = _ALL_ROWS.copy()
         params = params or {}
+
+        # Filter by ticker if bound
         if "ticker" in params:
             df = df[df["ticker"] == params["ticker"]]
+
+        # Filter by user_email if bound
         if "user_email" in params:
             df = df[df["user_email"] == params["user_email"]]
+
+        # If this is the examples endpoint (has "replay" in SQL), apply the
+        # IS DISTINCT FROM 'replay' exclusion and assert the predicates
+        # are present in the SQL text (not just in params).
         if "replay" in sql.lower():
-            df = df[df["source"] != "replay"]
+            # FIX 1: Assert both predicates are in the SQL text. Dropping
+            # "AND user_email = :user_email" or "AND ticker = :ticker" from
+            # the endpoint's SQL would pass a test that only checked params,
+            # so we check the literal SQL instead.
+            assert "user_email = :user_email" in sql, \
+                f"examples SQL must include 'user_email = :user_email' predicate, got: {sql}"
+            assert "ticker = :ticker" in sql, \
+                f"examples SQL must include 'ticker = :ticker' predicate, got: {sql}"
+
+            # FIX 2: Implement IS DISTINCT FROM 'replay' correctly.
+            # IS DISTINCT FROM returns True when:
+            #  - one side is NULL and the other is not (e.g., NULL IS DISTINCT FROM 'replay' = True)
+            #  - both are non-NULL and different (e.g., 'manual' IS DISTINCT FROM 'replay' = True)
+            # This is different from != which treats NULL != 'replay' as NULL (false in WHERE).
+            # So we keep rows where source is NULL or source != 'replay'.
+            df = df[df["source"].isna() | (df["source"] != "replay")]
+
         return df.drop(columns=["user_email"]).reset_index(drop=True)
 
     return fake_query
@@ -159,7 +200,34 @@ def test_examples_excludes_replay_rows(monkeypatch, cloud_sql_client):
     assert "replay" in sql_text
 
 
-# ── (c) another user's rows never appear, regardless of caller identity ────
+# ── (c) NULL-source rows are included (IS DISTINCT FROM semantics) ───────────
+
+
+def test_examples_includes_null_source_rows(monkeypatch, cloud_sql_client):
+    """IS DISTINCT FROM 'replay' includes NULL, unlike != 'replay'.
+
+    A mutation from IS DISTINCT FROM to != 'replay' would exclude the
+    admin-null-source-1 row. This test catches that.
+    """
+    calls: list = []
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query(calls))
+
+    r = cloud_sql_client.get("/api/journal/examples/SPY")
+    assert r.status_code == 200
+    body = r.json()
+    ids = {t["id"] for t in body["trades"]}
+    # Both manual and NULL-source rows are included; replay is excluded.
+    assert "admin-manual-1" in ids
+    assert "admin-null-source-1" in ids
+    assert "admin-replay-1" not in ids
+
+    # Verify the SQL uses IS DISTINCT FROM (not !=) so NULL is included.
+    assert len(calls) == 1
+    sql_text = calls[0][0]
+    assert "IS DISTINCT FROM 'replay'" in sql_text
+
+
+# ── (d) another user's rows never appear, regardless of caller identity ────
 
 
 def test_examples_never_leaks_other_users_rows(monkeypatch, cloud_sql_client):
@@ -174,7 +242,10 @@ def test_examples_never_leaks_other_users_rows(monkeypatch, cloud_sql_client):
     assert r.status_code == 200
     ids = {t["id"] for t in r.json()["trades"]}
     assert "other-user-1" not in ids
-    assert ids == {"admin-manual-1"}
+    # Both admin-manual-1 (source='manual') and admin-null-source-1 (source=NULL)
+    # are included because the examples SQL uses IS DISTINCT FROM 'replay'
+    # (which includes NULL), not != 'replay'.
+    assert ids == {"admin-manual-1", "admin-null-source-1"}
 
     # The bound query param must be the server-side admin constant, not the
     # caller's identity.
@@ -182,7 +253,7 @@ def test_examples_never_leaks_other_users_rows(monkeypatch, cloud_sql_client):
     assert calls[0][1].get("user_email") != OTHER_USER
 
 
-# ── (d) requires auth exactly like the trades GET ───────────────────────────
+# ── (e) requires auth exactly like the trades GET ───────────────────────────
 
 
 def test_examples_requires_auth_like_trades_get(monkeypatch):
@@ -222,7 +293,7 @@ def test_examples_requires_auth_like_trades_get(monkeypatch):
     assert r_trades_auth.status_code == 200
 
 
-# ── (e) unknown ticker -> empty trades, count 0 ─────────────────────────────
+# ── (f) unknown ticker -> empty trades, count 0 ─────────────────────────────
 
 
 def test_examples_unknown_ticker_returns_empty(monkeypatch, cloud_sql_client):
