@@ -484,7 +484,10 @@ export default function JournalPage() {
       )}
 
       {/* ── Chart + rail row (layout B "Cockpit") ──────────────────────── */}
-      <div className="flex gap-4">
+      {/* Mobile (below lg): the rail stacks BELOW the chart — a fixed-width
+          rail beside a flex-1 chart collapsed the chart to an illegible
+          sliver on phone viewports (staging bug report, ~390-412px). */}
+      <div className="flex flex-col gap-4 lg:flex-row">
         {/* Chart column */}
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Chart mini-toolbar: timeframes + Vol/RTH toggles */}
@@ -583,7 +586,7 @@ export default function JournalPage() {
         </div>
 
         {/* Trade rail */}
-        <div className="w-[340px] shrink-0 space-y-2">
+        <div className="w-full space-y-2 lg:w-[340px] lg:shrink-0">
           <div className="text-xs font-semibold text-[var(--color-text-secondary)]">
             {isExamples ? 'Example trades' : 'My trades'}
             {chartIsoDate ? ` — ${chartIsoDate}` : ''}

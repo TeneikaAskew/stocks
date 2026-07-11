@@ -407,6 +407,44 @@ test.describe('Journal one-stop cockpit — My journal view', () => {
   });
 });
 
+// Mobile responsiveness (staging bug report, 390-412px viewport): the
+// cockpit row (chart + rail, layout B) used a fixed `w-[340px] shrink-0`
+// rail beside a `flex-1` chart in a plain `flex` row — on a phone viewport
+// the chart collapsed to a sliver and its own toolbar overlapped the
+// rail's heading/cards. The approved design stacks the rail BELOW the
+// chart under the `lg` breakpoint.
+test.describe('Journal one-stop cockpit — mobile viewport (390x844)', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockJournalOneStop(page, { own: OWN_TRADES, examples: EXAMPLE_TRADES });
+  });
+
+  test('no page-level horizontal scroll, and the rail stacks below the chart (not beside it)', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // (a) No horizontal overflow at the page level.
+    const overflowX = await page.evaluate(() => {
+      const doc = document.documentElement;
+      return { scrollWidth: doc.scrollWidth, clientWidth: doc.clientWidth };
+    });
+    expect(overflowX.scrollWidth).toBeLessThanOrEqual(overflowX.clientWidth + 1);
+
+    // (b) Chart card and rail do NOT overlap horizontally — the rail sits
+    // below the chart card (stacked), not beside it.
+    const chartCard = page.getByTestId('journal-chart-card');
+    const rail = page.getByTestId('trade-rail-card').first();
+    const chartBox = await chartCard.boundingBox();
+    const railBox = await rail.boundingBox();
+    expect(chartBox).not.toBeNull();
+    expect(railBox).not.toBeNull();
+    expect(railBox!.y).toBeGreaterThanOrEqual(chartBox!.y + chartBox!.height - 1);
+
+    // (c) The chart card is not squeezed into a sliver.
+    expect(chartBox!.width).toBeGreaterThanOrEqual(300);
+  });
+});
+
 // task-examples-union: Examples = pipeline `trades` UNION admin journal
 // (user decision 2026-07-11) — GET /api/journal/examples/{ticker} now
 // returns both an admin-authored row and a pipeline row; the page must
