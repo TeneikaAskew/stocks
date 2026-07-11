@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
@@ -24,7 +24,13 @@ import {
   type ReplayAggregate,
   type MineStyleSuccess,
 } from '@/hooks/useJournalChartTrades';
-import { CandlestickChart } from '@/components/charts/CandlestickChart';
+import {
+  TradeMarkingChart,
+  type TradeMarkingChartHandle,
+  type PriceLineConfig,
+} from '@/components/journal/TradeMarkingChart';
+import { TradeRailCard } from '@/components/journal/TradeRailCard';
+import type { DrawingStep } from '@/hooks/useTradeMarking';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { Modal } from '@/components/shared/Modal';
@@ -35,7 +41,7 @@ import { ReplaySessionControls } from '@/components/charts/ReplaySessionControls
 import { useReplaySession } from '@/hooks/useReplaySession';
 import { useLiveIndicators, useSignalSeries } from '@/hooks/useLiveIndicators';
 import { EMPTY_INDICATORS, type Bar } from '@/lib/indicators';
-import type { Timeframe, TradeEntry, TradeDirection, ChartVoter } from '@/types';
+import type { Timeframe, TradeDirection, ChartVoter } from '@/types';
 import type { CandlestickBar, VolumeBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
 import {
@@ -48,9 +54,7 @@ import {
   X,
   Ruler,
   Activity,
-  LogOut,
   Download,
-  Trash2,
   Zap,
   BookOpen,
   ClipboardCheck,
@@ -85,24 +89,6 @@ const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '60', label: '1h' },
 ];
 
-type DrawingStep = 'idle' | 'entry' | 'option-type' | 'tp1' | 'tp2' | 'tp3' | 'sl' | 'exit';
-
-interface TempTradeData {
-  entryTime: number;
-  entryPrice: number;
-  optionType?: TradeDirection;
-  takeProfits: { price: number; size: number }[];
-  stopLoss?: { price: number };
-}
-
-interface PriceLineConfig {
-  price: number;
-  color: string;
-  title: string;
-  lineStyle?: number;
-  lineWidth?: LineWidth;
-}
-
 export default function ChartsPage() {
   const { activeTicker } = useTickerStore();
   const { timeframe, setTimeframe } = useSettingsStore();
@@ -126,10 +112,15 @@ export default function ChartsPage() {
   // score (so no scorecard POST/modal fires) — cleared on the next session.
   const [sessionEndNote, setSessionEndNote] = useState<string | null>(null);
 
-  // Drawing mode state
+  // Drawing mode state — mirrors the drawingStep owned by TradeMarkingChart's
+  // useTradeMarking instance (Task 4 extraction). ChartsPage no longer owns
+  // the state machine itself; it only needs the CURRENT step for two things
+  // outside TradeMarkingChart's own render tree: hiding the export buttons
+  // while marking is in progress, and driving the toolbar's own Mark
+  // Entry/CALL/PUT/status UI, which stays in ChartsPage byte-identical to
+  // before and is wired to the chart via tradeMarkingRef.
   const [drawingStep, setDrawingStep] = useState<DrawingStep>('idle');
-  const [tempTrade, setTempTrade] = useState<TempTradeData | null>(null);
-  const [exitingTradeId, setExitingTradeId] = useState<string | null>(null);
+  const tradeMarkingRef = useRef<TradeMarkingChartHandle>(null);
 
   // Crosshair info
   const [crosshairData, setCrosshairData] = useState<{
@@ -425,33 +416,10 @@ export default function ChartsPage() {
   const chartIndicators = indicatorsQuery.data?.indicators ?? EMPTY_INDICATORS;
   const chartVoter = indicatorsQuery.data?.chart_voter ?? EMPTY_CHART_VOTER;
 
-  // Build chart markers from trades
-  const tradeMarkers: SeriesMarker<Time>[] = useMemo(() => {
-    return currentTrades.flatMap((trade) => {
-      const m: SeriesMarker<Time>[] = [];
-      m.push({
-        time: trade.entryTime as Time,
-        position: trade.optionType === 'CALL' ? 'belowBar' : 'aboveBar',
-        color: trade.optionType === 'CALL' ? '#089981' : '#f23645',
-        shape: trade.optionType === 'CALL' ? 'arrowUp' : 'arrowDown',
-        text: `${trade.optionType} @ $${trade.entryPrice.toFixed(2)}`,
-      });
-      if (trade.exitTime) {
-        // AUDIT-2026-05-13: silent fallback — pre-existing; only reachable
-        // via manual DB writes (server always sets return_pct on close).
-        // See docs/audits/FALLBACK_AUDIT_2026-05-13.md
-        const pnl = trade.pnl ?? 0;
-        m.push({
-          time: trade.exitTime as Time,
-          position: pnl >= 0 ? 'aboveBar' : 'belowBar',
-          color: pnl >= 0 ? '#089981' : '#f23645',
-          shape: 'circle',
-          text: `Exit ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`,
-        });
-      }
-      return m;
-    });
-  }, [currentTrades]);
+  // Task 4 extraction: the user's own trade markers (entry/exit arrows +
+  // PNL exit circle) are now built INSIDE TradeMarkingChart from its
+  // `trades` prop — ChartsPage only builds the "extra" overlays (signal +
+  // seed) below, which TradeMarkingChart merges underneath its own.
 
   // Strategy signal overlay — green up triangles for CALL fires, red down
   // for PUT fires. Computed server-side via POST /api/live/signal-series,
@@ -526,39 +494,18 @@ export default function ChartsPage() {
     });
   }, [showSeedTrades, seedRows, replay.active]);
 
-  // Trade markers on top of seed/signal markers so the user's own trades
-  // win the visual priority (and re-render last in the chart's marker
-  // plugin). Seed markers sit above the signal overlay but below the
-  // user's trades.
-  const markers: SeriesMarker<Time>[] = useMemo(
-    () => [...signalMarkers, ...seedMarkers, ...tradeMarkers],
-    [signalMarkers, seedMarkers, tradeMarkers],
+  // Extra overlays merged UNDER TradeMarkingChart's own trade markers/TP-SL
+  // lines (Task 4 extraction) — signal overlay + seed teaching layer for
+  // markers, reference/gamma levels for price lines. Order preserved:
+  // signal overlay lowest priority, then seed, then (inside
+  // TradeMarkingChart) the user's own trades on top.
+  const extraMarkers: SeriesMarker<Time>[] = useMemo(
+    () => [...signalMarkers, ...seedMarkers],
+    [signalMarkers, seedMarkers],
   );
 
-  // Build price lines from trades (TP/SL) + reference levels
-  const priceLines: PriceLineConfig[] = useMemo(() => {
+  const extraPriceLines: PriceLineConfig[] = useMemo(() => {
     const lines: PriceLineConfig[] = [];
-
-    // Trade TP/SL lines
-    for (const trade of currentTrades) {
-      if (trade.status !== 'active') continue;
-      trade.takeProfits.forEach((tp, i) => {
-        lines.push({
-          price: tp.price,
-          color: '#089981',
-          title: `TP${i + 1}`,
-          lineStyle: 2, // Dotted
-        });
-      });
-      if (trade.stopLoss) {
-        lines.push({
-          price: trade.stopLoss.price,
-          color: '#f23645',
-          title: 'SL',
-          lineStyle: 2,
-        });
-      }
-    }
 
     // Reference levels
     if (showRefLevels && refLevels) {
@@ -612,103 +559,7 @@ export default function ChartsPage() {
     }
 
     return lines;
-  }, [currentTrades, showRefLevels, refLevels, showGamma, gammaLevels]);
-
-  // Chart click handler
-  const handleChartClick = useCallback(
-    (data: { time: number; price: number }) => {
-      if (drawingStep === 'entry') {
-        // Mid-playback Mark Entry (Task 5.2): the entry EPOCH is pinned to
-        // the last REVEALED bar's time, not wherever on the chart the user
-        // clicked — clicking anywhere is just how the entry PRICE gets
-        // chosen. Outside a replay session this is identical to before
-        // (data.time from the click).
-        const entryTime =
-          replay.active && replay.revealedBars.length > 0
-            ? replay.revealedBars[replay.revealedBars.length - 1].time
-            : data.time;
-        setTempTrade({
-          entryTime,
-          entryPrice: data.price,
-          takeProfits: [],
-        });
-        setDrawingStep('option-type');
-      } else if (drawingStep === 'tp1' || drawingStep === 'tp2' || drawingStep === 'tp3') {
-        if (!tempTrade) return;
-        const tps = [...tempTrade.takeProfits, { price: data.price, size: 0.33 }];
-        setTempTrade({ ...tempTrade, takeProfits: tps });
-        if (drawingStep === 'tp1') setDrawingStep('tp2');
-        else if (drawingStep === 'tp2') setDrawingStep('tp3');
-        else setDrawingStep('sl');
-      } else if (drawingStep === 'sl') {
-        if (!tempTrade) return;
-        completeTrade({ ...tempTrade, stopLoss: { price: data.price } });
-      } else if (drawingStep === 'exit' && exitingTradeId) {
-        const trade = trades.find((t) => t.id === exitingTradeId);
-        if (trade) {
-          // Clamp exit time to the last REVEALED bar during replay (mirrors
-          // the Mark Entry pin above) — a raw click time has no such clamp
-          // and could otherwise persist a future-bar epoch, leaking how far
-          // the reveal will eventually go.
-          const exitTime =
-            replay.active && replay.revealedBars.length > 0
-              ? replay.revealedBars[replay.revealedBars.length - 1].time
-              : data.time;
-          // PATCH persists the exit; return_pct/status come back from the
-          // server (journal.py's _return_pct/_derive_status) — no client-side
-          // pnl math here, the query invalidation refetches the closed row.
-          closeChartTrade.mutate({
-            id: exitingTradeId,
-            ticker: activeTicker,
-            exitTime,
-            exitPrice: data.price,
-          });
-        }
-        cancelDrawing();
-      }
-    },
-    [drawingStep, tempTrade, exitingTradeId, trades, closeChartTrade, replay.active, replay.revealedBars]
-  );
-
-  const selectOptionType = (type: TradeDirection) => {
-    if (!tempTrade) return;
-    setTempTrade({ ...tempTrade, optionType: type });
-    setDrawingStep('tp1');
-  };
-
-  const skipToSL = () => setDrawingStep('sl');
-  const skipSL = () => {
-    if (tempTrade) completeTrade(tempTrade);
-  };
-
-  const completeTrade = (data: TempTradeData) => {
-    if (!data.optionType) return;
-    createChartTrade.mutate({
-      ticker: activeTicker,
-      direction: data.optionType,
-      entryTime: data.entryTime,
-      entryPrice: data.entryPrice,
-      stopLoss: data.stopLoss?.price,
-      takeProfits: data.takeProfits.map((tp) => tp.price),
-      // Trades drawn during a bar-replay trainer session (Task 5.2) are
-      // tagged `source: 'replay'` + the session's UUID so Task 5.3's
-      // post-session review can group them apart from ordinary chart trades.
-      source: replay.active ? 'replay' : 'chart',
-      sessionId: replay.active ? (replay.sessionId ?? undefined) : undefined,
-    });
-    cancelDrawing();
-  };
-
-  const startExitMode = (tradeId: string) => {
-    setExitingTradeId(tradeId);
-    setDrawingStep('exit');
-  };
-
-  const cancelDrawing = () => {
-    setDrawingStep('idle');
-    setTempTrade(null);
-    setExitingTradeId(null);
-  };
+  }, [showRefLevels, refLevels, showGamma, gammaLevels]);
 
   // Export trades to JSON (compatible with pipeline)
   const exportTradesJSON = () => {
@@ -755,24 +606,6 @@ export default function ChartsPage() {
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  // Document-level ESC handler (works regardless of focus)
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (drawingStep === 'entry' || drawingStep === 'option-type' || drawingStep === 'exit') {
-        cancelDrawing();
-      } else if (drawingStep === 'tp1' || drawingStep === 'tp2' || drawingStep === 'tp3') {
-        skipToSL();
-      } else if (drawingStep === 'sl') {
-        skipSL();
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [drawingStep, tempTrade]);
-
-  const drawingActive = drawingStep !== 'idle' && drawingStep !== 'option-type';
 
   return (
     <div className="flex flex-col gap-6">
@@ -942,10 +775,13 @@ export default function ChartsPage() {
             </div>
           )}
 
-          {/* Drawing mode */}
+          {/* Drawing mode — drives TradeMarkingChart's state machine via
+              tradeMarkingRef (Task 4 extraction); `drawingStep` here is a
+              mirror fed by TradeMarkingChart's onDrawingStepChange, not
+              locally-owned state. */}
           {drawingStep === 'idle' ? (
             <button
-              onClick={() => setDrawingStep('entry')}
+              onClick={() => tradeMarkingRef.current?.startDrawing()}
               className="flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:bg-blue-600"
             >
               <Crosshair size={14} />
@@ -965,14 +801,14 @@ export default function ChartsPage() {
               {drawingStep === 'option-type' && (
                 <div className="flex gap-1">
                   <button
-                    onClick={() => selectOptionType('CALL')}
+                    onClick={() => tradeMarkingRef.current?.selectOptionType('CALL')}
                     className="flex items-center gap-1 rounded bg-[var(--bull)] px-2 py-1 text-xs text-black"
                   >
                     <ArrowUpCircle size={12} />
                     CALL
                   </button>
                   <button
-                    onClick={() => selectOptionType('PUT')}
+                    onClick={() => tradeMarkingRef.current?.selectOptionType('PUT')}
                     className="flex items-center gap-1 rounded bg-[var(--bear)] px-2 py-1 text-xs text-white"
                   >
                     <ArrowDownCircle size={12} />
@@ -981,7 +817,7 @@ export default function ChartsPage() {
                 </div>
               )}
               <button
-                onClick={cancelDrawing}
+                onClick={() => tradeMarkingRef.current?.cancelDrawing()}
                 className="rounded p-1 text-[var(--color-text-muted)] hover:text-[var(--color-accent-red)]"
               >
                 <X size={16} />
@@ -1036,23 +872,35 @@ export default function ChartsPage() {
               )}
             </div>
           ) : marketData && marketData.count > 0 ? (
-            <CandlestickChart
+            <TradeMarkingChart
+              ref={tradeMarkingRef}
+              ticker={activeTicker}
               // Remount on session start/stop (Task 5.1 review handoff):
               // appendMode flipping false->true on an already-mounted
               // instance does NOT re-fit, so a fresh key per session (and
               // back to a stable 'live' key once stopped) forces the first
-              // reveal to frame correctly.
-              key={`chart-${replay.active ? replay.sessionId : 'live'}`}
-              candlestick={replay.active ? replay.revealedBars : marketData.candlestick}
+              // reveal to frame correctly. Applied only to the underlying
+              // CandlestickChart (see TradeMarkingChart's chartKey doc) so
+              // the in-progress marking state survives the remount exactly
+              // as it did when ChartsPage owned both directly.
+              chartKey={`chart-${replay.active ? replay.sessionId : 'live'}`}
+              bars={replay.active ? replay.revealedBars : marketData.candlestick}
               volume={replay.active ? revealedVolume : marketData.volume}
+              trades={currentTrades}
+              onTradeCreated={(vars) => createChartTrade.mutate(vars)}
+              onTradeExited={(vars) => closeChartTrade.mutate(vars)}
+              markersStyle="own"
+              extraMarkers={extraMarkers}
+              extraPriceLines={extraPriceLines}
               showVolume={showVolume}
               rthOnly={rthOnly}
-              markers={markers}
-              priceLines={priceLines}
-              onChartClick={drawingActive ? handleChartClick : undefined}
               onCrosshairMove={setCrosshairData}
               minHeight={400}
               appendMode={replay.active}
+              replayActive={replay.active}
+              replayRevealedBars={replay.revealedBars}
+              replaySessionId={replay.sessionId}
+              onDrawingStepChange={setDrawingStep}
             />
           ) : marketData ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-[var(--color-text-muted)]">
@@ -1129,10 +977,10 @@ export default function ChartsPage() {
                 </p>
               ) : (
                 currentTrades.map((trade) => (
-                  <TradeCard
+                  <TradeRailCard
                     key={trade.id}
                     trade={trade}
-                    onExit={startExitMode}
+                    onExit={(id) => tradeMarkingRef.current?.startExitMode(id)}
                     onDelete={(id) => deleteChartTrade.mutate({ id, ticker: activeTicker })}
                   />
                 ))
@@ -1340,85 +1188,9 @@ export default function ChartsPage() {
   );
 }
 
-function TradeCard({
-  trade,
-  onExit,
-  onDelete,
-}: {
-  trade: TradeEntry;
-  onExit: (id: string) => void;
-  onDelete: (id: string) => void;
-}) {
-  const isCall = trade.optionType === 'CALL';
-  const formatTime = (ts: number) => {
-    const d = new Date(ts * 1000);
-    return `${d.getUTCHours().toString().padStart(2, '0')}:${d.getUTCMinutes().toString().padStart(2, '0')}`;
-  };
-
-  return (
-    <div className="rounded border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] p-2">
-      <div className="flex items-center justify-between">
-        <span
-          className={`rounded px-1.5 py-0.5 text-xs font-bold ${
-            isCall ? 'bg-green-500/20 text-[var(--bull)]' : 'bg-red-500/20 text-[var(--bear)]'
-          }`}
-        >
-          {trade.optionType}
-        </span>
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-[var(--color-text-muted)]">
-            {formatTime(trade.entryTime)}
-          </span>
-          {trade.status === 'active' && (
-            <button
-              onClick={() => onExit(trade.id)}
-              className="rounded p-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-accent-amber)]"
-              title="Mark exit"
-            >
-              <LogOut size={12} />
-            </button>
-          )}
-          <button
-            onClick={() => onDelete(trade.id)}
-            className="rounded p-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-accent-red)]"
-            title="Delete trade"
-          >
-            <Trash2 size={12} />
-          </button>
-        </div>
-      </div>
-      <div className="mt-1 text-xs">
-        <span className="text-[var(--color-text-secondary)]">Entry:</span>{' '}
-        <span className="font-mono">${trade.entryPrice.toFixed(2)}</span>
-      </div>
-      {trade.exitPrice && (
-        <div className="mt-0.5 text-xs">
-          <span className="text-[var(--color-text-secondary)]">Exit:</span>{' '}
-          <span className="font-mono">${trade.exitPrice.toFixed(2)}</span>
-        </div>
-      )}
-      {trade.takeProfits.length > 0 && (
-        <div className="mt-0.5 text-xs text-[var(--color-accent-green)]">
-          TP: {trade.takeProfits.map((tp) => `$${tp.price.toFixed(2)}`).join(' / ')}
-        </div>
-      )}
-      {trade.stopLoss && (
-        <div className="mt-0.5 text-xs text-[var(--color-accent-red)]">
-          SL: ${trade.stopLoss.price.toFixed(2)}
-        </div>
-      )}
-      {trade.pnl !== undefined && trade.pnl !== null && (
-        <div className={`mt-1 text-xs font-medium ${trade.pnl >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
-          {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)} ({trade.pnlPercent?.toFixed(2)}%)
-        </div>
-      )}
-    </div>
-  );
-}
-
 /**
  * Read-only card for one admin seed trade (Task 2.4) — dashed border + muted
- * background distinguishes it from TradeCard at a glance. No exit/delete
+ * background distinguishes it from TradeRailCard at a glance. No exit/delete
  * controls: this is a teaching overlay from the automated pipeline `trades`
  * table, never editable from the chart.
  */
