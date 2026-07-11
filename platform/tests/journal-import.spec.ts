@@ -75,10 +75,10 @@ const PREVIEW_RESPONSE = {
     },
   ],
   skipped: [
-    { raw_index: 5, reason: 'shares/equity row' },
+    { raw_index: 5, reason: 'shares — options only in v1' },
     { raw_index: 6, reason: 'short options not supported' },
-    { raw_index: 7, reason: 'unrecognized trans code: CDIV' },
-    { raw_index: 8, reason: 'missing ticker' },
+    { raw_index: 7, reason: 'unsupported activity type: CDIV' },
+    { raw_index: 8, reason: 'unsupported activity type: ACH' },
   ],
 };
 
@@ -166,10 +166,10 @@ test.describe('Broker CSV import', () => {
 
     // Skipped list — honest per-row reasons, never a silent drop.
     const skippedList = page.getByTestId('import-skipped-list');
-    await expect(skippedList).toContainText('shares/equity row');
+    await expect(skippedList).toContainText('shares — options only in v1');
     await expect(skippedList).toContainText('short options not supported');
-    await expect(skippedList).toContainText('unrecognized trans code: CDIV');
-    await expect(skippedList).toContainText('missing ticker');
+    await expect(skippedList).toContainText('unsupported activity type: CDIV');
+    await expect(skippedList).toContainText('unsupported activity type: ACH');
 
     // Re-check the duplicate row so the commit exercises all 3 rows and the
     // mocked server-side re-detection (skipped_duplicates: 1) is meaningful.
