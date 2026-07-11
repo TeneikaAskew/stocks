@@ -777,3 +777,34 @@ folds (least training data) are negative, so ~31% of resamples drop it below 6/8
 `prune` beats `baseline` (baseline had an IWM fold at -0.036). **Before trusting
 SIZE live, confirm QQQ** with a shifted-cutoffs run and/or more history. The pass
 is real; QQQ is the leg to watch.
+
+
+### Shifted-cutoffs CONFIRMATION (2026-07-11, `magnitude-recal-jcv9r`) — gate pass is FOLD-FRAGILE
+
+Re-ran the winning config (15m + isotonic + prune) with **mid-year fold
+boundaries** (2018-07..2025-07 instead of Jan-1) to test whether the gate pass
+was cutoff-luck.
+
+| ticker | folds_beat (shifted) | median_beat | min_beat | ECE | vs Jan-1 |
+|---|---|---|---|---|---|
+| SPY | 8/8 | +0.0172 | +0.0015 | 0.038 | 7/8 → 8/8 (stronger) |
+| QQQ | 6/8 | +0.0117 | -0.0406 | 0.053 | 6/8 → 6/8 (held) |
+| IWM | 5/8 | +0.0031 | -0.0139 | 0.036 | 8/8 → **5/8 (dropped)** |
+
+**Finding: the strict per-ticker gate is FRAGILE to fold placement.** QQQ (the
+Jan-1 marginal leg) held at 6/8, but IWM fell from 8/8 to 5/8 — the marginal
+ticker SWAPS with the cutoff scheme. So "≥6/8 folds on all 3 tickers" passes on
+Jan-1 folds and FAILS on mid-year folds (IWM 5/8).
+
+**Corrected verdict:** the underlying SIZE edge is real and robust — *every
+ticker has a positive median log-loss beat under BOTH cutoff schemes* (+0.003 to
++0.017) with consistent good calibration (ECE ~0.04). But the strict
+pre-registered gate is a **near-threshold, fold-sensitive pass, not a solid
+one** — 1-2 early/hard folds per ticker dip negative. This supersedes the clean
+"GATE PASS" framing above: SIZE is best described as **a real but modest,
+calibrated edge that does not ROBUSTLY clear the strict 3-ticker gate.**
+
+**Not productionized** on this basis. Options to firm it up: (a) lengthen the
+minimum training window / add pre-2016 history so the early folds aren't
+train-starved; (b) relax the gate to a median-beat criterion (which IS robust);
+(c) deploy as a low-confidence modest edge with monitoring. Decision pending.

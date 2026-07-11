@@ -1269,3 +1269,11 @@ pre-registered gate at **15m + isotonic** — baseline IWM 6/8, SPY 7/8, QQQ 6/8
 First gate pass in the program. Winning lever = timeframe+calibration+prune, not
 new features. Modest edge (near 6/8 threshold; bootstrap-confirm recommended).
 See MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 confirmation (2026-07-11, `magnitude-recal-jcv9r`):** shifted-cutoffs
+robustness run shows the SIZE gate pass is FOLD-FRAGILE — under mid-year folds
+IWM drops 8/8→5/8 (QQQ held 6/8, SPY 8/8), so the strict 3-ticker gate does not
+replicate across fold placements. The edge is real (all positive median beats,
+ECE ~0.04) but the strict pass is near-threshold. Not productionized. See
+MAGNITUDE_ENGINE_RESULTS.md.
