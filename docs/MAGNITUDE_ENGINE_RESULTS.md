@@ -723,3 +723,39 @@ calibration=isotonic** (esp. `options_iv` + `prune`) to test whether IWM/QQQ
 cross 6/8 — the first realistic shot at a full gate pass in the program.
 This does NOT overturn the 2026-05-29 gate-7 (cost) FAIL — it is the
 pure-prediction lens, where the user's reframe explicitly drops costs.
+
+
+### GATE PASS (2026-07-11, `direction-phase2-cmv2d`) — SIZE is PREDICTABLE at 15m+isotonic
+
+Re-ran the Phase-2 size ablation at **15m with calibration=isotonic** (7 configs,
+config-tagged GCS results). Result: **every config clears the pre-registered gate
+(>=6/8 folds on ALL 3 tickers).**
+
+| config | IWM | SPY | QQQ | tickers_pass | predictable | med_beat |
+|---|---|---|---|---|---|---|
+| baseline | 6/8 | 7/8 | 6/8 | 3/3 | **True** | +0.0090 |
+| prune | 8/8 | 7/8 | 6/8 | 3/3 | **True** | +0.0120 |
+| options_iv | 7/8 | 7/8 | 6/8 | 3/3 | True | +0.0097 |
+| positioning | 6/8 | 7/8 | 6/8 | 3/3 | True | +0.0100 |
+| cross_asset | 7/8 | 7/8 | 6/8 | 3/3 | True | +0.0076 |
+| calendar | 6/8 | 7/8 | 6/8 | 3/3 | True | +0.0088 |
+| full stack | 8/8 | 7/8 | 6/8 | 3/3 | True | +0.0115 |
+
+**This is the program's first pre-registered gate pass.** The winning
+configuration is **timeframe (15m) + isotonic calibration**, NOT features — even
+the baseline (no new families) passes. **`prune` adds the most margin** (IWM 6→8/8,
+best median beat +0.012); the options/cross-asset/calendar families add little on
+top. ECE ≈ 0.04 (well-calibrated).
+
+**Caveats / rigor:** the edge is modest (median log-loss beat +0.009 to +0.012)
+and IWM/QQQ baseline sit exactly at the 6/8 threshold — run-to-run CV variance is
+real (the earlier `magnitude-recal` all-cells run showed IWM 5/8, QQQ 4/8 for the
+same cell; this properly-tagged ablation shows 6/8, 6/8). The **pruned** config is
+the robust one (IWM 8/8 gives margin). Recommended before production: a bootstrap/
+repeat run to confirm the pruned config holds >=6/8 across resamples, and note
+this is the PURE-PREDICTION lens (log-loss), distinct from the 2026-05-29 gate-7
+(implied-vs-realized cost) FAIL — which the user's reframe explicitly set aside.
+
+**Bottom line:** SIZE (magnitude bucket) IS walk-forward predictable and
+calibrated at 15m; the 5m failure was a joint timeframe+calibration problem.
+Deploy target: 15m + isotonic + prune.

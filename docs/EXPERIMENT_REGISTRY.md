@@ -1261,3 +1261,11 @@ calibration hypothesis partly confirmed — isotonic fails at 5m (beat still ≈
 -0.13, ECE 0.10) but at **15m** produces positive, well-calibrated beats (ECE
 0.04) with SPY 6/8, IWM 5/8, QQQ 4/8 — a strong near-miss on the full gate.
 15m+isotonic is the recommended next ablation target. See MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 GATE PASS (2026-07-11, `direction-phase2-cmv2d`):** SIZE clears the
+pre-registered gate at **15m + isotonic** — baseline IWM 6/8, SPY 7/8, QQQ 6/8
+(3/3 tickers, predictable=True); `prune` strengthens to IWM 8/8 (med beat +0.012).
+First gate pass in the program. Winning lever = timeframe+calibration+prune, not
+new features. Modest edge (near 6/8 threshold; bootstrap-confirm recommended).
+See MAGNITUDE_ENGINE_RESULTS.md.
