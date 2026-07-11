@@ -426,3 +426,20 @@ with the literature (the directional signal lives in order-flow/limit-order-book
 data, unavailable from the current bar+daily-options vendor). Direction is, on
 this evidence, not predictable from available data; reopen only on tick/book
 acquisition. Full ablation: EXPERIMENT_REGISTRY.md E-25.
+
+
+---
+
+## CLOSED (2026-07-11): direction not predictable from available data
+
+Phase-2 pure-prediction ablation (options positioning + IV-skew + cross-asset
+lead-lag + calendar, at 5m) moved direction 0/3 tickers -> still 0/3; best any
+single ticker reached is 3/8 folds (gate needs 6/8). Combined with the full prior
+program (longer horizons, trigger/regime conditioning, triple-barrier, EOD dealer
+flow), the standing verdict is now **closed**: intraday directional sign on liquid
+index ETFs is NOT predictable from the price/volume/technical/regime/daily-options
+data available from the current vendor. The one signal class the literature says
+carries it — intraday order-flow / limit-order-book imbalance — is unavailable
+(no tick/book data). **Reopen only on acquisition of order-flow/tick data.**
+Size and type ARE predictable (see MAGNITUDE_ENGINE_RESULTS.md gate pass, and the
+validated strat TYPE model).

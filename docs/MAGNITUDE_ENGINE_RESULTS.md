@@ -759,3 +759,21 @@ this is the PURE-PREDICTION lens (log-loss), distinct from the 2026-05-29 gate-7
 **Bottom line:** SIZE (magnitude bucket) IS walk-forward predictable and
 calibrated at 15m; the 5m failure was a joint timeframe+calibration problem.
 Deploy target: 15m + isotonic + prune.
+
+
+### Bootstrap confirmation (2026-07-11) — pass holds; QQQ is the marginal leg
+
+Bootstrapped the 8 fold-beats per ticker (5000 resamples, P of still >=6/8) for
+the winning `prune` config at 15m+isotonic:
+
+| ticker | folds_beat | fold beats | boot P(>=6/8) |
+|---|---|---|---|
+| IWM | 8/8 | all +0.004..+0.012 | **1.00** (rock solid) |
+| SPY | 7/8 | one -0.005, rest +0.009..+0.025 | 0.94 (strong) |
+| QQQ | 6/8 | two neg (-0.005,-0.020) in earliest folds, rest +0.009..+0.019 | **0.69** (marginal) |
+
+IWM and SPY are robust; **QQQ sits at the threshold** — its two earliest test
+folds (least training data) are negative, so ~31% of resamples drop it below 6/8.
+`prune` beats `baseline` (baseline had an IWM fold at -0.036). **Before trusting
+SIZE live, confirm QQQ** with a shifted-cutoffs run and/or more history. The pass
+is real; QQQ is the leg to watch.
