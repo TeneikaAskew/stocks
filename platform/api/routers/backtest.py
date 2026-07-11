@@ -4,10 +4,12 @@ Backtest router — reads directly from GCS with in-memory TTL caching.
 Endpoints
 ---------
 GET /api/backtest/results/{ticker}
-    Return trades from the most recent backtest CSV for the given ticker.
+    Return trades from the most recent backtest CSV for the given ticker,
+    or from a specific run if `?run=YYYYMMDD_HHMMSS` is provided.
 
 GET /api/backtest/equity/{ticker}
-    Return equity curve from the most recent equity CSV for the given ticker.
+    Return equity curve from the most recent equity CSV for the given ticker,
+    or from a specific run if `?run=YYYYMMDD_HHMMSS` is provided.
 
 GET /api/backtest/all/{ticker}
     List all backtest runs for a ticker, sorted newest first, with summary metrics.
@@ -32,6 +34,10 @@ Every `*_pct` field this router emits — `avg_return_pct`, `avg_win_pct`,
 to TRUE PERCENT units (fraction * 100) so the frontend can render
 `${v.toFixed(2)}%` without unit knowledge. `win_rate` is the only
 exception: it stays a 0-1 fraction (the UI multiplies by 100 itself).
+Note this convention is local to THIS router — the playbook API
+(routers/playbook.py) parses `win_rate`/`avg_return` straight out of
+markdown card text and already stores them as true percent (e.g. 45.2,
+not 0.452), so don't assume the same fraction/percent split applies there.
 """
 import json
 import logging

@@ -9,89 +9,46 @@
  * hermetic and doesn't depend on a live authenticated backend.
  */
 import { test, expect } from '@playwright/test';
-import { mockCommon, M } from './helpers/mocks';
-
-const MOCK_BRIEF = {
-  ticker: 'IWM',
-  source: 'cloud_sql',
-  bias: 'bullish',
-  rsi: 58.4,
-  strat_candle: '2U',
-  strat_combo: 'Failed 2D → 2U',
-  ftfc_score: 0.72,
-  ftfc_direction: 'bullish',
-  signal_status: '0DTE call flow leading',
-  daily_indicators: {
-    date: '2026-04-25',
-    close: 220.5,
-    rsi_14: 58.4,
-    rvol: 1.4,
-    strat_candle: '2U',
-    strat_combo: 'Failed 2D → 2U',
-    ftfc_score: 0.72,
-    ftfc_direction: 'bullish',
-  },
-  live: { price: 220.45, session: 'closed' },
-};
+import { mockDashboard, M } from './helpers/mocks';
 
 test.describe('Dashboard intraday candle chart', () => {
   test.beforeEach(async ({ page }) => {
-    await mockCommon(page);
-    await page.route('**/api/config/firebase', (route) =>
-      route.fulfill({ status: 200, body: JSON.stringify({ authMode: 'open', firebase: null }) })
+    await mockDashboard(page);
+    // Real /api/backtest/results/{ticker} shape (empty CSV branch): ticker,
+    // filename, trade_count, summary, trades — see
+    // platform/api/routers/backtest.py get_backtest_results. Previously
+    // mocked with the wrong shape ({ ticker, runs: [] }), which doesn't
+    // match anything the router actually returns.
+    await page.route('**/api/backtest/results/IWM', (r) =>
+      r.fulfill(
+        M.ok({
+          ticker: 'IWM',
+          filename: 'backtest_IWM_20260420_150000.csv',
+          trade_count: 0,
+          summary: {},
+          trades: [],
+        })
+      )
     );
-    await page.route('**/api/dashboard/brief/IWM*', (r) => r.fulfill(M.ok(MOCK_BRIEF)));
-    await page.route('**/api/backtest/results/IWM', (r) => r.fulfill(M.ok({ ticker: 'IWM', runs: [] })));
+    // Real /api/backtest/equity/{ticker} shape (empty CSV branch): ticker,
+    // filename, summary, dates, values — see get_equity_curve. Previously
+    // mocked with { ticker, points: [], summary }, which doesn't match the
+    // router's dates/values contract BacktesterSection.tsx actually reads.
     await page.route('**/api/backtest/equity/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', points: [], summary: { total_return_pct: 0, max_drawdown_pct: 0 } }))
-    );
-    await page.route('**/api/backtest/all/IWM', (r) => r.fulfill(M.ok({ runs: [] })));
-    await page.route('**/api/signals/IWM*', (r) => r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] })));
-    await page.route('**/api/playbook/IWM', (r) => r.fulfill(M.ok({ ticker: 'IWM', cards: [] })));
-    await page.route('**/api/live/quote/IWM', (r) =>
       r.fulfill(
         M.ok({
           ticker: 'IWM',
-          price: 220.45,
-          open: 219.8,
-          high: 221.2,
-          low: 219.5,
-          volume: 1234567,
-          change: 0.65,
-          change_pct: 0.296,
-          prev_close: 219.8,
-          last_updated: '2026-04-25T19:55:00Z',
-          market_session: 'closed',
-          market_open: false,
+          filename: 'equity_IWM_20260420_150000.csv',
+          summary: {},
+          dates: [],
+          values: [],
         })
       )
     );
-    await page.route('**/api/live/history/IWM', (r) => r.fulfill(M.ok({ ticker: 'IWM', interval: '1min', count: 0, bars: [] })));
-    await page.route('**/api/live/avg-volume/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', avg_volume_20d: 25_000_000, sample_size: 20, last_date: '2026-04-24', source: 'mock' }))
-    );
-    await page.route('**/api/market/reference/IWM/*', (r) =>
-      r.fulfill(
-        M.ok({
-          ticker: 'IWM',
-          date: '2026-04-25',
-          source: 'mock',
-          stale_days: 0,
-          open: 220.0,
-          high: 222.0,
-          low: 218.0,
-          close: 220.5,
-          week: {
-            high: 224.0,
-            low: 216.0,
-            avg_close: 220.0,
-            avg_rsi_14: 55.0,
-            start_date: '2026-04-21',
-            end_date: '2026-04-25',
-            sessions: 5,
-          },
-        })
-      )
+    // Real /api/backtest/all/{ticker} shape: ticker, total_runs, runs — see
+    // list_all_backtests. Previously mocked as bare { runs: [] }.
+    await page.route('**/api/backtest/all/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', total_runs: 0, runs: [] }))
     );
     // Intraday bars (32 hourly bars) so the candle chart has enough data to
     // create a canvas and lay out a realistic candle count.
@@ -109,12 +66,6 @@ test.describe('Dashboard intraday candle chart', () => {
           candlestick: bars,
           volume: bars.map((b) => ({ time: b.time, value: 1_000_000 })),
         })
-      )
-    );
-    // Candlestick chart reads market-hours for its RTH window.
-    await page.route('**/api/config/market-hours', (r) =>
-      r.fulfill(
-        M.ok({ regular: { open: '09:30', close: '16:00' }, premarket: { open: '04:00', close: '09:30' }, afterhours: { open: '16:00', close: '20:00' } })
       )
     );
     await page.goto('/dashboard');

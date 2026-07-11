@@ -269,6 +269,20 @@ export default function ChartsPage() {
   // Analytics tab's "Mine my style" button, mirroring replayTrades above.
   const mineMyStyle = useMineMyStyle();
 
+  // #702 follow-ups Task 4 item 6: a mined "My style" result and an open
+  // replay-trades scorecard are per-ticker artifacts — mirror
+  // BacktesterSection's `lastTicker` render-time-adjustment idiom (this
+  // component is mounted unkeyed, so switching the ticker doesn't remount
+  // it) so a stale prior ticker's mined profile / scorecard rows never
+  // linger on screen under the new symbol.
+  const [lastMineTicker, setLastMineTicker] = useState(activeTicker);
+  if (lastMineTicker !== activeTicker) {
+    setLastMineTicker(activeTicker);
+    mineMyStyle.reset();
+    setScorecardOpen(false);
+    replayTrades.reset();
+  }
+
   // Admin seed-trade teaching layer (Task 2.4) — read-only pull from the
   // automated pipeline `trades` table, GET /api/journal/seed/{ticker}.
   // Kept fetching regardless of the toggle (cheap single-row/single-ticker
@@ -412,6 +426,9 @@ export default function ChartsPage() {
         text: `${trade.optionType} @ $${trade.entryPrice.toFixed(2)}`,
       });
       if (trade.exitTime) {
+        // AUDIT-2026-05-13: silent fallback — pre-existing; only reachable
+        // via manual DB writes (server always sets return_pct on close).
+        // See docs/audits/FALLBACK_AUDIT_2026-05-13.md
         const pnl = trade.pnl ?? 0;
         m.push({
           time: trade.exitTime as Time,
@@ -1541,31 +1558,44 @@ function ScorecardRow({
 /**
  * Aggregate footer for the scorecard modal (Task 3.3). `n` counts every
  * requested trade; `scored_n` only the ones the replay could actually
- * price. `system_agreement_rate` is `null` when the system never resolved
- * a direction on any scored entry — rendered as an honest em dash with the
- * resolved/scored counts as context, never a fabricated 0% (Rule 3.7; see
- * lib/backtest.py's `_aggregate_scorecards` docstring for the exact
- * definition this mirrors).
+ * price. `win_rate`/`avg_return_pct`/`avg_exit_edge_bps` are `null` when
+ * `scored_n === 0` — rendered as honest em dashes (the "X / N scored"
+ * context line still shows 0/N), never a fabricated "0%" (Rule 3.7,
+ * #702 follow-ups Task 2 item 1). `system_agreement_rate` is `null` when
+ * the system never resolved a direction on any scored entry — rendered as
+ * an honest em dash with the resolved/scored counts as context, never a
+ * fabricated 0% (Rule 3.7; see lib/backtest.py's `_aggregate_scorecards`
+ * docstring for the exact definition this mirrors). `system_no_signal_n`
+ * (Task 2 item 2) surfaces separately as "no setup on Y" so the copy
+ * distinguishes "the system disagreed" from "the system never had a
+ * setup" whenever Y > 0.
  */
 function ScorecardFooter({ aggregate }: { aggregate: ReplayAggregate }) {
   const agreementPct =
     aggregate.system_agreement_rate != null ? `${Math.round(aggregate.system_agreement_rate * 100)}%` : '—';
+  const winRatePct = aggregate.win_rate != null ? `${Math.round(aggregate.win_rate * 100)}%` : '—';
+  const avgReturnDisplay =
+    aggregate.avg_return_pct != null
+      ? `${aggregate.avg_return_pct >= 0 ? '+' : ''}${aggregate.avg_return_pct.toFixed(2)}%`
+      : '—';
+  const avgReturnIsPositive = aggregate.avg_return_pct != null && aggregate.avg_return_pct >= 0;
+  const noSetupClause = aggregate.system_no_signal_n > 0 ? ` · no setup on ${aggregate.system_no_signal_n}` : '';
 
   return (
     <div className="mt-3 space-y-1 border-t border-[var(--color-border)] pt-2 text-xs text-[var(--color-text-secondary)]">
       <div>
-        {aggregate.scored_n} / {aggregate.n} scored · Win rate {Math.round(aggregate.win_rate * 100)}%
+        {aggregate.scored_n} / {aggregate.n} scored · Win rate {winRatePct}
       </div>
       <div>
         Avg return:{' '}
-        <span className={aggregate.avg_return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
-          {aggregate.avg_return_pct >= 0 ? '+' : ''}
-          {aggregate.avg_return_pct.toFixed(2)}%
+        <span className={avgReturnIsPositive ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
+          {avgReturnDisplay}
         </span>{' '}
         · Avg edge: {formatEdgeBps(aggregate.avg_exit_edge_bps)}
       </div>
       <div>
-        Agreement: {agreementPct} — system had a setup on {aggregate.system_resolved_n} of {aggregate.scored_n} entries
+        Agreement: {agreementPct} — system had a setup on {aggregate.system_resolved_n} of {aggregate.scored_n}{' '}
+        entries{noSetupClause}
       </div>
     </div>
   );

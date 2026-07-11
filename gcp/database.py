@@ -708,12 +708,22 @@ def row_exists(table: str, where: dict) -> bool:
         return False
 
 
-def execute_sql(sql: str, params: Optional[dict] = None) -> None:
-    """Execute a non-SELECT statement (INSERT, UPDATE, DELETE, DDL)."""
+def execute_sql(sql: str, params: Optional[dict] = None) -> int:
+    """Execute a non-SELECT statement (INSERT, UPDATE, DELETE, DDL).
+
+    Returns the driver-reported ``rowcount`` for the statement (e.g. how
+    many rows an UPDATE/DELETE actually matched), so callers that need to
+    detect a zero-row race — a conditional UPDATE whose WHERE clause no
+    longer matches because another writer got there first — can act on it
+    instead of assuming success. DDL and some multi-statement forms report
+    -1 (driver doesn't know); callers doing DDL should ignore the return
+    value.
+    """
     engine = get_engine()
     import sqlalchemy
     with engine.begin() as conn:
-        conn.execute(sqlalchemy.text(sql), params or {})
+        result = conn.execute(sqlalchemy.text(sql), params or {})
+        return result.rowcount
 
 
 # Single source of truth for `lib.indicators.add_all_indicators()` output

@@ -787,6 +787,10 @@ async def market_coverage(symbols: str = Query(..., description="Comma-separated
     Rule 0: batch by grouping key, never per-row/per-symbol): one covering
     market_data_daily, one covering market_data_intraday (the partitioned
     parent table — see gcp/schema.sql:100).
+
+    NOTE: `symbols` is silently truncated to the first 50 tickers (see the
+    `[:50]` slice below) — requests beyond that count get no error, just a
+    coverage map missing the overflow symbols.
     """
     syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:50]
     if not syms:

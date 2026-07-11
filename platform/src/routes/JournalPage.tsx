@@ -17,6 +17,7 @@ import { TickerCombobox } from '@/components/shared/TickerCombobox';
 import { PriceAreaChart } from '@/components/charts/PriceAreaChart';
 import { fmtPct, NA } from '@/lib/format';
 import { computeJournalStats } from '@/lib/journalStats';
+import { todayET } from '@/lib/dates';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,15 @@ export function tradesToCsv(entries: JournalEntry[]): string {
   return header + rows.join('\n');
 }
 
+// The `/api/journal/export/{ticker}` endpoint's `JournalTradeExportItem`
+// model requires exit_date/exit_time/exit_price (server-side 422 pinned in
+// tests/test_journal_phase2.py::test_export_endpoint_422s_for_active_shaped_item),
+// so an active (unexited) trade has nothing to export — filter it out before
+// the pipeline POST, never send a partial row and rely on the server to reject it.
+export function exportableTrades(entries: JournalEntry[]): JournalEntry[] {
+  return entries.filter((e) => e.status !== 'active' && e.exit_ts != null);
+}
+
 function downloadCsv(content: string, filename: string) {
   const blob = new Blob([content], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -93,16 +103,30 @@ function downloadCsv(content: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-const emptyForm = () => ({
-  direction: 'CALL' as 'CALL' | 'PUT',
-  entryDate: new Date().toISOString().slice(0, 10),
-  entryTime: '09:30',
-  entryPrice: '' as string | number,
-  exitDate: new Date().toISOString().slice(0, 10),
-  exitTime: '10:00',
-  exitPrice: '' as string | number,
-  notes: '',
-});
+// #702 follow-ups Task 4 item 1: the form's default dates used
+// `new Date().toISOString()`, which is UTC and is wrong for 4-5 hours every
+// evening (see lib/dates.ts's header comment) — a trader logging a trade at
+// 8pm ET would default to tomorrow's date. `todayET()` is the one source of
+// truth for "today" on the market calendar; exported as a pure helper so the
+// ET-alignment is testable without mounting the form.
+export function defaultFormDates(): { entryDate: string; exitDate: string } {
+  const d = todayET();
+  return { entryDate: d, exitDate: d };
+}
+
+const emptyForm = () => {
+  const { entryDate, exitDate } = defaultFormDates();
+  return {
+    direction: 'CALL' as 'CALL' | 'PUT',
+    entryDate,
+    entryTime: '09:30',
+    entryPrice: '' as string | number,
+    exitDate,
+    exitTime: '10:00',
+    exitPrice: '' as string | number,
+    notes: '',
+  };
+};
 
 // ── API hooks ──────────────────────────────────────────────────────────────
 
@@ -186,15 +210,16 @@ export default function JournalPage() {
   // closedCount/totalCount rather than drifting from a separately-scoped
   // filter.
   const [includeReplay, setIncludeReplay] = useState(false);
-  const scopedEntries = includeReplay ? entries : entries.filter((e) => e.source !== 'replay');
 
   const stats = computeJournalStats(entries, { includeReplay });
-  const { closedCount, totalCount, winRate, avgReturn, totalReturn, avgWin, equityPoints, replayExcludedCount } = stats;
-  // Compute closed wins count for the Trades tile sub-label
-  const wins = scopedEntries
-    .filter((e): e is JournalEntry & { return_pct: number } =>
-      typeof e.return_pct === 'number' && !Number.isNaN(e.return_pct) && e.return_pct > 0)
-    .length;
+  // #702 follow-ups Task 4 item 3: winCount/lossCount now come straight off
+  // computeJournalStats (already scoped by includeReplay, null-return
+  // entries excluded) instead of a separately-scoped local recompute that
+  // could drift from it.
+  const {
+    closedCount, totalCount, winRate, avgReturn, totalReturn, avgWin,
+    equityPoints, replayExcludedCount, winCount, lossCount,
+  } = stats;
 
   const handleAdd = () => {
     const ep = parseFloat(String(form.entryPrice));
@@ -206,16 +231,20 @@ export default function JournalPage() {
   };
 
   const exportPipeline = async () => {
-    const csv = tradesToCsv(entries);
+    // Active (unexited) trades have no exit_* to export and the server 422s
+    // on them — filter locally so the request only ever carries closed
+    // trades, and tell the user how many were left out.
+    const closed = exportableTrades(entries);
+    const skippedCount = entries.length - closed.length;
+    const csv = tradesToCsv(closed);
     try {
       const r = await fetch(`/api/journal/export/${activeTicker}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          trades: entries.map((e, i) => {
+          trades: closed.map((e, i) => {
             const entry = tsToDisplay(e.entry_ts);
-            // Active (null-exit) trades send null, never a fabricated "—" date.
-            const exit  = e.exit_ts == null ? null : tsToDisplay(e.exit_ts);
+            const exit  = tsToDisplay(e.exit_ts);
             return {
               id: String(i + 1),
               ticker: e.ticker,
@@ -223,8 +252,8 @@ export default function JournalPage() {
               entry_date: entry.date,
               entry_time: entry.time,
               entry_price: e.entry_price,
-              exit_date: exit?.date ?? null,
-              exit_time: exit?.time ?? null,
+              exit_date: exit.date,
+              exit_time: exit.time,
               exit_price: e.exit_price,
               notes: e.notes,
             };
@@ -233,7 +262,8 @@ export default function JournalPage() {
       });
       if (r.ok) {
         const d = await r.json();
-        setExportStatus(`Exported ${d.trades_exported} trades → ${d.filename}`);
+        const skippedNote = skippedCount > 0 ? ` · ${skippedCount} active skipped` : '';
+        setExportStatus(`Exported ${d.trades_exported} closed trades${skippedNote} → ${d.filename}`);
       } else {
         downloadCsv(csv, `${activeTicker.toLowerCase()}_journal.csv`);
         setExportStatus('API unavailable — downloaded CSV locally');
@@ -313,7 +343,7 @@ export default function JournalPage() {
             Include practice sessions
           </label>
           <div className="grid grid-cols-2 gap-[14px] md:grid-cols-3 lg:grid-cols-5">
-            <KpiTile label="Trades" value={String(totalCount)} sub={`${wins}W / ${closedCount - wins}L`} />
+            <KpiTile label="Trades" value={String(totalCount)} sub={`${winCount}W / ${lossCount}L`} />
             <KpiTile label="Win rate" value={winRate !== null ? `${winRate.toFixed(0)}%` : NA} tone={(winRate ?? 0) >= 50 ? 'bull' : 'bear'} />
             <KpiTile label="Total P&L" value={fmtPct(totalReturn)} tone={(totalReturn ?? 0) >= 0 ? 'bull' : 'bear'} />
             <KpiTile label="Avg / trade" value={fmtPct(avgReturn)} tone={(avgReturn ?? 0) >= 0 ? 'bull' : 'bear'} />

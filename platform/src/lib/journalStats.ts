@@ -30,6 +30,18 @@ export interface JournalStats {
    *  trade(s) excluded from stats" note, kept separate from the existing
    *  open/unreturned-trade exclusion note. */
   replayExcludedCount: number;
+  /** Closed (return_pct != null) entries with return_pct > 0. Scoped the
+   *  same as every other aggregate here (replay-excluded unless
+   *  includeReplay). winCount + lossCount === closedCount always. */
+  winCount: number;
+  /** Closed entries with return_pct <= 0 — matches the `<=0`-is-loss
+   *  convention in platform/api/routers/analytics.py::_compute_stats
+   *  (`"win" if pnl > 0 else "loss"`), the primary source for this
+   *  convention. lib/backtest.py's `BacktestResult.losers` now agrees too
+   *  (fixed in #702 to use `return_pct is not None and return_pct <= 0`
+   *  instead of a falsy-zero `and` check that silently dropped exact-0.0
+   *  breakeven trades from both winners and losers). */
+  lossCount: number;
 }
 
 /** Aggregate journal stats. Entries with null/undefined return_pct are
@@ -50,6 +62,7 @@ export function computeJournalStats(
     typeof e.return_pct === 'number' && !Number.isNaN(e.return_pct));
   const returns = withRet.map((e) => e.return_pct);
   const wins = returns.filter((r) => r > 0);
+  const losses = returns.filter((r) => r <= 0);
   const sum = returns.reduce((a, b) => a + b, 0);
   const sorted = [...withRet].sort((a, b) =>
     (a.exit_ts || a.entry_ts).localeCompare(b.exit_ts || b.entry_ts));
@@ -67,5 +80,7 @@ export function computeJournalStats(
     avgWin: wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : null,
     equityPoints,
     replayExcludedCount,
+    winCount: wins.length,
+    lossCount: losses.length,
   };
 }

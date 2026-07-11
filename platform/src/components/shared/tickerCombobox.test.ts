@@ -6,7 +6,7 @@
 // badge mapping, the search-result merge, and the debounce scheduler.
 
 import { describe, expect, it, vi } from 'vitest';
-import { coverageBadge, dedupeSearchResults, mergeSuggestions } from './TickerCombobox';
+import { coverageBadge, dedupeSearchResults, defaultSelectionIndex, mergeSuggestions } from './TickerCombobox';
 import { scheduleDebounce } from '@/hooks/useDebouncedValue';
 
 describe('coverageBadge', () => {
@@ -91,6 +91,40 @@ describe('dedupeSearchResults', () => {
     const msft = { ...aapl, symbol: 'MSFT', name: 'Microsoft Corp' };
     const rows = dedupeSearchResults([iwm, aapl, msft], ['IWM'], []);
     expect(rows.map((r) => r.symbol)).toEqual(['AAPL', 'MSFT']);
+  });
+
+  it('dedupes duplicate symbols WITHIN the search results themselves, first occurrence wins (API returns AAPL twice)', () => {
+    const aaplDup = { ...aapl, match_score: 0.5, name: 'Apple Inc (dup)' };
+    const rows = dedupeSearchResults([aapl, aaplDup], [], []);
+    expect(rows.map((r) => r.symbol)).toEqual(['AAPL']);
+    expect(rows[0]).toBe(aapl); // first occurrence kept, not the later duplicate
+  });
+
+  it('dedupes within-results duplicates case-insensitively', () => {
+    const rows = dedupeSearchResults([aapl, { ...aapl, symbol: 'aapl' }], [], []);
+    expect(rows.map((r) => r.symbol)).toEqual(['AAPL']);
+  });
+});
+
+describe('defaultSelectionIndex', () => {
+  it('returns 0 when the query is empty (no search results to prioritize)', () => {
+    expect(defaultSelectionIndex(3, 0, 0, false)).toBe(0);
+  });
+
+  it('returns 0 when the query is non-empty but there are no search results yet', () => {
+    expect(defaultSelectionIndex(3, 0, 0, true)).toBe(0);
+  });
+
+  it('returns the flat index of the first search row when the query is non-empty and results exist', () => {
+    expect(defaultSelectionIndex(3, 0, 1, true)).toBe(3);
+  });
+
+  it('accounts for recents preceding search rows in the flat list', () => {
+    expect(defaultSelectionIndex(3, 2, 4, true)).toBe(5);
+  });
+
+  it('ignores search results when the query is empty even if a stale count is passed', () => {
+    expect(defaultSelectionIndex(3, 2, 4, false)).toBe(0);
   });
 });
 

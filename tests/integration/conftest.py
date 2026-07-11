@@ -39,6 +39,7 @@ def clean_db(db_engine):
         "backtest_trades",
         "backtest_sweeps",
         "backtest_reports",
+        "journal_entries",
     )
     with db_engine.begin() as conn:
         for t in tables:

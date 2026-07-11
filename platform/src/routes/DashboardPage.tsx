@@ -212,11 +212,13 @@ function isoPlusDays(days: number): string {
   return isoPlusDaysFrom(todayISO(), days);
 }
 // Add `days` to an arbitrary ISO date (used so review-mode catalysts window
-// is anchored to the review date, not today).
+// is anchored to the review date, not today). #702 follow-ups Task 4 item 2:
+// this used to hand-roll the same UTC-anchored arithmetic lib/dates.ts's
+// addDaysToISO already provides (both are UTC-anchored — behavior-identical
+// fold, not a semantics change). Kept as a local name since it's the call
+// site's established vocabulary throughout this file.
 function isoPlusDaysFrom(baseISO: string, days: number): string {
-  const d = new Date(`${baseISO}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addDaysToISO(baseISO, days);
 }
 
 // ── Empty/unavailable state ──────────────────────────────────────────────────

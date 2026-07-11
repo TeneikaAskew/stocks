@@ -17,7 +17,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Request
@@ -55,8 +55,9 @@ def _journal_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     return query_to_dataframe(sql, params)
 
 
-def _journal_exec(sql: str, params: Optional[dict] = None) -> None:
-    execute_sql(sql, params)
+def _journal_exec(sql: str, params: Optional[dict] = None) -> int:
+    """Forwards to `execute_sql` and returns its rowcount (see there)."""
+    return execute_sql(sql, params)
 
 
 def _seed_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -99,7 +100,10 @@ class JournalTradeCreate(BaseModel):
     exit_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profits: Optional[list[float]] = None   # up to 3 levels -> tp1..tp3
-    status: Optional[str] = None                 # derived if omitted
+    # Derived if omitted. Constrained to the values `_derive_status` actually
+    # produces (plus the "closed"-but-flat-return legacy value) so a typo'd
+    # override can't persist a junk status the rest of the app can't render.
+    status: Optional[Literal["active", "win", "loss", "breakeven", "closed"]] = None
     source: str = "manual"                        # manual | chart | replay, etc.
     session_id: Optional[str] = None              # replay-trainer session grouping
     notes: Optional[str] = ""
@@ -398,12 +402,18 @@ async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
             new_status = _derive_status(True, ret_pct)
             ret_pct_out = ret_pct
 
-            _journal_exec(
+            # `AND status = 'active'` closes the TOCTOU window between the
+            # SELECT above and this UPDATE: if a concurrent PATCH already
+            # closed the trade in between, this UPDATE matches zero rows
+            # instead of clobbering the other request's exit. rowcount==0
+            # means "lost the race" -> 409, never a fabricated 200 over a
+            # no-op write.
+            rowcount = _journal_exec(
                 """
                 UPDATE journal_entries
                 SET exit_ts = :exit_ts, exit_price = :exit_price,
                     return_pct = :return_pct, status = :status
-                WHERE id = :id AND user_email = :user_email
+                WHERE id = :id AND user_email = :user_email AND status = 'active'
                 """,
                 {
                     "exit_ts": exit_ts,
@@ -414,6 +424,8 @@ async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
                     "user_email": owner,
                 },
             )
+            if not rowcount:
+                raise HTTPException(status_code=409, detail="trade already closed")
             return {"source": "cloud_sql", "id": trade_id, "return_pct": ret_pct_out, "status": new_status}
         except HTTPException:
             raise
@@ -487,6 +499,16 @@ async def seed_trades(ticker: str, date: str):
     as a 503, never a silently-empty trade list.
     """
     ticker_upper = ticker.upper()
+
+    # Validate BEFORE any query runs: a malformed `date` used to reach the
+    # Postgres `date` cast in the WHERE clause and surface as a generic
+    # "seed query failed" 503, masking a client input error as a server
+    # outage. Reject it here as a 422 instead.
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must be in YYYY-MM-DD format")
+
     if not _HAS_CLOUD_SQL:
         return {"status": "unavailable", "reason": "seed layer requires Cloud SQL"}
 

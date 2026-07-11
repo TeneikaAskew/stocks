@@ -210,6 +210,103 @@ class TestBacktestResult:
         assert len(result.winners) == 1
         assert len(result.losers) == 1
 
+    def test_breakeven_trade_counts_as_loser_not_dropped(self):
+        """REGRESSION: `winners`/`losers` used `t.return_pct and ...`, and
+        in Python `0.0 and anything` short-circuits to the falsy `0.0` —
+        so an exact-breakeven trade (return_pct == 0.0) satisfied NEITHER
+        the winners filter NOR the losers filter and was silently dropped
+        from both. total_trades still counted it, so win_rate's numerator
+        (winners) undercounted while a breakeven trade should count as a
+        loss — matching platform/api/routers/analytics.py::_compute_stats
+        (`"win" if pnl > 0 else "loss"`)."""
+        trades = [
+            Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
+                  base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+                  conditions_met=[], return_pct=0.01),
+            Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
+                  base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+                  conditions_met=[], return_pct=0.0),
+            Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',
+                  base_score=3, strat_bonus=0, total_score=3, position_size=0.25,
+                  conditions_met=[], return_pct=-0.01),
+        ]
+        result = BacktestResult(trades=trades, daily_pnl=[])
+        assert len(result.winners) == 1
+        assert result.winners[0].return_pct == 0.01
+        assert len(result.losers) == 2
+        assert {t.return_pct for t in result.losers} == {0.0, -0.01}
+
+    def test_duration_metrics_includes_breakeven_and_excludes_none(self):
+        """REGRESSION: duration_metrics used `if t.return_pct and ...` which
+        treats 0.0 (breakeven) as falsy. This caused breakeven trades to be
+        silently dropped from BOTH avg_win_duration_min and avg_loss_duration_min.
+        Breakeven should count as a loss; None should be excluded from both.
+
+        Trades with real durations:
+        - +0.01 return (5 min) → should be in winners
+        - 0.0 return (10 min) → should be in losers
+        - -0.01 return (15 min) → should be in losers
+        - None return (no exit) → should be in neither
+        """
+        base_time = datetime(2024, 1, 2, 10, 0)
+        trades = [
+            Trade(
+                entry_time=base_time,
+                exit_time=base_time + timedelta(minutes=5),
+                entry_price=100, exit_price=100.01,
+                direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                position_size=0.25, conditions_met=[], exit_reason='target',
+                return_pct=0.01,
+            ),
+            Trade(
+                entry_time=base_time + timedelta(minutes=6),
+                exit_time=base_time + timedelta(minutes=16),
+                entry_price=100, exit_price=100.0,
+                direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                position_size=0.25, conditions_met=[], exit_reason='target',
+                return_pct=0.0,
+            ),
+            Trade(
+                entry_time=base_time + timedelta(minutes=17),
+                exit_time=base_time + timedelta(minutes=32),
+                entry_price=100, exit_price=99.99,
+                direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                position_size=0.25, conditions_met=[], exit_reason='stop_loss',
+                return_pct=-0.01,
+            ),
+            Trade(
+                entry_time=base_time + timedelta(minutes=33),
+                entry_price=100, direction='CALL',
+                base_score=3, strat_bonus=0, total_score=3,
+                position_size=0.25, conditions_met=[],
+                return_pct=None,  # No exit, no duration
+            ),
+        ]
+        result = BacktestResult(trades=trades, daily_pnl=[])
+
+        # Verify winners and losers properties
+        assert len(result.winners) == 1
+        assert result.winners[0].return_pct == 0.01
+        assert len(result.losers) == 2
+        assert {t.return_pct for t in result.losers} == {0.0, -0.01}
+
+        # Check duration_metrics
+        metrics = result.duration_metrics()
+        assert 'avg_duration_min' in metrics
+        assert 'avg_win_duration_min' in metrics
+        assert 'avg_loss_duration_min' in metrics
+
+        # Winners: 1 trade with 5 min duration
+        assert metrics['avg_win_duration_min'] == 5.0
+
+        # Losers: 2 trades with 10 min (breakeven) and 15 min (loss)
+        # Average should be (10 + 15) / 2 = 12.5
+        assert metrics['avg_loss_duration_min'] == 12.5
+
+        # Overall average: (5 + 10 + 15) / 3 = 10.0
+        # The None-return trade has no duration, so not included
+        assert metrics['avg_duration_min'] == 10.0
+
     def test_profit_factor(self):
         trades = [
             Trade(entry_time=datetime.now(), entry_price=100, direction='CALL',

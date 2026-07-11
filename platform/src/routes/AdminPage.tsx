@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Lock, LogOut, Save } from 'lucide-react';
 import {
   clearAdminToken,
@@ -25,6 +25,16 @@ export default function AdminPage() {
   const { isAdmin, isLoading: userLoading } = useUser();
   const [token, setToken] = useState<string | null>(getAdminToken());
 
+  // #702 follow-ups Task 4 item 5: stable identity across renders so
+  // RoutingPanel's `useEffect([routesQuery.error, onLogout])` doesn't
+  // re-run on every parent re-render from a fresh inline arrow. Declared
+  // before the userLoading early return — Rules of Hooks requires every
+  // hook to run on every render, regardless of which branch below returns.
+  const onLogout = useCallback(() => {
+    clearAdminToken();
+    setToken(null);
+  }, []);
+
   if (userLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -41,7 +51,7 @@ export default function AdminPage() {
       <h1 className="mb-4 text-[22px] font-bold tracking-[-0.02em] text-[var(--on-surface)]">Admin</h1>
       {authed ? (
         <div className="space-y-8">
-          <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} showLogout={!isAdmin} />
+          <RoutingPanel onLogout={onLogout} showLogout={!isAdmin} />
 
           <section>
             <h2 className="mb-3 text-base font-semibold text-[var(--color-text-primary)]">
