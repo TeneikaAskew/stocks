@@ -45,6 +45,11 @@ from lib.indicators import (
 # uses. See lib/signals.py module docstring.
 from lib.signals import generate_signals
 
+# July-6 chart teaching voter (trend confirmation in a pullback band) —
+# distinct from the production alerting voter above. See lib/chart_voter.py
+# module docstring for the full voter taxonomy (issue #701).
+from lib.chart_voter import evaluate_chart_voter
+
 log = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -464,7 +469,11 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
             "atr": None,
             "vwap": None,
         }
-        return {"indicators": empty_ind, "signals": _empty_signals()}
+        return {
+            "indicators": empty_ind,
+            "signals": _empty_signals(),
+            "chart_voter": evaluate_chart_voter([], None, None, None, None),
+        }
 
     # Assemble Series — aligned, no index mismatches.
     closes = pd.Series([b.close for b in bars], dtype=float)
@@ -511,7 +520,15 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
         rvol = vol / req.avg_volume_20d
 
     signals = _build_signals(price, indicators, rvol)
-    return {"indicators": indicators, "signals": signals}
+
+    chart_voter = evaluate_chart_voter(
+        closes=closes.tolist(),
+        rsi=indicators["rsi"],
+        stoch_k=indicators["stochK"],
+        ema9=indicators["ema9"],
+        vwap=indicators["vwap"],
+    )
+    return {"indicators": indicators, "signals": signals, "chart_voter": chart_voter}
 
 
 @router.post("/api/live/signal-series")

@@ -88,6 +88,13 @@ const MOCK_SIMILAR_CALL = {
 // /api/live/indicators — lib/indicators.py). CALL side deliberately fires
 // (strength >= 70) so the badge/fires-path is exercised deterministically;
 // PUT side does not.
+//
+// chart_voter is the July-6 5-condition "teaching voter" restored server-side
+// (POST /api/live/indicators -> chart_voter, lib/chart_voter.py) that drives
+// the Charts page's Strategy Conditions card (Task 3 of the July-6
+// restoration). CALL fires (met_count 3/5, PUT doesn't) so the card's
+// fires-path/badge is exercised deterministically. Labels/details verbatim
+// from lib/chart_voter.py's Global Constraints.
 const MOCK_LIVE_INDICATORS = {
   indicators: {
     ema9: 220.5, ema20: 220.0, ema50: 219.0, rsi: 55,
@@ -128,6 +135,35 @@ const MOCK_LIVE_INDICATORS = {
         { id: 'p_atr', label: 'ATR > 2.0', met: false, current: 1.2, threshold: 2.0, operator: '>' },
       ],
     },
+  },
+  chart_voter: {
+    call: {
+      direction: 'CALL',
+      met_count: 3,
+      total_count: 5,
+      fires: true,
+      conditions: [
+        { id: 'call_consec_up', label: '3 consecutive up moves', met: true, detail: '3/3 last bars up' },
+        { id: 'call_rsi_band', label: 'RSI 25–50 (bullish band)', met: false, detail: 'RSI 55.0' },
+        { id: 'call_stoch_room', label: 'StochRSI K < 80 (room to run)', met: true, detail: 'K 72.0' },
+        { id: 'call_above_vwap', label: 'Price > VWAP', met: true, detail: '221.50 > VWAP 220.20' },
+        { id: 'call_above_ema9', label: 'Price > EMA9', met: false, detail: '220.50 < EMA9 221.50' },
+      ],
+    },
+    put: {
+      direction: 'PUT',
+      met_count: 1,
+      total_count: 5,
+      fires: false,
+      conditions: [
+        { id: 'put_consec_down', label: '3 consecutive down moves', met: false, detail: '0/3 last bars down' },
+        { id: 'put_rsi_band', label: 'RSI 50–75 (bearish band)', met: true, detail: 'RSI 55.0' },
+        { id: 'put_stoch_room', label: 'StochRSI K > 20 (room to fall)', met: false, detail: 'K 72.0' },
+        { id: 'put_below_vwap', label: 'Price < VWAP', met: false, detail: '221.50 < VWAP 220.20' },
+        { id: 'put_below_ema9', label: 'Price < EMA9', met: false, detail: '221.50 > EMA9 220.50' },
+      ],
+    },
+    firing: 'CALL',
   },
 };
 
@@ -173,13 +209,15 @@ test.describe('Charts page — Phase D/4/5 cards', () => {
     await page.goto('/charts');
     await page.waitForLoadState('networkidle');
     await expect(page.getByText('Live Strategy Conditions')).toBeVisible();
-    await expect(page.getByText(/Price > EMA9/i).first()).toBeVisible();
-    await expect(page.getByText(/Price < EMA9/i).first()).toBeVisible();
-    // The voter result badge should exist (CALL / PUT / "No setup") — the
-    // condition count isn't pinned so the assertion survives future
-    // additions/removals from the server-side condition set.
-    const badge = page.getByText(/CALL · \d+\/\d+|PUT · \d+\/\d+|No setup/i).first();
-    await expect(badge).toBeVisible();
+    // July-6 labels, verbatim from lib/chart_voter.py / MOCK_LIVE_INDICATORS.chart_voter.
+    await expect(page.getByText('3 consecutive up moves').first()).toBeVisible();
+    await expect(page.getByText('RSI 25–50 (bullish band)').first()).toBeVisible();
+    await expect(page.getByText('3 consecutive down moves').first()).toBeVisible();
+    await expect(page.getByText('RSI 50–75 (bearish band)').first()).toBeVisible();
+    // Card badge — CALL fires with met_count 3/5.
+    await expect(page.getByText(/CALL · 3\/5/).first()).toBeVisible();
+    // Column header — CALL's "3/5 ✓ fires" suffix.
+    await expect(page.getByText(/3\/5 ✓ fires/).first()).toBeVisible();
   });
 
   test('Similar Setups card renders heading and either matches or placeholder', async ({ page }) => {
@@ -203,6 +241,28 @@ test.describe('Charts page — Phase D/4/5 cards', () => {
     // Click again to toggle off (no assertion on visual state — just that
     // the button doesn't throw).
     await sigButton.click();
+  });
+
+  // Task 4 of the July-6 restoration: the chart wrapper lost its viewport-
+  // based height to a wrapping toolbar + an effective fixed ~400px chart.
+  // This pins the fix (viewport-clamped wrapper height + single-row
+  // toolbar) without reintroducing the #700 overflow bug.
+  test('chart fills the viewport height without horizontal overflow', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    const canvas = page.locator('canvas').first();
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThan(450); // was ~400 flat before
+    // overflow guard: the #700 fix must hold — canvas never wider than its card
+    const card = page.locator('[data-testid="chart-card"]');
+    const cardBox = await card.boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(cardBox!.width + 1);
+    // no page-level horizontal scrollbar
+    const scrollW = await page.evaluate(() => document.documentElement.scrollWidth);
+    const clientW = await page.evaluate(() => document.documentElement.clientWidth);
+    expect(scrollW).toBeLessThanOrEqual(clientW + 1);
   });
 });
 
