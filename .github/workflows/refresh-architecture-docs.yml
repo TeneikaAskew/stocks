@@ -371,9 +371,6 @@ jobs:
         run: |
           echo "::notice::No meaningful doc changes this run — exiting clean without opening a PR."
 
-  - name: No-op summary
-    if: steps.detect.outputs.meaningful != '1'
-
   # Standard failure handler (CLAUDE.md "Automated Workflow Failure
   # Handling") — was missing here, so the 2026-07-01 `gh pr create`
   # failure (PR-creation blocked, see the Open refresh PR step above)

@@ -11,6 +11,14 @@ workflow via the `PR_WORKFLOW_TOKEN` PAT (see
 docs/CLAUDE_CODE_ON_WEB.md "Secret naming for blast-radius isolation").
 This workflow also had no `handle-failure` job, so the failure recurred
 silently for two months with no issue/PR trail.
+
+A third failure mode hit on 2026-07-06 (issue #688): the workflow reuses
+a fixed `bot/arch-refresh-YYYY-MM` branch name for every run in a given
+month. The 2026-07-01 scheduled run failed after already pushing that
+branch; the 2026-07-06 workflow_dispatch retry regenerated the docs from
+a fresh main checkout and tried to push the same branch name again, and
+`git push` was rejected as non-fast-forward because the two commits had
+diverged histories. The step failed before `gh pr create` ever ran.
 """
 from __future__ import annotations
 
@@ -40,6 +48,25 @@ def test_open_pr_step_uses_pr_workflow_token_not_default_github_token():
         "exactly what broke the 2026-06-01 and 2026-07-01 runs."
     )
     assert "secrets.GITHUB_TOKEN" not in gh_token
+
+
+def test_open_pr_step_force_pushes_the_monthly_branch():
+    steps = DOC["jobs"]["refresh"]["steps"]
+    open_pr_steps = [s for s in steps if s.get("name") == "Open refresh PR"]
+    assert len(open_pr_steps) == 1, "expected exactly one 'Open refresh PR' step"
+    run_script = open_pr_steps[0]["run"]
+    push_lines = [
+        line for line in run_script.splitlines() if "git push" in line and "$BRANCH" in line
+    ]
+    assert push_lines, "expected a 'git push ... \"$BRANCH\"' line in the Open refresh PR step"
+    assert all("--force" in line for line in push_lines), (
+        "the monthly bot/arch-refresh-YYYY-MM branch is fully regenerated from "
+        "a fresh main checkout every run, so the push must use --force — "
+        "otherwise a second run in the same month (retry after failure, or "
+        "workflow_dispatch after the scheduled run already pushed) hits a "
+        "non-fast-forward rejection and the step fails before `gh pr create` "
+        "runs, exactly as it did on 2026-07-06 (issue #688)."
+    )
 
 
 def test_handle_failure_job_exists_and_is_wired_correctly():
