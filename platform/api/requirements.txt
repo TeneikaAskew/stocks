@@ -6,3 +6,12 @@ httpx>=0.27.0
 google-cloud-aiplatform>=1.38.0
 google-genai>=1.0.0
 firebase-admin>=6.5.0
+
+# python-multipart backs FastAPI's UploadFile/Form parsing — required at
+# runtime by POST /api/journal/import/preview (api/routers/journal.py,
+# multipart broker-CSV upload). Without this pin, FastAPI raises at request
+# time ("Form data requires python-multipart to be installed") in the
+# deployed platform-api image, which does NOT get python-multipart
+# transitively (it is currently on the box only via streamlit, a
+# requirements-research.txt dev-only package not present in this image).
+python-multipart>=0.0.9

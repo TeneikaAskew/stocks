@@ -62,9 +62,24 @@ const MOCK_TRADES_WITH_ACTIVE = {
   ],
 };
 
+// Task 5 (journal one-stop): the page now also fetches the trading-date list
+// + market data (for the interactive chart) and the admin Examples dataset.
+// These structural mocks keep the legacy tests deterministic: an empty dates
+// list renders the chart card's honest no-data state, and empty Examples
+// keep the legacy own-journal assertions meaningful.
+async function mockOneStopStructure(page: import('@playwright/test').Page) {
+  await page.route('**/api/market/dates/IWM', (r) =>
+    r.fulfill(M.ok({ ticker: 'IWM', dates: [], months: [] }))
+  );
+  await page.route('**/api/journal/examples/IWM', (r) =>
+    r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] }))
+  );
+}
+
 test.describe('Trade Journal', () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
+    await mockOneStopStructure(page);
     await page.route('**/api/journal/trades/IWM*', (r) => r.fulfill(M.ok(MOCK_TRADES)));
   });
 
@@ -86,7 +101,14 @@ test.describe('Trade Journal', () => {
     );
     await page.goto('/journal');
     await page.waitForLoadState('networkidle');
+    // Task 5 structural re-anchor: an empty own journal now DEFAULTS to the
+    // Examples view (design spec "Views"), and the mocked Examples set is
+    // empty too — the honest examples empty state satisfies the original
+    // /no.*trade/ assertion. Toggling to My journal shows the own empty
+    // state, which is the surface the original test pinned.
     await expect(page.getByText(/no.*trade|empty|add.*trade/i).first()).toBeVisible();
+    await page.getByRole('button', { name: 'My journal' }).click();
+    await expect(page.getByText(/no trades logged for iwm yet/i)).toBeVisible();
   });
 
   test('renders within 5s perf budget', async ({ page }) => {
@@ -156,6 +178,7 @@ test.describe('Trade Journal — practice-trade analytics hygiene (Task 5.3)', (
 
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
+    await mockOneStopStructure(page);
     await page.route('**/api/journal/trades/IWM*', (r) => r.fulfill(M.ok(MIXED_TRADES)));
   });
 
@@ -179,5 +202,25 @@ test.describe('Trade Journal — practice-trade analytics hygiene (Task 5.3)', (
     await expect(page.getByText('-40.00%')).toBeVisible();
     await expect(page.getByText('1W / 1L')).toBeVisible();
     await expect(note).not.toBeVisible();
+  });
+
+  // Task 7 carried item (T6 review, Important): source==='replay' rows get a
+  // muted "practice" badge next to the direction cell in the trade table —
+  // same visual weight as the existing "active" badge, so a practice trade
+  // is visually distinguishable from a real one even when its stats are
+  // folded into the aggregates via the toggle above. Placed in THIS spec
+  // (rather than journal-onestop.spec.ts) because MIXED_TRADES above is
+  // already the one fixture in the suite with a real source:'replay' row
+  // rendered in the table — reusing it avoids inventing a second one.
+  test('replay-sourced rows carry a muted "practice" badge next to the direction cell', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const replayRow = page.locator('tr', { hasText: 'Practice replay trade.' });
+    await expect(replayRow.getByText('practice', { exact: true })).toBeVisible();
+
+    // The manual (non-replay) row must NOT carry the badge.
+    const manualRow = page.locator('tr', { hasText: 'Manual win trade.' });
+    await expect(manualRow.getByText('practice', { exact: true })).toHaveCount(0);
   });
 });

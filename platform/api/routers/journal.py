@@ -2,25 +2,31 @@
 Journal router — Cloud SQL-backed trade journal with local fallback.
 
 Endpoints:
-  GET    /api/journal/trades/{ticker}  — list all journal entries for a ticker
-  POST   /api/journal/trades           — create a new journal entry (active or closed)
-  PATCH  /api/journal/trades/{id}      — close an active trade (sets exit + return_pct/status)
-  DELETE /api/journal/trades/{id}      — delete a journal entry by UUID
-  GET    /api/journal/seed/{ticker}    — read-only admin seed from the pipeline `trades` table
-  POST   /api/journal/export/{ticker}  — write pipeline-compatible CSV to data/signals/
+  GET    /api/journal/trades/{ticker}    — list all journal entries for a ticker
+  POST   /api/journal/trades             — create a new journal entry (active or closed)
+  PATCH  /api/journal/trades/{id}        — close an active trade (sets exit + return_pct/status)
+  DELETE /api/journal/trades/{id}        — delete a journal entry by UUID
+  GET    /api/journal/examples/{ticker}  — read-only admin teaching examples (journal_entries)
+  GET    /api/journal/seed/{ticker}      — read-only admin seed from the pipeline `trades` table
+  POST   /api/journal/export/{ticker}    — write pipeline-compatible CSV to data/signals/
+  POST   /api/journal/import/preview     — parse+FIFO-pair an uploaded broker CSV (no writes)
+  POST   /api/journal/import/commit      — insert caller-selected paired trades from a preview
 """
 import csv
 import json
 import logging
 import math
+import os
+import re
 import sys
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,34 @@ sys.path.insert(0, str(PROJECT_ROOT))
 SIGNALS_DIR = PROJECT_ROOT / "data" / "signals"
 LOCAL_JOURNAL_DIR = PROJECT_ROOT / "data" / "journal"
 
+# Task 3 (2026-07-11 journal one-stop-shop): broker CSV import cap. Import
+# scale in practice is <= a few hundred rows (one brokerage account's trade
+# history); this bounds the pathological case (a multi-year, multi-account
+# export) so a single upload can't turn into thousands of per-trade INSERTs
+# or an unbounded in-memory parse (CLAUDE.md Rule 0). Applies to BOTH the
+# preview endpoint (CSV data-row count) and the commit endpoint (trades list
+# length) — see import_preview / import_commit.
+MAX_IMPORT_ROWS = 5000
+
+# Task-3-review Important-1 fix (2026-07-11): hard byte ceiling on the
+# uploaded file, enforced via a chunked read BEFORE the whole upload is
+# buffered in memory. 5 MiB is generous for a 5,000-row CSV (well under
+# 1 KiB/row) but bounds the pathological case (a caller uploading an
+# arbitrarily large file) so a single request can't turn into an unbounded
+# in-memory buffer regardless of what MAX_IMPORT_ROWS's line-count check
+# would eventually decide (CLAUDE.md Rule 0 — no unbounded reads before a
+# capacity check).
+MAX_IMPORT_BYTES = 5 * 1024 * 1024   # 5 MiB
+_IMPORT_READ_CHUNK_SIZE = 1024 * 1024  # 1 MiB
+
+# Task-3-review Minor-b fix: the broker allowlist `import_preview` already
+# enforces implicitly (any other string 404s out of `parse_csv`'s dispatch
+# with a ValueError -> 422). `import_commit` gets no free ride through
+# `parse_csv` (it never calls it), so it must check explicitly against the
+# SAME set to reject an unsupported broker before persisting `source =
+# f"import:{broker}"` rows under a value nothing else recognizes.
+_ALLOWED_BROKERS = {"robinhood", "webull", "generic"}
+
 # ── Cloud SQL availability check ─────────────────────────────────────────────
 try:
     from gcp.database import is_cloud_sql_configured, query_to_dataframe, execute_sql
@@ -40,8 +74,20 @@ try:
 except Exception:
     _HAS_CLOUD_SQL = False
 
+# Task 2 broker-import core (lib/broker_import.py) — pure parse/pairing, no
+# I/O. This router owns duplicate detection and DB writes (see module
+# docstring pt. 5 in lib/broker_import.py).
+from lib.broker_import import detect_broker, pair_orders, parse_csv  # noqa: E402
+
 # Server-verified identity for per-user scoping.
 from api.auth import current_user_email
+
+# Admin identity for the read-only "Examples" teaching layer (GET /api/journal/
+# examples/{ticker}) — same env var / default the admin gate uses elsewhere
+# (api/main.py:/api/me, api/routers/admin.py). Resolved once at import time
+# (mirrors those call sites); tests override via monkeypatch.setattr on this
+# module attribute rather than reload, same convention as api.auth.AUTH_MODE.
+_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lower()
 
 
 # ── Query/exec indirections (testability) ────────────────────────────────────
@@ -140,6 +186,42 @@ class ExportRequest(BaseModel):
     trades: list[JournalTradeExportItem]
 
 
+class ImportCommitTrade(BaseModel):
+    """One selected `PairedTrade` from a broker-import preview, ready to
+    commit. Mirrors `lib.broker_import.PairedTrade`'s fields exactly — no
+    `owner`/`user_email` field: owner is ALWAYS the authenticated caller,
+    never client-supplied (see `import_commit`).
+
+    `return_pct` is accepted for backward-compat with the preview response
+    shape only — it is ADVISORY, NEVER trusted for persistence (Task-3-review
+    Important-2 fix: a client could otherwise submit prices and a
+    contradictory return_pct and have the fabricated number persisted
+    verbatim). `import_commit` always recomputes it server-side from
+    `entry_price`/`exit_price` via `_import_return_pct` — the same
+    percent-change math `_return_pct` uses, but WITHOUT `_return_pct`'s
+    CALL/PUT sign flip (entry/exit here are option premiums on a long-only
+    round trip, not an underlying-price directional bet — see
+    `_import_return_pct`'s docstring). `status` is likewise accepted but
+    re-derived server-side from `exit_ts`/the recomputed `return_pct` via
+    `_derive_status` — never trusted verbatim — so a client can't fabricate
+    "win"/"loss" independent of the numbers.
+    """
+    ticker: str
+    direction: str                       # CALL | PUT
+    entry_ts: str                        # "YYYY-MM-DD HH:MM"
+    entry_price: float
+    exit_ts: Optional[str] = None
+    exit_price: Optional[float] = None
+    return_pct: Optional[float] = None   # ADVISORY ONLY — ignored at commit, see docstring
+    quantity: int = 1
+    status: str = "active"               # "active" | "closed" — advisory, re-derived below
+
+
+class ImportCommitRequest(BaseModel):
+    broker: str
+    trades: list[ImportCommitTrade]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _return_pct(direction: str, entry: float, exit_: float) -> float:
@@ -147,6 +229,48 @@ def _return_pct(direction: str, entry: float, exit_: float) -> float:
         return 0.0
     pct = (exit_ - entry) / entry * 100
     return pct if direction.upper() == "CALL" else -pct
+
+
+def _import_return_pct(entry: float, exit_: float) -> float:
+    """Server-side return_pct for a broker-import round trip
+    (`import_commit`) — Task-3-review Important-2 fix.
+
+    Reuses `_return_pct`'s exact percent-change math but ALWAYS passes
+    direction="CALL", i.e. NEVER applies the CALL/PUT sign flip.
+    `_return_pct`'s flip assumes entry/exit are the UNDERLYING price of a
+    directional bet (a PUT profits when the underlying falls). Broker-import
+    entry/exit are the OPTION PREMIUM of a long-only round trip (BTO then
+    STC — short legs are dropped by `lib/broker_import.py`, see its
+    docstring pt. 1), where a rising premium is always a gain and a falling
+    premium is always a loss, independent of CALL/PUT. Applying the flip
+    here would silently invert every PUT's premium P&L sign.
+    """
+    return _return_pct("CALL", entry, exit_)
+
+
+async def _read_bounded_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """Read `file` incrementally, capped at `max_bytes` — Task-3-review
+    Important-1 fix.
+
+    The prior code did `raw = await file.read()`, buffering the ENTIRE
+    upload in memory before any size/row-count check ran (CLAUDE.md Rule 0
+    — no unbounded reads before a capacity check). This reads in
+    `_IMPORT_READ_CHUNK_SIZE` chunks and aborts with 413 the moment the
+    running total exceeds `max_bytes`, so a pathologically large upload
+    never gets fully buffered and the CSV parser never runs on it.
+    """
+    buf = bytearray()
+    while True:
+        chunk = await file.read(_IMPORT_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"file too large — max {max_bytes // (1024 * 1024)} MB",
+            )
+    return bytes(buf)
 
 
 def _derive_status(has_exit: bool, return_pct: Optional[float]) -> str:
@@ -212,6 +336,166 @@ def _save_local(ticker: str, entries: list[dict]) -> None:
     _local_path(ticker).write_text(json.dumps(entries, indent=2, default=str))
 
 
+def _insert_cloud_sql_trade(
+    *, ticker: str, direction: str, entry_ts: str, exit_ts: Optional[str],
+    entry_price: float, exit_price: Optional[float], return_pct: Optional[float],
+    notes: str, owner: str, stop_loss: Optional[float],
+    tp1: Optional[float], tp2: Optional[float], tp3: Optional[float],
+    status: str, source: str, session_id: Optional[str],
+) -> str:
+    """Shared Cloud SQL insert path for one `journal_entries` row.
+
+    Used by BOTH `POST /api/journal/trades` (manual entry) and
+    `POST /api/journal/import/commit` (broker import) so the two write
+    surfaces can never drift on columns or validation — exactly the same
+    INSERT + id-lookup SQL either way. Raises on failure; the caller decides
+    503 vs. local fallback (same convention as every other Cloud SQL branch
+    in this router).
+    """
+    _journal_exec(
+        """
+        INSERT INTO journal_entries
+            (ticker, direction, entry_ts, exit_ts,
+             entry_price, exit_price, return_pct, notes, user_email,
+             stop_loss, tp1, tp2, tp3, status, source, session_id)
+        VALUES
+            (:ticker, :direction, :entry_ts, :exit_ts,
+             :entry_price, :exit_price, :return_pct, :notes, :user_email,
+             :stop_loss, :tp1, :tp2, :tp3, :status, :source, :session_id)
+        """,
+        {
+            "ticker": ticker,
+            "direction": direction,
+            "entry_ts": entry_ts,
+            "exit_ts": exit_ts,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "return_pct": return_pct,
+            "notes": notes,
+            "user_email": owner,
+            "stop_loss": stop_loss,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "status": status,
+            "source": source,
+            "session_id": session_id,
+        },
+    )
+    df = _journal_query(
+        """
+        SELECT id::text FROM journal_entries
+        WHERE ticker = :ticker AND entry_ts = :entry_ts AND user_email = :user_email
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        {"ticker": ticker, "entry_ts": entry_ts, "user_email": owner},
+    )
+    return str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
+
+
+_TS_NO_SECONDS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$")
+
+
+def _with_seconds(ts: Optional[str]) -> Optional[str]:
+    """Append ':00' when `ts` is exactly 'YYYY-MM-DD HH:MM' (no seconds) --
+    e.g. Robinhood-derived import timestamps (lib/broker_import.py's
+    date-only ts). Local-fallback storage must persist a seconds component
+    or the frontend's isoNaiveToEpoch (platform/src/hooks/
+    useJournalChartTrades.ts, whose regex requires HH:MM:SS) returns NaN
+    and chart marker times break on local dev. Only used by import_commit's
+    local-fallback branch -- Cloud SQL parses/normalizes timestamps itself."""
+    if ts is not None and _TS_NO_SECONDS_RE.match(ts):
+        return f"{ts}:00"
+    return ts
+
+
+def _build_local_entry(
+    ticker: str, direction: str, entry_ts: str, exit_ts: Optional[str],
+    entry_price: float, exit_price: Optional[float], return_pct: Optional[float],
+    notes: str, stop_loss: Optional[float], take_profits: list[float],
+    status: str, source: str, session_id: Optional[str],
+) -> dict:
+    """Local-fallback (open-dev, no Cloud SQL) `journal_entries`-shaped dict.
+
+    Shared by `POST /api/journal/trades` and `POST /api/journal/import/commit`
+    so the local JSON shape never drifts between the two write paths (same
+    reuse rationale as `_insert_cloud_sql_trade`).
+    """
+    return {
+        "id": str(uuid.uuid4()),
+        "ticker": ticker,
+        "direction": direction,
+        "entry_ts": entry_ts,
+        "exit_ts": exit_ts,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "return_pct": return_pct,
+        "notes": notes or "",
+        "stop_loss": stop_loss,
+        "take_profits": take_profits or [],
+        "status": status,
+        "source": source,
+        "session_id": session_id,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:
+    """Duplicate-detection key per the brief: (ticker, entry_ts, entry_price,
+    direction). `entry_ts` is normalized to 'YYYY-MM-DD HH:MM' (drop
+    seconds/the 'T' separator) so an imported row (no seconds, space
+    separator — `PairedTrade.entry_ts`) matches an existing DB/local row for
+    the same fill (which carries seconds and, in Cloud SQL, a 'T' or space
+    separator depending on the driver's timestamp rendering). `entry_price`
+    is rounded to 4dp to absorb float/Decimal representation noise.
+    """
+    ts_norm = str(entry_ts).replace("T", " ")[:16]
+    try:
+        price_norm = round(float(entry_price), 4)
+    except (TypeError, ValueError):
+        price_norm = None
+    return (str(ticker).strip().upper(), str(direction).strip().upper(), ts_norm, price_norm)
+
+
+def _existing_entry_keys(owner: str, tickers: list[str]) -> set[tuple]:
+    """Existing `journal_entries` dedupe keys for this owner, scoped to the
+    given tickers.
+
+    ONE batched SELECT (`ticker = ANY(:tickers)`) — never one query per
+    trade — bounded by the number of DISTINCT tickers in the import, not
+    the row count (CLAUDE.md Rule 0). Local/open-dev fallback mirrors this:
+    one local-file read per distinct ticker, not per trade.
+
+    Raises on a real Cloud SQL failure (mirrors `_journal_query`'s other
+    call sites in this router) — the caller decides 503 vs. local fallback.
+    """
+    keys: set[tuple] = set()
+    if not tickers:
+        return keys
+
+    if _HAS_CLOUD_SQL:
+        df = _journal_query(
+            """
+            SELECT ticker, direction, entry_price,
+                   entry_ts AT TIME ZONE 'UTC' AS entry_ts
+            FROM journal_entries
+            WHERE user_email = :user_email AND ticker = ANY(:tickers)
+            """,
+            {"user_email": owner, "tickers": tickers},
+        )
+        for _, row in df.iterrows():
+            keys.add(_dedupe_key(row["ticker"], row["direction"], row["entry_ts"], row["entry_price"]))
+        return keys
+
+    for ticker in sorted({t.upper() for t in tickers}):
+        for entry in _load_local(ticker):
+            keys.add(_dedupe_key(
+                entry.get("ticker", ticker), entry.get("direction", ""),
+                entry.get("entry_ts", ""), entry.get("entry_price", 0),
+            ))
+    return keys
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/journal/trades/{ticker}")
@@ -254,6 +538,57 @@ async def get_trades(ticker: str, request: Request):
     return {"ticker": ticker_upper, "source": "local", "count": len(entries), "trades": entries}
 
 
+@router.get("/api/journal/examples/{ticker}")
+async def get_examples(ticker: str):
+    """Read-only teaching "Examples" — the admin's own journal trades for a ticker.
+
+    Same JSON shape as GET /api/journal/trades/{ticker}: {ticker, source,
+    count, trades}. Admin identity comes from the server-side `_ADMIN_EMAIL`
+    constant, never the caller — every signed-in user sees the same
+    admin-authored examples regardless of who's asking (the frontend gates
+    auth via the normal middleware; this endpoint doesn't scope by caller
+    identity at all). Excludes `source = 'replay'` rows (practice-mode noise
+    isn't teaching material).
+
+    Cloud-SQL only: unlike the per-user trades GET, there is no local-owner
+    fallback here — "the admin's trades" has no meaning without Cloud SQL, so
+    DB-unavailable (not configured, or a real query failure) mirrors
+    get_trades' 503 envelope exactly rather than fabricating an empty success
+    (CLAUDE.md Rule 3.7).
+    """
+    ticker_upper = ticker.upper()
+
+    if not _HAS_CLOUD_SQL:
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+
+    try:
+        df = _journal_query(
+            """
+            SELECT id::text, ticker, direction,
+                   entry_ts AT TIME ZONE 'UTC' AS entry_ts,
+                   exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
+                   entry_price, exit_price, return_pct, notes,
+                   stop_loss, tp1, tp2, tp3, status, source,
+                   session_id::text AS session_id,
+                   created_at AT TIME ZONE 'UTC' AS created_at
+            FROM journal_entries
+            WHERE ticker = :ticker AND user_email = :user_email
+              AND source IS DISTINCT FROM 'replay'
+            ORDER BY entry_ts DESC
+            """,
+            {"ticker": ticker_upper, "user_email": _ADMIN_EMAIL},
+        )
+    except Exception:
+        # Mirrors get_trades' except path exactly (same 503 + same detail
+        # string). No owner=="local" branch here (unlike get_trades) because
+        # this endpoint always reads the admin's Cloud-SQL data, never a
+        # per-request owner's — there is no local variant to fall back to.
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+
+    trades = [] if df.empty else _rows_to_trades(df)
+    return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
+
+
 @router.post("/api/journal/trades")
 async def create_trade(trade: JournalTradeCreate, request: Request):
     """Insert a journal entry for the signed-in user. Returns it with its id.
@@ -280,45 +615,13 @@ async def create_trade(trade: JournalTradeCreate, request: Request):
     if _HAS_CLOUD_SQL:
         owner = _journal_owner(request)
         try:
-            _journal_exec(
-                """
-                INSERT INTO journal_entries
-                    (ticker, direction, entry_ts, exit_ts,
-                     entry_price, exit_price, return_pct, notes, user_email,
-                     stop_loss, tp1, tp2, tp3, status, source, session_id)
-                VALUES
-                    (:ticker, :direction, :entry_ts, :exit_ts,
-                     :entry_price, :exit_price, :return_pct, :notes, :user_email,
-                     :stop_loss, :tp1, :tp2, :tp3, :status, :source, :session_id)
-                """,
-                {
-                    "ticker": ticker_upper,
-                    "direction": direction,
-                    "entry_ts": entry_ts,
-                    "exit_ts": exit_ts,
-                    "entry_price": trade.entry_price,
-                    "exit_price": trade.exit_price if has_exit else None,
-                    "return_pct": ret_pct_rounded,
-                    "notes": trade.notes or "",
-                    "user_email": owner,
-                    "stop_loss": trade.stop_loss,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "tp3": tp3,
-                    "status": status,
-                    "source": trade.source,
-                    "session_id": trade.session_id,
-                },
+            new_id = _insert_cloud_sql_trade(
+                ticker=ticker_upper, direction=direction, entry_ts=entry_ts, exit_ts=exit_ts,
+                entry_price=trade.entry_price, exit_price=trade.exit_price if has_exit else None,
+                return_pct=ret_pct_rounded, notes=trade.notes or "", owner=owner,
+                stop_loss=trade.stop_loss, tp1=tp1, tp2=tp2, tp3=tp3,
+                status=status, source=trade.source, session_id=trade.session_id,
             )
-            df = _journal_query(
-                """
-                SELECT id::text FROM journal_entries
-                WHERE ticker = :ticker AND entry_ts = :entry_ts AND user_email = :user_email
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                {"ticker": ticker_upper, "entry_ts": entry_ts, "user_email": owner},
-            )
-            new_id = str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
             return {"source": "cloud_sql", "id": new_id, "return_pct": ret_pct_rounded, "status": status}
         except Exception:
             # Auth mode: never write to the shared owner-less local file (would
@@ -329,24 +632,13 @@ async def create_trade(trade: JournalTradeCreate, request: Request):
 
     # Local fallback
     entries = _load_local(ticker_upper)
-    new_id = str(uuid.uuid4())
-    entries.insert(0, {
-        "id": new_id,
-        "ticker": ticker_upper,
-        "direction": direction,
-        "entry_ts": entry_ts,
-        "exit_ts": exit_ts,
-        "entry_price": trade.entry_price,
-        "exit_price": trade.exit_price if has_exit else None,
-        "return_pct": ret_pct_rounded,
-        "notes": trade.notes or "",
-        "stop_loss": trade.stop_loss,
-        "take_profits": take_profits,
-        "status": status,
-        "source": trade.source,
-        "session_id": trade.session_id,
-        "created_at": datetime.utcnow().isoformat(),
-    })
+    entry = _build_local_entry(
+        ticker_upper, direction, entry_ts, exit_ts, trade.entry_price,
+        trade.exit_price if has_exit else None, ret_pct_rounded, trade.notes or "",
+        trade.stop_loss, take_profits, status, trade.source, trade.session_id,
+    )
+    new_id = entry["id"]
+    entries.insert(0, entry)
     _save_local(ticker_upper, entries)
     return {"source": "local", "id": new_id, "return_pct": ret_pct_rounded, "status": status}
 
@@ -584,3 +876,207 @@ async def export_trades(ticker: str, request: ExportRequest):
         "output_path": str(output_path),
         "filename": output_path.name,
     }
+
+
+@router.post("/api/journal/import/preview")
+async def import_preview(
+    request: Request,
+    file: UploadFile = File(...),
+    broker: Optional[str] = Form(None),
+    mapping: Optional[str] = Form(None),
+):
+    """Parse an uploaded broker CSV export and FIFO-pair round trips.
+
+    Pipeline: `detect_broker`/`parse_csv`/`pair_orders` (lib/broker_import.py,
+    Task 2) — pure, no I/O. This endpoint adds duplicate-detection against the
+    signed-in caller's existing journal_entries (ticker, entry_ts, entry_price,
+    direction) and returns the result. It NEVER writes to the journal — commit
+    is a separate, explicit step, and re-checks duplicates itself (this
+    preview's "duplicate" flag is advisory, not authoritative, so a stale
+    preview can never race a concurrent write into a bad commit).
+
+    `broker` auto-detects from the CSV header row when omitted (exact
+    required-column match, see `detect_broker`). `mapping` (a JSON-encoded
+    column-name dict) is required only when `broker="generic"`.
+
+    5,000-row cap -> 413 (see `MAX_IMPORT_ROWS`): bounds a pathological
+    multi-year/multi-account export from turning into an unbounded parse or,
+    downstream at commit time, thousands of per-trade INSERTs.
+
+    5 MiB byte cap -> 413 (see `MAX_IMPORT_BYTES`), enforced via a chunked
+    read BEFORE any of the above runs: an oversized upload never gets fully
+    buffered into memory or reaches `parse_csv` at all.
+    """
+    raw = await _read_bounded_upload(file, MAX_IMPORT_BYTES)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="file must be UTF-8 encoded CSV")
+
+    lines = text.splitlines()
+    if not lines:
+        raise HTTPException(status_code=422, detail="empty CSV file")
+
+    data_row_count = max(0, len(lines) - 1)  # exclude header
+    if data_row_count > MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV has {data_row_count} rows, exceeds the {MAX_IMPORT_ROWS}-row import cap",
+        )
+
+    resolved_broker = (broker or "").strip().lower() or detect_broker(lines[0])
+    if not resolved_broker:
+        raise HTTPException(
+            status_code=422,
+            detail="could not detect broker from CSV header; specify broker + mapping",
+        )
+
+    mapping_dict: Optional[dict] = None
+    if mapping:
+        try:
+            mapping_dict = json.loads(mapping)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=422, detail="mapping must be valid JSON")
+
+    try:
+        orders = parse_csv(text, resolved_broker, mapping=mapping_dict)
+    except ValueError as e:
+        # Caller-supplied broker/mapping is bad (unknown broker string, or a
+        # generic mapping missing required keys) — a client input error, not
+        # an internal failure. 422, not 500.
+        raise HTTPException(status_code=422, detail=str(e))
+
+    preview = pair_orders(orders)
+    preview.broker = resolved_broker  # pair_orders never sets this — see lib/broker_import.py pt.5
+
+    owner = _journal_owner(request)
+    tickers = sorted({t.ticker for t in preview.trades})
+    try:
+        existing_keys = _existing_entry_keys(owner, tickers)
+    except Exception:
+        if owner != "local":
+            raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+        existing_keys = set()
+
+    trades_out = []
+    for t in preview.trades:
+        d = asdict(t)
+        key = _dedupe_key(t.ticker, t.direction, t.entry_ts, t.entry_price)
+        d["duplicate"] = key in existing_keys
+        trades_out.append(d)
+
+    return {"broker": resolved_broker, "trades": trades_out, "skipped": preview.skipped}
+
+
+@router.post("/api/journal/import/commit")
+async def import_commit(body: ImportCommitRequest, request: Request):
+    """Insert the caller-selected `PairedTrade`s from a preview.
+
+    Re-checks duplicates server-side (idempotent: committing the exact same
+    preview twice imports zero new rows the second time) and reuses
+    `_insert_cloud_sql_trade` / `_build_local_entry` — the SAME insert path
+    `POST /api/journal/trades` uses — so the two write surfaces can never
+    drift on columns or validation (CLAUDE.md project instructions: reuse the
+    existing insert path, don't duplicate insert logic).
+
+    `owner` is ALWAYS the authenticated caller (`_journal_owner(request)`) —
+    never admin, never client-supplied; the request body carries no
+    owner/user field at all. This endpoint never writes to Examples: Examples
+    (GET /api/journal/examples) reads a server-side admin constant, and this
+    endpoint always writes under the caller's own identity, so an import can
+    never land in another user's — or the admin's — journal.
+
+    `return_pct`/`status`: an active trade's null exit stays null (never a
+    fabricated 0/closed). `return_pct` is NEVER trusted from the client
+    (Task-3-review Important-2 fix) — it is always recomputed server-side
+    from `entry_price`/`exit_price` via `_import_return_pct`; `status` is
+    re-derived from `exit_ts`/the recomputed `return_pct` via
+    `_derive_status`. Neither the incoming `PairedTrade.return_pct` nor
+    `.status` field is ever trusted verbatim (CLAUDE.md Rule 3.7 — no
+    fabricated/client-trusted financial fields).
+
+    `broker` must be one of `_ALLOWED_BROKERS` (Task-3-review Minor-b fix) —
+    422 otherwise. `import_preview` enforces this implicitly (any other
+    string fails to dispatch in `parse_csv` -> 422); `import_commit` never
+    calls `parse_csv`, so it checks explicitly against the same set before
+    persisting any row under `source = f"import:{broker}"`.
+    """
+    if len(body.trades) > MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"commit has {len(body.trades)} trades, exceeds the {MAX_IMPORT_ROWS}-row import cap",
+        )
+
+    broker = body.broker.strip().lower()
+    if broker not in _ALLOWED_BROKERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported broker {broker!r}; must be one of {sorted(_ALLOWED_BROKERS)}",
+        )
+    source = f"import:{broker}"
+    owner = _journal_owner(request)
+    tickers = sorted({t.ticker for t in body.trades})
+
+    try:
+        existing_keys = _existing_entry_keys(owner, tickers)
+    except Exception:
+        if owner != "local":
+            raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+        existing_keys = set()
+
+    imported = 0
+    skipped_duplicates = 0
+
+    for t in body.trades:
+        ticker_upper = t.ticker.upper()
+        direction = t.direction.upper()
+        key = _dedupe_key(ticker_upper, direction, t.entry_ts, t.entry_price)
+        if key in existing_keys:
+            skipped_duplicates += 1
+            continue
+
+        has_exit = t.exit_ts is not None and t.exit_price is not None
+        # `t.return_pct` (client-supplied, advisory only) is deliberately
+        # NOT used here — see docstring / Task-3-review Important-2 fix.
+        ret_pct = round(_import_return_pct(t.entry_price, t.exit_price), 4) if has_exit else None
+        status = _derive_status(has_exit, ret_pct)
+        exit_ts = t.exit_ts if has_exit else None
+        exit_price = t.exit_price if has_exit else None
+
+        if _HAS_CLOUD_SQL:
+            try:
+                _insert_cloud_sql_trade(
+                    ticker=ticker_upper, direction=direction,
+                    entry_ts=t.entry_ts, exit_ts=exit_ts,
+                    entry_price=t.entry_price, exit_price=exit_price,
+                    return_pct=ret_pct, notes="", owner=owner,
+                    stop_loss=None, tp1=None, tp2=None, tp3=None,
+                    status=status, source=source, session_id=None,
+                )
+                imported += 1
+                # Guard against duplicate rows WITHIN this same commit batch
+                # (e.g. a caller re-submitting the same trade twice) without
+                # a second round-trip to the DB.
+                existing_keys.add(key)
+                continue
+            except Exception:
+                # Auth mode: never fall back to the shared owner-less local
+                # file for a real user — fail loud (same convention as
+                # create_trade / delete_trade elsewhere in this router).
+                if owner != "local":
+                    raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+                # owner == "local": fall through to the local-file write below.
+
+        entries = _load_local(ticker_upper)
+        entry = _build_local_entry(
+            ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
+            t.entry_price, exit_price,
+            ret_pct, notes="", stop_loss=None, take_profits=[],
+            status=status, source=source, session_id=None,
+        )
+        entries.insert(0, entry)
+        _save_local(ticker_upper, entries)
+        imported += 1
+        existing_keys.add(key)
+
+    return {"imported": imported, "skipped_duplicates": skipped_duplicates}
