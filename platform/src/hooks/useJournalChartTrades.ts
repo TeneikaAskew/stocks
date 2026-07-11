@@ -20,6 +20,9 @@ export interface JournalRow {
   take_profits?: number[];
   stop_loss?: number | null;
   status?: string;
+  /** 'manual' | 'chart' | 'replay' | 'pipeline' (task-examples-union — an
+   *  automated-pipeline `trades` row surfaced read-only in the Examples
+   *  union). */
   source?: string;
   session_id?: string | null;
   created_at?: string;

@@ -838,6 +838,15 @@ export default function JournalPage() {
                             practice
                           </span>
                         )}
+                        {/* task-examples-union: same muted-badge treatment
+                            as "practice" above, for a row sourced from the
+                            automated pipeline `trades` table rather than
+                            an admin-authored journal_entries row. */}
+                        {e.source === 'pipeline' && (
+                          <span className="ml-1.5 rounded bg-[var(--color-bg-hover)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--color-text-muted)]">
+                            pipeline
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{entry.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.entry_price.toFixed(2)}</td>

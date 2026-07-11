@@ -29,7 +29,9 @@ export interface TradeEntry {
   pnl?: number;
   pnlPercent?: number;
   createdAt: number;
-  /** 'chart' | 'manual' | 'replay' (server's journal_entries.source column).
+  /** 'chart' | 'manual' | 'replay' (server's journal_entries.source column)
+   *  or 'pipeline' (task-examples-union — an automated-pipeline `trades`
+   *  row surfaced read-only in the Examples union, never editable).
    *  'replay' marks a trade drawn during a bar-replay-trainer session
    *  (Task 5.2) — Task 5.3's analytics hygiene filters these out of
    *  stats by default. */

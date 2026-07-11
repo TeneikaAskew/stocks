@@ -79,6 +79,20 @@ export function TradeRailCard({
               EX
             </span>
           )}
+          {/* task-examples-union: origin badge for a pipeline-sourced
+             (automated signal-engine) example row, distinguishing it from
+             an admin-authored one — same muted weight as the EX badge
+             above, shown alongside it (a pipeline row is always also an
+             example row). */}
+          {trade.source === 'pipeline' && (
+            <span
+              data-testid="pipeline-badge"
+              title="Pipeline — automated signal-engine trade"
+              className="rounded bg-[var(--color-bg-hover)] px-1 py-0.5 text-[9px] font-semibold tracking-wide text-[var(--color-text-muted)]"
+            >
+              pipeline
+            </span>
+          )}
         </div>
         <span
           data-testid="rail-return"
