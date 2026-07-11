@@ -808,3 +808,27 @@ calibrated edge that does not ROBUSTLY clear the strict 3-ticker gate.**
 minimum training window / add pre-2016 history so the early folds aren't
 train-starved; (b) relax the gate to a median-beat criterion (which IS robust);
 (c) deploy as a low-confidence modest edge with monitoring. Decision pending.
+
+
+### CORRECTION (2026-07-11) — RETRACT the "fold-fragile" finding above (bad data provenance)
+
+The shifted-cutoffs "fragility" entry above (IWM 8/8->5/8) is **retracted**. Root
+cause: the `magnitude-recal --all-cells` confirmation runs (`jcv9r`, `psvhw`)
+persisted only scattered cells to `magnitude_walk_forward_results` and GCS (mostly
+30m QQQ; the needed 15m IWM/QQQ rows were never written). The DB "latest run_id"
+queries used to read them therefore returned OLD `magnitude-engine` default-cutoff
+runs, not the confirmation runs. So the shifted-cutoffs robustness was **never
+actually measured** — neither confirmed nor refuted.
+
+**What remains reliable** (config-tagged GCS written directly by
+`phase2_ablation.run_config`, `direction-phase2-cmv2d`):
+- SIZE @ 15m + isotonic + prune (default Jan-1 cutoffs): **IWM 8/8, SPY 7/8,
+  QQQ 6/8 -> gate PASS**, ECE ~0.04. Bootstrap on the raw per-fold beats:
+  IWM P(>=6/8)=1.00, SPY 0.94, QQQ 0.69 (QQQ the marginal leg).
+
+**Standing verdict:** SIZE is a real, calibrated edge that PASSES the pre-registered
+gate at 15m+isotonic+prune on the standard folds, with QQQ near-threshold.
+**Cross-fold-placement robustness is UNCONFIRMED** — the confirmation must be
+re-run through the reliable config-tagged GCS path (phase2_ablation with a
+cutoffs parameter), NOT the mag --all-cells DB path which persisted unreliably.
+Not productionized pending that clean robustness check.

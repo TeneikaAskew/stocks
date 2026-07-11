@@ -1277,3 +1277,11 @@ IWM drops 8/8→5/8 (QQQ held 6/8, SPY 8/8), so the strict 3-ticker gate does no
 replicate across fold placements. The edge is real (all positive median beats,
 ECE ~0.04) but the strict pass is near-threshold. Not productionized. See
 MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 CORRECTION (2026-07-11):** the shifted-cutoffs "fold-fragility" claim is
+RETRACTED — the mag --all-cells confirmation runs did not persist reliably and the
+DB reads picked up old magnitude-engine runs. Reliable result stands (config-tagged
+GCS): SIZE PASSES at 15m+isotonic+prune (IWM 8/8, SPY 7/8, QQQ 6/8), QQQ bootstrap-
+marginal (0.69). Cross-fold robustness UNCONFIRMED; needs a clean re-run via the
+phase2_ablation GCS path. See MAGNITUDE_ENGINE_RESULTS.md.
