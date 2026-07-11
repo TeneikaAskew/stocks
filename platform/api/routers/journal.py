@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 import uuid
 from dataclasses import asdict
@@ -390,6 +391,22 @@ def _insert_cloud_sql_trade(
         {"ticker": ticker, "entry_ts": entry_ts, "user_email": owner},
     )
     return str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
+
+
+_TS_NO_SECONDS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$")
+
+
+def _with_seconds(ts: Optional[str]) -> Optional[str]:
+    """Append ':00' when `ts` is exactly 'YYYY-MM-DD HH:MM' (no seconds) --
+    e.g. Robinhood-derived import timestamps (lib/broker_import.py's
+    date-only ts). Local-fallback storage must persist a seconds component
+    or the frontend's isoNaiveToEpoch (platform/src/hooks/
+    useJournalChartTrades.ts, whose regex requires HH:MM:SS) returns NaN
+    and chart marker times break on local dev. Only used by import_commit's
+    local-fallback branch -- Cloud SQL parses/normalizes timestamps itself."""
+    if ts is not None and _TS_NO_SECONDS_RE.match(ts):
+        return f"{ts}:00"
+    return ts
 
 
 def _build_local_entry(
@@ -1052,7 +1069,8 @@ async def import_commit(body: ImportCommitRequest, request: Request):
 
         entries = _load_local(ticker_upper)
         entry = _build_local_entry(
-            ticker_upper, direction, t.entry_ts, exit_ts, t.entry_price, exit_price,
+            ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
+            t.entry_price, exit_price,
             ret_pct, notes="", stop_loss=None, take_profits=[],
             status=status, source=source, session_id=None,
         )

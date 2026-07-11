@@ -455,3 +455,98 @@ def test_robinhood_dividend_and_ach_rows_get_unsupported_activity_reason():
     assert by_index[8] == "unsupported activity type: ACH"
     # The genuine equity Buy row (raw_index 5) must still say "shares".
     assert by_index[5] == "shares — options only in v1"
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT fix — same-day Robinhood day trades must pair correctly. RH
+# activity CSVs are newest-first and RH rows have date-only ts ("<date>
+# 00:00"), so a same-day STC can land at a LOWER raw_index than its BTO.
+# Sorting solely on (ts, raw_index) then processes the close before the
+# open at identical ts, and the close is dropped as "close without matching
+# open" while the open sits as a phantom active lot. The fix breaks ties at
+# equal ts by processing opens before closes: (ts, 0 if open else 1,
+# raw_index).
+# ---------------------------------------------------------------------------
+
+def test_robinhood_same_day_day_trade_pairs_correctly_when_newest_first():
+    """Reproduces the reviewer's exact failure: a newest-first RH export
+    where the STC row (raw_index 0) precedes the same-day BTO row
+    (raw_index 1). Both normalize to the same date-only ts
+    ("2026-06-01 00:00"), so without the tie-break the close is processed
+    first and dropped as unmatched, leaving the open as a phantom active
+    lot instead of a completed +20.42% day trade."""
+    text = (
+        "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+        "6/1/2026,6/1/2026,6/3/2026,IWM,IWM 6/19/2026 Call $224.00,STC,2,$1.71,$342.00\n"
+        "6/1/2026,6/1/2026,6/3/2026,IWM,IWM 6/19/2026 Call $224.00,BTO,2,$1.42,($284.00)\n"
+    )
+    orders = parse_csv(text, "robinhood")
+    preview = pair_orders(orders)
+
+    assert preview.skipped == []
+    assert len(preview.trades) == 1
+    trade = preview.trades[0]
+    assert trade.status == "closed"
+    assert trade.entry_price == pytest.approx(1.42)
+    assert trade.exit_price == pytest.approx(1.71)
+    assert trade.return_pct == pytest.approx(20.42, abs=0.01)
+
+
+def test_fifo_multi_lot_and_reopen_cases_unaffected_by_tie_break():
+    """The open-before-close tie-break at equal ts must not disturb FIFO
+    ordering across DIFFERENT timestamps: earlier-ts lots still close
+    before later-ts lots, and a close/reopen at strictly increasing ts
+    still resolves in chronological order."""
+    orders = [
+        # Two lots at different ts, one close spanning both — same as
+        # test_fifo_pairing_close_spans_multiple_lots, tests file-wide
+        # invariant isn't broken by the new secondary sort key.
+        NormalizedOrder("SPY", "PUT", "open", "2026-06-01 00:00", 3.00, 1, 0),
+        NormalizedOrder("SPY", "PUT", "open", "2026-06-02 00:00", 3.20, 1, 1),
+        NormalizedOrder("SPY", "PUT", "close", "2026-06-03 00:00", 2.90, 2, 2),
+        # Close then reopen the same contract on a LATER date: the reopen
+        # must still be a fresh active lot, not accidentally matched to
+        # the close that already happened.
+        NormalizedOrder("QQQ", "CALL", "open", "2026-06-01 00:00", 5.00, 1, 3),
+        NormalizedOrder("QQQ", "CALL", "close", "2026-06-02 00:00", 6.00, 1, 4),
+        NormalizedOrder("QQQ", "CALL", "open", "2026-06-05 00:00", 5.50, 1, 5),
+    ]
+    preview = pair_orders(orders)
+    assert preview.skipped == []
+
+    spy_trades = [t for t in preview.trades if t.ticker == "SPY"]
+    assert len(spy_trades) == 2
+    assert all(t.status == "closed" for t in spy_trades)
+    entry_prices = sorted(t.entry_price for t in spy_trades)
+    assert entry_prices == [pytest.approx(3.00), pytest.approx(3.20)]
+
+    qqq_trades = [t for t in preview.trades if t.ticker == "QQQ"]
+    assert len(qqq_trades) == 2
+    closed = [t for t in qqq_trades if t.status == "closed"]
+    active = [t for t in qqq_trades if t.status == "active"]
+    assert len(closed) == 1 and closed[0].entry_price == pytest.approx(5.00)
+    assert len(active) == 1 and active[0].entry_price == pytest.approx(5.50)
+
+
+# ---------------------------------------------------------------------------
+# MINOR fix — entry_price == 0 (or negative) must not raise ZeroDivisionError
+# / produce a bogus infinite return; the close is skipped with an honest
+# reason instead (Rule 3.7: fail loud / surface, never fabricate or crash).
+# ---------------------------------------------------------------------------
+
+def test_zero_entry_price_is_skipped_not_a_zero_division_error():
+    text = (
+        "sym,dir,act,when,px,qty\n"
+        "IWM,CALL,open,2026-06-01 09:30,0,1\n"
+        "IWM,CALL,close,2026-06-03 09:30,1.71,1\n"
+    )
+    mapping = {
+        "ticker": "sym", "direction": "dir", "action": "act",
+        "ts": "when", "price": "px", "quantity": "qty",
+    }
+    orders = parse_csv(text, "generic", mapping=mapping)
+    preview = pair_orders(orders)  # must not raise ZeroDivisionError
+
+    assert preview.trades == []
+    by_index = {s["raw_index"]: s["reason"] for s in preview.skipped}
+    assert by_index[1] == "invalid entry price: 0"

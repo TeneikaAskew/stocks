@@ -478,7 +478,15 @@ def pair_orders(orders: list[NormalizedOrder]) -> ImportPreview:
     lots: dict[tuple, deque] = {}
 
     def sort_key(o: NormalizedOrder):
-        return (o.ts, o.raw_index)
+        # Secondary key breaks ties at identical ts by processing opens
+        # before closes. Robinhood activity CSVs are newest-first and RH
+        # rows carry date-only ts ("<date> 00:00"), so a same-day STC can
+        # land at a LOWER raw_index than its same-day BTO. Sorting on
+        # (ts, raw_index) alone would then process the close first, and it
+        # would be dropped as "close without matching open" while the open
+        # sits as a phantom active lot instead of pairing into the actual
+        # completed day trade.
+        return (o.ts, 0 if o.action == "open" else 1, o.raw_index)
 
     for order in sorted(orders, key=sort_key):
         # This skip-check MUST remain the first branch: skip-tagged orders
@@ -512,6 +520,23 @@ def pair_orders(orders: list[NormalizedOrder]) -> ImportPreview:
                 matched = min(lot["remaining"], remaining_to_close)
                 entry_price = lot["price"]
                 exit_price = order.price
+                if entry_price <= 0:
+                    # A zero/negative entry price can't produce a real
+                    # percent return (division by zero, or a fabricated
+                    # sign-flipped number for negative). Surface it
+                    # honestly as a skip rather than crash or fabricate
+                    # a return (Rule 3.7) — the matched quantity is still
+                    # consumed from the lot since the contracts really did
+                    # trade, just without a computable return.
+                    skipped.append({
+                        "raw_index": order.raw_index,
+                        "reason": f"invalid entry price: {entry_price:g}",
+                    })
+                    lot["remaining"] -= matched
+                    remaining_to_close -= matched
+                    if lot["remaining"] == 0:
+                        queue.popleft()
+                    continue
                 return_pct = round((exit_price - entry_price) / entry_price * 100, 2)
                 trades.append(PairedTrade(
                     ticker=order.ticker, direction=order.direction,

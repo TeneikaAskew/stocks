@@ -500,3 +500,35 @@ def test_dedupe_same_minute_different_price_is_not_deduped(client_local_owner):
     )
     assert r.status_code == 200
     assert r.json() == {"imported": 1, "skipped_duplicates": 0}
+
+
+# ── (f) local-fallback commit normalizes ts to carry seconds ───────────────
+
+
+def test_commit_local_fallback_stores_entry_ts_with_seconds(client_local_owner):
+    """Robinhood-derived timestamps land on the wire as 'YYYY-MM-DD HH:MM'
+    (no seconds — see lib/broker_import.py's date-only ts). The local-
+    fallback storage path must append ':00' before persisting, or the
+    frontend's isoNaiveToEpoch (platform/src/hooks/useJournalChartTrades.ts,
+    which requires an HH:MM:SS component) returns NaN and the chart marker
+    time is broken on local dev."""
+    r = client_local_owner.post(
+        "/api/journal/import/commit",
+        json={
+            "broker": "generic",
+            "trades": [{
+                "ticker": "IWM", "direction": "CALL",
+                "entry_ts": "2026-06-01 10:15", "entry_price": 1.42,
+                "exit_ts": "2026-06-03 11:30", "exit_price": 1.71,
+                "quantity": 1, "status": "closed",
+            }],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"imported": 1, "skipped_duplicates": 0}
+
+    trades = client_local_owner.get("/api/journal/trades/IWM").json()["trades"]
+    assert len(trades) == 1
+    # Must carry seconds now -- isoNaiveToEpoch's regex requires HH:MM:SS.
+    assert trades[0]["entry_ts"] == "2026-06-01 10:15:00"
+    assert trades[0]["exit_ts"] == "2026-06-03 11:30:00"
