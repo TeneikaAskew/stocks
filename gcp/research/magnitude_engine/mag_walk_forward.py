@@ -237,9 +237,23 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     }
 
 
-def _persist_results_table(engine, phase: str, ticker: str, tf: str,
-                            folds: list[dict], run_id: str) -> None:
-    """Insert per-fold rows into magnitude_walk_forward_results."""
+# Columns typed DOUBLE PRECISION in magnitude_walk_forward_results. When any of
+# these arrives all-None (e.g. explosive_precision/explosive_lift on a fold with
+# no EXPLOSIVE class), pandas would infer `object` dtype and SQLAlchemy would
+# emit a `::VARCHAR` cast that Postgres rejects (SQLSTATE 42804). Coercing to
+# numeric keeps them float64/NaN -> FLOAT bind matching the column type.
+_RESULTS_FLOAT_COLS = (
+    "logloss", "base_logloss", "beat", "ece", "ece_ceiling",
+    "accuracy", "base_accuracy", "accuracy_beat_pp",
+    "explosive_base_rate", "explosive_precision", "explosive_lift",
+)
+
+
+def _results_dataframe(phase: str, ticker: str, tf: str,
+                       folds: list[dict], run_id: str) -> pd.DataFrame:
+    """Build the per-fold DataFrame for magnitude_walk_forward_results, with
+    the DOUBLE-typed columns coerced to float64 so an all-None column does not
+    become an `object`/VARCHAR bind (SQLSTATE 42804). Pure — unit-testable."""
     def _to_date(s):
         if s is None:
             return None
@@ -272,6 +286,18 @@ def _persist_results_table(engine, phase: str, ticker: str, tf: str,
             "run_id": run_id,
         })
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    for _c in _RESULTS_FLOAT_COLS:
+        if _c in df.columns:
+            df[_c] = pd.to_numeric(df[_c], errors="coerce")
+    return df
+
+
+def _persist_results_table(engine, phase: str, ticker: str, tf: str,
+                            folds: list[dict], run_id: str) -> None:
+    """Insert per-fold rows into magnitude_walk_forward_results."""
+    df = _results_dataframe(phase, ticker, tf, folds, run_id)
     if df.empty:
         return
     # Use pandas-to-sql with append; the table has UNIQUE (phase,ticker,tf,fold,run_id)
@@ -650,20 +676,30 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # output is canonical for live consumers).
         if phase == "phase0":
             _persist_predictions_table(engine, ticker, tf, folds, run_id)
-        # Production model artifact (prereq for mag_inference live cron).
-        # Only emit from phase0 — phase1+ share the same backbone features
-        # and we want exactly one canonical artifact per (ticker, tf).
-        if persist_production_model and phase == "phase0":
+    except Exception as e:
+        # Hard failure — log loud, but DON'T fail the task because GCS
+        # persistence is the canonical output anyway.
+        log.error("Cloud SQL results/predictions persist FAILED (%s): %s",
+                  type(e).__name__, e)
+
+    # Production model artifact (prereq for mag_inference live cron) — in its
+    # OWN try so a Cloud SQL results/predictions failure can NEVER skip the
+    # artifact the live inference cron depends on. (Before 2026-07-11 this
+    # shared the results-table try; a schema error on explosive_precision
+    # aborted it and silently left the production model un-persisted.)
+    # Only emit from phase0 — phase1+ share the same backbone features and we
+    # want exactly one canonical artifact per (ticker, tf).
+    if persist_production_model and phase == "phase0":
+        try:
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
                 calibration=calibration, cv=cv,
             )
             if uri:
                 summary["production_model_uri"] = uri
-    except Exception as e:
-        # Hard failure — log loud, but DON'T fail the task because GCS
-        # persistence is the canonical output anyway.
-        log.error("Cloud SQL persist FAILED (%s): %s", type(e).__name__, e)
+        except Exception as e:
+            log.error("Production-model persist FAILED (%s): %s",
+                      type(e).__name__, e)
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf)

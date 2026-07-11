@@ -352,3 +352,31 @@ def test_load_model_reads_latest_pointer():
         "mag_inference._load_model_and_version must read the LATEST "
         "pointer for atomic-publish safety (Codex P2 #615)."
     )
+
+
+def test_results_dataframe_coerces_all_none_float_cols():
+    """Regression (2026-07-11): a fold with EXPLOSIVE absent yields
+    explosive_precision/lift = None for every fold. Those columns must land as
+    float64 (NaN), not object — otherwise SQLAlchemy binds ::VARCHAR and the
+    insert fails with SQLSTATE 42804, which used to abort the whole persist
+    try-block and silently skip the production-model artifact."""
+    from gcp.research.magnitude_engine.mag_walk_forward import _results_dataframe
+    folds = [
+        {"fold": "2019..2020", "train_end": "2019-01-01", "test_end": "2020-01-01",
+         "n_train": 100, "n_test": 50, "status": "OK", "logloss": 0.81,
+         "base_logloss": 0.82, "beat": 0.01, "ece": 0.03, "ece_ceiling": 0.05,
+         "ece_pass": True, "accuracy": 0.7, "base_accuracy": 0.7,
+         "accuracy_beat_pp": 0.0,
+         "explosive": {"base_rate": 0.02}},  # no precision/lift keys -> None
+        {"fold": "2020..2021", "train_end": "2020-01-01", "test_end": "2021-01-01",
+         "n_train": 120, "n_test": 55, "status": "OK", "logloss": 0.89,
+         "base_logloss": 0.87, "beat": -0.02, "ece": 0.10, "ece_ceiling": 0.05,
+         "ece_pass": False, "accuracy": 0.66, "base_accuracy": 0.66,
+         "accuracy_beat_pp": 0.0, "explosive": {"base_rate": 0.02}},
+    ]
+    df = _results_dataframe("phase0", "QQQ", "15m", folds, "run-x")
+    for col in ("explosive_precision", "explosive_lift"):
+        assert str(df[col].dtype) == "float64", f"{col} must be float64, not object"
+        assert df[col].isna().all()
+    # a populated column keeps its real values
+    assert df["beat"].tolist() == [0.01, -0.02]
