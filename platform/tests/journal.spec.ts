@@ -96,6 +96,15 @@ test.describe('Trade Journal', () => {
     expect(Date.now() - start).toBeLessThan(5000);
   });
 
+  test('equity curve card shows a placeholder when under 2 closed trades', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+    // .first(): both the card heading and the placeholder text match
+    // /equity curve/i — strict mode would reject the bare locator.
+    await expect(page.getByText(/equity curve/i).first()).toBeVisible();
+    await expect(page.getByText(/close 2\+ trades to see your equity curve/i)).toBeVisible();
+  });
+
   test('renders an active (null-exit) trade alongside a closed one without crashing', async ({ page }) => {
     await page.route('**/api/journal/trades/IWM*', (r) => r.fulfill(M.ok(MOCK_TRADES_WITH_ACTIVE)));
     await page.goto('/journal');

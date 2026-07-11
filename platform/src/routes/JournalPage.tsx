@@ -364,9 +364,9 @@ export default function JournalPage() {
       )}
 
       {/* Equity curve — cumulative P&L across closed trades */}
-      {equityPoints.length > 1 && (
-        <Card>
-          <CardHeader title={`${activeTicker} equity curve`} meta="cumulative P&L %" />
+      <Card>
+        <CardHeader title={`${activeTicker} equity curve`} meta="cumulative P&L %" />
+        {equityPoints.length > 1 ? (
           <PriceAreaChart
             data={equityPoints}
             seriesLabel="Cumulative P&L"
@@ -374,8 +374,12 @@ export default function JournalPage() {
             valueFormatter={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`}
             tooltipFormatter={(v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`}
           />
-        </Card>
-      )}
+        ) : (
+          <p className="py-8 text-center text-xs text-[var(--color-text-muted)]">
+            Close 2+ trades to see your equity curve.
+          </p>
+        )}
+      </Card>
 
       {/* Add Trade Form */}
       {showForm && (
