@@ -112,6 +112,54 @@ const OWN_TRADES = {
 
 const EMPTY_TRADES = { ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] };
 
+// task-examples-union: the Examples union response contains BOTH an
+// admin-authored journal_entries row (source:'chart', same as EXAMPLE_TRADES
+// above) and an automated-pipeline `trades` row (id 'pipe-<n>',
+// source:'pipeline') — both dated on the mocked chart session (2026-04-25)
+// so both land in the rail. Both are wins so the aggregate tile assertion
+// (2W / 0L) is unambiguous evidence the pipeline row's return_pct is folded
+// into the stats layer exactly like any other example row (brief: "the
+// stats layer must not treat 'pipeline' specially").
+const UNION_EXAMPLE_TRADES = {
+  ticker: 'IWM',
+  source: 'cloud_sql',
+  count: 2,
+  trades: [
+    {
+      id: 'admin-union-1',
+      ticker: 'IWM',
+      direction: 'CALL',
+      entry_ts: '2026-04-25T09:35:00',
+      exit_ts: '2026-04-25T10:15:00',
+      entry_price: 220.0,
+      exit_price: 222.5,
+      return_pct: 1.14,
+      notes: 'Admin-authored example.',
+      take_profits: [],
+      stop_loss: null,
+      status: 'win',
+      source: 'chart',
+      session_id: null,
+    },
+    {
+      id: 'pipe-9001',
+      ticker: 'IWM',
+      direction: 'PUT',
+      entry_ts: '2026-04-25T10:30:00',
+      exit_ts: '2026-04-25T11:00:00',
+      entry_price: 221.0,
+      exit_price: 219.5,
+      return_pct: 0.68,
+      notes: 'target_hit',
+      take_profits: [],
+      stop_loss: null,
+      status: 'win',
+      source: 'pipeline',
+      session_id: null,
+    },
+  ],
+};
+
 async function mockJournalOneStop(
   page: import('@playwright/test').Page,
   { own, examples }: { own: unknown; examples: unknown },
@@ -356,5 +404,44 @@ test.describe('Journal one-stop cockpit — My journal view', () => {
     await page.mouse.move(0, 0);
     await expect(card).not.toHaveAttribute('data-highlighted', 'true');
     await expect(chart).not.toHaveAttribute('data-highlighted-trade', /.+/);
+  });
+});
+
+// task-examples-union: Examples = pipeline `trades` UNION admin journal
+// (user decision 2026-07-11) — GET /api/journal/examples/{ticker} now
+// returns both an admin-authored row and a pipeline row; the page must
+// render both with their distinct origin badges and aggregate both into
+// the KPI tiles unchanged (stats layer treats 'pipeline' like any other
+// non-replay source).
+test.describe('Journal one-stop cockpit — Examples union (pipeline + admin)', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockJournalOneStop(page, { own: EMPTY_TRADES, examples: UNION_EXAMPLE_TRADES });
+  });
+
+  test('renders a pipeline-labeled row alongside an admin EX row; tiles aggregate both', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // Both example rows carry the EX badge (read-only teaching rows) — the
+    // pipeline row ADDITIONALLY carries the muted "pipeline" origin badge,
+    // distinguishing it from the admin-authored one.
+    await expect(page.getByTestId('ex-badge')).toHaveCount(2);
+    await expect(page.getByTestId('pipeline-badge')).toHaveCount(1);
+
+    // Tiles aggregate BOTH rows — 2 trades total, both wins (1.14% CALL +
+    // 0.68% PUT), so the win/loss sub-label reads 2W / 0L.
+    await expect(page.getByText('Trades', { exact: true })).toBeVisible();
+    await expect(page.getByText('2W / 0L')).toBeVisible();
+
+    // Trade table: the pipeline row's direction cell carries the "pipeline"
+    // badge; the admin row's does not.
+    const pipelineRow = page.locator('tr', { hasText: 'target_hit' });
+    await expect(pipelineRow.getByText('pipeline', { exact: true })).toBeVisible();
+    const adminRow = page.locator('tr', { hasText: 'Admin-authored example.' });
+    await expect(adminRow.getByText('pipeline', { exact: true })).toHaveCount(0);
+
+    // Examples stay read-only across the union — both rows' delete buttons
+    // are disabled, including the pipeline one.
+    await expect(pipelineRow.getByRole('button')).toBeDisabled();
   });
 });

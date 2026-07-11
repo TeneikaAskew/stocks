@@ -317,6 +317,87 @@ def _rows_to_trades(df: pd.DataFrame) -> list[dict]:
     return trades
 
 
+def _pipeline_rows_to_trades(df: pd.DataFrame, ticker_upper: str) -> list[dict]:
+    """Pipeline `trades` rows (gcp/schema.sql:1065, the trading_analysis.py
+    dataset) -> the journal trade JSON shape, for the UNION half of
+    GET /api/journal/examples/{ticker} (task-examples-union, 2026-07-11 user
+    decision).
+
+    entry_ts/exit_ts here are ALREADY naive-ET wall-clock strings from the
+    caller's `entry_time AT TIME ZONE 'America/New_York'` /
+    `exit_time AT TIME ZONE 'America/New_York'` SELECT — deliberately NOT
+    `'UTC'` like `_rows_to_trades`' journal_entries columns use. Verified
+    empirically against production `trades` rows (2026-07-11, via
+    scripts/db_query_cr.sh): `trades.entry_time`/`exit_time` store TRUE UTC
+    instants (`datetime.now()` inside a UTC-clocked Cloud Run container in
+    gcp/signal_monitor.py's `_persist_signal_alert`), UNLIKE
+    `journal_entries.entry_ts` (a naive-ET literal written directly by this
+    router's own `create_trade`, then mislabeled as UTC on insert — that's
+    why `_rows_to_trades` uses `AT TIME ZONE 'UTC'` to strip the label back
+    off without converting). Applying `AT TIME ZONE 'UTC'` to
+    `trades.entry_time` would return the RAW UTC clock — 4-5 hours off from
+    the market-hours wall clock the frontend's isoNaiveToEpoch expects —
+    while `AT TIME ZONE 'America/New_York'` performs the real UTC->ET
+    conversion needed to land on the same naive-ET wire convention. Spot
+    check: production trade id 429, entry_time
+    2026-04-13 13:34:00+00:00 -> 'America/New_York' gives 09:34:00 (matches
+    the 09:30 ET session open); 'UTC' would have echoed 13:34:00 unchanged.
+
+    Other mapping rules (see .superpowers/sdd/task-examples-union-brief.md):
+      - id: 'pipe-<bigserial id>' — never collides with a journal_entries
+        UUID.
+      - take_profits/stop_loss: always [] / None — the signal engine logs
+        no risk plan; never fabricate one (CLAUDE.md Rule 3.7).
+      - return_pct: pipeline `trades.return_pct` is a RAW FRACTION (e.g.
+        0.003 == 0.3%, same convention `seed_trades` documents/converts) —
+        ×100 here to match the TRUE-PERCENT convention every other journal
+        endpoint uses on the wire.
+      - status: 'win' if return_pct > 0, else 'loss' if return_pct is not
+        null (i.e. <= 0), else 'active' — the union spec's three-way split
+        (no breakeven bucket, unlike `_derive_status`'s four-way split).
+      - notes: exit_reason and strat_combo, " · "-joined when both present,
+        whichever is present alone otherwise, "" when neither is (never a
+        fabricated placeholder).
+      - source: always 'pipeline'.
+    """
+    for col in ("entry_ts", "exit_ts"):
+        if col in df.columns:
+            df[col] = df[col].apply(lambda v: None if pd.isna(v) else str(v))
+
+    def _clean(v):
+        return None if v is None or _is_nan(v) else v
+
+    trades: list[dict] = []
+    for rec in df.to_dict(orient="records"):
+        raw_return = _clean(rec.get("return_pct"))
+        return_pct = None if raw_return is None else float(raw_return) * 100
+        exit_reason = _clean(rec.get("exit_reason"))
+        strat_combo = _clean(rec.get("strat_combo"))
+        notes = " · ".join(str(p) for p in (exit_reason, strat_combo) if p)
+        status = (
+            "win" if (return_pct is not None and return_pct > 0)
+            else "loss" if return_pct is not None
+            else "active"
+        )
+        trades.append({
+            "id": f"pipe-{int(rec['id'])}",
+            "ticker": ticker_upper,
+            "direction": rec.get("direction"),
+            "entry_ts": rec.get("entry_ts"),
+            "exit_ts": rec.get("exit_ts"),
+            "entry_price": _clean(rec.get("entry_price")),
+            "exit_price": _clean(rec.get("exit_price")),
+            "return_pct": return_pct,
+            "notes": notes,
+            "take_profits": [],
+            "stop_loss": None,
+            "status": status,
+            "source": "pipeline",
+            "session_id": None,
+        })
+    return trades
+
+
 def _local_path(ticker: str) -> Path:
     LOCAL_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
     return LOCAL_JOURNAL_DIR / f"{ticker.lower()}_journal.json"
@@ -540,21 +621,39 @@ async def get_trades(ticker: str, request: Request):
 
 @router.get("/api/journal/examples/{ticker}")
 async def get_examples(ticker: str):
-    """Read-only teaching "Examples" — the admin's own journal trades for a ticker.
+    """Read-only teaching "Examples" — the UNION of the admin's own journal
+    trades AND every automated-pipeline `trades` row for a ticker
+    (task-examples-union, 2026-07-11 user decision).
 
-    Same JSON shape as GET /api/journal/trades/{ticker}: {ticker, source,
-    count, trades}. Admin identity comes from the server-side `_ADMIN_EMAIL`
-    constant, never the caller — every signed-in user sees the same
-    admin-authored examples regardless of who's asking (the frontend gates
-    auth via the normal middleware; this endpoint doesn't scope by caller
-    identity at all). Excludes `source = 'replay'` rows (practice-mode noise
-    isn't teaching material).
+    Same envelope shape as GET /api/journal/trades/{ticker}: {ticker, source,
+    count, trades}. Two sources, one SQL query each (never per-row):
+      1. Admin identity comes from the server-side `_ADMIN_EMAIL` constant,
+         never the caller — every signed-in user sees the same admin-authored
+         examples regardless of who's asking. Excludes `source = 'replay'`
+         rows (practice-mode noise isn't teaching material). Mapped via
+         `_rows_to_trades` (unchanged from pre-union).
+      2. Every `trades`-table row (gcp/schema.sql:1065, the
+         trading_analysis.py pipeline dataset) for the ticker — no
+         per-caller/owner scoping, the pipeline table has no owner column.
+         Mapped via `_pipeline_rows_to_trades` (see its docstring for the
+         entry_ts/exit_ts timezone-conversion rationale and the
+         return_pct/status/notes mapping rules), tagged `source: 'pipeline'`.
+    Combined and sorted by entry_ts DESC across BOTH sources (not just within
+    each) — a plain Python sort, since the two source tables can't be UNIONed
+    in one SQL statement (different column sets/types).
+
+    Capacity (CLAUDE.md Rule 0): one additional indexed SELECT
+    (idx_trades_ticker_date's leading `ticker` column) per request. The
+    pipeline table's largest single-ticker slice is in the low thousands of
+    rows (~hundreds of KB of JSON) — acceptable for a read-only teaching
+    view; not a workload requiring pagination at this scale.
 
     Cloud-SQL only: unlike the per-user trades GET, there is no local-owner
     fallback here — "the admin's trades" has no meaning without Cloud SQL, so
-    DB-unavailable (not configured, or a real query failure) mirrors
-    get_trades' 503 envelope exactly rather than fabricating an empty success
-    (CLAUDE.md Rule 3.7).
+    DB-unavailable (not configured, or a real query failure on EITHER source)
+    mirrors get_trades' 503 envelope exactly rather than fabricating an empty
+    or partial success (CLAUDE.md Rule 3.7) — a pipeline-query failure fails
+    the whole request loud, it never silently degrades to admin-only rows.
     """
     ticker_upper = ticker.upper()
 
@@ -562,7 +661,7 @@ async def get_examples(ticker: str):
         raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     try:
-        df = _journal_query(
+        df_admin = _journal_query(
             """
             SELECT id::text, ticker, direction,
                    entry_ts AT TIME ZONE 'UTC' AS entry_ts,
@@ -585,7 +684,31 @@ async def get_examples(ticker: str):
         # per-request owner's — there is no local variant to fall back to.
         raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
-    trades = [] if df.empty else _rows_to_trades(df)
+    admin_trades = [] if df_admin.empty else _rows_to_trades(df_admin)
+
+    try:
+        df_pipeline = _journal_query(
+            """
+            SELECT id, direction,
+                   entry_time AT TIME ZONE 'America/New_York' AS entry_ts,
+                   exit_time  AT TIME ZONE 'America/New_York' AS exit_ts,
+                   entry_price, exit_price, return_pct, exit_reason, strat_combo
+            FROM trades
+            WHERE ticker = :ticker
+            ORDER BY entry_time DESC
+            """,
+            {"ticker": ticker_upper},
+        )
+    except Exception:
+        # Same fail-loud stance as the admin query above — never a partial
+        # admin-only success when the pipeline half is unreachable.
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+
+    pipeline_trades = [] if df_pipeline.empty else _pipeline_rows_to_trades(df_pipeline, ticker_upper)
+
+    trades = admin_trades + pipeline_trades
+    trades.sort(key=lambda t: t.get("entry_ts") or "", reverse=True)
+
     return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
 
 
