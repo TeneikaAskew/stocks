@@ -61,14 +61,29 @@ setup_logging()
 log = logging.getLogger(__name__)
 
 # Default cells. Override via INFERENCE_CELLS env var as
-# "TICKER:TF,TICKER:TF,...". 5m is the only TF where the docs found
-# stable signal in IWM/SPY/QQQ (see MAGNITUDE_ENGINE_RESULTS.md §6).
-# 15m/30m get retrained models but aren't scored live — they failed
-# gate 1 (log-loss) in the original audit.
+# "TICKER:TF,TICKER:TF,...".
+#
+# 15m is the VALIDATED timeframe (2026-07-11): the Direction-Predictability
+# Phase-2 work found magnitude is robustly predictable + calibrated at 15m with
+# isotonic calibration + pruned features (gate passes all 3 tickers across fold
+# placements; ECE ~0.04). The production 15m artifacts are persisted from a
+# `--features=prune --calibration=isotonic --persist-production-model` run — the
+# artifact's feature_cols.txt carries the pruned column set and model.joblib is
+# the isotonic-calibrated model, so inference aligns to them automatically. See
+# MAGNITUDE_ENGINE_RESULTS.md "ROBUSTNESS CONFIRMED".
+#
+# 5m is RETAINED but is NOT the validated timeframe (its walk-forward log-loss
+# beat is negative — see MAGNITUDE_ENGINE_RESULTS.md). It keeps flowing for any
+# existing consumer; the frontend Expected-Move surface should read 15m. (The
+# earlier "5m is the only stable TF / 15m failed gate 1" note was overturned by
+# the 2026-07 pure-prediction re-analysis.)
 DEFAULT_CELLS: list[tuple[str, str]] = [
     ("IWM", "5m"),
     ("SPY", "5m"),
     ("QQQ", "5m"),
+    ("IWM", "15m"),
+    ("SPY", "15m"),
+    ("QQQ", "15m"),
 ]
 
 # Lookback for "today's" inference. The job runs at 09:25 ET; the
