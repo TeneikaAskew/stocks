@@ -26,14 +26,17 @@ ones):
    (ET) time and is used directly, naive (no tz conversion — it's already
    ET).
 
-3. **FIFO pairing key is (ticker, direction) only.** ``NormalizedOrder``
-   does not carry strike/expiry (the brief's dataclass is deliberately
-   thin), so a same-ticker, same-direction trade with two different
-   strikes/expiries open at once will FIFO-match across them as if they
-   were the same contract. This matches how a trader typically closes in
-   the order they opened, but is a known coarsening — if strike/expiry
-   granularity is needed later, it requires widening ``NormalizedOrder``
-   (a Task-2-successor change, not silently patched in here).
+3. **FIFO pairing key is (ticker, direction, strike, expiry) for
+   contract-bearing orders.** Both parsers already extract strike/expiry
+   (Robinhood from the Description regex, Webull from the OCC symbol), and
+   ``NormalizedOrder`` carries them through so FIFO pairing never
+   cross-matches two different contracts on the same underlying/direction
+   (e.g. two different strikes open at once). Generic-mapping orders have
+   no contract data (the mapping dict has no strike/expiry keys), so
+   ``strike``/``expiry`` are ``None`` and ``pair_orders`` falls back to the
+   coarser ``(ticker, direction)`` key for them — a 2-tuple key can never
+   equal a 4-tuple key, so the two keying regimes are structurally disjoint
+   and cannot cross-match each other.
 
 4. **Skip-reason threading.** ``parse_csv``'s signature is fixed to
    ``-> list[NormalizedOrder]`` (Task 3/6 depend on this exact shape) but
@@ -82,6 +85,8 @@ class NormalizedOrder:
     price: float            # per-contract premium
     quantity: int
     raw_index: int          # source row for error messages
+    strike: float | None = None   # per-contract strike; None for generic-mapping orders (no contract data)
+    expiry: str | None = None     # ISO "YYYY-MM-DD"; None for generic-mapping orders (no contract data)
 
 
 @dataclass
@@ -182,6 +187,9 @@ def _parse_int_qty(raw: str | None) -> int | None:
 
 _RH_TRANS_ACTION = {"BTO": "open", "STC": "close"}
 _RH_TRANS_SHORT = {"STO", "BTC"}
+# Trans codes that are unambiguously equity/share trades (not options, not
+# cash/administrative events like dividends or transfers).
+_RH_TRANS_EQUITY = {"Buy", "Sell"}
 
 _RH_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
 # e.g. "IWM 6/19/2026 Call $224.00"
@@ -200,6 +208,13 @@ def _rh_date_to_ts(raw: str | None) -> str | None:
     return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d} 00:00"
 
 
+def _rh_slashdate_to_iso(raw: str) -> str:
+    """'6/19/2026' -> '2026-06-19'. Only called on strings already validated
+    by `_RH_DESC_RE`'s `\\d{1,2}/\\d{1,2}/\\d{4}` subpattern."""
+    mm, dd, yyyy = raw.split("/")
+    return f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+
+
 def _parse_robinhood(text: str) -> list[NormalizedOrder]:
     orders: list[NormalizedOrder] = []
     reader = csv.DictReader(io.StringIO(text))
@@ -210,9 +225,25 @@ def _parse_robinhood(text: str) -> list[NormalizedOrder]:
             orders.append(_make_skip(i, "short options not supported"))
             continue
         if trans not in _RH_TRANS_ACTION:
-            # Anything that isn't a recognized option trans code (Buy, Sell,
-            # ACH, CDIV, etc.) is treated as a non-option (shares) row in v1.
-            orders.append(_make_skip(i, "shares — options only in v1"))
+            # Not a recognized option trans code. Only call this a "shares"
+            # row when it genuinely looks like an equity trade — a Buy/Sell
+            # trans code, or an Instrument-tagged row with a real Quantity
+            # whose Description doesn't parse as an option contract. Cash/
+            # administrative rows (CDIV dividends, ACH transfers, interest,
+            # etc.) have no real Quantity and must not be mislabeled as
+            # "shares" — that would conceal what actually happened on the
+            # row (Rule 3.7: no silent/dishonest fallback labels).
+            instrument = (row.get("Instrument") or "").strip()
+            desc_probe = (row.get("Description") or "").strip()
+            looks_like_equity = trans in _RH_TRANS_EQUITY or (
+                bool(instrument)
+                and not _RH_DESC_RE.match(desc_probe)
+                and _parse_int_qty(row.get("Quantity")) is not None
+            )
+            if looks_like_equity:
+                orders.append(_make_skip(i, "shares — options only in v1"))
+            else:
+                orders.append(_make_skip(i, f"unsupported activity type: {trans}"))
             continue
 
         desc = (row.get("Description") or "").strip()
@@ -220,8 +251,10 @@ def _parse_robinhood(text: str) -> list[NormalizedOrder]:
         if not m:
             orders.append(_make_skip(i, "could not parse option description"))
             continue
-        ticker, _expiry, calput, _strike = m.groups()
+        ticker, expiry_raw, calput, strike_raw = m.groups()
         direction = "CALL" if calput == "Call" else "PUT"
+        expiry = _rh_slashdate_to_iso(expiry_raw)
+        strike = float(strike_raw.replace(",", ""))
 
         ts = _rh_date_to_ts(row.get("Activity Date"))
         if ts is None:
@@ -241,6 +274,7 @@ def _parse_robinhood(text: str) -> list[NormalizedOrder]:
         orders.append(NormalizedOrder(
             ticker=ticker, direction=direction, action=_RH_TRANS_ACTION[trans],
             ts=ts, price=price, quantity=qty, raw_index=i,
+            strike=strike, expiry=expiry,
         ))
     return orders
 
@@ -273,6 +307,19 @@ def _webull_time_to_ts(raw: str | None) -> str | None:
     return f"{yyyy}-{mm}-{dd} {hh}:{mi}"
 
 
+def _occ_yymmdd_to_iso(yymmdd: str) -> str:
+    """OCC 'yymmdd' (assumed 20yy per current OCC convention) -> ISO
+    'YYYY-MM-DD', e.g. '260619' -> '2026-06-19'."""
+    yy, mm, dd = yymmdd[0:2], yymmdd[2:4], yymmdd[4:6]
+    return f"20{yy}-{mm}-{dd}"
+
+
+def _occ_strike8_to_float(strike8: str) -> float:
+    """OCC 8-digit strike*1000 -> float, e.g. '00224000' -> 224.0,
+    '00224500' -> 224.5."""
+    return int(strike8) / 1000.0
+
+
 def _parse_webull(text: str) -> list[NormalizedOrder]:
     orders: list[NormalizedOrder] = []
     reader = csv.DictReader(io.StringIO(text))
@@ -283,8 +330,10 @@ def _parse_webull(text: str) -> list[NormalizedOrder]:
             # Not an OCC option symbol -> plain equity/shares row in v1.
             orders.append(_make_skip(i, "shares — options only in v1"))
             continue
-        ticker, _yymmdd, calput, _strike8 = m.groups()
+        ticker, yymmdd, calput, strike8 = m.groups()
         direction = "CALL" if calput == "C" else "PUT"
+        expiry = _occ_yymmdd_to_iso(yymmdd)
+        strike = _occ_strike8_to_float(strike8)
 
         side = (row.get("Side") or "").strip()
         if side in _WEBULL_SIDE_SHORT:
@@ -312,6 +361,7 @@ def _parse_webull(text: str) -> list[NormalizedOrder]:
         orders.append(NormalizedOrder(
             ticker=ticker, direction=direction, action=_WEBULL_SIDE_ACTION[side],
             ts=ts, price=price, quantity=qty, raw_index=i,
+            strike=strike, expiry=expiry,
         ))
     return orders
 
@@ -404,26 +454,44 @@ def parse_csv(text: str, broker: str, mapping: dict | None = None) -> list[Norma
 # FIFO round-trip pairing
 # ---------------------------------------------------------------------------
 
+def _lot_key(order: NormalizedOrder) -> tuple:
+    """FIFO lot key: (ticker, direction, strike, expiry) for contract-bearing
+    orders (RH/Webull parsers, which always set both), falling back to the
+    coarser (ticker, direction) for generic-mapping orders (no contract
+    data). A 2-tuple key can never equal a 4-tuple key, so the two keying
+    regimes are structurally disjoint and cannot cross-match — see module
+    docstring pt. 3.
+    """
+    if order.strike is not None or order.expiry is not None:
+        return (order.ticker, order.direction, order.strike, order.expiry)
+    return (order.ticker, order.direction)
+
+
 def pair_orders(orders: list[NormalizedOrder]) -> ImportPreview:
-    """Pure function: FIFO-pair opens/closes per (ticker, direction) — see
-    module docstring pt. 3 for why "contract" collapses to that pair in v1.
-    No I/O, no DB. Every skip-tagged input order and every close that can't
-    find a matching open lands in ``ImportPreview.skipped``.
+    """Pure function: FIFO-pair opens/closes per contract — see
+    module docstring pt. 3 and `_lot_key`. No I/O, no DB. Every skip-tagged
+    input order and every close that can't find a matching open lands in
+    ``ImportPreview.skipped``.
     """
     trades: list[PairedTrade] = []
     skipped: list[dict] = []
-    lots: dict[tuple[str, str], deque] = {}
+    lots: dict[tuple, deque] = {}
 
     def sort_key(o: NormalizedOrder):
         return (o.ts, o.raw_index)
 
     for order in sorted(orders, key=sort_key):
+        # This skip-check MUST remain the first branch: skip-tagged orders
+        # carry placeholder ticker/direction/price/quantity (see
+        # `_make_skip`), so if they ever reached the pairing arithmetic
+        # below they'd corrupt FIFO lots with garbage data instead of
+        # landing honestly in `skipped`.
         reason = _skip_reason(order)
         if reason is not None:
             skipped.append({"raw_index": order.raw_index, "reason": reason})
             continue
 
-        key = (order.ticker, order.direction)
+        key = _lot_key(order)
 
         if order.action == "open":
             lots.setdefault(key, deque()).append({
@@ -465,7 +533,10 @@ def pair_orders(orders: list[NormalizedOrder]) -> ImportPreview:
         # than silently drop if it ever happens (Rule 3.7).
         skipped.append({"raw_index": order.raw_index, "reason": f"unrecognized action: {order.action!r}"})
 
-    for (ticker, direction), queue in lots.items():
+    for key, queue in lots.items():
+        # key is either (ticker, direction, strike, expiry) or the
+        # generic-mapping fallback (ticker, direction) — see `_lot_key`.
+        ticker, direction = key[0], key[1]
         for lot in queue:
             trades.append(PairedTrade(
                 ticker=ticker, direction=direction,

@@ -159,6 +159,8 @@ def test_every_skip_reason_present_across_full_pipeline():
         "shares — options only in v1",
         "short options not supported",
         "close without matching open",
+        "unsupported activity type: CDIV",
+        "unsupported activity type: ACH",
     }
 
 
@@ -281,3 +283,175 @@ def test_generic_mapping_parses_and_skips_missing_columns():
     preview = pair_orders(orders)
     by_index = {s["raw_index"]: s["reason"] for s in preview.skipped}
     assert 2 in by_index  # unrecognized direction "WEIRD"
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL fix — FIFO pairing key must include the contract (strike/expiry),
+# not just (ticker, direction). Reproduces the reviewer's exact failure:
+# BTO IWM 224C, BTO IWM 220C, STC IWM 220C — pre-fix code closed the WRONG
+# lot (224C) at a fabricated +69.01%, leaving the 220C (which actually
+# closed) active. Truth: the 220C round-trip closes at +17.07%, and the
+# 224C lot (never touched by a close) is the one left active.
+# ---------------------------------------------------------------------------
+
+def test_fifo_pairing_keys_by_contract_not_just_ticker_direction():
+    orders = [
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="open",
+            ts="2026-06-01 00:00", price=1.42, quantity=1, raw_index=0,
+            strike=224.0, expiry="2026-06-19",
+        ),
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="open",
+            ts="2026-06-02 00:00", price=2.05, quantity=1, raw_index=1,
+            strike=220.0, expiry="2026-06-19",
+        ),
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="close",
+            ts="2026-06-03 00:00", price=2.40, quantity=1, raw_index=2,
+            strike=220.0, expiry="2026-06-19",
+        ),
+    ]
+    preview = pair_orders(orders)
+    assert preview.skipped == []
+    assert len(preview.trades) == 2
+
+    closed = [t for t in preview.trades if t.status == "closed"]
+    active = [t for t in preview.trades if t.status == "active"]
+    assert len(closed) == 1 and len(active) == 1
+
+    # The 220C round-trip closed, at +17.07% — NOT the 224C at +69.01%.
+    assert closed[0].entry_price == pytest.approx(2.05)
+    assert closed[0].exit_price == pytest.approx(2.40)
+    assert closed[0].return_pct == pytest.approx(17.07, abs=0.01)
+
+    # The 224C lot (never closed) is the one left active.
+    assert active[0].entry_price == pytest.approx(1.42)
+    assert active[0].status == "active"
+
+
+def test_fifo_pairing_excess_close_quantity_skips_remainder():
+    """Open qty 1, close qty 3 -> 1 closed trade (qty 1) + the excess 2
+    contracts skipped as 'close without matching open' (not fabricated or
+    silently dropped)."""
+    orders = [
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="open",
+            ts="2026-06-01 00:00", price=1.42, quantity=1, raw_index=0,
+            strike=224.0, expiry="2026-06-19",
+        ),
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="close",
+            ts="2026-06-03 00:00", price=1.71, quantity=3, raw_index=1,
+            strike=224.0, expiry="2026-06-19",
+        ),
+    ]
+    preview = pair_orders(orders)
+    assert len(preview.trades) == 1
+    assert preview.trades[0].status == "closed"
+    assert preview.trades[0].quantity == 1
+    assert preview.skipped == [{"raw_index": 1, "reason": "close without matching open"}]
+
+
+def test_fifo_pairing_contract_orders_never_cross_match_generic_orders():
+    """A contract-bearing order (strike/expiry set) and a generic-mapping
+    order (strike/expiry None) that share (ticker, direction) must NOT be
+    treated as the same lot — the two keying regimes are disjoint."""
+    orders = [
+        # Contract-bearing open (from RH/Webull parsing).
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="open",
+            ts="2026-06-01 00:00", price=1.42, quantity=1, raw_index=0,
+            strike=224.0, expiry="2026-06-19",
+        ),
+        # Generic-mapping close, same ticker/direction, no contract data.
+        NormalizedOrder(
+            ticker="IWM", direction="CALL", action="close",
+            ts="2026-06-03 00:00", price=1.71, quantity=1, raw_index=1,
+        ),
+    ]
+    preview = pair_orders(orders)
+    # The generic close must NOT match the contract-bearing open.
+    assert preview.skipped == [{"raw_index": 1, "reason": "close without matching open"}]
+    assert len(preview.trades) == 1
+    assert preview.trades[0].status == "active"
+    assert preview.trades[0].entry_price == pytest.approx(1.42)
+
+
+# ---------------------------------------------------------------------------
+# Strike/expiry threaded from the parsers (both brokers already extract
+# these values from Description/OCC symbol — they must be carried onto
+# NormalizedOrder, not discarded).
+# ---------------------------------------------------------------------------
+
+def test_robinhood_parses_strike_and_expiry():
+    orders = parse_csv(_read("robinhood_sample.csv"), "robinhood")
+    # raw_index 0: IWM 6/19/2026 Call $224.00
+    o0 = next(o for o in orders if o.raw_index == 0)
+    assert o0.strike == pytest.approx(224.0)
+    assert o0.expiry == "2026-06-19"
+
+
+def test_robinhood_parses_strike_with_cents():
+    text = (
+        "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+        "6/1/2026,6/1/2026,6/3/2026,IWM,IWM 6/19/2026 Call $224.50,BTO,1,$1.42,($142.00)\n"
+    )
+    orders = parse_csv(text, "robinhood")
+    assert orders[0].strike == pytest.approx(224.5)
+    assert orders[0].expiry == "2026-06-19"
+
+
+def test_webull_parses_strike_and_expiry():
+    orders = parse_csv(_read("webull_sample.csv"), "webull")
+    # raw_index 0: IWM260619C00224000
+    o0 = next(o for o in orders if o.raw_index == 0)
+    assert o0.strike == pytest.approx(224.0)
+    assert o0.expiry == "2026-06-19"
+
+
+def test_webull_parses_strike_with_cents():
+    text = (
+        "Name,Symbol,Side,Status,Filled Qty,Total Qty,Price,Avg Price,Time-in-Force,Placed Time,Filled Time\n"
+        "IWM Jun 19 2026 224.50 C,IWM260619C00224500,Buy to Open,Filled,1,1,1.42,1.42,DAY,"
+        "06/01/2026 09:38:00 EDT,06/01/2026 09:40:00 EDT\n"
+    )
+    orders = parse_csv(text, "webull")
+    assert orders[0].strike == pytest.approx(224.5)
+    assert orders[0].expiry == "2026-06-19"
+
+
+def test_generic_mapping_orders_have_no_strike_expiry():
+    """Generic-mapping orders never carry contract data (the mapping dict
+    has no strike/expiry keys per the brief) -> both stay None, which is
+    the fallback-key sentinel pair_orders relies on."""
+    text = (
+        "sym,dir,act,when,px,qty\n"
+        "IWM,CALL,open,2026-06-01 09:30,1.42,1\n"
+    )
+    mapping = {
+        "ticker": "sym", "direction": "dir", "action": "act",
+        "ts": "when", "price": "px", "quantity": "qty",
+    }
+    orders = parse_csv(text, "generic", mapping=mapping)
+    assert orders[0].strike is None
+    assert orders[0].expiry is None
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT fix — skip-reason honesty (Rule 3.7). RH rows whose Trans Code
+# isn't a recognized option code AND don't genuinely look like an equity
+# trade (dividends, ACH transfers, interest, etc.) must NOT be mislabeled
+# "shares — options only in v1" — that's a lie about what the row is.
+# ---------------------------------------------------------------------------
+
+def test_robinhood_dividend_and_ach_rows_get_unsupported_activity_reason():
+    orders = parse_csv(_read("robinhood_sample.csv"), "robinhood")
+    preview = pair_orders(orders)
+    by_index = {s["raw_index"]: s["reason"] for s in preview.skipped}
+    # raw_index 7: CDIV dividend row (Instrument=AAPL, no Quantity, not a trade).
+    assert by_index[7] == "unsupported activity type: CDIV"
+    # raw_index 8: ACH transfer row (no Instrument at all).
+    assert by_index[8] == "unsupported activity type: ACH"
+    # The genuine equity Buy row (raw_index 5) must still say "shares".
+    assert by_index[5] == "shares — options only in v1"
