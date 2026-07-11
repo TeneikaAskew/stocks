@@ -19,6 +19,12 @@ _FAMILIES = ["prune", "options_iv", "positioning", "cross_asset", "calendar"]
 _TF = os.environ.get("PHASE2_TF", "5m")
 _CALIBRATION = os.environ.get("PHASE2_CALIBRATION", "none")
 _AXES = [a for a in os.environ.get("PHASE2_AXES", "direction,size").split(",") if a]
+# Optional custom fold boundaries (YYYY-MM-DD comma list) so the same reliable
+# config-tagged path can run the fold-robustness confirmation (shifted / longer-
+# min-train cutoffs). None -> each engine's DEFAULT_CUTOFFS.
+_CUTOFFS = ([c for c in os.environ["PHASE2_CUTOFFS"].split(",") if c]
+            if os.environ.get("PHASE2_CUTOFFS") else None)
+_CUT_TAG = os.environ.get("PHASE2_CUT_TAG", "default")
 
 
 def _ladder(axis):
@@ -40,10 +46,11 @@ def run_config(engine, cfg, ledger_path="docs/research/direction_program_ledger.
             if cfg["axis"] == "direction":
                 from gcp.research.strat_engine.strat_dir_walk_forward import walk_forward_direction
                 # direction engine has no post-hoc calibration (24/24-fold study)
-                wf = walk_forward_direction(engine, tk, _TF, features=cfg["features"])
+                wf = walk_forward_direction(engine, tk, _TF, cutoffs=_CUTOFFS,
+                                            features=cfg["features"])
             else:
                 from gcp.research.magnitude_engine.mag_walk_forward import walk_forward
-                wf = walk_forward(engine, "phase0", tk, _TF,
+                wf = walk_forward(engine, "phase0", tk, _TF, cutoffs=_CUTOFFS,
                                   calibration=_CALIBRATION, features=cfg["features"])
             beats = extract_fold_beats(wf)
         except Exception:
@@ -70,10 +77,12 @@ def run_config(engine, cfg, ledger_path="docs/research/direction_program_ledger.
     # (lost on container exit), so persist a small JSON to GCS keyed by config.
     features_tag = cfg["features"].replace(",", "-") if cfg["features"] else "baseline"
     ts = int(pd.Timestamp.utcnow().timestamp())
-    blob = f"direction-program/phase2/{cfg['axis']}_{_TF}_{_CALIBRATION}_{features_tag}_{ts}.json"
+    blob = (f"direction-program/phase2/{cfg['axis']}_{_TF}_{_CALIBRATION}"
+            f"_{_CUT_TAG}_{features_tag}_{ts}.json")
     try:
         from gcp.research.strat_engine.strat_walk_forward import _gcs_upload
         payload = {"axis": cfg["axis"], "tf": _TF, "calibration": _CALIBRATION,
+                   "cut_tag": _CUT_TAG, "cutoffs": _CUTOFFS,
                    "features": cfg["features"] or "baseline",
                    "per_ticker_beats": per, "verdict": v}
         uri = _gcs_upload(json.dumps(payload, default=str).encode(), blob)
