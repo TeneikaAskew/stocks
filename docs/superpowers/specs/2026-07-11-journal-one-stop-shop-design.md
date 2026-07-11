@@ -12,7 +12,13 @@ Today the journaling experience is split: trade marking (Mark Entry → CALL/PUT
 
 ### Approved layout: Option B — "Cockpit"
 
-Chart with a **trade rail pinned beside it** (right column, ~340px): one card per trade of the active view on the selected date. Card layout (user-refined): top row = direction badge (+ EX badge in Examples) on the left, **return % centered and prominent** (e.g. `+1.14%`, bull/bear colored, largest text on the card), time on the right; second line = Entry $ → Exit $; third line = TP prices · SL · R:R. Hovering a card highlights its markers on the chart. Below the chart+rail row: KPI tiles, then equity curve + full trade table.
+Chart with a **trade rail pinned beside it** (right column, ~340px): one card per trade of the active view on the selected date. Card layout (user-refined): top row = direction badge (+ EX badge in Examples) on the left, **return % centered and prominent** (e.g. `+1.14%`, bull/bear colored, largest text on the card), time on the right; second line = Entry $ → Exit $; third line = TP prices · SL · R:R. Hovering a card highlights its markers on the chart.
+
+**Rail refinements (user, 2026-07-11):** the **equity curve card sits in the rail, under the trade cards** (cumulative P&L %, all dates). There is NO separate session-stats card — its metrics fold into the KPI row, which gains **Avg R:R** and **TP1 hit** tiles (7 tiles total).
+
+**KPI/table scoping (user, 2026-07-11):** the KPI tiles and the full trade table open in **Overview scope (all dates)**; the moment a date is selected they re-scope to that session's trades. The active scope is always labeled next to the tiles ("Overview — all dates" / "Session — MM/DD/YYYY"), and clearing the date returns to Overview. The equity curve is always cumulative across all dates. TP1-hit = share of closed trades with TP1 set whose exit price reached TP1 ("—" when no closed trade has TP1 set — no fabricated rates).
+
+Below the chart+rail row: scope label + 7 KPI tiles, then the full-width trade table.
 
 ### Trade import (user addition, 2026-07-11)
 
