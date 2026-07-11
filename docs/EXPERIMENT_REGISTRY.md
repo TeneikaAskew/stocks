@@ -1285,3 +1285,10 @@ DB reads picked up old magnitude-engine runs. Reliable result stands (config-tag
 GCS): SIZE PASSES at 15m+isotonic+prune (IWM 8/8, SPY 7/8, QQQ 6/8), QQQ bootstrap-
 marginal (0.69). Cross-fold robustness UNCONFIRMED; needs a clean re-run via the
 phase2_ablation GCS path. See MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 ROBUSTNESS CONFIRMED (2026-07-11, `direction-phase2-v5lxx`):** shifted-
+cutoffs re-run via the reliable config-tagged GCS path shows the SIZE gate pass
+HOLDS across fold placements — prune: Jan-1 (8/7/6) and shifted (7/8/7), both
+3/3. No fold-fragility. FINAL: SIZE robustly predictable+calibrated at
+15m+isotonic+prune. See MAGNITUDE_ENGINE_RESULTS.md.

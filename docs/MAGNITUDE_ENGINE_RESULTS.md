@@ -832,3 +832,24 @@ gate at 15m+isotonic+prune on the standard folds, with QQQ near-threshold.
 re-run through the reliable config-tagged GCS path (phase2_ablation with a
 cutoffs parameter), NOT the mag --all-cells DB path which persisted unreliably.
 Not productionized pending that clean robustness check.
+
+
+### ROBUSTNESS CONFIRMED (2026-07-11, `direction-phase2-v5lxx`, reliable GCS path)
+
+Re-ran the shifted-cutoffs confirmation through the config-tagged GCS path
+(PHASE2_CUTOFFS env, phase2_ablation — NOT the flaky mag --all-cells DB path).
+Result: **the gate pass HOLDS across fold placements.**
+
+| fold scheme | prune config | verdict |
+|---|---|---|
+| Jan-1 (default) | IWM 8/8, SPY 7/8, QQQ 6/8 | 3/3 PASS |
+| Shifted (mid-year) | IWM 7/8, SPY 8/8, QQQ 7/8 | 3/3 PASS |
+
+Every ticker >=6/8 under BOTH schemes; median beat ~+0.012, ECE ~0.04. QQQ (the
+Jan-1 marginal leg) went 6/8 -> 7/8 under shifted folds — MORE robust. This
+supersedes and confirms the retraction: there is no fold-fragility; the earlier
+"IWM 8/8->5/8" was purely the bad-data artifact (old magnitude-engine runs).
+
+**FINAL SIZE VERDICT: predictable, calibrated (ECE ~0.04), and ROBUSTLY gate-
+passing at 15m + isotonic + prune.** Deploy target confirmed. This is the pure-
+prediction lens (log-loss); orthogonal to the 2026-05-29 gate-7 (cost) FAIL.
