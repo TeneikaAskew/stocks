@@ -321,3 +321,182 @@ def test_commit_413_when_trades_exceed_row_cap(client_local_owner):
         json={"broker": "generic", "trades": [trade] * (cap + 1)},
     )
     assert r.status_code == 413
+
+
+# ── (g) Important 1: bounded upload read -> 413 before parse runs ──────────
+
+
+def test_preview_413_when_upload_exceeds_byte_cap(client_local_owner, monkeypatch):
+    """>5 MiB of junk must 413 on size alone, without `parse_csv` ever
+    running (the size guard must trip BEFORE the full file is buffered/
+    decoded/parsed)."""
+    parse_calls: list = []
+    monkeypatch.setattr(journal_module, "parse_csv", lambda *a, **k: parse_calls.append(1))
+
+    max_bytes = journal_module.MAX_IMPORT_BYTES
+    junk = b"x" * (max_bytes + 1)
+    r = client_local_owner.post(
+        "/api/journal/import/preview",
+        files={"file": ("huge.csv", junk, "text/csv")},
+    )
+    assert r.status_code == 413
+    assert "too large" in r.json()["detail"].lower()
+    assert parse_calls == []
+
+
+def test_preview_just_under_byte_cap_is_not_rejected_on_size_alone(client_local_owner):
+    """A large-but-under-cap upload must not 413 on size alone (a real CSV
+    this size should proceed to normal row-cap/parse handling instead).
+    Uses many moderately-wide rows (well under both the row cap and Python
+    csv's per-field size limit) rather than one giant field, so the upload
+    stays parseable while landing close to MAX_IMPORT_BYTES."""
+    max_bytes = journal_module.MAX_IMPORT_BYTES
+    header = "sym,dir,act,when,px,qty,notes\n"
+    n_rows = 40
+    filler_len = (max_bytes - len(header.encode("utf-8"))) // n_rows - 60
+    filler = "x" * filler_len
+    row = f"IWM,CALL,open,2026-06-01 09:30,1.42,1,{filler}\n"
+    text = header + row * n_rows
+    text_bytes = text.encode("utf-8")
+    assert text_bytes and len(text_bytes) < max_bytes
+
+    r = client_local_owner.post(
+        "/api/journal/import/preview",
+        files={"file": ("underbytecap.csv", text_bytes, "text/csv")},
+        data={"broker": "generic", "mapping": json.dumps({
+            "ticker": "sym", "direction": "dir", "action": "act",
+            "ts": "when", "price": "px", "quantity": "qty",
+        })},
+    )
+    assert r.status_code != 413
+
+
+# ── (h) Important 2: return_pct is server-recomputed, never trusted ────────
+
+
+def test_commit_ignores_client_return_pct_and_recomputes_from_prices(client_local_owner):
+    """A client-supplied return_pct that contradicts entry/exit prices must
+    be ignored at commit — the persisted (and later GET'd) value is always
+    recomputed server-side from entry_price/exit_price."""
+    body = {
+        "broker": "generic",
+        "trades": [
+            {
+                # CALL: premium rose 1.42 -> 1.71 (~+20.42%); client claims a
+                # wildly wrong +9999%.
+                "ticker": "IWM", "direction": "CALL",
+                "entry_ts": "2026-06-01 09:30", "entry_price": 1.42,
+                "exit_ts": "2026-06-01 10:00", "exit_price": 1.71,
+                "return_pct": 9999.0, "quantity": 1, "status": "closed",
+            },
+            {
+                # PUT: premium FELL 3.10 -> 2.95 (a loss, ~-4.84%). Client
+                # claims a wrong positive value. Also guards the direction
+                # trap: the premium formula must NOT flip sign for PUT (a
+                # falling premium is always a loss on a long round trip,
+                # regardless of CALL/PUT).
+                "ticker": "SPY", "direction": "PUT",
+                "entry_ts": "2026-06-02 09:30", "entry_price": 3.10,
+                "exit_ts": "2026-06-02 10:00", "exit_price": 2.95,
+                "return_pct": 500.0, "quantity": 1, "status": "closed",
+            },
+        ],
+    }
+    r = client_local_owner.post("/api/journal/import/commit", json=body)
+    assert r.status_code == 200
+    assert r.json()["imported"] == 2
+
+    iwm = client_local_owner.get("/api/journal/trades/IWM").json()["trades"]
+    assert len(iwm) == 1
+    assert iwm[0]["return_pct"] == pytest.approx(20.42, abs=0.01)
+
+    spy = client_local_owner.get("/api/journal/trades/SPY").json()["trades"]
+    assert len(spy) == 1
+    assert spy[0]["return_pct"] == pytest.approx(-4.84, abs=0.01)
+
+
+# ── (i) Minor b: commit's broker validated against the allowlist ───────────
+
+
+def test_commit_422_when_broker_not_in_allowlist(client_local_owner):
+    r = client_local_owner.post(
+        "/api/journal/import/commit",
+        json={"broker": "fidelity", "trades": []},
+    )
+    assert r.status_code == 422
+
+
+def test_commit_200_for_each_allowlisted_broker(client_local_owner):
+    for broker in ("robinhood", "webull", "generic"):
+        r = client_local_owner.post(
+            "/api/journal/import/commit",
+            json={"broker": broker, "trades": []},
+        )
+        assert r.status_code == 200, f"broker={broker!r} unexpectedly rejected"
+
+
+# ── (j) Minor c: dedupe near-miss coverage ──────────────────────────────────
+
+
+def test_dedupe_seconds_differing_entry_ts_still_deduped(client_local_owner):
+    """10:15:00 vs 10:15:30 fall in the same minute -> same dedupe key ->
+    treated as the same fill."""
+    journal_module._save_local("IWM", [{
+        "id": "pre-existing-1",
+        "ticker": "IWM",
+        "direction": "CALL",
+        "entry_ts": "2026-06-01T10:15:30",
+        "exit_ts": None,
+        "entry_price": 1.42,
+        "exit_price": None,
+        "return_pct": None,
+        "notes": "",
+        "status": "active",
+        "source": "manual",
+    }])
+
+    r = client_local_owner.post(
+        "/api/journal/import/commit",
+        json={
+            "broker": "generic",
+            "trades": [{
+                "ticker": "IWM", "direction": "CALL",
+                "entry_ts": "2026-06-01 10:15", "entry_price": 1.42,
+                "quantity": 1, "status": "active",
+            }],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"imported": 0, "skipped_duplicates": 1}
+
+
+def test_dedupe_same_minute_different_price_is_not_deduped(client_local_owner):
+    """Same ticker/direction/minute but a different entry_price is a
+    different fill -> NOT deduped."""
+    journal_module._save_local("IWM", [{
+        "id": "pre-existing-1",
+        "ticker": "IWM",
+        "direction": "CALL",
+        "entry_ts": "2026-06-01T10:15:00",
+        "exit_ts": None,
+        "entry_price": 1.42,
+        "exit_price": None,
+        "return_pct": None,
+        "notes": "",
+        "status": "active",
+        "source": "manual",
+    }])
+
+    r = client_local_owner.post(
+        "/api/journal/import/commit",
+        json={
+            "broker": "generic",
+            "trades": [{
+                "ticker": "IWM", "direction": "CALL",
+                "entry_ts": "2026-06-01 10:15", "entry_price": 1.50,
+                "quantity": 1, "status": "active",
+            }],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"imported": 1, "skipped_duplicates": 0}

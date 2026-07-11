@@ -13,7 +13,6 @@ Endpoints:
   POST   /api/journal/import/commit      — insert caller-selected paired trades from a preview
 """
 import csv
-import io
 import json
 import logging
 import math
@@ -47,6 +46,25 @@ LOCAL_JOURNAL_DIR = PROJECT_ROOT / "data" / "journal"
 # preview endpoint (CSV data-row count) and the commit endpoint (trades list
 # length) — see import_preview / import_commit.
 MAX_IMPORT_ROWS = 5000
+
+# Task-3-review Important-1 fix (2026-07-11): hard byte ceiling on the
+# uploaded file, enforced via a chunked read BEFORE the whole upload is
+# buffered in memory. 5 MiB is generous for a 5,000-row CSV (well under
+# 1 KiB/row) but bounds the pathological case (a caller uploading an
+# arbitrarily large file) so a single request can't turn into an unbounded
+# in-memory buffer regardless of what MAX_IMPORT_ROWS's line-count check
+# would eventually decide (CLAUDE.md Rule 0 — no unbounded reads before a
+# capacity check).
+MAX_IMPORT_BYTES = 5 * 1024 * 1024   # 5 MiB
+_IMPORT_READ_CHUNK_SIZE = 1024 * 1024  # 1 MiB
+
+# Task-3-review Minor-b fix: the broker allowlist `import_preview` already
+# enforces implicitly (any other string 404s out of `parse_csv`'s dispatch
+# with a ValueError -> 422). `import_commit` gets no free ride through
+# `parse_csv` (it never calls it), so it must check explicitly against the
+# SAME set to reject an unsupported broker before persisting `source =
+# f"import:{broker}"` rows under a value nothing else recognizes.
+_ALLOWED_BROKERS = {"robinhood", "webull", "generic"}
 
 # ── Cloud SQL availability check ─────────────────────────────────────────────
 try:
@@ -173,13 +191,19 @@ class ImportCommitTrade(BaseModel):
     `owner`/`user_email` field: owner is ALWAYS the authenticated caller,
     never client-supplied (see `import_commit`).
 
-    `return_pct` here is the import pipeline's PREMIUM P&L percent
-    (`(exit_price - entry_price) / entry_price * 100`, computed by
-    `pair_orders` — entry/exit are option premiums, not underlying price, so
-    it is NOT recomputed via `_return_pct`, which flips sign by direction for
-    an underlying-price bet). `status` is accepted but re-derived server-side
-    from `exit_ts`/`return_pct` via `_derive_status` — never trusted verbatim
-    — so a client can't fabricate "win"/"loss" independent of the numbers.
+    `return_pct` is accepted for backward-compat with the preview response
+    shape only — it is ADVISORY, NEVER trusted for persistence (Task-3-review
+    Important-2 fix: a client could otherwise submit prices and a
+    contradictory return_pct and have the fabricated number persisted
+    verbatim). `import_commit` always recomputes it server-side from
+    `entry_price`/`exit_price` via `_import_return_pct` — the same
+    percent-change math `_return_pct` uses, but WITHOUT `_return_pct`'s
+    CALL/PUT sign flip (entry/exit here are option premiums on a long-only
+    round trip, not an underlying-price directional bet — see
+    `_import_return_pct`'s docstring). `status` is likewise accepted but
+    re-derived server-side from `exit_ts`/the recomputed `return_pct` via
+    `_derive_status` — never trusted verbatim — so a client can't fabricate
+    "win"/"loss" independent of the numbers.
     """
     ticker: str
     direction: str                       # CALL | PUT
@@ -187,7 +211,7 @@ class ImportCommitTrade(BaseModel):
     entry_price: float
     exit_ts: Optional[str] = None
     exit_price: Optional[float] = None
-    return_pct: Optional[float] = None   # premium P&L, TRUE PERCENT; None when active
+    return_pct: Optional[float] = None   # ADVISORY ONLY — ignored at commit, see docstring
     quantity: int = 1
     status: str = "active"               # "active" | "closed" — advisory, re-derived below
 
@@ -204,6 +228,48 @@ def _return_pct(direction: str, entry: float, exit_: float) -> float:
         return 0.0
     pct = (exit_ - entry) / entry * 100
     return pct if direction.upper() == "CALL" else -pct
+
+
+def _import_return_pct(entry: float, exit_: float) -> float:
+    """Server-side return_pct for a broker-import round trip
+    (`import_commit`) — Task-3-review Important-2 fix.
+
+    Reuses `_return_pct`'s exact percent-change math but ALWAYS passes
+    direction="CALL", i.e. NEVER applies the CALL/PUT sign flip.
+    `_return_pct`'s flip assumes entry/exit are the UNDERLYING price of a
+    directional bet (a PUT profits when the underlying falls). Broker-import
+    entry/exit are the OPTION PREMIUM of a long-only round trip (BTO then
+    STC — short legs are dropped by `lib/broker_import.py`, see its
+    docstring pt. 1), where a rising premium is always a gain and a falling
+    premium is always a loss, independent of CALL/PUT. Applying the flip
+    here would silently invert every PUT's premium P&L sign.
+    """
+    return _return_pct("CALL", entry, exit_)
+
+
+async def _read_bounded_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """Read `file` incrementally, capped at `max_bytes` — Task-3-review
+    Important-1 fix.
+
+    The prior code did `raw = await file.read()`, buffering the ENTIRE
+    upload in memory before any size/row-count check ran (CLAUDE.md Rule 0
+    — no unbounded reads before a capacity check). This reads in
+    `_IMPORT_READ_CHUNK_SIZE` chunks and aborts with 413 the moment the
+    running total exceeds `max_bytes`, so a pathologically large upload
+    never gets fully buffered and the CSV parser never runs on it.
+    """
+    buf = bytearray()
+    while True:
+        chunk = await file.read(_IMPORT_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"file too large — max {max_bytes // (1024 * 1024)} MB",
+            )
+    return bytes(buf)
 
 
 def _derive_status(has_exit: bool, return_pct: Optional[float]) -> str:
@@ -819,8 +885,12 @@ async def import_preview(
     5,000-row cap -> 413 (see `MAX_IMPORT_ROWS`): bounds a pathological
     multi-year/multi-account export from turning into an unbounded parse or,
     downstream at commit time, thousands of per-trade INSERTs.
+
+    5 MiB byte cap -> 413 (see `MAX_IMPORT_BYTES`), enforced via a chunked
+    read BEFORE any of the above runs: an oversized upload never gets fully
+    buffered into memory or reaches `parse_csv` at all.
     """
-    raw = await file.read()
+    raw = await _read_bounded_upload(file, MAX_IMPORT_BYTES)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -900,9 +970,19 @@ async def import_commit(body: ImportCommitRequest, request: Request):
     never land in another user's — or the admin's — journal.
 
     `return_pct`/`status`: an active trade's null exit stays null (never a
-    fabricated 0/closed) — `status` is re-derived from `exit_ts`/`return_pct`
-    via `_derive_status`, the incoming `PairedTrade.status` field is never
-    trusted verbatim (CLAUDE.md Rule 3.7 — no fabricated financial fields).
+    fabricated 0/closed). `return_pct` is NEVER trusted from the client
+    (Task-3-review Important-2 fix) — it is always recomputed server-side
+    from `entry_price`/`exit_price` via `_import_return_pct`; `status` is
+    re-derived from `exit_ts`/the recomputed `return_pct` via
+    `_derive_status`. Neither the incoming `PairedTrade.return_pct` nor
+    `.status` field is ever trusted verbatim (CLAUDE.md Rule 3.7 — no
+    fabricated/client-trusted financial fields).
+
+    `broker` must be one of `_ALLOWED_BROKERS` (Task-3-review Minor-b fix) —
+    422 otherwise. `import_preview` enforces this implicitly (any other
+    string fails to dispatch in `parse_csv` -> 422); `import_commit` never
+    calls `parse_csv`, so it checks explicitly against the same set before
+    persisting any row under `source = f"import:{broker}"`.
     """
     if len(body.trades) > MAX_IMPORT_ROWS:
         raise HTTPException(
@@ -911,6 +991,11 @@ async def import_commit(body: ImportCommitRequest, request: Request):
         )
 
     broker = body.broker.strip().lower()
+    if broker not in _ALLOWED_BROKERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported broker {broker!r}; must be one of {sorted(_ALLOWED_BROKERS)}",
+        )
     source = f"import:{broker}"
     owner = _journal_owner(request)
     tickers = sorted({t.ticker for t in body.trades})
@@ -934,7 +1019,9 @@ async def import_commit(body: ImportCommitRequest, request: Request):
             continue
 
         has_exit = t.exit_ts is not None and t.exit_price is not None
-        ret_pct = round(t.return_pct, 4) if (has_exit and t.return_pct is not None) else None
+        # `t.return_pct` (client-supplied, advisory only) is deliberately
+        # NOT used here — see docstring / Task-3-review Important-2 fix.
+        ret_pct = round(_import_return_pct(t.entry_price, t.exit_price), 4) if has_exit else None
         status = _derive_status(has_exit, ret_pct)
         exit_ts = t.exit_ts if has_exit else None
         exit_price = t.exit_price if has_exit else None
