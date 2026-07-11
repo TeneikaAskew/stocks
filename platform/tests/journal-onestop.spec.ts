@@ -1,0 +1,340 @@
+/**
+ * E2E: Journal one-stop cockpit (Task 5 of the journal one-stop-shop program).
+ *
+ * The /journal page is the complete journaling surface: interactive marking
+ * chart + trade rail (layout B "Cockpit"), Examples view (admin teaching
+ * trades, GET /api/journal/examples/{ticker}) as the default when the user's
+ * own journal is empty, 7 KPI tiles (incl. Avg R:R + TP1 hit), Overview/
+ * Session scoping, and risk columns (Stop / TPs / R:R) in the trade table.
+ *
+ * Mocks follow tests/helpers/mocks.ts conventions; the mark-entry canvas
+ * interaction recipe is reused from charts-cards.spec.ts (Task 2.3 block).
+ */
+import { test, expect } from '@playwright/test';
+import { mockCommon, M } from './helpers/mocks';
+
+// 30 bars walking up — same synthetic series as charts-cards.spec.ts so the
+// canvas-click recipe resolves clicks to real bars deterministically.
+function buildUpRunCandlestick(n = 30, base = 220, step = 0.05) {
+  const bars = [];
+  for (let i = 0; i < n; i += 1) {
+    const close = base + i * step;
+    bars.push({
+      time: 1_700_000_000 + i * 60,
+      open: close - step,
+      high: close + 0.01,
+      low: close - step - 0.01,
+      close,
+    });
+  }
+  return bars;
+}
+
+const CALL_BARS = buildUpRunCandlestick(30);
+const VOLUME = CALL_BARS.map((c) => ({ time: c.time, value: 100_000 }));
+
+const MOCK_MARKET_DATA = {
+  ticker: 'IWM',
+  date: '2026-04-25',
+  count: CALL_BARS.length,
+  candlestick: CALL_BARS,
+  volume: VOLUME,
+};
+
+// Admin teaching examples — same JSON shape as GET /api/journal/trades.
+// ex-1 has the full risk plan: R:R = |220-222.5| / |220-219| = 2.50, and its
+// CALL exit (222.5) reached TP1 (222.5) -> TP1 hit = 100%. ex-2 has no
+// TP/SL — its risk columns must render "—", never fabricated values.
+const EXAMPLE_TRADES = {
+  ticker: 'IWM',
+  source: 'cloud_sql',
+  count: 2,
+  trades: [
+    {
+      id: 'ex-1',
+      ticker: 'IWM',
+      direction: 'CALL',
+      entry_ts: '2026-04-25T09:35:00',
+      exit_ts: '2026-04-25T10:15:00',
+      entry_price: 220.0,
+      exit_price: 222.5,
+      return_pct: 1.14,
+      notes: 'Example: breakout continuation.',
+      take_profits: [222.5, 224],
+      stop_loss: 219,
+      status: 'win',
+      source: 'chart',
+      session_id: null,
+    },
+    {
+      id: 'ex-2',
+      ticker: 'IWM',
+      direction: 'PUT',
+      entry_ts: '2026-04-25T10:30:00',
+      exit_ts: '2026-04-25T11:00:00',
+      entry_price: 221.0,
+      exit_price: 221.66,
+      return_pct: -0.3,
+      notes: 'Example: failed breakdown.',
+      status: 'loss',
+      source: 'manual',
+      session_id: null,
+    },
+  ],
+};
+
+// One own closed trade on the chart date — drives the My-journal rail card
+// and risk-column assertions.
+const OWN_TRADES = {
+  ticker: 'IWM',
+  source: 'cloud_sql',
+  count: 1,
+  trades: [
+    {
+      id: 'own-1',
+      ticker: 'IWM',
+      direction: 'CALL',
+      entry_ts: '2026-04-25T09:31:00',
+      exit_ts: '2026-04-25T10:15:00',
+      entry_price: 220.0,
+      exit_price: 222.5,
+      return_pct: 1.14,
+      notes: 'My own breakout trade.',
+      take_profits: [223, 225],
+      stop_loss: 218.5,
+      status: 'win',
+      source: 'chart',
+      session_id: null,
+      created_at: '2026-04-25T09:31:01',
+    },
+  ],
+};
+
+const EMPTY_TRADES = { ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] };
+
+async function mockJournalOneStop(
+  page: import('@playwright/test').Page,
+  { own, examples }: { own: unknown; examples: unknown },
+) {
+  await mockCommon(page);
+  // Dates come back as YYYYMMDD in production (platform/api/main.py) — the
+  // page's ISO conversion assumes that (see charts-cards.spec.ts Task 2.3).
+  await page.route('**/api/market/dates/IWM', (r) =>
+    r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+  );
+  await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
+  await page.route('**/api/config/market-hours', (r) =>
+    r.fulfill(
+      M.ok({
+        regular: { open: '09:30', close: '16:00' },
+        premarket: { open: '04:00', close: '09:30' },
+        afterhours: { open: '16:00', close: '20:00' },
+      })
+    )
+  );
+  await page.route('**/api/journal/trades/IWM', (r) => r.fulfill(M.ok(own)));
+  await page.route('**/api/journal/examples/IWM', (r) => r.fulfill(M.ok(examples)));
+}
+
+test.describe('Journal one-stop cockpit — Examples default', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockJournalOneStop(page, { own: EMPTY_TRADES, examples: EXAMPLE_TRADES });
+  });
+
+  test('defaults to Examples when own journal is empty — EX badges, 7 populated tiles, risk columns with "—" honesty', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // Rail cards carry the EX badge (read-only teaching rows).
+    await expect(page.getByTestId('ex-badge').first()).toBeVisible();
+
+    // Scope label opens in Overview.
+    await expect(page.getByTestId('scope-label')).toHaveText(/overview — all dates/i);
+
+    // All 7 KPI tiles, populated from the examples dataset.
+    await expect(page.getByText('Trades', { exact: true })).toBeVisible();
+    await expect(page.getByText('Win rate')).toBeVisible();
+    await expect(page.getByText('Total P&L')).toBeVisible();
+    await expect(page.getByText('Avg / trade')).toBeVisible();
+    await expect(page.getByText('Avg win')).toBeVisible();
+    await expect(page.getByText('Avg R:R')).toBeVisible();
+    await expect(page.getByText('TP1 hit')).toBeVisible();
+    // ex-1's plan: |220-222.5|/|220-219| = 2.50; its exit reached TP1 -> 100%.
+    // exact:true so "$222.50" (which contains the substring "2.50") can't
+    // satisfy the assertion.
+    await expect(page.getByText('2.50', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('100%', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('1W / 1L')).toBeVisible();
+
+    // Trade table: risk columns render values for ex-1 and "—" for ex-2.
+    await expect(page.getByRole('columnheader', { name: 'Stop' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'TPs' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'R:R' })).toBeVisible();
+    const ex1Row = page.locator('tr', { hasText: 'Example: breakout continuation.' });
+    await expect(ex1Row.getByText('$219.00')).toBeVisible();
+    await expect(ex1Row.getByText('222.50 / 224.00')).toBeVisible();
+    const ex2Row = page.locator('tr', { hasText: 'Example: failed breakdown.' });
+    await expect(ex2Row.getByText('—').first()).toBeVisible();
+
+    // Examples are read-only: table row actions are disabled with a tooltip.
+    await expect(ex1Row.getByRole('button')).toBeDisabled();
+
+    // Equity curve card sits in the rail (2 closed trades -> a real curve).
+    await expect(page.getByText(/equity curve/i).first()).toBeVisible();
+  });
+
+  test('toggling to My journal shows the own empty state WITHOUT hiding the chart', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByRole('button', { name: 'My journal' }).click();
+
+    await expect(page.getByText(/no trades logged for iwm yet/i)).toBeVisible();
+    // The chart card and its canvas stay rendered — never a bare page.
+    await expect(page.locator('canvas').first()).toBeVisible();
+    // EX badges are gone in My-journal view.
+    await expect(page.getByTestId('ex-badge')).toHaveCount(0);
+  });
+
+  test('mark-entry flow on the JOURNAL chart POSTs source:"chart" and flips the view to My journal', async ({ page }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedBody: any = null;
+    await page.route('**/api/journal/trades', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      capturedBody = route.request().postDataJSON();
+      await route.fulfill(
+        M.ok({ source: 'cloud_sql', id: 'new-trade-1', return_pct: null, status: 'active' })
+      );
+    });
+
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // RTH filtering (default ON) would clip every CALL_BARS candle — their
+    // epochs land at ~22:xx UTC, outside the 09:30-16:00 RTH window — so no
+    // candles would be plotted for the click handler to hit. Toggle it off
+    // so the full 30-bar series renders and a click resolves to a real bar.
+    await page.getByRole('button', { name: /^RTH$/ }).click();
+    await page.waitForTimeout(500);
+
+    await page.getByRole('button', { name: /Mark Entry/ }).click();
+    await expect(page.getByText('Click chart to set entry price')).toBeVisible();
+
+    const canvas = page.locator('canvas').first();
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+
+    // Entry click — left third of the plot area, away from scale margins.
+    await page.mouse.click(box!.x + box!.width * 0.15, box!.y + box!.height * 0.5);
+    await expect(page.getByText('Select CALL or PUT')).toBeVisible();
+
+    await page.getByRole('button', { name: 'CALL' }).click();
+    await expect(page.getByText(/Click TP1/)).toBeVisible();
+    // CandlestickChart's click-subscription effect re-subscribes via a
+    // passive useEffect — the DOM can read "Click TP1" before the canvas's
+    // click closure caught up to the new drawingStep (see
+    // charts-cards.spec.ts's identical wait).
+    await page.waitForTimeout(1500);
+
+    // Click TP1, then skip TP2/TP3/SL via two Escapes.
+    await page.mouse.click(box!.x + box!.width * 0.3, box!.y + box!.height * 0.3);
+    await expect(page.getByText(/Click TP2/)).toBeVisible();
+    await page.waitForTimeout(500);
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByText(/Click Stop Loss/)).toBeVisible();
+    await page.waitForTimeout(500);
+    await page.keyboard.press('Escape');
+
+    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
+    expect(capturedBody.ticker).toBe('IWM');
+    expect(capturedBody.direction).toBe('CALL');
+    expect(capturedBody.source).toBe('chart');
+
+    // Marking always writes to MY journal — the view flips so the user sees
+    // where the trade went. Own journal (mock) is still empty -> its honest
+    // empty state proves the active view is now My journal, and the EX
+    // badges are gone.
+    await expect(page.getByText(/no trades logged for iwm yet/i)).toBeVisible();
+    await expect(page.getByTestId('ex-badge')).toHaveCount(0);
+  });
+});
+
+test.describe('Journal one-stop cockpit — My journal view', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockJournalOneStop(page, { own: OWN_TRADES, examples: EXAMPLE_TRADES });
+  });
+
+  test('rail card shows the return % centered and prominent', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // Own journal is non-empty -> defaults to My journal.
+    await expect(page.getByTestId('ex-badge')).toHaveCount(0);
+
+    const railReturn = page.getByTestId('rail-return').first();
+    await expect(railReturn).toBeVisible();
+    await expect(railReturn).toHaveText('+1.14%');
+
+    // "Centered": the return element's horizontal midpoint sits within the
+    // middle third of its card. "Prominent": its font-size is strictly the
+    // largest on the card.
+    const card = page.getByTestId('trade-rail-card').first();
+    const cardBox = await card.boundingBox();
+    const retBox = await railReturn.boundingBox();
+    expect(cardBox).not.toBeNull();
+    expect(retBox).not.toBeNull();
+    const retMid = retBox!.x + retBox!.width / 2;
+    expect(retMid).toBeGreaterThan(cardBox!.x + cardBox!.width / 3);
+    expect(retMid).toBeLessThan(cardBox!.x + (cardBox!.width * 2) / 3);
+    const retSize = await railReturn.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    const maxOtherSize = await card.evaluate((el) => {
+      let max = 0;
+      el.querySelectorAll('*').forEach((child) => {
+        // Skip the return element itself AND its ancestors — containers
+        // inherit the root font-size without rendering their own text, so
+        // only elements whose text is NOT the return figure count.
+        if (
+          (child as HTMLElement).dataset?.testid === 'rail-return' ||
+          child.querySelector('[data-testid="rail-return"]')
+        ) return;
+        // Only elements that RENDER text directly (a non-whitespace text
+        // node child) — a wrapper div inheriting 16px around 12px spans
+        // doesn't display any 16px glyphs itself.
+        const rendersText = Array.from(child.childNodes).some(
+          (n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim(),
+        );
+        if (!rendersText) return;
+        const size = parseFloat(getComputedStyle(child).fontSize);
+        if (size > max) max = size;
+      });
+      return max;
+    });
+    expect(retSize).toBeGreaterThan(maxOtherSize);
+  });
+
+  test('risk columns render values for a planned trade in My journal', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // own-1: stop 218.5, TPs 223/225, R:R = |220-223|/|220-218.5| = 2.00.
+    const ownRow = page.locator('tr', { hasText: 'My own breakout trade.' });
+    await expect(ownRow.getByText('$218.50')).toBeVisible();
+    await expect(ownRow.getByText('223.00 / 225.00')).toBeVisible();
+    await expect(ownRow.getByText('2.00', { exact: true })).toBeVisible();
+  });
+
+  test('scope label flips between Overview and Session when the date is selected/cleared', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const label = page.getByTestId('scope-label');
+    await expect(label).toHaveText(/overview — all dates/i);
+
+    await page.locator('input[type="date"]').first().fill('2026-04-25');
+    await expect(label).toHaveText(/session — 04\/25\/2026/i);
+
+    await page.getByTestId('clear-date').click();
+    await expect(label).toHaveText(/overview — all dates/i);
+  });
+});

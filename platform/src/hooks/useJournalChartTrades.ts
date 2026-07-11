@@ -178,7 +178,11 @@ export function journalRowToTradeEntry(row: JournalRow): TradeEntry {
 
 // ── Hooks ──────────────────────────────────────────────────────────────────
 
-const chartTradesKey = (ticker: string) => ['journal-chart-trades', ticker] as const;
+/** Exported (Task 5) so JournalPage's manual Add-Trade mutation can
+ *  invalidate the SAME cache entry the chart/rail/table read from —
+ *  a second, differently-keyed fetch of the same endpoint would go stale
+ *  the moment a chart-marked trade landed. */
+export const chartTradesKey = (ticker: string) => ['journal-chart-trades', ticker] as const;
 
 /**
  * Chart-marked trades for one ticker, filtered client-side to `date`
@@ -202,6 +206,70 @@ export function useJournalChartTrades(ticker: string, date: string) {
     enabled: !!ticker && !!date,
     staleTime: 10_000,
   });
+}
+
+/**
+ * The ticker's FULL own journal (raw server rows, all dates) — same query
+ * key as useJournalChartTrades above, so the two share one cache entry and
+ * every mutation's invalidation refreshes both. Task 5's Journal page reads
+ * this for the Overview-scoped KPI tiles / table / equity curve and maps
+ * rows through journalRowToTradeEntry itself for the chart/rail.
+ */
+export function useJournalTradesFull(ticker: string) {
+  return useQuery<JournalTradesResponse>({
+    queryKey: chartTradesKey(ticker),
+    queryFn: async () => {
+      const r = await fetch(`/api/journal/trades/${ticker}`);
+      if (!r.ok) throw new Error(`journal trades ${r.status}`);
+      return r.json();
+    },
+    enabled: !!ticker,
+    staleTime: 10_000,
+  });
+}
+
+// ── Examples view (Task 5 — journal one-stop) ─────────────────────────────
+
+export const examplesKey = (ticker: string) => ['journal-examples', ticker] as const;
+
+/**
+ * Admin teaching "Examples" — GET /api/journal/examples/{ticker}, exactly
+ * the trades-GET shape (server excludes source='replay' rows). Read-only:
+ * there is no mutation against this key, ever. A 503 (Cloud SQL missing or
+ * failing — the endpoint has no local fallback by design) surfaces through
+ * `isError` and the page renders an honest "Examples unavailable" state
+ * (Rule 3.7), never a fabricated empty-success.
+ */
+export function useJournalExamples(ticker: string) {
+  return useQuery<JournalTradesResponse>({
+    queryKey: examplesKey(ticker),
+    queryFn: async () => {
+      const r = await fetch(`/api/journal/examples/${ticker}`);
+      if (!r.ok) throw new Error(`journal examples ${r.status}`);
+      return r.json();
+    },
+    enabled: !!ticker,
+    staleTime: 30_000,
+    // 503 = "journal temporarily unavailable" — a legitimate, fast-surfacing
+    // state (same retry stance as useSeedTrades above).
+    retry: false,
+  });
+}
+
+/** Which dataset the Journal page is showing. */
+export type JournalView = 'examples' | 'mine';
+
+/**
+ * Default-view rule (design spec "Views"): Examples when the user's own
+ * journal for the ticker is empty, otherwise My journal — unless the user
+ * has explicitly toggled (override is sticky for the session). Pure and
+ * exported so the rule is unit-testable without mounting the page.
+ */
+export function resolveJournalView(
+  override: JournalView | null,
+  ownTradeCount: number,
+): JournalView {
+  return override ?? (ownTradeCount === 0 ? 'examples' : 'mine');
 }
 
 export interface CreateChartTradeVars {

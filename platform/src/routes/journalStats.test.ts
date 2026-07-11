@@ -94,4 +94,95 @@ describe('computeJournalStats', () => {
       expect(s.lossCount).toBe(1);
     });
   });
+
+  // Task 5 (journal one-stop): risk aggregates + session date-scoping.
+  // All additions are PURE and additive — every assertion above this block
+  // is byte-identical to before Task 5.
+  describe('avgRR (Task 5)', () => {
+    it('averages riskReward per trade over entries where it is computable', () => {
+      const s = computeJournalStats([
+        // |220-222.5| / |220-219| = 2.5
+        { return_pct: 1.14, entry_ts: '2026-01-02T09:31:00', exit_ts: '2026-01-02T10:00:00',
+          direction: 'CALL', entry_price: 220, exit_price: 222.5, take_profits: [222.5, 224], stop_loss: 219 },
+        // |218-217| / |218-220| = 0.5
+        { return_pct: -0.5, entry_ts: '2026-01-03T09:31:00', exit_ts: '2026-01-03T10:00:00',
+          direction: 'PUT', entry_price: 218, exit_price: 219, take_profits: [217], stop_loss: 220 },
+        // no TP/SL — not computable, excluded from the average (never a fake 0)
+        { return_pct: 2, entry_ts: '2026-01-04T09:31:00', exit_ts: '2026-01-04T10:00:00',
+          direction: 'CALL', entry_price: 100, exit_price: 102 },
+      ]);
+      expect(s.avgRR).toBeCloseTo(1.5);
+    });
+
+    it('is null when no entry has a computable R:R (no fabricated ratio)', () => {
+      const s = computeJournalStats([E(2, '2026-01-02')]);
+      expect(s.avgRR).toBeNull();
+    });
+
+    it('is null when stop === entry (zero risk distance is undefined, not 0)', () => {
+      const s = computeJournalStats([
+        { return_pct: 1, entry_ts: '2026-01-02T09:31:00', exit_ts: '2026-01-02T10:00:00',
+          direction: 'CALL', entry_price: 220, exit_price: 221, take_profits: [222], stop_loss: 220 },
+      ]);
+      expect(s.avgRR).toBeNull();
+    });
+  });
+
+  describe('tp1HitRate (Task 5)', () => {
+    it('rates closed trades with TP1 set whose exit reached TP1 (direction-aware)', () => {
+      const s = computeJournalStats([
+        // CALL exit 222.5 >= TP1 222.5 — hit
+        { return_pct: 1.14, entry_ts: '2026-01-02T09:31:00', exit_ts: '2026-01-02T10:00:00',
+          direction: 'CALL', entry_price: 220, exit_price: 222.5, take_profits: [222.5], stop_loss: 219 },
+        // CALL exit 221 < TP1 223 — miss
+        { return_pct: 0.45, entry_ts: '2026-01-03T09:31:00', exit_ts: '2026-01-03T10:00:00',
+          direction: 'CALL', entry_price: 220, exit_price: 221, take_profits: [223], stop_loss: 219 },
+        // PUT exit 216 <= TP1 217 — hit
+        { return_pct: 0.9, entry_ts: '2026-01-04T09:31:00', exit_ts: '2026-01-04T10:00:00',
+          direction: 'PUT', entry_price: 218, exit_price: 216, take_profits: [217], stop_loss: 220 },
+        // TP1 set but still open (no exit) — excluded from the denominator
+        { return_pct: null, entry_ts: '2026-01-05T09:31:00', exit_ts: null,
+          direction: 'CALL', entry_price: 220, exit_price: null, take_profits: [225], stop_loss: 219 },
+        // closed but no TP1 — never qualifies
+        { return_pct: 2, entry_ts: '2026-01-06T09:31:00', exit_ts: '2026-01-06T10:00:00',
+          direction: 'CALL', entry_price: 100, exit_price: 102 },
+      ]);
+      expect(s.tp1HitRate).toBeCloseTo((2 / 3) * 100);
+    });
+
+    it('is null when no closed trade has TP1 set (no fabricated rate)', () => {
+      const s = computeJournalStats([E(2, '2026-01-02')]);
+      expect(s.tp1HitRate).toBeNull();
+    });
+  });
+
+  describe('date scoping (Task 5)', () => {
+    const D2 = { return_pct: 2, entry_ts: '2026-01-02T09:31:00', exit_ts: '2026-01-02T10:00:00' };
+    const D3 = { return_pct: -1, entry_ts: '2026-01-03T09:31:00', exit_ts: '2026-01-03T10:00:00' };
+
+    it('scopes every aggregate to entries whose entry_ts date matches', () => {
+      const s = computeJournalStats([D2, D3], { date: '2026-01-02' });
+      expect(s.totalCount).toBe(1);
+      expect(s.closedCount).toBe(1);
+      expect(s.totalReturn).toBeCloseTo(2);
+      expect(s.winCount).toBe(1);
+      expect(s.lossCount).toBe(0);
+      expect(s.equityPoints).toHaveLength(1);
+    });
+
+    it('omitting date keeps the all-dates behaviour byte-identical', () => {
+      const all = computeJournalStats([D2, D3]);
+      expect(all.totalCount).toBe(2);
+      expect(all.totalReturn).toBeCloseTo(1);
+    });
+
+    it('scopes the replay-excluded count to the selected date too', () => {
+      const s = computeJournalStats(
+        [D2, { ...D3, source: 'replay' }],
+        { date: '2026-01-03' },
+      );
+      expect(s.totalCount).toBe(0);
+      expect(s.replayExcludedCount).toBe(1);
+    });
+  });
 });

@@ -14,6 +14,12 @@ export interface PriceLineConfig {
   lineWidth?: LineWidth;
 }
 
+// Muted color for the read-only Examples teaching layer (Task 5) —
+// deliberately gray, never the bull/bear green/red the user's own trades
+// use, matching ChartsPage's SEED_MARKER_COLOR convention for the same
+// "two layers must be unmistakable at a glance" reason.
+const EXAMPLE_MARKER_COLOR = '#8a8f98';
+
 /**
  * Imperative surface exposed to a host page's OWN toolbar/rail-card markup
  * (ChartsPage today; a future Journal page). The state machine lives inside
@@ -49,9 +55,9 @@ export interface TradeMarkingChartProps {
    *  useCloseChartTrade().mutate(...) — the host wires its own mutation. */
   onTradeExited: (vars: CloseChartTradeVars) => void;
   /** 'own' (default) draws the bull/bear arrows + PNL exit circle used for
-   *  the caller's own trades. 'examples' is reserved for a future muted
-   *  teaching-style render; falls back to 'own' styling until that phase
-   *  defines its palette. */
+   *  the caller's own trades. 'examples' (Task 5) draws the read-only
+   *  teaching trades in the muted gray seed palette with dashed TP/SL lines
+   *  and an `EX` marker prefix — visually unmistakable from own trades. */
   markersStyle?: 'own' | 'examples';
   /** Markers/price-lines computed elsewhere (signal overlay, seed-trade
    *  teaching layer, reference levels, gamma levels) that render UNDER this
@@ -97,6 +103,7 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
       trades,
       onTradeCreated,
       onTradeExited,
+      markersStyle = 'own',
       extraMarkers,
       extraPriceLines,
       showVolume,
@@ -145,16 +152,23 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
     }, [marking.drawingStep]);
 
     // Build chart markers from trades — verbatim from ChartsPage's original
-    // tradeMarkers useMemo.
+    // tradeMarkers useMemo for markersStyle='own'; 'examples' (Task 5) swaps
+    // every color for the muted teaching gray and prefixes the label so the
+    // read-only layer can't be mistaken for the caller's own trades.
+    const isExamples = markersStyle === 'examples';
     const tradeMarkers: SeriesMarker<Time>[] = useMemo(() => {
       return trades.flatMap((trade) => {
         const m: SeriesMarker<Time>[] = [];
         m.push({
           time: trade.entryTime as Time,
           position: trade.optionType === 'CALL' ? 'belowBar' : 'aboveBar',
-          color: trade.optionType === 'CALL' ? '#089981' : '#f23645',
+          color: isExamples
+            ? EXAMPLE_MARKER_COLOR
+            : trade.optionType === 'CALL'
+              ? '#089981'
+              : '#f23645',
           shape: trade.optionType === 'CALL' ? 'arrowUp' : 'arrowDown',
-          text: `${trade.optionType} @ $${trade.entryPrice.toFixed(2)}`,
+          text: `${isExamples ? 'EX ' : ''}${trade.optionType} @ $${trade.entryPrice.toFixed(2)}`,
         });
         if (trade.exitTime) {
           // AUDIT-2026-05-13: silent fallback — pre-existing; only reachable
@@ -164,14 +178,14 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
           m.push({
             time: trade.exitTime as Time,
             position: pnl >= 0 ? 'aboveBar' : 'belowBar',
-            color: pnl >= 0 ? '#089981' : '#f23645',
+            color: isExamples ? EXAMPLE_MARKER_COLOR : pnl >= 0 ? '#089981' : '#f23645',
             shape: 'circle',
-            text: `Exit ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`,
+            text: `${isExamples ? 'EX ' : ''}Exit ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`,
           });
         }
         return m;
       });
-    }, [trades]);
+    }, [trades, isExamples]);
 
     const markers: SeriesMarker<Time>[] = useMemo(
       () => [...(extraMarkers ?? []), ...tradeMarkers],
@@ -188,22 +202,22 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
         trade.takeProfits.forEach((tp, i) => {
           lines.push({
             price: tp.price,
-            color: '#089981',
-            title: `TP${i + 1}`,
-            lineStyle: 2, // Dotted
+            color: isExamples ? EXAMPLE_MARKER_COLOR : '#089981',
+            title: isExamples ? `EX TP${i + 1}` : `TP${i + 1}`,
+            lineStyle: isExamples ? 1 : 2, // examples: Dashed; own: Dotted
           });
         });
         if (trade.stopLoss) {
           lines.push({
             price: trade.stopLoss.price,
-            color: '#f23645',
-            title: 'SL',
-            lineStyle: 2,
+            color: isExamples ? EXAMPLE_MARKER_COLOR : '#f23645',
+            title: isExamples ? 'EX SL' : 'SL',
+            lineStyle: isExamples ? 1 : 2,
           });
         }
       }
       return lines;
-    }, [trades]);
+    }, [trades, isExamples]);
 
     const priceLines: PriceLineConfig[] = useMemo(
       () => [...tradePriceLines, ...(extraPriceLines ?? [])],
