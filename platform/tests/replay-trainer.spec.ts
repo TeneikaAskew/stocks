@@ -7,8 +7,23 @@
  *   Start replay -> warm-start reveal -> Step x2 -> Sig disabled ->
  *   Mark Entry mid-replay POSTs source:'replay' + a real session UUID with
  *   the entry pinned to the LAST REVEALED bar's epoch -> a future-timed
- *   existing trade is hidden from both the side-panel count and the
- *   "N hidden" toolbar readout while the reveal hasn't reached it yet.
+ *   existing trade is hidden from the "N hidden" toolbar readout while the
+ *   reveal hasn't reached it yet.
+ *
+ * Task 6 (journal-one-stop, 2026-07-11) stripped ALL general-purpose
+ * journal activity off /charts — the Trades/Analytics side panel and the
+ * admin seed-trade "Playbook seed" panel are gone (design spec's binding
+ * REMOVE list). The ONE thing that survives on Charts is the bar-replay
+ * trainer's own create/reveal/score path (design spec: "the replay trainer
+ * writes source='replay' practice rows via its own path — that stays"), so
+ * Mark Entry is still reachable here but ONLY while a replay session is
+ * active (see ChartsPage.tsx's `replay.active &&` gate around the drawing
+ * toolbar chrome). This file was adapted accordingly: the "Trades (N)"
+ * side-panel assertions in the two remaining Task 5.2 tests were dropped
+ * (the leakage-cutoff filtering they exercised is still covered by the
+ * "N hidden" toolbar text), and the "admin seed layer is gated off during
+ * replay" test was deleted outright — the Playbook seed panel it verified
+ * no longer exists anywhere on this page to gate.
  */
 import { test, expect } from '@playwright/test';
 import { mockCommon, M } from './helpers/mocks';
@@ -155,9 +170,6 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     await page.goto('/charts');
     await page.waitForLoadState('networkidle');
 
-    // Pre-replay: both trades visible (no cutoff in effect yet).
-    await expect(page.getByText('Trades (2)')).toBeVisible();
-
     // Start replay -> warm-start reveal (REPLAY_WARM_START_BARS = 15 of 30).
     const startBtn = page.getByTestId('replay-start-btn');
     await expect(startBtn).toBeVisible();
@@ -166,9 +178,12 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     const revealedCount = page.getByTestId('replay-revealed-count');
     await expect(revealedCount).toHaveText('15/30');
 
-    // Future-timed trade (09:56, bar 25) is now hidden — reveal cutoff is
-    // bar 14 (09:45). Only the early trade (09:36, bar 5) remains visible.
-    await expect(page.getByText('Trades (1)')).toBeVisible();
+    // Future-timed trade (09:56, bar 25) is hidden — reveal cutoff is bar 14
+    // (09:45), before the late trade's 09:56 entry. Task 6 (journal-one-stop)
+    // removed the Trades(N) side-panel count this test used to also assert
+    // here — the leakage-cutoff filtering itself (currentTrades in
+    // ChartsPage.tsx) is unchanged and still covered by the toolbar's
+    // hidden-trades readout below.
     await expect(page.getByText(/1 trade hidden/)).toBeVisible();
 
     // Sig overlay is force-disabled for the duration of the session.
@@ -183,7 +198,6 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     await expect(revealedCount).toHaveText('17/30');
 
     // Still hidden — cutoff is now bar 16 (09:47), still before 09:56.
-    await expect(page.getByText('Trades (1)')).toBeVisible();
     await expect(page.getByText(/1 trade hidden/)).toBeVisible();
 
     // Let the appendMode extension's chart-canvas repaint settle before
@@ -251,49 +265,21 @@ test.describe('Charts page — bar-replay trainer session (Task 5.2)', () => {
     await expect(page.getByTestId('replay-start-btn')).toBeVisible();
     await expect(page.getByTestId('replay-controls')).not.toBeVisible();
 
-    // Both trades visible again — the replay cutoff no longer applies.
-    await expect(page.getByText('Trades (2)')).toBeVisible();
+    // The replay cutoff no longer applies — Sig re-enables. (Task 6
+    // journal-one-stop removed the Trades(N) side-panel count this test
+    // used to also assert here alongside Sig; see the header comment above
+    // this describe block.)
     const sigButton = page.getByRole('button', { name: /^Sig$/ });
     await expect(sigButton).toBeEnabled();
   });
 
-  test('admin seed layer is gated off during replay (leakage audit)', async ({ page }) => {
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-
-    // Pre-replay: the seed panel renders the LATE seed trade's row and
-    // summary in full — this is the pre-existing, correct behavior outside
-    // a replay session.
-    await expect(page.getByText('Playbook seed')).toBeVisible();
-    await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
-    await expect(page.getByText('SEED CALL')).toBeVisible();
-
-    const seedToggle = page.getByTestId('seed-toggle');
-    await expect(seedToggle).toBeEnabled();
-
-    // Start replay -> warm-start reveal (bar 14, 09:45) is before the seed
-    // trade's entry (bar 25, 09:56) — the exact scenario the leakage audit
-    // flagged: a seed exit/return_pct rendering ahead of the reveal cutoff.
-    await page.getByTestId('replay-start-btn').click();
-    await expect(page.getByTestId('replay-revealed-count')).toHaveText('15/30');
-
-    // The seed panel row and summary are gone; an honest muted line
-    // replaces the section body instead of a partially-filtered leak.
-    await expect(page.getByText('SEED CALL')).not.toBeVisible();
-    await expect(page.getByText(/Seed: 1 trade/)).not.toBeVisible();
-    await expect(page.getByText('unavailable during replay').first()).toBeVisible();
-
-    // The Show-seed-trades toggle is disabled for the duration of the
-    // session, mirroring the Sig overlay toggle.
-    await expect(seedToggle).toBeDisabled();
-    await expect(seedToggle).toHaveAttribute('title', 'unavailable during replay');
-
-    // Stop -> both the row and toggle come back.
-    await page.getByTestId('replay-stop-btn').click();
-    await expect(seedToggle).toBeEnabled();
-    await expect(page.getByText('SEED CALL')).toBeVisible();
-    await expect(page.getByText(/Seed: 1 trade/)).toBeVisible();
-  });
+  // Task 6 (journal-one-stop) deleted the "admin seed layer is gated off
+  // during replay" test that used to live here — the Playbook seed panel
+  // it exercised is gone from ChartsPage entirely (design spec's binding
+  // REMOVE list: "seed markers + Playbook-seed panel"), not merely
+  // adapted, so there is nothing left on this page for that test to
+  // assert against. The admin seed-trade teaching layer now lives only in
+  // the Journal page's Examples view — see journal-onestop.spec.ts.
 });
 
 // ── Task 5.3: post-replay-session scorecard ─────────────────────────────
