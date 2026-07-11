@@ -242,6 +242,28 @@ test.describe('Charts page — Phase D/4/5 cards', () => {
     // the button doesn't throw).
     await sigButton.click();
   });
+
+  // Task 4 of the July-6 restoration: the chart wrapper lost its viewport-
+  // based height to a wrapping toolbar + an effective fixed ~400px chart.
+  // This pins the fix (viewport-clamped wrapper height + single-row
+  // toolbar) without reintroducing the #700 overflow bug.
+  test('chart fills the viewport height without horizontal overflow', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto('/charts');
+    await page.waitForLoadState('networkidle');
+    const canvas = page.locator('canvas').first();
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThan(450); // was ~400 flat before
+    // overflow guard: the #700 fix must hold — canvas never wider than its card
+    const card = page.locator('[data-testid="chart-card"]');
+    const cardBox = await card.boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(cardBox!.width + 1);
+    // no page-level horizontal scrollbar
+    const scrollW = await page.evaluate(() => document.documentElement.scrollWidth);
+    const clientW = await page.evaluate(() => document.documentElement.clientWidth);
+    expect(scrollW).toBeLessThanOrEqual(clientW + 1);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

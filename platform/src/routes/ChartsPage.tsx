@@ -780,7 +780,7 @@ export default function ChartsPage() {
       {/* Main chart area */}
       <div className="flex flex-1 flex-col">
         {/* Toolbar */}
-        <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="mb-3 flex flex-wrap items-center gap-3 xl:flex-nowrap">
           {/* Date picker — disabled when in historical review mode */}
           <input
             type="date"
@@ -927,17 +927,17 @@ export default function ChartsPage() {
                 onClick={exportTradesJSON}
                 className="flex items-center gap-1 rounded px-2 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
                 title="Export trades as JSON"
+                aria-label="Export trades as JSON"
               >
                 <Download size={14} />
-                JSON
               </button>
               <button
                 onClick={exportTradesCSV}
                 className="flex items-center gap-1 rounded px-2 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
                 title="Export trades as CSV"
+                aria-label="Export trades as CSV"
               >
                 <Download size={14} />
-                CSV
               </button>
             </div>
           )}
@@ -1014,7 +1014,11 @@ export default function ChartsPage() {
         )}
 
         {/* Chart */}
-        <div className="flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)]">
+        <div
+          data-testid="chart-card"
+          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)]"
+          style={{ height: 'clamp(400px, calc(100vh - 340px), 900px)' }}
+        >
           {isLoading ? (
             <div className="flex h-full items-center justify-center">
               <LoadingSpinner size={32} />
