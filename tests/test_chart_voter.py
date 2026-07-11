@@ -74,3 +74,14 @@ def test_short_series_counts_available_moves_only():
     assert by_id["call_consec_up"]["detail"] == "1/3 last bars up"
     out_empty = evaluate_chart_voter([], rsi=None, stoch_k=None, ema9=None, vwap=None)
     assert out_empty["firing"] is None
+
+
+def test_two_met_never_fires_even_when_strictly_ahead():
+    # CALL met_count == 2 (stoch room + above vwap), PUT met_count == 1;
+    # call strictly beats put but is below the >=3 floor -> no fire.
+    closes = [100.0, 101.0, 100.5, 100.8]  # up, down, up: only 2-of-3
+    out = evaluate_chart_voter(closes, rsi=None, stoch_k=50.0, ema9=None, vwap=100.0)
+    assert out["call"]["met_count"] == 2          # stoch<80, last 100.8 > vwap 100.0
+    assert out["call"]["met_count"] > out["put"]["met_count"]
+    assert out["call"]["fires"] is False
+    assert out["firing"] is None
