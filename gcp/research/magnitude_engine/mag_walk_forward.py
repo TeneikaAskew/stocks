@@ -48,6 +48,10 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
 )
+from gcp.research.direction_program.phase2_features import (
+    build_family_columns, prune_feature_cols, _load_peers,
+)
+from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD
 from google.cloud import storage as gcs
 from lib.logging_config import setup_logging
 from sklearn.calibration import CalibratedClassifierCV
@@ -55,6 +59,8 @@ from sklearn.metrics import log_loss
 
 setup_logging()
 log = logging.getLogger(__name__)
+
+AXIS = "size"
 
 
 # ─────────────────────── DDL for the results table ───────────────────────
@@ -469,7 +475,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   calibration: str = DEFAULT_CALIBRATION,
                   cv: int = DEFAULT_CV,
                   label_mode: str = "body",
-                  persist_production_model: bool = False) -> dict:
+                  persist_production_model: bool = False,
+                  features: str = "") -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
@@ -483,6 +490,29 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
     t0 = time.time()
     X_df, feature_cols = featurize(df)
+
+    # ── Phase-2 feature families (CLAUDE.md Rule 3.7: NaN, never fillna(0),
+    # on the new columns) — attached AFTER featurize so they never hit its
+    # .fillna(0). features="" reproduces the baseline byte-for-byte: fams
+    # is empty, no prune, add is empty, build_family_columns is never
+    # called, X_df/feature_cols pass through unchanged. ──
+    fams = set(features.split(",")) - {""}
+    if "prune" in fams:
+        keep = prune_feature_cols(feature_cols, NEAR_DEAD[AXIS])
+        X_df = X_df[keep]; feature_cols = keep
+    add = fams - {"prune"}
+    peers = None
+    if "cross_asset" in add:
+        peers = _load_peers(engine, ticker, tf)
+    if add:
+        new_df, new_cols = build_family_columns(
+            df, add, AXIS, ticker, tf, engine, peers)
+        X_df = pd.concat([X_df.reset_index(drop=True), new_df.reset_index(drop=True)], axis=1)
+        feature_cols = feature_cols + new_cols
+    if fams:
+        log.info("phase2 features active: %s  (n_cols=%d)",
+                 ",".join(sorted(fams)), len(feature_cols))
+
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
     bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
@@ -647,7 +677,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
                    calibration: str = DEFAULT_CALIBRATION,
-                   persist_production_model: bool = False) -> dict:
+                   persist_production_model: bool = False,
+                   features: str = "") -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
@@ -655,7 +686,8 @@ def run_all_cells(engine, phase: str,
             try:
                 s = walk_forward(engine, phase, ticker, tf,
                                  cutoffs=cutoffs, calibration=calibration,
-                                 persist_production_model=persist_production_model)
+                                 persist_production_model=persist_production_model,
+                                 features=features)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -797,6 +829,11 @@ def main():
                         "(range/straddle); call=(next_high-next_open) upside; "
                         "put=(next_open-next_low) downside. Choices track "
                         "mag_config.LABEL_MODES so CLI can't drift from the labels.")
+    p.add_argument("--features",
+                   default=os.environ.get("MAG_FEATURES", ""),
+                   help="Comma-separated phase2 family names (prune, "
+                        "options_iv, positioning, cross_asset, calendar). "
+                        "Default empty = baseline (no phase2 change).")
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
@@ -814,7 +851,8 @@ def main():
                  phase, ticker, tf)
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
-                      persist_production_model=args.persist_production_model)
+                      persist_production_model=args.persist_production_model,
+                      features=args.features)
         return
 
     if args.plan and args.task_index is not None:
@@ -825,7 +863,8 @@ def main():
         phase, ticker, tf = plan[args.task_index]
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
-                      persist_production_model=args.persist_production_model)
+                      persist_production_model=args.persist_production_model,
+                      features=args.features)
         return
 
     if args.all_cells:
@@ -833,7 +872,8 @@ def main():
             raise SystemExit("--all-cells needs --phase")
         run_all_cells(engine, args.phase, cutoffs=cutoffs,
                        calibration=args.calibration,
-                       persist_production_model=args.persist_production_model)
+                       persist_production_model=args.persist_production_model,
+                       features=args.features)
         return
 
     if not args.phase or not args.ticker or not args.tf:
@@ -846,7 +886,8 @@ def main():
     walk_forward(engine, args.phase, args.ticker, args.tf,
                   cutoffs=cutoffs, calibration=args.calibration,
                   label_mode=args.label_mode,
-                  persist_production_model=args.persist_production_model)
+                  persist_production_model=args.persist_production_model,
+                  features=args.features)
 
 
 if __name__ == "__main__":

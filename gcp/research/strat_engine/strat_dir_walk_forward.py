@@ -41,12 +41,18 @@ from gcp.research.strat_engine.strat_pred_train import (
 from gcp.research.strat_engine.strat_walk_forward import (
     DEFAULT_CUTOFFS, MIN_TEST_BARS, _gcs_upload,
 )
+from gcp.research.direction_program.phase2_features import (
+    build_family_columns, prune_feature_cols, _load_peers,
+)
+from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD
 from google.cloud import storage as gcs
 from lib.logging_config import setup_logging
 from sklearn.metrics import log_loss
 
 setup_logging()
 log = logging.getLogger(__name__)
+
+AXIS = "direction"
 
 
 def make_direction_lgbm(n_jobs: int = -1) -> lgb.LGBMClassifier:
@@ -133,7 +139,8 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
 
 
 def walk_forward_direction(engine, ticker: str, tf: str,
-                              cutoffs: list[str] = None) -> dict:
+                              cutoffs: list[str] = None,
+                              features: str = "") -> dict:
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     log.info("=" * 70)
     log.info("DIRECTION WALK-FORWARD  %s %s  %d cutoffs", ticker, tf, len(cutoffs))
@@ -153,6 +160,29 @@ def walk_forward_direction(engine, ticker: str, tf: str,
 
     t0 = time.time()
     X_df, feature_cols = featurize(df)
+
+    # ── Phase-2 feature families (CLAUDE.md Rule 3.7: NaN, never fillna(0),
+    # on the new columns) — attached AFTER featurize so they never hit its
+    # .fillna(0). features="" reproduces the baseline byte-for-byte: fams
+    # is empty, no prune, add is empty, build_family_columns is never
+    # called, X_df/feature_cols pass through unchanged. ──
+    fams = set(features.split(",")) - {""}
+    if "prune" in fams:
+        keep = prune_feature_cols(feature_cols, NEAR_DEAD[AXIS])
+        X_df = X_df[keep]; feature_cols = keep
+    add = fams - {"prune"}
+    peers = None
+    if "cross_asset" in add:
+        peers = _load_peers(engine, ticker, tf)
+    if add:
+        new_df, new_cols = build_family_columns(
+            df, add, AXIS, ticker, tf, engine, peers)
+        X_df = pd.concat([X_df.reset_index(drop=True), new_df.reset_index(drop=True)], axis=1)
+        feature_cols = feature_cols + new_cols
+    if fams:
+        log.info("phase2 features active: %s  (n_cols=%d)",
+                 ",".join(sorted(fams)), len(feature_cols))
+
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = (df["next_close"] > df["next_open"]).astype(np.int64).values
     bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
@@ -255,10 +285,15 @@ def main():
     p.add_argument("--ticker", default="IWM", choices=list(TICKERS))
     p.add_argument("--tf", default="15m", choices=list(TIMEFRAMES))
     p.add_argument("--cutoffs", default=None)
+    p.add_argument("--features", default="",
+                   help="Comma-separated phase2 family names (prune, "
+                        "options_iv, positioning, cross_asset, calendar). "
+                        "Default empty = baseline (no phase2 change).")
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
-    walk_forward_direction(engine, args.ticker, args.tf, cutoffs=cutoffs)
+    walk_forward_direction(engine, args.ticker, args.tf, cutoffs=cutoffs,
+                            features=args.features)
 
 
 if __name__ == "__main__":
