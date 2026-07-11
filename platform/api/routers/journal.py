@@ -2,17 +2,19 @@
 Journal router — Cloud SQL-backed trade journal with local fallback.
 
 Endpoints:
-  GET    /api/journal/trades/{ticker}  — list all journal entries for a ticker
-  POST   /api/journal/trades           — create a new journal entry (active or closed)
-  PATCH  /api/journal/trades/{id}      — close an active trade (sets exit + return_pct/status)
-  DELETE /api/journal/trades/{id}      — delete a journal entry by UUID
-  GET    /api/journal/seed/{ticker}    — read-only admin seed from the pipeline `trades` table
-  POST   /api/journal/export/{ticker}  — write pipeline-compatible CSV to data/signals/
+  GET    /api/journal/trades/{ticker}    — list all journal entries for a ticker
+  POST   /api/journal/trades             — create a new journal entry (active or closed)
+  PATCH  /api/journal/trades/{id}        — close an active trade (sets exit + return_pct/status)
+  DELETE /api/journal/trades/{id}        — delete a journal entry by UUID
+  GET    /api/journal/examples/{ticker}  — read-only admin teaching examples (journal_entries)
+  GET    /api/journal/seed/{ticker}      — read-only admin seed from the pipeline `trades` table
+  POST   /api/journal/export/{ticker}    — write pipeline-compatible CSV to data/signals/
 """
 import csv
 import json
 import logging
 import math
+import os
 import sys
 import uuid
 from datetime import datetime
@@ -42,6 +44,13 @@ except Exception:
 
 # Server-verified identity for per-user scoping.
 from api.auth import current_user_email
+
+# Admin identity for the read-only "Examples" teaching layer (GET /api/journal/
+# examples/{ticker}) — same env var / default the admin gate uses elsewhere
+# (api/main.py:/api/me, api/routers/admin.py). Resolved once at import time
+# (mirrors those call sites); tests override via monkeypatch.setattr on this
+# module attribute rather than reload, same convention as api.auth.AUTH_MODE.
+_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lower()
 
 
 # ── Query/exec indirections (testability) ────────────────────────────────────
@@ -252,6 +261,57 @@ async def get_trades(ticker: str, request: Request):
     entries = _load_local(ticker_upper)
     entries.sort(key=lambda e: e.get("entry_ts", ""), reverse=True)
     return {"ticker": ticker_upper, "source": "local", "count": len(entries), "trades": entries}
+
+
+@router.get("/api/journal/examples/{ticker}")
+async def get_examples(ticker: str):
+    """Read-only teaching "Examples" — the admin's own journal trades for a ticker.
+
+    Same JSON shape as GET /api/journal/trades/{ticker}: {ticker, source,
+    count, trades}. Admin identity comes from the server-side `_ADMIN_EMAIL`
+    constant, never the caller — every signed-in user sees the same
+    admin-authored examples regardless of who's asking (the frontend gates
+    auth via the normal middleware; this endpoint doesn't scope by caller
+    identity at all). Excludes `source = 'replay'` rows (practice-mode noise
+    isn't teaching material).
+
+    Cloud-SQL only: unlike the per-user trades GET, there is no local-owner
+    fallback here — "the admin's trades" has no meaning without Cloud SQL, so
+    DB-unavailable (not configured, or a real query failure) mirrors
+    get_trades' 503 envelope exactly rather than fabricating an empty success
+    (CLAUDE.md Rule 3.7).
+    """
+    ticker_upper = ticker.upper()
+
+    if not _HAS_CLOUD_SQL:
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+
+    try:
+        df = _journal_query(
+            """
+            SELECT id::text, ticker, direction,
+                   entry_ts AT TIME ZONE 'UTC' AS entry_ts,
+                   exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
+                   entry_price, exit_price, return_pct, notes,
+                   stop_loss, tp1, tp2, tp3, status, source,
+                   session_id::text AS session_id,
+                   created_at AT TIME ZONE 'UTC' AS created_at
+            FROM journal_entries
+            WHERE ticker = :ticker AND user_email = :user_email
+              AND source IS DISTINCT FROM 'replay'
+            ORDER BY entry_ts DESC
+            """,
+            {"ticker": ticker_upper, "user_email": _ADMIN_EMAIL},
+        )
+    except Exception:
+        # Mirrors get_trades' except path exactly (same 503 + same detail
+        # string). No owner=="local" branch here (unlike get_trades) because
+        # this endpoint always reads the admin's Cloud-SQL data, never a
+        # per-request owner's — there is no local variant to fall back to.
+        raise HTTPException(status_code=503, detail="journal temporarily unavailable")
+
+    trades = [] if df.empty else _rows_to_trades(df)
+    return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
 
 
 @router.post("/api/journal/trades")
