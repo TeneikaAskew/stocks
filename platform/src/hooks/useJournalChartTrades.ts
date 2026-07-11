@@ -674,3 +674,137 @@ export function useMineMyStyle() {
     },
   });
 }
+
+// ── Broker CSV import (Task 7 — journal one-stop-shop) ───────────────────
+// POST /api/journal/import/preview (multipart) and POST /api/journal/import/
+// commit (platform/api/routers/journal.py) — see that router's docstrings
+// for the full pipeline (lib/broker_import.py's detect_broker/parse_csv/
+// pair_orders, dedupe-by-(ticker,direction,entry_ts,entry_price)). Both
+// hooks fail loud on a non-2xx response (Rule 3.7): the server's `detail`
+// message surfaces verbatim through the mutation's `error.message` so the
+// modal can render a real reason (413 file/row cap, 422 bad broker/mapping,
+// 503 journal unavailable) instead of a generic failure banner.
+
+/** One `PairedTrade` from a preview response — mirrors
+ * `lib.broker_import.PairedTrade` field-for-field plus the preview-only
+ * `duplicate` flag (`journal.py`'s `import_preview`, advisory only —
+ * `import_commit` re-checks server-side). */
+export interface ImportPreviewTrade {
+  ticker: string;
+  direction: string; // 'CALL' | 'PUT'
+  entry_ts: string; // naive-ET "YYYY-MM-DD HH:MM"
+  entry_price: number;
+  exit_ts: string | null;
+  exit_price: number | null;
+  return_pct: number | null; // ADVISORY ONLY — import_commit recomputes server-side
+  quantity: number;
+  status: string; // 'active' | 'closed'
+  duplicate: boolean;
+}
+
+export interface ImportSkippedRow {
+  raw_index: number;
+  reason: string;
+}
+
+export interface ImportPreviewResponse {
+  broker: string; // 'robinhood' | 'webull' | 'generic'
+  trades: ImportPreviewTrade[];
+  skipped: ImportSkippedRow[];
+}
+
+export interface ImportPreviewVars {
+  file: File;
+  /** Omit to let the server auto-detect from the CSV header row (Robinhood/
+   *  Webull). Required ('generic') alongside `mapping` for Schwab/Fidelity/
+   *  IBKR/Other. */
+  broker?: 'robinhood' | 'webull' | 'generic';
+  /** Required when broker==='generic' — the six-key column mapping
+   *  (`lib.broker_import._GENERIC_REQUIRED_KEYS`: ticker/direction/action/
+   *  ts/price/quantity) -> the uploaded CSV's actual header name. */
+  mapping?: Record<string, string>;
+}
+
+async function _detailOrStatus(r: Response, fallback: string): Promise<string> {
+  try {
+    const body = await r.json();
+    if (body?.detail) return String(body.detail);
+  } catch {
+    // response body wasn't JSON — keep the fallback message.
+  }
+  return fallback;
+}
+
+/**
+ * Parses + FIFO-pairs an uploaded broker CSV — no journal writes. A
+ * `useMutation` (triggered by the modal's "Preview" button), not a passive
+ * query, matching `useReplayTrades`/`useMineMyStyle`'s shape.
+ */
+export function useImportPreview() {
+  return useMutation<ImportPreviewResponse, Error, ImportPreviewVars>({
+    mutationFn: async (vars) => {
+      const form = new FormData();
+      form.append('file', vars.file);
+      if (vars.broker) form.append('broker', vars.broker);
+      if (vars.mapping) form.append('mapping', JSON.stringify(vars.mapping));
+      const r = await fetch('/api/journal/import/preview', { method: 'POST', body: form });
+      if (!r.ok) throw new Error(await _detailOrStatus(r, `import preview failed: ${r.status}`));
+      return r.json();
+    },
+  });
+}
+
+export interface ImportCommitVars {
+  broker: string;
+  /** Caller-selected subset of a preview's `trades` (checked rows only).
+   *  `duplicate` is dropped before the request body is built — the server
+   *  never reads it (commit re-checks duplicates itself). */
+  trades: ImportPreviewTrade[];
+}
+
+export interface ImportCommitResponse {
+  imported: number;
+  skipped_duplicates: number;
+}
+
+/**
+ * Inserts the caller-selected preview rows into the signed-in user's OWN
+ * journal (server never accepts an owner/user field — see `import_commit`'s
+ * docstring). On success, invalidates every `journal-chart-trades` cache
+ * entry rather than a single ticker's: a broker statement can carry rows
+ * for multiple tickers (e.g. one Robinhood export spanning IWM/SPY/QQQ), so
+ * guessing a single ticker to invalidate would leave the others stale.
+ * TanStack's default partial-key matching means invalidating the bare
+ * `['journal-chart-trades']` prefix (chartTradesKey below) refreshes every
+ * per-ticker entry currently mounted.
+ */
+export function useImportCommit() {
+  const qc = useQueryClient();
+  return useMutation<ImportCommitResponse, Error, ImportCommitVars>({
+    mutationFn: async (vars) => {
+      const r = await fetch('/api/journal/import/commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          broker: vars.broker,
+          trades: vars.trades.map((t) => ({
+            ticker: t.ticker,
+            direction: t.direction,
+            entry_ts: t.entry_ts,
+            entry_price: t.entry_price,
+            exit_ts: t.exit_ts,
+            exit_price: t.exit_price,
+            return_pct: t.return_pct,
+            quantity: t.quantity,
+            status: t.status,
+          })),
+        }),
+      });
+      if (!r.ok) throw new Error(await _detailOrStatus(r, `import commit failed: ${r.status}`));
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['journal-chart-trades'] });
+    },
+  });
+}

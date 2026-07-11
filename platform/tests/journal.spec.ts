@@ -203,4 +203,24 @@ test.describe('Trade Journal — practice-trade analytics hygiene (Task 5.3)', (
     await expect(page.getByText('1W / 1L')).toBeVisible();
     await expect(note).not.toBeVisible();
   });
+
+  // Task 7 carried item (T6 review, Important): source==='replay' rows get a
+  // muted "practice" badge next to the direction cell in the trade table —
+  // same visual weight as the existing "active" badge, so a practice trade
+  // is visually distinguishable from a real one even when its stats are
+  // folded into the aggregates via the toggle above. Placed in THIS spec
+  // (rather than journal-onestop.spec.ts) because MIXED_TRADES above is
+  // already the one fixture in the suite with a real source:'replay' row
+  // rendered in the table — reusing it avoids inventing a second one.
+  test('replay-sourced rows carry a muted "practice" badge next to the direction cell', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const replayRow = page.locator('tr', { hasText: 'Practice replay trade.' });
+    await expect(replayRow.getByText('practice', { exact: true })).toBeVisible();
+
+    // The manual (non-replay) row must NOT carry the badge.
+    const manualRow = page.locator('tr', { hasText: 'Manual win trade.' });
+    await expect(manualRow.getByText('practice', { exact: true })).toHaveCount(0);
+  });
 });

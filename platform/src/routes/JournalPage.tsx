@@ -19,6 +19,7 @@ import {
   Eye,
   EyeOff,
   Clock,
+  Upload,
 } from 'lucide-react';
 import { KpiTile, Card, CardHeader } from '@/components/primitives';
 import { TickerCombobox } from '@/components/shared/TickerCombobox';
@@ -29,6 +30,7 @@ import {
   type TradeMarkingChartHandle,
 } from '@/components/journal/TradeMarkingChart';
 import { TradeRailCard } from '@/components/journal/TradeRailCard';
+import { ImportTradesModal } from '@/components/journal/ImportTradesModal';
 import type { DrawingStep } from '@/hooks/useTradeMarking';
 import { useMarketData, useAvailableDates } from '@/hooks/useMarketData';
 import {
@@ -169,6 +171,7 @@ export default function JournalPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm());
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   // ── Dates + market data (chart) ─────────────────────────────────────────
   // selectedDate === '' is the "Overview" cleared state: KPI tiles + table
@@ -414,6 +417,16 @@ export default function JournalPage() {
             className="flex items-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:opacity-90"
           >
             <PlusCircle size={13} /> Add Trade
+          </button>
+
+          {/* Import always writes to MY journal, visible in every view
+              (design spec "Trade import"). */}
+          <button
+            data-testid="import-trades-btn"
+            onClick={() => setImportOpen(true)}
+            className="flex items-center gap-1.5 rounded border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
+          >
+            <Upload size={13} /> Import
           </button>
 
           {viewRows.length > 0 && (
@@ -814,6 +827,17 @@ export default function JournalPage() {
                             active
                           </span>
                         )}
+                        {/* Task 7 carried item (T6 review, Important): a
+                            practice (bar-replay-trainer) row gets the same
+                            muted-badge treatment TradeRailCard's "EX" badge
+                            uses — same weight as "active" above, distinct
+                            (muted, not amber) color so it reads as
+                            "not a real fill" rather than "still open." */}
+                        {e.source === 'replay' && (
+                          <span className="ml-1.5 rounded bg-[var(--color-bg-hover)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--color-text-muted)]">
+                            practice
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{entry.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.entry_price.toFixed(2)}</td>
@@ -865,6 +889,15 @@ export default function JournalPage() {
           </div>
         )
       )}
+
+      {/* Broker CSV import (Task 7) — always writes to MY journal; a
+          successful commit flips the view so the user sees where the
+          imported trades landed, same rule as chart marking above. */}
+      <ImportTradesModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => setViewOverride('mine')}
+      />
     </div>
   );
 }
