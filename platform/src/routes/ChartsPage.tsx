@@ -34,8 +34,8 @@ import { SimilarSetupsCard } from '@/components/charts/SimilarSetupsCard';
 import { ReplaySessionControls } from '@/components/charts/ReplaySessionControls';
 import { useReplaySession } from '@/hooks/useReplaySession';
 import { useLiveIndicators, useSignalSeries } from '@/hooks/useLiveIndicators';
-import { EMPTY_INDICATORS, EMPTY_SIGNALS, type Bar } from '@/lib/indicators';
-import type { Timeframe, TradeEntry, TradeDirection } from '@/types';
+import { EMPTY_INDICATORS, type Bar } from '@/lib/indicators';
+import type { Timeframe, TradeEntry, TradeDirection, ChartVoter } from '@/types';
 import type { CandlestickBar, VolumeBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
 import {
@@ -66,6 +66,16 @@ const GAMMA_LEVELS_TICKERS = new Set(['SPY', 'IWM', 'QQQ', 'SPX']);
 // deliberately gray, never the bull/bear green/red the user's own trades use,
 // so the two layers are visually unmistakable at a glance.
 const SEED_MARKER_COLOR = '#8a8f98';
+
+// Pre-fetch/no-data fallback for the chart_voter slice of useLiveIndicators'
+// response (July-6 5-condition teaching voter, lib/chart_voter.py). "No
+// setup" + zero counts is an honest empty state, not a fabricated result —
+// StrategyConditionsCard only renders it before the query resolves.
+const EMPTY_CHART_VOTER: ChartVoter = {
+  call: { direction: 'CALL', conditions: [], met_count: 0, total_count: 5, fires: false },
+  put: { direction: 'PUT', conditions: [], met_count: 0, total_count: 5, fires: false },
+  firing: null,
+};
 
 const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '1', label: '1m' },
@@ -398,9 +408,10 @@ export default function ChartsPage() {
   }, [effectiveCandlestick, effectiveVolume]);
 
   // Live Strategy Conditions panel — mirrors LiveMarketPage.tsx's
-  // useLiveIndicators usage exactly so the same 10-condition strength
-  // readout (POST /api/live/indicators, lib/indicators.py) drives every
-  // page in the app.
+  // useLiveIndicators usage so the same server-computed indicators drive
+  // every page. The card itself renders the July-6 5-condition
+  // `chart_voter` slice of this response (lib/chart_voter.py), not the
+  // 10-condition strength `signals` shape LiveMarketPage/PlaybookPage use.
   const lastChartBar = chartBars.length > 0 ? chartBars[chartBars.length - 1] : null;
   const indicatorsQuery = useLiveIndicators(
     {
@@ -412,7 +423,7 @@ export default function ChartsPage() {
     chartBars.length >= 14,
   );
   const chartIndicators = indicatorsQuery.data?.indicators ?? EMPTY_INDICATORS;
-  const chartSignals = indicatorsQuery.data?.signals ?? EMPTY_SIGNALS;
+  const chartVoter = indicatorsQuery.data?.chart_voter ?? EMPTY_CHART_VOTER;
 
   // Build chart markers from trades
   const tradeMarkers: SeriesMarker<Time>[] = useMemo(() => {
@@ -1254,10 +1265,11 @@ export default function ChartsPage() {
       </div>
     </div>
 
-    {/* Live strategy conditions — server-computed (POST /api/live/indicators,
-        lib/indicators.py), same panel LiveMarketPage/PlaybookPage render. */}
+    {/* Live strategy conditions — server-computed chart teaching voter
+        (POST /api/live/indicators -> chart_voter, lib/chart_voter.py),
+        the July-6 5-condition presentation restored per Task 3. */}
     {chartBars.length >= 14 && (
-      <StrategyConditionsCard signals={chartSignals} />
+      <StrategyConditionsCard voter={chartVoter} />
     )}
 
     {/* Like-this-bar similar past setups — only meaningful once the

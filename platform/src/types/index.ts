@@ -47,6 +47,41 @@ export interface Signal {
   indicators: Record<string, number>;
 }
 
+// ---------------------------------------------------------------------------
+// Chart Voter — the July-6 (pre-#700) 5-condition "teaching" readout for the
+// Charts page Strategy Conditions card. Mirrors lib/chart_voter.py's
+// evaluate_chart_voter() output, served on POST /api/live/indicators as the
+// `chart_voter` key (platform/api/routers/live.py). The frontend renders
+// this verbatim — no client-side re-derivation of the math (one source of
+// truth per CLAUDE.md's architectural rules).
+//
+// Distinct from the `Signal`/`SignalCondition` shape in lib/indicators.ts,
+// which backs the 10-condition strength panel on LiveMarketPage/PlaybookPage
+// (production alerting voter, not this chart teaching voter — see issue #701
+// for the voter taxonomy).
+// ---------------------------------------------------------------------------
+
+export interface ChartVoterCondition {
+  id: string;
+  label: string;
+  met: boolean;
+  detail: string;
+}
+
+export interface ChartVoterSide {
+  direction: TradeDirection;
+  conditions: ChartVoterCondition[];
+  met_count: number;
+  total_count: number;
+  fires: boolean;
+}
+
+export interface ChartVoter {
+  call: ChartVoterSide;
+  put: ChartVoterSide;
+  firing: TradeDirection | null;
+}
+
 export interface BacktestResult {
   entry_time: string;
   exit_time: string;
