@@ -633,11 +633,24 @@ async def get_examples(ticker: str):
          rows (practice-mode noise isn't teaching material). Mapped via
          `_rows_to_trades` (unchanged from pre-union).
       2. Every `trades`-table row (gcp/schema.sql:1065, the
-         trading_analysis.py pipeline dataset) for the ticker — no
-         per-caller/owner scoping, the pipeline table has no owner column.
-         Mapped via `_pipeline_rows_to_trades` (see its docstring for the
-         entry_ts/exit_ts timezone-conversion rationale and the
-         return_pct/status/notes mapping rules), tagged `source: 'pipeline'`.
+         trading_analysis.py pipeline dataset) for the ticker, RESTRICTED to
+         regular trading hours — no per-caller/owner scoping, the pipeline
+         table has no owner column. Mapped via `_pipeline_rows_to_trades`
+         (see its docstring for the entry_ts/exit_ts timezone-conversion
+         rationale and the return_pct/status/notes mapping rules), tagged
+         `source: 'pipeline'`.
+
+         USER DECISION (2026-07-11): `trades` contains 268 real but
+         extended-hours rows (premarket/evening, from an old scanner) that
+         clutter this teaching view; they stay in the DB for analysis, they
+         just don't render as Examples. Hence the
+         `(entry_time AT TIME ZONE 'America/New_York')::time BETWEEN
+         TIME '09:30' AND TIME '16:00'` predicate below. Note this also
+         excludes rows with a NULL `entry_time` (BETWEEN on NULL evaluates
+         to NULL, not TRUE) — acceptable, an example without an entry time
+         teaches nothing. Admin journal_entries rows are NOT filtered by
+         this predicate (users log what they log) — only the pipeline half
+         of the union is time-of-day scoped.
     Combined and sorted by entry_ts DESC across BOTH sources (not just within
     each) — a plain Python sort, since the two source tables can't be UNIONed
     in one SQL statement (different column sets/types).
@@ -695,6 +708,7 @@ async def get_examples(ticker: str):
                    entry_price, exit_price, return_pct, exit_reason, strat_combo
             FROM trades
             WHERE ticker = :ticker
+              AND (entry_time AT TIME ZONE 'America/New_York')::time BETWEEN TIME '09:30' AND TIME '16:00'
             ORDER BY entry_time DESC
             """,
             {"ticker": ticker_upper},
