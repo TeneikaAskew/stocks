@@ -153,6 +153,47 @@ _ALL_PIPELINE_ROWS = pd.DataFrame([
     },
 ])
 
+# task-examples-rth-filter (2026-07-11 user decision): fixture for testing
+# the new RTH-only predicate on the pipeline query. Scoped to ticker QQQ
+# (distinct from SPY/IWM/ZZZZ used elsewhere) so it doesn't perturb any
+# pre-existing assertion. `entry_ts` here already represents the naive-ET
+# wall-clock value the real SQL's `entry_time AT TIME ZONE 'America/New
+# York'` conversion would produce (see _pipeline_rows_to_trades' docstring
+# for why `trades.entry_time` is a true-UTC instant that this AT TIME ZONE
+# conversion turns into ET wall-clock) — i.e. these fixture values stand in
+# for UTC instants of 08:30Z and 21:30Z (2026-07-06 is EDT, UTC-4) that
+# convert to 04:30 ET (premarket) and 17:30 ET (evening) respectively.
+#
+# pipe-9101: premarket (04:30 ET) — must be excluded by the RTH filter.
+# pipe-9102: evening (17:30 ET) — must be excluded by the RTH filter.
+# pipe-9103: regular hours (10:15 ET) — must be the ONLY row returned.
+_ALL_PIPELINE_ROWS_RTH_FILTER = pd.DataFrame([
+    {
+        "id": 9101, "ticker": "QQQ", "direction": "CALL",
+        "entry_ts": pd.Timestamp("2026-07-06T04:30:00"),
+        "exit_ts": pd.Timestamp("2026-07-06T04:45:00"),
+        "entry_price": 480.0, "exit_price": 481.0,
+        "return_pct": 0.002,
+        "exit_reason": "target_hit", "strat_combo": "2U-2D",
+    },
+    {
+        "id": 9102, "ticker": "QQQ", "direction": "PUT",
+        "entry_ts": pd.Timestamp("2026-07-06T17:30:00"),
+        "exit_ts": pd.Timestamp("2026-07-06T17:45:00"),
+        "entry_price": 482.0, "exit_price": 481.0,
+        "return_pct": 0.002,
+        "exit_reason": "target_hit", "strat_combo": "2U-2D",
+    },
+    {
+        "id": 9103, "ticker": "QQQ", "direction": "CALL",
+        "entry_ts": pd.Timestamp("2026-07-06T10:15:00"),
+        "exit_ts": pd.Timestamp("2026-07-06T10:30:00"),
+        "entry_price": 483.0, "exit_price": 484.0,
+        "return_pct": 0.002,
+        "exit_reason": "target_hit", "strat_combo": "2U-2D",
+    },
+])
+
 
 def _is_pipeline_sql(sql: str) -> bool:
     """Distinguishes the pipeline `trades`-table query from the
@@ -186,9 +227,36 @@ def _make_fake_query(calls: list):
         if _is_pipeline_sql(sql):
             assert "ticker = :ticker" in sql, \
                 f"pipeline SQL must include 'ticker = :ticker' predicate, got: {sql}"
-            df = _ALL_PIPELINE_ROWS.copy()
+            # task-examples-rth-filter: mutation-proof pin on the RTH-only
+            # predicate's SQL text (not just the fixture's filtered result) —
+            # dropping the filter from the router must fail this test.
+            assert "between time '09:30' and time '16:00'" in sql.lower(), \
+                f"pipeline SQL must restrict to regular trading hours, got: {sql}"
+            df = pd.concat(
+                [_ALL_PIPELINE_ROWS, _ALL_PIPELINE_ROWS_RTH_FILTER], ignore_index=True
+            )
             if "ticker" in params:
                 df = df[df["ticker"] == params["ticker"]]
+            # Mirrors the real SQL's `(entry_time AT TIME ZONE
+            # 'America/New_York')::time BETWEEN TIME '09:30' AND TIME
+            # '16:00'` predicate — entry_ts here already stands in for the
+            # post-conversion ET wall clock (see _ALL_PIPELINE_ROWS_RTH_FILTER
+            # docstring). NULL entry_ts rows are excluded (BETWEEN on NULL
+            # evaluates to NULL, not TRUE, in real Postgres too).
+            rth_start = pd.Timestamp("09:30:00").time()
+            rth_end = pd.Timestamp("16:00:00").time()
+            # Built as an explicit bool-typed Series (not .apply(), which on
+            # an empty Series short-circuits without dtype=bool and breaks
+            # the boolean mask below) so the ZZZZ/SPY/IWM ticker-filtered
+            # empty-dataframe case works the same as the QQQ non-empty case.
+            in_rth = pd.Series(
+                [
+                    v is not None and not pd.isna(v) and rth_start <= v.time() <= rth_end
+                    for v in df["entry_ts"]
+                ],
+                index=df.index, dtype=bool,
+            )
+            df = df[in_rth]
             return df.drop(columns=["ticker"]).reset_index(drop=True)
 
         df = _ALL_ROWS.copy()
@@ -506,6 +574,39 @@ def test_examples_union_replay_exclusion_still_applies_to_journal_rows_only(
     # SPY has no pipeline fixture rows -> the union is admin-only here, same
     # membership as the pre-union endpoint.
     assert all(t["source"] != "pipeline" for t in body_trades)
+
+
+# ── task-examples-rth-filter: pipeline rows restricted to regular hours ────
+#
+# USER DECISION (2026-07-11): the `trades` table contains 268 real but
+# extended-hours rows (premarket/evening, from an old scanner) that clutter
+# the teaching Examples view; they stay in the DB for analysis, they just
+# don't render as Examples. Admin journal_entries rows are NOT filtered
+# (users log what they log) — only the pipeline half of the union is scoped
+# by entry time-of-day.
+
+
+def test_examples_pipeline_excludes_extended_hours_rows(monkeypatch, cloud_sql_client):
+    """Premarket (04:30 ET) and evening (17:30 ET) pipeline rows never
+    appear in Examples; only the regular-trading-hours row (10:15 ET) does.
+    """
+    calls: list = []
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query(calls))
+
+    r = cloud_sql_client.get("/api/journal/examples/QQQ")
+    assert r.status_code == 200
+    body = r.json()
+    ids = {t["id"] for t in body["trades"]}
+    assert ids == {"pipe-9103"}
+    assert body["count"] == 1
+
+    # Mutation-proof: the pipeline SQL text itself must carry the RTH
+    # predicate (the fake's assertion inside _make_fake_query already
+    # enforces this on every pipeline call, but pin it again here at the
+    # call-site level so this test independently fails if the predicate is
+    # dropped from the router).
+    pipeline_sql = next(sql for sql, _params in calls if _is_pipeline_sql(sql))
+    assert "BETWEEN TIME '09:30' AND TIME '16:00'" in pipeline_sql
 
 
 def test_examples_503_when_pipeline_query_fails(monkeypatch, cloud_sql_client):
