@@ -696,16 +696,21 @@ COLUMN_NULLITY_CHECKS: list[dict] = [
         "writer_job": "strat-engine",  # via gamma_levels_eod (p2_build_gamma_levels)
         "rationale": "gamma_levels_eod missed scheduler 2026-05-22 → 06-19 cascade",
     },
-    {
-        "name": "strat_features_5m.gamma_balance_price",
-        "table": "strat_features_5m",
-        "column": "gamma_balance_price",
-        "tickers": ("IWM", "SPY", "QQQ"),
-        "lookback_days": 1,
-        "min_non_null_rate": 0.90,
-        "writer_job": "strat-engine",
-        "rationale": "same gamma_levels_eod upstream as total_gex",
-    },
+    # gamma_balance_price is DELIBERATELY NOT checked here (removed
+    # 2026-07-12, was added by #644 on 2026-07-05 and copy-pasted the
+    # total_gex 90% threshold onto it without checking its baseline).
+    # compute_gamma_balance (lib/gamma.py:524, see the design note at
+    # lib/gamma.py:905-910) returns None whenever the day's cumulative
+    # net-gamma has no zero-crossing near spot — a legitimate, expected
+    # outcome, not a data-pipeline failure. 90-day empirical non-NULL
+    # rate: IWM 24.2%, SPY 66.1%, QQQ 72.6% (all structurally below any
+    # useful fixed threshold — see db-query-pmgsc). The actual cascade
+    # signature (gamma_levels_eod stopped running entirely) is already
+    # caught by the total_gex and total_vex checks above/below, which
+    # stay ~100% non-NULL whenever the upstream job is healthy. Checking
+    # gamma_balance_price's own null rate added zero incremental
+    # detection and paged on IWM almost every day (#freshness-watchdog
+    # gcp-job-failure, 2026-07-06 x10 + 2026-07-11).
     {
         "name": "strat_features_5m.total_vex",
         "table": "strat_features_5m",

@@ -6,6 +6,13 @@ schedule but `vix_close`, `total_gex`, `gamma_balance_price`, `total_vex`
 were all NULL after upstream sources stalled. This module's checks close
 that gap; these tests pin the contract so a future refactor can't
 silently weaken the detection.
+
+`gamma_balance_price` was later removed from the checked columns
+(2026-07-12) — it's legitimately NULL on ~25-75% of days depending on
+ticker (see lib/gamma.py:905-910), so a fixed non-NULL-rate threshold
+can't distinguish "healthy" from "broken" for it. `total_gex` and
+`total_vex` already cover the same upstream failure signature without
+that false-positive problem.
 """
 from __future__ import annotations
 
@@ -64,7 +71,7 @@ def test_below_threshold_fires_stale(monkeypatch):
     ])
     _patch_query(monkeypatch, df)
     out = _query_column_nullity(datetime(2026, 6, 21, 14, 0))
-    # One finding for every check x (IWM at 0%) — we have 5 checks declared
+    # One finding for every check x (IWM at 0%) — we have 4 checks declared
     assert len(out) > 0
     # Every finding must be stale, IWM, and carry a writer_job for routing
     for f in out:
@@ -98,7 +105,7 @@ def test_borderline_just_below_threshold_fires(monkeypatch):
     ])
     _patch_query(monkeypatch, df)
     out = _query_column_nullity(datetime(2026, 6, 21, 14, 0))
-    # 5 checks all fire on this one ticker since the same fake_df returns
+    # 4 checks all fire on this one ticker since the same fake_df returns
     # for every query
     assert all(f.status == "stale" for f in out)
     assert all(f.ticker == "IWM" for f in out)
@@ -234,22 +241,23 @@ def test_writer_job_routes_alert_to_culprit():
     by_name = {c["name"]: c for c in COLUMN_NULLITY_CHECKS}
     assert by_name["strat_features_5m.vix_close"]["writer_job"] == "fetch-market-data"
     assert by_name["strat_features_5m.total_gex"]["writer_job"] == "strat-engine"
-    assert by_name["strat_features_5m.gamma_balance_price"]["writer_job"] == "strat-engine"
     assert by_name["strat_features_5m.total_vex"]["writer_job"] == "strat-engine"
     assert by_name["strat_features_levels_5m.orb_5m_high"]["writer_job"] == "strat-engine"
 
 
 def test_checks_cover_the_2026_06_cascade_columns():
-    """Pin that the four columns that silently NULLed during the
-    2026-05-22 → 06-19 cascade are all in the check list. A future
-    refactor that drops one would reintroduce the exact gap this
-    PR exists to close."""
+    """Pin that the columns that silently NULLed during the
+    2026-05-22 → 06-19 cascade AND have a stable near-100% healthy
+    baseline are all in the check list. A future refactor that drops
+    one would reintroduce the exact gap this PR exists to close.
+
+    gamma_balance_price is deliberately excluded from this set — see
+    test_gamma_balance_price_excluded_as_structurally_sparse below."""
     from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
     names = {c["name"] for c in COLUMN_NULLITY_CHECKS}
     cascade_columns = {
         "strat_features_5m.vix_close",
         "strat_features_5m.total_gex",
-        "strat_features_5m.gamma_balance_price",
         "strat_features_5m.total_vex",
     }
     missing = cascade_columns - names
@@ -257,6 +265,29 @@ def test_checks_cover_the_2026_06_cascade_columns():
         f"COLUMN_NULLITY_CHECKS missing {missing} — the cascade columns "
         f"that silently NULLed for 4 weeks must stay covered"
     )
+
+
+def test_gamma_balance_price_excluded_as_structurally_sparse():
+    """gamma_balance_price was added to COLUMN_NULLITY_CHECKS by #644
+    (2026-07-05) with the same 90% threshold as total_gex, then removed
+    2026-07-12 after it paged freshness-watchdog on IWM almost every
+    day (10x on 2026-07-06 alone).
+
+    compute_gamma_balance (lib/gamma.py:524) legitimately returns None
+    whenever the day's cumulative net-gamma has no zero-crossing near
+    spot — documented at lib/gamma.py:905-910 as happening on ~half of
+    days, disproportionately negative-gamma days. 90-day empirical
+    non-NULL rate: IWM 24.2%, SPY 66.1%, QQQ 72.6% — all structurally
+    below any useful fixed threshold, so this column can never be
+    monitored this way without chronic false pages. The cascade
+    scenario (gamma_levels_eod stopped running) is already caught by
+    the total_gex/total_vex checks, which stay ~100% non-NULL whenever
+    the upstream job is healthy — do not re-add gamma_balance_price
+    here without a different detection strategy (e.g. comparing against
+    a rolling per-ticker baseline instead of a fixed rate)."""
+    from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
+    names = {c["name"] for c in COLUMN_NULLITY_CHECKS}
+    assert "strat_features_5m.gamma_balance_price" not in names
 
 
 def test_audit_all_wires_in_column_nullity(monkeypatch):
