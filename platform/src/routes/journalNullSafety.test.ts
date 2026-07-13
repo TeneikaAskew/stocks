@@ -1,7 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { tsToDisplay, tradesToCsv, exportableTrades } from './JournalPage';
 
 describe('tsToDisplay', () => {
+  // Bug (2026-07-12 user acceptance): a chart-marked IWM trade at naive-ET
+  // 10:05 displayed as 14:05 in the journal TABLE (this helper) while the
+  // chart marker and TradeRailCard both correctly showed 10:05. Root cause:
+  // this helper round-tripped through `new Date(...)`, which parses an
+  // offset-less date-time string as HOST-LOCAL time (ECMA-262) — the exact
+  // shape `_rows_to_trades` (platform/api/routers/journal.py) returns for
+  // every journal_entries row (`entry_ts AT TIME ZONE 'UTC'` strips the tz
+  // label, and pandas' `str()` on the resulting naive Timestamp yields
+  // "YYYY-MM-DD HH:MM:SS", no offset). On a host running in America/New_York
+  // during EDT (UTC-4), `new Date('2026-07-08T10:05:00')` is parsed as
+  // 10:05 LOCAL == 14:05 UTC, and `.toISOString()` then renders "14:05".
+  //
+  // The correct pattern (already used by `isoNaiveToEpoch` in
+  // useJournalChartTrades.ts, which is why the chart/rail card were right)
+  // is pure regex digit-extraction — never a `new Date()` round-trip — so
+  // host timezone cannot affect the result. These tests pin both string
+  // shapes the API actually returns (space-separated no-offset from
+  // `_rows_to_trades`, and offset-bearing) and set TZ to a non-UTC zone to
+  // prove the fix is host-tz-independent.
+  const originalTz = process.env.TZ;
+
+  afterEach(() => {
+    process.env.TZ = originalTz;
+  });
+
   it('returns em-dash placeholders for a null timestamp (active trade)', () => {
     expect(tsToDisplay(null)).toEqual({ date: '—', time: '—' });
   });
@@ -10,6 +35,31 @@ describe('tsToDisplay', () => {
     // Use a 'Z'-suffixed (UTC) timestamp so the assertion is stable
     // regardless of the machine's local timezone.
     expect(tsToDisplay('2026-07-02T13:35:00Z')).toEqual({ date: '2026-07-02', time: '13:35' });
+  });
+
+  it('reads a space-separated, offset-less Cloud SQL naive-ET string (_rows_to_trades shape) correctly under a non-UTC host TZ', () => {
+    process.env.TZ = 'America/New_York';
+    expect(tsToDisplay('2026-07-08 10:05:00')).toEqual({ date: '2026-07-08', time: '10:05' });
+  });
+
+  it('reads a T-separated, offset-less naive-ET string (local-fallback create_trade shape) correctly under a non-UTC host TZ', () => {
+    process.env.TZ = 'America/New_York';
+    expect(tsToDisplay('2026-07-08T10:05:00')).toEqual({ date: '2026-07-08', time: '10:05' });
+  });
+
+  it('reads a space-separated, offset-bearing naive-ET string (+00:00) correctly under a non-UTC host TZ', () => {
+    process.env.TZ = 'America/New_York';
+    expect(tsToDisplay('2026-07-08 10:05:00+00:00')).toEqual({ date: '2026-07-08', time: '10:05' });
+  });
+
+  it('reads a T-separated, offset-bearing naive-ET string (+00:00) correctly under a non-UTC host TZ', () => {
+    process.env.TZ = 'America/New_York';
+    expect(tsToDisplay('2026-07-08T10:05:00+00:00')).toEqual({ date: '2026-07-08', time: '10:05' });
+  });
+
+  it('is stable across host TZ for the same offset-less naive-ET string', () => {
+    process.env.TZ = 'Pacific/Auckland'; // UTC+12/+13 — opposite hemisphere from ET
+    expect(tsToDisplay('2026-07-08 10:05:00')).toEqual({ date: '2026-07-08', time: '10:05' });
   });
 });
 
