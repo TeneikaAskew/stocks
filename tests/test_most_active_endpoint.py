@@ -221,16 +221,43 @@ class TestLabel:
     separately from the endpoint's I/O)."""
 
     def test_live_when_recent_and_within_rth(self):
-        latest_ts = _ts("2026-07-11T14:30:00")  # 10:30 ET
-        now = datetime(2026, 7, 11, 15, 0, 0, tzinfo=timezone.utc)  # 11:00 ET, 30min later
-        assert main._most_active_label(latest_ts, "2026-07-11", now_utc=now) == "live"
+        # 2026-07-13 is a Monday (real trading day) -- must NOT collide with
+        # the weekend/holiday cases below, which intentionally reuse dates
+        # that pass the bare clock-time check but are not trading days.
+        latest_ts = _ts("2026-07-13T14:30:00")  # 10:30 ET
+        now = datetime(2026, 7, 13, 15, 0, 0, tzinfo=timezone.utc)  # 11:00 ET, 30min later
+        assert main._most_active_label(latest_ts, "2026-07-13", now_utc=now) == "live"
 
     def test_not_live_when_older_than_90_minutes(self):
-        latest_ts = _ts("2026-07-11T14:30:00")  # 10:30 ET
-        now = datetime(2026, 7, 11, 16, 30, 0, tzinfo=timezone.utc)  # 12:30 ET, 120min later
-        assert main._most_active_label(latest_ts, "2026-07-11", now_utc=now) == "2026-07-11"
+        latest_ts = _ts("2026-07-13T14:30:00")  # 10:30 ET, Monday
+        now = datetime(2026, 7, 13, 16, 30, 0, tzinfo=timezone.utc)  # 12:30 ET, 120min later
+        assert main._most_active_label(latest_ts, "2026-07-13", now_utc=now) == "2026-07-13"
 
     def test_not_live_when_outside_rth_even_if_recent(self):
-        latest_ts = _ts("2026-07-11T20:30:00")  # 16:30 ET (after close)
-        now = datetime(2026, 7, 11, 21, 0, 0, tzinfo=timezone.utc)  # 17:00 ET, 30min later, after close
+        latest_ts = _ts("2026-07-13T20:30:00")  # 16:30 ET (after close), Monday
+        now = datetime(2026, 7, 13, 21, 0, 0, tzinfo=timezone.utc)  # 17:00 ET, 30min later, after close
+        assert main._most_active_label(latest_ts, "2026-07-13", now_utc=now) == "2026-07-13"
+
+    def test_not_live_when_saturday_even_if_recent_and_within_clock_rth(self):
+        """Regression for T2 review (Important): the old implementation
+        only checked 09:30-16:00 ET clock time and had no weekday/holiday
+        awareness, so a fresh snapshot with a Saturday `now` would
+        incorrectly render "live". 2026-07-11 is a Saturday.
+        """
+        latest_ts = _ts("2026-07-11T14:30:00")  # 10:30 ET clock time
+        now = datetime(2026, 7, 11, 15, 0, 0, tzinfo=timezone.utc)  # 11:00 ET, 30min later, Saturday
         assert main._most_active_label(latest_ts, "2026-07-11", now_utc=now) == "2026-07-11"
+
+    def test_not_live_on_market_holiday_even_if_recent_and_within_clock_rth(self):
+        """Same regression as the Saturday case, for a US market holiday.
+        2026-07-03 (Independence Day, observed) is a Friday and is in
+        live.MARKET_HOLIDAYS_2026, so it passes the weekday check but must
+        still not report "live".
+        """
+        pytest.importorskip("api.routers.live")
+        from api.routers import live as live_router
+        assert __import__("datetime").date(2026, 7, 3) in live_router.MARKET_HOLIDAYS_2026
+
+        latest_ts = _ts("2026-07-03T14:30:00")  # 10:30 ET clock time
+        now = datetime(2026, 7, 3, 15, 0, 0, tzinfo=timezone.utc)  # 11:00 ET, 30min later
+        assert main._most_active_label(latest_ts, "2026-07-03", now_utc=now) == "2026-07-03"

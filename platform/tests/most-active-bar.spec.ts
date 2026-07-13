@@ -155,6 +155,31 @@ test.describe('MostActiveBar', () => {
     await expect(page.getByTestId('most-active-bar')).toHaveCount(0);
   });
 
+  test('bar is absent and the page otherwise renders fine when the API returns 500', async ({ page }) => {
+    // Error-path pin (T3 review, Minor): useMostActive() uses react-query's
+    // default error handling — a non-ok fetch throws inside queryFn, which
+    // react-query catches into its `error` state rather than propagating to
+    // the component tree. MostActiveBar only reads `data`, so on error
+    // `data` stays undefined, `items` defaults to `[]`, and the component
+    // returns null (same "null-render" path as the empty-list case above).
+    // This is expected to pass immediately given that design — it's a
+    // regression pin, not a bugfix, and is kept as one per the review.
+    await mockCommon(page);
+    await mockJournalStructure(page);
+    await page.route('**/api/market/most-active', (r) =>
+      r.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'internal server error' }) })
+    );
+
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    await expect(page.getByTestId('most-active-bar')).toHaveCount(0);
+    // Page otherwise fine: the journal's own content (unrelated to the
+    // marquee) still renders normally -- no crash, no error boundary.
+    await expect(page.getByRole('heading', { name: 'IWM Trade Journal' })).toBeVisible();
+    await expect(page.getByText(/no example trades for iwm yet/i)).toBeVisible();
+  });
+
   test('no page-level horizontal overflow at 390x844 with the bar mounted', async ({ page }) => {
     await mockCommon(page);
     await mockJournalStructure(page);

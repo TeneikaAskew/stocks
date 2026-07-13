@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta, timezone, time as dt_time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -981,8 +981,9 @@ async def market_sectors():
 # and unaffected identically in iap/open mode) — no new auth code needed.
 
 _ET_TZ = ZoneInfo("America/New_York")
-_MOST_ACTIVE_RTH_START = dt_time(9, 30)
-_MOST_ACTIVE_RTH_END = dt_time(16, 0)
+# RTH-window constants formerly lived here but are now superseded by
+# api.routers.live._is_market_open (weekend/holiday-aware) -- see
+# _most_active_label below.
 
 
 def _most_active_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -998,8 +999,16 @@ def _most_active_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
 
 
 def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[datetime] = None) -> str:
-    """"live" if the latest snapshot is <90min old AND now is within RTH
-    (09:30-16:00 ET), else the ET snapshot_date string.
+    """"live" if the latest snapshot is <90min old AND now is within a
+    regular trading session, else the ET snapshot_date string.
+
+    "Regular trading session" reuses ``api.routers.live._is_market_open``
+    (weekend + ``MARKET_HOLIDAYS_2026``-aware) instead of a bare 09:30-16:00
+    ET clock-time check -- a fresh snapshot with a Saturday/holiday `now`
+    must not render "live" even though the clock time falls in RTH (T2
+    review, "Important"). ``live`` is already imported at module level
+    (see the ``from api.routers import live, ...`` block above), so no new
+    import path or circular-import risk is introduced.
 
     ``now_utc`` is injectable for tests; production calls leave it unset
     and get the real wall clock.
@@ -1011,7 +1020,8 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
         latest = latest.replace(tzinfo=timezone.utc)
     age = now_utc - latest
     now_et = now_utc.astimezone(_ET_TZ)
-    within_rth = _MOST_ACTIVE_RTH_START <= now_et.time() <= _MOST_ACTIVE_RTH_END
+    is_open, session = live._is_market_open(now_et)
+    within_rth = is_open and session == "regular"
     if age < timedelta(minutes=90) and within_rth:
         return "live"
     return snapshot_date_str
