@@ -64,3 +64,34 @@ def test_aggregate_skips_none_shap_folds():
     ranked = aggregate_importance(cols, per_fold_gain, per_fold_shap)
     top = next(r for r in ranked if r["feature"] == "a")
     assert abs(top["mean_abs_shap"] - 0.8) < 1e-9
+
+
+def test_aggregate_drops_malformed_shap_row_instead_of_crashing():
+    """GCP job failure (issue #704): a fold whose SHAP vector didn't
+    reduce to a flat length-nfeat row (e.g. a shape bug in the SHAP
+    reduction upstream) made `np.asarray(shap_rows).mean(axis=0)`
+    produce a >1D `mean_shap`, so `mean_shap[i]` was itself an array
+    and `np.isnan(ms)` raised "The truth value of an array with more
+    than one element is ambiguous." aggregate_importance must drop the
+    malformed row (same contract as a None/failed-SHAP fold) rather
+    than let it corrupt the aggregate or crash."""
+    cols = ["a", "b", "c"]
+    per_fold_gain = [[3.0, 2.0, 1.0], [4.0, 2.0, 1.0]]
+    per_fold_shap = [
+        [0.9, 0.5, 0.1],          # well-formed fold
+        [[0.9, 0.5, 0.1], [0.9, 0.5, 0.1]],  # malformed: (2, 3) not (3,)
+    ]
+    ranked = aggregate_importance(cols, per_fold_gain, per_fold_shap)
+    top = next(r for r in ranked if r["feature"] == "a")
+    # Only the well-formed fold contributes -> mean_abs_shap == that fold's value
+    assert abs(top["mean_abs_shap"] - 0.9) < 1e-9
+
+
+def test_aggregate_all_shap_rows_malformed_falls_back_to_none():
+    """If every fold's SHAP row is malformed, mean_abs_shap must be
+    None (Rule 3.7 — never a fabricated value), not a crash."""
+    cols = ["a", "b"]
+    per_fold_gain = [[3.0, 1.0]]
+    per_fold_shap = [[[0.9, 0.5], [0.9, 0.5]]]  # malformed: (2, 2) not (2,)
+    ranked = aggregate_importance(cols, per_fold_gain, per_fold_shap)
+    assert all(r["mean_abs_shap"] is None for r in ranked)

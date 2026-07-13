@@ -50,12 +50,37 @@ def aggregate_importance(feature_cols, per_fold_gain, per_fold_shap):
     """
     G = np.asarray(per_fold_gain, dtype=float)          # (folds, features)
     mean_gain = G.mean(axis=0)
+    nfeat = len(feature_cols)
 
-    shap_rows = [s for s in (per_fold_shap or []) if s is not None]
+    # A fold's SHAP vector must reduce to exactly one scalar per feature.
+    # _reduce_shap_to_features is supposed to guarantee this, but a shape
+    # bug upstream (e.g. an unrecognized SHAP output shape) would silently
+    # produce a ragged or higher-rank row here instead of raising — drop
+    # any row that doesn't match rather than let np.asarray build a >1D
+    # array that turns `mean_shap[i]` into a non-scalar later (INTERNAL
+    # bug per CLAUDE.md Rule 3.7 — surface it loudly, don't let it corrupt
+    # the aggregate silently).
+    shap_rows = []
+    for fold_idx, s in enumerate(per_fold_shap or []):
+        if s is None:
+            continue
+        arr = np.asarray(s, dtype=float)
+        if arr.shape != (nfeat,):
+            log.warning(
+                "fold %d SHAP vector has shape %s, expected (%d,) — dropping "
+                "this fold's SHAP contribution instead of corrupting the mean",
+                fold_idx, arr.shape, nfeat,
+            )
+            continue
+        shap_rows.append(arr)
     if shap_rows:
         mean_shap = np.asarray(shap_rows, dtype=float).mean(axis=0)
     else:
-        mean_shap = np.full(len(feature_cols), np.nan)
+        mean_shap = np.full(nfeat, np.nan)
+    assert mean_shap.shape == (nfeat,), (
+        f"mean_shap shape {mean_shap.shape} != expected ({nfeat},) — "
+        f"per-fold shape validation above should have prevented this"
+    )
 
     order = np.argsort(mean_gain)[::-1]
     out = []
