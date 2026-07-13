@@ -547,3 +547,105 @@ test.describe('Journal one-stop cockpit — Examples union (pipeline + admin)', 
     await expect(pipelineRow.getByRole('button')).toBeDisabled();
   });
 });
+
+// task-alerts-enrichment (2026-07-12 user decision): pipeline example rows
+// join `signal_alerts` server-side — TPs come from the matched alert's
+// target_price, and the Stop column/rail SL segment render the row's OWN
+// time_stop_minutes as "<N>m time-stop" (never a fixed label, since there is
+// no stop PRICE for a pipeline row). Two rows with DIFFERENT time-stop
+// minutes (20 vs 25) prove the render is per-row, not hardcoded.
+const ALERT_ENRICHED_TRADES = {
+  ticker: 'IWM',
+  source: 'cloud_sql',
+  count: 2,
+  trades: [
+    {
+      id: 'pipe-alert-1',
+      ticker: 'IWM',
+      direction: 'CALL',
+      entry_ts: '2026-04-25T09:35:00',
+      exit_ts: '2026-04-25T10:15:00',
+      entry_price: 220.0,
+      exit_price: 222.5,
+      return_pct: 1.14,
+      notes: 'target_hit · PDH · score 4.0',
+      take_profits: [297.21],
+      stop_loss: null,
+      time_stop_minutes: 20,
+      status: 'win',
+      source: 'pipeline',
+      session_id: null,
+    },
+    {
+      id: 'pipe-alert-2',
+      ticker: 'IWM',
+      direction: 'PUT',
+      entry_ts: '2026-04-25T10:30:00',
+      exit_ts: null,
+      entry_price: 221.0,
+      exit_price: null,
+      return_pct: null,
+      notes: '',
+      take_profits: [249.9],
+      stop_loss: null,
+      time_stop_minutes: 25,
+      status: 'active',
+      source: 'pipeline',
+      session_id: null,
+    },
+  ],
+};
+
+test.describe('Journal one-stop cockpit — Examples alert enrichment (TPs + per-row time-stop)', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockJournalOneStop(page, { own: EMPTY_TRADES, examples: ALERT_ENRICHED_TRADES });
+  });
+
+  test('table Stop cell renders each pipeline row\'s OWN time_stop_minutes, never a fixed label', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const row1 = page.locator('tr', { hasText: 'target_hit · PDH · score 4.0' });
+    // Only one PUT row exists in this fixture set (pipe-alert-2) — the
+    // direction badge text is a unique, unambiguous locator here.
+    const row2 = page.locator('tr', { hasText: 'PUT' });
+
+    // Row 1 (matched alert, time_stop_minutes=20): Stop cell "20m time-stop",
+    // TPs cell shows the matched target_price, R:R stays "—" (no stop PRICE
+    // exists — a ratio would be fabricated, CLAUDE.md Rule 3.7).
+    await expect(row1.getByTestId('table-stop-cell')).toHaveText('20m time-stop');
+    await expect(row1.getByText('297.21')).toBeVisible();
+    await expect(row1.getByText('—').first()).toBeVisible();
+
+    // Row 2 (matched alert, DIFFERENT time_stop_minutes=25) — mutation-proof:
+    // a hardcoded "20m time-stop" render would make both rows identical.
+    await expect(row2.getByTestId('table-stop-cell')).toHaveText('25m time-stop');
+    await expect(row2.getByText('249.90')).toBeVisible();
+    await expect(row2.getByText('—').first()).toBeVisible();
+
+    const stopCells = page.getByTestId('table-stop-cell');
+    await expect(stopCells).toHaveCount(2);
+    const texts = await stopCells.allTextContents();
+    expect(new Set(texts).size).toBe(2); // two DIFFERENT rendered values
+  });
+
+  test('rail card SL segment renders the time-stop text (no stop price), and the chart draws a TP line from take_profits', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const railSlSegments = page.getByTestId('rail-sl');
+    await expect(railSlSegments).toHaveCount(2);
+    const railTexts = await railSlSegments.allTextContents();
+    expect(railTexts.some((t) => t.includes('20m time-stop'))).toBe(true);
+    expect(railTexts.some((t) => t.includes('25m time-stop'))).toBe(true);
+
+    // The chart renders TP price lines sourced from take_profits — presence
+    // of the chart canvas plus the rail cards (which share the SAME mapped
+    // TradeEntry.takeProfits the chart's tradePriceLines memo reads from)
+    // is the end-to-end proof the matched alert's target_price reaches the
+    // chart layer, not just the table.
+    await expect(page.locator('canvas').first()).toBeVisible();
+    const railTps = page.locator('[data-testid="trade-rail-card"]').getByText(/TP/);
+    await expect(railTps.first()).toBeVisible();
+  });
+});

@@ -1,6 +1,6 @@
 import { LogOut, Trash2 } from 'lucide-react';
 import type { TradeEntry } from '@/types';
-import { riskReward } from '@/lib/risk';
+import { riskReward, stopDisplayText } from '@/lib/risk';
 
 export interface TradeRailCardProps {
   trade: TradeEntry;
@@ -25,7 +25,9 @@ export interface TradeRailCardProps {
  * examples) left, return % CENTERED and PROMINENT (largest text on the
  * card), time right; line 2 = Entry → Exit; line 3 = TP · SL · R:R, each
  * segment rendering "—" when its plan leg is missing (Rule 3.7 — never a
- * fabricated value).
+ * fabricated value). task-alerts-enrichment (2026-07-12): the SL segment
+ * renders a pipeline row's OWN `timeStopMinutes` as "<N>m time-stop" when
+ * there is no stop PRICE (`stopLoss` undefined) — never a fixed label.
  */
 export function TradeRailCard({
   trade,
@@ -149,8 +151,8 @@ export function TradeRailCard({
             : '—'}
         </span>
         {' · '}
-        <span className="text-[var(--color-accent-red)]">
-          SL {trade.stopLoss ? `$${trade.stopLoss.price.toFixed(2)}` : '—'}
+        <span data-testid="rail-sl" className="text-[var(--color-accent-red)]">
+          SL {stopDisplayText(trade.stopLoss?.price ?? null, trade.timeStopMinutes ?? null)}
         </span>
         {' · '}
         <span>R:R {rr != null ? rr.toFixed(2) : '—'}</span>

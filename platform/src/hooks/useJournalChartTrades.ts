@@ -26,6 +26,14 @@ export interface JournalRow {
   source?: string;
   session_id?: string | null;
   created_at?: string;
+  /** task-alerts-enrichment (2026-07-12) — a pipeline row's matched
+   *  `signal_alerts.time_stop_minutes` (server: journal.py's
+   *  `_pipeline_rows_to_trades`). Only ever set alongside `stop_loss: null`
+   *  (no stop PRICE exists, only a time-based exit rule) — never present on
+   *  journal/manual/chart/replay rows. See journalRowToTradeEntry below and
+   *  JournalPage's Stop-cell / TradeRailCard's SL-segment renders, which
+   *  fall back to "<N>m time-stop" from this field when stop_loss is null. */
+  time_stop_minutes?: number | null;
 }
 
 interface JournalTradesResponse {
@@ -176,6 +184,10 @@ export function journalRowToTradeEntry(row: JournalRow): TradeEntry {
     // as take_profits/stop_loss above.
     source: row.source ?? undefined,
     sessionId: row.session_id ?? undefined,
+    // task-alerts-enrichment: structural passthrough, not a fabricated
+    // financial value — a pipeline row either carries its OWN matched
+    // alert's time_stop_minutes or omits the field entirely (Rule 3.7).
+    timeStopMinutes: row.time_stop_minutes ?? undefined,
   };
 }
 

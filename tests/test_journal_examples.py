@@ -195,6 +195,64 @@ _ALL_PIPELINE_ROWS_RTH_FILTER = pd.DataFrame([
 ])
 
 
+# task-alerts-enrichment (2026-07-12 user decision): fixture for the
+# signal_alerts-JOINed pipeline query. Scoped to ticker DIA (distinct from
+# every ticker used elsewhere) so it doesn't perturb any pre-existing
+# assertion. Unlike _ALL_PIPELINE_ROWS above, these rows carry the FOUR
+# columns the real LEFT JOIN LATERAL adds (target_price, time_stop_minutes,
+# level_broken, total_score) — simulating what the joined SQL's result set
+# already looks like (the fake stands in for the whole statement, join
+# included; see _make_fake_query's pipeline branch).
+#
+# pipe-9201: MATCHED alert — target_price=297.21 (the real production value
+# seen in the join-window verification query, id 2526/trade 2503), time_stop
+# _minutes=20, level_broken='PDH', total_score=4.0, exit_reason='target_hit',
+# strat_combo=None -> notes should read EXACTLY "target_hit · PDH · score
+# 4.0" (the brief's verbatim example).
+#
+# pipe-9202: MATCHED alert with a DIFFERENT time_stop_minutes=25 (vs.
+# pipe-9201's 20) — the mutation-proof pin for the USER REQUIREMENT that the
+# Stop column renders EACH row's OWN time_stop_minutes, never a fixed label.
+# No level_broken/total_score on this alert (both None) -> notes stays "".
+#
+# pipe-9203: UNMATCHED — no alert within the join window, so target_price/
+# time_stop_minutes/level_broken/total_score are ALL None (LEFT JOIN found
+# nothing). take_profits/time_stop_minutes/notes must all stay empty/None
+# (never fabricated) — "keep '-' everywhere" per the brief.
+_ALL_PIPELINE_ROWS_ALERTS = pd.DataFrame([
+    {
+        "id": 9201, "ticker": "DIA", "direction": "CALL",
+        "entry_ts": pd.Timestamp("2026-07-07T09:31:00"),
+        "exit_ts": pd.Timestamp("2026-07-07T09:45:00"),
+        "entry_price": 440.0, "exit_price": 442.0,
+        "return_pct": 0.0045,
+        "exit_reason": "target_hit", "strat_combo": None,
+        "target_price": 297.21, "time_stop_minutes": 20,
+        "level_broken": "PDH", "total_score": 4.0,
+    },
+    {
+        "id": 9202, "ticker": "DIA", "direction": "CALL",
+        "entry_ts": pd.Timestamp("2026-07-07T10:00:00"),
+        "exit_ts": pd.NaT,
+        "entry_price": 441.0, "exit_price": None,
+        "return_pct": None,
+        "exit_reason": None, "strat_combo": None,
+        "target_price": 441.5, "time_stop_minutes": 25,
+        "level_broken": None, "total_score": None,
+    },
+    {
+        "id": 9203, "ticker": "DIA", "direction": "PUT",
+        "entry_ts": pd.Timestamp("2026-07-07T10:15:00"),
+        "exit_ts": pd.Timestamp("2026-07-07T10:30:00"),
+        "entry_price": 439.0, "exit_price": 438.0,
+        "return_pct": 0.0023,
+        "exit_reason": None, "strat_combo": None,
+        "target_price": None, "time_stop_minutes": None,
+        "level_broken": None, "total_score": None,
+    },
+])
+
+
 def _is_pipeline_sql(sql: str) -> bool:
     """Distinguishes the pipeline `trades`-table query from the
     `journal_entries` query by SQL text (task-examples-union) — the
@@ -232,8 +290,22 @@ def _make_fake_query(calls: list):
             # dropping the filter from the router must fail this test.
             assert "between time '09:30' and time '16:00'" in sql.lower(), \
                 f"pipeline SQL must restrict to regular trading hours, got: {sql}"
+            # task-alerts-enrichment: mutation-proof pins on the signal_alerts
+            # join text — dropping the LATERAL join, the ticker+direction
+            # match, or the tight window predicate must fail this test (not
+            # just silently return unmatched rows).
+            sql_lower = sql.lower()
+            assert "signal_alerts" in sql_lower, \
+                f"pipeline SQL must join signal_alerts, got: {sql}"
+            assert "left join lateral" in sql_lower, \
+                f"pipeline SQL must use a single LEFT JOIN LATERAL (no per-row N+1), got: {sql}"
+            assert "sa2.ticker = t.ticker and sa2.direction = t.direction" in sql_lower, \
+                f"pipeline SQL's alert join must match on ticker+direction, got: {sql}"
+            assert "interval '5 seconds'" in sql_lower, \
+                f"pipeline SQL must bound the alert match to a tight time window, got: {sql}"
             df = pd.concat(
-                [_ALL_PIPELINE_ROWS, _ALL_PIPELINE_ROWS_RTH_FILTER], ignore_index=True
+                [_ALL_PIPELINE_ROWS, _ALL_PIPELINE_ROWS_RTH_FILTER, _ALL_PIPELINE_ROWS_ALERTS],
+                ignore_index=True,
             )
             if "ticker" in params:
                 df = df[df["ticker"] == params["ticker"]]
@@ -623,3 +695,101 @@ def test_examples_503_when_pipeline_query_fails(monkeypatch, cloud_sql_client):
     r = cloud_sql_client.get("/api/journal/examples/IWM")
     assert r.status_code == 503
     assert r.json()["detail"] == "journal temporarily unavailable"
+
+
+# ── task-alerts-enrichment: pipeline rows enriched with signal_alerts ──────
+#
+# USER DECISION (2026-07-12): the Examples pipeline rows join `signal_alerts`
+# server-side so the table's TPs/Stop columns show real values instead of
+# all-dashes. Uses ticker DIA throughout — _ALL_PIPELINE_ROWS_ALERTS is
+# scoped to DIA only, so every test above (SPY/ZZZZ/IWM/QQQ) is untouched.
+
+
+def test_examples_pipeline_matched_alert_target_and_time_stop_and_notes(
+    monkeypatch, cloud_sql_client
+):
+    """A matched pipeline row (pipe-9201) gets take_profits=[target_price],
+    its OWN time_stop_minutes, and notes joining exit_reason/level_broken/
+    total_score exactly per the brief's verbatim example."""
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query([]))
+
+    r = cloud_sql_client.get("/api/journal/examples/DIA")
+    assert r.status_code == 200
+    trades = {t["id"]: t for t in r.json()["trades"]}
+    pipe1 = trades["pipe-9201"]
+
+    assert pipe1["take_profits"] == [297.21]
+    assert pipe1["stop_loss"] is None
+    assert pipe1["time_stop_minutes"] == 20
+    assert pipe1["notes"] == "target_hit · PDH · score 4.0"
+    assert pipe1["source"] == "pipeline"
+
+
+def test_examples_pipeline_stop_is_per_row_never_hardcoded(monkeypatch, cloud_sql_client):
+    """USER REQUIREMENT (verbatim, task-alerts-enrichment-brief.md): the Stop
+    column renders EACH row's OWN time_stop_minutes, never a fixed label.
+    Mutation-proof pin — pipe-9201 (20) and pipe-9202 (25) MUST differ; a
+    mutant that hardcodes a single value for every row (e.g. always 20, or
+    always the first-matched row's value) fails this test."""
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query([]))
+
+    r = cloud_sql_client.get("/api/journal/examples/DIA")
+    trades = {t["id"]: t for t in r.json()["trades"]}
+
+    assert trades["pipe-9201"]["time_stop_minutes"] == 20
+    assert trades["pipe-9202"]["time_stop_minutes"] == 25
+    assert trades["pipe-9201"]["time_stop_minutes"] != trades["pipe-9202"]["time_stop_minutes"]
+
+
+def test_examples_pipeline_matched_alert_no_level_or_score_leaves_notes_empty(
+    monkeypatch, cloud_sql_client
+):
+    """pipe-9202 matches an alert with target_price/time_stop_minutes but no
+    level_broken/total_score (both None) and no exit_reason/strat_combo
+    (still active) — notes stays "" (never a fabricated placeholder)."""
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query([]))
+
+    r = cloud_sql_client.get("/api/journal/examples/DIA")
+    trades = {t["id"]: t for t in r.json()["trades"]}
+    pipe2 = trades["pipe-9202"]
+
+    assert pipe2["take_profits"] == [441.5]
+    assert pipe2["time_stop_minutes"] == 25
+    assert pipe2["notes"] == ""
+
+
+def test_examples_pipeline_unmatched_alert_stays_all_dashes(monkeypatch, cloud_sql_client):
+    """A trade with no matching alert within the join window (pipe-9203)
+    keeps take_profits/time_stop_minutes/stop_loss all null/empty — the
+    LEFT JOIN found nothing, and nothing is fabricated in its place
+    (CLAUDE.md Rule 3.7)."""
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query([]))
+
+    r = cloud_sql_client.get("/api/journal/examples/DIA")
+    trades = {t["id"]: t for t in r.json()["trades"]}
+    pipe3 = trades["pipe-9203"]
+
+    assert pipe3["take_profits"] == []
+    assert pipe3["stop_loss"] is None
+    assert pipe3["time_stop_minutes"] is None
+    assert pipe3["notes"] == ""
+
+
+def test_examples_pipeline_sql_joins_signal_alerts_once_per_request(monkeypatch, cloud_sql_client):
+    """Still exactly ONE SELECT for the pipeline half (never per-row) even
+    though it now also joins signal_alerts — the join lives entirely inside
+    the single SQL statement (LATERAL), not a Python-side loop."""
+    calls: list = []
+    monkeypatch.setattr(journal_module, "_journal_query", _make_fake_query(calls))
+
+    r = cloud_sql_client.get("/api/journal/examples/DIA")
+    assert r.status_code == 200
+
+    pipeline_calls = [sql for sql, _params in calls if _is_pipeline_sql(sql)]
+    assert len(pipeline_calls) == 1
+    # Two total (admin + pipeline) — the union invariant from task-examples-union.
+    assert len(calls) == 2
+
+    sql_lower = pipeline_calls[0].lower()
+    assert "signal_alerts" in sql_lower
+    assert "left join lateral" in sql_lower
