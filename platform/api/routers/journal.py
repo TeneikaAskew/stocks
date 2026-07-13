@@ -766,6 +766,13 @@ async def get_examples(ticker: str):
         # distribution). ±5s leaves headroom for any future writer that
         # doesn't share that exact code path without risking a false match
         # across two genuinely different signals.
+        #
+        # PR #728 review FIX 1: the nearest-match ORDER BY had no secondary
+        # key, so two equidistant alerts (production DOES have identical-
+        # microsecond refire duplicates) made the match nondeterministic --
+        # Postgres is free to return either row for a tied ORDER BY. Appended
+        # `, sa2.id` so ties resolve to the lower-id (earlier-inserted) alert
+        # deterministically.
         df_pipeline = _journal_query(
             """
             SELECT t.id, t.direction,
@@ -780,7 +787,7 @@ async def get_examples(ticker: str):
                 WHERE sa2.ticker = t.ticker AND sa2.direction = t.direction
                   AND sa2.alert_ts BETWEEN t.entry_time - INTERVAL '5 seconds'
                                         AND t.entry_time + INTERVAL '5 seconds'
-                ORDER BY ABS(EXTRACT(EPOCH FROM (t.entry_time - sa2.alert_ts)))
+                ORDER BY ABS(EXTRACT(EPOCH FROM (t.entry_time - sa2.alert_ts))), sa2.id
                 LIMIT 1
             ) sa ON true
             WHERE t.ticker = :ticker

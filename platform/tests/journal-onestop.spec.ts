@@ -231,6 +231,25 @@ test.describe('Journal one-stop cockpit — Examples default', () => {
     await expect(page.getByText(/equity curve/i).first()).toBeVisible();
   });
 
+  // PR #728 review FIX 2: closed Examples trades used to be skipped entirely
+  // by the chart's TP/SL price-line builder (`if (trade.status !== 'active')
+  // continue;`), so an example's target/stop was never visible on the chart
+  // -- defeating the teaching purpose of an "example" trade. Canvas
+  // rendering can't be pixel-inspected by Playwright (lightweight-charts
+  // draws to <canvas>), so this asserts the honest DOM-mirrored count
+  // TradeMarkingChart exposes via `data-price-lines` instead of a canvas
+  // pixel read.
+  test('closed example trades still draw their TP/SL lines on the chart', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    // ex-1 (closed, status:'win') has TP1=222.5, TP2=224, SL=219 -> 3 lines.
+    // ex-2 (closed, status:'loss') has no TP/SL -> 0 lines. Total = 3, and
+    // pre-fix this would have been 0 (both trades skipped as non-'active').
+    const chart = page.getByTestId('trade-marking-chart');
+    await expect(chart).toHaveAttribute('data-price-lines', '3');
+  });
+
   test('toggling to My journal shows the own empty state WITHOUT hiding the chart', async ({ page }) => {
     await page.goto('/journal');
     await page.waitForLoadState('networkidle');

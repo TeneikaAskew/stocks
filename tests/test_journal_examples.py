@@ -303,6 +303,15 @@ def _make_fake_query(calls: list):
                 f"pipeline SQL's alert join must match on ticker+direction, got: {sql}"
             assert "interval '5 seconds'" in sql_lower, \
                 f"pipeline SQL must bound the alert match to a tight time window, got: {sql}"
+            # PR #728 review FIX 1: the nearest-match ORDER BY must carry
+            # `sa2.id` as a secondary/tiebreaker key so two equidistant
+            # alerts (production has identical-microsecond refire
+            # duplicates) resolve deterministically instead of Postgres
+            # being free to pick either row for a tied ORDER BY.
+            assert (
+                "order by abs(extract(epoch from (t.entry_time - sa2.alert_ts))), sa2.id"
+                in sql_lower
+            ), f"pipeline SQL's nearest-alert ORDER BY must have sa2.id as a tiebreaker, got: {sql}"
             df = pd.concat(
                 [_ALL_PIPELINE_ROWS, _ALL_PIPELINE_ROWS_RTH_FILTER, _ALL_PIPELINE_ROWS_ALERTS],
                 ignore_index=True,
@@ -793,3 +802,120 @@ def test_examples_pipeline_sql_joins_signal_alerts_once_per_request(monkeypatch,
     sql_lower = pipeline_calls[0].lower()
     assert "signal_alerts" in sql_lower
     assert "left join lateral" in sql_lower
+
+
+# ── PR #728 review FIX 1: deterministic tiebreaker on equal-distance alerts ─
+#
+# The nearest-match `ORDER BY ABS(...)` had no secondary key, so two
+# equidistant `signal_alerts` rows (production HAS identical-microsecond
+# refire duplicates) made the match nondeterministic -- Postgres is free to
+# return either row for a tied ORDER BY. Fix appends `, sa2.id` as the final
+# ORDER BY key. Unlike `_make_fake_query` above (which pre-bakes the joined
+# columns directly into its fixture rows), this dedicated fake actually
+# performs the nearest-alert-wins join in Python -- including the tiebreaker
+# -- against two hand-built equal-distance alert rows, so it exercises real
+# join semantics rather than a pre-joined result.
+
+
+def _make_tiebreak_fake_query(calls: list):
+    trade = {
+        "id": 9301, "ticker": "GLD", "direction": "CALL",
+        "entry_ts": pd.Timestamp("2026-07-08T09:31:00"),
+        "exit_ts": pd.Timestamp("2026-07-08T09:45:00"),
+        "entry_price": 200.0, "exit_price": 202.0,
+        "return_pct": 0.01,
+        "exit_reason": "target_hit", "strat_combo": None,
+    }
+    # Two alerts, each exactly 3 seconds from the trade's entry_ts (09:31:00):
+    # alert_id=501 at 09:30:57 (3s BEFORE) and alert_id=502 at 09:31:03 (3s
+    # AFTER). ABS(EXTRACT(EPOCH FROM (...))) is IDENTICAL for both (3.0) --
+    # only the `, sa2.id` tiebreaker makes the lower id (501) win
+    # deterministically.
+    alerts = pd.DataFrame([
+        {
+            "id": 501, "ticker": "GLD", "direction": "CALL",
+            "alert_ts": pd.Timestamp("2026-07-08T09:30:57"),
+            "target_price": 200.0, "time_stop_minutes": 15,
+            "level_broken": "PDH", "total_score": 3.0,
+        },
+        {
+            "id": 502, "ticker": "GLD", "direction": "CALL",
+            "alert_ts": pd.Timestamp("2026-07-08T09:31:03"),
+            "target_price": 205.0, "time_stop_minutes": 30,
+            "level_broken": "PDL", "total_score": 5.0,
+        },
+    ])
+
+    def fake_query(sql, params=None):
+        calls.append((sql, params or {}))
+        params = params or {}
+
+        if _is_pipeline_sql(sql):
+            sql_lower = sql.lower()
+            # Mutation-proof pin: this dedicated fake refuses to serve rows
+            # at all unless the fix's tiebreaker is present in the SQL text
+            # -- so a regression that drops `, sa2.id` fails loud here too,
+            # not just in the shared _make_fake_query pin above.
+            assert (
+                "order by abs(extract(epoch from (t.entry_time - sa2.alert_ts))), sa2.id"
+                in sql_lower
+            ), f"pipeline SQL's nearest-alert ORDER BY must have sa2.id as a tiebreaker, got: {sql}"
+
+            if params.get("ticker") != "GLD":
+                return pd.DataFrame(columns=[
+                    "id", "direction", "entry_ts", "exit_ts", "entry_price",
+                    "exit_price", "return_pct", "exit_reason", "strat_combo",
+                    "target_price", "time_stop_minutes", "level_broken", "total_score",
+                ])
+
+            # Simulate the LATERAL join: candidate alerts within +-5s of
+            # entry_ts, ordered by (abs distance, id) -- the real fix's
+            # tiebreaker -- take the first (nearest, lowest-id-on-tie).
+            cand = alerts[
+                (alerts["ticker"] == trade["ticker"])
+                & (alerts["direction"] == trade["direction"])
+                & (alerts["alert_ts"] >= trade["entry_ts"] - pd.Timedelta(seconds=5))
+                & (alerts["alert_ts"] <= trade["entry_ts"] + pd.Timedelta(seconds=5))
+            ].copy()
+            cand["_dist"] = (trade["entry_ts"] - cand["alert_ts"]).abs()
+            cand = cand.sort_values(["_dist", "id"])
+            best = cand.iloc[0]
+
+            row = dict(trade)
+            row.pop("ticker")
+            row["target_price"] = best["target_price"]
+            row["time_stop_minutes"] = best["time_stop_minutes"]
+            row["level_broken"] = best["level_broken"]
+            row["total_score"] = best["total_score"]
+            return pd.DataFrame([row])
+
+        return pd.DataFrame(columns=[
+            "id", "ticker", "direction", "entry_ts", "exit_ts", "entry_price",
+            "exit_price", "return_pct", "notes", "stop_loss", "tp1", "tp2",
+            "tp3", "status", "source", "session_id", "created_at",
+        ])
+
+    return fake_query
+
+
+def test_examples_pipeline_alert_join_tiebreaker_lower_id_wins(monkeypatch, cloud_sql_client):
+    """FIX 1 (PR #728 review): when two signal_alerts rows are equidistant
+    from a trade's entry_ts (identical-microsecond refire duplicates seen in
+    production), the nearest-match ORDER BY must carry a deterministic
+    secondary key (`sa2.id`) so the LOWER id always wins -- never a
+    nondeterministic pick between equal-distance rows."""
+    calls: list = []
+    monkeypatch.setattr(journal_module, "_journal_query", _make_tiebreak_fake_query(calls))
+
+    r = cloud_sql_client.get("/api/journal/examples/GLD")
+    assert r.status_code == 200
+    trades = {t["id"]: t for t in r.json()["trades"]}
+    pipe = trades["pipe-9301"]
+
+    # alert id=501 (3s BEFORE entry) must win over id=502 (3s AFTER entry) --
+    # both are exactly 3s away, so only the `, sa2.id` tiebreaker resolves it.
+    assert pipe["take_profits"] == [200.0]
+    assert pipe["time_stop_minutes"] == 15
+
+    pipeline_calls = [sql for sql, _params in calls if _is_pipeline_sql(sql)]
+    assert len(pipeline_calls) == 1
