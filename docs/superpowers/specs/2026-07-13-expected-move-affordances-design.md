@@ -38,13 +38,17 @@ scope guard. Magnitude buckets are defined in ATR-20 units (`mag_config.py`):
 **Tier 1 — Informational (always shown; the honest core).** Additive to the
 existing `context-modifiers` block:
 - **Size-light chip** — a glanceable 🟢/🟡/🔴 from the calibrated tail
-  probability `p_tail = p_expanded + p_explosive`:
-  - 🟢 `big move likely` — `p_tail ≥ 0.25`
-  - 🟡 `normal` — `0.12 ≤ p_tail < 0.25`
-  - 🔴 `tight` — `p_tail < 0.12`
-  Thresholds are named constants (tunable; documented as calibrated to the
-  observed 15m distribution where big moves are genuinely rare — so 🟢 is
-  correctly uncommon).
+  probability `p_tail = p_expanded + p_explosive`. Thresholds are **grounded in
+  the base rate**, not guessed: EXPANDED base ≈ 5–8% + EXPLOSIVE base ≈ 1.5–2%
+  ⇒ a typical bar's `p_tail ≈ 0.07–0.10`. So:
+  - 🟢 `big move likely` — `p_tail ≥ 0.20` (≈ 2× base — genuinely elevated)
+  - 🟡 `elevated` — `0.10 ≤ p_tail < 0.20` (above base)
+  - 🔴 `tight` — `p_tail < 0.10` (at/below base — most bars)
+  Thresholds are named constants in one place. **Recalibration follow-up**
+  (own tiny task, NOT this phase): once ≥ ~2,000 live 15m predictions have
+  accumulated in `magnitude_per_bar_predictions`, replace the base-rate values
+  with the observed p75/p90 percentiles (a 69-row sample today would be
+  spurious). 🟢 is correctly uncommon either way — big moves ARE rare.
 - **Expected-move magnitude label** — the bucket's ATR range: e.g. EXPANDED →
   "≈ 1.0–1.5× ATR". No ATR *value* needed (label only).
 - **Direction line** — explicit, muted: "Direction: not predicted — you supply
@@ -107,7 +111,7 @@ inherit the Rule-3.7 "—/unavailable" discipline.
 
 ## Testing
 
-- **vitest (pure):** `sizeLight` thresholds (boundaries 0.12/0.25), bucket→ATR
+- **vitest (pure):** `sizeLight` thresholds (boundaries 0.10/0.20), bucket→ATR
   label, stop/size math (`k×ATR`, `floor(risk/stop)`), `atr_20=null` → disabled.
 - **Playwright e2e (extend `movement-read.spec.ts`):** mock `expected_move`
   with a high-`p_tail` payload → assert 🟢 chip + risk hint + options idea
