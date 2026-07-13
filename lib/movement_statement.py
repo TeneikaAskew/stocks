@@ -23,8 +23,10 @@ What it assembles (and where each piece comes from):
 
   expected_move  (CONTEXT / SIZING ONLY — never the headline)
       magnitude_per_bar_predictions — the magnitude-engine bucket
-      distribution. Magnitude FAILED gate-7; it is a sizing / filtering
-      signal, explicitly "sizing/context, not the headline".
+      distribution. The 15m magnitude model is VALIDATED (calibrated,
+      pure-prediction; 2026-07 re-analysis — see MAGNITUDE_ENGINE_RESULTS.md).
+      It is a SIZE signal (how big, not which way): sizing / filtering /
+      strike-selection context, explicitly "sizing/context, not the headline".
 
   regime  (CONTEXT ONLY)
       lib.agents.summarizers.summarize_gamma_levels — the gamma "mood"
@@ -80,8 +82,11 @@ LOW_SAMPLE_THRESHOLD = 30
 # Magnitude-engine bucket labels (matches platform/api/routers/magnitude.py).
 _MAG_BUCKET_LABELS = ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
 _MAG_USAGE = (
-    "Sizing / filtering / strike-selection context only — magnitude_engine "
-    "failed gate-7. Not a standalone trade signal and does not move the "
+    "How BIG the next move is likely to be — not which way. The 15m magnitude "
+    "model is validated (calibrated, ECE ~0.04; robustly beats the base rate on "
+    "all three ETFs in the pure-prediction re-analysis — see "
+    "MAGNITUDE_ENGINE_RESULTS.md). Sizing / filtering / strike-selection "
+    "context only: it is NOT a directional signal and does not move the "
     "headline probability."
 )
 
