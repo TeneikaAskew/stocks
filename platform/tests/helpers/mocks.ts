@@ -37,6 +37,13 @@ export async function mockCommon(page: Page) {
   await page.route('**/api/insights/watchlist*', (r) =>
     r.fulfill(ok({ tickers: ['IWM'], generated_at: '2026-04-25T20:00:00Z' }))
   );
+  // Most-active ticker bar (mounted on Market pages + /journal via AppShell).
+  // Default is an honest empty response so the bar hides itself — specs that
+  // don't care about the marquee stay unaffected; most-active-bar.spec.ts
+  // overrides this route per-test with real payloads.
+  await page.route('**/api/market/most-active', (r) =>
+    r.fulfill(ok({ snapshot_ts: null, snapshot_date: null, label: null, items: [] }))
+  );
 }
 
 // Brief shape the redesigned Overview consumes (bias bullets + KPI close/RSI).
