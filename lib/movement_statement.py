@@ -83,10 +83,10 @@ LOW_SAMPLE_THRESHOLD = 30
 _MAG_BUCKET_LABELS = ("TIGHT", "NORMAL", "EXPANDED", "EXPLOSIVE")
 _MAG_USAGE = (
     "How BIG the next move is likely to be — not which way. The 15m magnitude "
-    "model is validated: calibrated (ECE ~0.04) and robustly beats the base "
-    "rate on all three ETFs in the pure-prediction re-analysis (see "
-    "MAGNITUDE_ENGINE_RESULTS.md). Use it for position sizing, filtering, and "
-    "strike selection. It is NOT a directional signal and does not move the "
+    "model is validated (calibrated, ECE ~0.04; robustly beats the base rate on "
+    "all three ETFs in the pure-prediction re-analysis — see "
+    "MAGNITUDE_ENGINE_RESULTS.md). Sizing / filtering / strike-selection "
+    "context only: it is NOT a directional signal and does not move the "
     "headline probability."
 )
 
