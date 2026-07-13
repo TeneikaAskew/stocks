@@ -80,7 +80,11 @@ if [[ "${STAGING:-0}" == "1" ]]; then
 fi
 
 # ── Env vars + secrets (composed so staging can append its own) ────────────
-ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com,AUTH_MODE=${AUTH_MODE_VAL}"
+# MOVEMENT_STATEMENT_ENABLED=true: the movement-statement / Expected-Move card
+# (TYPE continuation headline + validated 15m SIZE bucket + levels + regime) is
+# validated and enabled as of 2026-07-12. --set-env-vars replaces the whole set
+# on each deploy, so the flag must live here to persist across deploys.
+ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com,AUTH_MODE=${AUTH_MODE_VAL},MOVEMENT_STATEMENT_ENABLED=true"
 SECRETS="DB_PASS=${DB_PASS_SECRET}:latest,AV_API_KEY=av-api-key:latest,ALPHA_VANTAGE_API_KEY=av-api-key:latest"
 
 # Firebase-mode services need the web SDK config (apiKey/authDomain/appId are
