@@ -108,7 +108,9 @@ def test_check_exits_increments_daily_pnl_on_target_hit():
     size = 0.10
     monitor.active_positions.setdefault(ticker, []).append({
         'ticker': ticker,
-        'alert_ts': datetime.utcnow() - timedelta(minutes=5),
+        # Same clock as production _check_exits (naive datetime.now(),
+        # == UTC on Cloud Run) so elapsed math is machine-tz independent.
+        'alert_ts': datetime.now() - timedelta(minutes=5),
         'direction': 'CALL',
         'entry_price': 677.63,
         'target_price': 679.66,
@@ -144,7 +146,7 @@ def test_check_exits_increments_daily_pnl_negative_on_put_loss():
     bumps NEGATIVE in fractional units."""
     monitor = _make_monitor()
     ticker = 'IWM'
-    alert_ts = datetime.utcnow() - timedelta(minutes=40)
+    alert_ts = datetime.now() - timedelta(minutes=40)  # same clock as _check_exits
     size = 0.20
     monitor.active_positions.setdefault(ticker, []).append({
         'ticker': ticker,
@@ -189,7 +191,7 @@ def test_daily_pnl_units_match_daily_loss_limit_units():
     for _ in range(3):
         monitor.active_positions.setdefault(ticker, []).append({
             'ticker': ticker,
-            'alert_ts': datetime.utcnow() - timedelta(minutes=40),
+            'alert_ts': datetime.now() - timedelta(minutes=40),  # same clock as _check_exits
             'direction': 'PUT',
             'entry_price': 200.00,
             'target_price': 197.50,

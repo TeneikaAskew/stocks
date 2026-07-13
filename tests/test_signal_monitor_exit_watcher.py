@@ -38,7 +38,10 @@ def _seed_position(monitor, ticker, direction, entry_price, target_price,
                    strength='medium'):
     monitor.active_positions.setdefault(ticker, []).append({
         'ticker': ticker,
-        'alert_ts': alert_ts or datetime.utcnow() - timedelta(minutes=5),
+        # Production _check_exits computes elapsed against naive
+        # datetime.now() (== UTC on Cloud Run). Backdate with the same
+        # clock so elapsed math is machine-timezone independent.
+        'alert_ts': alert_ts or datetime.now() - timedelta(minutes=5),
         'direction': direction,
         'entry_price': entry_price,
         'target_price': target_price,
@@ -98,7 +101,7 @@ def test_check_exits_call_just_under_target_does_not_fire():
 def test_check_exits_time_stop():
     monitor = _make_monitor()
     # Backdate alert to be exactly 30 minutes ago
-    old_ts = datetime.utcnow() - timedelta(minutes=31)
+    old_ts = datetime.now() - timedelta(minutes=31)  # same clock as _check_exits
     _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
                    target_price=685.00, alert_ts=old_ts)
     with patch.object(monitor, '_fire_exit_alert') as mock_fire, \
@@ -147,7 +150,7 @@ def test_check_exits_target_takes_precedence_over_time_stop():
     """If price hits target on the SAME tick that time_stop expires,
     we record it as target_hit (the better outcome)."""
     monitor = _make_monitor()
-    old_ts = datetime.utcnow() - timedelta(minutes=31)  # past time stop
+    old_ts = datetime.now() - timedelta(minutes=31)  # past time stop; same clock as _check_exits
     _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
                    target_price=679.66, alert_ts=old_ts)
     with patch.object(monitor, '_fire_exit_alert') as mock_fire, \
@@ -203,6 +206,127 @@ def test_persist_row_includes_is_open_true():
     df = mock_upsert.call_args[0][0]
     assert 'is_open' in df.columns, "persist row MUST set is_open"
     assert bool(df.iloc[0]['is_open']) is True
+
+
+# ── _persist_exit mirrors exit onto the trades table ────────────────
+#
+# Forensics (.superpowers/sdd/p-exit-writing-forensics.md): nothing ever
+# wrote exits to `trades` — the watcher wrote signal_alerts only, so
+# every live pipeline trades row since 2026-05-01 is permanently open.
+# These tests pin the forward-fix: one exit event issues BOTH updates
+# with equal values, warns (never silently no-ops) when no open trades
+# row matches, and the trades UPDATE is idempotent via `exit_time IS
+# NULL` so a real exit is never overwritten by a different one.
+#
+# Linkage evidence: `_persist_signal_alert` writes signal_alerts.alert_ts
+# and trades.entry_time from the SAME `now` value, and (ticker,
+# entry_time) is the trades upsert conflict key — verified 2071/2071
+# post-2026-05-01 rows join exactly on (ticker, entry_time = alert_ts).
+
+def _mock_exit_engine(rowcounts):
+    """Engine mock whose conn.execute returns the given rowcounts in order."""
+    conn = MagicMock()
+    conn.execute.side_effect = [MagicMock(rowcount=rc) for rc in rowcounts]
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+    return engine, conn
+
+
+def _exit_pos(direction='CALL', entry_price=677.63, target_price=679.66):
+    return {
+        'ticker': 'QQQ',
+        'alert_ts': datetime(2026, 7, 10, 14, 30, 0),
+        'direction': direction,
+        'entry_price': entry_price,
+        'target_price': target_price,
+        'time_stop_minutes': 30,
+        'score': 4.0,
+        'strength': 'medium',
+        'size': 0.05,
+    }
+
+
+def test_persist_exit_writes_signal_alerts_and_trades_with_equal_values():
+    """One exit event → UPDATE signal_alerts AND UPDATE trades, carrying
+    the same exit_ts / exit_price / exit_reason / return_pct, with the
+    trades row matched on (ticker, entry_time == alert_ts)."""
+    from gcp.signal_monitor import SignalMonitor
+    monitor = _make_monitor()
+    pos = _exit_pos()
+    exit_ts = datetime(2026, 7, 10, 15, 0, 0)
+    engine, conn = _mock_exit_engine([1, 1])
+
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.get_engine', return_value=engine):
+        monitor._persist_exit(pos, 679.70, 'target_hit', exit_ts)
+
+    assert conn.execute.call_count == 2, \
+        "exit persist MUST issue exactly two UPDATEs (signal_alerts + trades)"
+    alert_stmt, alert_params = conn.execute.call_args_list[0].args
+    trade_stmt, trade_params = conn.execute.call_args_list[1].args
+    assert 'UPDATE signal_alerts' in str(alert_stmt)
+    assert 'UPDATE trades' in str(trade_stmt)
+
+    # Row correspondence: trades.entry_time == signal_alerts.alert_ts
+    assert trade_params['ticker'] == pos['ticker']
+    assert trade_params['entry_time'] == pos['alert_ts']
+    assert alert_params['alert_ts'] == pos['alert_ts']
+
+    # Equal computed values across both tables
+    expected_ret = SignalMonitor._exit_return_pct('CALL', 677.63, 679.70)
+    for params in (alert_params, trade_params):
+        assert params['exit_ts'] == exit_ts
+        assert params['reason'] == 'target_hit'
+        assert params['price'] == pytest.approx(679.70)
+        assert params['ret'] == pytest.approx(expected_ret)
+
+
+def test_persist_exit_trades_update_is_idempotent_and_never_overwrites():
+    """The trades UPDATE must carry `exit_time IS NULL` so a re-run
+    converges and a real recorded exit is never silently replaced."""
+    monitor = _make_monitor()
+    engine, conn = _mock_exit_engine([1, 1])
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.get_engine', return_value=engine):
+        monitor._persist_exit(_exit_pos(), 679.70, 'target_hit',
+                              datetime(2026, 7, 10, 15, 0, 0))
+    trade_stmt = str(conn.execute.call_args_list[1].args[0])
+    assert 'exit_time IS NULL' in trade_stmt, \
+        "trades exit mirror MUST guard on exit_time IS NULL (idempotence)"
+
+
+def test_persist_exit_warns_when_no_trades_row_matches(caplog):
+    """Rowcount 0 on the trades mirror MUST log a WARNING (Rule 3.7 — no
+    silent no-ops) while the signal_alerts write still goes through."""
+    import logging
+    monitor = _make_monitor()
+    engine, conn = _mock_exit_engine([1, 0])  # alerts row hit, trades miss
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.get_engine', return_value=engine), \
+         caplog.at_level(logging.WARNING, logger='gcp.signal_monitor'):
+        monitor._persist_exit(_exit_pos(), 679.70, 'target_hit',
+                              datetime(2026, 7, 10, 15, 0, 0))
+    assert conn.execute.call_count == 2, \
+        "signal_alerts UPDATE must still be issued when trades row is missing"
+    warnings = [r for r in caplog.records
+                if r.levelno >= logging.WARNING and 'trades' in r.getMessage()]
+    assert warnings, \
+        "missing/already-closed trades row MUST produce a WARNING, not a silent no-op"
+
+
+def test_persist_exit_put_direction_return_pct_units():
+    """PUT exits carry the direction-aware underlying-% return, matching
+    the April-backfill trades rows' units ((entry-exit)/entry*100)."""
+    monitor = _make_monitor()
+    pos = _exit_pos(direction='PUT', entry_price=100.0, target_price=99.0)
+    engine, conn = _mock_exit_engine([1, 1])
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.get_engine', return_value=engine):
+        monitor._persist_exit(pos, 99.0, 'target_hit',
+                              datetime(2026, 7, 10, 15, 0, 0))
+    trade_params = conn.execute.call_args_list[1].args[1]
+    assert trade_params['ret'] == pytest.approx(1.0)
 
 
 def test_persist_appends_to_active_positions():
