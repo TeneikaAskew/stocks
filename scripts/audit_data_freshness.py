@@ -696,16 +696,22 @@ COLUMN_NULLITY_CHECKS: list[dict] = [
         "writer_job": "strat-engine",  # via gamma_levels_eod (p2_build_gamma_levels)
         "rationale": "gamma_levels_eod missed scheduler 2026-05-22 → 06-19 cascade",
     },
-    {
-        "name": "strat_features_5m.gamma_balance_price",
-        "table": "strat_features_5m",
-        "column": "gamma_balance_price",
-        "tickers": ("IWM", "SPY", "QQQ"),
-        "lookback_days": 1,
-        "min_non_null_rate": 0.90,
-        "writer_job": "strat-engine",
-        "rationale": "same gamma_levels_eod upstream as total_gex",
-    },
+    # NOTE: gamma_balance_price is intentionally NOT a column-nullity check.
+    # lib/gamma.py's compute_gamma_balance() only exists where the
+    # cumulative-net-gamma curve actually crosses zero near spot — by the
+    # function's own documented behavior (lib/gamma.py ~903-909) it returns
+    # None on roughly half of all days, disproportionately during
+    # negative-gamma regimes. Empirically (gamma_levels_eod, trailing 4
+    # months, 2026-07-13): IWM's monthly non-null rate ranged 0%-35%, QQQ
+    # 8%-86%, SPY 0%-80% — never within reach of a 90% floor, including
+    # multi-week stretches at a legitimate 0%. A threshold check on this
+    # column pages on expected model output, not a data outage. It fired
+    # freshness-watchdog failures on 2026-07-11 and 2026-07-12 (IWM stuck
+    # in a negative-gamma regime, 0/78 non-null both days) with no upstream
+    # fetch actually broken. total_gex and total_vex below cover the same
+    # gamma_levels_eod upstream (2026-05→06 cascade) with a metric that IS
+    # reliably ~100% non-null when the pipeline is healthy — they fully
+    # cover the cascade-detection intent without the false-positive rate.
     {
         "name": "strat_features_5m.total_vex",
         "table": "strat_features_5m",

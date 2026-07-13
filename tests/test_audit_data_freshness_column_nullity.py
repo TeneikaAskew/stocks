@@ -64,7 +64,7 @@ def test_below_threshold_fires_stale(monkeypatch):
     ])
     _patch_query(monkeypatch, df)
     out = _query_column_nullity(datetime(2026, 6, 21, 14, 0))
-    # One finding for every check x (IWM at 0%) — we have 5 checks declared
+    # One finding for every check x (IWM at 0%) — we have 4 checks declared
     assert len(out) > 0
     # Every finding must be stale, IWM, and carry a writer_job for routing
     for f in out:
@@ -98,7 +98,7 @@ def test_borderline_just_below_threshold_fires(monkeypatch):
     ])
     _patch_query(monkeypatch, df)
     out = _query_column_nullity(datetime(2026, 6, 21, 14, 0))
-    # 5 checks all fire on this one ticker since the same fake_df returns
+    # 4 checks all fire on this one ticker since the same fake_df returns
     # for every query
     assert all(f.status == "stale" for f in out)
     assert all(f.ticker == "IWM" for f in out)
@@ -234,28 +234,37 @@ def test_writer_job_routes_alert_to_culprit():
     by_name = {c["name"]: c for c in COLUMN_NULLITY_CHECKS}
     assert by_name["strat_features_5m.vix_close"]["writer_job"] == "fetch-market-data"
     assert by_name["strat_features_5m.total_gex"]["writer_job"] == "strat-engine"
-    assert by_name["strat_features_5m.gamma_balance_price"]["writer_job"] == "strat-engine"
     assert by_name["strat_features_5m.total_vex"]["writer_job"] == "strat-engine"
     assert by_name["strat_features_levels_5m.orb_5m_high"]["writer_job"] == "strat-engine"
 
 
 def test_checks_cover_the_2026_06_cascade_columns():
-    """Pin that the four columns that silently NULLed during the
-    2026-05-22 → 06-19 cascade are all in the check list. A future
-    refactor that drops one would reintroduce the exact gap this
-    PR exists to close."""
+    """Pin that the columns that silently NULLed during the
+    2026-05-22 → 06-19 cascade and CAN sustain a fixed non-null
+    threshold are in the check list. gamma_balance_price shared the
+    same upstream outage but is deliberately excluded (see the NOTE
+    above COLUMN_NULLITY_CHECKS in audit_data_freshness.py) — it's
+    legitimately null on ~50%+ of days by the underlying model's own
+    design, so a threshold check on it pages on expected output, not
+    an outage. total_gex/total_vex cover the same gamma_levels_eod
+    upstream and don't share that false-positive mode."""
     from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
     names = {c["name"] for c in COLUMN_NULLITY_CHECKS}
     cascade_columns = {
         "strat_features_5m.vix_close",
         "strat_features_5m.total_gex",
-        "strat_features_5m.gamma_balance_price",
         "strat_features_5m.total_vex",
     }
     missing = cascade_columns - names
     assert not missing, (
         f"COLUMN_NULLITY_CHECKS missing {missing} — the cascade columns "
         f"that silently NULLed for 4 weeks must stay covered"
+    )
+    assert "strat_features_5m.gamma_balance_price" not in names, (
+        "gamma_balance_price is intentionally excluded from "
+        "COLUMN_NULLITY_CHECKS — see the NOTE in audit_data_freshness.py. "
+        "Re-adding it reintroduces the 2026-07-11/07-12 false-positive "
+        "(IWM legitimately null in a sustained negative-gamma regime)."
     )
 
 
