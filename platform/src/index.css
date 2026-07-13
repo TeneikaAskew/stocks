@@ -310,6 +310,34 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 .nav-badge { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 9999px; background: var(--surface-2); color: var(--on-surface-variant); font-variant-numeric: tabular-nums; font-weight: 600; }
 .nav-badge.live { background: rgba(34,197,94,0.15); color: var(--bull); }
 
+/* Most-active ticker bar (marquee) — mounted under the top nav on
+   Market-section routes + /journal (see AppShell.tsx). Its own overflow
+   container: the track never causes page-level horizontal scroll (the
+   journal-onestop mobile-viewport regression this bar must not repeat). */
+.most-active-bar { display: flex; align-items: stretch; height: 34px; background: var(--surface-1); border-bottom: 1px solid var(--outline-variant); overflow: hidden; }
+.mab-label { display: flex; align-items: center; gap: 6px; padding: 0 14px; flex-shrink: 0; border-right: 1px solid var(--outline-variant); white-space: nowrap; }
+.mab-label-title { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--on-surface-label); }
+.mab-label-sub { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--on-surface-muted); }
+.mab-track-wrap { flex: 1; min-width: 0; overflow: hidden; }
+.mab-track-wrap--static { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.mab-track-wrap:hover .mab-track--animate,
+.mab-track-wrap:focus-within .mab-track--animate { animation-play-state: paused; }
+.mab-track { display: flex; width: max-content; }
+.mab-track--animate { animation: mab-scroll 40s linear infinite; }
+@keyframes mab-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mab-track--animate { animation: none; }
+}
+.mab-item { display: flex; align-items: center; gap: 8px; padding: 0 16px; flex-shrink: 0; white-space: nowrap; font-size: 12px; }
+.mab-ticker { font-weight: 700; color: var(--on-surface); }
+.mab-price { color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
+.mab-change { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--on-surface-variant); }
+.mab-volume { color: var(--on-surface-muted); font-size: 11px; }
+.mab-spark { display: block; flex-shrink: 0; }
+
 /* Top-tabs nav pattern. No overflow on the bar itself — the inner tab <nav>
    owns horizontal scrolling; overflow-x:auto here clipped dropdown/popover
    panels to the 48px bar. */

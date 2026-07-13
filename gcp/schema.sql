@@ -961,6 +961,28 @@ CREATE INDEX IF NOT EXISTS idx_top_movers_date_category
 
 
 -- ─────────────────────────────────────────────────────────
+-- TOP MOVERS INTRADAY (AlphaVantage TOP_GAINERS_LOSERS, hourly
+-- most_actively_traded snapshot — feeds the most-active marquee bar)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS top_movers_intraday (
+    id            BIGSERIAL PRIMARY KEY,
+    snapshot_ts   TIMESTAMPTZ  NOT NULL,           -- true UTC, set once per job run
+    snapshot_date DATE         NOT NULL,           -- ET trading date of the snapshot
+    rank          SMALLINT     NOT NULL,           -- 1..20 position in the most-active list
+    ticker        VARCHAR(10)  NOT NULL,
+    price         DOUBLE PRECISION,
+    change_amount DOUBLE PRECISION,
+    change_pct    DOUBLE PRECISION,
+    volume        BIGINT,
+    inserted_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_top_movers_intraday UNIQUE (snapshot_ts, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_top_movers_intraday_date
+    ON top_movers_intraday (snapshot_date DESC, snapshot_ts DESC);
+
+
+-- ─────────────────────────────────────────────────────────
 -- RANKER AUDIT
 -- One row per call to lib.agents.ranker.rank_tickers. Captures inputs
 -- (weights, candidate count) and outputs (ranked list with full score

@@ -2056,12 +2056,30 @@ deploy_fetch_insider_transactions() {
         --quiet
 }
 
+# This single job now backs TWO cadences, selected by --args at the
+# Cloud Scheduler layer (see deploy_schedulers()):
+#   - default (no args)      -> daily TOP_GAINERS_LOSERS snapshot -> top_movers_daily
+#   - --args="--intraday-snapshot" -> most_actively_traded only -> top_movers_intraday
+# Same pattern as fetch-alphavantage-intraday/av-intraday-nightly: one
+# persisted job + a _schedule_with_args() scheduler that overrides args
+# on that trigger only, rather than standing up a second Cloud Run Job
+# for the same image/entrypoint/secrets.
+#
+# Capacity (Rule 0): 1 AV TOP_GAINERS_LOSERS call (~30 most_actively_traded
+# rows) + 1 batched upsert per invocation, both cadences. Wall-clock is
+# network-bound (AV call + upsert), observed sub-10s. task-timeout=300 is
+# ~30-60x the estimate. max-retries=0 (not 1, unlike the sibling fetchers
+# below): the intraday variant now runs hourly during market hours, so a
+# transient failure self-heals at the next hourly tick without Cloud Run
+# auto-retrying and double-sending failure emails for a blip the next run
+# already covers — same rationale as signal-quality-report's max-retries 0.
 deploy_fetch_top_movers() {
     echo "Deploying fetch-top-movers job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 1 \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
@@ -2069,6 +2087,8 @@ deploy_fetch_top_movers() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
+        --max-retries 0 \
+        --task-timeout 300 \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
@@ -3632,6 +3652,26 @@ deploy_schedulers() {
     # Top movers — daily at 4:15 PM ET, after the close so AV's snapshot
     # reflects the full session.
     _schedule "top-movers-daily"  "15 16 * * 1-5"  "fetch-top-movers"
+
+    # Most-active ticker bar (marquee) — intraday hourly snapshots feeding
+    # top_movers_intraday, via _schedule_with_args() overriding the SAME
+    # fetch-top-movers job with --intraday-snapshot (see deploy_fetch_top_movers
+    # for why this reuses the job instead of standing up a second one).
+    # Cron "30 9-15 * * 1-5" fires at :30 past 9 AM-3 PM ET weekdays
+    # (9:30, 10:30, ..., 15:30) — the market's 9:30 open through the last
+    # full hour before close, so the marquee has a fresh snapshot at least
+    # once an hour throughout the session. A separate 4:05 PM ET run
+    # captures the closing snapshot after AV's TOP_GAINERS_LOSERS reflects
+    # the full session (mirrors top-movers-daily's 4:15 PM timing, 10 min
+    # earlier so the intraday bar shows the close before the daily table
+    # lands). Both use --time-zone America/New_York (matches every other
+    # scheduler in this file) so the cadence doesn't drift across the
+    # DST transition — a bare UTC cron would silently shift an hour twice
+    # a year.
+    _schedule_with_args "top-movers-intraday-hourly"  "30 9-15 * * 1-5"  "fetch-top-movers" \
+        "--intraday-snapshot"
+    _schedule_with_args "top-movers-intraday-close"  "5 16 * * 1-5"  "fetch-top-movers" \
+        "--intraday-snapshot"
 
     # News sentiment — HOURLY during the trading day so catalysts can't
     # age out of AV's 50-article window before we capture them. The

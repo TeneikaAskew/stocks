@@ -6,8 +6,9 @@ import logging
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -970,6 +971,137 @@ async def market_sectors():
         resp["reason"] = "data quality check failed"
 
     return resp
+
+
+# ── Most-active ticker bar (top_movers_intraday) ─────────────────────────────
+#
+# GET /api/market/most-active — read endpoint for the marquee. Auth: same gate
+# as /api/market/dates/{ticker} above (neither path is in
+# auth._OPEN_API_PREFIXES, so both are gated identically by AUTH_MODE=firebase
+# and unaffected identically in iap/open mode) — no new auth code needed.
+
+_ET_TZ = ZoneInfo("America/New_York")
+# RTH-window constants formerly lived here but are now superseded by
+# api.routers.live._is_market_open (weekend/holiday-aware) -- see
+# _most_active_label below.
+
+
+def _most_active_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+    """Run the most-active SQL query, raising on failure.
+
+    Same rationale as ``_coverage_query`` / ``_sectors_query``: uses
+    ``query_to_dataframe_strict`` (the RAISING helper) so a real DB error
+    surfaces as a 503, never as a silently-empty "no movers" result
+    (CLAUDE.md Rule 3.7).
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
+def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[datetime] = None) -> str:
+    """"live" if the latest snapshot is <90min old AND now is within a
+    regular trading session, else the ET snapshot_date string.
+
+    "Regular trading session" reuses ``api.routers.live._is_market_open``
+    (weekend + ``MARKET_HOLIDAYS_2026``-aware) instead of a bare 09:30-16:00
+    ET clock-time check -- a fresh snapshot with a Saturday/holiday `now`
+    must not render "live" even though the clock time falls in RTH (T2
+    review, "Important"). ``live`` is already imported at module level
+    (see the ``from api.routers import live, ...`` block above), so no new
+    import path or circular-import risk is introduced.
+
+    ``now_utc`` is injectable for tests; production calls leave it unset
+    and get the real wall clock.
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    latest = latest_ts.to_pydatetime() if hasattr(latest_ts, "to_pydatetime") else latest_ts
+    if latest.tzinfo is None:
+        latest = latest.replace(tzinfo=timezone.utc)
+    age = now_utc - latest
+    now_et = now_utc.astimezone(_ET_TZ)
+    is_open, session = live._is_market_open(now_et)
+    within_rth = is_open and session == "regular"
+    if age < timedelta(minutes=90) and within_rth:
+        return "live"
+    return snapshot_date_str
+
+
+@app.get("/api/market/most-active")
+async def market_most_active():
+    """Most-active tickers snapshot, with per-ticker snapshot sparklines.
+
+    One SQL (CLAUDE.md Rule 0: batch, never per-ticker) pulls every row for
+    the latest ``snapshot_date`` from ``top_movers_intraday``; the rest is
+    grouped in memory:
+      - items = the latest snapshot_ts's rows, ordered by rank.
+      - spark = each ticker's price series across the date's snapshots,
+        ordered by snapshot_ts — omitted entirely (Rule 3.7: never
+        synthesize a single-point "series") when a ticker has <2 points.
+      - label = "live" / the ET snapshot date (see ``_most_active_label``).
+
+    Empty table -> honest 200 with an empty payload (the bar is decorative
+    and just hides on the frontend) — NOT an error. A real DB failure -> 503,
+    mirroring the sibling ``/api/market/sectors`` / ``/api/market/coverage``
+    endpoints above.
+    """
+    try:
+        df = _most_active_query(
+            """
+            SELECT snapshot_ts, snapshot_date, rank, ticker, price,
+                   change_amount, change_pct, volume
+            FROM top_movers_intraday
+            WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM top_movers_intraday)
+            ORDER BY snapshot_ts, rank
+            """
+        )
+    except Exception as e:
+        logger.error("most-active query failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"database query failed: {type(e).__name__}")
+
+    if df.empty:
+        return {"items": [], "label": None, "snapshot_ts": None, "snapshot_date": None}
+
+    def _finite_or_none(v):
+        if v is None:
+            return None
+        f = float(v)
+        return f if pd.notna(f) else None
+
+    latest_ts = df["snapshot_ts"].max()
+    latest_rows = df[df["snapshot_ts"] == latest_ts].sort_values("rank")
+    snapshot_date_str = str(latest_rows["snapshot_date"].iloc[0])
+
+    # spark: each ticker's price series across the date's snapshots, ordered
+    # by snapshot_ts (df is already ordered snapshot_ts, rank from the SQL).
+    spark_by_ticker: dict = {}
+    for ticker, sub in df.groupby("ticker", sort=False):
+        prices = [p for p in (_finite_or_none(p) for p in sub["price"]) if p is not None]
+        if len(prices) >= 2:
+            spark_by_ticker[ticker] = prices
+
+    items = []
+    for _, row in latest_rows.iterrows():
+        item = {
+            "ticker": row["ticker"],
+            "rank": int(row["rank"]),
+            "price": _finite_or_none(row["price"]),
+            "change_pct": _finite_or_none(row["change_pct"]),
+            "volume": int(row["volume"]) if pd.notna(row["volume"]) else None,
+        }
+        spark = spark_by_ticker.get(row["ticker"])
+        if spark is not None:
+            item["spark"] = spark
+        items.append(item)
+
+    label = _most_active_label(latest_ts, snapshot_date_str)
+
+    return {
+        "snapshot_ts": latest_ts.isoformat() if hasattr(latest_ts, "isoformat") else str(latest_ts),
+        "snapshot_date": snapshot_date_str,
+        "label": label,
+        "items": items,
+    }
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
