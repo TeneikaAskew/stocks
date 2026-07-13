@@ -40,6 +40,16 @@ export interface TradeEntry {
    *  trade drawn during the same session. Only meaningful when source
    *  === 'replay'. */
   sessionId?: string;
+  /** task-alerts-enrichment (2026-07-12) — a pipeline row's matched
+   *  `signal_alerts.time_stop_minutes`, in MINUTES. Only ever present when
+   *  `stopLoss` is undefined (the signal engine logs a time-based exit
+   *  rule, never a stop PRICE) — the Stop cell/rail-card SL segment render
+   *  "<N>m time-stop" from this field instead of a dollar price. USER
+   *  REQUIREMENT (verbatim): this is EACH row's OWN value — never a fixed
+   *  label — production data has both 20 and 25 in the same ticker's first
+   *  six rows. Undefined for journal/manual/chart/replay rows (no alert
+   *  concept applies to them). */
+  timeStopMinutes?: number;
 }
 
 export interface Signal {

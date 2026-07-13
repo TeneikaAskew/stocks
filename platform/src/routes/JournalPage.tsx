@@ -48,7 +48,7 @@ import {
 } from '@/hooks/useJournalChartTrades';
 import { fmtPct, NA } from '@/lib/format';
 import { computeJournalStats } from '@/lib/journalStats';
-import { riskReward } from '@/lib/risk';
+import { riskReward, stopDisplayText } from '@/lib/risk';
 import { todayET } from '@/lib/dates';
 import type { Timeframe } from '@/types';
 
@@ -886,9 +886,20 @@ export default function JournalPage() {
                           </span>
                         )}
                       </td>
-                      {/* Risk columns — "—" when the plan leg is missing (Rule 3.7). */}
-                      <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
-                        {e.stop_loss != null ? `$${e.stop_loss.toFixed(2)}` : <span className="text-[var(--on-surface-muted)]">—</span>}
+                      {/* Risk columns — "—" when the plan leg is missing (Rule 3.7).
+                          task-alerts-enrichment: a pipeline row with no stop PRICE
+                          but a matched alert's time_stop_minutes renders its OWN
+                          "<N>m time-stop" text (stopDisplayText, shared with
+                          TradeRailCard's SL segment) — USER REQUIREMENT
+                          (verbatim): never a fixed label, each row shows its
+                          own value. */}
+                      <td data-testid="table-stop-cell" className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
+                        {(() => {
+                          const text = stopDisplayText(e.stop_loss ?? null, e.time_stop_minutes ?? null);
+                          return text === '—'
+                            ? <span className="text-[var(--on-surface-muted)]">—</span>
+                            : text;
+                        })()}
                       </td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
                         {e.take_profits && e.take_profits.length > 0

@@ -346,8 +346,6 @@ def _pipeline_rows_to_trades(df: pd.DataFrame, ticker_upper: str) -> list[dict]:
     Other mapping rules (see .superpowers/sdd/task-examples-union-brief.md):
       - id: 'pipe-<bigserial id>' — never collides with a journal_entries
         UUID.
-      - take_profits/stop_loss: always [] / None — the signal engine logs
-        no risk plan; never fabricate one (CLAUDE.md Rule 3.7).
       - return_pct: pipeline `trades.return_pct` is a RAW FRACTION (e.g.
         0.003 == 0.3%, same convention `seed_trades` documents/converts) —
         ×100 here to match the TRUE-PERCENT convention every other journal
@@ -355,10 +353,37 @@ def _pipeline_rows_to_trades(df: pd.DataFrame, ticker_upper: str) -> list[dict]:
       - status: 'win' if return_pct > 0, else 'loss' if return_pct is not
         null (i.e. <= 0), else 'active' — the union spec's three-way split
         (no breakeven bucket, unlike `_derive_status`'s four-way split).
-      - notes: exit_reason and strat_combo, " · "-joined when both present,
-        whichever is present alone otherwise, "" when neither is (never a
-        fabricated placeholder).
+      - notes: exit_reason, strat_combo, level_broken, and "score <N.N>"
+        (from total_score) — " · "-joined, each part omitted when absent,
+        "" when none are present (never a fabricated placeholder).
       - source: always 'pipeline'.
+
+    task-alerts-enrichment (2026-07-12 user decision): the caller's SQL now
+    LEFT JOINs each `trades` row to its nearest `signal_alerts` row (same
+    ticker + direction, closest `alert_ts` to `entry_time`, see
+    `.superpowers/sdd/task-alerts-enrichment-brief.md` for the measured
+    join-window verification — production `trades`/`signal_alerts` rows are
+    written from the SAME `datetime.now()` call in
+    `gcp/signal_monitor.py::_persist_signal_alert`, so every one of the 2,483
+    production trades matched its originating alert at an EXACT 0-second
+    diff; a small tolerance window is still used for robustness). This adds
+    four OPTIONAL columns to `df` when a match was found (all NULL/absent
+    when the LEFT JOIN found nothing within the window — an honest
+    "unmatched" case, never fabricated):
+      - target_price -> take_profits = [target_price] (a single value, so
+        the CHART draws a real TP line and the table's TPs column renders
+        it) — never converted/scaled, it's already a dollar price.
+      - time_stop_minutes -> passed through AS-IS on the trade dict (a new
+        `time_stop_minutes` key, never folded into `stop_loss` — there is no
+        stop PRICE, only a time-based exit rule, so a fabricated R:R must
+        never be computable from it; see JournalPage's Stop-cell render and
+        TradeRailCard's SL segment, which render "<N>m time-stop" precisely
+        because `stop_loss` stays null here).
+      - level_broken / total_score -> appended to `notes` (level_broken
+        verbatim; total_score as "score <N.N>") when present.
+    stop_loss is UNCONDITONALLY None regardless of match — the signal engine
+    never logs a stop PRICE, only a time-stop; fabricating one from
+    target_price would violate CLAUDE.md Rule 3.7.
     """
     for col in ("entry_ts", "exit_ts"):
         if col in df.columns:
@@ -373,12 +398,28 @@ def _pipeline_rows_to_trades(df: pd.DataFrame, ticker_upper: str) -> list[dict]:
         return_pct = None if raw_return is None else float(raw_return) * 100
         exit_reason = _clean(rec.get("exit_reason"))
         strat_combo = _clean(rec.get("strat_combo"))
-        notes = " · ".join(str(p) for p in (exit_reason, strat_combo) if p)
+        level_broken = _clean(rec.get("level_broken"))
+        total_score = _clean(rec.get("total_score"))
+        notes_parts = [exit_reason, strat_combo, level_broken]
+        if total_score is not None:
+            notes_parts.append(f"score {float(total_score):.1f}")
+        notes = " · ".join(str(p) for p in notes_parts if p)
         status = (
             "win" if (return_pct is not None and return_pct > 0)
             else "loss" if return_pct is not None
             else "active"
         )
+
+        # task-alerts-enrichment: per-row, never a fixed/hardcoded value —
+        # each trade carries its OWN matched alert's target_price/
+        # time_stop_minutes (or None when unmatched). USER REQUIREMENT
+        # (verbatim, task-alerts-enrichment-brief.md): the Stop column must
+        # render EACH row's OWN time_stop_minutes, never a fixed label.
+        raw_target_price = _clean(rec.get("target_price"))
+        take_profits = [float(raw_target_price)] if raw_target_price is not None else []
+        raw_time_stop = _clean(rec.get("time_stop_minutes"))
+        time_stop_minutes = None if raw_time_stop is None else int(raw_time_stop)
+
         trades.append({
             "id": f"pipe-{int(rec['id'])}",
             "ticker": ticker_upper,
@@ -389,8 +430,9 @@ def _pipeline_rows_to_trades(df: pd.DataFrame, ticker_upper: str) -> list[dict]:
             "exit_price": _clean(rec.get("exit_price")),
             "return_pct": return_pct,
             "notes": notes,
-            "take_profits": [],
+            "take_profits": take_profits,
             "stop_loss": None,
+            "time_stop_minutes": time_stop_minutes,
             "status": status,
             "source": "pipeline",
             "session_id": None,
@@ -635,10 +677,15 @@ async def get_examples(ticker: str):
       2. Every `trades`-table row (gcp/schema.sql:1065, the
          trading_analysis.py pipeline dataset) for the ticker, RESTRICTED to
          regular trading hours — no per-caller/owner scoping, the pipeline
-         table has no owner column. Mapped via `_pipeline_rows_to_trades`
-         (see its docstring for the entry_ts/exit_ts timezone-conversion
-         rationale and the return_pct/status/notes mapping rules), tagged
-         `source: 'pipeline'`.
+         table has no owner column. LEFT JOIN LATERALs each row to its
+         nearest `signal_alerts` row (task-alerts-enrichment, 2026-07-12 user
+         decision — see the query's in-line comment for the measured
+         join-window verification) so real TP/time-stop data is available;
+         an unmatched trade still returns the row with those fields null,
+         never dropped. Mapped via `_pipeline_rows_to_trades` (see its
+         docstring for the entry_ts/exit_ts timezone-conversion rationale
+         and the return_pct/status/notes/take_profits/time_stop_minutes
+         mapping rules), tagged `source: 'pipeline'`.
 
          USER DECISION (2026-07-11): `trades` contains 268 real but
          extended-hours rows (premarket/evening, from an old scanner) that
@@ -700,16 +747,52 @@ async def get_examples(ticker: str):
     admin_trades = [] if df_admin.empty else _rows_to_trades(df_admin)
 
     try:
+        # task-alerts-enrichment (2026-07-12 user decision): LEFT JOIN LATERAL
+        # each `trades` row to its nearest `signal_alerts` row (same ticker +
+        # direction, closest `alert_ts` to `entry_time`) so the Examples table
+        # can surface real TP/time-stop data instead of the pre-enrichment
+        # all-dashes risk columns. STILL ONE SELECT for the whole pipeline
+        # half (never per-row) — the join runs entirely inside this single
+        # statement. Window predicate (`alert_ts BETWEEN entry_time ± 5s`) is
+        # a small tolerance around a measured production reality, not a
+        # guess: a read-only join-window verification query
+        # (gcp/queries/check_alert_trade_join_window.sql, run 2026-07-12 via
+        # `./scripts/db_query_cr.sh -f ...`) found EVERY one of the 2,483
+        # production `trades` rows matches its nearest same-ticker/direction
+        # `signal_alerts` row at an EXACT 0-second diff (both columns are
+        # TIMESTAMPTZ written from the SAME `datetime.now()` call in
+        # `gcp/signal_monitor.py::_persist_signal_alert` — see
+        # `.superpowers/sdd/p-alerts-enrichment-report.md` for the full
+        # distribution). ±5s leaves headroom for any future writer that
+        # doesn't share that exact code path without risking a false match
+        # across two genuinely different signals.
+        #
+        # PR #728 review FIX 1: the nearest-match ORDER BY had no secondary
+        # key, so two equidistant alerts (production DOES have identical-
+        # microsecond refire duplicates) made the match nondeterministic --
+        # Postgres is free to return either row for a tied ORDER BY. Appended
+        # `, sa2.id` so ties resolve to the lower-id (earlier-inserted) alert
+        # deterministically.
         df_pipeline = _journal_query(
             """
-            SELECT id, direction,
-                   entry_time AT TIME ZONE 'America/New_York' AS entry_ts,
-                   exit_time  AT TIME ZONE 'America/New_York' AS exit_ts,
-                   entry_price, exit_price, return_pct, exit_reason, strat_combo
-            FROM trades
-            WHERE ticker = :ticker
-              AND (entry_time AT TIME ZONE 'America/New_York')::time BETWEEN TIME '09:30' AND TIME '16:00'
-            ORDER BY entry_time DESC
+            SELECT t.id, t.direction,
+                   t.entry_time AT TIME ZONE 'America/New_York' AS entry_ts,
+                   t.exit_time  AT TIME ZONE 'America/New_York' AS exit_ts,
+                   t.entry_price, t.exit_price, t.return_pct, t.exit_reason, t.strat_combo,
+                   sa.target_price, sa.time_stop_minutes, sa.level_broken, sa.total_score
+            FROM trades t
+            LEFT JOIN LATERAL (
+                SELECT sa2.target_price, sa2.time_stop_minutes, sa2.level_broken, sa2.total_score
+                FROM signal_alerts sa2
+                WHERE sa2.ticker = t.ticker AND sa2.direction = t.direction
+                  AND sa2.alert_ts BETWEEN t.entry_time - INTERVAL '5 seconds'
+                                        AND t.entry_time + INTERVAL '5 seconds'
+                ORDER BY ABS(EXTRACT(EPOCH FROM (t.entry_time - sa2.alert_ts))), sa2.id
+                LIMIT 1
+            ) sa ON true
+            WHERE t.ticker = :ticker
+              AND (t.entry_time AT TIME ZONE 'America/New_York')::time BETWEEN TIME '09:30' AND TIME '16:00'
+            ORDER BY t.entry_time DESC
             """,
             {"ticker": ticker_upper},
         )
@@ -719,6 +802,17 @@ async def get_examples(ticker: str):
         raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
     pipeline_trades = [] if df_pipeline.empty else _pipeline_rows_to_trades(df_pipeline, ticker_upper)
+
+    # Match-rate observability (brief: "log match-rate server-side at INFO;
+    # UI unchanged for unmatched" — never surfaced in the response envelope,
+    # never a fabricated per-row indicator beyond the honest null fields
+    # _pipeline_rows_to_trades already produces).
+    if not df_pipeline.empty:
+        matched = int(df_pipeline["target_price"].notna().sum())
+        logger.info(
+            "examples pipeline alert-join ticker=%s matched=%d/%d",
+            ticker_upper, matched, len(df_pipeline),
+        )
 
     trades = admin_trades + pipeline_trades
     trades.sort(key=lambda t: t.get("entry_ts") or "", reverse=True)

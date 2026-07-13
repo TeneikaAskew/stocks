@@ -155,6 +155,37 @@ describe('journalRowToTradeEntry', () => {
     expect(t.status).toBe('loss');
   });
 
+  // task-alerts-enrichment (2026-07-12) — a matched pipeline row's
+  // time_stop_minutes passes through to TradeEntry.timeStopMinutes
+  // untouched (structural passthrough, not a fabricated financial value).
+  it('passes through time_stop_minutes for a matched pipeline row (no stop price)', () => {
+    const row: JournalRow = {
+      ...baseRow,
+      source: 'pipeline',
+      stop_loss: null,
+      time_stop_minutes: 20,
+      take_profits: [297.21],
+    };
+    const t = journalRowToTradeEntry(row);
+    expect(t.timeStopMinutes).toBe(20);
+    expect(t.stopLoss).toBeUndefined();
+    // The chart draws a TP line from takeProfits regardless of source —
+    // the matched alert's target_price survives the mapping unchanged.
+    expect(t.takeProfits).toEqual([{ price: 297.21, size: 0 }]);
+  });
+
+  it('a DIFFERENT row with a different time_stop_minutes maps to its OWN value, not a fixed one (mutation-proof)', () => {
+    const rowA = { ...baseRow, source: 'pipeline', stop_loss: null, time_stop_minutes: 20 };
+    const rowB = { ...baseRow, source: 'pipeline', stop_loss: null, time_stop_minutes: 25 };
+    expect(journalRowToTradeEntry(rowA).timeStopMinutes).toBe(20);
+    expect(journalRowToTradeEntry(rowB).timeStopMinutes).toBe(25);
+  });
+
+  it('omits timeStopMinutes when the server field is absent/null (e.g. an admin journal row)', () => {
+    const t = journalRowToTradeEntry(baseRow);
+    expect(t.timeStopMinutes).toBeUndefined();
+  });
+
   it('round-trips: epochToJournalDateTime -> create body -> journalRowToTradeEntry recovers the same minute-aligned epoch', () => {
     const originalEntryTime = 1751463300; // minute-aligned (mod 60 === 0)
     const { date, time } = epochToJournalDateTime(originalEntryTime);

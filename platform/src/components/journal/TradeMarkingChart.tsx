@@ -223,17 +223,29 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
     // Build TP/SL price lines from trades — verbatim from ChartsPage's
     // original priceLines useMemo (trade portion only; reference/gamma
     // levels are computed by the host and passed in via extraPriceLines).
+    //
+    // PR #728 review FIX 2: originally skipped every non-'active' trade
+    // (`if (trade.status !== 'active') continue;`), so a CLOSED Examples row
+    // never drew its target/stop lines — defeating the teaching purpose (the
+    // whole point of an example is to SEE the target/stop it was playing
+    // for). Now every trade draws its TP/SL lines; a CLOSED trade's lines
+    // reuse the existing hover-dim `withAlpha`/tint pattern (reduced alpha)
+    // so it visually recedes behind an ACTIVE trade's full-strength lines,
+    // and the hover-highlighted trade always wins (full strength) regardless
+    // of status — same "highlighted trade pops" rule the marker dimming
+    // already follows.
     const tradePriceLines: PriceLineConfig[] = useMemo(() => {
       const lines: PriceLineConfig[] = [];
       for (const trade of trades) {
-        if (trade.status !== 'active') continue;
-        const dimmed = highlightedTradeId != null && trade.id !== highlightedTradeId;
+        const isHighlighted = highlightedTradeId != null && trade.id === highlightedTradeId;
+        const dimmed =
+          !isHighlighted && (trade.status !== 'active' || highlightedTradeId != null);
         const tint = (hex: string) => (dimmed ? withAlpha(hex, DIMMED_ALPHA) : hex);
         // Highlighted trade's lines get a thicker weight so the hover effect
         // is visible even for readers who don't distinguish the opacity
         // difference on the dimmed siblings; untouched (no hover) case keeps
         // the original unset lineWidth (CandlestickChart defaults to 1).
-        const lineWidth = highlightedTradeId === trade.id ? (3 as LineWidth) : undefined;
+        const lineWidth = isHighlighted ? (3 as LineWidth) : undefined;
         trade.takeProfits.forEach((tp, i) => {
           lines.push({
             price: tp.price,
@@ -265,10 +277,16 @@ export const TradeMarkingChart = forwardRef<TradeMarkingChartHandle, TradeMarkin
       // data-highlighted-trade mirrors highlightedTradeId into the DOM so
       // the rail-card-hover → chart-highlight link (design spec Option B,
       // Task 5 gap) is e2e-testable — lightweight-charts renders to canvas,
-      // which Playwright can't pixel-inspect.
+      // which Playwright can't pixel-inspect. data-price-lines (PR #728
+      // review FIX 2) mirrors the count of TP/SL price lines this render
+      // computed (trade-derived only, not extraPriceLines) for the same
+      // canvas-can't-be-pixel-inspected reason — the honest assertable
+      // surface for "closed trades now draw their TP/SL lines" is this
+      // count, not a canvas pixel read.
       <div
         data-testid="trade-marking-chart"
         data-highlighted-trade={highlightedTradeId ?? undefined}
+        data-price-lines={tradePriceLines.length}
         className="h-full w-full"
       >
         <CandlestickChart
