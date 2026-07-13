@@ -149,6 +149,43 @@ def test_intraday_snapshot_skips_malformed_row_with_warning(caplog):
                for rec in caplog.records)
 
 
+def test_intraday_snapshot_dedupes_repeated_tickers_keep_first(caplog):
+    """When AlphaVantage returns the same ticker twice (different ranks),
+    keep only the first occurrence (lower rank) and drop the second.
+    A warning is logged so the dropped rows are visible (Rule 3.7).
+
+    This protects against Postgres 21000 ("cannot affect row a second time")
+    in the ON CONFLICT DO UPDATE when snapshot_ts is constant per batch.
+    """
+    fixture = _build_fixture()
+    # Inject a duplicate: BURU appears again AFTER the original in the list.
+    # The original BURU is at the end of _build_fixture (before BADROW).
+    # We append the duplicate after BADROW so it gets a higher rank.
+    fixture["most_actively_traded"].append(_make_item("BURU", "0.1520", "0.0108", "7.50%", "72500000"))
+
+    # Manually confirm fixture has two BURU entries before calling the function
+    buru_count_before = sum(1 for item in fixture["most_actively_traded"] if item.get("ticker") == "BURU")
+    assert buru_count_before == 2, f"Setup: expected 2 BURU entries, got {buru_count_before}"
+
+    with caplog.at_level("WARNING"):
+        with patch("gcp.fetchers.fetch_top_movers.requests.get",
+                   return_value=FakeResp(fixture)):
+            df = ftm.fetch_intraday_snapshot("fake-key")
+
+    # After dedup, only 1 BURU row should remain (the first/lowest-rank occurrence)
+    buru_rows = df[df["ticker"] == "BURU"]
+    assert len(buru_rows) == 1, f"Expected 1 BURU row after dedup, got {len(buru_rows)}"
+
+    # The kept row should be the first occurrence (original BURU with original price)
+    buru = buru_rows.iloc[0]
+    assert buru["price"] == pytest.approx(0.1516), "Kept row should have original BURU price (first occurrence)"
+
+    # Should have logged a warning about the duplicate
+    assert any("deduplicated" in rec.message.lower() or ("duplicate" in rec.message.lower() and "repeated" in rec.message.lower())
+               for rec in caplog.records), \
+        f"Expected a warning about deduplication, got: {[r.message for r in caplog.records]}"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # single snapshot_ts / ET snapshot_date
 # ──────────────────────────────────────────────────────────────────────

@@ -200,8 +200,25 @@ def fetch_intraday_snapshot(api_key: str) -> pd.DataFrame:
         parsed["snapshot_date"] = snapshot_date
         rows.append(parsed)
 
-    log.info("  most_active (intraday snapshot): %d/%d rows parsed", len(rows), len(items))
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    log.info("  most_active (intraday snapshot): %d/%d rows parsed", len(df), len(items))
+
+    # Dedupe on ticker, keeping the first (lowest rank) occurrence. AlphaVantage
+    # occasionally returns the same ticker twice; without this guard, the
+    # multi-row ON CONFLICT DO UPDATE upsert would fail with Postgres 21000
+    # ("cannot affect row a second time") since snapshot_ts is constant per
+    # batch. See the daily path at line ~261 for the precedent.
+    rows_before_dedup = len(df)
+    df = df.drop_duplicates(subset=["ticker"], keep="first")
+    if len(df) < rows_before_dedup:
+        dropped = rows_before_dedup - len(df)
+        log.warning(
+            "Deduplicated %d repeated ticker(s) in intraday snapshot; "
+            "kept first occurrence of each",
+            dropped
+        )
+
+    return df
 
 
 def main():
