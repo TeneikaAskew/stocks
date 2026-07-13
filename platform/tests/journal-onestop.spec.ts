@@ -407,6 +407,70 @@ test.describe('Journal one-stop cockpit — My journal view', () => {
   });
 });
 
+// Bug (2026-07-12 user acceptance): a chart-marked IWM trade at naive-ET
+// 10:05 showed the chart marker and TradeRailCard correctly at 10:05, but
+// the journal TABLE row showed 14:05 — a 4-hour UTC<->ET discrepancy
+// between two views of the SAME stored row. Root cause: JournalPage's
+// `tsToDisplay` round-tripped the naive-ET timestamp string through
+// `new Date(...)`, which parses an offset-less date-time string as
+// HOST-LOCAL time; TradeRailCard's `formatTime` never went through `Date`
+// string-parsing (it reads the already-correct epoch via `isoNaiveToEpoch`
+// and formats with UTC accessors), so it was immune. Pinned here with the
+// EXACT wire shape `_rows_to_trades` (platform/api/routers/journal.py)
+// returns for a Cloud SQL journal_entries row: space-separated, no offset
+// ("YYYY-MM-DD HH:MM:SS", from the `entry_ts AT TIME ZONE 'UTC'` SELECT
+// cast) — under a non-UTC browser timezone, so the assertion only passes
+// if the fix is genuinely host-timezone-independent. Dated 2026-04-25 (not
+// the real bug's 2026-07-08) to match `mockJournalOneStop`'s single mocked
+// market-data session date, so both the chart rail (date-filtered) and the
+// table (session-scoped when only one date exists) render this row.
+test.describe('Journal one-stop cockpit — table/rail-card time parity (regression)', () => {
+  test.use({ timezoneId: 'America/New_York' });
+
+  const TZ_BUG_OWN_TRADES = {
+    ticker: 'IWM',
+    source: 'cloud_sql',
+    count: 1,
+    trades: [
+      {
+        id: 'tz-bug-1',
+        ticker: 'IWM',
+        direction: 'CALL',
+        entry_ts: '2026-04-25 10:05:00', // exact _rows_to_trades wire shape
+        exit_ts: null,
+        entry_price: 291.86,
+        exit_price: null,
+        return_pct: null,
+        notes: 'TZ parity regression trade.',
+        take_profits: [],
+        stop_loss: null,
+        status: 'active',
+        source: 'chart',
+        session_id: null,
+      },
+    ],
+  };
+
+  test.beforeEach(async ({ page }) => {
+    await mockJournalOneStop(page, { own: TZ_BUG_OWN_TRADES, examples: EXAMPLE_TRADES });
+  });
+
+  test('the table Entry time and the rail card time render the SAME naive-ET wall clock', async ({ page }) => {
+    await page.goto('/journal');
+    await page.waitForLoadState('networkidle');
+
+    const railTime = page.getByTestId('rail-entry-time').first();
+    const tableTime = page.getByTestId('table-entry-time').first();
+    await expect(railTime).toBeVisible();
+    await expect(tableTime).toBeVisible();
+
+    // Both must read the stored wall clock (10:05), never the TZ-shifted
+    // 14:05 the pre-fix `tsToDisplay` produced under America/New_York.
+    await expect(railTime).toHaveText('10:05');
+    await expect(tableTime).toHaveText('10:05');
+  });
+});
+
 // Mobile responsiveness (staging bug report, 390-412px viewport): the
 // cockpit row (chart + rail, layout B) used a fixed `w-[340px] shrink-0`
 // rail beside a `flex-1` chart in a plain `flex` row — on a phone viewport

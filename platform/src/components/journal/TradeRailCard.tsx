@@ -107,7 +107,7 @@ export function TradeRailCard({
           {ret == null ? '—' : `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`}
         </span>
         <div className="flex items-center gap-1 justify-self-end">
-          <span className="text-xs text-[var(--color-text-muted)]">
+          <span data-testid="rail-entry-time" className="text-xs text-[var(--color-text-muted)]">
             {formatTime(trade.entryTime)}
           </span>
           {!example && trade.status === 'active' && (

@@ -54,13 +54,29 @@ import type { Timeframe } from '@/types';
 
 // ── Utility (exported, unit-tested in journalNullSafety.test.ts) ───────────
 
+// Matches isoNaiveToEpoch's digit-extraction regex (useJournalChartTrades.ts)
+// intentionally: (y)-(mo)-(d)[T or space](h):(mi), optional :ss and optional
+// trailing offset/'Z' — all ignored, never fed to Date parsing.
+const NAIVE_ET_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/;
+
 export function tsToDisplay(ts: string | null): { date: string; time: string } {
   if (ts == null) return { date: '—', time: '—' };
-  const d = new Date(ts.replace('T', ' ').replace(' ', 'T'));
-  return {
-    date: isNaN(d.getTime()) ? ts.slice(0, 10) : d.toISOString().slice(0, 10),
-    time: isNaN(d.getTime()) ? ts.slice(11, 16) : d.toISOString().slice(11, 16),
-  };
+  // Bug (2026-07-12): journal_entries.entry_ts/exit_ts encode a naive-ET
+  // wall clock (see journal.py's `_rows_to_trades` docstring), never real
+  // UTC. The API returns it as either "YYYY-MM-DD HH:MM:SS" (space, no
+  // offset — Cloud SQL's `AT TIME ZONE 'UTC'` cast) or
+  // "YYYY-MM-DDTHH:MM:SS[+00:00]" (local-fallback / offset-bearing shapes).
+  // `new Date(...)` parses an offset-less string as HOST-LOCAL time
+  // (ECMA-262) — on a non-UTC host that silently shifts the displayed wall
+  // clock by the host's UTC offset (10:05 ET stored -> 14:05 displayed on
+  // an EDT host). Pull the digits out with a regex instead, exactly like
+  // `isoNaiveToEpoch` (useJournalChartTrades.ts) already does for the
+  // chart/rail card — pure string parsing is host-timezone-independent by
+  // construction, no Date round-trip involved.
+  const m = NAIVE_ET_RE.exec(ts);
+  if (!m) return { date: ts.slice(0, 10), time: ts.slice(11, 16) };
+  const [, y, mo, d, h, mi] = m;
+  return { date: `${y}-${mo}-${d}`, time: `${h}:${mi}` };
 }
 
 export function tradesToCsv(entries: JournalRow[]): string {
@@ -851,7 +867,7 @@ export default function JournalPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{entry.time}</td>
+                      <td data-testid="table-entry-time" className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{entry.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.entry_price.toFixed(2)}</td>
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{exit.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">
