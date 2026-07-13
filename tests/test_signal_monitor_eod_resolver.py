@@ -354,6 +354,87 @@ def test_resolve_one_rsi_extreme_call(make_resolver):
     )
 
 
+# ── 5b) persist mirrors resolutions onto the trades table ─────────────
+#
+# Forensics (.superpowers/sdd/p-exit-writing-forensics.md): the resolver
+# wrote exits ONLY to signal_alerts, leaving the matching trades rows
+# permanently open. These tests pin the forward-fix mirror write.
+
+def _mock_persist_engine(rowcounts):
+    conn = MagicMock()
+    conn.execute.side_effect = [MagicMock(rowcount=rc) for rc in rowcounts]
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+    return engine, conn
+
+
+def _resolution():
+    return {
+        'ticker': 'SPY',
+        'alert_ts': datetime(2026, 5, 7, 13, 30, 0),
+        'exit_ts': datetime(2026, 5, 7, 13, 31, 0),
+        'exit_reason': 'target_hit',
+        'exit_price': 101.0,
+        'exit_return_pct': 1.0,
+    }
+
+
+def test_persist_mirrors_exit_to_trades_with_equal_values(make_resolver):
+    """persist() must UPDATE signal_alerts AND trades in one transaction,
+    matching trades on (ticker, entry_time == alert_ts) with the same
+    exit values, and still return the signal_alerts rowcount."""
+    resolver = make_resolver()
+    engine, conn = _mock_persist_engine([1, 1])
+    with patch('gcp.database.get_engine', return_value=engine):
+        n = resolver.persist(_resolution())
+
+    assert n == 1, "persist() must keep returning the signal_alerts rowcount"
+    assert conn.execute.call_count == 2
+    alert_stmt, alert_params = conn.execute.call_args_list[0].args
+    trade_stmt, trade_params = conn.execute.call_args_list[1].args
+    assert 'UPDATE signal_alerts' in str(alert_stmt)
+    assert 'UPDATE trades' in str(trade_stmt)
+
+    res = _resolution()
+    assert trade_params['ticker'] == res['ticker']
+    assert trade_params['entry_time'] == res['alert_ts'], \
+        "trades row is matched on entry_time == signal_alerts.alert_ts"
+    for params in (alert_params, trade_params):
+        assert params['exit_ts'] == res['exit_ts']
+        assert params['reason'] == res['exit_reason']
+        assert params['price'] == pytest.approx(res['exit_price'])
+        assert params['ret'] == pytest.approx(res['exit_return_pct'])
+
+
+def test_persist_trades_update_is_idempotent_guarded(make_resolver):
+    """The trades mirror must carry `exit_time IS NULL` — re-running a
+    resolution converges; a real exit is never silently overwritten."""
+    resolver = make_resolver()
+    engine, conn = _mock_persist_engine([1, 1])
+    with patch('gcp.database.get_engine', return_value=engine):
+        resolver.persist(_resolution())
+    trade_stmt = str(conn.execute.call_args_list[1].args[0])
+    assert 'exit_time IS NULL' in trade_stmt
+
+
+def test_persist_warns_when_no_trades_row_matches(make_resolver, caplog):
+    """Rowcount 0 on the trades mirror → WARNING (Rule 3.7), and the
+    signal_alerts resolution still counts (returns alerts rowcount)."""
+    import logging
+    resolver = make_resolver()
+    engine, conn = _mock_persist_engine([1, 0])
+    with patch('gcp.database.get_engine', return_value=engine), \
+         caplog.at_level(logging.WARNING,
+                         logger='gcp.signal_monitor_eod_resolver'):
+        n = resolver.persist(_resolution())
+    assert n == 1, "alerts resolution must survive a missing trades row"
+    warnings = [r for r in caplog.records
+                if r.levelno >= logging.WARNING and 'trades' in r.getMessage()]
+    assert warnings, \
+        "missing/already-closed trades row MUST warn, not silently no-op"
+
+
 # ── 6) build_digest_embed — EOD Discord summary ───────────────────────
 
 def _resolved(ticker, direction, reason, ret):
