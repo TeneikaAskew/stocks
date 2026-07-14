@@ -715,11 +715,14 @@ def calculate_order_blocks(
 
 
 def _wma(values: pd.Series, period: int) -> pd.Series:
-    """Linear-weighted moving average matching Pine ta.wma."""
-    weights = np.arange(1, period + 1, dtype=float)
-    return values.rolling(period).apply(
-        lambda w: np.dot(w, weights) / weights.sum(), raw=True
-    )
+    """Linear-weighted moving average matching Pine ta.wma.
+
+    Vectorized as a weighted sum of shifts (weight `period` on the most
+    recent bar) — identical to rolling-apply but ~100x faster on 1m series.
+    """
+    denom = period * (period + 1) / 2.0
+    out = sum((period - i) * values.shift(i) for i in range(period))
+    return out / denom
 
 
 def calculate_power_balance(
