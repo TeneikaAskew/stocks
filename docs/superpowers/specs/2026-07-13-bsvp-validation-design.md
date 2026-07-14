@@ -1,8 +1,15 @@
-# BSVP 10-Year Validation — Design
+# BSVP + Scalping-Lanes 10-Year Validation — Design
 
 **Date:** 2026-07-13
 **Branch:** `feature/bsvp-validation`
-**Status:** Approved (design presented and approved in session)
+**Status:** Approved (design presented and approved in session; scalping scope
+added at user request)
+
+**Data window (Phase 0 result, 2026-07-13):** `market_data_intraday` has
+continuous 1-min coverage 2015-01-02 → 2026-07-13 for IWM (1.96M rows /
+3,231 days), QQQ (2.23M / 3,082), SPY (2.39M / 3,285). Timestamps are UTC
+(TIMESTAMPTZ) and include extended hours — convert to America/New_York and
+RTH-filter at load.
 
 ## Problem
 
@@ -108,6 +115,30 @@ Sweep the small-sample-era magic numbers on the best-performing components:
      price extreme," not true pivot-to-pivot divergence.
   4. Info-table Buy/Sell ratio uses raw `BPV` even when `norm=true`.
   5. `divergenceLookback/2` integer division in hidden-div lookback.
+
+## Scalping-lanes addendum (added at user request)
+
+`tradingview-pine-scripts/iwm-scalping` renders 24 boolean lanes with **no
+composite signal** — the readme's entry rule ("≥6-7 green dots + RVOL high +
+time window") has never been measured, and the per-lane success rates in its
+tooltips (60.6% RSI>50, 62.6% RSI<50, etc.) date from the same small early
+sample as BSVP.
+
+Validation (same framework, same script, separate report section):
+
+- **Composite lane-count signal:** CALL score = count of the 11 bullish lanes
+  true; PUT score = count of the 11 bearish lanes. Evaluate entry rule at
+  thresholds 5..9, with and without the RVOL≥1.5 + time-window gates.
+- **Per-lane lift:** forward-return edge per individual lane (re-validates the
+  tooltip numbers on 11.5y).
+- **Lane parity notes:** match the Pine math exactly —
+  `stochRsi = ta.stoch(rsi, rsi, rsi, 14)` is *unsmoothed* raw %K (not the
+  platform's smoothed StochRSI); `rvol = volume / sma(volume, 50)` includes the
+  current bar; 1m rejection and 5m breakout sub-signals computed from the 1m
+  base data.
+- **Known issue to quantify:** `atrMin = 0.15` is an absolute-dollar gate —
+  non-stationary across a decade of price levels (IWM ~$115 in 2015 vs ~$293
+  now). Validate ATR% and ATR-vs-SMA(ATR) alternatives.
 
 ## Data & capacity (Rule 0 back-of-envelope)
 
