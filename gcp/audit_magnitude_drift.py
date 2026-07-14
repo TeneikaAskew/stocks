@@ -23,6 +23,14 @@ freshness alone can't catch:
   while the inference job has been running. Catches partial outages
   the global "no rows written" guard misses.
 
+* **Feature-join coverage** — recent inference predictions that can't
+  join a populated `strat_features_{tf}.atr_20` at their bar ts. The
+  movement-statement sizing calculator reads that value; a join-miss
+  (feature builder lagging inference) or a null/NaN atr_20 silently
+  disables the calculator. Today the miss count is 0 across 203k rows,
+  so this watchdog exists to catch the rare future pipeline-ordering
+  regression before a user hits a dead calculator.
+
 The script aggregates findings and posts a compact summary to
 `DISCORD_WEBHOOK_URL`. Exits 0 in all cases — the alerter is the
 output, not the exit code; we don't want CR's auto-retry machinery
@@ -143,6 +151,111 @@ def fetch_distribution() -> list[dict]:
         # before any SQL is issued.
         rows = conn.execute(sql, {"days": LOOKBACK_DAYS}).mappings().all()
     return [dict(r) for r in rows]
+
+
+# Timeframes whose atr_20 the movement-statement sizing calculator reads
+# (MOVEMENT_STATEMENT_TFS in platform/api/routers/dashboard.py). A prediction
+# landing with no matching strat_features_{tf} row — or a null/NaN atr_20 —
+# silently disables that calculator, so we watchdog the join here.
+FEATURE_JOIN_TFS: list[str] = ["5m", "15m"]
+
+# Table-name allowlist. strat_features_{tf} is interpolated into the SQL (the
+# table name can't be a bind param), so we NEVER interpolate a tf that isn't a
+# known, builder-produced suffix — defends against a future config typo turning
+# into an injection surface.
+_VALID_TFS: frozenset[str] = frozenset(
+    {"1m", "5m", "15m", "30m", "60m", "4h"}
+)
+
+
+def fetch_join_coverage(
+    tfs: list[str] | None = None, *, days: int | None = None,
+) -> list[dict]:
+    """Per (ticker, tf), how many recent inference predictions fail to join
+    a populated strat_features_{tf}.atr_20.
+
+    Returns one row per (ticker, tf) that produced ≥1 inference prediction in
+    the window, with:
+      * ``preds``               — predictions in the window
+      * ``missing_feature_row`` — predictions with NO strat_features row at ts
+      * ``null_atr``            — matched rows whose atr_20 is NULL or NaN
+
+    One aggregate query per tf (Rule 0 — never per-row). Cells with zero
+    predictions don't appear (cell-silence owns absence). Raises on query
+    failure; the caller converts it into report.errors (never a silent []).
+    """
+    from sqlalchemy import text
+    tfs = tfs if tfs is not None else FEATURE_JOIN_TFS
+    days = days if days is not None else LOOKBACK_DAYS
+    engine = get_engine()
+    out: list[dict] = []
+    with engine.connect() as conn:
+        for tf in tfs:
+            if tf not in _VALID_TFS:
+                # Loud skip — a bad tf in config shouldn't silently drop
+                # coverage for the other tfs.
+                log.warning("fetch_join_coverage: skipping unknown tf %r "
+                            "(not in _VALID_TFS)", tf)
+                continue
+            sql = text(f"""
+                SELECT p.ticker, p.tf,
+                       COUNT(*) AS preds,
+                       COUNT(*) FILTER (WHERE f.ts IS NULL)
+                           AS missing_feature_row,
+                       COUNT(*) FILTER (
+                           WHERE f.ts IS NOT NULL
+                             AND (f.atr_20 IS NULL
+                                  OR f.atr_20 = 'NaN'::double precision)
+                       ) AS null_atr
+                  FROM magnitude_per_bar_predictions p
+                  LEFT JOIN strat_features_{tf} f
+                         ON f.ticker = p.ticker AND f.ts = p.ts
+                 WHERE p.source = 'inference' AND p.tf = :tf
+                   AND p.computed_at >= NOW() - make_interval(days => :days)
+                 GROUP BY p.ticker, p.tf
+            """)
+            rows = conn.execute(sql, {"tf": tf, "days": days}).mappings().all()
+            out.extend(dict(r) for r in rows)
+    return out
+
+
+def check_feature_join_coverage(rows: list[dict], report: Report) -> None:
+    """Flag any cell where recent inference predictions can't join a
+    populated atr_20 — the movement-statement sizing calculator would render
+    "ATR unavailable" for those bars. Two failure modes, one HIGH finding:
+
+      * ``missing_feature_row`` > 0 — feature builder lagging inference, or a
+        ts-grid mismatch. The dominant realistic cause.
+      * ``null_atr`` > 0 — feature row exists but atr_20 is null/NaN, a data
+        regression (0 across all 203k rows today, so any hit is real signal).
+    """
+    for r in rows:
+        preds = r["preds"]
+        if preds <= 0:
+            continue  # cell-silence owns absence — a 0-pred cell isn't a miss
+        missing = r["missing_feature_row"]
+        null_atr = r["null_atr"]
+        if missing == 0 and null_atr == 0:
+            continue
+        ticker, tf = r["ticker"], r["tf"]
+        parts: list[str] = []
+        if missing:
+            parts.append(
+                f"{missing}/{preds} predictions have NO strat_features_{tf} "
+                f"row at their bar ts (feature builder lagging inference?)"
+            )
+        if null_atr:
+            parts.append(
+                f"{null_atr}/{preds} matched rows have null/NaN atr_20 "
+                f"(feature-data regression)"
+            )
+        report.add(
+            severity="HIGH", check="feature-join-coverage",
+            target=f"{ticker}:{tf}",
+            detail=("; ".join(parts)
+                    + f" over last {LOOKBACK_DAYS}d — the movement-statement "
+                    "sizing calculator is disabled for these bars"),
+        )
 
 
 def _parse_last_computed(value) -> datetime | None:
@@ -277,6 +390,16 @@ def main() -> int:
 
     check_modal_dominance(rows, report)
     check_cell_silence(rows, report, EXPECTED_CELLS)
+
+    # Feature-join coverage — the movement-statement sizing calculator reads
+    # strat_features_{tf}.atr_20 at each prediction's ts. A join-miss (or a
+    # null atr_20) silently disables the calculator; watchdog it here.
+    try:
+        coverage = fetch_join_coverage()
+    except Exception as e:
+        report.errors.append(f"fetch_join_coverage: {e}")
+        coverage = []
+    check_feature_join_coverage(coverage, report)
 
     summary = report.summary()
     log.info("=== summary ===\n%s", summary)
