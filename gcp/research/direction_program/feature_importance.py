@@ -47,15 +47,54 @@ def aggregate_importance(feature_cols, per_fold_gain, per_fold_shap):
     per_fold_shap: list (folds) of {list (features) of mean|shap| floats, or None
                    for a fold whose SHAP failed}. May be empty for gain-only.
     Missing SHAP is reported as None, never as 0 (Rule 3.7 — no fabricated value).
+
+    Defensive invariant: every non-None per-fold SHAP entry MUST be a flat
+    length-nfeat sequence. `_reduce_shap_to_features` guarantees this for any
+    fold it successfully reduces, but we don't blindly trust it here — a
+    future SHAP/LightGBM version drift that changes the output shape (see
+    the direction-importance-28djr incident, issue #704: multiclass SHAP
+    output shape assumptions broke `aggregate_importance` with "ambiguous
+    truth value of an array") should degrade to a dropped-fold warning, not
+    an unhandled crash. A fold whose SHAP can't be reduced to nfeat is
+    dropped (logged), never fabricated as 0 (Rule 3.7).
     """
     G = np.asarray(per_fold_gain, dtype=float)          # (folds, features)
     mean_gain = G.mean(axis=0)
+    nfeat = len(feature_cols)
 
-    shap_rows = [s for s in (per_fold_shap or []) if s is not None]
+    shap_rows = []
+    for fold_idx, s in enumerate(per_fold_shap or [], start=1):
+        if s is None:
+            continue
+        # Validate the WHOLE shape, not just top-level length: a fold whose
+        # entries are themselves sequences (e.g. shape (nfeat, k) because a
+        # reduction step left a class/sample axis un-collapsed) has
+        # len(s) == nfeat but is not flat — np.asarray(shap_rows) would then
+        # build a >2D array and `mean_shap[i]` downstream becomes a
+        # multi-element array, which is exactly the "truth value of an
+        # array with more than one element is ambiguous" crash from issue
+        # #704 (direction-importance-28djr). Coercing each row individually
+        # and checking ndim==1 catches both this and plain length mismatches.
+        try:
+            arr = np.asarray(s, dtype=float)
+        except (ValueError, TypeError) as e:
+            log.warning(
+                "fold %d SHAP could not be parsed as a flat float vector "
+                "(%s) — dropping this fold's SHAP contribution", fold_idx, e)
+            continue
+        if arr.ndim != 1 or arr.shape[0] != nfeat:
+            log.warning(
+                "fold %d SHAP shape %s is not a flat length-%d vector — "
+                "dropping this fold's SHAP contribution (gain-based rank is "
+                "unaffected; mean_abs_shap reflects only surviving folds)",
+                fold_idx, arr.shape, nfeat)
+            continue
+        shap_rows.append(arr)
+
     if shap_rows:
         mean_shap = np.asarray(shap_rows, dtype=float).mean(axis=0)
     else:
-        mean_shap = np.full(len(feature_cols), np.nan)
+        mean_shap = np.full(nfeat, np.nan)
 
     order = np.argsort(mean_gain)[::-1]
     out = []
@@ -80,18 +119,59 @@ def _fold_masks(bar_dates: np.ndarray, train_end: str, test_end: str):
 def _reduce_shap_to_features(sv, nfeat: int) -> np.ndarray:
     """Collapse any SHAP output to a length-nfeat mean|SHAP| vector.
 
-    shap.TreeExplainer.shap_values returns different shapes by model/version:
-      - binary      -> ndarray (n_samples, n_features)
-      - multiclass  -> ndarray (n_samples, n_features, n_classes)  [newer]
-                       OR list of n_classes arrays each (n_samples, n_features)
-    We take |shap|, find the feature axis by matching nfeat, and average over
-    every other axis (samples and, for multiclass, classes). Rank-preserving.
+    shap.TreeExplainer.shap_values returns different shapes by model/version
+    (empirically confirmed against this repo's pinned shap>=0.43.0 /
+    lightgbm>=4.1.0 range — tested shap 0.44.1/0.45.0/0.51.0 x lightgbm
+    4.1.0/4.6.0, see PR for the direction-importance-28djr investigation):
+      - binary      -> ndarray (n_samples, n_features)                 [ndim=2]
+      - multiclass  -> ndarray (n_samples, n_features, n_classes)       [ndim=3, shap>=0.45]
+                       OR list of n_classes arrays, each (n_samples, n_features)
+                       [shap<0.45; stacked below to (n_classes, n_samples, n_features)]
+
+    Per the SHAP API's own documented contract ("multiple outputs: shape
+    (num_samples, *X.shape[1:], num_outputs)"), the feature axis position is
+    DETERMINISTIC given ndim and whether `sv` originated as a list — it does
+    NOT need to be discovered by matching axis sizes against nfeat. The old
+    "search for the axis whose size == nfeat" heuristic was fragile: it
+    happened to work for this repo's realistic feature counts (254-259,
+    always >> the 2-4 classes) but would silently pick the wrong axis (or
+    scramble features with samples/classes) the moment nfeat ever collided
+    with n_classes or n_samples — e.g. a future feature-ablation run with a
+    handful of features. Picking the axis by position removes that class of
+    bug entirely instead of hoping the collision never happens.
+
+    We take |shap| and average over every other axis (samples and, for
+    multiclass, classes). Rank-preserving. Raises (caught by
+    `_mean_abs_shap`, logged, fold dropped — never fabricated as 0 per
+    Rule 3.7) if the resulting feature axis doesn't actually have size
+    nfeat, rather than silently returning a mis-shaped/garbled result.
     """
-    if isinstance(sv, list):
-        sv = np.stack([np.asarray(a) for a in sv])       # (k, n, f)
+    was_list = isinstance(sv, list)
+    if was_list:
+        sv = np.stack([np.asarray(a) for a in sv])       # (n_classes, n_samples, n_features)
     absv = np.abs(np.asarray(sv, dtype=float))
-    feat_ax = next((ax for ax in reversed(range(absv.ndim))
-                    if absv.shape[ax] == nfeat), absv.ndim - 1)
+
+    if was_list or absv.ndim == 2:
+        # list-stacked multiclass (classes, samples, features) or single-output
+        # ndarray (samples, features): features is always the LAST axis.
+        feat_ax = absv.ndim - 1
+    elif absv.ndim == 3:
+        # Native multi-output ndarray (shap>=0.45): (samples, features, classes)
+        # per the documented contract — features is the second-to-last axis.
+        feat_ax = absv.ndim - 2
+    else:
+        raise ValueError(
+            f"unexpected SHAP output ndim={absv.ndim} shape={absv.shape} "
+            f"(was_list={was_list}) — don't know how to locate the feature axis"
+        )
+
+    if absv.shape[feat_ax] != nfeat:
+        raise ValueError(
+            f"SHAP feature axis (position {feat_ax} of shape {absv.shape}, "
+            f"was_list={was_list}) has size {absv.shape[feat_ax]}, expected "
+            f"nfeat={nfeat} — refusing to reduce a mismatched SHAP output"
+        )
+
     return np.moveaxis(absv, feat_ax, -1).reshape(-1, nfeat).mean(axis=0)
 
 
