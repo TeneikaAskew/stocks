@@ -230,6 +230,90 @@ def test_jitter_sleep_called_before_initial_check(mock_get, mock_post, mock_unif
 
 
 # ── End-to-end handler ───────────────────────────────────────────────────────
+def test_is_benign_pool_cleanup_matches_close_connection_traceback():
+    message = (
+        "Traceback (most recent call last):\n"
+        '  File ".../sqlalchemy/pool/base.py", line 373, in _close_connection\n'
+        "    self._dialect.do_terminate(connection)\n"
+        '  File ".../sqlalchemy/engine/default.py", line 718, in do_terminate\n'
+        "    self.do_close(dbapi_connection)\n"
+        '  File ".../pg8000/core.py", line 146, in _flush\n'
+        '    raise InterfaceError("network error") from e\n'
+        "pg8000.exceptions.InterfaceError: network error"
+    )
+    assert fn.is_benign_pool_cleanup(message) is True
+
+
+def test_is_benign_pool_cleanup_matches_connection_reset_variant():
+    message = (
+        "QueuePool: Exception terminating connection "
+        "<pg8000.core.Connection object at 0x7f>"
+    )
+    assert fn.is_benign_pool_cleanup(message) is True
+
+
+def test_is_benign_pool_cleanup_false_for_unrelated_error():
+    message = (
+        "Traceback (most recent call last):\n"
+        '  File "/app/gcp/signal_monitor.py", line 200, in evaluate_ticker\n'
+        "    raise AttributeError(\"'NoneType' object has no attribute 'close'\")\n"
+        "AttributeError: 'NoneType' object has no attribute 'close'"
+    )
+    assert fn.is_benign_pool_cleanup(message) is False
+
+
+def test_handle_notification_suppresses_benign_pool_cleanup(monkeypatch):
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.test/webhook")
+    monkeypatch.setenv("GITHUB_PAT", "ghp_x")
+    monkeypatch.setenv("GITHUB_REPO", "owner/repo")
+
+    envelope = _make_envelope(
+        {
+            "resource": {"labels": {"job_name": "signal-monitor"}},
+            "severity": "ERROR",
+            "textPayload": (
+                'File ".../sqlalchemy/pool/base.py", line 373, in _close_connection\n'
+                "ConnectionResetError: [Errno 104] Connection reset by peer"
+            ),
+        }
+    )
+
+    with patch("gcp.failure_notifier.send_discord") as mock_discord, patch(
+        "gcp.failure_notifier.create_or_update_github_issue"
+    ) as mock_gh:
+        status, _ = fn.handle_notification(envelope)
+
+    assert status == 204
+    mock_discord.assert_not_called()
+    mock_gh.assert_not_called()
+
+
+def test_handle_notification_still_fires_for_real_error_in_same_job(monkeypatch):
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.test/webhook")
+    monkeypatch.setenv("GITHUB_PAT", "ghp_x")
+    monkeypatch.setenv("GITHUB_REPO", "owner/repo")
+
+    envelope = _make_envelope(
+        {
+            "resource": {"labels": {"job_name": "signal-monitor"}},
+            "severity": "ERROR",
+            "textPayload": (
+                'File "/app/gcp/signal_monitor.py", line 200, in evaluate_ticker\n'
+                "ValueError: bad bar data"
+            ),
+        }
+    )
+
+    with patch("gcp.failure_notifier.send_discord") as mock_discord, patch(
+        "gcp.failure_notifier.create_or_update_github_issue", return_value=(7, True)
+    ) as mock_gh:
+        status, _ = fn.handle_notification(envelope)
+
+    assert status == 204
+    mock_discord.assert_called_once()
+    mock_gh.assert_called_once()
+
+
 def test_handle_notification_skips_self_loop(monkeypatch):
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.test/webhook")
     monkeypatch.setenv("GITHUB_PAT", "ghp_x")
