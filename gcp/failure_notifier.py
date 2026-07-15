@@ -102,13 +102,19 @@ def extract_failure_details(log_entry: dict[str, Any]) -> dict[str, Any]:
     message = log_entry.get("textPayload")
     if not message:
         json_payload = log_entry.get("jsonPayload") or {}
-        message = (
-            json_payload.get("message")
-            or json_payload.get("error")
-            or json.dumps(json_payload)[:2000]
-            if json_payload
-            else "(no message in log entry)"
-        )
+        if json_payload:
+            message = (
+                json_payload.get("message")
+                or json_payload.get("error")
+                or json.dumps(json_payload)[:2000]
+            )
+        else:
+            # Cloud Audit Log entries (e.g. the Jobs.RunJob "Execution ...
+            # has failed to complete" record admitted by the sink filter
+            # fix below) carry no textPayload/jsonPayload at all — the
+            # failure text lives under protoPayload.status.message.
+            proto_status = (log_entry.get("protoPayload") or {}).get("status") or {}
+            message = proto_status.get("message") or "(no message in log entry)"
 
     project_id = os.environ.get("GCP_PROJECT_ID", "")
     if execution_name:

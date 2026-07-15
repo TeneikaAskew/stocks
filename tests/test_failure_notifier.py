@@ -71,6 +71,43 @@ def test_extract_failure_details_defaults_when_fields_missing():
     assert details["message"]  # non-empty fallback
 
 
+def test_extract_failure_details_reads_protopayload_status_for_audit_log_entries():
+    """Jobs.RunJob audit-log failure entries (admitted by the sink filter
+    fix so exit(1)-without-a-traceback jobs are no longer a silent blind
+    spot — see signal-monitor-eod-resolver, 2026-07-09/07-14) carry no
+    textPayload/jsonPayload at all; the failure text lives under
+    protoPayload.status.message. Codex review flagged this on PR #739."""
+    log_entry = {
+        "resource": {
+            "type": "cloud_run_job",
+            "labels": {"job_name": "signal-monitor-eod-resolver", "location": "us-east1"},
+        },
+        "labels": {
+            "run.googleapis.com/execution_name": "signal-monitor-eod-resolver-6wb24"
+        },
+        "logName": "projects/p/logs/cloudaudit.googleapis.com%2Fsystem_event",
+        "severity": "ERROR",
+        "protoPayload": {
+            "methodName": "/Jobs.RunJob",
+            "status": {
+                "code": 10,
+                "message": (
+                    "Execution signal-monitor-eod-resolver-6wb24 has failed "
+                    "to complete, 0/1 tasks were a success."
+                ),
+            },
+        },
+    }
+
+    details = fn.extract_failure_details(log_entry)
+
+    assert details["job_name"] == "signal-monitor-eod-resolver"
+    assert details["message"] == (
+        "Execution signal-monitor-eod-resolver-6wb24 has failed to "
+        "complete, 0/1 tasks were a success."
+    )
+
+
 # ── Discord payload ──────────────────────────────────────────────────────────
 def test_build_discord_payload_truncates_long_messages():
     details = {
