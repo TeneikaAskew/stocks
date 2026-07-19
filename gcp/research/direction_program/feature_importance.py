@@ -195,12 +195,25 @@ def main():
     tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
 
     results = []
+    # Cells that fail because there isn't enough data yet for a fold
+    # (RuntimeError("no usable folds...")) are an expected, non-fatal skip —
+    # logged and excluded from the run, same as before. Any OTHER exception
+    # (e.g. the aggregate_importance contract-violation guard below) is a
+    # code bug, not a data-availability gap: it's tracked separately so the
+    # job still exits non-zero even though we keep processing the remaining
+    # cells for visibility (a single bad cell shouldn't blind monitoring to
+    # every other cell, but it also must not let the job report success).
+    hard_failures = []
     for axis in axes:
         for tk in tickers:
             try:
                 res = importance_for_axis(engine, axis, tk, args.tf)
+            except RuntimeError as e:
+                log.warning("no usable folds for %s %s: %s", axis, tk, e)
+                continue
             except Exception as e:
                 log.exception("importance failed for %s %s: %s", axis, tk, e)
+                hard_failures.append(f"{axis}/{tk}")
                 continue
             results.append(res)
             log.info("=== TOP %d  %s %s %s  (%d folds, %d feats) ===",
@@ -219,8 +232,11 @@ def main():
     except Exception as e:
         log.warning("GCS upload failed (results still in logs): %s", e)
     log.info("IMPORTANCE_DONE axes=%s tickers=%s cells=%d", axes, tickers, len(results))
-    return results
+    if hard_failures:
+        log.error("IMPORTANCE_HARD_FAILURES count=%d cells=%s", len(hard_failures), hard_failures)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

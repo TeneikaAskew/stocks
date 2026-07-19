@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import pytest
 
@@ -6,6 +8,7 @@ import pytest
 # image / "Research Tests" CI job).
 pytest.importorskip("lightgbm")
 
+import gcp.research.direction_program.feature_importance as fi
 from gcp.research.direction_program.feature_importance import (
     aggregate_importance, _reduce_shap_to_features,
 )
@@ -118,3 +121,45 @@ def test_aggregate_rejects_unreduced_per_class_shap_rows():
     per_fold_shap = [[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]]
     with pytest.raises(AssertionError, match="scalar-per-feature"):
         aggregate_importance(cols, per_fold_gain, per_fold_shap)
+
+
+def test_main_exits_nonzero_on_hard_cell_failure(monkeypatch):
+    """Codex review on PR #742: main()'s per-cell `except Exception` used to
+    swallow ANY failure (including the aggregate_importance contract
+    assertion above) and the module was invoked bare (`main()`, no
+    `sys.exit`), so a regression that trips the new guard would still
+    report success to Cloud Run / failure-notifier. main() must now return
+    a non-zero exit code when any cell fails for a reason other than
+    "no usable folds" (an expected, non-fatal data-availability skip)."""
+    monkeypatch.setattr(fi, "get_engine", lambda: object())
+    monkeypatch.setattr(fi, "_gcs_upload", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["feature_importance.py", "--axes=direction", "--tickers=IWM"],
+    )
+
+    def fake_importance_for_axis(engine, axis, ticker, tf, cutoffs=None):
+        raise AssertionError("mean_shap must be shape (5,), got (5, 4)")
+
+    monkeypatch.setattr(fi, "importance_for_axis", fake_importance_for_axis)
+
+    assert fi.main() != 0
+
+
+def test_main_no_usable_folds_is_a_soft_skip(monkeypatch):
+    """The expected, non-fatal case (not enough data yet for any fold) must
+    NOT be treated as a hard failure -- it's a data-availability gap, not a
+    code bug, and must not gate the job's exit code."""
+    monkeypatch.setattr(fi, "get_engine", lambda: object())
+    monkeypatch.setattr(fi, "_gcs_upload", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["feature_importance.py", "--axes=direction", "--tickers=IWM"],
+    )
+
+    def fake_importance_for_axis(engine, axis, ticker, tf, cutoffs=None):
+        raise RuntimeError("no usable folds for direction IWM 5m")
+
+    monkeypatch.setattr(fi, "importance_for_axis", fake_importance_for_axis)
+
+    assert fi.main() == 0
