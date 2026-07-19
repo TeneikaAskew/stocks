@@ -15,8 +15,9 @@ These tests lock in the post-fix behaviour:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import patch, MagicMock
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -506,3 +507,93 @@ def test_post_digest_noop_with_no_exits(make_resolver):
     with patch('gcp.signal_monitor_eod_resolver.requests.post') as post:
         resolver._post_digest([], None)
     post.assert_not_called()
+
+
+# ── 8) Issue #740: same-day partition lag must not page, stale gaps must ──
+#
+# Root cause: the ONLY writers of market_data_intraday for SPY/IWM/QQQ
+# (av-intraday-nightly, fetch-market-data-daily) run at 21:00/23:00 ET —
+# 5-7 hours AFTER this job's 16:30 ET schedule (see deploy.sh comments on
+# those crons re: AV's multi-hour intraday publish lag). Any alert still
+# open at 16:30 ET on ITS OWN alert_date will therefore ALWAYS find an
+# empty partition — that is not a QQQ-specific bug, it's guaranteed by
+# the scheduling gap and self-heals on the next day's idempotent re-run.
+# Only a skip against a PRIOR alert_date (the partition should already
+# exist by now) indicates a genuine gap worth paging on.
+
+def test_normalize_alert_date_handles_multiple_input_types():
+    from gcp.signal_monitor_eod_resolver import _normalize_alert_date
+    expected = date(2026, 7, 9)
+    assert _normalize_alert_date(date(2026, 7, 9)) == expected
+    assert _normalize_alert_date(datetime(2026, 7, 9, 13, 0)) == expected
+    assert _normalize_alert_date(pd.Timestamp('2026-07-09')) == expected
+    assert _normalize_alert_date('2026-07-09') == expected
+
+
+def _skip_alerts_df(alert_date):
+    return pd.DataFrame([{
+        'ticker': 'QQQ',
+        'alert_ts': datetime(2026, 7, 9, 19, 55, 49),
+        'alert_date': alert_date,
+        'direction': 'CALL',
+        'price_at_signal': 722.75,
+        'target_price': 724.92,
+        'time_stop_minutes': 20,
+    }])
+
+
+def test_run_same_day_skip_is_not_stale(make_resolver):
+    """A skip against TODAY's alert_date (partition hasn't landed yet)
+    must NOT count toward stale_skipped — main() must still exit 0."""
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    resolver = make_resolver()
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    df = _skip_alerts_df(today_et)
+    with patch.object(EODResolver, 'find_open_alerts', return_value=df),          patch.object(EODResolver, 'resolve_one', return_value=None),          patch.object(EODResolver, '_post_digest'):
+        summary = resolver.run()
+    assert summary['skipped'] == 1
+    assert summary['stale_skipped'] == 0, (
+        "same-day partition lag is expected (issue #740) and must not "
+        "be counted as a stale/actionable skip"
+    )
+
+
+def test_run_prior_day_skip_is_stale(make_resolver):
+    """A skip against a PRIOR alert_date means the partition should
+    already exist — a genuine gap that MUST count as stale_skipped."""
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    resolver = make_resolver()
+    stale_date = (
+        datetime.now(ZoneInfo("America/New_York")) - timedelta(days=3)
+    ).date()
+    df = _skip_alerts_df(stale_date)
+    with patch.object(EODResolver, 'find_open_alerts', return_value=df),          patch.object(EODResolver, 'resolve_one', return_value=None),          patch.object(EODResolver, '_post_digest'):
+        summary = resolver.run()
+    assert summary['skipped'] == 1
+    assert summary['stale_skipped'] == 1, (
+        "a multi-day-old unresolved alert with a missing partition is a "
+        "genuine data gap and must be flagged as stale_skipped"
+    )
+
+
+def test_main_exit_code_driven_by_stale_skipped_not_skipped(monkeypatch):
+    """main()'s exit code must key off stale_skipped, not skipped, so a
+    same-day partition-lag skip (issue #740) doesn't file a
+    gcp-job-failure issue while a genuine multi-day gap still does."""
+    import sys
+    from gcp.signal_monitor_eod_resolver import EODResolver, main
+
+    monkeypatch.setattr(sys, 'argv', ['signal_monitor_eod_resolver'])
+
+    def _run_same_day_lag_only(self, since=None):
+        return {'resolved': 5, 'skipped': 3, 'stale_skipped': 0,
+                'by_reason': {'time_stop': 5}, 'wall_clock_s': 0.1}
+
+    def _run_genuine_gap(self, since=None):
+        return {'resolved': 5, 'skipped': 3, 'stale_skipped': 1,
+                'by_reason': {'time_stop': 5}, 'wall_clock_s': 0.1}
+
+    with patch.object(EODResolver, 'run', _run_same_day_lag_only):
+        assert main() == 0
+    with patch.object(EODResolver, 'run', _run_genuine_gap):
+        assert main() == 1

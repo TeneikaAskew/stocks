@@ -57,7 +57,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, time as dt_time, timedelta
+from datetime import date as dt_date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -75,6 +75,16 @@ from lib.indicators import calculate_rsi
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 _SESSION_CLOSE_ET = dt_time(16, 0)  # 4:00 PM ET — same as MarketConfig default
+
+
+def _normalize_alert_date(value) -> dt_date:
+    """Coerce alert_date (date/datetime/Timestamp/str from SQL) to a plain
+    ``date`` so it can be compared against "today" (issue #740)."""
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.date()
+    if isinstance(value, dt_date):
+        return value
+    return datetime.fromisoformat(str(value)).date()
 
 
 def _exit_return_pct(direction: str, entry_price: float, exit_price: float) -> float:
@@ -448,23 +458,43 @@ class EODResolver:
     # ── 5. Orchestration ──────────────────────────────────────────────
 
     def run(self, since: Optional[str] = None) -> dict:
-        """Top-level entry. Returns a per-reason count summary."""
+        """Top-level entry. Returns a per-reason count summary.
+
+        Issue #740: the intraday partition for "today" legitimately does
+        not exist yet at this job's 16:30 ET run time — the only writers
+        of market_data_intraday (av-intraday-nightly, fetch-market-data-daily)
+        run at 21:00/23:00 ET, 5-7 hours later (see deploy.sh comments on
+        those crons re: AV's multi-hour publish lag). A same-day skip is
+        therefore expected and self-heals on tomorrow's idempotent re-run
+        (the SAME (ticker, alert_date) row is picked up again since
+        is_open stays TRUE). Only a skip on a PRIOR day's alert_date means
+        the partition SHOULD already exist and didn't — a genuine data
+        gap worth paging on. `stale_skipped` (not `skipped`) drives the
+        exit code so same-day timing noise stops filing gcp-job-failure
+        issues while a real multi-day gap still pages.
+        """
         t0 = time.time()
+        today_et = datetime.now(_ET).date()
         df = self.find_open_alerts(since=since)
         if df.empty:
             logger.info("nothing to resolve")
-            return {'resolved': 0, 'skipped': 0, 'wall_clock_s': time.time() - t0}
+            return {'resolved': 0, 'skipped': 0, 'stale_skipped': 0,
+                     'wall_clock_s': time.time() - t0}
 
         per_reason: dict[str, int] = {}
         resolved_exits: list[dict] = []
         skipped = 0
+        stale_skipped = 0
         groups = df.groupby(['ticker', 'alert_date'])
         for (ticker, alert_date), group in groups:
             logger.info("ticker=%s date=%s alerts=%d", ticker, alert_date, len(group))
+            is_stale_day = _normalize_alert_date(alert_date) < today_et
             for _, alert in group.iterrows():
                 resolution = self.resolve_one(alert)
                 if resolution is None:
                     skipped += 1
+                    if is_stale_day:
+                        stale_skipped += 1
                     continue
                 try:
                     n = self.persist(resolution)
@@ -490,12 +520,14 @@ class EODResolver:
         wall_clock = time.time() - t0
         resolved = sum(per_reason.values())
         logger.info(
-            "EOD resolver complete: resolved=%d skipped=%d by_reason=%s wall_clock=%.1fs",
-            resolved, skipped, per_reason, wall_clock,
+            "EOD resolver complete: resolved=%d skipped=%d stale_skipped=%d "
+            "by_reason=%s wall_clock=%.1fs",
+            resolved, skipped, stale_skipped, per_reason, wall_clock,
         )
         return {
             'resolved': resolved,
             'skipped': skipped,
+            'stale_skipped': stale_skipped,
             'by_reason': per_reason,
             'wall_clock_s': wall_clock,
         }
@@ -526,7 +558,12 @@ def main() -> int:
         logger.info("backfill mode — resolving all unresolved alerts")
 
     summary = EODResolver().run(since=args.since)
-    return 0 if summary['skipped'] == 0 else 1
+    # Exit code is driven by stale_skipped, not skipped: a same-day skip
+    # (today's intraday partition hasn't landed yet — see run()'s
+    # docstring, issue #740) is expected and self-heals tomorrow. Only a
+    # skip on a PRIOR day's alert_date means the partition should already
+    # exist and didn't — that's the actionable failure.
+    return 0 if summary['stale_skipped'] == 0 else 1
 
 
 if __name__ == '__main__':
