@@ -2,10 +2,20 @@
 
 The 2026-06 ^VIX/gamma cascade went undetected for ~4 weeks because no
 freshness check looked at column non-NULL rate — rows were writing on
-schedule but `vix_close`, `total_gex`, `gamma_balance_price`, `total_vex`
-were all NULL after upstream sources stalled. This module's checks close
-that gap; these tests pin the contract so a future refactor can't
-silently weaken the detection.
+schedule but `vix_close`, `total_gex`, `total_vex` were all NULL after
+upstream sources stalled. This module's checks close that gap; these
+tests pin the contract so a future refactor can't silently weaken the
+detection.
+
+`gamma_balance_price` was ALSO checked here originally but was removed
+2026-07-19 after a 7-day failure sweep found it fired on `freshness-
+watchdog` almost every run: `compute_gamma_balance` (lib/gamma.py)
+legitimately returns NULL for an entire session on ~half of days by
+design, and IWM/SPY/QQQ each showed multi-week 0%-fill stretches in the
+last 180 days while `total_gex`/`total_vex` stayed at 100% fill across
+those same weeks — proving `total_gex`/`total_vex` already fully cover
+the cascade this check family exists to catch, and the extra
+`gamma_balance_price` check only added false positives.
 """
 from __future__ import annotations
 
@@ -234,22 +244,26 @@ def test_writer_job_routes_alert_to_culprit():
     by_name = {c["name"]: c for c in COLUMN_NULLITY_CHECKS}
     assert by_name["strat_features_5m.vix_close"]["writer_job"] == "fetch-market-data"
     assert by_name["strat_features_5m.total_gex"]["writer_job"] == "strat-engine"
-    assert by_name["strat_features_5m.gamma_balance_price"]["writer_job"] == "strat-engine"
     assert by_name["strat_features_5m.total_vex"]["writer_job"] == "strat-engine"
     assert by_name["strat_features_levels_5m.orb_5m_high"]["writer_job"] == "strat-engine"
 
 
 def test_checks_cover_the_2026_06_cascade_columns():
-    """Pin that the four columns that silently NULLed during the
+    """Pin that the columns that silently NULLed during the
     2026-05-22 → 06-19 cascade are all in the check list. A future
     refactor that drops one would reintroduce the exact gap this
-    PR exists to close."""
+    PR exists to close.
+
+    `gamma_balance_price` is deliberately NOT in this set — see the
+    2026-07-19 note in scripts/audit_data_freshness.py and the module
+    docstring above: unlike these columns, it legitimately NULLs for
+    entire sessions by design, so a nullity check on it is noise, not
+    signal."""
     from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
     names = {c["name"] for c in COLUMN_NULLITY_CHECKS}
     cascade_columns = {
         "strat_features_5m.vix_close",
         "strat_features_5m.total_gex",
-        "strat_features_5m.gamma_balance_price",
         "strat_features_5m.total_vex",
     }
     missing = cascade_columns - names
@@ -257,6 +271,20 @@ def test_checks_cover_the_2026_06_cascade_columns():
         f"COLUMN_NULLITY_CHECKS missing {missing} — the cascade columns "
         f"that silently NULLed for 4 weeks must stay covered"
     )
+
+
+def test_gamma_balance_price_not_checked_for_nullity():
+    """Regression guard for the 2026-07-19 false-positive fix: don't
+    silently re-add a nullity check on `gamma_balance_price` without
+    accounting for its documented ~50% legitimate-NULL base rate (it
+    caused two real freshness-watchdog job failures — 2026-07-12 and
+    2026-07-18 — that were pure noise, confirmed via
+    `strat_features_5m` weekly fill-rate history showing multi-week
+    0%-fill stretches for IWM/SPY/QQQ while total_gex/total_vex stayed
+    at 100% fill the same weeks)."""
+    from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
+    names = {c["name"] for c in COLUMN_NULLITY_CHECKS}
+    assert "strat_features_5m.gamma_balance_price" not in names
 
 
 def test_audit_all_wires_in_column_nullity(monkeypatch):

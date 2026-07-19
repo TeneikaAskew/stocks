@@ -696,16 +696,25 @@ COLUMN_NULLITY_CHECKS: list[dict] = [
         "writer_job": "strat-engine",  # via gamma_levels_eod (p2_build_gamma_levels)
         "rationale": "gamma_levels_eod missed scheduler 2026-05-22 → 06-19 cascade",
     },
-    {
-        "name": "strat_features_5m.gamma_balance_price",
-        "table": "strat_features_5m",
-        "column": "gamma_balance_price",
-        "tickers": ("IWM", "SPY", "QQQ"),
-        "lookback_days": 1,
-        "min_non_null_rate": 0.90,
-        "writer_job": "strat-engine",
-        "rationale": "same gamma_levels_eod upstream as total_gex",
-    },
+    # NOTE 2026-07-19: a `strat_features_5m.gamma_balance_price` check with
+    # the same 0.90 threshold used to live here and was REMOVED after a
+    # 7-day failure sweep traced repeated `freshness-watchdog` job failures
+    # (issues from 2026-07-12 and 2026-07-18) to it. `gamma_balance_price`
+    # is `compute_gamma_balance`'s cumulative-net-gamma crossing (see
+    # lib/gamma.py) — it legitimately returns NULL for the entire session
+    # on ~half of days by design, and `SELECT date_trunc('week', ts),
+    # count(gamma_balance_price) FROM strat_features_5m` showed IWM/SPY/QQQ
+    # each spending multi-week stretches (up to 5 consecutive weeks) at a
+    # literal 0% fill rate over the trailing 180 days — with `total_gex`
+    # and `total_vex` both at 100% fill across every one of those same
+    # weeks. That confirms `total_gex`/`total_vex` (below) already fully
+    # cover the failure mode this check was meant to catch — a
+    # gamma_levels_eod row missing entirely (the actual 05-22→06-19
+    # cascade signature) — while `gamma_balance_price`'s own sparsity adds
+    # a guaranteed-recurring false alarm with no incremental detection
+    # value. Don't re-add a nullity check on this column without a
+    # threshold that accounts for its documented ~50% legitimate-NULL
+    # base rate.
     {
         "name": "strat_features_5m.total_vex",
         "table": "strat_features_5m",
