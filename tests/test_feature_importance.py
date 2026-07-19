@@ -64,3 +64,57 @@ def test_aggregate_skips_none_shap_folds():
     ranked = aggregate_importance(cols, per_fold_gain, per_fold_shap)
     top = next(r for r in ranked if r["feature"] == "a")
     assert abs(top["mean_abs_shap"] - 0.8) < 1e-9
+
+
+def test_aggregate_end_to_end_multiclass_shap_no_crash():
+    """Regression for issue #704 / direction-importance-28djr.
+
+    Production crash: the SIZE axis (4-class magnitude-bucket LightGBM model)
+    hit 'ValueError: truth value of an array with more than one element is
+    ambiguous' inside aggregate_importance. Root cause: the per-fold SHAP
+    reducer only collapsed the samples axis, leaving a (features, classes)
+    matrix instead of one scalar per feature; averaging that across folds and
+    indexing by feature returned a length-n_classes array, and np.isnan(ms)
+    raised on it. DIRECTION (binary) never hit this because SHAP's 2D binary
+    output has no leftover class axis.
+
+    This reproduces the real SHAP shape family (confirmed empirically against
+    the pinned shap/lightgbm versions: multiclass shap_values() returns
+    (n_samples, n_features, n_classes)) through the actual production
+    reducer (_reduce_shap_to_features) into aggregate_importance, and asserts
+    the result is sane scalars -- not just "didn't crash".
+    """
+    nfeat, n_classes, n_samples = 5, 4, 50
+    cols = [f"f{i}" for i in range(nfeat)]
+    rng = np.random.default_rng(1)
+
+    per_fold_gain, per_fold_shap, raw_per_fold = [], [], []
+    for _ in range(3):
+        sv = rng.normal(size=(n_samples, nfeat, n_classes))  # multiclass SHAP shape
+        reduced = _reduce_shap_to_features(sv, nfeat)
+        assert reduced.shape == (nfeat,)
+        per_fold_shap.append(reduced.tolist())
+        raw_per_fold.append(reduced)
+        per_fold_gain.append(rng.uniform(1, 100, size=nfeat).tolist())
+
+    ranking = aggregate_importance(cols, per_fold_gain, per_fold_shap)
+
+    manual_mean = np.mean(raw_per_fold, axis=0)
+    got = {r["feature"]: r["mean_abs_shap"] for r in ranking}
+    for i, c in enumerate(cols):
+        assert isinstance(got[c], float)          # scalar, never an array
+        assert not np.isnan(got[c])
+        assert abs(got[c] - manual_mean[i]) < 1e-9
+
+
+def test_aggregate_rejects_unreduced_per_class_shap_rows():
+    """If a producer regresses to the pre-fix shape (per-fold row is a
+    (features, classes) matrix instead of a scalar-per-feature vector),
+    aggregate_importance must fail loud with a clear diagnostic -- not the
+    cryptic 'ambiguous truth value' from np.isnan on an array."""
+    cols = ["a", "b", "c"]
+    per_fold_gain = [[3.0, 2.0, 1.0]]
+    # pre-fix shape: each row is (n_features, n_classes), never collapsed
+    per_fold_shap = [[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]]
+    with pytest.raises(AssertionError, match="scalar-per-feature"):
+        aggregate_importance(cols, per_fold_gain, per_fold_shap)

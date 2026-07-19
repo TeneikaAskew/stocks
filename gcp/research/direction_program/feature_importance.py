@@ -56,6 +56,15 @@ def aggregate_importance(feature_cols, per_fold_gain, per_fold_shap):
         mean_shap = np.asarray(shap_rows, dtype=float).mean(axis=0)
     else:
         mean_shap = np.full(len(feature_cols), np.nan)
+    # Contract: each per-fold row must already be one scalar per feature (see
+    # _reduce_shap_to_features). A non-1D mean_shap means a producer upstream
+    # (e.g. a multiclass SHAP row that never collapsed its class axis) shipped
+    # a per-class vector instead of a scalar -- fix that producer, don't make
+    # this check array-safe (issue #704 / direction-importance-28djr).
+    assert mean_shap.ndim == 1 and mean_shap.shape[0] == len(feature_cols), (
+        f"mean_shap must be shape ({len(feature_cols)},), got {mean_shap.shape}; "
+        "a per-fold SHAP row wasn't reduced to a scalar-per-feature vector"
+    )
 
     order = np.argsort(mean_gain)[::-1]
     out = []
