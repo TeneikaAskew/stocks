@@ -587,13 +587,58 @@ def test_main_exit_code_driven_by_stale_skipped_not_skipped(monkeypatch):
 
     def _run_same_day_lag_only(self, since=None):
         return {'resolved': 5, 'skipped': 3, 'stale_skipped': 0,
+                'persist_failed': 0,
                 'by_reason': {'time_stop': 5}, 'wall_clock_s': 0.1}
 
     def _run_genuine_gap(self, since=None):
         return {'resolved': 5, 'skipped': 3, 'stale_skipped': 1,
+                'persist_failed': 0,
                 'by_reason': {'time_stop': 5}, 'wall_clock_s': 0.1}
 
     with patch.object(EODResolver, 'run', _run_same_day_lag_only):
         assert main() == 0
     with patch.object(EODResolver, 'run', _run_genuine_gap):
+        assert main() == 1
+
+
+def test_run_persist_failure_counts_separately_from_stale_skipped(make_resolver):
+    """Codex review on PR #743: a persist() exception (Cloud SQL write
+    outage, schema error) is a DIFFERENT failure mode than partition
+    timing and must be tracked on its own — it must count as an
+    actionable failure even against a SAME-DAY alert_date, where
+    stale_skipped is (correctly) 0."""
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    resolver = make_resolver()
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    df = _skip_alerts_df(today_et)
+    resolution = {
+        'ticker': 'QQQ', 'exit_reason': 'time_stop', 'exit_return_pct': 1.0,
+    }
+    with patch.object(EODResolver, 'find_open_alerts', return_value=df),          patch.object(EODResolver, 'resolve_one', return_value=resolution),          patch.object(EODResolver, 'persist', side_effect=RuntimeError('db down')),          patch.object(EODResolver, '_post_digest'):
+        summary = resolver.run()
+    assert summary['stale_skipped'] == 0, (
+        "the alert itself is same-day, so partition-timing logic must "
+        "not be confused by the unrelated persist() failure"
+    )
+    assert summary['persist_failed'] == 1, (
+        "a persist() exception must always be tracked as an actionable "
+        "failure, regardless of the alert's own staleness"
+    )
+
+
+def test_main_exit_code_also_driven_by_persist_failed(monkeypatch):
+    """main() must exit non-zero on a persist_failed run even when
+    stale_skipped is 0 -- otherwise a genuine Cloud SQL write outage
+    would be masked as a healthy run (Codex review, PR #743)."""
+    import sys
+    from gcp.signal_monitor_eod_resolver import EODResolver, main
+
+    monkeypatch.setattr(sys, 'argv', ['signal_monitor_eod_resolver'])
+
+    def _run_persist_failure_only(self, since=None):
+        return {'resolved': 0, 'skipped': 1, 'stale_skipped': 0,
+                'persist_failed': 1,
+                'by_reason': {}, 'wall_clock_s': 0.1}
+
+    with patch.object(EODResolver, 'run', _run_persist_failure_only):
         assert main() == 1

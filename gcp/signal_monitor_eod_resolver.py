@@ -469,9 +469,16 @@ class EODResolver:
         (the SAME (ticker, alert_date) row is picked up again since
         is_open stays TRUE). Only a skip on a PRIOR day's alert_date means
         the partition SHOULD already exist and didn't — a genuine data
-        gap worth paging on. `stale_skipped` (not `skipped`) drives the
-        exit code so same-day timing noise stops filing gcp-job-failure
-        issues while a real multi-day gap still pages.
+        gap worth paging on. `stale_skipped` (not `skipped`) drives that
+        part of the exit code so same-day timing noise stops filing
+        gcp-job-failure issues while a real multi-day gap still pages.
+
+        A `persist()` exception (e.g. a Cloud SQL write outage or schema
+        error) is a DIFFERENT failure mode — nothing to do with partition
+        timing — and is tracked separately as `persist_failed` so it keeps
+        paging regardless of whether the alert itself was same-day or
+        stale (a write failure on TODAY's resolution is just as actionable
+        as one on a prior day's).
         """
         t0 = time.time()
         today_et = datetime.now(_ET).date()
@@ -479,12 +486,13 @@ class EODResolver:
         if df.empty:
             logger.info("nothing to resolve")
             return {'resolved': 0, 'skipped': 0, 'stale_skipped': 0,
-                     'wall_clock_s': time.time() - t0}
+                     'persist_failed': 0, 'wall_clock_s': time.time() - t0}
 
         per_reason: dict[str, int] = {}
         resolved_exits: list[dict] = []
         skipped = 0
         stale_skipped = 0
+        persist_failed = 0
         groups = df.groupby(['ticker', 'alert_date'])
         for (ticker, alert_date), group in groups:
             logger.info("ticker=%s date=%s alerts=%d", ticker, alert_date, len(group))
@@ -514,6 +522,7 @@ class EODResolver:
                         ticker, alert['alert_ts'], e,
                     )
                     skipped += 1
+                    persist_failed += 1
 
         self._post_digest(resolved_exits, since)
 
@@ -521,13 +530,14 @@ class EODResolver:
         resolved = sum(per_reason.values())
         logger.info(
             "EOD resolver complete: resolved=%d skipped=%d stale_skipped=%d "
-            "by_reason=%s wall_clock=%.1fs",
-            resolved, skipped, stale_skipped, per_reason, wall_clock,
+            "persist_failed=%d by_reason=%s wall_clock=%.1fs",
+            resolved, skipped, stale_skipped, persist_failed, per_reason, wall_clock,
         )
         return {
             'resolved': resolved,
             'skipped': skipped,
             'stale_skipped': stale_skipped,
+            'persist_failed': persist_failed,
             'by_reason': per_reason,
             'wall_clock_s': wall_clock,
         }
@@ -558,12 +568,17 @@ def main() -> int:
         logger.info("backfill mode — resolving all unresolved alerts")
 
     summary = EODResolver().run(since=args.since)
-    # Exit code is driven by stale_skipped, not skipped: a same-day skip
-    # (today's intraday partition hasn't landed yet — see run()'s
-    # docstring, issue #740) is expected and self-heals tomorrow. Only a
-    # skip on a PRIOR day's alert_date means the partition should already
-    # exist and didn't — that's the actionable failure.
-    return 0 if summary['stale_skipped'] == 0 else 1
+    # Exit code is driven by stale_skipped OR persist_failed, not the raw
+    # skipped count: a same-day skip (today's intraday partition hasn't
+    # landed yet — see run()'s docstring, issue #740) is expected and
+    # self-heals tomorrow. Only a skip on a PRIOR day's alert_date means
+    # the partition should already exist and didn't, and a persist()
+    # exception (Cloud SQL write outage, schema error) is always an
+    # actionable failure regardless of whether the alert was same-day or
+    # stale — a write failure must still page (Codex review, PR #743).
+    if summary['stale_skipped'] or summary['persist_failed']:
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
