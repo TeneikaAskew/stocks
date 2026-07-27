@@ -113,3 +113,10 @@ httpx>=0.27.0
 # multipart broker-CSV upload). Without it, FastAPI raises at request time
 # ("Form data requires python-multipart to be installed").
 python-multipart>=0.0.9
+
+# cachetools backs the in-process TTLCache used by platform/api/main.py and
+# several routers (backtest, playbook, grid, signals, options, gcs_reader),
+# all imported at module level — required for pytest collection, same
+# reasoning as the other platform/api deps above. Version pin matches
+# platform/Dockerfile's explicit `cachetools>=5.3.0` install.
+cachetools>=5.3.0
