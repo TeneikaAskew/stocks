@@ -515,15 +515,20 @@ def test_post_digest_noop_with_no_exits(make_resolver):
 # alert still open at 16:30 ET therefore ALWAYS hits an empty
 # `_load_day` — expected, self-heals tomorrow — and must NOT be treated
 # the same as a genuinely stale (prior-day) gap that should hard-fail.
+# But per the Codex review on PR #745, that exemption must NOT apply
+# blindly: (P1) it must not mask a genuine Cloud SQL read failure, and
+# (P2) it must not apply past tonight's ingestion cutoff.
 
 class _FrozenNow:
     """Stand-in for the `datetime` name inside the resolver module.
     Only `.now()` is exercised on this path — both alerts below skip via
     an empty intraday partition before any other datetime method
     (`combine`, `fromisoformat`) is touched."""
-    @staticmethod
-    def now(tz=None):
-        return datetime(2026, 7, 14, 16, 30, 0, tzinfo=tz)
+    _NOW = datetime(2026, 7, 14, 16, 30, 0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._NOW.replace(tzinfo=tz) if tz else cls._NOW
 
 
 def _open_alert(ticker, alert_date):
@@ -538,11 +543,31 @@ def _open_alert(ticker, alert_date):
     }
 
 
+def _read_path_healthy_side_effect(ticker, start_date=None, end_date=None):
+    """Simulate a healthy Cloud SQL read path: the specific (short,
+    <=1 day) same-day partition query is empty (not ingested yet), but
+    the wider trailing control-check window finds real data."""
+    span = pd.Timestamp(end_date) - pd.Timestamp(start_date)
+    if span <= pd.Timedelta(days=1):
+        return pd.DataFrame()
+    return _intraday([('2026-07-13 15:55:00', 100.0)])
+
+
+def _read_path_unhealthy_side_effect(ticker, start_date=None, end_date=None):
+    """Simulate a broken Cloud SQL read path: EVERY query comes back
+    empty, including the trailing control-check window that should
+    already be fully ingested — indistinguishable from "not ingested
+    yet" without the control check added in PR #745."""
+    return pd.DataFrame()
+
+
 def test_run_same_day_skip_is_not_stale(make_resolver):
-    """A skip for TODAY's own alert_date (partition not written yet by
-    tonight's av-intraday-nightly) must not count toward skipped_stale —
-    it self-heals on tomorrow's run, so the job must not hard-fail."""
-    resolver = make_resolver(pd.DataFrame())  # every _load_day call → empty
+    """A skip for TODAY's own alert_date, with a healthy read path
+    confirmed via the control query, must not count toward
+    skipped_stale — it self-heals on tomorrow's run, so the job must
+    not hard-fail."""
+    resolver = make_resolver(pd.DataFrame())
+    resolver.loader.load_intraday.side_effect = _read_path_healthy_side_effect
     resolver.find_open_alerts = MagicMock(
         return_value=pd.DataFrame([_open_alert('QQQ', '2026-07-14')])
     )
@@ -552,7 +577,8 @@ def test_run_same_day_skip_is_not_stale(make_resolver):
     assert summary['skipped'] == 1
     assert summary['skipped_stale'] == 0, (
         "same-day skip is expected (today's partition isn't fetched "
-        "until 21:00 ET) — must not be classified as stale"
+        "until 21:00 ET) and the read path is confirmed healthy — must "
+        "not be classified as stale"
     )
 
 
@@ -574,9 +600,57 @@ def test_run_prior_day_skip_is_stale(make_resolver):
     )
 
 
-def test_run_mixed_skips_only_counts_stale_as_stale(make_resolver):
-    """One same-day skip + one stale skip → skipped=2, skipped_stale=1."""
+def test_run_same_day_skip_is_stale_when_read_path_unhealthy(make_resolver):
+    """Codex P1: a same-day skip must NOT be exempted if the control
+    query — probing a trailing window that should already be fully
+    ingested — is ALSO empty. `_query_cloud_sql` swallows real Cloud SQL
+    errors (auth/connection/schema) into an empty DataFrame, so without
+    this check a live outage on today's date would silently page nobody."""
     resolver = make_resolver(pd.DataFrame())
+    resolver.loader.load_intraday.side_effect = _read_path_unhealthy_side_effect
+    resolver.find_open_alerts = MagicMock(
+        return_value=pd.DataFrame([_open_alert('QQQ', '2026-07-14')])
+    )
+    with patch('gcp.signal_monitor_eod_resolver.datetime', _FrozenNow):
+        summary = resolver.run()
+
+    assert summary['skipped'] == 1
+    assert summary['skipped_stale'] == 1, (
+        "the control query came back empty too — the read path itself "
+        "looks broken, not just 'not ingested yet' — must hard-fail"
+    )
+
+
+def test_run_same_day_skip_is_stale_past_ingestion_cutoff(make_resolver):
+    """Codex P2: the same-day exemption must not apply for the entire ET
+    calendar day. Once tonight's av-intraday-nightly (21:00 ET) should
+    already have run, a same-day skip is a real gap too, even if a
+    healthy-read-path control query would otherwise pass."""
+    resolver = make_resolver(pd.DataFrame())
+    resolver.loader.load_intraday.side_effect = _read_path_healthy_side_effect
+    resolver.find_open_alerts = MagicMock(
+        return_value=pd.DataFrame([_open_alert('QQQ', '2026-07-14')])
+    )
+
+    class _FrozenNowLate(_FrozenNow):
+        _NOW = datetime(2026, 7, 14, 22, 0, 0)  # after the 21:00 ET cutoff
+
+    with patch('gcp.signal_monitor_eod_resolver.datetime', _FrozenNowLate):
+        summary = resolver.run()
+
+    assert summary['skipped'] == 1
+    assert summary['skipped_stale'] == 1, (
+        "tonight's nightly fetch should already have run by 22:00 ET — "
+        "a same-day skip at this hour is a real gap, not the expected "
+        "pre-ingestion race"
+    )
+
+
+def test_run_mixed_skips_only_counts_stale_as_stale(make_resolver):
+    """One same-day skip (healthy read path) + one stale skip →
+    skipped=2, skipped_stale=1."""
+    resolver = make_resolver(pd.DataFrame())
+    resolver.loader.load_intraday.side_effect = _read_path_healthy_side_effect
     resolver.find_open_alerts = MagicMock(
         return_value=pd.DataFrame([
             _open_alert('QQQ', '2026-07-14'),
