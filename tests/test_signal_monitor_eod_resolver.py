@@ -506,3 +506,85 @@ def test_post_digest_noop_with_no_exits(make_resolver):
     with patch('gcp.signal_monitor_eod_resolver.requests.post') as post:
         resolver._post_digest([], None)
     post.assert_not_called()
+
+
+# ── 8) same-day skip vs stale skip — issue #740 ────────────────────────
+#
+# `av-intraday-nightly` (21:00 ET) writes a calendar day's own intraday
+# partition hours AFTER this resolver's 16:30 ET schedule. A same-day
+# alert still open at 16:30 ET therefore ALWAYS hits an empty
+# `_load_day` — expected, self-heals tomorrow — and must NOT be treated
+# the same as a genuinely stale (prior-day) gap that should hard-fail.
+
+class _FrozenNow:
+    """Stand-in for the `datetime` name inside the resolver module.
+    Only `.now()` is exercised on this path — both alerts below skip via
+    an empty intraday partition before any other datetime method
+    (`combine`, `fromisoformat`) is touched."""
+    @staticmethod
+    def now(tz=None):
+        return datetime(2026, 7, 14, 16, 30, 0, tzinfo=tz)
+
+
+def _open_alert(ticker, alert_date):
+    return {
+        'ticker': ticker,
+        'alert_ts': pd.Timestamp(f'{alert_date} 15:55:00'),
+        'alert_date': alert_date,
+        'direction': 'CALL',
+        'price_at_signal': 100.0,
+        'target_price': 110.0,
+        'time_stop_minutes': 30,
+    }
+
+
+def test_run_same_day_skip_is_not_stale(make_resolver):
+    """A skip for TODAY's own alert_date (partition not written yet by
+    tonight's av-intraday-nightly) must not count toward skipped_stale —
+    it self-heals on tomorrow's run, so the job must not hard-fail."""
+    resolver = make_resolver(pd.DataFrame())  # every _load_day call → empty
+    resolver.find_open_alerts = MagicMock(
+        return_value=pd.DataFrame([_open_alert('QQQ', '2026-07-14')])
+    )
+    with patch('gcp.signal_monitor_eod_resolver.datetime', _FrozenNow):
+        summary = resolver.run()
+
+    assert summary['skipped'] == 1
+    assert summary['skipped_stale'] == 0, (
+        "same-day skip is expected (today's partition isn't fetched "
+        "until 21:00 ET) — must not be classified as stale"
+    )
+
+
+def test_run_prior_day_skip_is_stale(make_resolver):
+    """A skip for a PRIOR alert_date (data had a full night to land and
+    still didn't) is a genuine gap and must count toward skipped_stale
+    so the job hard-fails and pages."""
+    resolver = make_resolver(pd.DataFrame())
+    resolver.find_open_alerts = MagicMock(
+        return_value=pd.DataFrame([_open_alert('QQQ', '2026-07-10')])
+    )
+    with patch('gcp.signal_monitor_eod_resolver.datetime', _FrozenNow):
+        summary = resolver.run()
+
+    assert summary['skipped'] == 1
+    assert summary['skipped_stale'] == 1, (
+        "a prior-day skip already had a full night for data to land — "
+        "this is a genuine gap and must hard-fail"
+    )
+
+
+def test_run_mixed_skips_only_counts_stale_as_stale(make_resolver):
+    """One same-day skip + one stale skip → skipped=2, skipped_stale=1."""
+    resolver = make_resolver(pd.DataFrame())
+    resolver.find_open_alerts = MagicMock(
+        return_value=pd.DataFrame([
+            _open_alert('QQQ', '2026-07-14'),
+            _open_alert('IWM', '2026-07-09'),
+        ])
+    )
+    with patch('gcp.signal_monitor_eod_resolver.datetime', _FrozenNow):
+        summary = resolver.run()
+
+    assert summary['skipped'] == 2
+    assert summary['skipped_stale'] == 1

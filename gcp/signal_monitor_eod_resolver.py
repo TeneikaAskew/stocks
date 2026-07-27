@@ -453,11 +453,22 @@ class EODResolver:
         df = self.find_open_alerts(since=since)
         if df.empty:
             logger.info("nothing to resolve")
-            return {'resolved': 0, 'skipped': 0, 'wall_clock_s': time.time() - t0}
+            return {'resolved': 0, 'skipped': 0, 'skipped_stale': 0, 'wall_clock_s': time.time() - t0}
 
         per_reason: dict[str, int] = {}
         resolved_exits: list[dict] = []
         skipped = 0
+        # `av-intraday-nightly` (21:00 ET) writes TODAY's own intraday
+        # partition several hours AFTER this resolver's 16:30 ET schedule
+        # (gcp/deploy.sh: `signal-monitor-eod-resolver-daily` 30 16 * * 1-5
+        # vs `av-intraday-nightly` 0 21 * * 2-6). A same-day alert that's
+        # still open at 16:30 ET therefore hits an EXPECTED empty
+        # `_load_day` — it self-heals on tomorrow's run once tonight's
+        # fetch lands (`alert_date <= CURRENT_DATE` picks it back up).
+        # Only a skip for a PRIOR day (data that already had a full night
+        # to land and still didn't) indicates a genuine gap worth paging.
+        skipped_stale = 0
+        today_et = datetime.now(_ET).date()
         groups = df.groupby(['ticker', 'alert_date'])
         for (ticker, alert_date), group in groups:
             logger.info("ticker=%s date=%s alerts=%d", ticker, alert_date, len(group))
@@ -465,6 +476,8 @@ class EODResolver:
                 resolution = self.resolve_one(alert)
                 if resolution is None:
                     skipped += 1
+                    if pd.Timestamp(alert_date).date() < today_et:
+                        skipped_stale += 1
                     continue
                 try:
                     n = self.persist(resolution)
@@ -484,18 +497,21 @@ class EODResolver:
                         ticker, alert['alert_ts'], e,
                     )
                     skipped += 1
+                    skipped_stale += 1  # DB write failure is a real bug, not
+                    # a same-day data-not-yet-landed race — always hard-fail.
 
         self._post_digest(resolved_exits, since)
 
         wall_clock = time.time() - t0
         resolved = sum(per_reason.values())
         logger.info(
-            "EOD resolver complete: resolved=%d skipped=%d by_reason=%s wall_clock=%.1fs",
-            resolved, skipped, per_reason, wall_clock,
+            "EOD resolver complete: resolved=%d skipped=%d (stale=%d) by_reason=%s wall_clock=%.1fs",
+            resolved, skipped, skipped_stale, per_reason, wall_clock,
         )
         return {
             'resolved': resolved,
             'skipped': skipped,
+            'skipped_stale': skipped_stale,
             'by_reason': per_reason,
             'wall_clock_s': wall_clock,
         }
@@ -526,7 +542,11 @@ def main() -> int:
         logger.info("backfill mode — resolving all unresolved alerts")
 
     summary = EODResolver().run(since=args.since)
-    return 0 if summary['skipped'] == 0 else 1
+    # Same-day skips (today's own intraday partition not yet fetched by
+    # av-intraday-nightly, 21:00 ET) are expected and self-heal on the
+    # next run — only a stale (prior-day) skip is a real failure worth
+    # paging on (see run()).
+    return 0 if summary.get('skipped_stale', 0) == 0 else 1
 
 
 if __name__ == '__main__':
