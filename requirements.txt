@@ -103,6 +103,16 @@ pydantic>=2.12.0
 # pynacl is the Ed25519 verifier for Discord webhook signatures.
 fastapi>=0.115.0
 pynacl>=1.5.0
+
+# cachetools.TTLCache backs the in-process response caches in
+# platform/api/main.py and platform/api/routers/{backtest,playbook,grid,
+# signals,health,options}.py and platform/api/gcs_reader.py. Imported at
+# module level, so any test that collects those modules (e.g.
+# tests/test_backtest_router_units.py, tests/integration/test_journal_*)
+# fails with ModuleNotFoundError without it — confirmed as the root cause
+# of the Backtest Pipeline CI failure on PR #745 (runs 30235045716,
+# 30235335101, 2026-07-27), unrelated to that PR's own diff.
+cachetools>=5.3.0
 # httpx is fastapi.testclient's HTTP transport — required at import
 # time even though it's "optional" per FastAPI's own deps. Without it
 # `from fastapi.testclient import TestClient` raises RuntimeError.
