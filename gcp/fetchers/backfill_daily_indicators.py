@@ -38,8 +38,8 @@ schedule, safe to retry.
 
 Gap-detection convergence (issue #751, 2026-08):
     The original gap check flagged any recent row with ANY null derived
-    column. Two structural null classes made that non-convergent, so the
-    same tickers were re-processed every night forever:
+    column. Three structural null classes made that non-convergent, so
+    the same tickers were re-processed every night forever:
       1. Warmup nulls — sma_200 needs 200 bars, ema_50/ma_50 need 50;
          a ticker listed 6 months ago can NEVER fill sma_200, so every
          fresh bar re-flagged it (≈50 young tickers/day, permanently).
@@ -47,9 +47,15 @@ Gap-detection convergence (issue #751, 2026-08):
          compute path, so their derived nulls can never be healed;
          same-day partial rows (written intraday by the top-movers
          snapshots) haven't been through the nightly enrich yet.
-    The check now joins per-ticker bar counts and only counts a null as
-    a *healable gap* when the ticker has enough history for that column
-    class, the row's raw OHLCV is complete, and the row is a completed
+      3. Formula-domain nulls — quotient indicators (bb_pct, bb_squeeze,
+         rvol, stoch_rsi, the RSI family, ATR-normalized features) are
+         legitimately NaN when their denominator is zero on flat-price /
+         zero-volume stretches; recompute reproduces the same NaN.
+    The check now joins per-ticker USABLE-bar counts (complete raw
+    OHLCV only) and only counts a null as a *healable gap* when the
+    ticker has enough history for that column class, the column is a
+    total function of valid input (_FORMULA_DOMAIN_COLS are exempt),
+    the row's raw OHLCV is complete, and the row is a completed
     trading day (date < CURRENT_DATE).
 
 Capacity (CLAUDE.md Rule 0.2 — re-measured 2026-08-24, issue #751):
@@ -142,10 +148,30 @@ _DERIVED_COLS_FOR_GAP_CHECK: tuple[str, ...] = tuple(
 # formula (lib/indicators.py) + margin for the lookback window.
 _WARMUP_200_COLS: tuple[str, ...] = ('sma_200',)          # rolling(200)
 _WARMUP_50_COLS: tuple[str, ...] = ('ema_50', 'ma_50')     # min_periods=50
+
+# Columns that are PARTIAL functions of valid OHLCV — their formulas
+# divide by a data-dependent quantity that is legitimately zero on
+# flat-price / zero-volume stretches: bb_pct & bb_squeeze (Bollinger
+# bandwidth), rvol (rolling volume), the RSI family incl. stoch_rsi
+# and rsi_divergence (zero net movement → 0/0), and the ATR-normalized
+# features (ATR = 0 on a flat run). Recompute reproduces the same NaN,
+# so a NULL here is NOT a healable gap and must never drive the daily
+# flag. Verified live 2026-08-24: after warmup gating, the entire
+# non-convergent residue was exactly {bb_pct, rvol, bb_squeeze} on 5
+# flat/illiquid tickers. The enrichment-didn't-run failure mode nulls
+# EVERY column, so the guaranteed set below still catches it.
+_FORMULA_DOMAIN_COLS: tuple[str, ...] = (
+    'rsi_9', 'rsi_14', 'rsi_30', 'rsi_divergence',
+    'stoch_rsi_k', 'stoch_rsi_d',
+    'bb_pct', 'bb_squeeze', 'rvol',
+    'price_vs_ema9_atr', 'price_vs_ema20_atr', 'ema_spread_atr',
+    'ema9_slope',
+)
+
 _WARMUP_SHORT_COLS: tuple[str, ...] = tuple(
     c for c in _DERIVED_COLS_FOR_GAP_CHECK
-    if c not in _WARMUP_200_COLS + _WARMUP_50_COLS
-)  # everything else needs ≤ ~35 bars (macd_signal / stoch_rsi_d)
+    if c not in _WARMUP_200_COLS + _WARMUP_50_COLS + _FORMULA_DOMAIN_COLS
+)  # total functions of valid OHLCV needing ≤ ~35 bars (macd_signal)
 _WARMUP_200_MIN_BARS = 215
 _WARMUP_50_MIN_BARS = 65
 _WARMUP_SHORT_MIN_BARS = 50
@@ -174,8 +200,21 @@ def _tickers_with_gaps(lookback_days: int) -> list[str]:
     w200_sql = ", ".join(_WARMUP_200_COLS)
     sql = f"""
         WITH bar_counts AS (
+            -- Only bars the compute path can actually use: rows with
+            -- NULL raw OHLCV are dropped by _build_indicator_rows, so
+            -- counting them would let a ticker cross a warmup threshold
+            -- it can't actually satisfy (non-convergent re-flag).
+            -- Bounded to the last 450 calendar days (~310 trading bars,
+            -- comfortably above the largest threshold of 215) so the
+            -- null-check heap scan stays on an index range instead of
+            -- the full ~6.5M-row table — unbounded, this CTE alone
+            -- blew a 120s statement timeout. Undercounting a ticker's
+            -- history is convergence-safe: it can only suppress a
+            -- flag (weekly full mode still heals it), never re-queue.
             SELECT ticker, count(*) AS n_bars
             FROM market_data_daily
+            WHERE date >= CURRENT_DATE - INTERVAL '450 days'
+              AND num_nulls(open, high, low, close, volume) = 0
             GROUP BY ticker
         )
         SELECT DISTINCT m.ticker
@@ -335,6 +374,20 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def _filter_recent_rows(rows: list[dict],
+                        recent_days: Optional[int]) -> list[dict]:
+    """Keep only rows dated within the last ``recent_days`` (None = all).
+
+    Shared by the real upsert path and --dry-run so the dry run
+    previews exactly the rows the live run would write.
+    """
+    if recent_days is None or not rows:
+        return rows
+    from datetime import date as _date, timedelta as _timedelta
+    cutoff = _date.today() - _timedelta(days=recent_days)
+    return [r for r in rows if r['date'] >= cutoff]
+
+
 def backfill_ticker(ticker: str, recent_days: Optional[int] = None) -> int:
     """Backfill derived columns for one ticker. Returns row count.
 
@@ -353,11 +406,7 @@ def backfill_ticker(ticker: str, recent_days: Optional[int] = None) -> int:
     if df.empty:
         log.warning("  %s: no rows in market_data_daily — skipping", ticker)
         return 0
-    rows = _build_indicator_rows(ticker, df)
-    if recent_days is not None and rows:
-        from datetime import date as _date, timedelta as _timedelta
-        cutoff = _date.today() - _timedelta(days=recent_days)
-        rows = [r for r in rows if r['date'] >= cutoff]
+    rows = _filter_recent_rows(_build_indicator_rows(ticker, df), recent_days)
     if not rows:
         log.warning("  %s: no indicator rows produced (only %d bars)", ticker, len(df))
         return 0
@@ -470,7 +519,8 @@ def main() -> int:
     def _process_one(tk: str) -> int:
         if args.dry_run:
             df = _full_history(tk)
-            rows = _build_indicator_rows(tk, df)
+            rows = _filter_recent_rows(
+                _build_indicator_rows(tk, df), recent_days)
             log.info("  %s: would upsert %d rows", tk, len(rows))
             return 0
         return backfill_ticker(tk, recent_days=recent_days)

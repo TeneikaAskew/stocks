@@ -44,7 +44,7 @@ class TestTickerResolution:
         sql, params = qm.call_args[0]
         assert 'num_nulls(' in sql
         assert 'atr_14' in sql       # part of the OR-list
-        assert 'rsi_14' in sql       # part of the OR-list
+        assert 'ema_9' in sql        # part of the OR-list
         assert 'macd' in sql         # part of the OR-list
         assert 'strat_candle' in sql # strat included too
         assert 'CURRENT_DATE' in sql
@@ -88,6 +88,20 @@ class TestTickerResolution:
         assert f'n_bars >= {mod._WARMUP_200_MIN_BARS}' in sql
         assert f'n_bars >= {mod._WARMUP_50_MIN_BARS}' in sql
         assert f'n_bars >= {mod._WARMUP_SHORT_MIN_BARS}' in sql
+        # Warmup thresholds must count only USABLE bars (complete raw
+        # OHLCV) — rows the compute path drops can't satisfy a warmup.
+        cte = sql.split('SELECT DISTINCT')[0]
+        assert 'num_nulls(open, high, low, close, volume) = 0' in cte
+        # Formula-domain columns (legitimately NaN on flat/zero-volume
+        # stretches — denominator is zero, recompute reproduces the
+        # NaN) must never appear in the flag predicate. Live residue
+        # 2026-08-24 was exactly bb_pct/rvol/bb_squeeze re-queuing 5
+        # tickers forever.
+        for col in mod._FORMULA_DOMAIN_COLS:
+            assert col not in sql, (
+                f"{col} is formula-domain (partial function) — flagging "
+                "its NULLs makes the daily self-heal non-convergent"
+            )
 
     def test_warmup_classes_partition_the_gap_columns(self):
         """Every gap-check column must belong to exactly one warmup
@@ -98,11 +112,17 @@ class TestTickerResolution:
         short = set(mod._WARMUP_SHORT_COLS)
         w50 = set(mod._WARMUP_50_COLS)
         w200 = set(mod._WARMUP_200_COLS)
-        assert short | w50 | w200 == set(mod._DERIVED_COLS_FOR_GAP_CHECK)
-        assert not (short & w50) and not (short & w200) and not (w50 & w200)
+        formula = set(mod._FORMULA_DOMAIN_COLS)
+        classes = [short, w50, w200, formula]
+        union = set().union(*classes)
+        assert union == set(mod._DERIVED_COLS_FOR_GAP_CHECK)
+        assert sum(len(c) for c in classes) == len(union), \
+            "warmup/formula classes must be pairwise disjoint"
         # The known long-warmup columns must be gated, not in short.
         assert w200 == {'sma_200'}
         assert w50 == {'ema_50', 'ma_50'}
+        # The live-verified non-convergent trio must stay exempt.
+        assert {'bb_pct', 'rvol', 'bb_squeeze'} <= formula
 
     def test_mode_full_returns_all_tickers(self):
         with patch.object(mod, 'query_to_dataframe',
@@ -218,6 +238,21 @@ class TestBackfillTicker:
         assert (df_written['date'] >= cutoff).all()
         assert 0 < len(df_written) <= 11
         assert n == len(df_written)
+
+    def test_filter_recent_rows_shared_helper(self):
+        """--dry-run must preview the same rows the live path writes
+        (Codex review on PR #756): both go through _filter_recent_rows."""
+        today = date.today()
+        rows = [
+            {'ticker': 'SPY', 'date': today, 'atr_14': 1.0},
+            {'ticker': 'SPY', 'date': today - timedelta(days=3), 'atr_14': 1.0},
+            {'ticker': 'SPY', 'date': today - timedelta(days=30), 'atr_14': 1.0},
+        ]
+        kept = mod._filter_recent_rows(rows, 10)
+        assert [r['date'] for r in kept] == [today, today - timedelta(days=3)]
+        # None = no filtering (full mode / --tickers recoveries)
+        assert mod._filter_recent_rows(rows, None) == rows
+        assert mod._filter_recent_rows([], 10) == []
 
     def test_recent_days_with_only_stale_rows_writes_nothing(self):
         bars = _synth_bars(60)  # dated 2024 — all older than any window
