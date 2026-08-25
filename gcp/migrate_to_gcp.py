@@ -679,6 +679,24 @@ def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
 
 # ── Trades ────────────────────────────────────────────────────────────────────
 
+def _trade_times_to_utc(series: pd.Series) -> pd.Series:
+    """tz guard (#722): trade parquets carry NAIVE ET wall-clock times.
+
+    ``pd.to_datetime(..., utc=True)`` on a naive series RELABELS it as UTC
+    — a 4-5h shift that lands under a different (ticker, entry_time)
+    conflict key on re-run, duplicating rows instead of converging.
+    Branch on tz-awareness like the intraday ``ts`` normalization above:
+    naive → localize America/New_York then convert; aware → convert only.
+    DST-ambiguous/nonexistent wall times become NaT rather than guessing.
+    """
+    s = pd.to_datetime(series, errors='coerce')
+    if s.dt.tz is None:
+        return s.dt.tz_localize(
+            'America/New_York', ambiguous='NaT', nonexistent='NaT',
+        ).dt.tz_convert('UTC')
+    return s.dt.tz_convert('UTC')
+
+
 def migrate_trades(data_dir: Path, dry_run: bool):
     """Upsert daily trade-log Parquet files into the ``trades`` table.
 
@@ -706,9 +724,9 @@ def migrate_trades(data_dir: Path, dry_run: bool):
             if 'trade_date' not in df.columns:
                 df['trade_date'] = f.stem   # filename is YYYY-MM-DD.parquet
             if 'entry_time' in df.columns:
-                df['entry_time'] = pd.to_datetime(df['entry_time'], utc=True, errors='coerce')
+                df['entry_time'] = _trade_times_to_utc(df['entry_time'])
             if 'exit_time' in df.columns:
-                df['exit_time'] = pd.to_datetime(df['exit_time'], utc=True, errors='coerce')
+                df['exit_time'] = _trade_times_to_utc(df['exit_time'])
             if not dry_run:
                 upsert_dataframe(df, 'trades', ['ticker', 'entry_time'])
             total += len(df)
