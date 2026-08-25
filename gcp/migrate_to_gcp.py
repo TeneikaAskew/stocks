@@ -680,20 +680,24 @@ def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
 # ── Trades ────────────────────────────────────────────────────────────────────
 
 def _trade_times_to_utc(series: pd.Series) -> pd.Series:
-    """tz guard (#722): trade parquets carry NAIVE ET wall-clock times.
+    """Normalize trade parquet timestamps to aware UTC.
 
-    ``pd.to_datetime(..., utc=True)`` on a naive series RELABELS it as UTC
-    — a 4-5h shift that lands under a different (ticker, entry_time)
-    conflict key on re-run, duplicating rows instead of converging.
-    Branch on tz-awareness like the intraday ``ts`` normalization above:
-    naive → localize America/New_York then convert; aware → convert only.
-    DST-ambiguous/nonexistent wall times become NaT rather than guessing.
+    NAIVE values are UTC instants, NOT Eastern wall clock: TradeLogger's
+    producer stamps ``entry_time = datetime.now()`` (gcp/signal_monitor.py,
+    whose own comment calls it "the same naive UTC value written to the
+    DB row" — Cloud Run containers run UTC) and writes the IDENTICAL
+    value to the ``trades`` table conflict key and the parquet backup.
+    Restore parity therefore requires naive → relabel as UTC; localizing
+    as America/New_York would shift a summer 14:05 to 18:05 UTC and land
+    restored rows under a different (ticker, entry_time) key, duplicating
+    every trade (Codex P1 on #764 — the first cut of this helper made
+    exactly that mistake, mis-generalizing from the intraday path whose
+    parquets ARE ET-naive but come from a different producer).
+    Already-aware values convert without relabeling.
     """
     s = pd.to_datetime(series, errors='coerce')
     if s.dt.tz is None:
-        return s.dt.tz_localize(
-            'America/New_York', ambiguous='NaT', nonexistent='NaT',
-        ).dt.tz_convert('UTC')
+        return s.dt.tz_localize('UTC')
     return s.dt.tz_convert('UTC')
 
 
