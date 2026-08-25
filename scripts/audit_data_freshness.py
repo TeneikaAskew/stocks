@@ -1000,13 +1000,24 @@ _JOB_DURATION_MIN_RUNS = 6
 
 
 def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
-    """Warn when a job's latest recorded run took more than
+    """Flag a job whose latest recorded run took more than
     _JOB_DURATION_FACTOR × its trailing 30-day median.
 
     Reads job_runs (gcp/schema.sql — written by record_job_run).
     Capacity drift is invisible until a timeout cliff: issue #751's job
     ran 3h09m daily for 20 days against a 3h cap — 19 near-misses with
     no trend signal. This makes the trend itself page, before the cliff.
+
+    Emits status="stale", NOT "warn" (Codex P1, PR #759): the deployed
+    freshness-watchdog runs `--strict`, whose exit code — the only
+    thing the failure-notifier sees — is nonzero solely on overall
+    "stale". A warn-level finding would render this detector inert in
+    production, which is exactly the silent-near-miss failure mode it
+    exists to close.
+
+    Baselines are per (job_name, variant): backfill-daily-indicators'
+    weekly 2h full sweep must not be judged against its daily runs'
+    minutes-scale median (Codex P2, PR #759).
 
     job_runs may not exist yet on an instance that hasn't run the
     schema migration; that case logs and skips explicitly (narrow,
@@ -1022,19 +1033,21 @@ def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
 
     sql = f"""
         WITH recent AS (
-            SELECT job_name, duration_s, started_at,
-                   row_number() OVER (PARTITION BY job_name
-                                      ORDER BY started_at DESC) AS rn
+            SELECT job_name, COALESCE(variant, '') AS variant,
+                   duration_s, started_at,
+                   row_number() OVER (
+                       PARTITION BY job_name, COALESCE(variant, '')
+                       ORDER BY started_at DESC) AS rn
             FROM job_runs
             WHERE started_at >= now() - INTERVAL '30 days'
         )
-        SELECT job_name,
+        SELECT job_name, variant,
                max(duration_s) FILTER (WHERE rn = 1)  AS latest_s,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_s)
                    FILTER (WHERE rn > 1)              AS median_prior_s,
                count(*)                               AS n_runs
         FROM recent
-        GROUP BY job_name
+        GROUP BY job_name, variant
         HAVING count(*) >= {_JOB_DURATION_MIN_RUNS}
     """
     df = query_to_dataframe_strict(sql, {})
@@ -1044,16 +1057,18 @@ def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
         median = float(r['median_prior_s']) if r['median_prior_s'] is not None else None
         if median is None or median <= 0:
             continue
+        variant = str(r['variant']) if r['variant'] else ''
+        label = f"{r['job_name']}[{variant}]" if variant else str(r['job_name'])
         if latest > _JOB_DURATION_FLOOR_S and latest > _JOB_DURATION_FACTOR * median:
             rows.append(FreshnessRow(
-                table=f"job_runs.{r['job_name']} duration",
+                table=f"job_runs.{label} duration",
                 ticker=None,
                 last_row_at=f"latest {latest / 60:.1f} min",
                 expected_latest=(f"<= {_JOB_DURATION_FACTOR:.0f}x median "
                                  f"({median / 60:.1f} min, n={int(r['n_runs'])})"),
                 lag_hours=None,
                 expected_max_hours=0,
-                status="warn",
+                status="stale",
                 row_count_recent=int(r['n_runs']),
                 writer_job=str(r['job_name']),
             ))

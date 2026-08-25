@@ -72,26 +72,64 @@ def test_duration_regression_healthy_is_silent(monkeypatch):
     from scripts.audit_data_freshness import _query_job_duration_regression
     monkeypatch.setattr(database, "table_exists", lambda t: True)
     _patch_strict(monkeypatch, pd.DataFrame([
-        {"job_name": "backfill-daily-indicators",
+        {"job_name": "backfill-daily-indicators", "variant": "daily",
          "latest_s": 2100.0, "median_prior_s": 1900.0, "n_runs": 14},
     ]))
     assert _query_job_duration_regression(datetime(2026, 8, 25, 14, 0)) == []
 
 
-def test_duration_regression_fires_warn(monkeypatch):
+def test_duration_regression_fires_stale(monkeypatch):
     """The #751 shape: a job that used to take ~35 min suddenly runs
-    3h+. latest > 2x median AND above the floor → warn naming the job."""
+    3h+. latest > 2x median AND above the floor → STALE naming the job.
+    Must be stale, not warn: the deployed watchdog's --strict exit code
+    (the only signal the failure-notifier sees) fires solely on stale —
+    a warn here would make the detector inert in production (Codex P1,
+    PR #759)."""
     from gcp import database
     from scripts.audit_data_freshness import _query_job_duration_regression
     monkeypatch.setattr(database, "table_exists", lambda t: True)
     _patch_strict(monkeypatch, pd.DataFrame([
-        {"job_name": "backfill-daily-indicators",
+        {"job_name": "backfill-daily-indicators", "variant": "daily",
          "latest_s": 11340.0, "median_prior_s": 2100.0, "n_runs": 14},
     ]))
     out = _query_job_duration_regression(datetime(2026, 8, 25, 14, 0))
     assert len(out) == 1
-    assert out[0].status == "warn"
+    assert out[0].status == "stale"
     assert out[0].writer_job == "backfill-daily-indicators"
+    assert "[daily]" in out[0].table
+
+
+def test_duration_regression_partitions_by_variant(monkeypatch):
+    """A healthy weekly full sweep (2h vs its own 2h median) must not be
+    judged against the daily variant's minutes-scale median (Codex P2,
+    PR #759) — the SQL groups by (job_name, variant), and per-group
+    rows that are within factor stay silent."""
+    from gcp import database
+    from scripts.audit_data_freshness import _query_job_duration_regression
+    monkeypatch.setattr(database, "table_exists", lambda t: True)
+    _patch_strict(monkeypatch, pd.DataFrame([
+        {"job_name": "backfill-daily-indicators", "variant": "daily",
+         "latest_s": 180.0, "median_prior_s": 150.0, "n_runs": 20},
+        {"job_name": "backfill-daily-indicators", "variant": "full",
+         "latest_s": 7800.0, "median_prior_s": 7200.0, "n_runs": 8},
+    ]))
+    assert _query_job_duration_regression(datetime(2026, 8, 25, 14, 0)) == []
+
+
+def test_duration_regression_sql_groups_by_variant(monkeypatch):
+    from gcp import database
+    from scripts.audit_data_freshness import _query_job_duration_regression
+    monkeypatch.setattr(database, "table_exists", lambda t: True)
+    captured = {}
+
+    def fake(sql, params=None):
+        captured["sql"] = sql
+        return pd.DataFrame()
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", fake)
+    _query_job_duration_regression(datetime(2026, 8, 25, 14, 0))
+    assert "PARTITION BY job_name, COALESCE(variant, '')" in captured["sql"]
+    assert "GROUP BY job_name, variant" in captured["sql"]
 
 
 def test_duration_regression_ignores_fast_jobs(monkeypatch):
@@ -101,7 +139,7 @@ def test_duration_regression_ignores_fast_jobs(monkeypatch):
     from scripts.audit_data_freshness import _query_job_duration_regression
     monkeypatch.setattr(database, "table_exists", lambda t: True)
     _patch_strict(monkeypatch, pd.DataFrame([
-        {"job_name": "fetch-fred-rates",
+        {"job_name": "fetch-fred-rates", "variant": None,
          "latest_s": 90.0, "median_prior_s": 40.0, "n_runs": 20},
     ]))
     assert _query_job_duration_regression(datetime(2026, 8, 25, 14, 0)) == []
@@ -170,6 +208,7 @@ def test_backfill_main_records_job_run(monkeypatch):
     args, kwargs = calls[0]
     assert args[0] == "backfill-daily-indicators"
     assert args[2] == "success"
+    assert kwargs["variant"] == "daily"
     assert kwargs["items_total"] == 2
     assert kwargs["items_failed"] == 0
     assert kwargs["rows_written"] == 14

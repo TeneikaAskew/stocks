@@ -797,6 +797,7 @@ def record_job_run(
     started_at,
     status: str,
     *,
+    variant: Optional[str] = None,
     items_total: Optional[int] = None,
     items_processed: Optional[int] = None,
     items_failed: Optional[int] = None,
@@ -826,16 +827,17 @@ def record_job_run(
         execute_sql(
             """
             INSERT INTO job_runs
-                (job_name, execution_name, started_at, finished_at,
+                (job_name, variant, execution_name, started_at, finished_at,
                  duration_s, status, items_total, items_processed,
                  items_failed, rows_written, note)
             VALUES
-                (:job_name, :execution_name, :started_at, :finished_at,
+                (:job_name, :variant, :execution_name, :started_at, :finished_at,
                  :duration_s, :status, :items_total, :items_processed,
                  :items_failed, :rows_written, :note)
             """,
             {
                 'job_name': job_name,
+                'variant': variant,
                 'execution_name': os.environ.get('CLOUD_RUN_EXECUTION'),
                 'started_at': started_at,
                 'finished_at': finished_at,

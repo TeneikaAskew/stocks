@@ -3702,6 +3702,12 @@ CREATE TABLE IF NOT EXISTS playbook_cards_staging (
 CREATE TABLE IF NOT EXISTS job_runs (
     id              BIGSERIAL    PRIMARY KEY,
     job_name        TEXT         NOT NULL,
+    -- Execution mode within a job (e.g. 'daily' vs 'full' for
+    -- backfill-daily-indicators). A first-class column, not free-form
+    -- note text: the duration-regression check baselines per
+    -- (job_name, variant) — a weekly 2h full sweep must not be judged
+    -- against the daily runs' minutes-scale median (Codex, PR #759).
+    variant         TEXT,
     execution_name  TEXT,                      -- $CLOUD_RUN_EXECUTION when present
     started_at      TIMESTAMPTZ  NOT NULL,
     finished_at     TIMESTAMPTZ  NOT NULL,

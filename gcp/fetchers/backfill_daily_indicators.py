@@ -501,8 +501,9 @@ def main() -> int:
     if not tickers:
         log.info("No tickers to process — exiting cleanly (0 gaps detected).")
         record_job_run('backfill-daily-indicators', run_started, 'success',
+                       variant=args.mode,
                        items_total=0, items_processed=0, items_failed=0,
-                       rows_written=0, note=f"mode={args.mode} (no gaps)")
+                       rows_written=0, note="no gaps")
         return 0
 
     # Daily mode writes back only the recent window (gap window + margin
@@ -567,11 +568,12 @@ def main() -> int:
     # task-timeout) becomes a queryable trend instead of a cliff.
     record_job_run('backfill-daily-indicators', run_started,
                    'error' if too_many else 'success',
+                   variant=args.mode,
                    items_total=n_total,
                    items_processed=n_total - n_failed,
                    items_failed=n_failed,
                    rows_written=total_rows,
-                   note=f"mode={args.mode} workers={workers}")
+                   note=f"workers={workers}")
     if too_many:
         log.error("TOO-MANY-FAILURES — %d/%d tickers (%.0f%%) failed",
                   n_failed, n_total, 100 * n_failed / n_total)
