@@ -11,6 +11,7 @@ schema on the ephemeral test Postgres:
 """
 from __future__ import annotations
 
+import os
 import uuid
 
 import pandas as pd
@@ -18,6 +19,15 @@ import pytest
 import sqlalchemy
 
 from scripts.run_param_sweep import apply_winner, combo_label, persist_results
+
+# Same guard as test_journal_timestamptz_roundtrip.py (#714): the CI
+# `Run Tests` job passes --ignore=tests/integration, so this only matters
+# for a local `pytest tests/` run with no DB — skip instead of erroring.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DB_HOST"),
+    reason="integration tests need a Postgres (DB_HOST) — see the "
+    "integration-tests CI job in backtest-pipeline.yml",
+)
 from lib.walk_forward import select_calibration_winner
 
 
