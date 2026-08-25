@@ -175,3 +175,45 @@ class TestBackfillDataSourceTag:
         df_written = ups.call_args[0][0]
         assert 'data_source' in df_written.columns
         assert (df_written['data_source'] == 'av_daily_backfill').all()
+
+
+class TestExcludePartialToday:
+    """Pre-close runs must never persist AV's intraday-partial
+    current-day bar (Codex P1 on PR #758): the evening run would see
+    max_date == today, skip the ticker, and let the partial bar stand
+    as "final" for ~24h."""
+
+    def _frame(self, today):
+        return pd.DataFrame({
+            'ticker': ['AAA'] * 3,
+            'date': [today - pd.Timedelta(days=2).to_pytimedelta(),
+                     today - pd.Timedelta(days=1).to_pytimedelta(),
+                     today],
+            'close': [1.0, 1.1, 1.2],
+        })
+
+    def test_preclose_drops_todays_row(self):
+        from datetime import time as dt_time
+        from gcp.fetchers.fetch_market_data import _exclude_partial_today
+        today = pd.Timestamp('2026-08-24').date()
+        out = _exclude_partial_today(self._frame(today), today,
+                                     dt_time(11, 30))
+        assert today not in set(out['date'])
+        assert len(out) == 2
+
+    def test_postclose_keeps_todays_row(self):
+        from datetime import time as dt_time
+        from gcp.fetchers.fetch_market_data import _exclude_partial_today
+        today = pd.Timestamp('2026-08-24').date()
+        out = _exclude_partial_today(self._frame(today), today,
+                                     dt_time(19, 15))
+        assert today in set(out['date'])
+        assert len(out) == 3
+
+    def test_boundary_1615_keeps(self):
+        from datetime import time as dt_time
+        from gcp.fetchers.fetch_market_data import _exclude_partial_today
+        today = pd.Timestamp('2026-08-24').date()
+        out = _exclude_partial_today(self._frame(today), today,
+                                     dt_time(16, 15))
+        assert today in set(out['date'])
