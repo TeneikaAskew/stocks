@@ -259,9 +259,35 @@ Three hypotheses tested: system change, regime change, mix shift.
   holds a pooled connection). Failed dates were re-run at bounded
   concurrency; the job is idempotent so re-runs converge.
 
-> **Backfill verification in progress** — resolved July/August playbook
-> outcome numbers will be appended to this section once every weekday
-> session ≤ 2026-08-24 reports resolved (tracked on PR #774).
+### Backfilled results — the playbook levels are the profitable surface
+
+With the backfill complete, June–August playbook coverage is full
+(June 60/63, July 63/66, August 48/51 — the only unresolved rows are the
+holiday dates 6/19 and 7/3 and today, 8/25). Per the resolver's
+mechanical model ($10,000 notional per triggered leg, enter at trigger
+touch, exit at first-touch of stop/targets else EOD close, no costs):
+
+| Month | CALL trig | CALL T1 | CALL P&L | PUT trig | PUT T1 | PUT P&L | Month total |
+|---|---|---|---|---|---|---|---|
+| Jun | 37 | 30 (81%) | +$2,072 | 40 | 29 (73%) | +$1,235 | **+$3,307** |
+| Jul | 39 | 29 (74%) | +$801 | 44 | 34 (77%) | +$901 | **+$1,702** |
+| Aug | 33 | 22 (67%) | +$999 | 22 | 13 (59%) | +$899 | **+$1,898** |
+
+**Positive every month, on both legs, and for every ticker** (IWM
++$2,540, QQQ +$2,761, SPY +$1,605). ~215 triggered legs, overall T1 hit
+rate ~74%, avg P&L per triggered leg +0.20% to +0.56%.
+
+This reframes the overall verdict. The structure-based *levels*
+framework (premarket trigger → T1/T2/T3 with stops, both directions
+armed, first-touch resolution) has been consistently profitable all
+three months — including July and August, where the momentum alert
+engine and the AI day-calls were coin-flips. The system's losses are
+concentrated in the intraday *alert* engine's fire/exit machinery, not
+in the level construction. Caveats: trigger-touch fills with no
+slippage/costs, and both legs can trigger on whipsaw days (the totals
+net that); as a mechanical model it overstates what a human trading it
+would capture, but the margin (+$6,907 per $10k-per-leg over 63
+sessions) is not a rounding artifact.
 
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
