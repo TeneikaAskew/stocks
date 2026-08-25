@@ -323,9 +323,28 @@ jobs:
           fi
 
           git commit -m "docs: monthly architecture doc refresh ${MONTH}"
-          git push -u origin "$BRANCH"
+
+          # bot/arch-refresh-YYYY-MM is disposable and re-created fresh from
+          # main every run. If an earlier run already pushed it this month
+          # (the 1st-of-month schedule, followed by a manual workflow_dispatch
+          # re-run — exactly what happened 2026-07-06, issue #688) this run's
+          # branch shares no history with the remote one and a plain push is
+          # rejected as non-fast-forward. Force-push is safe here: this branch
+          # is never shared/collaborated on and is NOT `main` (CLAUDE.md's
+          # force-push ban is scoped to main).
+          git push --force -u origin "$BRANCH"
 
           STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md)
+
+          # A PR may already be open for this branch from an earlier run this
+          # month. `gh pr create` errors loudly in that case even though the
+          # force-push above already updated it with fresh content — that's
+          # not a failure, just nothing further to do.
+          EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING_PR" ]; then
+            echo "::notice::PR #$EXISTING_PR already open for $BRANCH — force-pushed fresh content, no new PR needed"
+            exit 0
+          fi
 
           gh pr create \
             --base main --head "$BRANCH" \
