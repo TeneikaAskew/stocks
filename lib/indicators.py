@@ -702,6 +702,241 @@ def calculate_order_blocks(
 
 
 # ---------------------------------------------------------------------------
+# Volume pressure (BSVP) — port of tradingview-pine-scripts/iwm-bsvp (Pine v6)
+# ---------------------------------------------------------------------------
+# Faithful port of the Vadim Gimelfarb "Power-Balance" bull/bear pressure
+# split, Karthik Marar's normalized variant, and the VPO oscillator layer.
+# Parity notes vs Pine:
+#   * ta.ema(x, n)  -> x.ewm(span=n, adjust=False).mean()
+#   * ta.wma(x, n)  -> linear-weighted rolling mean (most-recent weight = n)
+#   * ta.roc(x, n)  -> 100 * (x - x.shift(n)) / x.shift(n)
+#   * Warm-up bars are NaN (Pine `na`); boolean signals treat NaN as False,
+#     which matches Pine's na-propagation through comparisons.
+
+
+def _wma(values: pd.Series, period: int) -> pd.Series:
+    """Linear-weighted moving average matching Pine ta.wma.
+
+    Vectorized as a weighted sum of shifts (weight `period` on the most
+    recent bar) — identical to rolling-apply but ~100x faster on 1m series.
+    """
+    denom = period * (period + 1) / 2.0
+    out = sum((period - i) * values.shift(i) for i in range(period))
+    return out / denom
+
+
+def calculate_power_balance(
+    open_: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+) -> Tuple[pd.Series, pd.Series]:
+    """Gimelfarb Power-Balance split of each bar's range into bull power (BP)
+    and bear power (SP).
+
+    Vectorized port of the nested ternary chains in iwm-bsvp lines 72-74.
+    The `close == open` branches use the position of the close within the
+    range (upper-wick vs lower-wick dominance) and the previous close vs
+    this bar's open.
+    """
+    c1 = close.shift(1)  # Pine close[1]
+    hl = high - low
+
+    dn = close < open_          # down bar
+    up = close > open_          # up bar
+    uw_gt = (high - close) > (close - low)   # upper wick dominates (doji)
+    uw_lt = (high - close) < (close - low)   # lower wick dominates (doji)
+
+    bp = np.select(
+        [
+            dn & (c1 < open_), dn,
+            up & (c1 > open_), up,
+            uw_gt & (c1 < open_), uw_gt,
+            uw_lt & (c1 > open_), uw_lt,
+            (c1 > open_), (c1 < open_),
+        ],
+        [
+            np.maximum(high - c1, close - low), np.maximum(high - open_, close - low),
+            hl, np.maximum(open_ - c1, hl),
+            np.maximum(high - c1, close - low), high - open_,
+            hl, np.maximum(open_ - c1, hl),
+            np.maximum(high - open_, close - low), np.maximum(open_ - c1, hl),
+        ],
+        default=hl,
+    )
+
+    sp = np.select(
+        [
+            dn & (c1 > open_), dn,
+            up & (c1 > open_), up,
+            uw_gt & (c1 > open_), uw_gt,
+            uw_lt & (c1 > open_), uw_lt,
+            (c1 > open_), (c1 < open_),
+        ],
+        [
+            np.maximum(c1 - open_, hl), hl,
+            np.maximum(c1 - low, high - close), np.maximum(open_ - low, high - close),
+            np.maximum(c1 - open_, hl), hl,
+            np.maximum(c1 - low, high - close), open_ - low,
+            np.maximum(c1 - open_, hl), np.maximum(open_ - low, high - close),
+        ],
+        default=hl,
+    )
+
+    bp = pd.Series(bp, index=close.index)
+    sp = pd.Series(sp, index=close.index)
+    # First bar has no close[1]; Pine yields na there.
+    bp.iloc[:1] = np.nan
+    sp.iloc[:1] = np.nan
+    return bp, sp
+
+
+def calculate_bsvp(
+    df: pd.DataFrame,
+    fast_ma: int = 3,
+    lookback: int = 27,
+    divergence_lookback: int = 14,
+    close_col: str = 'Close',
+) -> pd.DataFrame:
+    """Full BSVP indicator stack: pressure volumes, VPO oscillator, and the
+    derived signal layer (divergences, acceleration, exhaustion, trend
+    strength, entry quality) from tradingview-pine-scripts/iwm-bsvp.
+
+    Expects RTH-only bars (the Pine script's RTH gate is applied upstream by
+    the caller's session filter). Raw mode (`norm=false` in Pine) is used for
+    the pressure selectors, matching the script's default; both raw and
+    normalized smoothed series are returned since VPO2 is defined from the
+    normalized side.
+
+    Returns a DataFrame indexed like `df` with columns:
+      bsvp_bp, bsvp_sp, bsvp_bpv, bsvp_spv, bsvp_bpv_avg, bsvp_spv_avg,
+      bsvp_vpo1, bsvp_vpo2, bsvp_vph, bsvp_trend_strength,
+      bsvp_entry_quality, and boolean signal columns:
+      bsvp_buy, bsvp_sell, bsvp_strong_buy, bsvp_strong_sell,
+      bsvp_bull_cross, bsvp_bear_cross, bsvp_bullish_div_conf,
+      bsvp_bearish_div_conf, bsvp_bull_exhaustion, bsvp_sell_exhaustion,
+      bsvp_bull_accel, bsvp_sell_accel, bsvp_prime_buy, bsvp_prime_sell,
+      bsvp_low_quality_bar.
+    """
+    o, h, l, c = df['Open'], df['High'], df['Low'], df[close_col]
+    vol = df['Volume'].where(df['Volume'] > 0, 1).astype(float)
+
+    bp, sp = calculate_power_balance(o, h, l, c)
+    tp = bp + sp
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        bpv = (bp / tp) * vol
+        spv = (sp / tp) * vol
+    tpv = bpv + spv
+
+    ema = lambda s, n: s.ewm(span=n, adjust=False).mean()
+
+    # Raw smoothed pressure
+    bpv_avg = ema(ema(bpv, fast_ma), fast_ma)
+    spv_avg = ema(ema(spv, fast_ma), fast_ma)
+    tpv_avg = ema(_wma(tpv, fast_ma), fast_ma)
+
+    # Normalized (Karthik Marar) smoothed pressure
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vn = vol / ema(vol, lookback)
+        bpn = (bp / ema(bp, lookback)) * vn * 100.0
+        spn = (sp / ema(sp, lookback)) * vn * 100.0
+    tpn = bpn + spn
+    nbf = ema(_wma(bpn, fast_ma), fast_ma)
+    nsf = ema(_wma(spn, fast_ma), fast_ma)
+    tpf = ema(_wma(tpn, fast_ma), fast_ma)
+
+    # VPO oscillator (vinv=false, oscillator mode — the script's default)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vpo1 = ((bpv_avg - spv_avg) / tpv_avg) * 100.0
+        vpo2 = ((nbf - nsf) / tpf) * 100.0
+    vph = vpo1 - vpo2  # Pine nz() only matters during warm-up; NaN>0 is False either way
+
+    # Conditional selectors — raw mode (norm=false)
+    bpcon = bpv.where(bpv > spv, -bpv.abs())
+    spcon = spv.where(spv > bpv, -spv.abs())
+    bpacon = bpv_avg
+    spacon = spv_avg
+
+    # Data-quality gate (RTH is assumed upstream; this is the volume/range leg)
+    is_low_volume = df['Volume'] < df['Volume'].rolling(20).mean() * 0.3
+    is_narrow_range = (h - l) < calculate_atr(h, l, c, 14) * 0.2
+    low_quality_bar = is_low_volume & is_narrow_range
+
+    # Divergences (iwm-bsvp lines 117-136)
+    price_at_high = h == h.rolling(divergence_lookback).max()
+    price_at_low = l == l.rolling(divergence_lookback).min()
+    bearish_div = price_at_high & (bpacon < bpacon.shift(1)) & (bpacon < bpacon.shift(2)) & (vpo1 > 0)
+    bearish_div_conf = bearish_div & (vph < vph.shift(1))
+    bullish_div = price_at_low & (spacon < spacon.shift(1)) & (spacon < spacon.shift(2)) & (vpo1 < 0)
+    bullish_div_conf = bullish_div & (vph > vph.shift(1))
+
+    # Acceleration / exhaustion (lines 143-156)
+    roc = lambda s, n: 100.0 * (s - s.shift(n)) / s.shift(n)
+    bull_accel_roc = roc(bpacon, 3)
+    sell_accel_roc = roc(spacon, 3)
+    vpo1_accel = roc(vpo1, 3)
+    bull_exhaustion = (bpacon > bpacon.rolling(20).mean()) & (bull_accel_roc < -15) & (vpo1 > 0)
+    sell_exhaustion = (spacon > spacon.rolling(20).mean()) & (sell_accel_roc < -15) & (vpo1 < 0)
+    bull_accelerating = (bpacon > spacon) & (bull_accel_roc > 20) & (vpo1_accel > 0)
+    sell_accelerating = (spacon > bpacon) & (sell_accel_roc > 20) & (vpo1_accel < 0)
+    momentum_shift = ((vph > 0) & (vph.shift(1) <= 0)) | ((vph < 0) & (vph.shift(1) >= 0))
+
+    # Trend strength 0-100 (lines 163-177)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vp_dominance = ((bpacon - spacon) / (bpacon + spacon)).abs() * 100.0
+    vp_score = np.select([vp_dominance > 70, vp_dominance > 50, vp_dominance > 30], [40, 30, 20], 10)
+    vpo1_strength = vpo1.abs()
+    conv_score = np.select([vpo1_strength > 30, vpo1_strength > 15, vpo1_strength > 5], [30, 20, 10], 5)
+    vph_strength = vph.abs()
+    hist_score = np.select([vph_strength > 10, vph_strength > 5, vph_strength > 2], [30, 20, 10], 5)
+    trend_strength = pd.Series(vp_score + conv_score + hist_score, index=df.index, dtype=float)
+
+    # Core signals (lines 201-221) — inRTH is True by construction here
+    buy_signal = (bpcon > 0) & (vpo1 > 0) & (vpo1 > vpo2) & ~bearish_div_conf & ~low_quality_bar
+    sell_signal = (spcon > 0) & (vpo1 < 0) & (vpo1 < vpo2) & ~bullish_div_conf & ~low_quality_bar
+    strong_buy = (bpcon > 0) & (bpcon > bpcon.shift(1)) & (vpo1 > 0) & (vpo1 > vpo2) & (vph > 0) & ~bearish_div
+    strong_sell = (spcon > 0) & (spcon > spcon.shift(1)) & (vpo1 < 0) & (vpo1 < vpo2) & (vph < 0) & ~bullish_div
+    bull_cross = (vpo1 > vpo2) & (vpo1.shift(1) <= vpo2.shift(1)) & (vpo1 > 0)
+    bear_cross = (vpo1 < vpo2) & (vpo1.shift(1) >= vpo2.shift(1)) & (vpo1 < 0)
+
+    # Entry quality 0-100 (lines 228-255)
+    trend_score = np.select([trend_strength > 75, trend_strength > 50, trend_strength > 30], [30, 20, 10], 0)
+    accel_score = np.where(bull_accelerating | sell_accelerating, 25, np.where(momentum_shift, 15, 0))
+    div_score = np.where(~bearish_div & ~bullish_div, 20, 10)
+    align_score = np.where(
+        ((bpcon > 0) & (vpo1 > 0) & (vpo1 > vpo2)) | ((spcon > 0) & (vpo1 < 0) & (vpo1 < vpo2)), 25, 10)
+    quality_mult = np.where(low_quality_bar, 0.5, 1.0)
+    entry_quality = pd.Series(
+        (trend_score + accel_score + div_score + align_score) * quality_mult,
+        index=df.index, dtype=float)
+
+    early_entry = (buy_signal | sell_signal) & (bull_accelerating | sell_accelerating) & (entry_quality > 70)
+    prime_buy = buy_signal & early_entry & ~bull_exhaustion
+    prime_sell = sell_signal & early_entry & ~sell_exhaustion
+
+    return pd.DataFrame({
+        'bsvp_bp': bp, 'bsvp_sp': sp,
+        'bsvp_bpv': bpv, 'bsvp_spv': spv,
+        'bsvp_bpv_avg': bpv_avg, 'bsvp_spv_avg': spv_avg,
+        'bsvp_vpo1': vpo1, 'bsvp_vpo2': vpo2, 'bsvp_vph': vph,
+        'bsvp_trend_strength': trend_strength,
+        'bsvp_entry_quality': entry_quality,
+        'bsvp_buy': buy_signal, 'bsvp_sell': sell_signal,
+        'bsvp_strong_buy': strong_buy, 'bsvp_strong_sell': strong_sell,
+        'bsvp_bull_cross': bull_cross, 'bsvp_bear_cross': bear_cross,
+        'bsvp_bullish_div_conf': bullish_div_conf,
+        'bsvp_bearish_div_conf': bearish_div_conf,
+        'bsvp_bull_exhaustion': bull_exhaustion,
+        'bsvp_sell_exhaustion': sell_exhaustion,
+        'bsvp_bull_accel': bull_accelerating,
+        'bsvp_sell_accel': sell_accelerating,
+        'bsvp_prime_buy': prime_buy, 'bsvp_prime_sell': prime_sell,
+        'bsvp_low_quality_bar': low_quality_bar,
+    }, index=df.index)
+
+
+# ---------------------------------------------------------------------------
 # Convenience: add all indicators to a DataFrame
 # ---------------------------------------------------------------------------
 

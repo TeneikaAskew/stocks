@@ -628,3 +628,116 @@ class TestRealizedVolZScore:
         bd = pd.Series(df.index.date, index=df.index)
         z = realized_vol_zscore(df["Close"], bd)
         assert z.notna().sum() == 0  # genuine missingness (not a bug)
+
+
+# ---------------------------------------------------------------------------
+# BSVP (Gimelfarb power-balance) — port of tradingview-pine-scripts/iwm-bsvp
+# ---------------------------------------------------------------------------
+
+class TestPowerBalance:
+    """Hand-computed cases for the 9-branch BP/SP conditional chains."""
+
+    @staticmethod
+    def _two_bar(prev_close, o, h, l, c):
+        """Frame whose second bar has close[1] = prev_close."""
+        return pd.DataFrame({
+            'Open':  [prev_close, o], 'High': [prev_close, h],
+            'Low':   [prev_close, l], 'Close': [prev_close, c],
+            'Volume': [1000.0, 1000.0],
+        })
+
+    def test_down_bar_prev_close_below_open(self):
+        # close<open, close[1]<open: BP=max(H-C1, C-L); SP=(c1>open? ... : H-L)
+        from lib.indicators import calculate_power_balance
+        df = self._two_bar(prev_close=100.5, o=101, h=102, l=99, c=100)
+        bp, sp = calculate_power_balance(df['Open'], df['High'], df['Low'], df['Close'])
+        assert bp.iloc[1] == pytest.approx(max(102 - 100.5, 100 - 99))  # 1.5
+        assert sp.iloc[1] == pytest.approx(102 - 99)                    # 3.0
+
+    def test_up_bar_prev_close_above_open(self):
+        # close>open, close[1]>open: BP=H-L; SP=max(C1-L, H-C)
+        from lib.indicators import calculate_power_balance
+        df = self._two_bar(prev_close=101, o=100, h=103, l=99.5, c=102)
+        bp, sp = calculate_power_balance(df['Open'], df['High'], df['Low'], df['Close'])
+        assert bp.iloc[1] == pytest.approx(103 - 99.5)                  # 3.5
+        assert sp.iloc[1] == pytest.approx(max(101 - 99.5, 103 - 102))  # 1.5
+
+    def test_doji_upper_wick_dominant(self):
+        # close==open, H-C > C-L, close[1]<open: BP=max(H-C1, C-L); SP=H-L
+        from lib.indicators import calculate_power_balance
+        df = self._two_bar(prev_close=99.5, o=100, h=102, l=99, c=100)
+        bp, sp = calculate_power_balance(df['Open'], df['High'], df['Low'], df['Close'])
+        assert bp.iloc[1] == pytest.approx(max(102 - 99.5, 100 - 99))   # 2.5
+        assert sp.iloc[1] == pytest.approx(102 - 99)                    # 3.0
+
+    def test_first_bar_is_nan(self):
+        from lib.indicators import calculate_power_balance
+        df = self._two_bar(prev_close=100, o=100, h=101, l=99, c=100.5)
+        bp, sp = calculate_power_balance(df['Open'], df['High'], df['Low'], df['Close'])
+        assert pd.isna(bp.iloc[0]) and pd.isna(sp.iloc[0])
+
+    def test_non_negative_on_random_data(self):
+        from lib.indicators import calculate_power_balance
+        df = _two_session_ohlcv()
+        bp, sp = calculate_power_balance(df['Open'], df['High'], df['Low'], df['Close'])
+        assert (bp.dropna() >= 0).all()
+        assert (sp.dropna() >= 0).all()
+
+
+class TestCalculateBsvp:
+
+    def test_output_shape_and_columns(self):
+        from lib.indicators import calculate_bsvp
+        df = _two_session_ohlcv()
+        out = calculate_bsvp(df)
+        assert len(out) == len(df)
+        for col in ('bsvp_vpo1', 'bsvp_vpo2', 'bsvp_vph', 'bsvp_buy', 'bsvp_sell',
+                    'bsvp_strong_buy', 'bsvp_strong_sell', 'bsvp_prime_buy',
+                    'bsvp_prime_sell', 'bsvp_trend_strength', 'bsvp_entry_quality'):
+            assert col in out.columns, col
+        # Signals are boolean and never both directions on the same bar
+        assert out['bsvp_buy'].dtype == bool
+        assert not (out['bsvp_buy'] & out['bsvp_sell']).any()
+
+    def test_vpo1_bounded(self):
+        # (BPVavg-SPVavg)/TPVavg is a normalized share: within [-100, 100]
+        from lib.indicators import calculate_bsvp
+        out = calculate_bsvp(_two_session_ohlcv())
+        v = out['bsvp_vpo1'].dropna()
+        assert v.between(-100.0001, 100.0001).all()
+
+    def test_vph_is_vpo1_minus_vpo2(self):
+        from lib.indicators import calculate_bsvp
+        out = calculate_bsvp(_two_session_ohlcv())
+        m = out[['bsvp_vpo1', 'bsvp_vpo2', 'bsvp_vph']].dropna()
+        assert np.allclose(m['bsvp_vph'], m['bsvp_vpo1'] - m['bsvp_vpo2'])
+
+    @staticmethod
+    def _trending_tape(direction=1, n=200):
+        """Strongly one-sided tape: closes march at the extreme of each bar."""
+        idx = pd.date_range('2024-01-02 09:30', periods=n, freq='1min')
+        drift = 0.05 * direction
+        close = 200.0 + np.cumsum(np.full(n, drift))
+        if direction > 0:
+            open_, high, low = close - 0.05, close + 0.01, close - 0.08
+        else:
+            open_, high, low = close + 0.05, close + 0.08, close - 0.01
+        return pd.DataFrame({'Open': open_, 'High': high, 'Low': low,
+                             'Close': close, 'Volume': np.full(n, 10_000.0)},
+                            index=idx)
+
+    def test_bull_tape_positive_vpo1(self):
+        from lib.indicators import calculate_bsvp
+        out = calculate_bsvp(self._trending_tape(direction=1))
+        assert out['bsvp_vpo1'].iloc[-20:].mean() > 0
+
+    def test_bear_tape_negative_vpo1(self):
+        from lib.indicators import calculate_bsvp
+        out = calculate_bsvp(self._trending_tape(direction=-1))
+        assert out['bsvp_vpo1'].iloc[-20:].mean() < 0
+
+    def test_trend_strength_and_quality_ranges(self):
+        from lib.indicators import calculate_bsvp
+        out = calculate_bsvp(_two_session_ohlcv())
+        assert out['bsvp_trend_strength'].between(15, 100).all()
+        assert out['bsvp_entry_quality'].between(0, 100).all()
