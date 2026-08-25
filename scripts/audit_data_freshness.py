@@ -709,23 +709,40 @@ COLUMN_NULLITY_CHECKS: list[dict] = [
         "table": "strat_features_5m",
         "column": "gamma_balance_price",
         "tickers": ("IWM", "SPY", "QQQ"),
-        # gamma_balance is sparse BY DESIGN: it exists only on sessions
-        # where cumulative net gamma has a zero-crossing (lib/gamma.py:905
-        # — "returns None on ~half of days"). Measured 2026-08: IWM ~40%,
-        # SPY/QQQ ~50-60% of sessions populated. A single-session 90%
-        # check therefore fails on any crossing-less day — the watchdog
-        # flapped (fail Sun 2026-08-23, pass Mon 08-24) and the notifier
-        # opened/auto-closed #744 on the flap. Five sessions at >=20%
-        # tolerates the design sparsity while still catching the real
-        # cascade signature this check exists for: the #744 July stretch
-        # (0% for 3+ weeks) scores 0.0 and still pages. Full-stop
-        # upstream (gamma_levels_eod stalls) is ALSO caught same-day by
-        # the total_gex check above, which is dense and stays at 90%/1d.
-        "lookback_days": 5,
-        "min_non_null_rate": 0.20,
+        # 2026-08-25: back to the strict dense shape, deliberately. The
+        # old zero-crossing gamma_balance was NULL by construction on
+        # put-gamma-heavy sessions, which made ANY fixed threshold track
+        # the market regime instead of pipeline health — calibrated twice
+        # (#644 90%/1d, #762 20%/5d), failed twice (#744, #765). The
+        # metric is now the OI-weighted gamma MEDIAN (lib/gamma.py,
+        # GAMMA_BALANCE_AUDIT_2026-08-25 R5): always defined for a chain
+        # with any gamma, so a NULL here is a real pipeline bug — which
+        # is exactly what this check should mean (owner directive:
+        # "none of these should be null, ever").
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
         "writer_job": "strat-engine",
-        "rationale": "same gamma_levels_eod upstream as total_gex; "
-                     "sparse-aware window per #744",
+        "rationale": "gamma median is always defined post-redefinition; "
+                     "NULL = real upstream bug, same family as total_gex",
+    },
+    {
+        "name": "strat_features_5m.gamma_flip",
+        "table": "strat_features_5m",
+        "column": "gamma_flip",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        # Added 2026-08-25 (GAMMA_BALANCE_AUDIT C-04): gamma_flip is the
+        # level gamma_proximity actually trades, yet it had no nullity
+        # check while the legacy balance metric paged hourly — the
+        # monitoring was inverted relative to value. With the escalating
+        # ±10%→±50% flip search (lib/gamma.py), a flip resolves on any
+        # two-sided IWM/SPY/QQQ chain; NULL now means a real data-quality
+        # problem (thin/one-sided chain data, missing IV, or a scipy-less
+        # image) — page on it.
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "strat-engine",
+        "rationale": "the traded gamma level (gamma_proximity); dense "
+                     "after the escalating flip search — NULL = real bug",
     },
     {
         "name": "strat_features_5m.total_vex",

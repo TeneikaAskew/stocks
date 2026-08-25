@@ -34,7 +34,8 @@ KING  : highest |GEX| node (≥ NODE_KING_PCT of max |GEX| in window)
 GATE  : secondary high-gamma node (≥ NODE_GATE_PCT of max)
 SPOT  : strikes within SPOT_PROXIMITY_PCT of estimated spot
 GAMMA_BALANCE : the two strikes adjacent to the cumulative-net-gamma balance
-        price (compute_gamma_balance) — a balance point, NOT the true flip.
+        price (compute_gamma_balance) — the gamma-median balance point, NOT
+        the true flip.
 GAMMA_FLIP : the true Black-Scholes-recurved zero-gamma spot level
         (compute_gamma_flip_bs) — the price where re-priced dealer GEX(S)=0.
 
@@ -104,8 +105,9 @@ class GammaSummary:
     ticker: str
     snapshot_date: str
     spot: SpotEstimate
-    # gamma_balance = cumulative-net-gamma zero-crossing nearest spot (a price
-    # "balance point" — NOT a true dealer-gamma regime flip; see compute_gamma_balance).
+    # gamma_balance = OI-weighted gamma-median price (half the chain's
+    # |net_gamma| mass below, half above — NOT a true dealer-gamma regime
+    # flip; see compute_gamma_balance). None only for a chain with no gamma.
     gamma_balance: float | None
     # gamma_flip = TRUE Black-Scholes-recurved zero-gamma level: the spot price
     # where re-priced dealer GEX(S) crosses 0 (see compute_gamma_flip_bs). This
@@ -180,7 +182,7 @@ class GammaGridSummary:
     snapshot_ts: str | None   # ISO timestamp of the underlying snapshot
     data_source: str          # 'realtime'|'eod_fallback'|'stale_fallback'|'unavailable'
     spot: SpotEstimate
-    gamma_balance: float | None   # cumulative-net-gamma balance price (not a true flip)
+    gamma_balance: float | None   # gamma-median balance price (not a true flip)
     gamma_flip: float | None      # true BS-recurved zero-gamma level
     regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
     total_gex: float
@@ -507,8 +509,8 @@ def zero_gamma(strikes: Sequence[dict]) -> float | None:
 
     Walks adjacent strikes and returns the first sign change of net_gamma,
     linearly interpolated. Useful for the existing /api/options/greeks
-    response shape but coarse — see compute_gamma_balance for the spot-aware
-    cumulative version.
+    response shape but coarse — see compute_gamma_balance for the always-
+    defined gamma-median balance price.
     """
     rows = list(strikes)
     for i in range(len(rows) - 1):
@@ -522,39 +524,59 @@ def zero_gamma(strikes: Sequence[dict]) -> float | None:
 
 
 def compute_gamma_balance(strikes: Sequence[dict], spot: float) -> float | None:
-    """Cumulative-net-gamma "balance" price — the cumulative-net-gamma
-    zero-crossing nearest spot.
+    """OI-weighted gamma-median "balance" price — the price at which cumulative
+    |net_gamma| reaches half the chain's total.
 
-    Walks strikes ascending, accumulates per-strike net_gamma, finds every
-    crossing of the *cumulative* net_gamma and returns the one closest to spot
-    (linearly interpolated). This is a balance point in OI-weighted gamma space;
-    it is NOT the true dealer-gamma regime flip (the dollar GEX = net_gamma·S²·k
-    is monotonic in S for a fixed chain, so there is no zero of GEX in this
-    formulation). For the real zero-gamma level use :func:`compute_gamma_flip_bs`.
+    Redefined 2026-08-25 (docs/audits/GAMMA_BALANCE_AUDIT_2026-08-25.md, R5).
+    The previous definition returned the zero-crossing of SIGNED cumulative
+    net_gamma nearest spot, which only exists when the running total happens to
+    change sign — on real ETF chains that made the value NULL on put-gamma-heavy
+    sessions (every NULL implied a negative-gamma regime; issues #744/#765),
+    i.e. it vanished precisely on the high-volatility sessions where it
+    mattered. A balance point exists for every chain that carries any gamma at
+    all, so the metric now computes it directly: half the chain's absolute
+    gamma mass sits below the returned price, half above.
 
-    Renamed 2026-06-09 from ``compute_gamma_flip`` — the old name implied a
-    regime flip it never computed (see docs/EXPERIMENT_REGISTRY.md DQ1).
+    Convention: each strike's mass is anchored at its own position
+    (``C_k = Σ w_{<k} + w_k / 2``, ``w = |net_gamma|``) and the half-mass point
+    is linearly interpolated between strike positions — a symmetric chain's
+    median is its center strike, and a dominant strike pulls the median onto
+    itself. The result is a chain property, independent of spot; ``spot`` is
+    retained in the signature for API stability.
+
+    Returns None ONLY for genuine data absence — an empty chain or one with
+    zero gamma mass (§3.7: never fabricate a price from no data). It is NOT
+    the dealer-gamma regime flip; for the true zero-gamma level use
+    :func:`compute_gamma_flip_bs`. Renamed 2026-06-09 from
+    ``compute_gamma_flip`` (docs/EXPERIMENT_REGISTRY.md DQ1).
+
+    ``strikes`` must be sorted ascending by strike (as
+    :func:`aggregate_by_strike` returns).
     """
     rows = list(strikes)
     if not rows:
         return None
-    cumulative = 0.0
-    crossings: list[tuple[float, float]] = []  # (price, distance_to_spot)
-    prev_strike: float | None = None
-    prev_cum: float = 0.0
-    for r in rows:
-        prev_cum_local = cumulative
-        cumulative += r["net_gamma"]
-        if prev_strike is not None and prev_cum_local * cumulative < 0:
-            frac = -prev_cum_local / (cumulative - prev_cum_local)
-            price = prev_strike + frac * (r["strike"] - prev_strike)
-            crossings.append((price, abs(price - spot)))
-        prev_strike = r["strike"]
-        prev_cum = cumulative
-    if not crossings:
+    prices = [float(r["strike"]) for r in rows]
+    weights = [abs(float(r["net_gamma"])) for r in rows]
+    total = sum(weights)
+    if total <= 0:
         return None
-    crossings.sort(key=lambda x: x[1])
-    return crossings[0][0]
+    half = total / 2.0
+    centers: list[float] = []
+    cum = 0.0
+    for w in weights:
+        centers.append(cum + w / 2.0)
+        cum += w
+    if half <= centers[0]:
+        return prices[0]
+    for k in range(1, len(rows)):
+        if half <= centers[k]:
+            span = centers[k] - centers[k - 1]
+            if span <= 0:
+                return prices[k]
+            frac = (half - centers[k - 1]) / span
+            return prices[k - 1] + frac * (prices[k] - prices[k - 1])
+    return prices[-1]
 
 
 def compute_gamma_flip_bs(
@@ -596,8 +618,11 @@ def compute_gamma_flip_bs(
 
     NO SILENT FALLBACK (§3.7): returns ``None`` — never a fabricated 0 — when
     fewer than ``min_contracts`` valid contracts survive, when no IV is usable,
-    or when ``G(S)`` does not change sign anywhere on the ±search_pct grid (a
-    no-flip chain is legitimate signal, not an error). The grid is NOT silently
+    or when ``G(S)`` does not change sign anywhere after escalating the search
+    window from ±``search_pct`` through ±25% to ±50% (a chain that is one-sided
+    across ±50% genuinely has no flip — legitimate signal, not an error; the
+    escalation exists so a real crossing just outside the caller's window is
+    never reported as NULL). The grid is NOT silently
     widened.
     """
     import numpy as np
@@ -659,26 +684,39 @@ def compute_gamma_flip_bs(
     K = np.asarray(Ks); T = np.asarray(Ts); sig = np.asarray(sigs)
     sgn = np.asarray(signs); oi = np.asarray(ois)
 
-    S_grid = np.linspace(spot * (1 - search_pct), spot * (1 + search_pct), grid_points)
-    # G(S_i) = Σ_j sign_j · gamma_BS(S_i, K_j, T_j, r, q, σ_j) · OI_j
-    # Vectorize the [grid_points × n_contracts] outer product (Rule 0: numpy, not loops).
-    Sg = S_grid[:, None]                       # (M, 1)
-    gam = bs_gamma(Sg, K[None, :], T[None, :], risk_free, dividend_yield, sig[None, :])
-    gam = np.where(np.isfinite(gam), gam, 0.0)  # deep OTM/ITM gamma → 0 contribution
-    G = (gam * (sgn * oi)[None, :]).sum(axis=1)  # (M,)
+    def _crossings_at(pct: float) -> list[float]:
+        S_grid = np.linspace(spot * (1 - pct), spot * (1 + pct), grid_points)
+        # G(S_i) = Σ_j sign_j · gamma_BS(S_i, K_j, T_j, r, q, σ_j) · OI_j
+        # Vectorize the [grid_points × n_contracts] outer product (Rule 0: numpy, not loops).
+        Sg = S_grid[:, None]                       # (M, 1)
+        gam = bs_gamma(Sg, K[None, :], T[None, :], risk_free, dividend_yield, sig[None, :])
+        gam = np.where(np.isfinite(gam), gam, 0.0)  # deep OTM/ITM gamma → 0 contribution
+        G = (gam * (sgn * oi)[None, :]).sum(axis=1)  # (M,)
+        # Find sign changes; linearly interpolate each crossing.
+        found: list[float] = []
+        for i in range(len(S_grid) - 1):
+            g1, g2 = G[i], G[i + 1]
+            if g1 == 0.0:
+                found.append(float(S_grid[i]))
+            elif g1 * g2 < 0:
+                frac = -g1 / (g2 - g1)
+                found.append(float(S_grid[i] + frac * (S_grid[i + 1] - S_grid[i])))
+        return found
 
-    # Find sign changes; linearly interpolate each crossing; pick nearest spot.
-    crossings: list[float] = []
-    for i in range(len(S_grid) - 1):
-        g1, g2 = G[i], G[i + 1]
-        if g1 == 0.0:
-            crossings.append(float(S_grid[i]))
-        elif g1 * g2 < 0:
-            frac = -g1 / (g2 - g1)
-            crossings.append(float(S_grid[i] + frac * (S_grid[i + 1] - S_grid[i])))
-    if not crossings:
-        return None
-    return min(crossings, key=lambda p: abs(p - spot))
+    # Escalating search: try the caller's window first (finest resolution near
+    # spot), then widen to ±25% and ±50% before concluding "no flip". Added
+    # 2026-08-25 (GAMMA_BALANCE_AUDIT, never-null directive): a real dealer-
+    # gamma zero sitting just outside the ±10% default was reported as NULL —
+    # an artifact of the grid bound, not of the chain. A chain whose G(S)
+    # never changes sign across ±50% genuinely has no flip; that None is
+    # signal, not failure (§3.7). Cost: extra grid evaluations only on the
+    # rare no-crossing-at-narrow-width sessions.
+    pcts = [search_pct] + [p for p in (0.25, 0.50) if p > search_pct]
+    for pct in pcts:
+        crossings = _crossings_at(pct)
+        if crossings:
+            return min(crossings, key=lambda p: abs(p - spot))
+    return None
 
 
 # ── Max pain / implied move ─────────────────────────────────────────────────

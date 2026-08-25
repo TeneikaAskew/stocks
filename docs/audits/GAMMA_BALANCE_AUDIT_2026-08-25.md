@@ -1,7 +1,7 @@
 # Gamma Balance Audit — 2026-08-25
 
-**Status:** Evaluation + one doc correction. The gamma math itself is UNCHANGED
-pending a decision (see §7).
+**Status:** RESOLVED same day — see §0. The evaluation below is preserved as
+written (including the post-Codex correction); §0 records what shipped.
 **Scope:** What `gamma_balance_price` is, why it is NULL, how gamma is consumed
 across the platform, and whether we are harvesting the edge we validated.
 **Trigger:** Repository owner — *"IWM should never be null, so there is concern
@@ -14,6 +14,49 @@ neither.
 - #765 — `freshness-watchdog` failing hourly (open)
 - PR #741 — proposed dropping the check; closed as do-not-merge for lack of a mechanism
 - B6 / DQ1 in `docs/EXPERIMENT_REGISTRY.md` — the 11-year gamma reassessment
+
+---
+
+## §0 Resolution (2026-08-25, same PR)
+
+The owner's directive — **"none of these should be null, ever"** — settled §7's
+open decision in favour of fixing the metric rather than deleting its
+monitoring. Shipped, verification-first (failing suite written before the
+implementation: `tests/test_gamma_never_null.py`, 8 red → 14 green):
+
+| Item | Outcome |
+|---|---|
+| R5 **adopted** | `compute_gamma_balance` redefined as the OI-weighted gamma **median** — cumulative \|net_gamma\|, anchored at each strike's center, interpolated to the half-mass point. Always defined for a chain with any gamma; NULL only for genuine data absence (§3.7). Spot-independent chain property. |
+| Flip robustness | `compute_gamma_flip_bs` escalates its search window ±10%→±25%→±50% before concluding "no flip" — a real crossing just outside the caller's window can no longer manufacture NULL. Thin/IV-less/one-sided-across-±50% chains still return None (genuine signal). |
+| R1 **superseded** | Instead of deleting the balance nullity check, it returns to the strict dense shape (90%/1-day): with the median always defined, a NULL is a real pipeline bug — the check now means what the owner wants it to mean. The old metric's two failed calibrations (#644, #762) were symptoms of thresholding a regime-tracking quantity; that quantity no longer exists. |
+| R2 **applied** | `strat_features_5m.gamma_flip` nullity check added at 90%/1-day (closes C-04). |
+| R3 **mooted** | The feature no longer thins out on high-vol sessions; it stays in the model feature lists. The §9 `converse_breaks` query is now historical interest only. |
+| R4 | Still open (incremental-vol ablation before sizing) — unchanged. |
+
+**Post-deploy runbook (ordering matters):**
+1. Deploy the image (`./gcp/deploy.sh build` + strat-engine/trading-system).
+2. Rebuild `gamma_levels_eod` over at least the trailing window
+   (`p2_build_gamma_levels`) so T-1 joins pick up median values, then refresh
+   `strat_features_*` via `gcp/queries/strat_features_gamma_backfill.sql`
+   (`./scripts/db_query_cr.sh -f ... --commit`). Full-history rebuild is the
+   same job over all quarters (~90s of build_summary per header estimate).
+3. `freshness-watchdog` then goes green on both gamma checks; close #765.
+   Until step 2 lands, the strict checks will truthfully flag the not-yet-
+   rebuilt sessions — deploy and rebuild in the same maintenance window.
+
+**Feature-semantics note:** `gamma_balance_price` values change scale/meaning
+(zero-crossing → median). LightGBM models pick the new distribution up on
+their next walk-forward retrain; do not mix pre/post rows in a single training
+window without noting the 2026-08-25 boundary.
+
+Collateral corrections while verifying (§8 updated in place): C-02 was
+over-stated — `_na_to_none_records` (PR #650) already NaN-sanitizes the
+`upsert_dataframe` fallback, so both write paths bind SQL NULL; what remained
+was only a vestigial `import psycopg2` gate in `bulk_copy_upsert` forcing the
+slow path on an unused dependency (removed), plus possible pre-#650 historical
+float8-NaN rows (data question, not code). C-03 was wrong: `.fillna("unknown")`
+is an explicit, distinguishable sentinel — exactly what §3.7 asks for — not a
+violation.
 
 ---
 
@@ -219,6 +262,10 @@ against ATR/RVOL/VIX is the cheap version of the test.
 
 ## §7 Recommendations
 
+> **Superseded by §0** — the owner's never-null directive resolved this table
+> the same day (R5 adopted, R2 applied, R1 superseded, R3 mooted, R4 open).
+> Preserved as written for the decision record.
+
 Ordered by confidence. **None of these are applied in this PR** — the gamma math
 is a trading-math decision and #744 already flagged it as needing quant judgment.
 
@@ -244,9 +291,9 @@ stored, already in `realtime_gex_15m`.
 | # | Finding | Where |
 |---|---|---|
 | C-01 | **`docs/gamma_levels.md` taught a disproven rule.** It defined regime as "spot above/below flip" — the rule B6 found gives the *inverted* vol split (2,765 of 2,767 rows mislabelled) and which was replaced in code on 2026-06-07 by `sign(total_gex)`. The doc was never updated. **Corrected in this PR.** | `docs/gamma_levels.md:29-30` |
-| C-02 | **DQ1 family-B cast still missing.** DQ1 flagged `flip_price` (now `gamma_balance_price`) as 56.7% IEEE-NaN rather than SQL NULL — IWM 77.5%, SPY 37.4% — with the fix recorded as a `.where(notna, None)` cast at write. The column is still written through a bare `.map()`. A float NaN counts as present to `count()`, so the nullity check and the feature loader can disagree about the same cell. | `strat_data_builder.py:574` |
-| C-03 | **`gamma_regime` written with `.fillna("unknown")`,** converting a missing regime into a category the models learn from. `dealer_regime_GEX_nan_VEX_nan` exists as a one-hot level for the same reason. Rule 3.7-adjacent. | `strat_data_builder.py:580` |
-| C-04 | **`gamma_flip` is unmonitored** while the degenerate metric pages hourly. | `scripts/audit_data_freshness.py` |
+| C-02 | **Corrected (see §0):** first written as "the DQ1 family-B cast is still missing." In fact `_na_to_none_records` (PR #650) sanitizes NaN→None for every `upsert_dataframe` caller and the COPY path renders NaN as the CSV NULL token — both write paths bind SQL NULL. The remediation landed centrally, which is why the per-callsite cast DQ1 recorded never appeared. Remaining: the vestigial `import psycopg2` gate in `bulk_copy_upsert` (removed in this PR) and possibly historical float8-NaN rows written before #650 (verify with `col = 'NaN'::float8` if ever load-bearing). | `gcp/database.py:306` |
+| C-03 | **Withdrawn (see §0):** `.fillna("unknown")` is an explicit, distinguishable sentinel — the opposite of a silent fallback, and what §3.7 prescribes. The category is also in `NEAR_DEAD` on both model axes. Original finding over-called. | `strat_data_builder.py:580` |
+| C-04 | **Fixed (see §0):** `gamma_flip` nullity check added at 90%/1-day. | `scripts/audit_data_freshness.py` |
 
 ---
 

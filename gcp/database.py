@@ -447,18 +447,26 @@ def bulk_copy_upsert(
     conflict_cols: List[str],
     update_cols: Optional[List[str]] = None,
 ) -> int:
-    """Fast bulk upsert via psycopg2 COPY FROM STDIN → temp table → INSERT ... ON CONFLICT.
+    """Fast bulk upsert via pg8000 COPY FROM STDIN → temp table → INSERT ... ON CONFLICT.
 
     10-30× faster than `upsert_dataframe()` (which uses pg8000 per-row binds)
-    for large DataFrames. Uses the same Cloud SQL Connector but with the
-    psycopg2 driver path. Falls back to `upsert_dataframe()` if psycopg2
-    isn't installed or the COPY path errors.
+    for large DataFrames. Same Cloud SQL Connector engine; COPY runs on the
+    raw pg8000 connection (`cur.execute("COPY ...", stream=...)`). Falls back
+    to `upsert_dataframe()` only if the COPY path itself errors — the fallback
+    is NaN-safe too (`_na_to_none_records`), so either path binds SQL NULL,
+    never float8 'NaN' (§3.7).
+
+    2026-08-25: removed a vestigial `import psycopg2` gate that forced the
+    slow fallback whenever psycopg2 was missing, even though this function
+    never uses psycopg2 — the COPY has always run through pg8000
+    (GAMMA_BALANCE_AUDIT_2026-08-25 collateral). The docstring's old
+    "psycopg2 COPY" framing dated from a prior implementation.
 
     Implementation:
-      1. Open psycopg2 connection via Cloud SQL Connector
+      1. Raw pg8000 connection from the shared engine
       2. CREATE TEMPORARY TABLE matching target schema
-      3. COPY FROM STDIN (CSV) into temp — single binary stream, no per-row
-         binds, no parameter-count limit
+      3. COPY FROM STDIN (CSV, NULL '\\N') into temp — single stream, no
+         per-row binds, no parameter-count limit
       4. INSERT INTO target SELECT * FROM temp ON CONFLICT DO UPDATE
       5. Drop temp (implicit on connection close)
 
@@ -469,12 +477,6 @@ def bulk_copy_upsert(
     """
     if df.empty:
         return 0
-
-    try:
-        import psycopg2
-    except ImportError:
-        logger.warning("psycopg2 not installed — falling back to upsert_dataframe()")
-        return upsert_dataframe(df, table, conflict_cols, update_cols)
 
     # Reflect target columns first so we drop extra DataFrame cols (same
     # safety check as upsert_dataframe) before COPY.

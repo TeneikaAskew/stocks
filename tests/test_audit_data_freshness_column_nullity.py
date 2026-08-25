@@ -315,31 +315,29 @@ def _df_by_column(mapping):
     return fake
 
 
-def test_gamma_balance_design_sparsity_does_not_fire(monkeypatch):
-    """IWM at 40% over the window — the measured by-design rate — must
-    NOT page. Before the #744 calibration this exact shape fired stale
-    on every crossing-less day and flapped the watchdog."""
+def test_gamma_balance_partial_coverage_fires_post_median(monkeypatch):
+    """IWM at 40% must PAGE now — deliberately inverting the old
+    sparse-tolerance test. Under the zero-crossing definition 40% was
+    by-design sparsity; under the gamma-median redefinition
+    (GAMMA_BALANCE_AUDIT R5, never-null directive) the value is always
+    defined, so 40% coverage means the pipeline genuinely failed on 60%
+    of the session's rows."""
     from scripts.audit_data_freshness import _query_column_nullity
     _patch_query(monkeypatch, _df_by_column({
         "gamma_balance_price": [
-            {"ticker": "IWM", "total": 390, "non_null": 156},   # 40% of 5 sessions
+            {"ticker": "IWM", "total": 78, "non_null": 31},   # 40% of 1 session
         ],
     }))
     out = _query_column_nullity(datetime(2026, 8, 25, 14, 0))
-    assert out == [], (
-        "40% gamma_balance coverage is by-design sparsity, not an outage "
-        "— firing here recreates the #744 flap"
-    )
+    assert len(out) == 1 and out[0].status == "stale" and out[0].ticker == "IWM"
 
 
 def test_gamma_balance_full_stop_still_fires(monkeypatch):
-    """The real #744 July signature — 0% across the whole window — must
-    still page. The sparse-aware threshold widens the window; it must
-    not blind the check to a genuine upstream stall."""
+    """The real #744 signature — 0% for the session — must page."""
     from scripts.audit_data_freshness import _query_column_nullity
     _patch_query(monkeypatch, _df_by_column({
         "gamma_balance_price": [
-            {"ticker": "IWM", "total": 390, "non_null": 0},
+            {"ticker": "IWM", "total": 78, "non_null": 0},
         ],
     }))
     out = _query_column_nullity(datetime(2026, 8, 25, 14, 0))
@@ -349,33 +347,56 @@ def test_gamma_balance_full_stop_still_fires(monkeypatch):
     assert out[0].writer_job == "strat-engine"
 
 
-def test_gamma_balance_check_is_sparse_calibrated():
-    """Pin the calibration so a refactor can't silently revert it to the
-    flapping single-session 90% shape — and pin that total_gex (the
-    dense same-upstream sentinel that catches a full gamma_levels_eod
-    stall same-day) keeps its strict 90%/1-day shape."""
+def test_gamma_checks_are_dense_calibrated():
+    """Pin all three gamma checks at the strict dense shape (90%/1-day).
+
+    History matters here: the balance check was calibrated twice against
+    the OLD zero-crossing metric (#644 at 90%/1d, #762 at 20%/5d) and
+    failed both times, because that metric's fill rate tracked market
+    regime, not pipeline health. The gamma-median redefinition makes the
+    value always defined, so the strict shape is now CORRECT — loosening
+    it again would hide real pipeline bugs, and re-sparsifying it without
+    re-litigating GAMMA_BALANCE_AUDIT_2026-08-25 §7 is a regression.
+    gamma_flip is pinned too: it is the traded level (gamma_proximity)
+    and was entirely unmonitored before (audit C-04)."""
     from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
     by_name = {c["name"]: c for c in COLUMN_NULLITY_CHECKS}
-    gbp = by_name["strat_features_5m.gamma_balance_price"]
-    assert gbp["lookback_days"] == 5
-    assert gbp["min_non_null_rate"] == 0.20
-    gex = by_name["strat_features_5m.total_gex"]
-    assert gex["lookback_days"] == 1
-    assert gex["min_non_null_rate"] == 0.90
+    for name in ("strat_features_5m.gamma_balance_price",
+                 "strat_features_5m.gamma_flip",
+                 "strat_features_5m.total_gex"):
+        check = by_name[name]
+        assert check["lookback_days"] == 1, name
+        assert check["min_non_null_rate"] == 0.90, name
+        assert check["writer_job"] == "strat-engine", name
 
 
 def test_lookback_counts_trading_sessions_not_calendar_days(monkeypatch):
-    """Codex P1 #762: calendar-day subtraction turned the 5-session
-    gamma_balance window into 3 sessions across a weekend (Tuesday
-    anchor - 4 calendar days = Friday). The window must span the five
-    most recent TRADING sessions: for a Tuesday 2026-08-25 audit that
-    is Wed 08-19 .. Tue 08-25."""
+    """Codex P1 #762: calendar-day subtraction turned a 5-session window
+    into 3 sessions across a weekend (Tuesday anchor - 4 calendar days =
+    Friday). The window must span the five most recent TRADING sessions:
+    for a Tuesday 2026-08-25 audit that is Wed 08-19 .. Tue 08-25.
+
+    The gamma checks are all 1-session now, so this pins the machinery
+    through a synthetic 5-session check — the trading-session semantics
+    must hold for ANY future multi-session entry."""
+    import scripts.audit_data_freshness as adf
     from scripts.audit_data_freshness import _query_column_nullity
+
+    monkeypatch.setattr(adf, "COLUMN_NULLITY_CHECKS", [{
+        "name": "synthetic.multi_session_col",
+        "table": "synthetic",
+        "column": "multi_session_col",
+        "tickers": ("IWM",),
+        "lookback_days": 5,
+        "min_non_null_rate": 0.20,
+        "writer_job": "strat-engine",
+        "rationale": "test vehicle for trading-session window semantics",
+    }])
 
     windows = {}
 
     def capturing(sql, params=None, timeout_s=None):
-        if "COUNT(gamma_balance_price)" in sql:
+        if "COUNT(multi_session_col)" in sql:
             windows["start"] = params["window_start"]
             windows["end"] = params["window_end"]
         return pd.DataFrame()

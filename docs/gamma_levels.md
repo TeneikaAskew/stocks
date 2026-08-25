@@ -25,8 +25,8 @@ read like the community recaps.
 | **King** | Strike where \|Net GEX\| ≥ 50% of max in window | Primary magnet/defense level. First touches react ~80% in positive gamma |
 | **Gate (Gatekeeper)** | Strike where \|Net GEX\| ≥ 20% of max | Secondary level — must break before price reaches the King |
 | **Spot** | Strike within 0.2% of current price | Visual marker, no trading meaning by itself |
-| **Flip** | `compute_gamma_flip_bs` — the Black-Scholes-recurved spot at which net dealer gamma crosses zero | Regime divider (the tradeable level) |
-| **Balance** | `compute_gamma_balance` — cumulative-net-gamma zero crossing nearest spot | Legacy and fragile: it resolves only when the running total of `net_gamma` changes sign, so **a NULL always means the regime is negative** (the converse does not hold). See [`audits/GAMMA_BALANCE_AUDIT_2026-08-25.md`](audits/GAMMA_BALANCE_AUDIT_2026-08-25.md). Do not use it as a level. |
+| **Flip** | `compute_gamma_flip_bs` — the Black-Scholes-recurved spot at which net dealer gamma crosses zero; search escalates ±10%→±25%→±50% before concluding no-flip | Regime divider (the tradeable level). NULL only for thin/IV-less chains or a chain one-sided across ±50% |
+| **Balance** | `compute_gamma_balance` — the OI-weighted gamma **median**: the price where cumulative \|net_gamma\| reaches half the chain total (center-anchored, interpolated) | Always defined for a chain with any gamma; NULL only for genuine data absence. Redefined 2026-08-25 — the old cumulative-zero-crossing form was NULL on every put-gamma-heavy session; see [`audits/GAMMA_BALANCE_AUDIT_2026-08-25.md`](audits/GAMMA_BALANCE_AUDIT_2026-08-25.md). A mass-balance point, **not** the regime divider — that is the Flip. |
 | **Regime — Positive gamma** | `total_gex > 0` | Dealers buy dips/sell rips → vol suppressed → range-bound, pinning |
 | **Regime — Negative gamma** | `total_gex < 0` | Dealers sell dips/buy rips → vol amplified → trending |
 

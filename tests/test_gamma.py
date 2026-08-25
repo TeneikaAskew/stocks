@@ -147,67 +147,60 @@ class TestEstimateSpot:
 
 
 class TestComputeGammaBalance:
-    def test_no_crossing_returns_none(self):
-        """All-positive cumulative GEX → no flip."""
+    """gamma_balance is the OI-weighted gamma MEDIAN (redefined 2026-08-25,
+    GAMMA_BALANCE_AUDIT R5 / never-null directive): the price where cumulative
+    |net_gamma| — anchored at each strike's center — reaches half the chain
+    total. Always defined for a chain with any gamma; None only for genuine
+    data absence. tests/test_gamma_never_null.py carries the full verification
+    suite; these pin the same convention on this file's original fixtures."""
+
+    def test_one_sided_chain_returns_center_median(self):
+        """All-call chain — NULL under the old zero-crossing definition. The
+        chain is symmetric around 100, so the median is exactly 100."""
         opts = [
             {"type": "call", "strike": 95,  "open_interest": 100, "gamma": 0.04},
             {"type": "call", "strike": 100, "open_interest": 100, "gamma": 0.05},
             {"type": "call", "strike": 105, "open_interest": 100, "gamma": 0.04},
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        assert gamma.compute_gamma_balance(strikes, 100) is None
+        assert gamma.compute_gamma_balance(strikes, 100) == pytest.approx(100.0, abs=1e-9)
 
-    def test_simple_single_crossing_with_definitive_sign_change(self):
-        """Heavy puts → heavy calls → heavy puts: cumulative crosses zero strictly."""
+    def test_two_strike_median_leans_toward_heavier_strike(self):
+        """|w| = 50 @95 (puts), 100 @100 (calls). Center-anchored cumulatives
+        25 and 100; half-mass 75 sits 50/75 of the way from 95 to 100."""
         opts = [
             {"type": "put",  "strike": 95,  "open_interest": 1000, "gamma": 0.05},
-            # cum after 95: -50
             {"type": "call", "strike": 100, "open_interest": 2000, "gamma": 0.05},
-            # cum after 100: -50 + 100 = +50  (strict crossing here)
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        flip = gamma.compute_gamma_balance(strikes, 97)
-        assert flip is not None
-        # Crossing interpolated between 95 (cum=-50) and 100 (cum=+50): midpoint 97.5
-        assert flip == pytest.approx(97.5, abs=0.1)
+        bal = gamma.compute_gamma_balance(strikes, 97)
+        assert bal == pytest.approx(95 + 5 * 50 / 75, abs=1e-9)
 
-    def test_three_strike_crossing_returns_interpolated(self):
-        """Cumulative GEX crosses zero between two strikes — return interpolated price."""
+    def test_three_strike_median_lands_on_exact_half_mass_strike(self):
+        """|w| = 50, 30, 50 → centers 25 / 65 / 105; half-mass 65 is exactly
+        the middle strike's center → 100."""
         opts = [
             {"type": "put",  "strike": 95,  "open_interest": 1000, "gamma": 0.05},
-            # cum after 95: -50
             {"type": "call", "strike": 100, "open_interest": 600,  "gamma": 0.05},
-            # cum after 100: -50 + 30 = -20
             {"type": "call", "strike": 105, "open_interest": 1000, "gamma": 0.05},
-            # cum after 105: -20 + 50 = +30
-            # Crossing between 100 (-20) and 105 (+30)
-            # frac = -(-20) / (30 - (-20)) = 20/50 = 0.4
-            # flip = 100 + 0.4 * 5 = 102.0
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        flip = gamma.compute_gamma_balance(strikes, 100)
-        assert flip == pytest.approx(102.0, abs=0.1)
+        assert gamma.compute_gamma_balance(strikes, 100) == pytest.approx(100.0, abs=1e-9)
 
-    def test_picks_crossing_nearest_spot(self):
-        """If multiple crossings exist, pick the one closest to spot."""
-        # Construct a chain with two flips; expect the nearer one
+    def test_median_is_spot_independent(self):
+        """The old definition picked the zero-crossing nearest spot, so this
+        two-crossing chain answered differently per spot. The median is a
+        chain property: |w| = 50,100,100,50 → centers 25/100/200/275 →
+        half-mass 150 lands midway between strikes 92 and 110 → 101."""
         opts = [
             {"type": "put",  "strike": 90,  "open_interest": 1000, "gamma": 0.05},
-            # cum after 90: -50
             {"type": "call", "strike": 92,  "open_interest": 2000, "gamma": 0.05},
-            # cum after 92: -50 + 100 = +50  (first crossing between 90-92)
             {"type": "put",  "strike": 110, "open_interest": 2000, "gamma": 0.05},
-            # cum after 110: +50 - 100 = -50 (second crossing between 92-110)
             {"type": "call", "strike": 112, "open_interest": 1000, "gamma": 0.05},
-            # cum after 112: -50 + 50 = 0
         ]
         strikes = gamma.aggregate_by_strike(opts)
-        # Spot at 91 → should pick first crossing (~91)
-        flip_91 = gamma.compute_gamma_balance(strikes, 91)
-        # Spot at 100 → equidistant from both. Just check it returns a number.
-        flip_100 = gamma.compute_gamma_balance(strikes, 100)
-        assert flip_91 is not None and 90 < flip_91 < 92
-        assert flip_100 is not None
+        for spot in (91, 100, 111):
+            assert gamma.compute_gamma_balance(strikes, spot) == pytest.approx(101.0, abs=1e-9)
 
 
 # ── Level classification ───────────────────────────────────────────────────
@@ -832,37 +825,30 @@ class TestComputeGammaFlipBS:
             assert abs(bal - flip) > 1e-6
 
 
-# ── gamma_balance nullity vs regime (issues #744, #765) ────────────────────
+# ── gamma_balance / gamma_flip density across the ETF sweep ────────────────
 #
-# `gamma_balance_price` went ~100% NULL across IWM/SPY/QQQ from 2026-08-18,
-# after months of IWM near 25% fill while SPY/QQQ held ~55-60%. Two
-# investigations looked upstream for a chain-completeness regression and found
-# none. The cause is in this module.
+# History: `gamma_balance_price` went ~100% NULL across IWM/SPY/QQQ from
+# 2026-08-18 (issues #744/#765). Root cause: the old definition returned the
+# zero-crossing of SIGNED cumulative net_gamma, which exists only when the
+# running total changes sign — every NULL implied a negative-gamma regime, so
+# the feature vanished precisely on the high-volatility sessions where it
+# mattered (B6: 1.34-1.87x larger forward 30m moves). Full history, including
+# the Codex-corrected one-way analysis of the old behaviour:
+# docs/audits/GAMMA_BALANCE_AUDIT_2026-08-25.md.
 #
-# compute_gamma_balance accumulates net_gamma from ZERO at the BOTTOM of the
-# strike ladder and reports sign changes of that running total. Real ETF
-# chains are put-dominated at their lowest strikes, so the running total goes
-# negative on the first strike. If it never changes sign there is no crossing,
-# and the chain necessarily ends where it started -- negative. Hence:
-#
-#     NULL  =>  total_gex < 0  =>  regime == 'negative_gamma'
-#         (given a put-dominated lowest strike, which real ETF chains have)
-#
-# The CONVERSE IS FALSE, and that matters: a cumulative path may cross zero an
-# even number of times and finish negative, yielding a balance price in a
-# negative-gamma regime. `test_negative_regime_can_still_return_a_balance`
-# pins a concrete instance. An earlier draft of this audit claimed the two
-# were equivalent; they are not, and the one-way implication is what the
-# recommendations in docs/audits/GAMMA_BALANCE_AUDIT_2026-08-25.md rest on.
+# Resolution (owner directive, 2026-08-25: "none of these should be null,
+# ever"): gamma_balance is now the OI-weighted gamma MEDIAN — always defined
+# for a chain with any gamma at all — and compute_gamma_flip_bs escalates its
+# search window (±10% → ±25% → ±50%) before concluding "no flip".
+# tests/test_gamma_never_null.py is the verification suite for both; the sweep
+# below pins density end-to-end through the production build_summary.
 
 
 def _skewed_chain(spot, lo, hi, step, put_skew, gamma_peak=0.05, width=0.06):
     """ETF-shaped chain: gamma peaks ATM, OI peaks OTM on both wings.
 
-    `put_skew` scales put OI against call OI -- the one knob that moves a
-    chain across the call-heavy/put-heavy boundary. Note this generator
-    produces a SINGLE-DIP cumulative path by construction, so it cannot
-    exhibit the multi-crossing case; that is covered separately below.
+    `put_skew` scales put OI against call OI — the knob that moves a chain
+    across the call-heavy/put-heavy (positive/negative regime) boundary.
     """
     import math
     opts = []
@@ -887,101 +873,25 @@ _GRIDS = (
 )
 
 
-class TestGammaBalanceNullityVsRegime:
-    def test_null_implies_negative_gamma(self):
-        """The direction that holds: a NULL balance means negative regime.
-
-        No crossing means the running total never changed sign, so it ends
-        on the side it started -- negative, for a put-dominated low wing.
-        """
-        checked = null_seen = 0
+class TestGammaDensityAcrossEtfSweep:
+    def test_balance_and_flip_resolve_on_every_chain(self):
+        """42 chains (3 spot/strike grids × 14 put/call OI skews) through the
+        production build_summary: gamma_balance and gamma_flip must BOTH
+        resolve on every one — including every negative-gamma chain, where the
+        old balance definition was NULL 24/24 and where B6 measured the
+        largest forward moves."""
+        neg_seen = 0
         for spot, lo, hi, step in _GRIDS:
             for i in range(14):
+                skew = 0.80 + i * 0.05
                 s = gamma.build_summary(
                     "TEST", "2026-08-25",
-                    _skewed_chain(spot, lo, hi, step, 0.80 + i * 0.05))
-                if s.gamma_balance is None:
-                    null_seen += 1
-                    assert s.total_gex < 0, (
-                        f"NULL balance with total_gex={s.total_gex} at "
-                        f"spot={spot} skew={0.80 + i * 0.05:.2f}")
-                    assert s.regime == "negative_gamma"
-                checked += 1
-        assert checked == 42 and null_seen > 0, (checked, null_seen)
-
-    def test_negative_regime_can_still_return_a_balance(self):
-        """The converse FAILS -- nullity is not equivalent to the regime.
-
-        A call cluster below spot lifts the running total above zero; a heavy
-        put wall above spot drags the final total back negative. Two
-        crossings, negative regime, and a balance price is still returned.
-        Both structures occur in real index chains.
-        """
-        import math
-        spot = 200.0
-        strikes = []
-        for i in range(41):
-            K = 180.0 + i
-            if K < 195:
-                call_oi, put_oi = 200.0, 600.0        # put-dominated low wing
-            elif K < 200:
-                call_oi, put_oi = 9000.0, 300.0       # call cluster below spot
-            else:
-                call_oi, put_oi = 200.0, 5000.0       # put wall above spot
-            g = 0.05 * math.exp(-(((K - spot) / spot) ** 2) / (2 * 0.06 ** 2))
-            strikes.append({"strike": float(K), "net_gamma": (call_oi - put_oi) * g,
-                            "call_gamma": call_oi * g, "put_gamma": put_oi * g})
-
-        assert strikes[0]["net_gamma"] < 0, "low wing must be put-dominated"
-        cum, path = 0.0, []
-        for r in strikes:
-            cum += r["net_gamma"]
-            path.append(cum)
-        assert sum(1 for a, b in zip(path, path[1:]) if a * b < 0) == 2, (
-            "this fixture exists to exercise the MULTI-crossing path")
-
-        total = gamma.total_gex_from_strikes(gamma.gex_by_strike(strikes, spot))
-        assert total < 0, "fixture must be in the negative-gamma regime"
-        assert gamma.compute_gamma_balance(strikes, spot) is not None, (
-            "a negative-gamma chain CAN return a balance price; do not "
-            "reintroduce the claim that NULL and negative_gamma are equivalent")
-
-    def test_put_heavy_single_dip_chain_yields_no_balance(self):
-        """The IWM case: nothing is missing, the total just never returns."""
-        opts = _skewed_chain(200.0, 168.0, 232.0, 1.0, put_skew=1.20)
-        strikes = gamma.aggregate_by_strike(opts)
-        assert sum(r["net_gamma"] for r in strikes) < 0
-        assert gamma.compute_gamma_balance(strikes, 200.0) is None
-
-    def test_only_the_oi_skew_changes_between_present_and_null(self):
-        """Same strikes, same gamma surface -- only put/call OI skew differs."""
-        call_heavy = gamma.aggregate_by_strike(
-            _skewed_chain(200.0, 168.0, 232.0, 1.0, put_skew=0.95))
-        put_heavy = gamma.aggregate_by_strike(
-            _skewed_chain(200.0, 168.0, 232.0, 1.0, put_skew=1.20))
-        assert [r["strike"] for r in call_heavy] == [r["strike"] for r in put_heavy]
-        assert gamma.compute_gamma_balance(call_heavy, 200.0) is not None
-        assert gamma.compute_gamma_balance(put_heavy, 200.0) is None
-
-    def test_bs_flip_survives_where_balance_does_not(self):
-        """compute_gamma_flip_bs is the robust replacement.
-
-        It re-prices each contract's gamma across candidate spots rather than
-        walking the stored chain gamma, so it does not depend on where the
-        running total happens to end. Across the grid it resolves on every
-        chain, including every one where gamma_balance is NULL.
-        """
-        bal_null = flip_null = 0
-        for spot, lo, hi, step in _GRIDS:
-            for i in range(14):
-                s = gamma.build_summary(
-                    "TEST", "2026-08-25",
-                    _skewed_chain(spot, lo, hi, step, 0.80 + i * 0.05))
-                if s.gamma_balance is None:
-                    bal_null += 1
-                    assert s.gamma_flip is not None, (
-                        "the BS flip is the recommended replacement precisely "
-                        "because it resolves where gamma_balance does not")
-                flip_null += s.gamma_flip is None
-        assert bal_null > 0
-        assert flip_null == 0
+                    _skewed_chain(spot, lo, hi, step, skew))
+                if s.regime == "negative_gamma":
+                    neg_seen += 1
+                assert s.gamma_balance is not None, (
+                    f"balance NULL at spot={spot} skew={skew:.2f}")
+                assert lo <= s.gamma_balance <= hi
+                assert s.gamma_flip is not None, (
+                    f"flip NULL at spot={spot} skew={skew:.2f}")
+        assert neg_seen > 0, "sweep must exercise the negative-gamma regime"
