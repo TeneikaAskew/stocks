@@ -762,12 +762,29 @@ def _backfill_targets() -> list:
 def _pick_backfill_outputsize(bar_count: int, max_date,
                               today_et: date) -> str | None:
     """Decide AV outputsize — or skip entirely. Returns 'full',
-    'compact', or None (skip)."""
+    'compact', or None (skip).
+
+    Skip ONLY when the ticker already has today's bar (days_stale <= 0).
+    The job runs post-close (19:15 ET via fetch-earnings-history's
+    chained --backfill), so a ticker whose latest bar is yesterday IS
+    stale — today's bar exists upstream. The previous ``<= 1`` skip
+    made every ticker alternate: refreshed one night (two days of bars
+    at once), skipped the next — so the ~2,300-ticker tail's daily bar
+    arrived up to 25h late (absent from the next day's premarket brief
+    and insights), and the 06:30 UTC indicator-enrich job got hit with
+    a double-universe every other morning (the alternating 2,400- vs
+    ~850-ticker flag sets behind issue #751's timeout loop; verified
+    against run durations 2026-08-13→24: 28/64/23/70-min alternation).
+
+    A run BEFORE the close would fetch AV's intraday-partial daily bar;
+    that row is overwritten by the same evening's post-close runs, so
+    manual midday invocations converge rather than corrupt.
+    """
     if bar_count == 0:
         return 'full'
     days_stale = (today_et - max_date).days if max_date else 99999
     if bar_count >= BACKFILL_DEPTH_THRESHOLD_BARS:
-        if days_stale <= 1:
+        if days_stale <= 0:
             return None
         if days_stale <= 90:
             return 'compact'
@@ -887,6 +904,15 @@ def _run_backfill() -> None:
         else:
             df = df[df['date'] >= cutoff]  # enforce 10y cap on write
             if not df.empty:
+                # Attribute the write. These rows were previously
+                # unattributable (empty data_source) — identifying this
+                # path as the ~2,400-bar/night universe writer during
+                # the issue #751 investigation required insert-hour
+                # forensics. data_source = last writer: the 23:00 ET
+                # fetch-market-data pass re-stamps its enriched tickers
+                # afterwards, preserving that distinction.
+                df = df.copy()
+                df['data_source'] = 'av_daily_backfill'
                 upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
                 upserted += len(df)
                 log.info("    %d bars upserted: %s..%s",
