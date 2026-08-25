@@ -277,6 +277,13 @@ touch, exit at first-touch of stop/targets else EOD close, no costs):
 +$2,540, QQQ +$2,761, SPY +$1,605). ~215 triggered legs, overall T1 hit
 rate ~74%, avg P&L per triggered leg +0.20% to +0.56%.
 
+The full-history backfill (every weekday session since the table
+began; only the 5/25, 6/19, 7/3 holidays and 4/29 remain unresolved)
+extends the pattern: **positive every month on record** — Mar +$2,001,
+Apr +$4,348, May +$1,785, Jun +$3,306, Jul +$1,702, Aug +$1,898
+(≈ +$15,089 total per $10k-per-leg) — including May, the alert engine's
+−25 pct disaster month.
+
 This reframes the overall verdict. The structure-based *levels*
 framework (premarket trigger → T1/T2/T3 with stops, both directions
 armed, first-touch resolution) has been consistently profitable all
