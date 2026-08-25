@@ -296,6 +296,98 @@ net that); as a mechanical model it overstates what a human trading it
 would capture, but the margin (+$6,907 per $10k-per-leg over 63
 sessions) is not a rounding artifact.
 
+## 9. Verification & validation of the backfilled data
+
+Ran without waiting for the 21:15 ET scheduled run, entirely against the
+already-backfilled rows:
+
+- **Consistency sweep (all 328 resolved rows)**: 0 timestamp-ordering
+  violations (T1/stop never precede trigger, either leg); 0 triggered
+  legs missing P&L; 0 `pnl_dollar` vs `pnl_pct×$10k` mismatches; single
+  resolver version (`2026-05-11.v1`) across all rows.
+- **Idempotency**: all 42 pre-outage June 1–18 rows carry their original
+  `outcome_resolved_at` — the backfill touched nothing already resolved.
+- **Independent recomputation**: for a deterministic sample of 12 legs
+  (one call + one put per ticker per month, July and August), the
+  trigger/T1/stop timestamps were recomputed directly from
+  `market_data_intraday` in SQL using `resolve_leg`'s exact semantics
+  (first bar touch; T1/stop scanned from the trigger bar inclusive).
+  **12/12 match the stored values exactly.**
+- **Outlier audit**: the single |pnl| > 5% row is AMD 2026-04-24
+  (+12.1%) — a legitimate single-stock earnings-gap day from the April
+  era of the table, not a bad bar; outside the June–Aug window (it
+  inflates April's total by +$1,210).
+
+## 10. Hardening experiments — replayed on the 740 recorded June–Aug fires
+
+Every experiment evaluates recorded production fires against real
+1-minute bars (no fire simulation). Baseline: actual engine −5.37 pct,
+52.7% win.
+
+### Exit-only changes do NOT fix the engine (negative results)
+
+| Policy (all 735 fires with bars) | Total ret | Win % |
+|---|---|---|
+| Exit at market, T+10 min | −12.71 | 48.7 |
+| Exit T+15 | −7.78 | 46.9 |
+| Exit T+20 | −4.99 | 51.3 |
+| Exit T+30 | −5.11 | 51.7 |
+| Exit T+45 | −13.49 | 47.2 |
+| Exit T+60 | −38.53 | 45.7 |
+| Target + hard stop −0.10% (within time-stop window) | −4.03 | 31.8 |
+| Target + hard stop −0.15% | −6.81 | 40.7 |
+| Target + hard stop −0.20% | −3.39 | 47.2 |
+| Target + hard stop −0.30% | −12.57 | 51.2 |
+| Scratch rule (exit at 10m if losing, else 30m) | −11.92 | 35.5 |
+
+The current 22-min time stop already sits at the optimum of pure clock
+exits (the 20–30 min basin); holding to 60 min would have lost 7×
+more. **The loss pool is the entry population, not the clock.**
+
+### Entry filters DO fix it (actual recorded engine outcomes, filtered)
+
+| Filter | n | Engine total | Engine win % |
+|---|---|---|---|
+| BASELINE — all fires | 740 | −5.37 | 52.7 |
+| RVOL ≥ 1.0 | 212 | **+4.41** | 56.1 |
+| Opening hour (9:xx ET) only | 482 | +1.87 | 56.2 |
+| RVOL ≥ 1.0 AND opening hour | 177 | **+4.89** | 58.8 |
+| RVOL ≥ 1.0 AND not brief-opposed | 203 | **+5.42** | 56.2 |
+| timeframe_tag ∈ {15m, 30m} | 212 | +4.41 | 56.1 (identical set to RVOL ≥ 1.0) |
+
+71% of fires had RVOL < 1.0 and hit only 47.5% at 30 min (avg −0.036%);
+the RVOL ≥ 1.0 cohort hits ~62% with positive average moves, monotone
+across buckets (1.0–1.5: 61.9%, 1.5–2.5: 62.2%, ≥2.5: 62.3%). The same
+exit machinery is profitable on the high-RVOL third of fires.
+
+### Best combination found: RVOL ≥ 1.0 entries + plain 30-min exit
+
+| Month | n | Total ret | Win % |
+|---|---|---|---|
+| Jun | 74 | +1.40 | 55.4 |
+| Jul | 72 | +3.74 | 59.7 |
+| Aug | 65 | +8.64 | 72.3 |
+| **Jun–Aug** | 211 | **+13.77** | **62.1** |
+
+Positive in all three months across three different regimes (trending
+June, choppy July, dead August) — vs +4.41 for the engine's own exits
+on the same subset.
+
+### Caveats (read before shipping)
+
+- **May is a counterexample**: under May's pre-tightening config,
+  RVOL ≥ 1.0 fires still lost −12.14 (n=347, 44.1% win). The filter
+  separates cleanly on the *current* engine config (June onward); it is
+  not a universal shield.
+- In-sample: filters were mechanically motivated and few (not a mined
+  grid), and the RVOL effect is monotone — but the +13.77 headline is
+  one 3-month window, 211 trades, bar-close fills, no costs. Validate
+  out-of-sample (September live-shadow, or walk-forward via
+  `scripts/replay_signal_monitor.py`) before changing fire behavior.
+- Direction persistence context: of fires right at +30 min, 72% are
+  still right at +60 and only 62% by the close — the exit must stay
+  inside the ≤30-min window regardless of filter.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
