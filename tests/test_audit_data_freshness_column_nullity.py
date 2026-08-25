@@ -362,3 +362,29 @@ def test_gamma_balance_check_is_sparse_calibrated():
     gex = by_name["strat_features_5m.total_gex"]
     assert gex["lookback_days"] == 1
     assert gex["min_non_null_rate"] == 0.90
+
+
+def test_lookback_counts_trading_sessions_not_calendar_days(monkeypatch):
+    """Codex P1 #762: calendar-day subtraction turned the 5-session
+    gamma_balance window into 3 sessions across a weekend (Tuesday
+    anchor - 4 calendar days = Friday). The window must span the five
+    most recent TRADING sessions: for a Tuesday 2026-08-25 audit that
+    is Wed 08-19 .. Tue 08-25."""
+    from scripts.audit_data_freshness import _query_column_nullity
+
+    windows = {}
+
+    def capturing(sql, params=None):
+        if "COUNT(gamma_balance_price)" in sql:
+            windows["start"] = params["window_start"]
+            windows["end"] = params["window_end"]
+        return pd.DataFrame()
+
+    _patch_query(monkeypatch, capturing)
+    # Tuesday 2026-08-25 14:00 UTC (10:00 ET, past the 02:00 ET settle)
+    _query_column_nullity(datetime(2026, 8, 25, 14, 0))
+    assert windows["start"] == datetime(2026, 8, 19, 0, 0), (
+        f"5-session window must start Wed 08-19, got {windows['start']} — "
+        f"calendar-day subtraction shrinks the window across weekends"
+    )
+    assert windows["end"] == datetime(2026, 8, 26, 0, 0)

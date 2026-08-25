@@ -788,15 +788,17 @@ def _query_column_nullity(now_utc: datetime) -> list[FreshnessRow]:
         settle_hour_et = int(check.get("settle_hour_et", 2))
 
         # Anchor on the most-recent SETTLED trading day. lookback_days
-        # then walks BACK from that day (lookback_days=1 → just the
-        # latest session; lookback_days=2 → latest two sessions, etc).
-        latest_day = most_recent_trading_day(
-            now_utc, settle_hour_et=settle_hour_et,
+        # counts TRADING sessions walking back from that day
+        # (lookback_days=1 → just the latest session; 5 → the latest
+        # five sessions). Codex P1 on #762: calendar-day subtraction
+        # here turned "5 sessions" into 3 across a weekend (Tue anchor
+        # minus 4 calendar days = Fri) and fewer over holidays — narrow
+        # enough to false-fire the sparse gamma_balance check.
+        session_days = _recent_trading_days(
+            now_utc, lookback_days, settle_hour_et=settle_hour_et,
         )
-        window_start = datetime.combine(
-            latest_day - timedelta(days=max(lookback_days - 1, 0)),
-            time.min,
-        )
+        latest_day = session_days[0]
+        window_start = datetime.combine(min(session_days), time.min)
         # Upper bound is end-of-latest-trading-day; rows beyond that
         # are tomorrow's intraday partial writes (if any) and shouldn't
         # be counted against the latest session's nullity rate.
