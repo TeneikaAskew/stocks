@@ -3009,20 +3009,38 @@ deploy_notifier() {
     # 5) Create Cloud Logging sink → Pub/Sub
     # Filter catches Cloud Run Job execution failures but excludes:
     #   1. the notifier itself (prevents infinite loops)
-    #   2. Cloud Audit Logs (`cloudaudit.googleapis.com`) — every
-    #      `gcloud run jobs update` triggers an ERROR-severity audit log
-    #      because gcloud tries Jobs.CreateJob first (ALREADY_EXISTS at
-    #      ERROR severity) and falls back to UpdateJob. Without the
-    #      `logName:"run.googleapis.com"` clause, every deploy fired one
-    #      false-positive notification per job. Real execution failures
-    #      land on `run.googleapis.com/varlog/system` (task-failed
-    #      records) and `run.googleapis.com/stderr` (container stack
-    #      traces), both of which still match.
+    #   2. the two Cloud Audit Log methods that fire ERROR-severity noise
+    #      on ordinary deploys: `gcloud run jobs update` tries
+    #      Jobs.CreateJob first (ALREADY_EXISTS at ERROR severity) before
+    #      falling back to Jobs.UpdateJob.
+    #
+    # A blanket `logName:"run.googleapis.com"` clause (i.e. excluding ALL
+    # of cloudaudit.googleapis.com) was tried first but created a real
+    # blind spot: a job that calls sys.exit(1) after its own INFO/WARNING
+    # logging (no ERROR-severity Python traceback) has no run.googleapis.com
+    # log line at severity>=ERROR at all — "Container called exit(1)."
+    # lands on run.googleapis.com/varlog/system at WARNING, not ERROR. The
+    # ONLY severity>=ERROR record of that failure is the audit log's
+    # Jobs.RunJob entry ("Execution <name> has failed to complete, 0/1
+    # tasks were a success"), which the blanket exclusion silently dropped.
+    # signal-monitor-eod-resolver hit exactly this twice (2026-07-09,
+    # 2026-07-14 — issue gcp-job-failure tracking added retroactively)
+    # with zero Discord/GitHub notification either time. Excluding by
+    # methodName instead of by logName keeps the original deploy-noise
+    # fix while letting genuine Jobs.RunJob failures through. Uses `:`
+    # (substring) rather than `=` (exact) because the observed methodName
+    # value differs by audit sub-log: short form `/Jobs.CreateJob` on
+    # `cloudaudit.googleapis.com/system_event`, fully-qualified
+    # `google.cloud.run.v1.Jobs.CreateJob` on `.../activity` — an exact
+    # match against one form silently misses the other. Verified against
+    # 30 days of production logs before merging: this filter still
+    # excludes every historical CreateJob/UpdateJob deploy-noise entry and
+    # newly includes both eod-resolver failures.
     local sink_filter
     sink_filter='resource.type="cloud_run_job"
 AND severity>=ERROR
 AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"
-AND logName:"run.googleapis.com"'
+AND NOT (protoPayload.methodName:"CreateJob" OR protoPayload.methodName:"UpdateJob")'
 
     gcloud logging sinks create "${NOTIFIER_SINK}" \
         "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
