@@ -346,7 +346,13 @@ export default function BacktesterSection({ ticker }: { ticker: string }) {
     activeRun,
   );
 
-  const summary = results?.summary;
+  // The API's empty-CSV branch returns `summary: {}` — truthy, so an
+  // object-truthiness guard renders the metric grid and crashes on
+  // `summary.avg_return_pct.toFixed` for any ticker with no backtest
+  // rows. Gate on a field the populated branch always carries.
+  const rawSummary = results?.summary;
+  const summary =
+    rawSummary && rawSummary.total_trades != null ? rawSummary : undefined;
 
   return (
     <div className="space-y-4">

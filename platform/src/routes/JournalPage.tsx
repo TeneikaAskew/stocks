@@ -327,7 +327,9 @@ export default function JournalPage() {
       });
       if (r.ok) {
         const d = await r.json();
-        const skippedNote = skippedCount > 0 ? ` · ${skippedCount} active skipped` : '';
+        // Not all skipped rows are active — a row with a null exit_ts is
+        // also unexportable — so say "not closed" rather than "active" (#714).
+        const skippedNote = skippedCount > 0 ? ` · ${skippedCount} not closed, skipped` : '';
         setExportStatus(`Exported ${d.trades_exported} closed trades${skippedNote} → ${d.filename}`);
       } else {
         downloadCsv(csv, `${activeTicker.toLowerCase()}_journal.csv`);

@@ -6,10 +6,21 @@ the winning combo lands and a same-day re-run converges via ON CONFLICT.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 import sqlalchemy
 
 from scripts.calibrate_earnings import apply_winner
+
+# Same guard as test_journal_timestamptz_roundtrip.py (#714): the CI
+# `Run Tests` job passes --ignore=tests/integration, so this only matters
+# for a local `pytest tests/` run with no DB — skip instead of erroring.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DB_HOST"),
+    reason="integration tests need a Postgres (DB_HOST) — see the "
+    "integration-tests CI job in backtest-pipeline.yml",
+)
 
 
 @pytest.fixture

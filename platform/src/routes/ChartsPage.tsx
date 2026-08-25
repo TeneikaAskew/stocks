@@ -259,8 +259,14 @@ export default function ChartsPage() {
   if (lastTicker !== activeTicker) {
     setLastTicker(activeTicker);
     setScorecardOpen(false);
-    replayTrades.reset();
   }
+  // reset() mutates an external store — not safe during render (#714).
+  // Keyed on activeTicker; the initial-mount run resets a fresh store,
+  // which is a no-op.
+  useEffect(() => {
+    replayTrades.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTicker]);
 
   // Trades for current date/ticker — filter out trades after reviewTs in review mode
   const reviewCutoffTs = useMemo(() => {

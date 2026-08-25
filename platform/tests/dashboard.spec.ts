@@ -34,19 +34,16 @@ const MOCK_SECTORS = {
   ],
 };
 
+// Real /api/backtest/results/{ticker} shape (empty CSV branch): ticker,
+// filename, trade_count, summary, trades — same corrected contract as
+// dashboard-chart-fit.spec.ts (#714 item 2). No assertion reads these
+// values; the mock exists so the dashboard fan-out resolves.
 const MOCK_BACKTEST = {
   ticker: 'IWM',
-  runs: [
-    {
-      run_id: 'run-1',
-      started_at: '2026-04-20T15:00:00Z',
-      win_rate: 0.62,
-      avg_return_pct: 0.85,
-      total_return_pct: 12.4,
-      profit_factor: 1.9,
-      trades: 42,
-    },
-  ],
+  filename: 'backtest_IWM_20260420_150000.csv',
+  trade_count: 0,
+  summary: {},
+  trades: [],
 };
 
 // News is backward-dated (yesterday) alongside 3 forward-dated catalyst
@@ -122,19 +119,23 @@ test.describe('Dashboard', () => {
   test.beforeEach(async ({ page }) => {
     await mockDashboard(page);
     await page.route('**/api/backtest/results/IWM', (r) => r.fulfill(M.ok(MOCK_BACKTEST)));
+    // Real equity shape: ticker, filename, summary, dates, values — the
+    // dates/values contract BacktesterSection.tsx actually reads (#714).
     await page.route('**/api/backtest/equity/IWM', (r) =>
       r.fulfill(
         M.ok({
           ticker: 'IWM',
-          points: [
-            { date: '2026-04-21', equity: 10000, drawdown: 0 },
-            { date: '2026-04-25', equity: 11240, drawdown: 0 },
-          ],
-          summary: { total_return_pct: 12.4, max_drawdown_pct: 3.2 },
+          filename: 'equity_IWM_20260420_150000.csv',
+          summary: {},
+          dates: [],
+          values: [],
         })
       )
     );
-    await page.route('**/api/backtest/all/IWM', (r) => r.fulfill(M.ok({ runs: [] })));
+    // Real /api/backtest/all/{ticker} shape: ticker, total_runs, runs.
+    await page.route('**/api/backtest/all/IWM', (r) =>
+      r.fulfill(M.ok({ ticker: 'IWM', total_runs: 0, runs: [] }))
+    );
     // Intraday bars so the Overview chart card renders (candlestick default).
     const bars = [10, 11, 12, 13, 14, 15].map((h) => {
       const time = Date.UTC(2026, 3, 24, h, 0, 0) / 1000;

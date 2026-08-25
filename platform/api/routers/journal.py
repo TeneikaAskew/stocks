@@ -21,7 +21,7 @@ import re
 import sys
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -559,7 +559,7 @@ def _build_local_entry(
         "status": status,
         "source": source,
         "session_id": session_id,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
