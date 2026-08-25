@@ -113,3 +113,16 @@ httpx>=0.27.0
 # multipart broker-CSV upload). Without it, FastAPI raises at request time
 # ("Form data requires python-multipart to be installed").
 python-multipart>=0.0.9
+
+# cachetools backs the TTLCache used by platform/api/main.py at module
+# load (_SECTORS_CACHE). Was never pinned here even though it's imported
+# unconditionally at import time — every route and every test that
+# imports platform.api.main (e.g. tests/integration/test_journal_*.py)
+# fails collection with ModuleNotFoundError without it.
+cachetools>=5.3.0
+# sqlparse backs gcp/queries/run_query.py (the db-query Cloud Run Job's
+# statement splitter). It was only in requirements-gcp.txt, so the
+# module had zero CI import coverage — an import break there would
+# first surface as a production db-query failure. Found by
+# tests/test_import_coverage.py on 2026-08-24.
+sqlparse>=0.4.4
