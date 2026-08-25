@@ -1101,11 +1101,24 @@ CREATE TABLE IF NOT EXISTS trades (
     strat_combo     VARCHAR(30),
     ftfc_score      DOUBLE PRECISION,
     trade_date      DATE,
-    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    -- trade_logger / migrate_to_gcp upsert on (ticker, entry_time) —
+    -- production has carried this constraint (as `uq_trades`) since the
+    -- upsert shipped, but schema.sql never declared it, so a fresh apply
+    -- (e.g. the integration-tests ephemeral Postgres) diverged and the
+    -- ON CONFLICT key had nothing to land on (#722).
+    CONSTRAINT uq_trades UNIQUE (ticker, entry_time)
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_ticker_date
     ON trades (ticker, trade_date DESC);
+
+-- Retrofit for pre-existing installs whose `trades` predates the inline
+-- constraint above (CREATE TABLE IF NOT EXISTS skips them). Production
+-- already has `uq_trades` (constraint-owned index), so IF NOT EXISTS
+-- makes this a no-op there; a unique index is all ON CONFLICT needs.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_trades
+    ON trades (ticker, entry_time);
 
 
 -- ─────────────────────────────────────────────────────────
