@@ -19,22 +19,36 @@ neither.
 
 ## §1 Executive summary
 
-`gamma_balance_price` is NULL **if and only if** the session is in the
-negative-gamma regime. This is an algebraic identity, not a correlation, and it
-holds through the production `build_summary` on 42 of 42 test chains.
+> **Correction (2026-08-25, post-review).** The first draft of this audit claimed
+> `gamma_balance_price IS NULL` was *equivalent* to `regime = negative_gamma`.
+> **That was wrong**, and a Codex review on PR #771 caught it. A cumulative path
+> can cross zero an even number of times and finish negative, so a negative-gamma
+> chain can still return a balance price. Only the one-way implication holds. The
+> section below is the corrected version; §2 carries the counterexample.
+
+`gamma_balance_price` is NULL **only when** the session is in the negative-gamma
+regime — but the reverse does not follow. The implication runs one way:
+
+```
+gamma_balance_price IS NULL   ⟹   total_gex < 0   ⟹   regime = 'negative_gamma'
+        (given a put-dominated lowest strike, which real ETF chains have)
+
+regime = 'negative_gamma'     ⇏   gamma_balance_price IS NULL
+```
 
 | Question asked | Answer |
 |---|---|
-| Why is it NULL? | The chain is put-gamma-heavy. The metric can only resolve on call-heavy chains. |
+| Why is it NULL? | The running total of `net_gamma`, accumulated from zero at the bottom of the ladder, never came back through zero. That requires the chain to be put-gamma-heavy overall. |
 | Upstream or downstream? | **Neither.** No fetcher gap, no code regression, no chain-completeness issue. |
-| Is it a bug? | The metric is mis-specified. A chain always *has* a balance point; this construction cannot find it. |
-| Should it be NULL? | No — and worse, it is NULL exactly on the high-volatility sessions where it would matter most. |
-| Is the feature salvageable? | Not as written. `compute_gamma_flip_bs` already does the job and resolved on 42/42 chains. |
+| Is it a bug? | The metric is fragile by construction. A chain always *has* a balance point; this construction finds one only when the running total happens to change sign. |
+| Should it be NULL? | Not for the reason it is. And it is disproportionately absent on the high-volatility sessions where it would matter most. |
+| Is the feature salvageable? | Not as written. `compute_gamma_flip_bs` already does the job and resolved on 42/42 chains, including every one where balance was NULL. |
 
-**The one-line version:** the nullity carries no information that `total_gex` —
-already stored, already densely monitored — does not carry more directly.
-
----
+**What this does and does not license.** A NULL tells you the regime is negative —
+which `total_gex` already tells you directly and densely, so the NULL adds
+nothing. A *non*-NULL tells you nothing about the regime either way. As a regime
+signal the column is therefore redundant in one direction and silent in the
+other. That is the basis for R1/R3 — **not** an equivalence.
 
 ## §2 The mechanism
 
@@ -53,45 +67,65 @@ if not crossings:
 ```
 
 The accumulator starts at **zero at the bottom of the strike ladder**. Real ETF
-chains are put-dominated at low strikes, so the running total dives negative on
-the first few strikes and can only cross back through zero if it finishes
-positive. Therefore:
+chains are put-dominated at low strikes, so the running total goes negative on
+the first strike.
 
-> **A crossing exists ⟺ Σ net_gamma > 0 ⟺ the chain is net call-gamma-heavy.**
+### What follows (and what does not)
 
-And because `gex = net_gamma × spot² × GEX_MULTIPLIER` with both factors strictly
-positive:
+**Holds.** If there is no crossing, the running total never changed sign, so it
+ends on the side it began. With a put-dominated lowest strike that side is
+negative. And because `gex = net_gamma × spot² × GEX_MULTIPLIER` with both
+factors strictly positive, `sign(total_gex) ≡ sign(Σ net_gamma)`. Therefore:
 
-> **sign(total_gex) ≡ sign(Σ net_gamma)**
+> **NULL ⟹ total_gex < 0 ⟹ regime = negative_gamma.**
 
-Combining the two gives the identity:
+**Does not hold.** The converse. A cumulative path may cross zero, come back,
+and finish negative — an even number of crossings — which returns a balance
+price in a negative-gamma regime. Minimal case, run through the production
+function: per-strike `net_gamma` of `[-2, +5, -4]` gives cumulative
+`[-2, +3, -1]`, two crossings, `total_gex = -102.01`, and
+`compute_gamma_balance` returns `100.4`.
 
-```
-gamma_balance_price IS NULL
-  ≡  Σ net_gamma < 0
-  ≡  total_gex < 0
-  ≡  regime = 'negative_gamma'
-```
+This is not only a toy. `test_negative_regime_can_still_return_a_balance` builds
+it at realistic magnitudes from structures real index chains have — a call
+cluster below spot lifting the running total above zero, a heavy put wall above
+spot dragging the final total back negative:
 
-**Evidence.** `tests/test_gamma.py::TestGammaBalanceNullityIdentity` runs 42
-chains through `build_summary` across three spot/strike-grid configurations
-(IWM-like $200/$1, SPY-like $600/$5, QQQ-like $450/$2.50), sweeping put/call OI
-skew from 0.80 to 1.45. **42 agree, 0 disagree.** The tipping point sits at a
-put/call OI skew of roughly 1.05–1.15.
+| upper put OI | end cumulative | crossings | total_gex | balance |
+|---|---|---|---|---|
+| 1,400 | +1,072.8 | 1 | +429,122 | 194.42 |
+| 3,000 | −65.1 | 2 | −26,047 | **194.42** |
+| 5,000 | −1,487.5 | 2 | −595,009 | **194.42** |
+| 9,000 | −4,332.3 | 2 | −1,732,933 | **203.45** |
 
-**Corroboration.** The B6 entry in `EXPERIMENT_REGISTRY.md` (2026-06-07) already
-recorded the empirical shadow of this — `compute_gamma_flip` (the old name for
-this function) *"returns None on ~half the days — disproportionately the
-negative-gamma days, which were dumped into 'unknown'"*. It was logged as a quirk
-rather than traced to its cause.
+Every row from `upper put OI` = 3,000 down is a negative-gamma chain that still
+returns a balance price.
 
-**The observed data signature also predicts it.** #744's 07-28 table noted the
-metric is binary per session — 0% or 100%, never partial. That is exactly what a
-single global sign test, evaluated once per `(ticker, date)` and fanned out to
-every row of that day, produces. A chain-completeness gap would produce partial
-days. It never does.
+### How often does the converse fail in practice?
 
----
+**Unknown, and this audit cannot answer it.** Across ~14,000 randomized chains
+from naturally-shaped generators — smooth wings, and wings with random
+single-strike OI clusters — the converse never failed once: every negative-gamma
+chain was NULL. Producing a failure required deliberately alternating call/put
+dominance across the ladder with enough magnitude to move the running total
+across zero twice.
+
+So the two conditions may well coincide on most real sessions. But "may well" is
+not evidence, and the frequency question is exactly what §9's query settles.
+**Run it before acting on R1 or R3.**
+
+### Corroboration for the direction that holds
+
+The B6 entry in `EXPERIMENT_REGISTRY.md` (2026-06-07) independently recorded
+that `compute_gamma_flip` (the old name for this function) *"returns None on
+~half the days — disproportionately the negative-gamma days, which were dumped
+into 'unknown'"*. That is the one-way implication showing up in production data,
+logged as a quirk rather than traced.
+
+#744's 07-28 table separately noted the metric is binary per session — 0% or
+100%, never partial. That is consistent with a single chain-level condition
+evaluated once per `(ticker, date)` and fanned out to every row of that day, and
+inconsistent with a chain-completeness gap, which would produce partial days.
 
 ## §3 Why IWM specifically
 
@@ -124,11 +158,16 @@ sessions carry materially larger forward moves:
 | QQQ | 21.7 bps | 13.1 bps | 1.66× |
 | SPY | 18.5 bps | 9.9 bps | 1.87× |
 
-Those are precisely the sessions on which `gamma_balance_price` is guaranteed
-NULL. **The feature is present on quiet days and absent on violent ones** — and
-it remains a live feature in both the `direction` and `size` model axes
-(`strat_config.py:50`; it is *not* in either `NEAR_DEAD` set, so it survives
-pruning).
+Every NULL falls on one of those sessions (§2, forward direction), and B6
+independently measured the column absent on roughly half of all days,
+*disproportionately* the negative-gamma ones. So the feature thins out precisely
+where the volatility is — and it remains live in both the `direction` and `size`
+model axes (`strat_config.py:50`; it is *not* in either `NEAR_DEAD` set, so it
+survives pruning).
+
+The precise claim: NULLs are confined to negative-gamma sessions, and B6's
+~50%-of-days absence rate means a large share of those sessions lose the
+feature. It is **not** true that every negative-gamma session is NULL — see §2.
 
 ---
 
@@ -185,9 +224,9 @@ is a trading-math decision and #744 already flagged it as needing quant judgment
 
 | # | Action | Confidence | Notes |
 |---|---|---|---|
-| R1 | Drop `strat_features_5m.gamma_balance_price` from `COLUMN_NULLITY_CHECKS` | High | Its nullity restates `total_gex`'s sign, which is monitored densely at 90%/1-day. This is what PR #741 proposed; it was closed for lack of a mechanism, and §2 supplies it. |
+| R1 | Drop `strat_features_5m.gamma_balance_price` from `COLUMN_NULLITY_CHECKS` | High | Two independent reasons, neither needing the (false) equivalence. **(a)** A NULL only ever means negative-gamma, which `total_gex` reports directly and densely at 90%/1-day — so the check re-detects a condition already covered. **(b)** The column's fill rate tracks market regime rather than pipeline health, so a fixed nullity threshold cannot be calibrated stably: it has now been recalibrated twice (#644 → #762) and failed both times. |
 | R2 | Add a nullity check for `gamma_flip` | High | It is the level `gamma_proximity` trades and it has **no** check today. Monitoring is currently inverted relative to value. |
-| R3 | Drop `gamma_balance_price` from `STRAT_NUMERIC_FEATURES` | Medium-high | A feature that is absent exactly on high-vol sessions is worse than no feature. LightGBM tolerates the NaN, so this is a cleanup, not a correctness fix. |
+| R3 | Drop `gamma_balance_price` from `STRAT_NUMERIC_FEATURES` | Medium | A feature whose absence is confined to high-vol sessions thins out where it would matter most. LightGBM tolerates the NaN, so this is a cleanup, not a correctness fix — and it is worth confirming against §9 first, since the practical NULL rate is what makes it dead weight. |
 | R4 | Settle the incremental-vol question, then wire regime → `get_position_size` | Medium | The only recommendation here with revenue attached. Gated on the §6 caveat. |
 | R5 | If a balance price is still wanted as a distinct quantity, redefine it as the **gamma median** | Medium | The strike where cumulative `\|net_gamma\|` reaches half the chain total. Always exists for a non-empty chain, and matches what the docstring already claims ("a balance point in OI-weighted gamma space"). Note this changes `tests/test_gamma.py::TestComputeGammaBalance::test_no_crossing_returns_none`, which currently pins the degenerate behaviour. |
 
@@ -219,22 +258,41 @@ per CLAUDE.md Rule 3.6 — no throwaway harness; the proof lives in
 `tests/test_gamma.py` where it can be re-run.
 
 **GCP credentials in this session return `ACCESS_TOKEN_TYPE_UNSUPPORTED`,** so no
-production rows were queried directly. The production figures quoted (24.8% /
-~55% / ~60%, the 0/312, the 2/18 ticker-days) are taken from the triage comments
-on #744 and #765. **The mechanism is proven from code and does not depend on
-them** — but R1/R3 should be sanity-checked against one live query before merging:
+production rows were queried. The production figures quoted (24.8% / ~55% /
+~60%, the 0/312, the 2/18 ticker-days) are taken from the triage comments on
+#744 and #765.
+
+**This query is now a prerequisite, not a formality.** The first draft treated it
+as a sanity check because the equivalence was believed proven. It isn't — §2 only
+establishes the forward direction — so the practical question of how often the
+two conditions coincide has to come from production:
 
 ```sql
 SELECT ticker,
        count(*)                                                   AS n,
        count(gamma_balance_price)                                 AS bal,
        count(*) FILTER (WHERE total_gex > 0)                      AS pos_gex,
-       count(*) FILTER (WHERE (gamma_balance_price IS NOT NULL)
-                          <> (total_gex > 0))                     AS identity_breaks
+       -- MUST be 0: a NULL balance in a positive-gamma session would
+       -- falsify even the forward implication in §2.
+       count(*) FILTER (WHERE gamma_balance_price IS NULL
+                          AND total_gex > 0)                      AS forward_breaks,
+       -- Expected to be small; this is the number §2 cannot predict.
+       -- It is the count of negative-gamma sessions that STILL produced a
+       -- balance price, i.e. how much independent signal the column carries.
+       count(*) FILTER (WHERE gamma_balance_price IS NOT NULL
+                          AND total_gex < 0)                      AS converse_breaks
 FROM gamma_levels_eod
 WHERE date > current_date - 120
 GROUP BY ticker ORDER BY ticker;
 ```
 
-`identity_breaks` should be **0**. If it isn't, §2 is wrong for real chains and
-every recommendation here needs revisiting.
+Read it as:
+
+- `forward_breaks > 0` → §2 is wrong even in the direction claimed; discard this
+  audit's reasoning and start over.
+- `converse_breaks ≈ 0` → the column is, in practice, a redundant restatement of
+  `total_gex < 0`. R1 and R3 are safe.
+- `converse_breaks` materially above zero → the column *does* carry independent
+  information on those sessions. R1 still holds on ground (b) — the check cannot
+  be calibrated stably — but **R3 should be reconsidered**, because the feature
+  is then not merely a regime echo.

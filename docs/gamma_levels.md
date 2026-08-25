@@ -26,7 +26,7 @@ read like the community recaps.
 | **Gate (Gatekeeper)** | Strike where \|Net GEX\| ≥ 20% of max | Secondary level — must break before price reaches the King |
 | **Spot** | Strike within 0.2% of current price | Visual marker, no trading meaning by itself |
 | **Flip** | `compute_gamma_flip_bs` — the Black-Scholes-recurved spot at which net dealer gamma crosses zero | Regime divider (the tradeable level) |
-| **Balance** | `compute_gamma_balance` — cumulative-net-gamma zero crossing nearest spot | Legacy. **Resolves only on call-gamma-heavy chains**, so it is NULL exactly when the regime is negative — see [`audits/GAMMA_BALANCE_AUDIT_2026-08-25.md`](audits/GAMMA_BALANCE_AUDIT_2026-08-25.md). Do not use it as a level. |
+| **Balance** | `compute_gamma_balance` — cumulative-net-gamma zero crossing nearest spot | Legacy and fragile: it resolves only when the running total of `net_gamma` changes sign, so **a NULL always means the regime is negative** (the converse does not hold). See [`audits/GAMMA_BALANCE_AUDIT_2026-08-25.md`](audits/GAMMA_BALANCE_AUDIT_2026-08-25.md). Do not use it as a level. |
 | **Regime — Positive gamma** | `total_gex > 0` | Dealers buy dips/sell rips → vol suppressed → range-bound, pinning |
 | **Regime — Negative gamma** | `total_gex < 0` | Dealers sell dips/buy rips → vol amplified → trending |
 
