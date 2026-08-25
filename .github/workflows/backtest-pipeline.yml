@@ -182,6 +182,8 @@ jobs:
       issues: write
       pull-requests: write
       actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
     with:
       workflow_name: "CI (Backtest Pipeline)"
       failure_title: "❌ CI red on main — nightly canary or main push failed"
