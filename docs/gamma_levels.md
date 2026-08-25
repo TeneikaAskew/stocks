@@ -25,11 +25,18 @@ read like the community recaps.
 | **King** | Strike where \|Net GEX\| ≥ 50% of max in window | Primary magnet/defense level. First touches react ~80% in positive gamma |
 | **Gate (Gatekeeper)** | Strike where \|Net GEX\| ≥ 20% of max | Secondary level — must break before price reaches the King |
 | **Spot** | Strike within 0.2% of current price | Visual marker, no trading meaning by itself |
-| **Flip** | Cumulative-GEX zero crossing nearest spot | Regime divider |
-| **Regime — Positive gamma** | Spot above flip | Dealers buy dips/sell rips → vol suppressed → range-bound, pinning |
-| **Regime — Negative gamma** | Spot below flip | Dealers sell dips/buy rips → vol amplified → trending |
+| **Flip** | `compute_gamma_flip_bs` — the Black-Scholes-recurved spot at which net dealer gamma crosses zero; search escalates ±10%→±25%→±50% before concluding no-flip | Regime divider (the tradeable level). NULL only for thin/IV-less chains or a chain one-sided across ±50% |
+| **Balance** | `compute_gamma_balance` — the OI-weighted gamma **median**: the price where cumulative \|net_gamma\| reaches half the chain total (center-anchored, interpolated) | Always defined for a chain with any gamma; NULL only for genuine data absence. Redefined 2026-08-25 — the old cumulative-zero-crossing form was NULL on every put-gamma-heavy session; see [`audits/GAMMA_BALANCE_AUDIT_2026-08-25.md`](audits/GAMMA_BALANCE_AUDIT_2026-08-25.md). A mass-balance point, **not** the regime divider — that is the Flip. |
+| **Regime — Positive gamma** | `total_gex > 0` | Dealers buy dips/sell rips → vol suppressed → range-bound, pinning |
+| **Regime — Negative gamma** | `total_gex < 0` | Dealers sell dips/buy rips → vol amplified → trending |
 
 ---
+
+> **Regime is derived from `sign(total_gex)`, not from spot-vs-flip.** The
+> spot-above/below-flip rule this table used to carry was found inverted in
+> experiment B6 (2026-06-07): `regime='negative_gamma'` had `total_gex > 0` in
+> 2,765 of 2,767 `gamma_levels_eod` rows. `lib/gamma.py:911` was fixed the same
+> day; this doc was corrected 2026-08-25.
 
 ## Sign convention (locked)
 

@@ -39,6 +39,14 @@ log = logging.getLogger(__name__)
 
 TICKERS = ("IWM", "SPY", "QQQ", "SPX")
 
+# Server-side wall-time cap for a single audit query. The watchdog's
+# Cloud Run task-timeout is 3600s; no individual check may spend a
+# meaningful fraction of that. Issue #765: one unindexed query ate the
+# entire budget, so the job was killed mid-run and reported NOTHING --
+# not even the checks that had already passed. A per-query bound turns
+# that into one loud, attributable check failure instead.
+_CHECK_QUERY_TIMEOUT_S = 120.0
+
 # Tables to check. Each entry describes how to compute freshness for one table.
 #
 # Fields:
@@ -701,23 +709,40 @@ COLUMN_NULLITY_CHECKS: list[dict] = [
         "table": "strat_features_5m",
         "column": "gamma_balance_price",
         "tickers": ("IWM", "SPY", "QQQ"),
-        # gamma_balance is sparse BY DESIGN: it exists only on sessions
-        # where cumulative net gamma has a zero-crossing (lib/gamma.py:905
-        # — "returns None on ~half of days"). Measured 2026-08: IWM ~40%,
-        # SPY/QQQ ~50-60% of sessions populated. A single-session 90%
-        # check therefore fails on any crossing-less day — the watchdog
-        # flapped (fail Sun 2026-08-23, pass Mon 08-24) and the notifier
-        # opened/auto-closed #744 on the flap. Five sessions at >=20%
-        # tolerates the design sparsity while still catching the real
-        # cascade signature this check exists for: the #744 July stretch
-        # (0% for 3+ weeks) scores 0.0 and still pages. Full-stop
-        # upstream (gamma_levels_eod stalls) is ALSO caught same-day by
-        # the total_gex check above, which is dense and stays at 90%/1d.
-        "lookback_days": 5,
-        "min_non_null_rate": 0.20,
+        # 2026-08-25: back to the strict dense shape, deliberately. The
+        # old zero-crossing gamma_balance was NULL by construction on
+        # put-gamma-heavy sessions, which made ANY fixed threshold track
+        # the market regime instead of pipeline health — calibrated twice
+        # (#644 90%/1d, #762 20%/5d), failed twice (#744, #765). The
+        # metric is now the OI-weighted gamma MEDIAN (lib/gamma.py,
+        # GAMMA_BALANCE_AUDIT_2026-08-25 R5): always defined for a chain
+        # with any gamma, so a NULL here is a real pipeline bug — which
+        # is exactly what this check should mean (owner directive:
+        # "none of these should be null, ever").
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
         "writer_job": "strat-engine",
-        "rationale": "same gamma_levels_eod upstream as total_gex; "
-                     "sparse-aware window per #744",
+        "rationale": "gamma median is always defined post-redefinition; "
+                     "NULL = real upstream bug, same family as total_gex",
+    },
+    {
+        "name": "strat_features_5m.gamma_flip",
+        "table": "strat_features_5m",
+        "column": "gamma_flip",
+        "tickers": ("IWM", "SPY", "QQQ"),
+        # Added 2026-08-25 (GAMMA_BALANCE_AUDIT C-04): gamma_flip is the
+        # level gamma_proximity actually trades, yet it had no nullity
+        # check while the legacy balance metric paged hourly — the
+        # monitoring was inverted relative to value. With the escalating
+        # ±10%→±50% flip search (lib/gamma.py), a flip resolves on any
+        # two-sided IWM/SPY/QQQ chain; NULL now means a real data-quality
+        # problem (thin/one-sided chain data, missing IV, or a scipy-less
+        # image) — page on it.
+        "lookback_days": 1,
+        "min_non_null_rate": 0.90,
+        "writer_job": "strat-engine",
+        "rationale": "the traded gamma level (gamma_proximity); dense "
+                     "after the escalating flip search — NULL = real bug",
     },
     {
         "name": "strat_features_5m.total_vex",
@@ -817,7 +842,8 @@ def _query_column_nullity(now_utc: datetime) -> list[FreshnessRow]:
         """
         params = {"window_start": window_start, "window_end": window_end}
         try:
-            df = query_to_dataframe_strict(sql, params=params)
+            df = query_to_dataframe_strict(sql, params=params,
+                                           timeout_s=_CHECK_QUERY_TIMEOUT_S)
         except Exception as e:
             # Distinguish two error classes:
             #   - Missing TABLE (fresh deploy, legitimate): skip silently
@@ -966,22 +992,53 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
     # Settled after the enrich job finishes: 02:30 ET start + worst-case
     # ~2h ⇒ 05:00 ET. Before 05:00 ET the check anchors one day back.
     latest_day = most_recent_trading_day(now_utc, settle_hour_et=5)
+    # Driven by the settled day's own rows, NOT by a bare 450-day scan.
+    #
+    # The original form (PR #759) opened with an unbounded
+    #   FROM market_data_daily WHERE date >= CURRENT_DATE - INTERVAL '450 days'
+    # which has no ticker predicate, so it could not use
+    # idx_market_data_daily_ticker_date (ticker-leading) and degraded to a
+    # full sequential scan -- twice, once for the CTE and once for the
+    # outer :day lookup. That is what pushed freshness-watchdog past its
+    # 3600s task-timeout (issue #765). Three changes fix it:
+    #
+    #   1. `day_rows` first, so the expensive per-ticker history scan is
+    #      bounded to tickers that actually traded on :day. It rides the
+    #      new idx_market_data_daily_date.
+    #   2. `usable` carries a ticker predicate, so each ticker's 450-day
+    #      count is an index range scan on (ticker, date DESC).
+    #   3. HAVING count(*) >= 50 is pushed into the CTE instead of being
+    #      applied in the outer WHERE, so short-history tickers never
+    #      reach the join.
+    #
+    # Also anchors the history window on :day rather than CURRENT_DATE.
+    # The two differ whenever :day falls back a session (before 05:00 ET,
+    # or a holiday), and an as-of check must not let wall-clock decide
+    # which bars count -- that made the result irreproducible on replay
+    # and let bars dated AFTER :day into the eligibility count.
     sql = """
-        WITH usable AS (
-            SELECT ticker, count(*) AS n_bars
+        WITH day_rows AS (
+            SELECT ticker, atr_14
             FROM market_data_daily
-            WHERE date >= CURRENT_DATE - INTERVAL '450 days'
+            WHERE date = CAST(:day AS date)
               AND num_nulls(open, high, low, close, volume) = 0
-            GROUP BY ticker
+        ),
+        usable AS (
+            SELECT m.ticker
+            FROM market_data_daily m
+            WHERE m.ticker IN (SELECT ticker FROM day_rows)
+              AND m.date >= CAST(:day AS date) - 450
+              AND m.date <= CAST(:day AS date)
+              AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
+            GROUP BY m.ticker
+            HAVING count(*) >= 50
         )
-        SELECT COUNT(*) AS total, COUNT(m.atr_14) AS non_null
-        FROM market_data_daily m
-        JOIN usable u ON u.ticker = m.ticker
-        WHERE m.date = :day
-          AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
-          AND u.n_bars >= 50
+        SELECT count(*) AS total, count(d.atr_14) AS non_null
+        FROM day_rows d
+        JOIN usable u ON u.ticker = d.ticker
     """
-    df = query_to_dataframe_strict(sql, {'day': latest_day})
+    df = query_to_dataframe_strict(sql, {'day': latest_day},
+                                   timeout_s=_CHECK_QUERY_TIMEOUT_S)
     total = int(df.iloc[0]['total']) if not df.empty else 0
     non_null = int(df.iloc[0]['non_null']) if not df.empty else 0
     rate = (non_null / total) if total else None
@@ -1065,7 +1122,7 @@ def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
         GROUP BY job_name, variant
         HAVING count(*) >= {_JOB_DURATION_MIN_RUNS}
     """
-    df = query_to_dataframe_strict(sql, {})
+    df = query_to_dataframe_strict(sql, {}, timeout_s=_CHECK_QUERY_TIMEOUT_S)
     rows: list[FreshnessRow] = []
     for _, r in df.iterrows():
         latest = float(r['latest_s'])
@@ -1087,6 +1144,32 @@ def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
                 row_count_recent=int(r['n_runs']),
                 writer_job=str(r['job_name']),
             ))
+    return rows
+
+
+def _timed(name: str, fn, *args):
+    """Run one check group, logging its wall-clock either way.
+
+    Issue #765: freshness-watchdog hit its 3600s task-timeout with no
+    per-check timing anywhere in the job, so the only evidence available
+    was "the container was killed" -- which check burned the hour was not
+    recoverable from the logs at all. Diagnosing it needed a schema read
+    rather than a log read. Rule 0 calls for observable progress; this is
+    that, at the granularity a timeout actually gets attributed to.
+
+    A raising check is logged with its elapsed time and re-raised: this
+    is INTERNAL code, so it fails loud (Rule 3.7) rather than degrading
+    the audit to a partial pass that reads as green.
+    """
+    import time as _time
+    t0 = _time.monotonic()
+    try:
+        rows = fn(*args)
+    except Exception:
+        log.error("check=%s FAILED after %.1fs", name, _time.monotonic() - t0)
+        raise
+    log.info("check=%s ok in %.1fs (%d finding(s))",
+             name, _time.monotonic() - t0, len(rows))
     return rows
 
 
@@ -1126,22 +1209,22 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
         report.rows.extend(_query_gap_scan(check, now))
 
     # Value sanity across tables — only reports failures
-    report.rows.extend(_query_value_sanity(now))
+    report.rows.extend(_timed("value_sanity", _query_value_sanity, now))
 
     # Column-nullity checks — flag tables whose rows ARE writing on
     # schedule but a critical column is silently NULL because an upstream
     # source froze (the 2026-06 ^VIX/gamma cascade signature). Only
     # reports failures.
-    report.rows.extend(_query_column_nullity(now))
+    report.rows.extend(_timed("column_nullity", _query_column_nullity, now))
 
     # Enrichment-coverage contract: the nightly raw-bar writer feeds the
     # 02:30 ET indicator-enrich stage; a break there must page directly
     # instead of surfacing as a downstream job's timeout (issue #751).
-    report.rows.extend(_query_enrichment_coverage(now))
+    report.rows.extend(_timed("enrichment_coverage", _query_enrichment_coverage, now))
 
     # Duration-regression: capacity drift trends from job_runs, warned
     # on BEFORE a task-timeout cliff. Only reports offenders.
-    report.rows.extend(_query_job_duration_regression(now))
+    report.rows.extend(_timed("job_duration_regression", _query_job_duration_regression, now))
 
     return report
 

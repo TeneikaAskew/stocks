@@ -190,7 +190,8 @@ def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def query_to_dataframe_strict(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+def query_to_dataframe_strict(sql: str, params: Optional[dict] = None,
+                              timeout_s: Optional[float] = None) -> pd.DataFrame:
     """Run a SELECT and return a DataFrame — RAISES on any failure.
 
     The non-swallowing sibling of ``query_to_dataframe``. A connection error,
@@ -203,11 +204,26 @@ def query_to_dataframe_strict(sql: str, params: Optional[dict] = None) -> pd.Dat
 
     An empty DataFrame returned by this function therefore unambiguously means
     "the query ran and matched no rows", never "the DB was unreachable".
+
+    ``timeout_s`` bounds server-side wall-time for this one statement. A
+    query that exceeds it raises (SQLSTATE 57014) rather than running until
+    the *caller's* Cloud Run task-timeout kills the whole job — the failure
+    mode behind issue #765, where one unindexed watchdog query consumed a
+    3600s budget and took every other check down with it, reporting nothing.
+    Applied via ``SET LOCAL`` inside an explicit transaction so the bound is
+    transaction-scoped and cannot leak back to the pool on this connection.
     """
     import sqlalchemy
     engine = get_engine()
     with engine.connect() as conn:
-        return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
+        if timeout_s is None:
+            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
+        # Postgres SET does not accept bind parameters; int() coercion is
+        # what keeps this interpolation safe.
+        with conn.begin():
+            conn.execute(sqlalchemy.text(
+                f"SET LOCAL statement_timeout = {int(timeout_s * 1000)}"))
+            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
 
 
 # pg8000 packs the bind-parameter count as an unsigned 16-bit short, so
@@ -431,18 +447,26 @@ def bulk_copy_upsert(
     conflict_cols: List[str],
     update_cols: Optional[List[str]] = None,
 ) -> int:
-    """Fast bulk upsert via psycopg2 COPY FROM STDIN → temp table → INSERT ... ON CONFLICT.
+    """Fast bulk upsert via pg8000 COPY FROM STDIN → temp table → INSERT ... ON CONFLICT.
 
     10-30× faster than `upsert_dataframe()` (which uses pg8000 per-row binds)
-    for large DataFrames. Uses the same Cloud SQL Connector but with the
-    psycopg2 driver path. Falls back to `upsert_dataframe()` if psycopg2
-    isn't installed or the COPY path errors.
+    for large DataFrames. Same Cloud SQL Connector engine; COPY runs on the
+    raw pg8000 connection (`cur.execute("COPY ...", stream=...)`). Falls back
+    to `upsert_dataframe()` only if the COPY path itself errors — the fallback
+    is NaN-safe too (`_na_to_none_records`), so either path binds SQL NULL,
+    never float8 'NaN' (§3.7).
+
+    2026-08-25: removed a vestigial `import psycopg2` gate that forced the
+    slow fallback whenever psycopg2 was missing, even though this function
+    never uses psycopg2 — the COPY has always run through pg8000
+    (GAMMA_BALANCE_AUDIT_2026-08-25 collateral). The docstring's old
+    "psycopg2 COPY" framing dated from a prior implementation.
 
     Implementation:
-      1. Open psycopg2 connection via Cloud SQL Connector
+      1. Raw pg8000 connection from the shared engine
       2. CREATE TEMPORARY TABLE matching target schema
-      3. COPY FROM STDIN (CSV) into temp — single binary stream, no per-row
-         binds, no parameter-count limit
+      3. COPY FROM STDIN (CSV, NULL '\\N') into temp — single stream, no
+         per-row binds, no parameter-count limit
       4. INSERT INTO target SELECT * FROM temp ON CONFLICT DO UPDATE
       5. Drop temp (implicit on connection close)
 
@@ -453,12 +477,6 @@ def bulk_copy_upsert(
     """
     if df.empty:
         return 0
-
-    try:
-        import psycopg2
-    except ImportError:
-        logger.warning("psycopg2 not installed — falling back to upsert_dataframe()")
-        return upsert_dataframe(df, table, conflict_cols, update_cols)
 
     # Reflect target columns first so we drop extra DataFrame cols (same
     # safety check as upsert_dataframe) before COPY.

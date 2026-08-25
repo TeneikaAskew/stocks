@@ -18,12 +18,20 @@ import pandas as pd
 
 
 def _patch_strict(monkeypatch, df):
-    from gcp import database
+    """Stub query_to_dataframe_strict, recording every call.
 
-    def fake(sql, params=None):
+    Returns the call log so tests can assert on the SQL that was issued
+    and on the timeout each check bound itself to (issue #765).
+    """
+    from gcp import database
+    calls: list[dict] = []
+
+    def fake(sql, params=None, timeout_s=None):
+        calls.append({"sql": sql, "params": params, "timeout_s": timeout_s})
         return df.copy()
 
     monkeypatch.setattr(database, "query_to_dataframe_strict", fake)
+    return calls
 
 
 # ── enrichment coverage ──────────────────────────────────────────────
@@ -122,7 +130,7 @@ def test_duration_regression_sql_groups_by_variant(monkeypatch):
     monkeypatch.setattr(database, "table_exists", lambda t: True)
     captured = {}
 
-    def fake(sql, params=None):
+    def fake(sql, params=None, timeout_s=None):
         captured["sql"] = sql
         return pd.DataFrame()
 
@@ -229,3 +237,105 @@ def test_backfill_main_records_empty_run(monkeypatch):
     assert mod.main() == 0
     assert len(calls) == 1
     assert calls[0][1]["items_total"] == 0
+
+
+# ── #765: the watchdog's 3600s task-timeout ──────────────────────────
+#
+# freshness-watchdog ran 8-14 min for months, then began hitting its
+# 3600s cap the day PR #759 shipped. Cause: #759's enrichment-coverage
+# check was the watchdog's first query with NO ticker predicate, and
+# market_data_daily carried only ticker-leading indexes -- so a date-only
+# WHERE could not be served by an index and degraded to a full sequential
+# scan, twice. Every earlier check is per-ticker and rides
+# idx_market_data_daily_ticker_date, which is why nothing regressed until
+# then. These tests pin all three halves of the fix so it cannot silently
+# come back: the index, the query shape, and the per-query bound.
+
+
+def test_enrichment_sql_is_bounded_to_the_days_tickers(monkeypatch):
+    """The 450-day history scan must carry a ticker predicate.
+
+    Without it the planner cannot use (ticker, date DESC) and falls back
+    to a full table scan -- the #765 timeout.
+    """
+    from scripts.audit_data_freshness import _query_enrichment_coverage
+    calls = _patch_strict(monkeypatch, pd.DataFrame([{"total": 10, "non_null": 10}]))
+    _query_enrichment_coverage(datetime(2026, 8, 25, 14, 0))
+    sql = calls[0]["sql"]
+    assert "m.ticker IN (SELECT ticker FROM day_rows)" in sql, (
+        "the 450-day scan lost its ticker predicate — this is the exact "
+        "shape that caused the #765 full-table scan")
+    assert "HAVING count(*) >= 50" in sql, (
+        "the >=50-bar filter belongs in the CTE, not the outer WHERE")
+
+
+def test_enrichment_sql_anchors_on_day_not_wall_clock(monkeypatch):
+    """An as-of check must not let CURRENT_DATE pick the history window.
+
+    :day falls back a session before 05:00 ET and on holidays; anchoring
+    the eligibility window on CURRENT_DATE made the result depend on when
+    the job happened to run and let bars dated after :day be counted.
+    """
+    from scripts.audit_data_freshness import _query_enrichment_coverage
+    calls = _patch_strict(monkeypatch, pd.DataFrame([{"total": 10, "non_null": 10}]))
+    _query_enrichment_coverage(datetime(2026, 8, 25, 14, 0))
+    sql = calls[0]["sql"]
+    assert "CURRENT_DATE" not in sql, "history window must be anchored on :day"
+    assert "m.date <= CAST(:day AS date)" in sql, "missing as-of upper bound"
+
+
+def test_both_759_checks_bound_their_query_time(monkeypatch):
+    """No single check may spend a meaningful slice of the 3600s budget.
+
+    In #765 the job was killed mid-run and reported nothing at all — not
+    even the checks that had already passed. A per-query bound turns that
+    into one attributable check failure.
+    """
+    from gcp import database
+    from scripts.audit_data_freshness import (
+        _CHECK_QUERY_TIMEOUT_S, _query_enrichment_coverage,
+        _query_job_duration_regression,
+    )
+    assert _CHECK_QUERY_TIMEOUT_S <= 300, (
+        "a per-check bound above 5 min defeats its purpose against a "
+        "3600s task-timeout")
+
+    calls = _patch_strict(monkeypatch, pd.DataFrame([{"total": 10, "non_null": 10}]))
+    _query_enrichment_coverage(datetime(2026, 8, 25, 14, 0))
+    assert calls[0]["timeout_s"] == _CHECK_QUERY_TIMEOUT_S
+
+    monkeypatch.setattr(database, "table_exists", lambda t: True)
+    calls2 = _patch_strict(monkeypatch, pd.DataFrame())
+    _query_job_duration_regression(datetime(2026, 8, 25, 14, 0))
+    assert calls2[0]["timeout_s"] == _CHECK_QUERY_TIMEOUT_S
+
+
+def test_market_data_daily_has_a_date_leading_index():
+    """Whole-universe single-day queries need a date-leading index.
+
+    (ticker, date DESC) cannot serve a date-only WHERE. Dropping this
+    index silently restores the #765 sequential scan.
+    """
+    import pathlib
+    schema = (pathlib.Path(__file__).resolve().parent.parent
+              / "gcp" / "schema.sql").read_text()
+    assert "idx_market_data_daily_date" in schema
+    assert "ON market_data_daily (date)" in schema
+
+
+def test_timed_reraises_and_does_not_degrade_the_audit():
+    """A failing check fails the audit loudly (Rule 3.7).
+
+    Swallowing it would render the run a partial pass that reads green —
+    the silent-failure mode the watchdog exists to prevent.
+    """
+    import pytest
+    from scripts.audit_data_freshness import _timed
+
+    def boom(_now):
+        raise RuntimeError("check exploded")
+
+    with pytest.raises(RuntimeError, match="check exploded"):
+        _timed("boom", boom, datetime(2026, 8, 25, 14, 0))
+
+    assert _timed("fine", lambda _n: ["row"], datetime(2026, 8, 25, 14, 0)) == ["row"]
