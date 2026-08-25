@@ -3388,13 +3388,18 @@ deploy_schedulers() {
     # Premarket brief-playbook outcome resolver — 9:15 PM ET weekdays.
     # Walks each (analysis_date, ticker) row's RTH 1-min bars and records
     # trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
-    # EOD pnl. MUST run after av-intraday-nightly (~21:00 ET) lands the
-    # day's market_data_intraday partition: the previous 16:30 ET slot
-    # raced ingestion, found no same-day bars, and silently resolved 0
-    # rows every night from 2026-06-19 to 2026-08-25 (see
-    # docs/audits/PROFITABILITY_REVIEW_2026-08-25.md). The job also
-    # sweeps any unresolved weekday dates in a 14-day lookback, so a
-    # missed night self-heals on the next run.
+    # EOD pnl. Runs after av-intraday-nightly lands the session's
+    # market_data_intraday partition: Tue-Fri sessions land ~21:00 ET the
+    # same evening (so they resolve same-night at 21:15); Monday sessions
+    # land ~23:00 ET (av-intraday-nightly's cron is Tue-Sat), so Monday
+    # resolves on Tuesday's sweep — the resolver treats a same-day
+    # pre-ingestion miss as benign and only a past date with no bars as a
+    # failure. The previous 16:30 ET slot raced ingestion every day,
+    # found no same-day bars, and silently resolved 0 rows from
+    # 2026-06-19 to 2026-08-25 (see
+    # docs/audits/PROFITABILITY_REVIEW_2026-08-25.md). The job sweeps all
+    # unresolved weekday dates in a 14-day lookback, so a missed night
+    # self-heals on the next run.
     _schedule "premarket-playbook-resolver-daily" "15 21 * * 1-5"  "premarket-playbook-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.

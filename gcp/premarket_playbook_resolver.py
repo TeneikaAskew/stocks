@@ -14,12 +14,16 @@ day's market_data_intraday bars and computes:
 
 Idempotent: re-running on the same date overwrites with the same values.
 
-Cron: ``15 21 * * 1-5`` America/New_York (9:15 PM ET — after
-av-intraday-nightly lands the day's intraday bars at ~21:00 ET; the old
-16:30 ET slot raced ingestion and resolved nothing from 2026-06-19 to
-2026-08-25). Without PLAYBOOK_RESOLVE_DATE the job sweeps every
-unresolved weekday date in a lookback window (default 14 days), so a
-missed night self-heals on the next run instead of orphaning the date.
+Cron: ``15 21 * * 1-5`` America/New_York (9:15 PM ET). Intraday
+ingestion lands Tue-Fri sessions at ~21:00 ET the same evening, so those
+resolve same-night; Monday sessions land ~23:00 ET (measured from
+market_data_intraday.inserted_at), so Monday resolves on Tuesday's sweep.
+The old 16:30 ET slot raced ingestion every day and resolved nothing
+from 2026-06-19 to 2026-08-25. Without PLAYBOOK_RESOLVE_DATE the job
+sweeps every unresolved weekday date in a lookback window (default 14
+days), so a missed night self-heals on the next run instead of orphaning
+the date, and a same-day pre-ingestion miss is benign while a past date
+with no bars turns the run red.
 
 Environment overrides:
   - PLAYBOOK_RESOLVE_DATE=YYYY-MM-DD : resolve one specific date instead
@@ -49,7 +53,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -59,11 +63,6 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo('America/New_York')
-# `av-intraday-nightly` writes a calendar day's own intraday partition at
-# ~21:00 ET. Before that, a same-day "no bars" skip is the expected
-# pre-ingestion race and the date resolves on the next run; at or after it,
-# missing bars are a real gap. Mirrors gcp/signal_monitor_eod_resolver.py.
-_INTRADAY_INGESTION_CUTOFF_ET = dt_time(21, 0)
 
 # Resolver version stamped on every row — bump when the math changes so
 # callers can detect "this row was resolved by an older version, re-run."
@@ -303,10 +302,12 @@ def resolve_one(
     engine,
     notional: float = DEFAULT_NOTIONAL,
     force: bool = False,
-) -> Optional[dict]:
-    """Resolve outcomes for one (analysis_date, ticker). Returns dict of
-    UPDATE values, or None if the row was skipped (no setup, no bars, or
-    already resolved without --force).
+) -> tuple[Optional[dict], str]:
+    """Resolve outcomes for one (analysis_date, ticker).
+
+    Returns (updates, reason): (dict, 'resolved') on success, else
+    (None, reason) with reason one of 'already_resolved' (idempotent
+    no-op — not a failure), 'no_row', 'no_setup', 'no_bars'.
     """
     # Pull the row
     row_sql = text("""
@@ -323,13 +324,13 @@ def resolve_one(
     row_df = pd.read_sql(row_sql, engine, params={'d': str(analysis_date), 't': ticker.upper()})
     if row_df.empty:
         logger.info("no premarket_analysis row for %s on %s — skipping", ticker, analysis_date)
-        return None
+        return None, 'no_row'
     row = row_df.iloc[0]
 
     if row['outcome_resolved_at'] is not None and pd.notna(row['outcome_resolved_at']) and not force:
         logger.info("%s %s already resolved at %s — skipping (use force=True to re-run)",
                     ticker, analysis_date, row['outcome_resolved_at'])
-        return None
+        return None, 'already_resolved'
 
     # Self-healing fallback: if structured input columns are NULL (e.g.
     # historical row written before the structured-column persistence
@@ -349,7 +350,7 @@ def resolve_one(
             and structured_inputs['puts_trigger_price'] is None
         ):
             logger.info("%s %s level map yielded no triggers — skipping", ticker, analysis_date)
-            return None
+            return None, 'no_setup'
         # Make the row dict look as if these came from the DB so the
         # downstream resolve_leg(...) calls work unchanged.
         row = {**row.to_dict(), **structured_inputs}
@@ -369,7 +370,7 @@ def resolve_one(
     bars = pd.read_sql(bars_sql, engine, params={'t': ticker.upper(), 'd': str(analysis_date)})
     if bars.empty:
         logger.warning("no intraday bars for %s on %s — skipping", ticker, analysis_date)
-        return None
+        return None, 'no_bars'
     bars['time'] = pd.to_datetime(bars['time'], utc=True)
 
     def _f(v):
@@ -483,7 +484,7 @@ def resolve_one(
     logger.info("resolved %s %s: calls_pnl=%s%% puts_pnl=%s%%",
                 ticker, analysis_date,
                 calls_out.eod_pnl_pct, puts_out.eod_pnl_pct)
-    return updates
+    return updates, 'resolved'
 
 
 def pending_dates(engine, today_et: date, lookback_days: int) -> list[date]:
@@ -514,19 +515,29 @@ def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
                           now_et: datetime) -> str:
     """Classify one date's resolution pass: 'ok' | 'benign_pending' | 'failed'.
 
-    - 'ok':             at least one row resolved, or nothing was attempted.
-    - 'benign_pending': nothing resolved, but the date is today before the
-                        ~21:00 ET intraday-ingestion cutoff — the expected
-                        pre-ingestion race; the next run picks it up.
-    - 'failed':         nothing resolved on a past date (or today after the
-                        cutoff) — a real gap that must turn the run red, not
-                        exit 0. This is the silent failure that left every
-                        date after 2026-06-19 unresolved for two months.
+    - 'ok':             at least one row resolved, or nothing to do (rows
+                        already resolved / nothing attempted).
+    - 'benign_pending': nothing resolved on TODAY's date. Ingestion time
+                        varies by weekday (`av-intraday-nightly` lands
+                        Tue-Fri sessions ~21:00 ET the same evening, but
+                        Monday sessions ~23:00 ET, measured from
+                        market_data_intraday.inserted_at), so same-day
+                        missing bars are always the expected pre-ingestion
+                        race — the next run's sweep picks the date up.
+    - 'failed':         nothing resolved on a PAST date — a real gap that
+                        must turn the run red, not exit 0. This is the
+                        silent failure that left every date after
+                        2026-06-19 unresolved for two months. A genuine
+                        ingestion outage therefore alarms on the next run
+                        (within ~24h), when the date ages into 'past'.
+
+    n_skipped must count only rows that could not resolve (missing bars,
+    no setup, missing row) — never already-resolved no-ops, so an
+    idempotent retry of a fully-resolved date reports 'ok'.
     """
     if n_resolved > 0 or n_skipped == 0:
         return 'ok'
-    same_day = analysis_date == now_et.date()
-    if same_day and now_et.time() < _INTRADAY_INGESTION_CUTOFF_ET:
+    if analysis_date == now_et.date():
         return 'benign_pending'
     return 'failed'
 
@@ -582,11 +593,17 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         n_resolved = 0
         n_skipped = 0
+        n_noop = 0
         for ticker in tickers:
             try:
-                result = resolve_one(target_date, ticker, engine, notional=notional, force=force)
+                result, reason = resolve_one(target_date, ticker, engine,
+                                             notional=notional, force=force)
                 if result is not None:
                     n_resolved += 1
+                elif reason == 'already_resolved':
+                    # Idempotent retry of a resolved row — success, not a
+                    # skip: it must never flip a date to 'failed'.
+                    n_noop += 1
                 else:
                     n_skipped += 1
             except Exception as exc:
@@ -595,8 +612,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 n_exceptions += 1
 
         outcome = classify_date_outcome(target_date, n_resolved, n_skipped, now_et)
-        logger.info("done %s: %d resolved, %d skipped (%s)",
-                    target_date, n_resolved, n_skipped, outcome)
+        logger.info("done %s: %d resolved, %d already-resolved, %d skipped (%s)",
+                    target_date, n_resolved, n_noop, n_skipped, outcome)
         if outcome == 'failed':
             n_failed_dates += 1
 

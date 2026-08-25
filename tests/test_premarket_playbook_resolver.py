@@ -296,16 +296,14 @@ def test_classify_nothing_attempted_is_ok():
     assert classify_date_outcome(_date(2026, 8, 25), 0, 0, now) == 'ok'
 
 
-def test_classify_same_day_before_ingestion_cutoff_is_benign():
-    # 16:30 ET, all skipped — the pre-ingestion race, next run picks it up.
-    now = datetime(2026, 8, 25, 16, 30, tzinfo=_ET_TZ)
-    assert classify_date_outcome(_date(2026, 8, 25), 0, 3, now) == 'benign_pending'
-
-
-def test_classify_same_day_after_ingestion_cutoff_is_failed():
-    # 21:15 ET, bars should have landed — all-skip is a real gap.
-    now = datetime(2026, 8, 25, 21, 15, tzinfo=_ET_TZ)
-    assert classify_date_outcome(_date(2026, 8, 25), 0, 3, now) == 'failed'
+def test_classify_same_day_all_skipped_is_benign_any_hour():
+    # Ingestion time varies by weekday (Tue-Fri ~21:00 ET, Mon ~23:00 ET),
+    # so a same-day all-skip is always the pre-ingestion race; the sweep
+    # picks the date up on the next run. A real outage alarms the next
+    # night when the date ages into 'past'.
+    for hour in (16, 21, 23):
+        now = datetime(2026, 8, 25, hour, 30, tzinfo=_ET_TZ)
+        assert classify_date_outcome(_date(2026, 8, 25), 0, 3, now) == 'benign_pending'
 
 
 def test_classify_past_date_all_skipped_is_failed():
