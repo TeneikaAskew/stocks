@@ -101,3 +101,119 @@ def test_negative_env_clamped_to_zero(mock_av, mock_targets, mock_cfg, monkeypat
          patch('time.sleep') as sleep_mock:
         fetch_market_data._run_backfill()
     sleep_mock.assert_not_called()
+
+
+class TestPickBackfillOutputsize:
+    """Staleness-decision regression guards (issue #751 follow-up).
+
+    The `<= 1` skip made the nightly chained backfill refresh each
+    ticker only every OTHER evening: at 19:15 ET a ticker whose latest
+    bar was yesterday counted as current, even though today's bar
+    already existed upstream. Result: the tail's daily bar arrived up
+    to 25h late and the 06:30 UTC enrich job saw alternating 2,400- vs
+    ~850-ticker mornings (verified against 2026-08 run durations).
+    """
+
+    TODAY = pd.Timestamp('2026-08-24').date()
+
+    def _pick(self, bar_count, max_date):
+        from gcp.fetchers.fetch_market_data import _pick_backfill_outputsize
+        return _pick_backfill_outputsize(bar_count, max_date, self.TODAY)
+
+    def test_no_bars_bootstraps_full(self):
+        assert self._pick(0, None) == 'full'
+
+    def test_current_through_today_skips(self):
+        assert self._pick(2000, self.TODAY) is None
+
+    def test_stale_by_one_day_refreshes_compact(self):
+        """THE regression guard: post-close, yesterday-fresh is stale —
+        today's bar exists upstream and must be pulled tonight, not
+        tomorrow night."""
+        yesterday = self.TODAY - pd.Timedelta(days=1).to_pytimedelta()
+        assert self._pick(2000, yesterday) == 'compact'
+
+    def test_stale_90d_still_compact(self):
+        d = self.TODAY - pd.Timedelta(days=90).to_pytimedelta()
+        assert self._pick(2000, d) == 'compact'
+
+    def test_stale_beyond_90d_full(self):
+        d = self.TODAY - pd.Timedelta(days=91).to_pytimedelta()
+        assert self._pick(2000, d) == 'full'
+
+    def test_shallow_history_bootstraps_full_even_if_fresh(self):
+        assert self._pick(100, self.TODAY) == 'full'
+
+
+class TestBackfillDataSourceTag:
+    def test_upserted_frame_carries_data_source(self):
+        """The universe writer's rows must be attributable — they were
+        the unattributable ~2,400 empty-data_source bars/night that
+        made the issue #751 investigation need insert-hour forensics."""
+        from gcp.fetchers import fetch_market_data as fmd
+        bars = pd.DataFrame({
+            'ticker': ['AAA'] * 3,
+            'date': pd.to_datetime(['2026-08-20', '2026-08-21',
+                                    '2026-08-24']).date,
+            'open': [1.0, 1.1, 1.2], 'high': [1.1, 1.2, 1.3],
+            'low': [0.9, 1.0, 1.1], 'close': [1.05, 1.15, 1.25],
+            'volume': [1000, 1100, 1200],
+        })
+        with patch.object(fmd, '_backfill_targets',
+                          return_value=[('AAA', 2000,
+                                         pd.Timestamp('2026-05-01').date())]), \
+             patch.object(fmd, '_av_get_full_daily_series',
+                          return_value=bars), \
+             patch('gcp.database.upsert_dataframe') as ups, \
+             patch.object(fmd, 'is_cloud_sql_configured', return_value=True):
+            os.environ['AV_BACKFILL_SLEEP_SECS'] = '0'
+            try:
+                fmd._run_backfill()
+            finally:
+                os.environ.pop('AV_BACKFILL_SLEEP_SECS', None)
+        assert ups.called
+        df_written = ups.call_args[0][0]
+        assert 'data_source' in df_written.columns
+        assert (df_written['data_source'] == 'av_daily_backfill').all()
+
+
+class TestExcludePartialToday:
+    """Pre-close runs must never persist AV's intraday-partial
+    current-day bar (Codex P1 on PR #758): the evening run would see
+    max_date == today, skip the ticker, and let the partial bar stand
+    as "final" for ~24h."""
+
+    def _frame(self, today):
+        return pd.DataFrame({
+            'ticker': ['AAA'] * 3,
+            'date': [today - pd.Timedelta(days=2).to_pytimedelta(),
+                     today - pd.Timedelta(days=1).to_pytimedelta(),
+                     today],
+            'close': [1.0, 1.1, 1.2],
+        })
+
+    def test_preclose_drops_todays_row(self):
+        from datetime import time as dt_time
+        from gcp.fetchers.fetch_market_data import _exclude_partial_today
+        today = pd.Timestamp('2026-08-24').date()
+        out = _exclude_partial_today(self._frame(today), today,
+                                     dt_time(11, 30))
+        assert today not in set(out['date'])
+        assert len(out) == 2
+
+    def test_postclose_keeps_todays_row(self):
+        from datetime import time as dt_time
+        from gcp.fetchers.fetch_market_data import _exclude_partial_today
+        today = pd.Timestamp('2026-08-24').date()
+        out = _exclude_partial_today(self._frame(today), today,
+                                     dt_time(19, 15))
+        assert today in set(out['date'])
+        assert len(out) == 3
+
+    def test_boundary_1615_keeps(self):
+        from datetime import time as dt_time
+        from gcp.fetchers.fetch_market_data import _exclude_partial_today
+        today = pd.Timestamp('2026-08-24').date()
+        out = _exclude_partial_today(self._frame(today), today,
+                                     dt_time(16, 15))
+        assert today in set(out['date'])

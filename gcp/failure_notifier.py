@@ -41,6 +41,27 @@ GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 15
 MAX_BODY = 1_048_576  # 1 MB — log entries are typically < 10 KB
 
+# Innermost-frame markers for SQLAlchemy/pg8000 connection-pool cleanup
+# exceptions (pool_pre_ping/pool_recycle finding a dead socket and failing to
+# gracefully close it). These are self-healing: the pool logs the exception at
+# ERROR severity for visibility, then transparently opens a fresh connection
+# on the next checkout. CLAUDE.md Rule 3.7 explicitly allows this as a
+# "cleanup path... original error already propagated" — the job's own exit
+# code, not this log line, is the source of truth for job success. Confirmed
+# against signal-monitor-z4ctn (2026-07-14, issues #737/#738): the execution's
+# succeededCount was 1 with no failedCount, and the monitor kept firing
+# signals uninterrupted through the rest of the session.
+_BENIGN_POOL_CLEANUP_MARKERS = (
+    "in _close_connection",
+    "in do_terminate",
+    "Exception terminating connection",
+)
+
+
+def is_benign_pool_cleanup(message: str) -> bool:
+    """True if a log message is SQLAlchemy pool-cleanup noise, not a real failure."""
+    return any(marker in message for marker in _BENIGN_POOL_CLEANUP_MARKERS)
+
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
 def parse_pubsub_envelope(body: bytes) -> dict[str, Any]:
@@ -81,13 +102,19 @@ def extract_failure_details(log_entry: dict[str, Any]) -> dict[str, Any]:
     message = log_entry.get("textPayload")
     if not message:
         json_payload = log_entry.get("jsonPayload") or {}
-        message = (
-            json_payload.get("message")
-            or json_payload.get("error")
-            or json.dumps(json_payload)[:2000]
-            if json_payload
-            else "(no message in log entry)"
-        )
+        if json_payload:
+            message = (
+                json_payload.get("message")
+                or json_payload.get("error")
+                or json.dumps(json_payload)[:2000]
+            )
+        else:
+            # Cloud Audit Log entries (e.g. the Jobs.RunJob "Execution ...
+            # has failed to complete" record admitted by the sink filter
+            # fix below) carry no textPayload/jsonPayload at all — the
+            # failure text lives under protoPayload.status.message.
+            proto_status = (log_entry.get("protoPayload") or {}).get("status") or {}
+            message = proto_status.get("message") or "(no message in log entry)"
 
     project_id = os.environ.get("GCP_PROJECT_ID", "")
     if execution_name:
@@ -497,6 +524,13 @@ def handle_notification(body: bytes) -> tuple[int, str]:
     # named "failure-notifier" is accidentally created.
     if details["job_name"] == "failure-notifier":
         logger.info("Ignoring self-notification.")
+        return 204, ""
+
+    if is_benign_pool_cleanup(details["message"]):
+        logger.info(
+            "Suppressing benign pool-cleanup log line (job=%s, execution=%s)",
+            details["job_name"], details["execution_name"],
+        )
         return 204, ""
 
     webhook = os.environ.get("DISCORD_WEBHOOK_URL")
