@@ -90,6 +90,7 @@ jobs:
             tests/test_strat*.py \
             tests/test_mag*.py \
             tests/test_featurize_all_nan_robust.py \
+            tests/test_feature_importance.py \
             tests/test_import_coverage.py
 
   integration-tests:
