@@ -75,6 +75,12 @@ from lib.indicators import calculate_rsi
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 _SESSION_CLOSE_ET = dt_time(16, 0)  # 4:00 PM ET — same as MarketConfig default
+# `av-intraday-nightly` (gcp/deploy.sh) writes a calendar day's own intraday
+# partition at 21:00 ET. Before this, a same-day skip is the expected
+# pre-ingestion race (see EODResolver._same_day_skip_is_benign); at or after
+# it, tonight's fetch should already have landed, so a same-day skip is a
+# real gap too (Codex P2 review, PR #745).
+_INTRADAY_INGESTION_CUTOFF_ET = dt_time(21, 0)
 
 
 def _exit_return_pct(direction: str, entry_price: float, exit_price: float) -> float:
@@ -189,6 +195,46 @@ class EODResolver:
         )
         self._intraday_cache[key] = df
         return df
+
+    def _same_day_skip_is_benign(self, ticker: str, now_et: Optional[datetime] = None) -> bool:
+        """Decide whether a same-day `_load_day` miss is the expected
+        pre-ingestion race, or a real failure worth paging on.
+
+        Two conditions both have to hold, per the Codex review on PR #745:
+
+        1. **Timing (P2)** — tonight's `av-intraday-nightly` (21:00 ET)
+           hasn't run yet. After that cutoff, today's own partition
+           should already be written, so a same-day skip is a real gap
+           too, not just an early-in-the-day race.
+        2. **Read-path health (P1)** — `_query_cloud_sql`
+           (lib/data_loader.py) swallows ANY exception — auth,
+           connection, schema — into an empty DataFrame, so an empty
+           same-day result is indistinguishable from a live Cloud SQL
+           outage without an independent control query. We probe a
+           trailing window that should already be fully ingested
+           (yesterday and before); if that's ALSO empty, the read path
+           itself is broken and this is a real failure, not "not
+           ingested yet".
+        """
+        now_et = now_et or datetime.now(_ET)
+        if now_et.time() >= _INTRADAY_INGESTION_CUTOFF_ET:
+            return False
+        return self._control_query_ok(ticker, as_of=now_et.date())
+
+    def _control_query_ok(self, ticker: str, as_of) -> bool:
+        """Confirm Cloud SQL intraday reads work at all for `ticker`, via
+        a trailing window that should already be fully ingested (today is
+        deliberately excluded — that's the thing under test)."""
+        key = ('__control__', ticker)
+        if key in self._intraday_cache:
+            return not self._intraday_cache[key].empty
+        end = pd.Timestamp(as_of)
+        start = end - pd.Timedelta(days=6)
+        df = self.loader.load_intraday(
+            ticker, start_date=start.isoformat(), end_date=end.isoformat(),
+        )
+        self._intraday_cache[key] = df
+        return not df.empty
 
     def _detect_exit(
         self,
@@ -453,11 +499,26 @@ class EODResolver:
         df = self.find_open_alerts(since=since)
         if df.empty:
             logger.info("nothing to resolve")
-            return {'resolved': 0, 'skipped': 0, 'wall_clock_s': time.time() - t0}
+            return {'resolved': 0, 'skipped': 0, 'skipped_stale': 0, 'wall_clock_s': time.time() - t0}
 
         per_reason: dict[str, int] = {}
         resolved_exits: list[dict] = []
         skipped = 0
+        # `av-intraday-nightly` (gcp/deploy.sh: `0 21 * * 2-6`) writes
+        # TODAY's own intraday partition hours after this resolver's
+        # 16:30 ET schedule (`signal-monitor-eod-resolver-daily`,
+        # `30 16 * * 1-5`). A same-day alert still open at 16:30 ET
+        # therefore hits an EXPECTED empty `_load_day` — it self-heals on
+        # tomorrow's run once tonight's fetch lands (`alert_date <=
+        # CURRENT_DATE` picks it back up). A skip for a PRIOR day (data
+        # that already had a full night to land and still didn't), a
+        # persist() exception, or a same-day skip past the ingestion
+        # cutoff / with an unhealthy read path (see
+        # `_same_day_skip_is_benign`) all indicate a genuine gap worth
+        # paging on.
+        skipped_stale = 0
+        now_et = datetime.now(_ET)
+        today_et = now_et.date()
         groups = df.groupby(['ticker', 'alert_date'])
         for (ticker, alert_date), group in groups:
             logger.info("ticker=%s date=%s alerts=%d", ticker, alert_date, len(group))
@@ -465,6 +526,9 @@ class EODResolver:
                 resolution = self.resolve_one(alert)
                 if resolution is None:
                     skipped += 1
+                    is_same_day = pd.Timestamp(alert_date).date() >= today_et
+                    if not is_same_day or not self._same_day_skip_is_benign(ticker, now_et):
+                        skipped_stale += 1
                     continue
                 try:
                     n = self.persist(resolution)
@@ -484,18 +548,21 @@ class EODResolver:
                         ticker, alert['alert_ts'], e,
                     )
                     skipped += 1
+                    skipped_stale += 1  # DB write failure is a real bug, not
+                    # a same-day data-not-yet-landed race — always hard-fail.
 
         self._post_digest(resolved_exits, since)
 
         wall_clock = time.time() - t0
         resolved = sum(per_reason.values())
         logger.info(
-            "EOD resolver complete: resolved=%d skipped=%d by_reason=%s wall_clock=%.1fs",
-            resolved, skipped, per_reason, wall_clock,
+            "EOD resolver complete: resolved=%d skipped=%d (stale=%d) by_reason=%s wall_clock=%.1fs",
+            resolved, skipped, skipped_stale, per_reason, wall_clock,
         )
         return {
             'resolved': resolved,
             'skipped': skipped,
+            'skipped_stale': skipped_stale,
             'by_reason': per_reason,
             'wall_clock_s': wall_clock,
         }
@@ -526,7 +593,11 @@ def main() -> int:
         logger.info("backfill mode — resolving all unresolved alerts")
 
     summary = EODResolver().run(since=args.since)
-    return 0 if summary['skipped'] == 0 else 1
+    # Same-day skips (today's own intraday partition not yet fetched by
+    # av-intraday-nightly, 21:00 ET) are expected and self-heal on the
+    # next run — only a stale (prior-day) skip is a real failure worth
+    # paging on (see run()).
+    return 0 if summary.get('skipped_stale', 0) == 0 else 1
 
 
 if __name__ == '__main__':
