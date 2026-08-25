@@ -830,3 +830,128 @@ class TestComputeGammaFlipBS:
         # They need not both exist, but when both do they should not be identical.
         if bal is not None:
             assert abs(bal - flip) > 1e-6
+
+
+# ── The gamma_balance nullity identity (issues #744, #765) ──────────────────
+#
+# `gamma_balance_price` went ~100% NULL across IWM/SPY/QQQ from 2026-08-18,
+# after months of IWM sitting near 25% fill while SPY/QQQ held ~55-60%. Two
+# investigations looked upstream for a chain-completeness regression and
+# found none. The cause is in this module.
+#
+# compute_gamma_balance accumulates net_gamma from ZERO at the BOTTOM of the
+# strike ladder. Real ETF chains are put-heavy at low strikes, so the running
+# total dives negative immediately and can only cross back through zero if
+# the chain finishes net call-gamma-heavy. Since
+#   total_gex = (spot^2 * GEX_MULTIPLIER) * sum(net_gamma)
+# and that leading factor is strictly positive, "a crossing exists" and
+# "total_gex > 0" are THE SAME CONDITION. The nullity is therefore an exact
+# restatement of regime == negative_gamma, carrying no information that
+# total_gex does not carry more directly — and it is absent precisely on the
+# high-volatility sessions (B6: negative-gamma days run 1.34-1.87x larger
+# forward 30m moves) where it would matter most.
+#
+# These tests pin the mechanism so the behaviour is understood rather than
+# rediscovered, and pin compute_gamma_flip_bs as the robust alternative.
+
+
+def _skewed_chain(spot, lo, hi, step, put_skew, gamma_peak=0.05, width=0.06):
+    """ETF-shaped chain: gamma peaks ATM, OI peaks OTM on both wings.
+
+    `put_skew` scales put OI against call OI — the one knob that moves a
+    chain across the call-heavy/put-heavy boundary.
+    """
+    import math
+    opts = []
+    K = lo
+    while K <= hi + 1e-9:
+        m = (K - spot) / spot
+        g = gamma_peak * math.exp(-(m * m) / (2 * width * width))
+        call_oi = 1000 * math.exp(-((m - 0.04) ** 2) / (2 * 0.05 ** 2))
+        put_oi = 1000 * math.exp(-((m + 0.05) ** 2) / (2 * 0.05 ** 2)) * put_skew
+        for typ, oi in (("call", call_oi), ("put", put_oi)):
+            opts.append({"type": typ, "strike": K, "open_interest": oi,
+                         "gamma": g, "expiration": "2026-09-18",
+                         "implied_volatility": 0.20})
+        K += step
+    return opts
+
+
+_GRIDS = (
+    (200.0, 168.0, 232.0, 1.0),    # IWM-like: ~$200, $1 strikes
+    (600.0, 480.0, 720.0, 5.0),    # SPY-like: ~$600, $5 strikes
+    (450.0, 360.0, 540.0, 2.5),    # QQQ-like: ~$450, $2.50 strikes
+)
+
+
+class TestGammaBalanceNullityIdentity:
+    def test_balance_is_present_exactly_when_total_gex_is_positive(self):
+        """The identity, through the real end-to-end build_summary.
+
+        If this ever fails, compute_gamma_balance has stopped being a
+        restatement of sign(total_gex) — which would make it worth keeping
+        as an independent feature. Today it is not.
+        """
+        checked = 0
+        for spot, lo, hi, step in _GRIDS:
+            for i in range(14):
+                skew = 0.80 + i * 0.05
+                s = gamma.build_summary(
+                    "TEST", "2026-08-25",
+                    _skewed_chain(spot, lo, hi, step, skew))
+                assert (s.gamma_balance is not None) == (s.total_gex > 0), (
+                    f"identity broken at spot={spot} put_skew={skew:.2f}: "
+                    f"balance={s.gamma_balance} total_gex={s.total_gex}")
+                assert (s.gamma_balance is None) == (s.regime == "negative_gamma")
+                checked += 1
+        assert checked == 42, checked
+
+    def test_put_heavy_chain_yields_no_balance_price(self):
+        """A put-gamma-heavy chain is NULL every time — not a data gap.
+
+        This is the IWM case: nothing is missing from the chain, it simply
+        never accumulates back through zero.
+        """
+        opts = _skewed_chain(200.0, 168.0, 232.0, 1.0, put_skew=1.20)
+        strikes = gamma.aggregate_by_strike(opts)
+        assert sum(r["net_gamma"] for r in strikes) < 0
+        assert gamma.compute_gamma_balance(strikes, 200.0) is None
+
+    def test_only_the_oi_skew_changes_between_present_and_null(self):
+        """Same strikes, same gamma surface — only put/call OI skew differs."""
+        base = dict(spot=200.0, lo=168.0, hi=232.0, step=1.0)
+        call_heavy = gamma.aggregate_by_strike(
+            _skewed_chain(**{k: v for k, v in
+                             zip(("spot", "lo", "hi", "step"), base.values())},
+                          put_skew=0.95))
+        put_heavy = gamma.aggregate_by_strike(
+            _skewed_chain(*base.values(), put_skew=1.20))
+        assert [r["strike"] for r in call_heavy] == [r["strike"] for r in put_heavy]
+        assert gamma.compute_gamma_balance(call_heavy, 200.0) is not None
+        assert gamma.compute_gamma_balance(put_heavy, 200.0) is None
+
+    def test_bs_flip_survives_where_balance_does_not(self):
+        """compute_gamma_flip_bs is the robust replacement.
+
+        It re-prices each contract's gamma across candidate spots rather than
+        walking the stored chain gamma, so it does not require the chain to
+        be call-heavy. Across the same grid it resolves on every chain,
+        including every one where gamma_balance is NULL.
+        """
+        bal_null = flip_null = neg_regime = 0
+        for spot, lo, hi, step in _GRIDS:
+            for i in range(14):
+                s = gamma.build_summary(
+                    "TEST", "2026-08-25",
+                    _skewed_chain(spot, lo, hi, step, 0.80 + i * 0.05))
+                if s.regime == "negative_gamma":
+                    neg_regime += 1
+                    assert s.gamma_balance is None
+                    assert s.gamma_flip is not None, (
+                        "the BS flip is the recommended replacement precisely "
+                        "because it resolves in the negative-gamma regime")
+                bal_null += s.gamma_balance is None
+                flip_null += s.gamma_flip is None
+        assert neg_regime > 0, "grid must exercise the negative-gamma regime"
+        assert bal_null == neg_regime
+        assert flip_null == 0
