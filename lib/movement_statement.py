@@ -392,6 +392,30 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     row = df.iloc[0].to_dict()
     bucket = int(row["pred_bucket"])
     ts = row.get("ts")
+
+    # ATR-20 + current price for the Tier-3 sizing calculator. Read from the
+    # same strat_features_{tf} bar the prediction was scored on (join on ts).
+    # Rule 3.7: missing -> None (the calculator disables; never a fabricated
+    # stop). This is a small indexed single-row lookup.
+    atr_20 = None
+    current_price = None
+    try:
+        feat_sql = (
+            f"SELECT atr_20, close FROM strat_features_{tf} "
+            "WHERE ticker = :ticker AND ts = :ts LIMIT 1"
+        )
+        fdf = query_fn(feat_sql, {"ticker": ticker.upper(), "ts": ts})
+        if fdf is not None and not getattr(fdf, "empty", True):
+            frow = fdf.iloc[0].to_dict()
+            av = frow.get("atr_20")
+            cv = frow.get("close")
+            # NaN-safe without importing pandas (module stays dependency-light):
+            # NaN != NaN, so `x == x` is False only for NaN.
+            atr_20 = float(av) if av is not None and av == av else None
+            current_price = float(cv) if cv is not None and cv == cv else None
+    except Exception as e:  # EXTERNAL: surface, don't fabricate
+        log.warning("expected_move ATR lookup failed for %s %s: %s", ticker, tf, e)
+
     return _ok(
         role="context",
         size_class=_MAG_BUCKET_LABELS[bucket],
@@ -405,6 +429,8 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
         max_proba=float(row["max_proba"]),
         model_version=row.get("model_version"),
         ts=ts.isoformat() if hasattr(ts, "isoformat") else ts,
+        atr_20=atr_20,
+        current_price=current_price,
         usage_guidance=_MAG_USAGE,
     )
 

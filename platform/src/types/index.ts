@@ -205,6 +205,8 @@ export interface MovementExpectedMove {
   max_proba?: number | null;
   model_version?: string | null;
   ts?: string | null;
+  atr_20?: number | null; // NEW — current ATR-20 for the Tier-3 sizing calculator
+  current_price?: number | null; // NEW — latest close for context
   usage_guidance?: string | null;
 }
 

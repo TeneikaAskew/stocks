@@ -23,7 +23,15 @@
 
 import { AlertTriangle, Activity } from 'lucide-react';
 import { Card, CardHeader } from '@/components/primitives';
+import { useState } from 'react';
 import { useMovementStatement } from '@/hooks/useMovementStatement';
+import {
+  sizeLight,
+  bucketToAtrLabel,
+  riskHint,
+  showOptionsIdea,
+  sizeCalc,
+} from './expectedMove';
 import type {
   MovementStatement,
   MovementLevelEntry,
@@ -158,6 +166,11 @@ export function MovementReadView({ statement }: { statement: MovementStatement }
       {/* Context modifiers — visually secondary / muted. */}
       <ContextModifiers modifiers={confidence_modifiers} />
 
+      {/* Expected-move affordances (size light, magnitude, direction line,
+          risk hint, options idea, opt-in sizing calculator). Size only —
+          never a direction call. */}
+      <ExpectedMoveAffordances expectedMove={confidence_modifiers?.expected_move ?? null} />
+
       {/* Scope disclaimer — always present. */}
       <p className="mt-3 text-[10px] leading-relaxed text-[var(--on-surface-muted)]">
         {scope_statement}
@@ -287,5 +300,140 @@ export function RegimeLine({ regime }: { regime: MovementRegime | undefined }) {
         <UnavailableValue reason={regime?.reason} />
       )}
     </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Expected-Move affordances — three tiers on the SIZE read. Size only; every
+// tier reinforces "you supply direction." All values derive from expected_move
+// (validated 15m model) + atr_20; missing data renders "—"/disabled, never a
+// fabricated number (Rule 3.7).
+// ---------------------------------------------------------------------------
+
+const _TONE_COLOR: Record<string, string> = {
+  green: '#16a34a',
+  amber: '#d97706',
+  red: '#dc2626',
+  muted: 'var(--on-surface-muted)',
+};
+
+function SizeLightChip({ pTail }: { pTail: number | null }) {
+  const s = sizeLight(pTail);
+  return (
+    <span data-testid="size-light-chip" className="inline-flex items-center gap-1.5">
+      <span
+        aria-hidden
+        style={{ background: _TONE_COLOR[s.tone], width: 8, height: 8, borderRadius: 9999, display: 'inline-block' }}
+      />
+      <span className="text-[12px] font-semibold text-[var(--on-surface)]">{s.label}</span>
+    </span>
+  );
+}
+
+function SizeCalculator({ em }: { em: MovementExpectedMove }) {
+  const [account, setAccount] = useState<string>(
+    () => (typeof localStorage !== 'undefined' && localStorage.getItem('em.account')) || '',
+  );
+  const [riskPct, setRiskPct] = useState<string>(
+    () => (typeof localStorage !== 'undefined' && localStorage.getItem('em.riskPct')) || '1',
+  );
+  const setAcc = (v: string) => {
+    setAccount(v);
+    try {
+      localStorage.setItem('em.account', v);
+    } catch {
+      /* localStorage unavailable — inputs just aren't persisted */
+    }
+  };
+  const setRisk = (v: string) => {
+    setRiskPct(v);
+    try {
+      localStorage.setItem('em.riskPct', v);
+    } catch {
+      /* localStorage unavailable — inputs just aren't persisted */
+    }
+  };
+  const atrMissing = em.atr_20 == null;
+  const r = sizeCalc({
+    sizeClass: em.size_class,
+    atr20: em.atr_20,
+    account: Number(account),
+    riskPct: Number(riskPct),
+  });
+  return (
+    <details data-testid="size-calculator" className="mt-2 text-[11px]">
+      <summary className="cursor-pointer text-[var(--on-surface-muted)]">Size this trade</summary>
+      <div className="mt-1.5 space-y-1.5">
+        {atrMissing ? (
+          <p className="text-[var(--on-surface-muted)]">ATR unavailable — sizing disabled.</p>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <label className="text-[var(--on-surface-muted)]">Account $</label>
+              <input
+                data-testid="calc-account"
+                inputMode="decimal"
+                value={account}
+                onChange={(e) => setAcc(e.target.value)}
+                className="w-24 rounded border border-[var(--outline)] bg-transparent px-1 py-0.5 text-[var(--on-surface)]"
+              />
+              <label className="text-[var(--on-surface-muted)]">Risk %</label>
+              <input
+                data-testid="calc-risk"
+                inputMode="decimal"
+                value={riskPct}
+                onChange={(e) => setRisk(e.target.value)}
+                className="w-14 rounded border border-[var(--outline)] bg-transparent px-1 py-0.5 text-[var(--on-surface)]"
+              />
+            </div>
+            {r ? (
+              <p data-testid="calc-result" className="text-[var(--on-surface)]">
+                Suggested stop ≈ <span className="tabular-nums">{r.stop.toFixed(2)}</span> · size ≈{' '}
+                <span className="tabular-nums">{r.shares}</span> shares
+              </p>
+            ) : (
+              <p className="text-[var(--on-surface-muted)]">Enter a positive account + risk %.</p>
+            )}
+          </>
+        )}
+        <p className="text-[10px] text-[var(--on-surface-muted)]">
+          Calculator, not a recommendation — sizing math on the model's expected move (stop = bucket
+          × ATR). Verify against your own plan.
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function ExpectedMoveAffordances({ expectedMove }: { expectedMove: MovementExpectedMove | null }) {
+  if (!isOk(expectedMove) || !expectedMove) return null;
+  const probs = expectedMove.probabilities;
+  const pTail = probs ? probs.p_expanded + probs.p_explosive : null;
+  const pExplosive = probs ? probs.p_explosive : null;
+  const hint = riskHint(expectedMove.size_class);
+  return (
+    <div className="mt-2 border-t border-[var(--outline)] pt-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <SizeLightChip pTail={pTail} />
+        <span data-testid="expected-move-atr" className="text-[11px] text-[var(--on-surface-muted)]">
+          {bucketToAtrLabel(expectedMove.size_class)}
+        </span>
+      </div>
+      <p data-testid="direction-line" className="mt-1 text-[10px] text-[var(--on-surface-muted)]">
+        Direction: not predicted — you supply it from your levels/read.
+      </p>
+      {hint && (
+        <p data-testid="risk-hint" className="mt-1 text-[11px] text-[var(--on-surface)]">
+          <span className="text-[var(--on-surface-muted)]">Suggestion:</span> {hint}
+        </p>
+      )}
+      {showOptionsIdea(pExplosive) && (
+        <p data-testid="options-idea" className="mt-1 text-[11px] text-[var(--on-surface)]">
+          <span className="text-[var(--on-surface-muted)]">Suggestion:</span> non-directional
+          structure (straddle/strangle) favored — profits from size, not direction.
+        </p>
+      )}
+      <SizeCalculator em={expectedMove} />
+    </div>
   );
 }

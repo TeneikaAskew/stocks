@@ -441,9 +441,13 @@ def test_expected_move_applies_as_of_cutoff():
     captured = {}
 
     def _recording_qf(sql, params=None):
-        captured["sql"] = sql
-        captured["params"] = params
-        return _mag_df()
+        # Capture ONLY the magnitude query (the ATR/price lookup is a second,
+        # separate query on strat_features and must not overwrite the capture).
+        if "magnitude_per_bar_predictions" in sql:
+            captured["sql"] = sql
+            captured["params"] = params
+            return _mag_df()
+        return None  # ATR/price lookup — not under test here
 
     cutoff = "2026-06-20T15:45:00+00:00"
     em = ms._build_expected_move("SPY", "15m", _recording_qf, as_of=cutoff)
@@ -459,9 +463,13 @@ def test_expected_move_no_as_of_is_latest_row():
     captured = {}
 
     def _recording_qf(sql, params=None):
-        captured["sql"] = sql
-        captured["params"] = params
-        return _mag_df()
+        # Capture ONLY the magnitude query (the ATR/price lookup is a second,
+        # separate query on strat_features and must not overwrite the capture).
+        if "magnitude_per_bar_predictions" in sql:
+            captured["sql"] = sql
+            captured["params"] = params
+            return _mag_df()
+        return None  # ATR/price lookup — not under test here
 
     em = ms._build_expected_move("SPY", "15m", _recording_qf, as_of=None)
     assert em["status"] == "OK"
@@ -561,3 +569,45 @@ def test_modifier_block_carries_context_note(monkeypatch):
     assert em["role"] == "context"
     assert "not the" in em["usage_guidance"].lower() or \
         "context only" in em["usage_guidance"].lower()
+
+
+def test_expected_move_includes_atr_and_price():
+    import pandas as pd
+    from lib.movement_statement import _build_expected_move
+
+    def fake_query(sql, params):
+        if "magnitude_per_bar_predictions" in sql:
+            return pd.DataFrame([{
+                "ticker": "IWM", "tf": "15m", "ts": pd.Timestamp("2026-07-10T19:45:00Z"),
+                "p_tight": 0.2, "p_normal": 0.3, "p_expanded": 0.3, "p_explosive": 0.2,
+                "pred_bucket": 2, "max_proba": 0.3,
+                "model_version": "m1", "source": "inference",
+                "computed_at": pd.Timestamp("2026-07-10T20:00:00Z"),
+            }])
+        return pd.DataFrame([{"atr_20": 1.85, "close": 218.4}])
+
+    em = _build_expected_move("IWM", "15m", fake_query)
+    assert em["status"] == "OK"
+    assert em["atr_20"] == 1.85
+    assert em["current_price"] == 218.4
+
+
+def test_expected_move_atr_none_when_features_missing():
+    import pandas as pd
+    from lib.movement_statement import _build_expected_move
+
+    def fake_query(sql, params):
+        if "magnitude_per_bar_predictions" in sql:
+            return pd.DataFrame([{
+                "ticker": "IWM", "tf": "15m", "ts": pd.Timestamp("2026-07-10T19:45:00Z"),
+                "p_tight": 0.7, "p_normal": 0.2, "p_expanded": 0.07, "p_explosive": 0.03,
+                "pred_bucket": 0, "max_proba": 0.7,
+                "model_version": "m1", "source": "inference",
+                "computed_at": pd.Timestamp("2026-07-10T20:00:00Z"),
+            }])
+        return pd.DataFrame()
+
+    em = _build_expected_move("IWM", "15m", fake_query)
+    assert em["status"] == "OK"
+    assert em["atr_20"] is None
+    assert em["current_price"] is None
