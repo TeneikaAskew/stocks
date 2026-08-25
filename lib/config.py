@@ -260,6 +260,20 @@ class ExitConfig:
     put_time_stop: int = 35       # minutes
     call_rsi_exit: float = 80.0
     put_rsi_exit: float = 20.0
+    # Exit-policy mode (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §10).
+    # The default 'target_stop' is the existing first-touch-target /
+    # time-stop / rsi-extreme machinery — zero behavior change. The
+    # counterfactual replay of all live fires (Mar 19 - Aug 25) measured
+    # that machinery at -15.9 summed pct while a plain hold-30-minutes
+    # exit measured +43.7: the target-first structure truncates winners
+    # at +0.30% and rides losers to the time stop. 'fixed_horizon' exits
+    # every position at fixed_horizon_minutes, full stop — no target, no
+    # RSI exit. PRECONDITION for enabling: the EOD resolver
+    # (gcp/signal_monitor_eod_resolver.py:_detect_exit) mirrors this
+    # mode, so live monitor and resolver stay comparable — flip the
+    # config, never just one code path.
+    mode: str = 'target_stop'     # 'target_stop' | 'fixed_horizon'
+    fixed_horizon_minutes: int = 30
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +369,21 @@ class SignalConfig:
     # estimates ~150-200 additional fires/day across SPY/IWM/QQQ at
     # MIN_CONDITIONS_MOMENTUM=5 + core gate.
     enable_standalone_momentum: bool = False
+    # RVOL entry gate (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §10).
+    # 71% of Jun-Aug fires carried RVOL < 1.0 and hit the called
+    # direction only 47.5% of the time at +30 min; the RVOL >= 1.0
+    # cohort hit ~62% and was net-positive under the live exit engine
+    # (+4.41 vs -5.37 summed pct). Modes:
+    #   'off'     — gate disabled, nothing recorded.
+    #   'shadow'  — fire exactly as today; persist the verdict to
+    #               signal_alerts.rvol_gate ('pass'/'below') so the
+    #               September out-of-sample check is a SQL query.
+    #               DEFAULT: measurement first, behavior change later
+    #               (May 2026 is a counterexample month — see audit).
+    #   'enforce' — suppress fires with RVOL below the threshold
+    #               (no Discord, no persist, no trade-cap increment).
+    rvol_gate_min: float = 1.0
+    rvol_gate_mode: str = 'shadow'  # 'off' | 'shadow' | 'enforce'
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
     # Task 4.3 fix (trading-logic review of 1c7a7f35): when set, restricts

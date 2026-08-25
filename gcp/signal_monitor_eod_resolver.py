@@ -253,6 +253,14 @@ class EODResolver:
         price = float(bar['Close'])
         rsi = float(bar.get(self.indicator_cfg.rsi_col, 0) or 0)
 
+        if getattr(self.exit_cfg, 'mode', 'target_stop') == 'fixed_horizon':
+            # Mirror of SignalMonitor._check_exits fixed-horizon mode
+            # (audit 2026-08-25 §10) — hold exactly N minutes, nothing
+            # else exits. Keep in lock-step with the live monitor.
+            if elapsed_min >= self.exit_cfg.fixed_horizon_minutes:
+                return 'fixed_horizon'
+            return None
+
         if direction == 'CALL':
             if price >= target_price:
                 return 'target_hit'

@@ -354,3 +354,52 @@ def test_persist_appends_to_active_positions():
     assert pos['target_price'] == 679.66
     assert pos['time_stop_minutes'] == 30
     assert pos['entry_price'] == 677.63
+
+
+# ── fixed_horizon exit mode (audit 2026-08-25 §10) ──────────────────
+# Default mode is 'target_stop' — every test above exercises it
+# unchanged. These pin the opt-in mode: nothing exits before the
+# horizon (target crossed or not), everything exits at the horizon
+# with reason 'fixed_horizon'.
+
+def test_fixed_horizon_ignores_target_before_horizon():
+    monitor = _make_monitor()
+    monitor.exit.mode = 'fixed_horizon'
+    monitor.exit.fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
+                   target_price=679.66)  # seeded 5 min ago
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire:
+        # Price is far past the target — target_stop mode would exit here.
+        monitor._check_exits('QQQ', _bar(685.00, 50.0), 685.00)
+    assert not mock_fire.called, \
+        "fixed_horizon must NOT exit on target before the horizon"
+    assert len(monitor.active_positions['QQQ']) == 1
+
+
+def test_fixed_horizon_exits_at_horizon():
+    from datetime import datetime as _dt, timedelta as _td
+    monitor = _make_monitor()
+    monitor.exit.mode = 'fixed_horizon'
+    monitor.exit.fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
+                   target_price=685.00,
+                   alert_ts=_dt.now() - _td(minutes=31))
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire, \
+         patch.object(monitor, '_persist_exit') as mock_persist:
+        monitor._check_exits('QQQ', _bar(678.00, 50.0), 678.00)
+    assert mock_fire.called and mock_persist.called
+    args, _ = mock_fire.call_args
+    assert args[2] == 'fixed_horizon', f"expected fixed_horizon, got {args[2]}"
+    assert monitor.active_positions['QQQ'] == []
+
+
+def test_fixed_horizon_ignores_rsi_extreme():
+    monitor = _make_monitor()
+    monitor.exit.mode = 'fixed_horizon'
+    monitor.exit.fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
+                   target_price=685.00)  # 5 min ago
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire:
+        monitor._check_exits('QQQ', _bar(678.00, 95.0), 678.00)  # RSI 95
+    assert not mock_fire.called, \
+        "fixed_horizon must NOT exit on extreme RSI before the horizon"
