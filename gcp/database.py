@@ -190,7 +190,8 @@ def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def query_to_dataframe_strict(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
+def query_to_dataframe_strict(sql: str, params: Optional[dict] = None,
+                              timeout_s: Optional[float] = None) -> pd.DataFrame:
     """Run a SELECT and return a DataFrame — RAISES on any failure.
 
     The non-swallowing sibling of ``query_to_dataframe``. A connection error,
@@ -203,11 +204,26 @@ def query_to_dataframe_strict(sql: str, params: Optional[dict] = None) -> pd.Dat
 
     An empty DataFrame returned by this function therefore unambiguously means
     "the query ran and matched no rows", never "the DB was unreachable".
+
+    ``timeout_s`` bounds server-side wall-time for this one statement. A
+    query that exceeds it raises (SQLSTATE 57014) rather than running until
+    the *caller's* Cloud Run task-timeout kills the whole job — the failure
+    mode behind issue #765, where one unindexed watchdog query consumed a
+    3600s budget and took every other check down with it, reporting nothing.
+    Applied via ``SET LOCAL`` inside an explicit transaction so the bound is
+    transaction-scoped and cannot leak back to the pool on this connection.
     """
     import sqlalchemy
     engine = get_engine()
     with engine.connect() as conn:
-        return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
+        if timeout_s is None:
+            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
+        # Postgres SET does not accept bind parameters; int() coercion is
+        # what keeps this interpolation safe.
+        with conn.begin():
+            conn.execute(sqlalchemy.text(
+                f"SET LOCAL statement_timeout = {int(timeout_s * 1000)}"))
+            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
 
 
 # pg8000 packs the bind-parameter count as an unsigned 16-bit short, so

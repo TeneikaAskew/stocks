@@ -28,7 +28,7 @@ def _patch_query(monkeypatch, df_or_exc):
     being swallowed into a silent-fallback false-pass, per Codex P2)."""
     from gcp import database
 
-    def fake(sql, params=None):
+    def fake(sql, params=None, timeout_s=None):
         if isinstance(df_or_exc, BaseException):
             raise df_or_exc
         if callable(df_or_exc):
@@ -179,7 +179,7 @@ def test_window_anchors_to_settled_trading_day_not_wallclock(monkeypatch):
     # Capture the params the SQL is invoked with so we can assert the
     # window covers Friday 2026-06-19.
     captured = {}
-    def capturing(sql, params=None):
+    def capturing(sql, params=None, timeout_s=None):
         captured["params"] = params or {}
         # Return the "broken" shape: 0/78 non-NULL on Friday
         return _fake_distribution([
@@ -307,7 +307,7 @@ def test_audit_all_wires_in_column_nullity(monkeypatch):
 def _df_by_column(mapping):
     """Fake query keyed on which column the SQL counts, so different
     checks in the same run can see different data shapes."""
-    def fake(sql, params=None):
+    def fake(sql, params=None, timeout_s=None):
         for col, rows in mapping.items():
             if f"COUNT({col})" in sql:
                 return pd.DataFrame(rows)
@@ -374,7 +374,7 @@ def test_lookback_counts_trading_sessions_not_calendar_days(monkeypatch):
 
     windows = {}
 
-    def capturing(sql, params=None):
+    def capturing(sql, params=None, timeout_s=None):
         if "COUNT(gamma_balance_price)" in sql:
             windows["start"] = params["window_start"]
             windows["end"] = params["window_end"]

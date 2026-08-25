@@ -96,6 +96,21 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
 CREATE INDEX IF NOT EXISTS idx_market_data_daily_ticker_date
     ON market_data_daily (ticker, date DESC);
 
+-- Date-leading companion to the (ticker, date) index above. Required by
+-- whole-universe, single-day queries -- i.e. any check that asks "across
+-- EVERY ticker, what happened on date D" and therefore has no ticker
+-- predicate to lead with. The (ticker, date DESC) index cannot serve those:
+-- `date` is its second column, so a date-only WHERE degrades to a full
+-- sequential scan of the table.
+--
+-- Added 2026-08-25 after `freshness-watchdog` began hitting its 3600s
+-- task-timeout (issue #765). PR #759's enrichment-coverage check was the
+-- watchdog's first date-only query; every prior check is per-ticker and
+-- rides the index above, which is why the job ran 8-14 min for months and
+-- then blew a 60-min cap the day that check shipped.
+CREATE INDEX IF NOT EXISTS idx_market_data_daily_date
+    ON market_data_daily (date);
+
 
 CREATE TABLE IF NOT EXISTS market_data_intraday (
     ticker      VARCHAR(10)  NOT NULL,
