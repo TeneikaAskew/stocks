@@ -790,3 +790,68 @@ DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'BB_Squeeze':         'bb_squeeze',
     'RSI_Divergence':     'rsi_divergence',
 }
+
+
+def record_job_run(
+    job_name: str,
+    started_at,
+    status: str,
+    *,
+    variant: Optional[str] = None,
+    items_total: Optional[int] = None,
+    items_processed: Optional[int] = None,
+    items_failed: Optional[int] = None,
+    rows_written: Optional[int] = None,
+    note: Optional[str] = None,
+) -> bool:
+    """Record one job execution into job_runs (see gcp/schema.sql).
+
+    Call at the very end of a Cloud Run Job's main() — after the job's
+    real outcome is already determined — so the freshness-watchdog's
+    duration-regression check can warn on capacity drift BEFORE a
+    timeout cliff (the #751 failure mode: 19 silent near-misses).
+
+    Returns True when the row landed. Failures are logged at WARNING
+    and swallowed — permitted under CLAUDE.md Rule 3.7's cleanup-path
+    exception: this is post-outcome telemetry, the job's own exit code
+    has already been decided, and failing a healthy 2-hour run because
+    the telemetry INSERT hit a blip would invert the priority. The
+    warning line keeps the failure observable in Cloud Logging.
+    """
+    import datetime as _dt
+
+    finished_at = _dt.datetime.now(_dt.timezone.utc)
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=_dt.timezone.utc)
+    try:
+        execute_sql(
+            """
+            INSERT INTO job_runs
+                (job_name, variant, execution_name, started_at, finished_at,
+                 duration_s, status, items_total, items_processed,
+                 items_failed, rows_written, note)
+            VALUES
+                (:job_name, :variant, :execution_name, :started_at, :finished_at,
+                 :duration_s, :status, :items_total, :items_processed,
+                 :items_failed, :rows_written, :note)
+            """,
+            {
+                'job_name': job_name,
+                'variant': variant,
+                'execution_name': os.environ.get('CLOUD_RUN_EXECUTION'),
+                'started_at': started_at,
+                'finished_at': finished_at,
+                'duration_s': (finished_at - started_at).total_seconds(),
+                'status': status,
+                'items_total': items_total,
+                'items_processed': items_processed,
+                'items_failed': items_failed,
+                'rows_written': rows_written,
+                'note': note,
+            },
+        )
+        return True
+    except Exception as e:  # cleanup/telemetry — job outcome already decided
+        logger.warning("record_job_run(%s) failed (job outcome unaffected): %s",
+                       job_name, e)
+        return False

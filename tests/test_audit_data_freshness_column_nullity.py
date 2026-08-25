@@ -270,6 +270,10 @@ def test_audit_all_wires_in_column_nullity(monkeypatch):
     monkeypatch.setattr(mod, "CHECKS", [])
     monkeypatch.setattr(mod, "_query_value_sanity",
                         lambda *_args, **_kw: [])
+    monkeypatch.setattr(mod, "_query_enrichment_coverage",
+                        lambda *_args, **_kw: [])
+    monkeypatch.setattr(mod, "_query_job_duration_regression",
+                        lambda *_args, **_kw: [])
 
     sentinel = mod.FreshnessRow(
         table="sentinel.col", ticker="IWM",

@@ -3686,3 +3686,39 @@ CREATE TABLE IF NOT EXISTS playbook_cards_staging (
     generated_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
     CONSTRAINT pk_playbook_cards_staging PRIMARY KEY (user_email, ticker, name)
 );
+
+-- ─────────────────────────────────────────────────────────
+-- JOB OBSERVABILITY
+-- ─────────────────────────────────────────────────────────
+
+-- One row per Cloud Run Job execution, written by
+-- gcp.database.record_job_run() at the end of each run. Exists because
+-- capacity drift is invisible until a timeout cliff: the 2026-08
+-- backfill-daily-indicators incident (#751) ran 3h9m daily for 20 days
+-- — 19 near-misses of its 3h cap — with no queryable duration history
+-- to alert on. The freshness-watchdog's duration-regression check
+-- (scripts/audit_data_freshness.py) reads this table and warns when a
+-- job's latest run exceeds 2x its trailing median, BEFORE the cliff.
+CREATE TABLE IF NOT EXISTS job_runs (
+    id              BIGSERIAL    PRIMARY KEY,
+    job_name        TEXT         NOT NULL,
+    -- Execution mode within a job (e.g. 'daily' vs 'full' for
+    -- backfill-daily-indicators). A first-class column, not free-form
+    -- note text: the duration-regression check baselines per
+    -- (job_name, variant) — a weekly 2h full sweep must not be judged
+    -- against the daily runs' minutes-scale median (Codex, PR #759).
+    variant         TEXT,
+    execution_name  TEXT,                      -- $CLOUD_RUN_EXECUTION when present
+    started_at      TIMESTAMPTZ  NOT NULL,
+    finished_at     TIMESTAMPTZ  NOT NULL,
+    duration_s      DOUBLE PRECISION NOT NULL,
+    status          TEXT         NOT NULL,     -- 'success' | 'error'
+    items_total     INTEGER,                   -- e.g. tickers discovered
+    items_processed INTEGER,
+    items_failed    INTEGER,
+    rows_written    BIGINT,
+    note            TEXT,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_job_started
+    ON job_runs (job_name, started_at DESC);
