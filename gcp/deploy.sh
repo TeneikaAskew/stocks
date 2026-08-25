@@ -1365,15 +1365,23 @@ deploy_fetch_market_data() {
 deploy_backfill_daily_indicators() {
     echo "Deploying backfill-daily-indicators job..."
     # Self-healing job that fixes NULL derived-indicator columns in
-    # market_data_daily. Default mode=daily auto-discovers tickers
-    # with NULL atr_14 in the last 7 days — cheap when healthy.
-    # Weekly --mode=full sweep catches anything daily missed.
-    # 10800s (3h) timeout: full sweep on ~1,200 tickers × ~2s ≈ 40min
-    # wall-clock; daily sweep on ~50 tickers ≈ 2min. Headroom for spikes.
+    # market_data_daily. Default mode=daily auto-discovers tickers with
+    # healable derived-column gaps in the last 7 days — cheap when
+    # healthy. Weekly --mode=full sweep catches anything daily missed.
+    #
+    # Sizing (re-measured 2026-08-24, issue #751 — the 3h timeout died
+    # daily once the universe hit ~2,580 tickers at ~5.5s each ≈ 3.9h):
+    #   worst-case daily  : 2,580 tickers × ~2.2s / 4 workers ≈ 35–95min
+    #   worst-case full   : 2,580 tickers × ~5s   / 4 workers ≈ 1.5–2.5h
+    #   healthy daily     : ≲100 tickers ≈ 2–4 min
+    # task-timeout 36000s (10h) ≈ 4× the full-mode estimate (Rule 0.5 —
+    # Cloud Run bills actual runtime, not the cap). cpu=2/2Gi: 4 worker
+    # threads overlap pg8000 I/O with pandas compute.
+    # Cost: typical day ≲$0.02; worst-case full sweep ≈ $0.45/run.
     gcloud run jobs create backfill-daily-indicators \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 0 \
-        --task-timeout 10800 \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 36000 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
         ${DB_SECRET_FLAG} \
@@ -1381,7 +1389,8 @@ deploy_backfill_daily_indicators() {
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-daily-indicators \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 10800 \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 36000 \
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
         --args "" \
         ${DB_SECRET_FLAG} \
