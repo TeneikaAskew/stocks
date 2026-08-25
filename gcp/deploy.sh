@@ -2948,11 +2948,13 @@ deploy_notifier() {
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
     # Secrets are mounted from Secret Manager at runtime via --set-secrets so
     # they never appear in revision metadata (visible to anyone with run.services.get).
+    # --args= (equals form) is required: the value starts with "-m", which the
+    # space form hands to argparse as a flag ("expected one argument").
     gcloud run deploy "${NOTIFIER_SERVICE}" \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
-        --command "python" --args "-m,gcp.failure_notifier" \
+        --command "python" --args="-m,gcp.failure_notifier" \
         --set-env-vars "${env_string}" \
         --set-secrets="${notifier_secrets}" \
         --no-allow-unauthenticated \
