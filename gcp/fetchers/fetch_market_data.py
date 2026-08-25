@@ -16,7 +16,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dt_time
 from pathlib import Path
 
 import pandas as pd
@@ -776,9 +776,10 @@ def _pick_backfill_outputsize(bar_count: int, max_date,
     ~850-ticker flag sets behind issue #751's timeout loop; verified
     against run durations 2026-08-13→24: 28/64/23/70-min alternation).
 
-    A run BEFORE the close would fetch AV's intraday-partial daily bar;
-    that row is overwritten by the same evening's post-close runs, so
-    manual midday invocations converge rather than corrupt.
+    A run BEFORE the close never persists AV's intraday-partial daily
+    bar in the first place — _exclude_partial_today drops today's row
+    pre-close (a persisted partial bar would make this function skip
+    the ticker that evening and stand as "final" for ~24h).
     """
     if bar_count == 0:
         return 'full'
@@ -841,6 +842,25 @@ def _av_get_full_daily_series(ticker: str, api_key: str,
         return pd.DataFrame()
 
 
+def _exclude_partial_today(df: pd.DataFrame, today_et: date,
+                           now_et_time) -> pd.DataFrame:
+    """Drop today's row from an AV daily series when the session hasn't
+    closed yet (before 16:15 ET).
+
+    AV's daily endpoint serves an intraday-PARTIAL bar for the current
+    day during market hours. Persisting it is worse than skipping it
+    (Codex P1 on PR #758): the same evening's scheduled run then sees
+    max_date == today, judges the ticker current, and skips — so the
+    partial bar stands as "final" for ~24h until the NEXT evening's
+    refresh rewrites it. Never writing a pre-close current-day bar
+    removes the corruption at the source; post-close runs (the
+    scheduled 19:15 ET path) are unaffected.
+    """
+    if now_et_time >= dt_time(16, 15):
+        return df
+    return df[df['date'] < today_et]
+
+
 def _run_backfill() -> None:
     """--backfill mode: pull historical daily bars for every ticker in
     earnings_history that the brief would render but lacks depth.
@@ -848,7 +868,8 @@ def _run_backfill() -> None:
     Skip + smart-switch keep this idempotent and cheap on re-runs:
     already-current tickers do zero AV calls."""
     from zoneinfo import ZoneInfo
-    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    today_et = now_et.date()
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
     if not is_cloud_sql_configured():
@@ -903,6 +924,7 @@ def _run_backfill() -> None:
             log.warning("    (no data returned)")
         else:
             df = df[df['date'] >= cutoff]  # enforce 10y cap on write
+            df = _exclude_partial_today(df, today_et, now_et.time())
             if not df.empty:
                 # Attribute the write. These rows were previously
                 # unattributable (empty data_source) — identifying this
