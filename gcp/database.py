@@ -308,6 +308,12 @@ def _na_to_none_records(records: list[dict]) -> list[dict]:
     return [{k: _fix(v) for k, v in r.items()} for r in records]
 
 
+# Per-process cache of reflected Table objects for upsert_dataframe.
+# Keyed by table name; populated lazily on first upsert against a table.
+# See the comment at the use site for why this is safe.
+_REFLECTED_TABLES: dict = {}
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -334,9 +340,19 @@ def upsert_dataframe(
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     engine = get_engine()
-    meta = sqlalchemy.MetaData()
-    meta.reflect(bind=engine, only=[table])
-    tbl = meta.tables[table]
+    # Reflection is a handful of information_schema round-trips (~0.5s
+    # over pg8000 + Cloud SQL Connector). Batch jobs call upsert_dataframe
+    # once per ticker × thousands of tickers (issue #751), so cache the
+    # reflected Table per process. Schema never changes mid-job — the
+    # apply-schema-migrations Cloud Run Job runs in its own process.
+    # Thread-safe: worst case two threads reflect concurrently and one
+    # harmlessly overwrites the other with an equivalent Table.
+    tbl = _REFLECTED_TABLES.get(table)
+    if tbl is None:
+        meta = sqlalchemy.MetaData()
+        meta.reflect(bind=engine, only=[table])
+        tbl = meta.tables[table]
+        _REFLECTED_TABLES[table] = tbl
 
     # Only keep DataFrame columns that actually exist in the table schema.
     # Extra columns in the DataFrame (e.g. from source files) would cause a
@@ -708,12 +724,22 @@ def row_exists(table: str, where: dict) -> bool:
         return False
 
 
-def execute_sql(sql: str, params: Optional[dict] = None) -> None:
-    """Execute a non-SELECT statement (INSERT, UPDATE, DELETE, DDL)."""
+def execute_sql(sql: str, params: Optional[dict] = None) -> int:
+    """Execute a non-SELECT statement (INSERT, UPDATE, DELETE, DDL).
+
+    Returns the driver-reported ``rowcount`` for the statement (e.g. how
+    many rows an UPDATE/DELETE actually matched), so callers that need to
+    detect a zero-row race — a conditional UPDATE whose WHERE clause no
+    longer matches because another writer got there first — can act on it
+    instead of assuming success. DDL and some multi-statement forms report
+    -1 (driver doesn't know); callers doing DDL should ignore the return
+    value.
+    """
     engine = get_engine()
     import sqlalchemy
     with engine.begin() as conn:
-        conn.execute(sqlalchemy.text(sql), params or {})
+        result = conn.execute(sqlalchemy.text(sql), params or {})
+        return result.rowcount
 
 
 # Single source of truth for `lib.indicators.add_all_indicators()` output

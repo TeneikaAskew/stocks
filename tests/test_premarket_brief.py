@@ -2879,3 +2879,48 @@ class TestFmtGammaTs:
         # Garbage input falls through to the original string rather
         # than crashing the brief embed builder.
         assert _fmt_gamma_ts('not-an-iso-string') == 'not-an-iso-string'
+
+
+class TestDeleteNullCloseRows:
+    """`_delete_null_close_rows` now forwards the real `execute_sql`
+    rowcount (gcp/database.py:711 returns the driver rowcount as of commit
+    1b6b2067) instead of a hardcoded "1 = attempted" sentinel."""
+
+    def test_returns_real_rowcount_on_success(self, monkeypatch):
+        from gcp import database
+        from gcp.premarket_brief import _delete_null_close_rows
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+        monkeypatch.setattr(database, "execute_sql", lambda sql, params=None: 3)
+
+        assert _delete_null_close_rows("SPY") == 3
+
+    def test_returns_zero_when_no_rows_matched(self, monkeypatch):
+        from gcp import database
+        from gcp.premarket_brief import _delete_null_close_rows
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+        monkeypatch.setattr(database, "execute_sql", lambda sql, params=None: 0)
+
+        assert _delete_null_close_rows("SPY") == 0
+
+    def test_returns_zero_when_cloud_sql_not_configured(self, monkeypatch):
+        from gcp import database
+        from gcp.premarket_brief import _delete_null_close_rows
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
+
+        assert _delete_null_close_rows("SPY") == 0
+
+    def test_returns_zero_and_swallows_on_execute_error(self, monkeypatch):
+        from gcp import database
+        from gcp.premarket_brief import _delete_null_close_rows
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+
+        def _boom(sql, params=None):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(database, "execute_sql", _boom)
+
+        assert _delete_null_close_rows("SPY") == 0

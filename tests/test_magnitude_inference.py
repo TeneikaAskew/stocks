@@ -81,6 +81,15 @@ def test_parse_cells_default_when_empty():
     assert _parse_cells("   ") == list(DEFAULT_CELLS)
 
 
+def test_default_cells_score_validated_15m_alongside_5m():
+    # 2026-07-11 repoint: 15m is the validated timeframe (isotonic+prune);
+    # 5m is retained for existing consumers. All 3 ETFs scored at both.
+    from gcp.research.magnitude_engine.mag_inference import DEFAULT_CELLS
+    for tk in ("IWM", "SPY", "QQQ"):
+        assert (tk, "15m") in DEFAULT_CELLS, f"{tk}:15m must be scored live"
+        assert (tk, "5m") in DEFAULT_CELLS, f"{tk}:5m retained"
+
+
 def test_parse_cells_one():
     from gcp.research.magnitude_engine.mag_inference import _parse_cells
     assert _parse_cells("IWM:5m") == [("IWM", "5m")]

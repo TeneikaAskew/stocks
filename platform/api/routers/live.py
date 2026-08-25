@@ -45,6 +45,11 @@ from lib.indicators import (
 # uses. See lib/signals.py module docstring.
 from lib.signals import generate_signals
 
+# July-6 chart teaching voter (trend confirmation in a pullback band) —
+# distinct from the production alerting voter above. See lib/chart_voter.py
+# module docstring for the full voter taxonomy (issue #701).
+from lib.chart_voter import evaluate_chart_voter
+
 log = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -59,6 +64,23 @@ def _normalize_bar_time(t: str) -> str:
     (VWAP sessions) and pd.to_datetime both work."""
     s = str(t).strip()
     if s.isdigit():
+        # #702 follow-ups Task 2 item 4: a 10-digit epoch-SECOND string is
+        # the only shape this endpoint's callers ever send. A ms-epoch (or
+        # longer) digit string parsed with unit="s" doesn't error -- it
+        # silently lands in the year ~57000, which then blows up later
+        # with an opaque pandas NotImplementedError (or worse, silently
+        # poisons VWAP date-grouping). Fail loud at the boundary instead
+        # (Rule 3.7): >12 digits is unambiguously not an epoch-second
+        # value (epoch-seconds won't hit 13 digits until the year 33658).
+        if len(s) > 12:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "bar time looks like a milliseconds epoch "
+                    f"({len(s)}-digit value {s!r}) — milliseconds epoch "
+                    "not supported, send seconds"
+                ),
+            )
         return pd.Timestamp(int(s), unit="s").strftime("%Y-%m-%d %H:%M:%S")
     return s
 
@@ -193,6 +215,8 @@ async def get_live_quote(ticker: str):
         raise HTTPException(status_code=status_code, detail=f"No quote data returned for {ticker_upper}")
 
     def _float(val: str) -> float:
+        # AUDIT-2026-05-13: silent fallback — pre-existing 0.0-on-parse-failure.
+        # See docs/audits/FALLBACK_AUDIT_2026-05-13.md
         try:
             return float(val)
         except (TypeError, ValueError):
@@ -445,7 +469,11 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
             "atr": None,
             "vwap": None,
         }
-        return {"indicators": empty_ind, "signals": _empty_signals()}
+        return {
+            "indicators": empty_ind,
+            "signals": _empty_signals(),
+            "chart_voter": evaluate_chart_voter([], None, None, None, None),
+        }
 
     # Assemble Series — aligned, no index mismatches.
     closes = pd.Series([b.close for b in bars], dtype=float)
@@ -492,7 +520,15 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
         rvol = vol / req.avg_volume_20d
 
     signals = _build_signals(price, indicators, rvol)
-    return {"indicators": indicators, "signals": signals}
+
+    chart_voter = evaluate_chart_voter(
+        closes=closes.tolist(),
+        rsi=indicators["rsi"],
+        stoch_k=indicators["stochK"],
+        ema9=indicators["ema9"],
+        vwap=indicators["vwap"],
+    )
+    return {"indicators": indicators, "signals": signals, "chart_voter": chart_voter}
 
 
 @router.post("/api/live/signal-series")

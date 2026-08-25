@@ -29,6 +29,27 @@ export interface TradeEntry {
   pnl?: number;
   pnlPercent?: number;
   createdAt: number;
+  /** 'chart' | 'manual' | 'replay' (server's journal_entries.source column)
+   *  or 'pipeline' (task-examples-union — an automated-pipeline `trades`
+   *  row surfaced read-only in the Examples union, never editable).
+   *  'replay' marks a trade drawn during a bar-replay-trainer session
+   *  (Task 5.2) — Task 5.3's analytics hygiene filters these out of
+   *  stats by default. */
+  source?: string;
+  /** Replay-trainer session grouping (Task 5.2) — a UUID shared by every
+   *  trade drawn during the same session. Only meaningful when source
+   *  === 'replay'. */
+  sessionId?: string;
+  /** task-alerts-enrichment (2026-07-12) — a pipeline row's matched
+   *  `signal_alerts.time_stop_minutes`, in MINUTES. Only ever present when
+   *  `stopLoss` is undefined (the signal engine logs a time-based exit
+   *  rule, never a stop PRICE) — the Stop cell/rail-card SL segment render
+   *  "<N>m time-stop" from this field instead of a dollar price. USER
+   *  REQUIREMENT (verbatim): this is EACH row's OWN value — never a fixed
+   *  label — production data has both 20 and 25 in the same ticker's first
+   *  six rows. Undefined for journal/manual/chart/replay rows (no alert
+   *  concept applies to them). */
+  timeStopMinutes?: number;
 }
 
 export interface Signal {
@@ -36,6 +57,41 @@ export interface Signal {
   direction: TradeDirection;
   score: number;
   indicators: Record<string, number>;
+}
+
+// ---------------------------------------------------------------------------
+// Chart Voter — the July-6 (pre-#700) 5-condition "teaching" readout for the
+// Charts page Strategy Conditions card. Mirrors lib/chart_voter.py's
+// evaluate_chart_voter() output, served on POST /api/live/indicators as the
+// `chart_voter` key (platform/api/routers/live.py). The frontend renders
+// this verbatim — no client-side re-derivation of the math (one source of
+// truth per CLAUDE.md's architectural rules).
+//
+// Distinct from the `Signal`/`SignalCondition` shape in lib/indicators.ts,
+// which backs the 10-condition strength panel on LiveMarketPage/PlaybookPage
+// (production alerting voter, not this chart teaching voter — see issue #701
+// for the voter taxonomy).
+// ---------------------------------------------------------------------------
+
+export interface ChartVoterCondition {
+  id: string;
+  label: string;
+  met: boolean;
+  detail: string;
+}
+
+export interface ChartVoterSide {
+  direction: TradeDirection;
+  conditions: ChartVoterCondition[];
+  met_count: number;
+  total_count: number;
+  fires: boolean;
+}
+
+export interface ChartVoter {
+  call: ChartVoterSide;
+  put: ChartVoterSide;
+  firing: TradeDirection | null;
 }
 
 export interface BacktestResult {

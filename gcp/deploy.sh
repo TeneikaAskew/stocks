@@ -1145,6 +1145,124 @@ deploy_magnitude_engine() {
         --quiet
 }
 
+# ── Direction-program baseline job (one-shot) ────────────────────────────────
+# Anchors the direction-predictability program: runs 3 axes (direction/size/
+# type) × 3 tickers = 9 walk-forward cells SERIALLY in a single task, records
+# a slice-ledger row per cell, and logs the pre-registered verdict. NOT
+# scheduled — executed on demand to establish the honest baseline every Phase-2
+# lever experiment must beat. The direction axis reproduces the 0/72 close-sign
+# control as a harness-trust check.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 9 WF cells, each ~8 folds of LightGBM over the 5m feature surface.
+#   Velocity: 1 batched feature SELECT per cell; in-memory fold slicing (no N+1).
+#   Wall-clock: ≤ ~45 min p100 on a single 4-CPU task. task-timeout 10800s (3h)
+#               is ~4× headroom — Rule 0 §5 (CR bills runtime, headroom is free).
+#   Cost: ~$0.10 per manual run, on demand only. Effectively free.
+#   max-retries 0 — Rule 0: a stuck cell fails loud, no double-runs.
+deploy_direction_baseline() {
+    echo "Deploying direction-baseline job (one-shot 3-axis baseline)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create direction-baseline \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-baseline \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Direction-program feature-importance / SHAP audit (one-shot) ─────────────
+# Ranks the ~75-143 baseline columns by LightGBM gain + mean|SHAP| for the
+# DIRECTION and SIZE engines, reusing each engine's exact production feature
+# path (loader -> featurize -> model factory -> same anchored cutoffs). Tells us
+# which columns carry the edge before Phase-2 adds new features. NOT scheduled.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 2 axes × 3 tickers × ~8 folds = ~48 LightGBM fits + SHAP over the
+#           test slice each. SHAP TreeExplainer is the cost driver.
+#   Wall-clock: ≤ ~60 min p100 single 4-CPU task. task-timeout 10800s (3h) headroom.
+#   Cost: ~$0.15 per manual run, on demand only. max-retries 0 (fail loud).
+deploy_direction_importance() {
+    echo "Deploying direction-importance job (feature-importance/SHAP audit)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Direction-program Phase-2 ablation (task-parallel, one task per config) ──
+# Volume: 14 configs (2 axes × [baseline + 5 isolation + 1 stack]) × 3 tickers
+#         × 8 folds. Velocity: 1 batched feature SELECT per (ticker,cfg); daily
+#         options read from the materialized options_daily_features table.
+# Wall-clock: one config ≈ baseline (~40 min); task-parallel => ~40 min total.
+# task-timeout 10800s (4×). max-retries 0 (fail loud). ~$0.15/run, on demand.
+# PREREQUISITE (run once, not in this job): materialize options daily features
+#   python -c "from gcp.database import get_engine; \
+#     from lib.features.experimental.options_derived import build_materialized; \
+#     e=get_engine(); [build_materialized(e,t,'2015-01-01','2026-07-08') \
+#       for t in ('IWM','SPY','QQQ')]"
+# ── Magnitude recalibration experiment (one-shot) ──────────────────────────
+# Phase-2 ablation found the SIZE baseline log-loss beat is ~-0.148 (worse than
+# the base-rate constant) with calibration=none + class_weight=balanced. Tests
+# whether isotonic calibration closes that gap. Runs phase0 --all-cells (3
+# tickers x 3 tfs) with --calibration=isotonic. Compare the 5m cells to the
+# phase-2 size baseline. One-shot, not scheduled. max-retries 0.
+deploy_magnitude_recal() {
+    echo "Deploying magnitude-recal job (isotonic calibration experiment)..."
+    local research_image="${IMAGE}:research"
+    gcloud run jobs create magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --service-account "${SA_EMAIL}"         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet 2>/dev/null ||     gcloud run jobs update magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet
+}
+
+deploy_direction_phase2() {
+    echo "Deploying direction-phase2 ablation job (task-parallel)..."
+    local research_image="${IMAGE}:research"
+    local n=14
+    gcloud run jobs create direction-phase2 \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${n} --parallelism ${n} \
+        --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.phase2_ablation" \
+        ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet 2>/dev/null || \
+    gcloud run jobs update direction-phase2 \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${n} --parallelism ${n} \
+        --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.phase2_ablation" \
+        ${DB_SECRET_FLAG} --set-env-vars "$(_env_string)" --quiet
+}
+
 # ── Magnitude live-inference job ──────────────────────────────────────────────
 # Phase B of magnitude productionization. Daily cron at 09:25 ET scores
 # the most-recent settled bars from strat_features_<tf> using the
@@ -1247,15 +1365,23 @@ deploy_fetch_market_data() {
 deploy_backfill_daily_indicators() {
     echo "Deploying backfill-daily-indicators job..."
     # Self-healing job that fixes NULL derived-indicator columns in
-    # market_data_daily. Default mode=daily auto-discovers tickers
-    # with NULL atr_14 in the last 7 days — cheap when healthy.
-    # Weekly --mode=full sweep catches anything daily missed.
-    # 10800s (3h) timeout: full sweep on ~1,200 tickers × ~2s ≈ 40min
-    # wall-clock; daily sweep on ~50 tickers ≈ 2min. Headroom for spikes.
+    # market_data_daily. Default mode=daily auto-discovers tickers with
+    # healable derived-column gaps in the last 7 days — cheap when
+    # healthy. Weekly --mode=full sweep catches anything daily missed.
+    #
+    # Sizing (re-measured 2026-08-24, issue #751 — the 3h timeout died
+    # daily once the universe hit ~2,580 tickers at ~5.5s each ≈ 3.9h):
+    #   worst-case daily  : 2,580 tickers × ~2.2s / 4 workers ≈ 35–95min
+    #   worst-case full   : 2,580 tickers × ~5s   / 4 workers ≈ 1.5–2.5h
+    #   healthy daily     : ≲100 tickers ≈ 2–4 min
+    # task-timeout 36000s (10h) ≈ 4× the full-mode estimate (Rule 0.5 —
+    # Cloud Run bills actual runtime, not the cap). cpu=2/2Gi: 4 worker
+    # threads overlap pg8000 I/O with pandas compute.
+    # Cost: typical day ≲$0.02; worst-case full sweep ≈ $0.45/run.
     gcloud run jobs create backfill-daily-indicators \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 0 \
-        --task-timeout 10800 \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 36000 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
         ${DB_SECRET_FLAG} \
@@ -1263,7 +1389,8 @@ deploy_backfill_daily_indicators() {
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-daily-indicators \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 10800 \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 36000 \
         --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -1938,12 +2065,30 @@ deploy_fetch_insider_transactions() {
         --quiet
 }
 
+# This single job now backs TWO cadences, selected by --args at the
+# Cloud Scheduler layer (see deploy_schedulers()):
+#   - default (no args)      -> daily TOP_GAINERS_LOSERS snapshot -> top_movers_daily
+#   - --args="--intraday-snapshot" -> most_actively_traded only -> top_movers_intraday
+# Same pattern as fetch-alphavantage-intraday/av-intraday-nightly: one
+# persisted job + a _schedule_with_args() scheduler that overrides args
+# on that trigger only, rather than standing up a second Cloud Run Job
+# for the same image/entrypoint/secrets.
+#
+# Capacity (Rule 0): 1 AV TOP_GAINERS_LOSERS call (~30 most_actively_traded
+# rows) + 1 batched upsert per invocation, both cadences. Wall-clock is
+# network-bound (AV call + upsert), observed sub-10s. task-timeout=300 is
+# ~30-60x the estimate. max-retries=0 (not 1, unlike the sibling fetchers
+# below): the intraday variant now runs hourly during market hours, so a
+# transient failure self-heals at the next hourly tick without Cloud Run
+# auto-retrying and double-sending failure emails for a blip the next run
+# already covers — same rationale as signal-quality-report's max-retries 0.
 deploy_fetch_top_movers() {
     echo "Deploying fetch-top-movers job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 1 \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
@@ -1951,6 +2096,8 @@ deploy_fetch_top_movers() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
+        --max-retries 0 \
+        --task-timeout 300 \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
@@ -3515,6 +3662,26 @@ deploy_schedulers() {
     # reflects the full session.
     _schedule "top-movers-daily"  "15 16 * * 1-5"  "fetch-top-movers"
 
+    # Most-active ticker bar (marquee) — intraday hourly snapshots feeding
+    # top_movers_intraday, via _schedule_with_args() overriding the SAME
+    # fetch-top-movers job with --intraday-snapshot (see deploy_fetch_top_movers
+    # for why this reuses the job instead of standing up a second one).
+    # Cron "30 9-15 * * 1-5" fires at :30 past 9 AM-3 PM ET weekdays
+    # (9:30, 10:30, ..., 15:30) — the market's 9:30 open through the last
+    # full hour before close, so the marquee has a fresh snapshot at least
+    # once an hour throughout the session. A separate 4:05 PM ET run
+    # captures the closing snapshot after AV's TOP_GAINERS_LOSERS reflects
+    # the full session (mirrors top-movers-daily's 4:15 PM timing, 10 min
+    # earlier so the intraday bar shows the close before the daily table
+    # lands). Both use --time-zone America/New_York (matches every other
+    # scheduler in this file) so the cadence doesn't drift across the
+    # DST transition — a bare UTC cron would silently shift an hour twice
+    # a year.
+    _schedule_with_args "top-movers-intraday-hourly"  "30 9-15 * * 1-5"  "fetch-top-movers" \
+        "--intraday-snapshot"
+    _schedule_with_args "top-movers-intraday-close"  "5 16 * * 1-5"  "fetch-top-movers" \
+        "--intraday-snapshot"
+
     # News sentiment — HOURLY during the trading day so catalysts can't
     # age out of AV's 50-article window before we capture them. The
     # Apr-7-2026 Broadcom-Google deal hit at 13:46 ET; with the prior
@@ -3633,6 +3800,10 @@ case "${1:-help}" in
     build-realtime-gex) deploy_build_realtime_gex ;;      # research image
     build-options-daily-features) deploy_build_options_daily_features ;;  # research image
     magnitude-engine) deploy_magnitude_engine ;;
+    direction-baseline) deploy_direction_baseline ;;   # research image; build separately (build-research)
+    direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
+    direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
+    magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
     magnitude-inference) build_research_image && deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend)     build_image && deploy_weekend ;;

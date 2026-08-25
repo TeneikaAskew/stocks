@@ -20,9 +20,20 @@ export interface JournalRow {
   take_profits?: number[];
   stop_loss?: number | null;
   status?: string;
+  /** 'manual' | 'chart' | 'replay' | 'pipeline' (task-examples-union — an
+   *  automated-pipeline `trades` row surfaced read-only in the Examples
+   *  union). */
   source?: string;
   session_id?: string | null;
   created_at?: string;
+  /** task-alerts-enrichment (2026-07-12) — a pipeline row's matched
+   *  `signal_alerts.time_stop_minutes` (server: journal.py's
+   *  `_pipeline_rows_to_trades`). Only ever set alongside `stop_loss: null`
+   *  (no stop PRICE exists, only a time-based exit rule) — never present on
+   *  journal/manual/chart/replay rows. See journalRowToTradeEntry below and
+   *  JournalPage's Stop-cell / TradeRailCard's SL-segment renders, which
+   *  fall back to "<N>m time-stop" from this field when stop_loss is null. */
+  time_stop_minutes?: number | null;
 }
 
 interface JournalTradesResponse {
@@ -167,12 +178,26 @@ export function journalRowToTradeEntry(row: JournalRow): TradeEntry {
     pnl,
     pnlPercent,
     createdAt: row.created_at ? isoNaiveToEpoch(row.created_at) * 1000 : Date.now(),
+    // Structural passthrough (Task 5.3) — feeds the replay-session scorecard
+    // trigger (filter by sessionId) and the practice-trade analytics
+    // exclusion (filter by source==='replay'). Absent on legacy rows, same
+    // as take_profits/stop_loss above.
+    source: row.source ?? undefined,
+    sessionId: row.session_id ?? undefined,
+    // task-alerts-enrichment: structural passthrough, not a fabricated
+    // financial value — a pipeline row either carries its OWN matched
+    // alert's time_stop_minutes or omits the field entirely (Rule 3.7).
+    timeStopMinutes: row.time_stop_minutes ?? undefined,
   };
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────
 
-const chartTradesKey = (ticker: string) => ['journal-chart-trades', ticker] as const;
+/** Exported (Task 5) so JournalPage's manual Add-Trade mutation can
+ *  invalidate the SAME cache entry the chart/rail/table read from —
+ *  a second, differently-keyed fetch of the same endpoint would go stale
+ *  the moment a chart-marked trade landed. */
+export const chartTradesKey = (ticker: string) => ['journal-chart-trades', ticker] as const;
 
 /**
  * Chart-marked trades for one ticker, filtered client-side to `date`
@@ -198,6 +223,70 @@ export function useJournalChartTrades(ticker: string, date: string) {
   });
 }
 
+/**
+ * The ticker's FULL own journal (raw server rows, all dates) — same query
+ * key as useJournalChartTrades above, so the two share one cache entry and
+ * every mutation's invalidation refreshes both. Task 5's Journal page reads
+ * this for the Overview-scoped KPI tiles / table / equity curve and maps
+ * rows through journalRowToTradeEntry itself for the chart/rail.
+ */
+export function useJournalTradesFull(ticker: string) {
+  return useQuery<JournalTradesResponse>({
+    queryKey: chartTradesKey(ticker),
+    queryFn: async () => {
+      const r = await fetch(`/api/journal/trades/${ticker}`);
+      if (!r.ok) throw new Error(`journal trades ${r.status}`);
+      return r.json();
+    },
+    enabled: !!ticker,
+    staleTime: 10_000,
+  });
+}
+
+// ── Examples view (Task 5 — journal one-stop) ─────────────────────────────
+
+export const examplesKey = (ticker: string) => ['journal-examples', ticker] as const;
+
+/**
+ * Admin teaching "Examples" — GET /api/journal/examples/{ticker}, exactly
+ * the trades-GET shape (server excludes source='replay' rows). Read-only:
+ * there is no mutation against this key, ever. A 503 (Cloud SQL missing or
+ * failing — the endpoint has no local fallback by design) surfaces through
+ * `isError` and the page renders an honest "Examples unavailable" state
+ * (Rule 3.7), never a fabricated empty-success.
+ */
+export function useJournalExamples(ticker: string) {
+  return useQuery<JournalTradesResponse>({
+    queryKey: examplesKey(ticker),
+    queryFn: async () => {
+      const r = await fetch(`/api/journal/examples/${ticker}`);
+      if (!r.ok) throw new Error(`journal examples ${r.status}`);
+      return r.json();
+    },
+    enabled: !!ticker,
+    staleTime: 30_000,
+    // 503 = "journal temporarily unavailable" — a legitimate, fast-surfacing
+    // state (same retry stance as useSeedTrades above).
+    retry: false,
+  });
+}
+
+/** Which dataset the Journal page is showing. */
+export type JournalView = 'examples' | 'mine';
+
+/**
+ * Default-view rule (design spec "Views"): Examples when the user's own
+ * journal for the ticker is empty, otherwise My journal — unless the user
+ * has explicitly toggled (override is sticky for the session). Pure and
+ * exported so the rule is unit-testable without mounting the page.
+ */
+export function resolveJournalView(
+  override: JournalView | null,
+  ownTradeCount: number,
+): JournalView {
+  return override ?? (ownTradeCount === 0 ? 'examples' : 'mine');
+}
+
 export interface CreateChartTradeVars {
   ticker: string;
   direction: TradeDirection;
@@ -205,6 +294,14 @@ export interface CreateChartTradeVars {
   entryPrice: number;
   stopLoss?: number;
   takeProfits?: number[];
+  /** 'chart' (default — drawn directly on /charts) vs 'replay' (drawn during
+   *  a bar-replay trainer session, Task 5.2). Mirrors the server's `source`
+   *  column (platform/api/routers/journal.py: manual | chart | replay). */
+  source?: 'chart' | 'replay';
+  /** Replay-trainer session grouping (Task 5.2) — a real UUID minted by
+   *  useReplaySession's start() via crypto.randomUUID(). Only meaningful
+   *  when source === 'replay'. */
+  sessionId?: string;
 }
 
 // Mutations below invalidate-on-success rather than doing optimistic
@@ -227,7 +324,8 @@ export function useCreateChartTrade() {
           entry_price: vars.entryPrice,
           stop_loss: vars.stopLoss,
           take_profits: vars.takeProfits && vars.takeProfits.length > 0 ? vars.takeProfits : undefined,
-          source: 'chart',
+          source: vars.source ?? 'chart',
+          session_id: vars.sessionId,
         }),
       });
       if (!r.ok) throw new Error(`create trade failed: ${r.status}`);
@@ -356,12 +454,12 @@ export interface ReplayTradeCard {
 export interface ReplayAggregate {
   n: number;
   scored_n: number;
-  win_rate: number; // 0-1
-  avg_return_pct: number; // PERCENT
+  win_rate: number | null; // 0-1, or null when scored_n === 0 (Rule 3.7: honest null, never fabricated 0.0)
+  avg_return_pct: number | null; // PERCENT, or null when scored_n === 0
   system_resolved_n: number;
   system_no_signal_n: number;
   system_agreement_rate: number | null; // 0-1, or null when system_resolved_n === 0 (Rule 3.7: honest null, never fabricated 0)
-  avg_exit_edge_bps: number; // bps
+  avg_exit_edge_bps: number | null; // bps, or null when scored_n === 0
 }
 
 export interface ReplayTradesResponse {
@@ -371,14 +469,22 @@ export interface ReplayTradesResponse {
 
 export interface ReplayTradesVars {
   ticker: string;
-  tradeIds: string[];
+  /** Task 3.3's "Backtest my trades" button path — scores specific trade
+   *  ids. Mutually usable alongside sessionId (the server accepts either or
+   *  both); the two callers in this repo only ever supply one. */
+  tradeIds?: string[];
+  /** Task 5.3's post-replay-session scorecard path — scores every trade
+   *  tagged with this bar-replay-trainer session id (source==='replay'),
+   *  regardless of which ticker view is currently open. */
+  sessionId?: string;
 }
 
 /**
- * Scores the closed trades identified by `tradeIds` against the production
- * benchmark. A `useMutation` (not `useQuery`) because this is a triggered
- * analytics computation, not cached data the page reads passively — the
- * modal calls `.mutate()` on button click and renders `isPending`/`isError`/
+ * Scores the closed trades identified by `tradeIds` and/or `sessionId`
+ * against the production benchmark. A `useMutation` (not `useQuery`)
+ * because this is a triggered analytics computation, not cached data the
+ * page reads passively — the modal calls `.mutate()` on button click (or,
+ * for Task 5.3, on replay-session stop) and renders `isPending`/`isError`/
  * `data` directly.
  */
 export function useReplayTrades() {
@@ -387,7 +493,10 @@ export function useReplayTrades() {
       const r = await fetch('/api/backtest/replay-trades', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: vars.ticker, trade_ids: vars.tradeIds }),
+        // JSON.stringify drops `undefined` keys, so omitting one of
+        // tradeIds/sessionId naturally omits it from the request body
+        // rather than sending an explicit null.
+        body: JSON.stringify({ ticker: vars.ticker, trade_ids: vars.tradeIds, session_id: vars.sessionId }),
       });
       if (!r.ok) {
         // Fail-loud (Rule 3.7): surface the server's `detail` message when
@@ -456,9 +565,9 @@ export function seedBenchmark(rows: SeedTradeRow[]): SeedBenchmark {
 // lib/style_miner.py, Task 4.2-4.3). Mines the user's own closed
 // chart/manual journal trades into a condition profile and walk-forward
 // validates it. Always a 200 — the "not enough signal yet" cases (< 10
-// closed trades, zero mined profile, zero folds, zero fires) come back as
-// `{status: "unavailable", reason}`, never a 4xx (Rule 3.7: these are
-// expected, recoverable states, not errors). A genuine backend failure
+// closed trades, zero mined profile, no market data, zero folds, zero
+// fires) come back as `{status: "unavailable", reason}`, never a 4xx
+// (Rule 3.7: these are expected, recoverable states, not errors). A genuine backend failure
 // (Cloud SQL down, etc.) is still a real HTTP error status and surfaces as
 // a loud inline error via the mutation's `isError`.
 
@@ -577,6 +686,140 @@ export function useMineMyStyle() {
         throw new Error(detail);
       }
       return r.json();
+    },
+  });
+}
+
+// ── Broker CSV import (Task 7 — journal one-stop-shop) ───────────────────
+// POST /api/journal/import/preview (multipart) and POST /api/journal/import/
+// commit (platform/api/routers/journal.py) — see that router's docstrings
+// for the full pipeline (lib/broker_import.py's detect_broker/parse_csv/
+// pair_orders, dedupe-by-(ticker,direction,entry_ts,entry_price)). Both
+// hooks fail loud on a non-2xx response (Rule 3.7): the server's `detail`
+// message surfaces verbatim through the mutation's `error.message` so the
+// modal can render a real reason (413 file/row cap, 422 bad broker/mapping,
+// 503 journal unavailable) instead of a generic failure banner.
+
+/** One `PairedTrade` from a preview response — mirrors
+ * `lib.broker_import.PairedTrade` field-for-field plus the preview-only
+ * `duplicate` flag (`journal.py`'s `import_preview`, advisory only —
+ * `import_commit` re-checks server-side). */
+export interface ImportPreviewTrade {
+  ticker: string;
+  direction: string; // 'CALL' | 'PUT'
+  entry_ts: string; // naive-ET "YYYY-MM-DD HH:MM"
+  entry_price: number;
+  exit_ts: string | null;
+  exit_price: number | null;
+  return_pct: number | null; // ADVISORY ONLY — import_commit recomputes server-side
+  quantity: number;
+  status: string; // 'active' | 'closed'
+  duplicate: boolean;
+}
+
+export interface ImportSkippedRow {
+  raw_index: number;
+  reason: string;
+}
+
+export interface ImportPreviewResponse {
+  broker: string; // 'robinhood' | 'webull' | 'generic'
+  trades: ImportPreviewTrade[];
+  skipped: ImportSkippedRow[];
+}
+
+export interface ImportPreviewVars {
+  file: File;
+  /** Omit to let the server auto-detect from the CSV header row (Robinhood/
+   *  Webull). Required ('generic') alongside `mapping` for Schwab/Fidelity/
+   *  IBKR/Other. */
+  broker?: 'robinhood' | 'webull' | 'generic';
+  /** Required when broker==='generic' — the six-key column mapping
+   *  (`lib.broker_import._GENERIC_REQUIRED_KEYS`: ticker/direction/action/
+   *  ts/price/quantity) -> the uploaded CSV's actual header name. */
+  mapping?: Record<string, string>;
+}
+
+async function _detailOrStatus(r: Response, fallback: string): Promise<string> {
+  try {
+    const body = await r.json();
+    if (body?.detail) return String(body.detail);
+  } catch {
+    // response body wasn't JSON — keep the fallback message.
+  }
+  return fallback;
+}
+
+/**
+ * Parses + FIFO-pairs an uploaded broker CSV — no journal writes. A
+ * `useMutation` (triggered by the modal's "Preview" button), not a passive
+ * query, matching `useReplayTrades`/`useMineMyStyle`'s shape.
+ */
+export function useImportPreview() {
+  return useMutation<ImportPreviewResponse, Error, ImportPreviewVars>({
+    mutationFn: async (vars) => {
+      const form = new FormData();
+      form.append('file', vars.file);
+      if (vars.broker) form.append('broker', vars.broker);
+      if (vars.mapping) form.append('mapping', JSON.stringify(vars.mapping));
+      const r = await fetch('/api/journal/import/preview', { method: 'POST', body: form });
+      if (!r.ok) throw new Error(await _detailOrStatus(r, `import preview failed: ${r.status}`));
+      return r.json();
+    },
+  });
+}
+
+export interface ImportCommitVars {
+  broker: string;
+  /** Caller-selected subset of a preview's `trades` (checked rows only).
+   *  `duplicate` is dropped before the request body is built — the server
+   *  never reads it (commit re-checks duplicates itself). */
+  trades: ImportPreviewTrade[];
+}
+
+export interface ImportCommitResponse {
+  imported: number;
+  skipped_duplicates: number;
+}
+
+/**
+ * Inserts the caller-selected preview rows into the signed-in user's OWN
+ * journal (server never accepts an owner/user field — see `import_commit`'s
+ * docstring). On success, invalidates every `journal-chart-trades` cache
+ * entry rather than a single ticker's: a broker statement can carry rows
+ * for multiple tickers (e.g. one Robinhood export spanning IWM/SPY/QQQ), so
+ * guessing a single ticker to invalidate would leave the others stale.
+ * TanStack's default partial-key matching means invalidating the bare
+ * `['journal-chart-trades']` prefix (chartTradesKey below) refreshes every
+ * per-ticker entry currently mounted.
+ */
+export function useImportCommit() {
+  const qc = useQueryClient();
+  return useMutation<ImportCommitResponse, Error, ImportCommitVars>({
+    mutationFn: async (vars) => {
+      const r = await fetch('/api/journal/import/commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          broker: vars.broker,
+          trades: vars.trades.map((t) => ({
+            ticker: t.ticker,
+            direction: t.direction,
+            entry_ts: t.entry_ts,
+            entry_price: t.entry_price,
+            exit_ts: t.exit_ts,
+            exit_price: t.exit_price,
+            return_pct: t.return_pct,
+            quantity: t.quantity,
+            status: t.status,
+          })),
+        }),
+      });
+      if (!r.ok) throw new Error(await _detailOrStatus(r, `import commit failed: ${r.status}`));
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['journal-chart-trades'] });
     },
   });
 }

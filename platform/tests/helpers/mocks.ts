@@ -37,6 +37,157 @@ export async function mockCommon(page: Page) {
   await page.route('**/api/insights/watchlist*', (r) =>
     r.fulfill(ok({ tickers: ['IWM'], generated_at: '2026-04-25T20:00:00Z' }))
   );
+  // Most-active ticker bar (mounted on Market pages + /journal via AppShell).
+  // Default is an honest empty response so the bar hides itself — specs that
+  // don't care about the marquee stay unaffected; most-active-bar.spec.ts
+  // overrides this route per-test with real payloads.
+  await page.route('**/api/market/most-active', (r) =>
+    r.fulfill(ok({ snapshot_ts: null, snapshot_date: null, label: null, items: [] }))
+  );
 }
+
+// Brief shape the redesigned Overview consumes (bias bullets + KPI close/RSI).
+// Byte-identical fixture previously duplicated in dashboard.spec.ts and
+// dashboard-chart-fit.spec.ts's beforeEach blocks.
+const MOCK_DASHBOARD_BRIEF = {
+  ticker: 'IWM',
+  source: 'cloud_sql',
+  bias: 'bullish',
+  rsi: 58.4,
+  strat_candle: '2U',
+  strat_combo: 'Failed 2D → 2U',
+  ftfc_score: 0.72,
+  ftfc_direction: 'bullish',
+  signal_status: '0DTE call flow leading',
+  daily_indicators: {
+    date: '2026-04-25',
+    close: 220.5,
+    rsi_14: 58.4,
+    rvol: 1.4,
+    strat_candle: '2U',
+    strat_combo: 'Failed 2D → 2U',
+    ftfc_score: 0.72,
+    ftfc_direction: 'bullish',
+  },
+  live: { price: 220.45, session: 'closed' },
+};
+
+/**
+ * Apply the dashboard route set shared by dashboard.spec.ts and
+ * dashboard-chart-fit.spec.ts's beforeEach blocks — brief, signals,
+ * playbook, live quote/history/avg-volume, market reference, and the
+ * market-hours config, all scoped to IWM (the app's default ticker).
+ * Includes `mockCommon`, so callers don't need to call it separately.
+ *
+ * Backtest routes (`/api/backtest/*`) and the intraday `/api/market/data`
+ * candle bars differ meaningfully between the two specs (real trade data
+ * vs. layout-focused bar counts/shapes) and stay local to each spec's
+ * beforeEach per-call overrides.
+ */
+export async function mockDashboard(page: Page) {
+  await mockCommon(page);
+  await page.route('**/api/dashboard/brief/IWM*', (r) => r.fulfill(ok(MOCK_DASHBOARD_BRIEF)));
+  await page.route('**/api/signals/IWM*', (r) =>
+    r.fulfill(ok({ ticker: 'IWM', count: 0, signals: [] }))
+  );
+  await page.route('**/api/playbook/IWM', (r) => r.fulfill(ok({ ticker: 'IWM', cards: [] })));
+  await page.route('**/api/live/quote/IWM', (r) =>
+    r.fulfill(
+      ok({
+        ticker: 'IWM',
+        price: 220.45,
+        open: 219.8,
+        high: 221.2,
+        low: 219.5,
+        volume: 1234567,
+        change: 0.65,
+        change_pct: 0.296,
+        prev_close: 219.8,
+        last_updated: '2026-04-25T19:55:00Z',
+        market_session: 'closed',
+        market_open: false,
+      })
+    )
+  );
+  await page.route('**/api/live/history/IWM', (r) =>
+    r.fulfill(ok({ ticker: 'IWM', interval: '1min', count: 0, bars: [] }))
+  );
+  await page.route('**/api/live/avg-volume/IWM', (r) =>
+    r.fulfill(
+      ok({ ticker: 'IWM', avg_volume_20d: 25_000_000, sample_size: 20, last_date: '2026-04-24', source: 'mock' })
+    )
+  );
+  await page.route('**/api/market/reference/IWM/*', (r) =>
+    r.fulfill(
+      ok({
+        ticker: 'IWM',
+        date: '2026-04-25',
+        source: 'mock',
+        stale_days: 0,
+        open: 220.0,
+        high: 222.0,
+        low: 218.0,
+        close: 220.5,
+        week: {
+          high: 224.0,
+          low: 216.0,
+          avg_close: 220.0,
+          avg_rsi_14: 55.0,
+          start_date: '2026-04-21',
+          end_date: '2026-04-25',
+          sessions: 5,
+        },
+      })
+    )
+  );
+  // Candlestick chart reads market-hours for its RTH window.
+  await page.route('**/api/config/market-hours', (r) =>
+    r.fulfill(
+      ok({
+        regular: { open: '09:30', close: '16:00' },
+        premarket: { open: '04:00', close: '09:30' },
+        afterhours: { open: '16:00', close: '20:00' },
+      })
+    )
+  );
+}
+
+// Options grid/levels fixtures shared by navigation.spec.ts's "SwingMode
+// toolbar" describe block and demo-banners.spec.ts (byte-identical, IWM,
+// snapshot 2026-04-25).
+export const MOCK_LEVELS = {
+  ticker: 'IWM',
+  snapshot_date: '2026-04-25',
+  spot: { price: 220, method: 'parity', note: '' },
+  gamma_balance: 220,
+  gamma_flip: 220,
+  regime: 'positive_gamma',
+  total_gex: 1_000_000,
+  levels: [],
+  kings: [],
+  gates: [],
+  gamma_balance_levels: [],
+  window_pct: 6,
+  warnings: [],
+  chain_size: 0,
+};
+
+export const MOCK_GRID = {
+  ticker: 'IWM',
+  snapshot_date: '2026-04-25',
+  snapshot_ts: null,
+  data_source: 'realtime',
+  spot: { price: 220, method: 'parity', note: '' },
+  gamma_balance: 220,
+  gamma_flip: 220,
+  regime: 'positive_gamma',
+  total_gex: 1_000_000,
+  total_vex: 0,
+  cells: [],
+  expirations: [],
+  strikes: [],
+  window_pct: 6,
+  warnings: [],
+};
 
 export const M = { ok, notFound };

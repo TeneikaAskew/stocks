@@ -48,6 +48,10 @@ from gcp.research.magnitude_engine.mag_pred_train import (
     featurize, make_lgbm, resolve_class_weight, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
 )
+from gcp.research.direction_program.phase2_features import (
+    build_family_columns, prune_feature_cols, _load_peers,
+)
+from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD
 from google.cloud import storage as gcs
 from lib.logging_config import setup_logging
 from sklearn.calibration import CalibratedClassifierCV
@@ -55,6 +59,8 @@ from sklearn.metrics import log_loss
 
 setup_logging()
 log = logging.getLogger(__name__)
+
+AXIS = "size"
 
 
 # ─────────────────────── DDL for the results table ───────────────────────
@@ -231,9 +237,23 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
     }
 
 
-def _persist_results_table(engine, phase: str, ticker: str, tf: str,
-                            folds: list[dict], run_id: str) -> None:
-    """Insert per-fold rows into magnitude_walk_forward_results."""
+# Columns typed DOUBLE PRECISION in magnitude_walk_forward_results. When any of
+# these arrives all-None (e.g. explosive_precision/explosive_lift on a fold with
+# no EXPLOSIVE class), pandas would infer `object` dtype and SQLAlchemy would
+# emit a `::VARCHAR` cast that Postgres rejects (SQLSTATE 42804). Coercing to
+# numeric keeps them float64/NaN -> FLOAT bind matching the column type.
+_RESULTS_FLOAT_COLS = (
+    "logloss", "base_logloss", "beat", "ece", "ece_ceiling",
+    "accuracy", "base_accuracy", "accuracy_beat_pp",
+    "explosive_base_rate", "explosive_precision", "explosive_lift",
+)
+
+
+def _results_dataframe(phase: str, ticker: str, tf: str,
+                       folds: list[dict], run_id: str) -> pd.DataFrame:
+    """Build the per-fold DataFrame for magnitude_walk_forward_results, with
+    the DOUBLE-typed columns coerced to float64 so an all-None column does not
+    become an `object`/VARCHAR bind (SQLSTATE 42804). Pure — unit-testable."""
     def _to_date(s):
         if s is None:
             return None
@@ -266,6 +286,18 @@ def _persist_results_table(engine, phase: str, ticker: str, tf: str,
             "run_id": run_id,
         })
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    for _c in _RESULTS_FLOAT_COLS:
+        if _c in df.columns:
+            df[_c] = pd.to_numeric(df[_c], errors="coerce")
+    return df
+
+
+def _persist_results_table(engine, phase: str, ticker: str, tf: str,
+                            folds: list[dict], run_id: str) -> None:
+    """Insert per-fold rows into magnitude_walk_forward_results."""
+    df = _results_dataframe(phase, ticker, tf, folds, run_id)
     if df.empty:
         return
     # Use pandas-to-sql with append; the table has UNIQUE (phase,ticker,tf,fold,run_id)
@@ -469,7 +501,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   calibration: str = DEFAULT_CALIBRATION,
                   cv: int = DEFAULT_CV,
                   label_mode: str = "body",
-                  persist_production_model: bool = False) -> dict:
+                  persist_production_model: bool = False,
+                  features: str = "") -> dict:
     cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  label_mode=%s",
@@ -483,6 +516,29 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
     t0 = time.time()
     X_df, feature_cols = featurize(df)
+
+    # ── Phase-2 feature families (CLAUDE.md Rule 3.7: NaN, never fillna(0),
+    # on the new columns) — attached AFTER featurize so they never hit its
+    # .fillna(0). features="" reproduces the baseline byte-for-byte: fams
+    # is empty, no prune, add is empty, build_family_columns is never
+    # called, X_df/feature_cols pass through unchanged. ──
+    fams = set(features.split(",")) - {""}
+    if "prune" in fams:
+        keep = prune_feature_cols(feature_cols, NEAR_DEAD[AXIS])
+        X_df = X_df[keep]; feature_cols = keep
+    add = fams - {"prune"}
+    peers = None
+    if "cross_asset" in add:
+        peers = _load_peers(engine, ticker, tf)
+    if add:
+        new_df, new_cols = build_family_columns(
+            df, add, AXIS, ticker, tf, engine, peers)
+        X_df = pd.concat([X_df.reset_index(drop=True), new_df.reset_index(drop=True)], axis=1)
+        feature_cols = feature_cols + new_cols
+    if fams:
+        log.info("phase2 features active: %s  (n_cols=%d)",
+                 ",".join(sorted(fams)), len(feature_cols))
+
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
     bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
@@ -620,20 +676,30 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         # output is canonical for live consumers).
         if phase == "phase0":
             _persist_predictions_table(engine, ticker, tf, folds, run_id)
-        # Production model artifact (prereq for mag_inference live cron).
-        # Only emit from phase0 — phase1+ share the same backbone features
-        # and we want exactly one canonical artifact per (ticker, tf).
-        if persist_production_model and phase == "phase0":
+    except Exception as e:
+        # Hard failure — log loud, but DON'T fail the task because GCS
+        # persistence is the canonical output anyway.
+        log.error("Cloud SQL results/predictions persist FAILED (%s): %s",
+                  type(e).__name__, e)
+
+    # Production model artifact (prereq for mag_inference live cron) — in its
+    # OWN try so a Cloud SQL results/predictions failure can NEVER skip the
+    # artifact the live inference cron depends on. (Before 2026-07-11 this
+    # shared the results-table try; a schema error on explosive_precision
+    # aborted it and silently left the production model un-persisted.)
+    # Only emit from phase0 — phase1+ share the same backbone features and we
+    # want exactly one canonical artifact per (ticker, tf).
+    if persist_production_model and phase == "phase0":
+        try:
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
                 calibration=calibration, cv=cv,
             )
             if uri:
                 summary["production_model_uri"] = uri
-    except Exception as e:
-        # Hard failure — log loud, but DON'T fail the task because GCS
-        # persistence is the canonical output anyway.
-        log.error("Cloud SQL persist FAILED (%s): %s", type(e).__name__, e)
+        except Exception as e:
+            log.error("Production-model persist FAILED (%s): %s",
+                      type(e).__name__, e)
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf)
@@ -647,7 +713,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 def run_all_cells(engine, phase: str,
                    cutoffs: list[str] | None = None,
                    calibration: str = DEFAULT_CALIBRATION,
-                   persist_production_model: bool = False) -> dict:
+                   persist_production_model: bool = False,
+                   features: str = "") -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
@@ -655,7 +722,8 @@ def run_all_cells(engine, phase: str,
             try:
                 s = walk_forward(engine, phase, ticker, tf,
                                  cutoffs=cutoffs, calibration=calibration,
-                                 persist_production_model=persist_production_model)
+                                 persist_production_model=persist_production_model,
+                                 features=features)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -797,6 +865,11 @@ def main():
                         "(range/straddle); call=(next_high-next_open) upside; "
                         "put=(next_open-next_low) downside. Choices track "
                         "mag_config.LABEL_MODES so CLI can't drift from the labels.")
+    p.add_argument("--features",
+                   default=os.environ.get("MAG_FEATURES", ""),
+                   help="Comma-separated phase2 family names (prune, "
+                        "options_iv, positioning, cross_asset, calendar). "
+                        "Default empty = baseline (no phase2 change).")
     args = p.parse_args()
     cutoffs = args.cutoffs.split(",") if args.cutoffs else None
     engine = get_engine()
@@ -814,7 +887,8 @@ def main():
                  phase, ticker, tf)
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
-                      persist_production_model=args.persist_production_model)
+                      persist_production_model=args.persist_production_model,
+                      features=args.features)
         return
 
     if args.plan and args.task_index is not None:
@@ -825,7 +899,8 @@ def main():
         phase, ticker, tf = plan[args.task_index]
         walk_forward(engine, phase, ticker, tf,
                       cutoffs=cutoffs, calibration=args.calibration,
-                      persist_production_model=args.persist_production_model)
+                      persist_production_model=args.persist_production_model,
+                      features=args.features)
         return
 
     if args.all_cells:
@@ -833,7 +908,8 @@ def main():
             raise SystemExit("--all-cells needs --phase")
         run_all_cells(engine, args.phase, cutoffs=cutoffs,
                        calibration=args.calibration,
-                       persist_production_model=args.persist_production_model)
+                       persist_production_model=args.persist_production_model,
+                       features=args.features)
         return
 
     if not args.phase or not args.ticker or not args.tf:
@@ -846,7 +922,8 @@ def main():
     walk_forward(engine, args.phase, args.ticker, args.tf,
                   cutoffs=cutoffs, calibration=args.calibration,
                   label_mode=args.label_mode,
-                  persist_production_model=args.persist_production_model)
+                  persist_production_model=args.persist_production_model,
+                  features=args.features)
 
 
 if __name__ == "__main__":

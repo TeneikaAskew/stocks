@@ -211,6 +211,89 @@ def test_cell_silence_uses_most_recent_last_computed_per_cell():
     assert r.findings == []
 
 
+def _cov(ticker: str, tf: str, preds: int, missing: int, null_atr: int) -> dict:
+    """Build a fake join-coverage row matching fetch_join_coverage()'s shape."""
+    return {
+        "ticker": ticker, "tf": tf, "preds": preds,
+        "missing_feature_row": missing, "null_atr": null_atr,
+    }
+
+
+def test_feature_join_coverage_flags_missing_feature_row():
+    """A cell whose recent predictions have NO matching strat_features row
+    must fire HIGH — this is the exact failure that silently disables the
+    movement-statement sizing calculator (feature builder lagging inference)."""
+    from gcp.audit_magnitude_drift import Report, check_feature_join_coverage
+    r = Report()
+    check_feature_join_coverage([_cov("IWM", "15m", 23, 4, 0)], r)
+    assert len(r.findings) == 1
+    f = r.findings[0]
+    assert f.severity == "HIGH"
+    assert f.check == "feature-join-coverage"
+    assert f.target == "IWM:15m"
+    assert "4/23" in f.detail
+    assert "strat_features_15m" in f.detail
+
+
+def test_feature_join_coverage_flags_null_atr():
+    """A matched feature row with a null/NaN atr_20 must fire HIGH — a
+    genuine atr_20 data regression (today this count is 0 across 203k rows)."""
+    from gcp.audit_magnitude_drift import Report, check_feature_join_coverage
+    r = Report()
+    check_feature_join_coverage([_cov("SPY", "5m", 78, 0, 3)], r)
+    assert len(r.findings) == 1
+    f = r.findings[0]
+    assert f.severity == "HIGH"
+    assert f.target == "SPY:5m"
+    assert "3/78" in f.detail
+    assert "atr_20" in f.detail
+
+
+def test_feature_join_coverage_clean_when_fully_matched():
+    """The live-today shape: every prediction matches a populated feature
+    row → no finding, no alert noise."""
+    from gcp.audit_magnitude_drift import Report, check_feature_join_coverage
+    r = Report()
+    rows = [_cov(t, "15m", 23, 0, 0) for t in ("IWM", "SPY", "QQQ")]
+    check_feature_join_coverage(rows, r)
+    assert r.findings == []
+
+
+def test_feature_join_coverage_skips_zero_pred_cells():
+    """A cell with zero predictions in the window is NOT a join failure —
+    cell-silence owns absence. A 0/0/0 row must not false-fire."""
+    from gcp.audit_magnitude_drift import Report, check_feature_join_coverage
+    r = Report()
+    check_feature_join_coverage([_cov("QQQ", "15m", 0, 0, 0)], r)
+    assert r.findings == []
+
+
+def test_feature_join_coverage_reports_both_failure_modes_together():
+    """A cell with BOTH missing rows and null atr_20 gets one finding that
+    names both counts (don't drop one for the other)."""
+    from gcp.audit_magnitude_drift import Report, check_feature_join_coverage
+    r = Report()
+    check_feature_join_coverage([_cov("IWM", "15m", 20, 2, 5)], r)
+    assert len(r.findings) == 1
+    d = r.findings[0].detail
+    assert "2/20" in d and "5/20" in d
+
+
+def test_main_reports_join_coverage_finding():
+    """main() wires the join-coverage check — a missing-row cell surfaces
+    in the Discord summary."""
+    from gcp import audit_magnitude_drift as mod
+    with patch.object(mod, "fetch_distribution", return_value=[]), \
+         patch.object(mod, "fetch_join_coverage",
+                      return_value=[_cov("IWM", "15m", 23, 4, 0)]), \
+         patch.object(mod, "post_to_discord", return_value=True) as posted:
+        rc = mod.main()
+    assert rc == 0
+    msg = posted.call_args.args[0]
+    assert "feature-join-coverage" in msg
+    assert "IWM:15m" in msg
+
+
 def test_parse_last_computed_handles_string_and_datetime():
     """SQLAlchemy returns datetime, but some local-dev paths emit
     ISO strings. Both must parse to the same tz-aware datetime."""
@@ -258,6 +341,7 @@ def test_main_handles_fetch_failure_loudly():
 
     with patch.object(mod, "fetch_distribution",
                        side_effect=RuntimeError("connection refused")), \
+         patch.object(mod, "fetch_join_coverage", return_value=[]), \
          patch.object(mod, "post_to_discord", return_value=True) as posted:
         rc = mod.main()
     assert rc == 0  # alerter pattern — exit 0 even on findings

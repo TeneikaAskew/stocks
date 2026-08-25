@@ -1289,7 +1289,19 @@ class SignalMonitor:
             logger.warning("Exit alert Discord post failed: %s", e)
 
     def _persist_exit(self, pos, exit_price, exit_reason, exit_ts):
-        """Update the signal_alerts row with exit details."""
+        """Update the signal_alerts row AND mirror the exit onto trades.
+
+        The trades row is matched on (ticker, entry_time == alert_ts):
+        `_persist_signal_alert` writes signal_alerts.alert_ts and
+        trades.entry_time from the SAME `now` value, and (ticker,
+        entry_time) is the trades upsert conflict key — verified
+        2071/2071 live rows since 2026-05-01 join exactly on it.
+        Both UPDATEs run in one transaction so the two tables can't
+        drift on a mid-write failure. The trades UPDATE is guarded by
+        `exit_time IS NULL` (idempotent — a recorded exit is never
+        overwritten); a rowcount of 0 logs a WARNING per Rule 3.7
+        rather than silently no-oping.
+        """
         try:
             from gcp.database import get_engine, is_cloud_sql_configured
         except ImportError:
@@ -1311,6 +1323,20 @@ class SignalMonitor:
              WHERE ticker   = :ticker
                AND alert_ts = :alert_ts
         """)
+        # return_pct is the direction-aware underlying-move percent
+        # ((exit-entry)/entry*100 for CALL, negated for PUT) — the same
+        # units as the pre-existing closed trades rows (April backfill)
+        # and signal_alerts.exit_return_pct.
+        trades_sql = text("""
+            UPDATE trades
+               SET exit_time   = :exit_ts,
+                   exit_price  = :price,
+                   exit_reason = :reason,
+                   return_pct  = :ret
+             WHERE ticker     = :ticker
+               AND entry_time = :entry_time
+               AND exit_time IS NULL
+        """)
         try:
             with get_engine().begin() as conn:
                 conn.execute(sql, {
@@ -1321,6 +1347,21 @@ class SignalMonitor:
                     'ticker':   pos['ticker'],
                     'alert_ts': pos['alert_ts'],
                 })
+                trade_result = conn.execute(trades_sql, {
+                    'exit_ts':    exit_ts,
+                    'reason':     exit_reason,
+                    'price':      float(exit_price),
+                    'ret':        float(return_pct),
+                    'ticker':     pos['ticker'],
+                    'entry_time': pos['alert_ts'],
+                })
+                if (trade_result.rowcount or 0) == 0:
+                    logger.warning(
+                        "exit mirror matched no open trades row for %s "
+                        "entry_time=%s reason=%s — row missing or already "
+                        "closed; signal_alerts exit still recorded",
+                        pos['ticker'], pos['alert_ts'], exit_reason,
+                    )
         except Exception as e:
             logger.warning("Exit persist failed for %s %s: %s",
                            pos['ticker'], pos['alert_ts'], e)

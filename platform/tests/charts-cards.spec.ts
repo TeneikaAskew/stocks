@@ -88,6 +88,13 @@ const MOCK_SIMILAR_CALL = {
 // /api/live/indicators — lib/indicators.py). CALL side deliberately fires
 // (strength >= 70) so the badge/fires-path is exercised deterministically;
 // PUT side does not.
+//
+// chart_voter is the July-6 5-condition "teaching voter" restored server-side
+// (POST /api/live/indicators -> chart_voter, lib/chart_voter.py) that drives
+// the Charts page's Strategy Conditions card (Task 3 of the July-6
+// restoration). CALL fires (met_count 3/5, PUT doesn't) so the card's
+// fires-path/badge is exercised deterministically. Labels/details verbatim
+// from lib/chart_voter.py's Global Constraints.
 const MOCK_LIVE_INDICATORS = {
   indicators: {
     ema9: 220.5, ema20: 220.0, ema50: 219.0, rsi: 55,
@@ -128,6 +135,35 @@ const MOCK_LIVE_INDICATORS = {
         { id: 'p_atr', label: 'ATR > 2.0', met: false, current: 1.2, threshold: 2.0, operator: '>' },
       ],
     },
+  },
+  chart_voter: {
+    call: {
+      direction: 'CALL',
+      met_count: 3,
+      total_count: 5,
+      fires: true,
+      conditions: [
+        { id: 'call_consec_up', label: '3 consecutive up moves', met: true, detail: '3/3 last bars up' },
+        { id: 'call_rsi_band', label: 'RSI 25–50 (bullish band)', met: false, detail: 'RSI 55.0' },
+        { id: 'call_stoch_room', label: 'StochRSI K < 80 (room to run)', met: true, detail: 'K 72.0' },
+        { id: 'call_above_vwap', label: 'Price > VWAP', met: true, detail: '221.50 > VWAP 220.20' },
+        { id: 'call_above_ema9', label: 'Price > EMA9', met: false, detail: '220.50 < EMA9 221.50' },
+      ],
+    },
+    put: {
+      direction: 'PUT',
+      met_count: 1,
+      total_count: 5,
+      fires: false,
+      conditions: [
+        { id: 'put_consec_down', label: '3 consecutive down moves', met: false, detail: '0/3 last bars down' },
+        { id: 'put_rsi_band', label: 'RSI 50–75 (bearish band)', met: true, detail: 'RSI 55.0' },
+        { id: 'put_stoch_room', label: 'StochRSI K > 20 (room to fall)', met: false, detail: 'K 72.0' },
+        { id: 'put_below_vwap', label: 'Price < VWAP', met: false, detail: '221.50 < VWAP 220.20' },
+        { id: 'put_below_ema9', label: 'Price < EMA9', met: false, detail: '221.50 > EMA9 220.50' },
+      ],
+    },
+    firing: 'CALL',
   },
 };
 
@@ -173,13 +209,15 @@ test.describe('Charts page — Phase D/4/5 cards', () => {
     await page.goto('/charts');
     await page.waitForLoadState('networkidle');
     await expect(page.getByText('Live Strategy Conditions')).toBeVisible();
-    await expect(page.getByText(/Price > EMA9/i).first()).toBeVisible();
-    await expect(page.getByText(/Price < EMA9/i).first()).toBeVisible();
-    // The voter result badge should exist (CALL / PUT / "No setup") — the
-    // condition count isn't pinned so the assertion survives future
-    // additions/removals from the server-side condition set.
-    const badge = page.getByText(/CALL · \d+\/\d+|PUT · \d+\/\d+|No setup/i).first();
-    await expect(badge).toBeVisible();
+    // July-6 labels, verbatim from lib/chart_voter.py / MOCK_LIVE_INDICATORS.chart_voter.
+    await expect(page.getByText('3 consecutive up moves').first()).toBeVisible();
+    await expect(page.getByText('RSI 25–50 (bullish band)').first()).toBeVisible();
+    await expect(page.getByText('3 consecutive down moves').first()).toBeVisible();
+    await expect(page.getByText('RSI 50–75 (bearish band)').first()).toBeVisible();
+    // Card badge — CALL fires with met_count 3/5.
+    await expect(page.getByText(/CALL · 3\/5/).first()).toBeVisible();
+    // Column header — CALL's "3/5 ✓ fires" suffix.
+    await expect(page.getByText(/3\/5 ✓ fires/).first()).toBeVisible();
   });
 
   test('Similar Setups card renders heading and either matches or placeholder', async ({ page }) => {
@@ -204,186 +242,56 @@ test.describe('Charts page — Phase D/4/5 cards', () => {
     // the button doesn't throw).
     await sigButton.click();
   });
-});
 
-// ─────────────────────────────────────────────────────────────────────────
-// Task 2.3: chart-marked trades persist through the journal API instead of
-// the throwaway zustand store (platform/src/hooks/useJournalChartTrades.ts).
-// ─────────────────────────────────────────────────────────────────────────
-test.describe('Charts page — journal-backed trade persistence (Task 2.3)', () => {
-  test.beforeEach(async ({ page }) => {
-    await mockCommon(page);
-    // Dates come back as YYYYMMDD in production (platform/api/main.py's
-    // get_available_dates: `d.strftime("%Y%m%d")`) — ChartsPage's
-    // selectedIsoDate conversion (slice(0,4)/(4,6)/(6,8)) assumes that, so
-    // the mock must match or the journal date filter silently mismatches.
-    await page.route('**/api/market/dates/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
-    );
-    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
-    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
-    await page.route('**/api/signals/IWM/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
-    await page.route('**/api/signals/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
-    );
-    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
-    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
-  });
-
-  test('renders a trade loaded from the journal GET — covers reload-persistence', async ({ page }) => {
-    // A page reload just re-runs this same GET; there's no client-side
-    // persistence layer left to lose the trade, so mocking the GET response
-    // with a pre-existing closed trade IS the reload-persistence case.
-    const closedRow = {
-      id: 'closed-trade-1',
-      ticker: 'IWM',
-      direction: 'CALL',
-      entry_ts: '2026-04-25T09:31:00',
-      exit_ts: '2026-04-25T10:15:00',
-      entry_price: 220.0,
-      exit_price: 222.5,
-      return_pct: 1.1364,
-      notes: '',
-      take_profits: [223, 225],
-      stop_loss: 218.5,
-      status: 'win',
-      source: 'chart',
-      session_id: null,
-      created_at: '2026-04-25T09:31:01',
-    };
-    await page.route('**/api/journal/trades/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 1, trades: [closedRow] }))
-    );
-
+  // Task 4 of the July-6 restoration: the chart wrapper lost its viewport-
+  // based height to a wrapping toolbar + an effective fixed ~400px chart.
+  // This pins the fix (viewport-clamped wrapper height + single-row
+  // toolbar) without reintroducing the #700 overflow bug.
+  test('chart fills the viewport height without horizontal overflow', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
     await page.goto('/charts');
     await page.waitForLoadState('networkidle');
-
-    await expect(page.getByText('Trades (1)')).toBeVisible();
-    await expect(page.getByText('CALL', { exact: true }).first()).toBeVisible();
-    await expect(page.getByText('$220.00')).toBeVisible();
-    await expect(page.getByText('$222.50')).toBeVisible();
-  });
-
-  test('mark-entry flow POSTs source:"chart", a take_profits array, and a valid epoch->date/time mapping', async ({ page }) => {
-    await page.route('**/api/journal/trades/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] }))
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let capturedBody: any = null;
-    await page.route('**/api/journal/trades', async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      capturedBody = route.request().postDataJSON();
-      await route.fulfill(M.ok({ source: 'cloud_sql', id: 'new-trade-1', return_pct: null, status: 'active' }));
-    });
-
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-
-    // RTH filtering (default ON) would clip every CALL_BARS candle — their
-    // epochs land at ~22:xx UTC, outside the 09:30-16:00 RTH window — so no
-    // candles would be plotted for the click handler to hit. Toggle it off
-    // so the full 30-bar series renders and a click resolves to a real bar.
-    await page.getByRole('button', { name: /^RTH$/ }).click();
-    await page.waitForTimeout(500);
-
-    await page.getByRole('button', { name: /Mark Entry/ }).click();
-    await expect(page.getByText('Click chart to set entry price')).toBeVisible();
-
     const canvas = page.locator('canvas').first();
     const box = await canvas.boundingBox();
     expect(box).not.toBeNull();
-
-    // Entry click — somewhere in the left third of the plot area, comfortably
-    // inside the data range and away from the price-scale/time-scale margins.
-    await page.mouse.click(box!.x + box!.width * 0.15, box!.y + box!.height * 0.5);
-    await expect(page.getByText('Select CALL or PUT')).toBeVisible();
-
-    await page.getByRole('button', { name: 'CALL' }).click();
-    await expect(page.getByText(/Click TP1/)).toBeVisible();
-    // CandlestickChart's click-subscription effect (deps: [onChartClick])
-    // re-subscribes via a passive useEffect that React flushes some time
-    // after paint — the DOM can already read "Click TP1" before the canvas's
-    // click handler closure has caught up to the new drawingStep. Empirically
-    // (see debug run notes) a couple hundred ms isn't reliably enough in this
-    // headless/CI environment; 1.5s consistently clears it without flaking.
-    await page.waitForTimeout(1500);
-
-    // Click TP1, then skip TP2/TP3/SL via two Escapes (any tp step -> straight
-    // to 'sl' via skipToSL; 'sl' -> skipSL -> completeTrade fires the POST).
-    await page.mouse.click(box!.x + box!.width * 0.3, box!.y + box!.height * 0.3);
-    await expect(page.getByText(/Click TP2/)).toBeVisible();
-    await page.waitForTimeout(500);
-
-    await page.keyboard.press('Escape');
-    await expect(page.getByText(/Click Stop Loss/)).toBeVisible();
-    await page.waitForTimeout(500);
-    await page.keyboard.press('Escape');
-
-    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
-
-    expect(capturedBody.ticker).toBe('IWM');
-    expect(capturedBody.direction).toBe('CALL');
-    expect(capturedBody.source).toBe('chart');
-    expect(Array.isArray(capturedBody.take_profits)).toBe(true);
-    expect(capturedBody.take_profits).toHaveLength(1);
-    expect(capturedBody.stop_loss).toBeUndefined();
-
-    // entry_date/entry_time must be the naive-ET wall-clock mapping
-    // (epochToJournalDateTime, reimplemented here rather than imported so
-    // this spec stays independent of the app's module graph/aliases) of
-    // SOME bar in CALL_BARS — proves the click's epoch survived the
-    // entry->POST-body transform intact.
-    const expectedPairs = new Set(
-      CALL_BARS.map((b) => {
-        const d = new Date(b.time * 1000);
-        const p = (n: number) => String(n).padStart(2, '0');
-        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}|${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-      })
-    );
-    expect(expectedPairs.has(`${capturedBody.entry_date}|${capturedBody.entry_time}`)).toBe(true);
+    expect(box!.height).toBeGreaterThan(450); // was ~400 flat before
+    // overflow guard: the #700 fix must hold — canvas never wider than its card
+    const card = page.locator('[data-testid="chart-card"]');
+    const cardBox = await card.boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(cardBox!.width + 1);
+    // no page-level horizontal scrollbar
+    const scrollW = await page.evaluate(() => document.documentElement.scrollWidth);
+    const clientW = await page.evaluate(() => document.documentElement.clientWidth);
+    expect(scrollW).toBeLessThanOrEqual(clientW + 1);
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Task 2.4: admin seed-trade teaching layer (GET /api/journal/seed/{ticker}).
-// Read-only overlay — muted markers, a "Playbook seed" panel section, a
-// client-side benchmark line, and a `Show seed trades` toggle that gates
-// both. Unavailable/error responses render an honest muted line, never
-// fabricated stats (CLAUDE.md Rule 3.7).
+// Task 6: Charts page strip-down — journal activity removed. Trade marking,
+// the Trades/Analytics side panel (TradeRailCard list, Backtest-my-trades,
+// "My style" tab), trade JSON/CSV export, and the admin seed-trade teaching
+// layer (Playbook seed) all moved to the Journal page (/journal) — see
+// docs/superpowers/specs/2026-07-11-journal-one-stop-shop-design.md
+// §"Charts page (/charts) — journal activity removed". The describes that
+// used to exercise those features (Task 2.3 persistence, Task 2.4 seed
+// layer, Task 3.3 backtest-my-trades, Task 4.4 My style) are DELETED here,
+// not adapted — the underlying UI they drove no longer exists outside an
+// active bar-replay-trainer session (see replay-trainer.spec.ts, which
+// keeps the trainer's own create/reveal/score path green — the ONE seam
+// where Mark Entry survives, gated to `replay.active`, per the design
+// spec's "the replay trainer writes source='replay' practice rows via its
+// own path — that stays").
+//
+// This negative-assertion test is the RED->GREEN gate for the strip-down:
+// it fails against the pre-strip page (Mark Entry button + "Trades (N)"
+// side-panel tab are always rendered) and passes once ChartsPage.tsx no
+// longer renders either outside a replay session.
 // ─────────────────────────────────────────────────────────────────────────
-const SEED_TRADES = [
-  {
-    id: 'seed-1',
-    direction: 'CALL',
-    entry_time: '2026-04-25 09:35:00+00:00',
-    entry_price: 220.1,
-    exit_time: '2026-04-25 09:50:00+00:00',
-    exit_price: 221.1,
-    return_pct: 0.45,
-    strat_combo: '2U-2U',
-    exit_reason: 'take_profit',
-  },
-  {
-    id: 'seed-2',
-    direction: 'PUT',
-    entry_time: '2026-04-25 10:05:00+00:00',
-    entry_price: 221.5,
-    exit_time: '2026-04-25 10:20:00+00:00',
-    exit_price: 221.94,
-    return_pct: -0.2,
-    strat_combo: '3-2D',
-    exit_reason: 'stop_loss',
-  },
-];
-
-test.describe('Charts page — admin seed-trade teaching layer (Task 2.4)', () => {
+test.describe('Charts page — no journal activity (Task 6)', () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
-    // Dates come back as YYYYMMDD in production — see the Task 2.3 block
-    // above for why this format matters (selectedIsoDate conversion).
     await page.route('**/api/market/dates/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
+      r.fulfill(M.ok({ ticker: 'IWM', dates: ['2026-04-25'] }))
     );
     await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
     await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
@@ -393,395 +301,54 @@ test.describe('Charts page — admin seed-trade teaching layer (Task 2.4)', () =
     );
     await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
     await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
-    await page.route('**/api/journal/trades/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] }))
-    );
-  });
-
-  test('renders Playbook seed section with read-only rows and a benchmark line; toggle hides section + markers', async ({ page }) => {
-    await page.route('**/api/journal/seed/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 2, trades: SEED_TRADES }))
-    );
-
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-
-    // Section + benchmark line (default ON).
-    await expect(page.getByText('Playbook seed')).toBeVisible();
-    await expect(page.getByText(/2 trades · 50% win/)).toBeVisible();
-
-    // Two read-only rows — direction chips + signed percents, no exit/delete
-    // controls (those only exist on TradeCard, the user-trade component).
-    await expect(page.getByText('SEED CALL')).toBeVisible();
-    await expect(page.getByText('SEED PUT')).toBeVisible();
-    await expect(page.getByText('+0.45%')).toBeVisible();
-    await expect(page.getByText('-0.20%')).toBeVisible();
-    await expect(page.getByText('2U-2U')).toBeVisible();
-    await expect(page.getByText('3-2D')).toBeVisible();
-
-    // Toggle off — section (and its markers) disappear.
-    const toggle = page.getByTestId('seed-toggle');
-    await expect(toggle).toBeVisible();
-    await toggle.click();
-    await expect(page.getByText('Playbook seed')).not.toBeVisible();
-
-    // Toggle back on — section reappears (proves it's pure client state,
-    // not a one-shot unmount).
-    await toggle.click();
-    await expect(page.getByText('Playbook seed')).toBeVisible();
-  });
-
-  test('unavailable seed layer renders an honest muted line, never fabricated stats', async ({ page }) => {
-    await page.route('**/api/journal/seed/IWM*', (r) =>
-      r.fulfill(M.ok({ status: 'unavailable', reason: 'seed layer requires Cloud SQL' }))
-    );
-
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-
-    await expect(page.getByText('Seed layer unavailable')).toBeVisible();
-    // No benchmark numbers should render alongside the honest line.
-    await expect(page.getByText(/\d+% win/)).not.toBeVisible();
-  });
-
-  test('seed query error (503) renders the same honest muted line', async ({ page }) => {
-    await page.route('**/api/journal/seed/IWM*', (r) =>
-      r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'seed query failed' }) })
-    );
-
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-
-    await expect(page.getByText('Seed layer unavailable')).toBeVisible();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
-// Task 3.3: "Backtest my trades" scorecard (POST /api/backtest/replay-trades
-// — platform/api/routers/backtest.py / lib/backtest.py replay_labeled_trades).
-// Button lives in the side panel Trades tab, enabled only when >=1 CLOSED
-// (non-active) trade is present for the current ticker/date; clicking it
-// opens a modal scoring the closed trades against the production benchmark.
-// ─────────────────────────────────────────────────────────────────────────
-test.describe('Charts page — backtest-my-trades scorecard (Task 3.3)', () => {
-  const CLOSED_ROW_1 = {
-    id: 'closed-1',
-    ticker: 'IWM',
-    direction: 'CALL',
-    entry_ts: '2026-04-25T09:31:00',
-    exit_ts: '2026-04-25T10:15:00',
-    entry_price: 220.0,
-    exit_price: 222.5,
-    return_pct: 1.5,
-    notes: '',
-    take_profits: [223],
-    stop_loss: 218.5,
-    status: 'win',
-    source: 'chart',
-    session_id: null,
-    created_at: '2026-04-25T09:31:01',
-  };
-  const CLOSED_ROW_2 = {
-    id: 'closed-2',
-    ticker: 'IWM',
-    direction: 'PUT',
-    entry_ts: '2026-04-25T10:30:00',
-    exit_ts: '2026-04-25T11:00:00',
-    entry_price: 221.0,
-    exit_price: 220.0,
-    return_pct: 0.45,
-    notes: '',
-    take_profits: [],
-    stop_loss: null,
-    status: 'win',
-    source: 'chart',
-    session_id: null,
-    created_at: '2026-04-25T10:30:01',
-  };
-  const ACTIVE_ROW = {
-    id: 'active-1',
-    ticker: 'IWM',
-    direction: 'CALL',
-    entry_ts: '2026-04-25T11:15:00',
-    exit_ts: null,
-    entry_price: 222.0,
-    exit_price: null,
-    return_pct: null,
-    notes: '',
-    take_profits: [],
-    stop_loss: null,
-    status: 'active',
-    source: 'chart',
-    session_id: null,
-    created_at: '2026-04-25T11:15:01',
-  };
-
-  test.beforeEach(async ({ page }) => {
-    await mockCommon(page);
-    await page.route('**/api/market/dates/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
-    );
-    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
-    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
-    await page.route('**/api/signals/IWM/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
-    await page.route('**/api/signals/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
-    );
-    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
-    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
-    await page.route('**/api/journal/seed/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
-    );
+    // Journal-trades fetch still happens on /charts (feeds the replay
+    // trainer's leakage-cutoff filtering + Task 5.3 scorecard bookkeeping —
+    // see ChartsPage.tsx), so it still needs a default mock even though the
+    // trade list is no longer rendered as a browsable panel. A closed trade
+    // is included on purpose, to prove the panel is genuinely gone (not just
+    // hidden because there's nothing to show).
     await page.route('**/api/journal/trades/IWM', (r) =>
       r.fulfill(
         M.ok({
           ticker: 'IWM',
           source: 'cloud_sql',
-          count: 3,
-          trades: [CLOSED_ROW_1, CLOSED_ROW_2, ACTIVE_ROW],
-        })
-      )
-    );
-  });
-
-  test('button is enabled with closed trades present and POSTs only the closed trade ids', async ({ page }) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let capturedBody: any = null;
-    await page.route('**/api/backtest/replay-trades', async (route) => {
-      capturedBody = route.request().postDataJSON();
-      await route.fulfill(
-        M.ok({
+          count: 1,
           trades: [
             {
-              id: 'closed-1',
-              status: 'ok',
-              actual_return_pct: 1.5,
-              fill_check: 'ok',
-              system_signal_at_entry: { direction: 'CALL', score: 4 },
-              system_exit: { exit_reason: 'time_stop', return_pct: 0.3, exit_time: '2026-04-25 10:00:00' },
-              exit_edge_bps: 120.0,
+              id: 'closed-trade-1',
+              ticker: 'IWM',
+              direction: 'CALL',
+              entry_ts: '2026-04-25T09:31:00',
+              exit_ts: '2026-04-25T10:15:00',
+              entry_price: 220.0,
+              exit_price: 222.5,
+              return_pct: 1.1364,
+              notes: '',
+              take_profits: [223, 225],
+              stop_loss: 218.5,
+              status: 'win',
+              source: 'chart',
+              session_id: null,
+              created_at: '2026-04-25T09:31:01',
             },
-            { id: 'closed-2', status: 'unavailable', reason: 'trade still open' },
           ],
-          aggregate: {
-            n: 2,
-            scored_n: 1,
-            win_rate: 1.0,
-            avg_return_pct: 1.5,
-            system_resolved_n: 1,
-            system_no_signal_n: 0,
-            system_agreement_rate: 1.0,
-            avg_exit_edge_bps: 120.0,
-          },
-        })
-      );
-    });
-
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-
-    const btn = page.getByTestId('backtest-trades-btn');
-    await expect(btn).toBeVisible();
-    await expect(btn).toBeEnabled();
-
-    await btn.click();
-    await expect.poll(() => capturedBody, { timeout: 10_000 }).not.toBeNull();
-    expect(capturedBody.ticker).toBe('IWM');
-    expect(new Set(capturedBody.trade_ids)).toEqual(new Set(['closed-1', 'closed-2']));
-  });
-
-  test('modal renders per-trade rows (ok + unavailable) and an honest aggregate footer', async ({ page }) => {
-    await page.route('**/api/backtest/replay-trades', (r) =>
-      r.fulfill(
-        M.ok({
-          trades: [
-            {
-              id: 'closed-1',
-              status: 'ok',
-              actual_return_pct: 1.5,
-              fill_check: 'ok',
-              system_signal_at_entry: { direction: 'CALL', score: 4 },
-              system_exit: { exit_reason: 'time_stop', return_pct: 0.3, exit_time: '2026-04-25 10:00:00' },
-              exit_edge_bps: 120.0,
-            },
-            { id: 'closed-2', status: 'unavailable', reason: 'trade still open' },
-          ],
-          aggregate: {
-            n: 2,
-            scored_n: 1,
-            win_rate: 1.0,
-            avg_return_pct: 1.5,
-            system_resolved_n: 1,
-            system_no_signal_n: 0,
-            system_agreement_rate: 1.0,
-            avg_exit_edge_bps: 120.0,
-          },
         })
       )
     );
+  });
 
+  test('no Mark Entry button and no Trades (N) side panel outside an active replay session', async ({ page }) => {
     await page.goto('/charts');
     await page.waitForLoadState('networkidle');
-    await page.getByTestId('backtest-trades-btn').click();
 
-    const modal = page.getByTestId('replay-scorecard');
-    await expect(modal).toBeVisible();
-
-    const okRow = page.getByTestId('scorecard-row-closed-1');
-    await expect(okRow).toBeVisible();
-    await expect(okRow.getByText('+1.50%')).toBeVisible();
-    await expect(okRow.getByText(/time_stop/)).toBeVisible();
-    await expect(okRow.getByText(/match/i)).toBeVisible();
-    await expect(okRow.getByText(/\+120\.00\s*bps/)).toBeVisible();
-
-    const unavailableRow = page.getByTestId('scorecard-row-closed-2');
-    await expect(unavailableRow).toBeVisible();
-    await expect(unavailableRow.getByText(/trade still open/i)).toBeVisible();
-    // Unavailable rows never render numbers.
-    await expect(unavailableRow.getByText(/%/)).not.toBeVisible();
-
-    await expect(modal.getByText(/1\s*\/\s*2\s*scored.*100%/i)).toBeVisible();
-    await expect(modal.getByText(/Agreement:\s*100%/i)).toBeVisible();
-    await expect(modal.getByText(/system had a setup on 1 of 1 entries/i)).toBeVisible();
-  });
-
-  test('a 503 from the replay endpoint renders a loud inline error, never a silent failure', async ({ page }) => {
-    await page.route('**/api/backtest/replay-trades', (r) =>
-      r.fulfill({
-        status: 503,
-        contentType: 'application/json',
-        body: JSON.stringify({ detail: 'journal database not configured' }),
-      })
-    );
-
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-    await page.getByTestId('backtest-trades-btn').click();
-
-    const modal = page.getByTestId('replay-scorecard');
-    await expect(modal).toBeVisible();
-    await expect(modal.getByText(/journal database not configured/i)).toBeVisible();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
-// Task 4.4: "My style" panel (POST /api/style/mine-and-validate —
-// platform/api/routers/backtest.py / lib/style_miner.py + lib/walk_forward.py).
-// Lives in the side panel's Analytics tab. Always a 200 from the endpoint —
-// the "not enough signal yet" cases come back as `{status: "unavailable",
-// reason}` and must render the reason verbatim in muted text, never as an
-// error; a genuine backend failure (503/500) is a loud inline error.
-// ─────────────────────────────────────────────────────────────────────────
-test.describe('Charts page — "My style" panel (Task 4.4)', () => {
-  test.beforeEach(async ({ page }) => {
-    await mockCommon(page);
-    await page.route('**/api/market/dates/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', dates: ['20260425'] }))
-    );
-    await page.route('**/api/market/data/IWM/*', (r) => r.fulfill(M.ok(MOCK_MARKET_DATA)));
-    await page.route('**/api/market/reference/IWM/*', (r) => r.fulfill(M.ok(MOCK_REFERENCE)));
-    await page.route('**/api/signals/IWM/similar*', (r) => r.fulfill(M.ok(MOCK_SIMILAR_CALL)));
-    await page.route('**/api/signals/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', count: 0, signals: [] }))
-    );
-    await page.route('**/api/live/indicators', (r) => r.fulfill(M.ok(MOCK_LIVE_INDICATORS)));
-    await page.route('**/api/live/signal-series', (r) => r.fulfill(M.ok(MOCK_SIGNAL_SERIES)));
-    await page.route('**/api/journal/seed/IWM*', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', date: '2026-04-25', count: 0, trades: [] }))
-    );
-    await page.route('**/api/journal/trades/IWM', (r) =>
-      r.fulfill(M.ok({ ticker: 'IWM', source: 'cloud_sql', count: 0, trades: [] }))
-    );
-  });
-
-  async function openAnalyticsTab(page: import('@playwright/test').Page) {
-    await page.goto('/charts');
-    await page.waitForLoadState('networkidle');
-    await page.getByRole('button', { name: /^Analytics$/ }).click();
-  }
-
-  test('unavailable response renders the reason verbatim in muted text, never as an error', async ({ page }) => {
-    await page.route('**/api/style/mine-and-validate', (r) =>
-      r.fulfill(M.ok({ status: 'unavailable', reason: 'need >= 10 closed trades, have 3' }))
-    );
-
-    await openAnalyticsTab(page);
-    await page.getByTestId('mine-my-style-btn').click();
-
-    const unavailable = page.getByTestId('mine-my-style-unavailable');
-    await expect(unavailable).toBeVisible();
-    await expect(unavailable).toHaveText('need >= 10 closed trades, have 3');
-    // Never rendered as an error banner.
-    await expect(page.getByTestId('mine-my-style-error')).not.toBeVisible();
-  });
-
-  test('success response renders direction + condition chips and the validated stats line with correctly-converted units', async ({ page }) => {
-    await page.route('**/api/style/mine-and-validate', (r) =>
-      r.fulfill(
-        M.ok({
-          profile: {
-            direction: 'CALL',
-            conditions: ['above_vwap', 'rsi_25_50'],
-            support: 4,
-            total: 5,
-          },
-          aggregate_metrics: {
-            avg_expectancy_pct: 0.42,
-            avg_win_rate: 0.6,
-            total_trades_all_folds: 23,
-            total_folds: 4,
-          },
-          stability_score: 0.75,
-          staged: true,
-        })
-      )
-    );
-
-    await openAnalyticsTab(page);
-    await page.getByTestId('mine-my-style-btn').click();
-
-    const result = page.getByTestId('mine-my-style-result');
-    await expect(result).toBeVisible();
-    await expect(result.getByText('CALL', { exact: true })).toBeVisible();
-    await expect(result.getByText('RSI 25-50')).toBeVisible();
-    await expect(result.getByText('Above VWAP')).toBeVisible();
-    await expect(result.getByText('Based on 4/5 of your entries')).toBeVisible();
-
-    // win_rate 0.6 -> "60%", avg_expectancy_pct 0.42 -> "+0.42%",
-    // stability 0.75 -> "75%", plus sample sizes (23 trades, 4 folds).
-    await expect(
-      result.getByText(/Win rate 60%.*expectancy \+0\.42%.*across 23 trades, 4 folds.*stability 75%/)
-    ).toBeVisible();
-  });
-
-  test('a 503 from the endpoint renders a loud inline error, never a silent failure', async ({ page }) => {
-    await page.route('**/api/style/mine-and-validate', (r) =>
-      r.fulfill({
-        status: 503,
-        contentType: 'application/json',
-        body: JSON.stringify({ detail: 'journal database not configured' }),
-      })
-    );
-
-    await openAnalyticsTab(page);
-    await page.getByTestId('mine-my-style-btn').click();
-
-    const error = page.getByTestId('mine-my-style-error');
-    await expect(error).toBeVisible();
-    await expect(error).toHaveText(/journal database not configured/i);
-    await expect(page.getByTestId('mine-my-style-unavailable')).not.toBeVisible();
-  });
-
-  test('button shows "Mining…" while the mutation is pending', async ({ page }) => {
-    await page.route('**/api/style/mine-and-validate', async (r) => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      await r.fulfill(M.ok({ status: 'unavailable', reason: 'need >= 10 closed trades, have 0' }));
-    });
-
-    await openAnalyticsTab(page);
-    const btn = page.getByTestId('mine-my-style-btn');
-    await btn.click();
-    await expect(btn).toHaveText(/Mining…/);
-    await expect(page.getByTestId('mine-my-style-unavailable')).toBeVisible();
+    // Mark Entry flow, the Trades/Analytics side panel, JSON/CSV export, and
+    // the seed-trade Playbook panel are all gone from the default (non-replay)
+    // page — even with a closed trade present for the ticker/date (proves
+    // this isn't just "no trades to show").
+    await expect(page.getByRole('button', { name: 'Mark Entry' })).not.toBeVisible();
+    await expect(page.getByText(/^Trades \(/)).not.toBeVisible();
+    await expect(page.getByText('Playbook seed')).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Backtest my trades' })).not.toBeVisible();
+    await expect(page.getByText('My style')).not.toBeVisible();
   });
 });

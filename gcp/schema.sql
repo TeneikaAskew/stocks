@@ -961,6 +961,28 @@ CREATE INDEX IF NOT EXISTS idx_top_movers_date_category
 
 
 -- ─────────────────────────────────────────────────────────
+-- TOP MOVERS INTRADAY (AlphaVantage TOP_GAINERS_LOSERS, hourly
+-- most_actively_traded snapshot — feeds the most-active marquee bar)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS top_movers_intraday (
+    id            BIGSERIAL PRIMARY KEY,
+    snapshot_ts   TIMESTAMPTZ  NOT NULL,           -- true UTC, set once per job run
+    snapshot_date DATE         NOT NULL,           -- ET trading date of the snapshot
+    rank          SMALLINT     NOT NULL,           -- 1..20 position in the most-active list
+    ticker        VARCHAR(10)  NOT NULL,
+    price         DOUBLE PRECISION,
+    change_amount DOUBLE PRECISION,
+    change_pct    DOUBLE PRECISION,
+    volume        BIGINT,
+    inserted_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_top_movers_intraday UNIQUE (snapshot_ts, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_top_movers_intraday_date
+    ON top_movers_intraday (snapshot_date DESC, snapshot_ts DESC);
+
+
+-- ─────────────────────────────────────────────────────────
 -- RANKER AUDIT
 -- One row per call to lib.agents.ranker.rank_tickers. Captures inputs
 -- (weights, candidate count) and outputs (ranked list with full score
@@ -3570,10 +3592,19 @@ CREATE TABLE IF NOT EXISTS earnings_upcoming_with_history (
     n_meets                    INTEGER,
     n_misses                   INTEGER,
     beat_rate_pct              NUMERIC(5, 1),
-    avg_abs_gap_pct            NUMERIC(6, 2),
+    -- avg_abs_gap_pct / avg_ratio widened from NUMERIC(6,2) / NUMERIC(5,2)
+    -- 2026-08-14 — refresh-earnings-views was failing daily (issue #753)
+    -- with "numeric field overflow ... precision 6, scale 2" because
+    -- reaction_gap_pct (source: earnings_reactions, DOUBLE PRECISION,
+    -- no floor on the divisor close price) can legitimately exceed
+    -- 9999.99% for micro-cap/penny tickers with a near-zero pre-report
+    -- close. NUMERIC(10,2) matches the source column's real range
+    -- instead of truncating it — the display layer, not this table, is
+    -- responsible for capping/flagging outliers for readability.
+    avg_abs_gap_pct            NUMERIC(10, 2),
     dir_consistency_pct        NUMERIC(5, 1),
     reversal_rate_pct          NUMERIC(5, 1),
-    avg_ratio                  NUMERIC(5, 2),
+    avg_ratio                  NUMERIC(10, 2),
     lean_score                 NUMERIC(5, 3),
     long_winner_count          INTEGER,
     short_winner_count         INTEGER,
@@ -3587,6 +3618,28 @@ CREATE INDEX IF NOT EXISTS idx_euwh_recent
     ON earnings_upcoming_with_history (refresh_date DESC, earnings_date);
 CREATE INDEX IF NOT EXISTS idx_euwh_ticker
     ON earnings_upcoming_with_history (ticker, refresh_date DESC);
+
+-- Migration: widen avg_abs_gap_pct / avg_ratio for existing deployments.
+-- Idempotent — see issue #753. The CREATE TABLE IF NOT EXISTS above is a
+-- no-op once the table exists, so pre-existing Cloud SQL instances need
+-- an explicit ALTER to pick up the new precision.
+DO $$
+BEGIN
+    IF (SELECT numeric_precision
+          FROM information_schema.columns
+         WHERE table_name='earnings_upcoming_with_history'
+           AND column_name='avg_abs_gap_pct') < 10 THEN
+        ALTER TABLE earnings_upcoming_with_history
+            ALTER COLUMN avg_abs_gap_pct TYPE NUMERIC(10, 2);
+    END IF;
+    IF (SELECT numeric_precision
+          FROM information_schema.columns
+         WHERE table_name='earnings_upcoming_with_history'
+           AND column_name='avg_ratio') < 10 THEN
+        ALTER TABLE earnings_upcoming_with_history
+            ALTER COLUMN avg_ratio TYPE NUMERIC(10, 2);
+    END IF;
+END $$;
 
 -- ── Solyra landing page waitlist (public POST /api/waitlist) ────────────────
 CREATE TABLE IF NOT EXISTS waitlist_signups (

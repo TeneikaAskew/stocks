@@ -107,3 +107,16 @@ pynacl>=1.5.0
 # time even though it's "optional" per FastAPI's own deps. Without it
 # `from fastapi.testclient import TestClient` raises RuntimeError.
 httpx>=0.27.0
+
+# python-multipart backs FastAPI's UploadFile/Form parsing — required at
+# runtime by POST /api/journal/import/preview (platform/api/routers/journal.py,
+# multipart broker-CSV upload). Without it, FastAPI raises at request time
+# ("Form data requires python-multipart to be installed").
+python-multipart>=0.0.9
+
+# cachetools backs the TTLCache used by platform/api/main.py at module
+# load (_SECTORS_CACHE). Was never pinned here even though it's imported
+# unconditionally at import time — every route and every test that
+# imports platform.api.main (e.g. tests/integration/test_journal_*.py)
+# fails collection with ModuleNotFoundError without it.
+cachetools>=5.3.0

@@ -1211,3 +1211,84 @@ asymmetry) and a concrete gating plan (gate-7 on the fwd-window target;
 purged/embargoed cost-aware EV on the fwd-directional probe). Scratch harness +
 per-experiment result JSONs retained by the author; not committed to the repo.
 
+
+
+---
+
+## E-25 — Direction-Predictability Program Phase 2: pure-prediction feature-lever ablation (2026-07-09)
+
+**Frame:** PURE PREDICTION (log-loss beat vs base-rate constant over purged
+walk-forward), options costs explicitly out of scope (per 2026-07 reframe).
+Distinct lens from the gate-7 implied-vs-realized cost verdict.
+
+**Pre-registered gate:** a slice is PREDICTABLE iff it beats base-rate log-loss
+in >=6/8 folds AND on all 3 tickers (IWM,SPY,QQQ).
+
+**Baseline anchor** (`direction-baseline-4pq6g`, 5m): TYPE ✅ 3/3, SIZE ❌ 0/3,
+DIRECTION ❌ 0/3. Harness-trust check passed (direction reproduced the 0/72
+close-sign control).
+
+**Importance audit** (`direction-importance`, gain+SHAP over the production
+engines): DIRECTION diffuse (top feature 4.6% of gain, 116/259 near-dead);
+SIZE concentrated (mins_since_open 9.9% + rvol_10 8.4%, 156/254 near-dead).
+Options positioning / IV-skew / ATM-IV entirely absent from the 259-col surface.
+
+**Phase 2 ablation** (`direction-phase2-sswwj`, 14 configs, 5m): 5 feature
+families (prune / options_iv / positioning / cross_asset / calendar) tested in
+isolation + full stack, on the real engines via a `--features` flag.
+
+| axis | best config | tickers pass | best median-beat Δ vs baseline |
+|---|---|---|---|
+| SIZE | full stack | 0/3 | +0.0055 (baseline median beat −0.148) |
+| DIRECTION | options_iv | 0/3 | +0.0006 (baseline median beat −0.0026) |
+
+**Verdict:** no family, nor the full stack, clears the gate on either axis.
+Options families (options_iv, positioning, full stack) are the ONLY consistently
+positive deltas on both axes — thesis-consistent but a rounding error. Calendar
+is the only family that hurts both. **Key new finding:** SIZE's −0.148 baseline
+beat is a *calibration* deficit (class_weight=balanced + calibration=none), not a
+feature deficit — no feature nudge closes 0.15 log-loss. Follow-up isotonic
+recalibration dispatched (`magnitude-recal`). DIRECTION remains null under the
+new options/cross-asset/calendar levers (best any ticker: 3/8 folds; needs 6/8) —
+consistent with the standing verdict; the missing signal class (order-flow/book)
+is unavailable from the current vendor. See DIRECTION_RESEARCH_RESULTS.md and
+MAGNITUDE_ENGINE_RESULTS.md Phase-2 sections. Code: PR #698
+(gcp/research/direction_program/, phase2_features.py, phase2_ablation.py).
+
+
+**E-25 follow-up (2026-07-10, isotonic recal `magnitude-recal-j5lfv`):** SIZE
+calibration hypothesis partly confirmed — isotonic fails at 5m (beat still ≈
+-0.13, ECE 0.10) but at **15m** produces positive, well-calibrated beats (ECE
+0.04) with SPY 6/8, IWM 5/8, QQQ 4/8 — a strong near-miss on the full gate.
+15m+isotonic is the recommended next ablation target. See MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 GATE PASS (2026-07-11, `direction-phase2-cmv2d`):** SIZE clears the
+pre-registered gate at **15m + isotonic** — baseline IWM 6/8, SPY 7/8, QQQ 6/8
+(3/3 tickers, predictable=True); `prune` strengthens to IWM 8/8 (med beat +0.012).
+First gate pass in the program. Winning lever = timeframe+calibration+prune, not
+new features. Modest edge (near 6/8 threshold; bootstrap-confirm recommended).
+See MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 confirmation (2026-07-11, `magnitude-recal-jcv9r`):** shifted-cutoffs
+robustness run shows the SIZE gate pass is FOLD-FRAGILE — under mid-year folds
+IWM drops 8/8→5/8 (QQQ held 6/8, SPY 8/8), so the strict 3-ticker gate does not
+replicate across fold placements. The edge is real (all positive median beats,
+ECE ~0.04) but the strict pass is near-threshold. Not productionized. See
+MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 CORRECTION (2026-07-11):** the shifted-cutoffs "fold-fragility" claim is
+RETRACTED — the mag --all-cells confirmation runs did not persist reliably and the
+DB reads picked up old magnitude-engine runs. Reliable result stands (config-tagged
+GCS): SIZE PASSES at 15m+isotonic+prune (IWM 8/8, SPY 7/8, QQQ 6/8), QQQ bootstrap-
+marginal (0.69). Cross-fold robustness UNCONFIRMED; needs a clean re-run via the
+phase2_ablation GCS path. See MAGNITUDE_ENGINE_RESULTS.md.
+
+
+**E-25 ROBUSTNESS CONFIRMED (2026-07-11, `direction-phase2-v5lxx`):** shifted-
+cutoffs re-run via the reliable config-tagged GCS path shows the SIZE gate pass
+HOLDS across fold placements — prune: Jan-1 (8/7/6) and shifted (7/8/7), both
+3/3. No fold-fragility. FINAL: SIZE robustly predictable+calibrated at
+15m+isotonic+prune. See MAGNITUDE_ENGINE_RESULTS.md.

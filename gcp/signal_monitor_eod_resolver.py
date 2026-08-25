@@ -314,10 +314,23 @@ class EODResolver:
     # ── 3. Persist ────────────────────────────────────────────────────
 
     def persist(self, resolution: dict) -> int:
-        """UPDATE the signal_alerts row. Returns 1 on success, 0 on no-op.
+        """UPDATE the signal_alerts row AND mirror the exit onto trades.
+        Returns the signal_alerts rowcount (1 on success, 0 on no-op).
 
-        Idempotency: this UPDATE flips `is_open=FALSE` so the next run's
-        query filter excludes the row. Safe to re-run a partial batch.
+        Idempotency: the signal_alerts UPDATE flips `is_open=FALSE` so
+        the next run's query filter excludes the row, and the trades
+        UPDATE is guarded by `exit_time IS NULL` so a recorded exit is
+        never overwritten. Safe to re-run a partial batch.
+
+        The trades row is matched on (ticker, entry_time == alert_ts):
+        the entry path in signal_monitor._persist_signal_alert writes
+        both timestamps from the SAME `now` value, and (ticker,
+        entry_time) is the trades upsert conflict key — verified
+        2071/2071 live rows since 2026-05-01 join exactly on it. Both
+        UPDATEs share one transaction so the tables can't drift on a
+        mid-write failure. A trades rowcount of 0 logs a WARNING per
+        Rule 3.7 (no silent no-ops) — expected for pre-dual-write
+        historical alerts that have no trades row at all.
         """
         from gcp.database import get_engine
         from sqlalchemy import text
@@ -331,6 +344,19 @@ class EODResolver:
              WHERE ticker   = :ticker
                AND alert_ts = :alert_ts
         """)
+        # return_pct units: direction-aware underlying-move percent
+        # (_exit_return_pct above) — same units as the pre-existing
+        # closed trades rows and signal_alerts.exit_return_pct.
+        trades_sql = text("""
+            UPDATE trades
+               SET exit_time   = :exit_ts,
+                   exit_price  = :price,
+                   exit_reason = :reason,
+                   return_pct  = :ret
+             WHERE ticker     = :ticker
+               AND entry_time = :entry_time
+               AND exit_time IS NULL
+        """)
         with get_engine().begin() as conn:
             result = conn.execute(sql, {
                 'exit_ts':  resolution['exit_ts'],
@@ -340,6 +366,22 @@ class EODResolver:
                 'ticker':   resolution['ticker'],
                 'alert_ts': resolution['alert_ts'],
             })
+            trade_result = conn.execute(trades_sql, {
+                'exit_ts':    resolution['exit_ts'],
+                'reason':     resolution['exit_reason'],
+                'price':      resolution['exit_price'],
+                'ret':        resolution['exit_return_pct'],
+                'ticker':     resolution['ticker'],
+                'entry_time': resolution['alert_ts'],
+            })
+            if (trade_result.rowcount or 0) == 0:
+                logger.warning(
+                    "exit mirror matched no open trades row for %s "
+                    "entry_time=%s reason=%s — row missing or already "
+                    "closed; signal_alerts resolution still recorded",
+                    resolution['ticker'], resolution['alert_ts'],
+                    resolution['exit_reason'],
+                )
             return result.rowcount or 0
 
     # ── 4. Discord digest ─────────────────────────────────────────────

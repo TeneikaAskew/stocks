@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { Bar } from '@/lib/indicators';
 import type { Indicators, Signal } from '@/lib/indicators';
+import type { ChartVoter } from '@/types';
 
 export interface IndicatorsRequest {
   bars: Bar[];
@@ -12,6 +13,7 @@ export interface IndicatorsRequest {
 export interface IndicatorsResponse {
   indicators: Indicators;
   signals: { call: Signal; put: Signal };
+  chart_voter: ChartVoter;
 }
 
 /**

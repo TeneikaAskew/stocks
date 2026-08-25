@@ -273,3 +273,129 @@ def test_post_with_exit_price_only_creates_active_trade(client_local_owner):
     assert len(trades) == 1
     assert trades[0]["exit_price"] is None
     assert trades[0]["status"] == "active"
+
+
+# ── #702 follow-ups: Task 1 backend journal hardening ───────────────────────
+#
+# Item 1 (export active trades) is fixed on the CLIENT side (JournalPage's
+# exportPipeline / exportableTrades — see platform/src/routes/journalNullSafety
+# .test.ts). The server contract is intentionally UNCHANGED: an active-shaped
+# export item (no exit_*) must keep 422ing so the client is provably
+# responsible for filtering, not the server silently accepting partial rows.
+# This test PINS that existing behaviour; it is not expected to go red.
+
+
+def test_export_endpoint_422s_for_active_shaped_item():
+    """`JournalTradeExportItem` requires exit_date/exit_time/exit_price — an
+    active (no-exit) trade in the POST body must still 422. Pins the current
+    server contract so a future change can't silently start accepting
+    active trades server-side (the fix lives in the client filter)."""
+    client = TestClient(main.app)
+    r = client.post(
+        "/api/journal/export/IWM",
+        json={
+            "trades": [
+                {
+                    "id": "1",
+                    "ticker": "IWM",
+                    "direction": "CALL",
+                    "entry_date": "2026-07-02",
+                    "entry_time": "09:31",
+                    "entry_price": 220.0,
+                    # active trade: no exit_* fields at all
+                    "notes": "",
+                }
+            ]
+        },
+    )
+    assert r.status_code == 422
+
+
+# ── Item 2: status must be a validated Literal ──────────────────────────────
+
+
+def test_create_trade_rejects_invalid_status_value(client_local_owner):
+    """POST with a bogus `status` string must 422, not silently persist a
+    junk status the rest of the app doesn't know how to render."""
+    r = _create(client_local_owner, status="bogus")
+    assert r.status_code == 422
+
+
+def test_create_trade_accepts_valid_status_override(client_local_owner):
+    """Sanity: a real status value in the Literal set is still accepted."""
+    r = _create(client_local_owner, status="win")
+    assert r.status_code == 200
+    assert r.json()["status"] == "win"
+
+
+# ── Item 3: PATCH close race guard ───────────────────────────────────────────
+
+
+def test_patch_close_race_guard_returns_409_when_concurrent_close_wins(monkeypatch):
+    """Two concurrent PATCH-close requests: the SELECT sees status='active'
+    for both, but only one UPDATE actually matches a still-active row (the
+    other loses the `AND status = 'active'` race). The loser must get a 409,
+    not a fabricated 200 over a no-op UPDATE."""
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(journal_module, "current_user_email", lambda req: "alice@x.com")
+
+    select_df = pd.DataFrame([{"direction": "CALL", "entry_price": 620.5, "status": "active"}])
+    monkeypatch.setattr(journal_module, "_journal_query", lambda *a, **k: select_df)
+    # Simulate the race: the UPDATE matched zero rows because another
+    # request already flipped status away from 'active'.
+    monkeypatch.setattr(journal_module, "_journal_exec", lambda *a, **k: 0)
+
+    client = TestClient(main.app)
+    r = client.patch(
+        "/api/journal/trades/some-id",
+        json={"exit_date": "2026-07-02", "exit_time": "10:45", "exit_price": 621.74},
+    )
+    assert r.status_code == 409
+
+
+def test_patch_close_succeeds_when_update_matches_one_row(monkeypatch):
+    """Sanity: the non-race path (UPDATE matches exactly 1 row) still 200s."""
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+    monkeypatch.setattr(journal_module, "current_user_email", lambda req: "alice@x.com")
+
+    select_df = pd.DataFrame([{"direction": "CALL", "entry_price": 620.5, "status": "active"}])
+    monkeypatch.setattr(journal_module, "_journal_query", lambda *a, **k: select_df)
+    monkeypatch.setattr(journal_module, "_journal_exec", lambda *a, **k: 1)
+
+    client = TestClient(main.app)
+    r = client.patch(
+        "/api/journal/trades/some-id",
+        json={"exit_date": "2026-07-02", "exit_time": "10:45", "exit_price": 621.74},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "win"
+
+
+# ── Item 4: seed `date` validation ───────────────────────────────────────────
+
+
+def test_seed_endpoint_422s_on_malformed_date(monkeypatch):
+    """A malformed `date` query param must 422 BEFORE any query runs —
+    previously this hit the Postgres date-cast error and surfaced as a 503."""
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+
+    def boom(*a, **k):
+        raise AssertionError("seed query must not run for a malformed date")
+
+    monkeypatch.setattr(journal_module, "_seed_query", boom)
+    client = TestClient(main.app)
+    r = client.get("/api/journal/seed/IWM", params={"date": "garbage"})
+    assert r.status_code == 422
+
+
+def test_seed_endpoint_422s_on_wrong_format_date(monkeypatch):
+    """MM/DD/YYYY (or any non-ISO shape) is also malformed."""
+    monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+
+    def boom(*a, **k):
+        raise AssertionError("seed query must not run for a malformed date")
+
+    monkeypatch.setattr(journal_module, "_seed_query", boom)
+    client = TestClient(main.app)
+    r = client.get("/api/journal/seed/IWM", params={"date": "07/02/2026"})
+    assert r.status_code == 422
