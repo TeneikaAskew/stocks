@@ -145,6 +145,124 @@ average −0.10%.
    luck, September should confirm it; the daily P&L series (below) shows
    Aug 3 onward as the only sustained positive stretch.
 
+---
+
+# Follow-up (same day) — direction-first analysis, decay root cause, resolver fix
+
+The sections below were added after the initial review, on the direction
+that raw directional accuracy — CALL means the market goes up, PUT means
+it goes down, and by how much — matters more than exit-mediated P&L,
+because direction drives everything downstream.
+
+## 6. Raw directional accuracy — exit machinery removed
+
+For every live alert, the underlying's move from `price_at_signal` to the
+1-min bar at +15/+30/+60 minutes and to the 16:00 ET close, signed by the
+alert's direction (positive = market moved the way the alert said).
+Source: `market_data_intraday` lateral joins; no exit logic involved.
+
+### By month — hit rate (% of alerts where the market moved the called direction) and average signed move
+
+| Month | n | 15m hit | 15m avg | 30m hit | 30m avg | 60m hit | 60m avg | close hit | close avg |
+|---|---|---|---|---|---|---|---|---|---|
+| Mar | 212 | 46.9 | −0.015 | 46.7 | +0.009 | 50.5 | +0.034 | 50.5 | +0.028 |
+| Apr | 220 | 48.2 | −0.014 | 54.6 | +0.016 | 49.3 | −0.001 | 48.2 | +0.011 |
+| May | 1,716 | 59.0 | +0.028 | 57.3 | +0.023 | 54.5 | +0.023 | 50.8 | +0.009 |
+| Jun | 267 | **36.3** | −0.066 | 44.6 | −0.060 | 44.6 | −0.067 | 48.3 | −0.070 |
+| Jul | 253 | 49.8 | −0.000 | 52.6 | −0.013 | 43.9 | −0.109 | 41.9 | −0.108 |
+| Aug | 220 | 56.7 | +0.046 | **59.5** | +0.066 | 49.3 | +0.031 | 45.1 | −0.033 |
+
+### June–Aug by direction
+
+| Cut | n | 30m hit | 30m avg | 60m hit | 60m avg | close hit | close avg |
+|---|---|---|---|---|---|---|---|
+| CALL | 609 | 50.2 | −0.012 | 46.0 | −0.055 | 44.3 | −0.117 |
+| PUT | 131 | 58.7 | +0.017 | 44.4 | −0.041 | 49.2 | +0.141 |
+
+### June–Aug by month × direction (30m)
+
+| Month | CALL n | CALL 30m hit | PUT n | PUT 30m hit |
+|---|---|---|---|---|
+| Jun | 203 | **38.4** | 64 | **64.1** |
+| Jul | 208 | 53.8 | 45 | 46.7 |
+| Aug | 198 | 58.6 | 22 | 70.6 |
+
+### What this says
+
+1. **Direction is NOT accurate beyond ~30 minutes.** June–Aug, at +60 min
+   both CALLs (46.0%) and PUTs (44.4%) were wrong more often than right,
+   and by the close CALL alerts averaged **−0.12% against the called
+   direction**. Any holding period past ~30 minutes is trading against
+   the signal's own information.
+2. **The edge that exists lives at 10–30 minutes.** August: 59.5% hit at
+   +30m with +0.066% average move; May: 57–59% at 15–30m. Exit data
+   agrees — target hits land at ~10–12 min, time stops at ~22 min, and
+   months where the ≤30m hit rate was good (May, Aug) were the months
+   exits made money.
+3. **June's alert losses were a direction failure, specifically long
+   bias.** June CALLs (76% of fires) hit only 38.4% at +30m while June
+   PUTs hit 64.1% — the market trended down intraday and the book stayed
+   3:1 long. The signals weren't noise; they were pointed the wrong way.
+4. **Moves systematically fade into the close** (hit rates at close are
+   the worst column in nearly every month). This is the key input for
+   the upcoming exit-timing work: shorter horizons, not longer.
+
+## 7. Decay investigation — why June's accuracy didn't persist
+
+Three hypotheses tested: system change, regime change, mix shift.
+
+- **Not a system change.** The insight pipeline has run the same model
+  (`vertex:gemini-3.1-flash-lite`, all seven roles) continuously since
+  mid-May — 63/69/51 reports in Jun/Jul/Aug with identical
+  `model_versions`. Alert volume was stable (267/253/220) and no gate or
+  threshold changes to `gcp/signal_monitor.py` / `lib/strategies/`
+  landed in the June–July seam (June commits were indicator/research
+  work).
+- **Primarily a regime change.** Market character (SPY/QQQ/IWM daily):
+
+  | Month | avg \|open→close\| | days >0.5% move | avg range | up-day % |
+  |---|---|---|---|---|
+  | Jun | 0.850% | **65.1%** | 1.76% | 47.6 |
+  | Jul | 0.578% | 50.0% | 1.32% | 47.0 |
+  | Aug | 0.527% | **35.3%** | 0.92% | 33.3 |
+
+  June was a trending month — directional calls get paid. August had
+  the least intraday movement of the six months studied; a day-direction
+  call in that regime is a coin flip with a small prize. Insight hit
+  rates decayed in lockstep with trendiness (66.1 → 47.0 → 49.0).
+- **Amplified by a stubborn long bias.** Insight longs collapsed (69.2%
+  hit in June → 43.3% July → 40.6% August) while shorts stayed decent
+  (63.3 / 50.0 / 63.2) — yet August issued MORE long calls than short
+  (32 vs 19) into a market with 33% up-days. Same pattern in alerts
+  (82% CALL fires all window). Neither system adapts its directional
+  prior to the drift of the tape.
+
+## 8. Playbook resolver — fixed, rescheduled, backfilled
+
+- **Code fix** (this branch): default mode now sweeps every unresolved
+  weekday date in a 14-day lookback instead of same-day-only;
+  `classify_date_outcome()` separates the benign same-day pre-ingestion
+  race from real gaps; any failed date or exception exits non-zero so
+  the execution shows red. Six new unit tests pin the semantics
+  (`tests/test_premarket_playbook_resolver.py`).
+- **Production mitigation applied now:** Cloud Scheduler
+  `premarket-playbook-resolver-daily` moved 16:30 ET → **21:15 ET**
+  (after `av-intraday-nightly` lands the day's bars ~21:00 ET), matching
+  the updated `gcp/deploy.sh`. This makes tonight's run work even before
+  the code fix deploys.
+- **Backfill:** every unresolved weekday session 2026-03-19 → 2026-08-24
+  re-dispatched through the deployed job via `PLAYBOOK_RESOLVE_DATE`
+  (the documented production replay path). Operational note: the first
+  parallel dispatch wave was too aggressive — ~30 concurrent resolver
+  executions exhausted Cloud SQL connection slots (SQLSTATE 53300) and
+  those executions failed; the live signal-monitor was unaffected (it
+  holds a pooled connection). Failed dates were re-run at bounded
+  concurrency; the job is idempotent so re-runs converge.
+
+> **Backfill verification in progress** — resolved July/August playbook
+> outcome numbers will be appended to this section once every weekday
+> session ≤ 2026-08-24 reports resolved (tracked on PR #774).
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
