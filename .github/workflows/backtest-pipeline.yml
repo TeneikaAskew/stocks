@@ -20,6 +20,17 @@ on:
       - "requirements-research.txt"
   pull_request:
     branches: [main]
+  # Nightly canary on main. CI otherwise runs only on push/PR — between
+  # 2026-07-14 and 2026-08-24 nothing was pushed, the unpinned transitive
+  # dep `cachetools` fell out of fresh pip resolutions, and every PR in
+  # that window failed collection while main "looked" green (it simply
+  # never ran). The canary re-validates main's tests against a fresh
+  # dependency resolution every night so environment rot is detected
+  # within 24h (via the handle-failure job below) instead of being
+  # discovered by the next contributor. 08:17 UTC = after the nightly
+  # data jobs, before US premarket.
+  schedule:
+    - cron: "17 8 * * *"
   workflow_dispatch:
 
 jobs:
@@ -78,7 +89,8 @@ jobs:
           python -m pytest -q \
             tests/test_strat*.py \
             tests/test_mag*.py \
-            tests/test_featurize_all_nan_robust.py
+            tests/test_featurize_all_nan_robust.py \
+            tests/test_import_coverage.py
 
   integration-tests:
     name: Integration Tests (ephemeral Postgres)
@@ -154,3 +166,31 @@ jobs:
           DB_PASS: testpass
           DB_NAME: trading
         run: python -m pytest tests/integration/ -q
+
+  # Failure escalation (repo convention — see CLAUDE.md "Automated
+  # Workflow Failure Handling"). Scoped to the nightly canary and to
+  # pushes on main: a red PR is visible to its author in the PR UI, but
+  # a red canary or broken main has NO audience without this — that
+  # blind spot is how the cachetools rot went unnoticed for 4 weeks.
+  handle-failure:
+    needs: [test, research-test, integration-tests]
+    if: |
+      failure() && (github.event_name == 'schedule' || github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    with:
+      workflow_name: "CI (Backtest Pipeline)"
+      failure_title: "❌ CI red on main — nightly canary or main push failed"
+      issue_labels: "workflow-failure,ci-canary,automated"
+      workflow_file: "backtest-pipeline.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false

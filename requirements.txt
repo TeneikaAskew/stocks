@@ -120,3 +120,9 @@ python-multipart>=0.0.9
 # imports platform.api.main (e.g. tests/integration/test_journal_*.py)
 # fails collection with ModuleNotFoundError without it.
 cachetools>=5.3.0
+# sqlparse backs gcp/queries/run_query.py (the db-query Cloud Run Job's
+# statement splitter). It was only in requirements-gcp.txt, so the
+# module had zero CI import coverage — an import break there would
+# first surface as a production db-query failure. Found by
+# tests/test_import_coverage.py on 2026-08-24.
+sqlparse>=0.4.4
