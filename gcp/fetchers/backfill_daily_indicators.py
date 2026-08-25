@@ -102,6 +102,7 @@ from gcp.database import (
     DAILY_INDICATOR_TO_SQL_COLUMN,
     is_cloud_sql_configured,
     query_to_dataframe,
+    record_job_run,
     upsert_dataframe,
 )
 
@@ -474,6 +475,9 @@ def main() -> int:
         log.error("Cloud SQL not configured — refusing to run")
         return 2
 
+    from datetime import datetime as _datetime, timezone as _timezone
+    run_started = _datetime.now(_timezone.utc)
+
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
         log.info("Ticker source: --tickers override (%d)", len(tickers))
@@ -496,6 +500,9 @@ def main() -> int:
 
     if not tickers:
         log.info("No tickers to process — exiting cleanly (0 gaps detected).")
+        record_job_run('backfill-daily-indicators', run_started, 'success',
+                       items_total=0, items_processed=0, items_failed=0,
+                       rows_written=0, note=f"mode={args.mode} (no gaps)")
         return 0
 
     # Daily mode writes back only the recent window (gap window + margin
@@ -554,7 +561,18 @@ def main() -> int:
     # issue if the threshold trips. Pattern matches run_historical_signals.
     n_failed = len(errors)
     n_total = len(tickers)
-    if n_total and n_failed / n_total > 0.5:
+    too_many = bool(n_total and n_failed / n_total > 0.5)
+    # Telemetry for the freshness-watchdog's duration-regression check —
+    # capacity drift (the #751 pattern: 19 silent near-misses of the
+    # task-timeout) becomes a queryable trend instead of a cliff.
+    record_job_run('backfill-daily-indicators', run_started,
+                   'error' if too_many else 'success',
+                   items_total=n_total,
+                   items_processed=n_total - n_failed,
+                   items_failed=n_failed,
+                   rows_written=total_rows,
+                   note=f"mode={args.mode} workers={workers}")
+    if too_many:
         log.error("TOO-MANY-FAILURES — %d/%d tickers (%.0f%%) failed",
                   n_failed, n_total, 100 * n_failed / n_total)
         return 1

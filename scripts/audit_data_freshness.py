@@ -928,6 +928,138 @@ def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
     return results
 
 
+def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
+    """Whole-universe derived-indicator coverage for the latest settled
+    trading day of market_data_daily.
+
+    The 2026-08 issue #751 loop showed the failure mode this pins: the
+    nightly universe writer (fetch-earnings-history → _run_backfill)
+    lands raw OHLCV bars and the 02:30 ET backfill-daily-indicators run
+    is the enrichment stage. If that stage breaks, every downstream
+    consumer (briefs, insights, backtests) reads bars with NULL
+    indicators — previously surfacing only as somebody else's timeout
+    three weeks later. This check alerts on the contract directly.
+
+    atr_14 is the canary: a total function of valid OHLCV (never
+    formula-domain NaN), computable for every ticker with ≥50 usable
+    bars. Rows with NULL raw OHLCV and young tickers are excluded —
+    same predicate family as the backfill's own convergent gap check.
+    Only failing rows are returned.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    # Settled after the enrich job finishes: 02:30 ET start + worst-case
+    # ~2h ⇒ 05:00 ET. Before 05:00 ET the check anchors one day back.
+    latest_day = most_recent_trading_day(now_utc, settle_hour_et=5)
+    sql = """
+        WITH usable AS (
+            SELECT ticker, count(*) AS n_bars
+            FROM market_data_daily
+            WHERE date >= CURRENT_DATE - INTERVAL '450 days'
+              AND num_nulls(open, high, low, close, volume) = 0
+            GROUP BY ticker
+        )
+        SELECT COUNT(*) AS total, COUNT(m.atr_14) AS non_null
+        FROM market_data_daily m
+        JOIN usable u ON u.ticker = m.ticker
+        WHERE m.date = :day
+          AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
+          AND u.n_bars >= 50
+    """
+    df = query_to_dataframe_strict(sql, {'day': latest_day})
+    total = int(df.iloc[0]['total']) if not df.empty else 0
+    non_null = int(df.iloc[0]['non_null']) if not df.empty else 0
+    rate = (non_null / total) if total else None
+    min_rate = 0.95
+    if total == 0:
+        # No bars at all for the settled day is a different (worse)
+        # failure — the gap-scan/freshness checks own that signal.
+        return []
+    if rate is not None and rate >= min_rate:
+        return []
+    return [FreshnessRow(
+        table="market_data_daily.atr_14 enrichment coverage",
+        ticker=None,
+        last_row_at=f"{non_null}/{total} enriched ({rate:.1%})",
+        expected_latest=f">= {min_rate:.0%} of {latest_day} bars",
+        lag_hours=None,
+        expected_max_hours=0,
+        status="stale",
+        row_count_recent=total,
+        writer_job="backfill-daily-indicators",
+    )]
+
+
+# Duration-regression thresholds: flag when the latest run exceeds
+# 2x the trailing median AND runs longer than the floor (so a 40s job
+# jumping to 90s doesn't page). Needs >= 6 recorded runs to have a
+# meaningful median.
+_JOB_DURATION_FACTOR = 2.0
+_JOB_DURATION_FLOOR_S = 300.0
+_JOB_DURATION_MIN_RUNS = 6
+
+
+def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
+    """Warn when a job's latest recorded run took more than
+    _JOB_DURATION_FACTOR × its trailing 30-day median.
+
+    Reads job_runs (gcp/schema.sql — written by record_job_run).
+    Capacity drift is invisible until a timeout cliff: issue #751's job
+    ran 3h09m daily for 20 days against a 3h cap — 19 near-misses with
+    no trend signal. This makes the trend itself page, before the cliff.
+
+    job_runs may not exist yet on an instance that hasn't run the
+    schema migration; that case logs and skips explicitly (narrow,
+    visible — not a blanket swallow) rather than failing the whole
+    audit for a table that is itself only telemetry.
+    """
+    from gcp.database import query_to_dataframe_strict, table_exists
+
+    if not table_exists('job_runs'):
+        log.warning("job_runs table absent — duration-regression check "
+                    "skipped (run the schema migration to enable it)")
+        return []
+
+    sql = f"""
+        WITH recent AS (
+            SELECT job_name, duration_s, started_at,
+                   row_number() OVER (PARTITION BY job_name
+                                      ORDER BY started_at DESC) AS rn
+            FROM job_runs
+            WHERE started_at >= now() - INTERVAL '30 days'
+        )
+        SELECT job_name,
+               max(duration_s) FILTER (WHERE rn = 1)  AS latest_s,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_s)
+                   FILTER (WHERE rn > 1)              AS median_prior_s,
+               count(*)                               AS n_runs
+        FROM recent
+        GROUP BY job_name
+        HAVING count(*) >= {_JOB_DURATION_MIN_RUNS}
+    """
+    df = query_to_dataframe_strict(sql, {})
+    rows: list[FreshnessRow] = []
+    for _, r in df.iterrows():
+        latest = float(r['latest_s'])
+        median = float(r['median_prior_s']) if r['median_prior_s'] is not None else None
+        if median is None or median <= 0:
+            continue
+        if latest > _JOB_DURATION_FLOOR_S and latest > _JOB_DURATION_FACTOR * median:
+            rows.append(FreshnessRow(
+                table=f"job_runs.{r['job_name']} duration",
+                ticker=None,
+                last_row_at=f"latest {latest / 60:.1f} min",
+                expected_latest=(f"<= {_JOB_DURATION_FACTOR:.0f}x median "
+                                 f"({median / 60:.1f} min, n={int(r['n_runs'])})"),
+                lag_hours=None,
+                expected_max_hours=0,
+                status="warn",
+                row_count_recent=int(r['n_runs']),
+                writer_job=str(r['job_name']),
+            ))
+    return rows
+
+
 def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
     """Run all freshness checks and return a full report.
 
@@ -971,6 +1103,15 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
     # source froze (the 2026-06 ^VIX/gamma cascade signature). Only
     # reports failures.
     report.rows.extend(_query_column_nullity(now))
+
+    # Enrichment-coverage contract: the nightly raw-bar writer feeds the
+    # 02:30 ET indicator-enrich stage; a break there must page directly
+    # instead of surfacing as a downstream job's timeout (issue #751).
+    report.rows.extend(_query_enrichment_coverage(now))
+
+    # Duration-regression: capacity drift trends from job_runs, warned
+    # on BEFORE a task-timeout cliff. Only reports offenders.
+    report.rows.extend(_query_job_duration_regression(now))
 
     return report
 
