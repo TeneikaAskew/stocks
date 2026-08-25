@@ -388,6 +388,90 @@ on the same subset.
   still right at +60 and only 62% by the close — the exit must stay
   inside the ≤30-min window regardless of filter.
 
+## 11. Full variation grid — all 5.4 months, and a correction
+
+Extended per challenge: exit ladder now includes 1/3/5 min, the window
+is the ENTIRE live-fire history (first fire 2026-03-19 — 6–12 months of
+sent-signal history does not exist yet; 2,883 fires including May's
+1,716-fire old-config era), and results are shown per month so
+consistency is visible rather than asserted.
+
+### Correction to §10
+
+§10 concluded "the loss pool is the entry population, not the clock."
+That was an artifact of testing only June–August. On full history the
+**exit machinery is defect #1**: summed over all six months, holding
+every fire exactly 30 minutes returns **+43.7 pct vs the engine's
+−15.9** — the first-touch-target + time-stop structure truncates
+winners at +0.30% and rides losers (classic cut-winners/ride-losers
+asymmetry). May is the smoking gun: 89.3% of May fires died at time
+stops for −87.5 pct while target hits banked only +57.5; any fixed exit
+that month made +39 to +65.
+
+### Exit ladder × month (all fires, exit at market after N minutes)
+
+| Exit | Mar (212) | Apr (220) | May (1716) | Jun (267) | Jul (253) | Aug (215) | Total |
+|---|---|---|---|---|---|---|---|
+| +1 min | +0.6 | −3.7 | **+65.5** | −11.5 | +0.6 | +3.7 | +55.2 |
+| +5 min | −4.9 | −5.0 | +55.4 | −16.6 | −1.4 | +6.2 | +33.7 |
+| +10 min | +4.3 | −0.3 | +51.4 | −18.0 | −2.3 | +7.6 | +42.7 |
+| +20 min | −2.2 | +3.3 | +46.5 | −17.1 | +1.4 | +10.7 | +42.6 |
+| **+30 min** | +3.0 | +5.7 | +40.1 | −16.1 | −3.3 | **+14.3** | **+43.7** |
+| +60 min | +8.2 | +1.9 | +38.9 | −17.8 | −27.5 | +6.8 | +10.5 |
+| **Engine actual** | +6.0 | +8.6 | **−25.2** | −10.7 | −2.8 | +8.2 | **−15.9** |
+
+Reading: the 20–30 min horizon is best overall and the only ladder rung
+positive in 4 of 6 months. June is negative at every horizon (a
+direction failure no exit fixes). The engine beat the ladder only in
+Mar/Apr (small months); in May it destroyed a +40-to-+65 month.
+
+### Entry filter × month (actual engine outcomes, filtered)
+
+| Filter | Mar | Apr | May | Jun | Jul | Aug |
+|---|---|---|---|---|---|---|
+| all fires | +6.0 | +8.6 | −25.2 | −10.7 | −2.8 | +8.2 |
+| rvol ≥ 1.0 | +0.8 | −1.1 | −12.1 | −0.4 | +0.6 | +4.2 |
+| rvol ≥ 1.5 | +0.5 | −0.4 | −8.4 | −0.1 | −0.2 | +2.6 |
+| opening hour | +1.2 | −4.3 | −17.4 | +0.1 | −4.4 | +6.2 |
+| rvol ≥ 1 + hour 9 | +0.1 | −1.5 | −10.5 | −0.0 | +1.5 | +3.4 |
+| brief-aligned only | — | — | **−10.6 (25.6% win)** | +4.0 | +2.0 | — |
+
+Key nonstationarity findings:
+- **No single static filter is stable across engine generations.** The
+  RVOL gate caps drawdowns (worst month −12.1 vs −25.2) but forfeits
+  Mar/Apr/May profits; brief-alignment was *anti*-predictive in May
+  (25.6% win on aligned fires) and predictive after.
+- **The June 2026 retune inverted the engine's character**: pre-June
+  fires had positive forward returns at every horizon (May most of
+  all); post-June fires are negative at every horizon except within
+  the RVOL ≥ 1.0 subset. Whatever the May incident response tightened,
+  it selected away the fires that carried the edge.
+
+### Combo consistency (rvol ≥ 1.0 × exit ladder × month) — best current-era policy
+
+Exit@30 on the rvol ≥ 1.0 subset: Mar +0.95, Apr −2.09, May −5.35,
+Jun +1.40, Jul +3.74, Aug +8.64 → **+7.3 total, positive 4/6 months,
+worst month −5.35**. Versus unfiltered exit@30: +43.7 total but −16.1
+worst month. The choice between them is a risk-profile decision:
+max-total (no filter, eat June-size drawdowns) vs drawdown-capped
+(filtered, forfeit May-size bounties).
+
+### What shipped as code (PR #774, commit 0d84c1a)
+
+1. `SignalConfig.rvol_gate_mode` — `'shadow'` by default: every fire
+   is tagged `pass`/`below` into the new `signal_alerts.rvol_gate`
+   column, zero behavior change; `'enforce'` suppresses below-threshold
+   fires before Discord/persist/caps. Missing RVOL never passes.
+2. `ExitConfig.mode='fixed_horizon'` + `fixed_horizon_minutes=30` —
+   opt-in (default unchanged `target_stop`), mirrored in the EOD
+   resolver so live and resolver semantics stay comparable.
+3. 11 new tests; monitor + resolver suites green (102 tests).
+
+Enforcement plan: run the shadow gate through September; the
+out-of-sample check is then one GROUP BY on `rvol_gate`. Flip
+`ExitConfig.mode` only together with its resolver counterpart and only
+after a replay-validated week (`scripts/replay_signal_monitor.py`).
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
