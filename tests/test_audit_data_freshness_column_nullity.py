@@ -290,3 +290,101 @@ def test_audit_all_wires_in_column_nullity(monkeypatch):
     report = mod.audit_all(now_utc=datetime(2026, 6, 21, 14, 0))
     assert called["n"] == 1, "_query_column_nullity must be called from audit_all"
     assert sentinel in report.rows, "findings must be merged into the report"
+
+
+# ── sparse-aware calibration for gamma_balance_price (#744) ──────────────────
+#
+# gamma_balance is populated only on sessions where cumulative net gamma
+# has a zero-crossing — lib/gamma.py documents ~half of days by design,
+# and 2026-08 production measured IWM ~40%, SPY/QQQ ~50-60%. The original
+# single-session 90% check therefore flapped on every crossing-less day
+# (watchdog failed Sun 2026-08-23, passed Mon 08-24; the notifier opened
+# and auto-closed #744 on the flap). The calibrated check widens to five
+# sessions at >=20% so design sparsity passes while the #744 July
+# signature (0% for 3+ weeks) still pages.
+
+
+def _df_by_column(mapping):
+    """Fake query keyed on which column the SQL counts, so different
+    checks in the same run can see different data shapes."""
+    def fake(sql, params=None):
+        for col, rows in mapping.items():
+            if f"COUNT({col})" in sql:
+                return pd.DataFrame(rows)
+        return pd.DataFrame()
+    return fake
+
+
+def test_gamma_balance_design_sparsity_does_not_fire(monkeypatch):
+    """IWM at 40% over the window — the measured by-design rate — must
+    NOT page. Before the #744 calibration this exact shape fired stale
+    on every crossing-less day and flapped the watchdog."""
+    from scripts.audit_data_freshness import _query_column_nullity
+    _patch_query(monkeypatch, _df_by_column({
+        "gamma_balance_price": [
+            {"ticker": "IWM", "total": 390, "non_null": 156},   # 40% of 5 sessions
+        ],
+    }))
+    out = _query_column_nullity(datetime(2026, 8, 25, 14, 0))
+    assert out == [], (
+        "40% gamma_balance coverage is by-design sparsity, not an outage "
+        "— firing here recreates the #744 flap"
+    )
+
+
+def test_gamma_balance_full_stop_still_fires(monkeypatch):
+    """The real #744 July signature — 0% across the whole window — must
+    still page. The sparse-aware threshold widens the window; it must
+    not blind the check to a genuine upstream stall."""
+    from scripts.audit_data_freshness import _query_column_nullity
+    _patch_query(monkeypatch, _df_by_column({
+        "gamma_balance_price": [
+            {"ticker": "IWM", "total": 390, "non_null": 0},
+        ],
+    }))
+    out = _query_column_nullity(datetime(2026, 8, 25, 14, 0))
+    assert len(out) == 1
+    assert out[0].status == "stale"
+    assert out[0].ticker == "IWM"
+    assert out[0].writer_job == "strat-engine"
+
+
+def test_gamma_balance_check_is_sparse_calibrated():
+    """Pin the calibration so a refactor can't silently revert it to the
+    flapping single-session 90% shape — and pin that total_gex (the
+    dense same-upstream sentinel that catches a full gamma_levels_eod
+    stall same-day) keeps its strict 90%/1-day shape."""
+    from scripts.audit_data_freshness import COLUMN_NULLITY_CHECKS
+    by_name = {c["name"]: c for c in COLUMN_NULLITY_CHECKS}
+    gbp = by_name["strat_features_5m.gamma_balance_price"]
+    assert gbp["lookback_days"] == 5
+    assert gbp["min_non_null_rate"] == 0.20
+    gex = by_name["strat_features_5m.total_gex"]
+    assert gex["lookback_days"] == 1
+    assert gex["min_non_null_rate"] == 0.90
+
+
+def test_lookback_counts_trading_sessions_not_calendar_days(monkeypatch):
+    """Codex P1 #762: calendar-day subtraction turned the 5-session
+    gamma_balance window into 3 sessions across a weekend (Tuesday
+    anchor - 4 calendar days = Friday). The window must span the five
+    most recent TRADING sessions: for a Tuesday 2026-08-25 audit that
+    is Wed 08-19 .. Tue 08-25."""
+    from scripts.audit_data_freshness import _query_column_nullity
+
+    windows = {}
+
+    def capturing(sql, params=None):
+        if "COUNT(gamma_balance_price)" in sql:
+            windows["start"] = params["window_start"]
+            windows["end"] = params["window_end"]
+        return pd.DataFrame()
+
+    _patch_query(monkeypatch, capturing)
+    # Tuesday 2026-08-25 14:00 UTC (10:00 ET, past the 02:00 ET settle)
+    _query_column_nullity(datetime(2026, 8, 25, 14, 0))
+    assert windows["start"] == datetime(2026, 8, 19, 0, 0), (
+        f"5-session window must start Wed 08-19, got {windows['start']} — "
+        f"calendar-day subtraction shrinks the window across weekends"
+    )
+    assert windows["end"] == datetime(2026, 8, 26, 0, 0)
