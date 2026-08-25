@@ -3385,12 +3385,17 @@ deploy_schedulers() {
     # still is_open=TRUE or with exit_ts NULL and resolves them via the
     # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
     _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
-    # Premarket brief-playbook outcome resolver — 4:30 PM ET weekdays.
+    # Premarket brief-playbook outcome resolver — 9:15 PM ET weekdays.
     # Walks each (analysis_date, ticker) row's RTH 1-min bars and records
     # trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
-    # EOD pnl. Same wall-clock slot as the alerts resolver above
-    # (different job, different table — no contention).
-    _schedule "premarket-playbook-resolver-daily" "30 16 * * 1-5"  "premarket-playbook-resolver"
+    # EOD pnl. MUST run after av-intraday-nightly (~21:00 ET) lands the
+    # day's market_data_intraday partition: the previous 16:30 ET slot
+    # raced ingestion, found no same-day bars, and silently resolved 0
+    # rows every night from 2026-06-19 to 2026-08-25 (see
+    # docs/audits/PROFITABILITY_REVIEW_2026-08-25.md). The job also
+    # sweeps any unresolved weekday dates in a 14-day lookback, so a
+    # missed night self-heals on the next run.
+    _schedule "premarket-playbook-resolver-daily" "15 21 * * 1-5"  "premarket-playbook-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.
     _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
