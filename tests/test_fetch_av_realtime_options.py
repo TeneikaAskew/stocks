@@ -331,3 +331,89 @@ def test_process_ticker_raises_unavailable_does_not_upsert(monkeypatch):
     with pytest.raises(mod.RealtimeOptionsUnavailable):
         mod.process_ticker("SPY", "fake-key", _NOW)
     assert upserts == [], "no upsert on UNAVAILABLE"
+
+
+# ── Transient-empty retry (issue #770) ──────────────────────────────────────
+#
+# AV intermittently returns a well-formed success with zero contracts for a
+# single ticker on one 5-minute fire while sibling tickers succeed on the
+# same key seconds apart; a re-probe minutes later returns the full chain
+# (verified live 2026-08-26: the failing IWM fire at 14:31 UTC vs a manual
+# 5,372-contract probe shortly after). process_ticker retries THAT shape
+# only; every other Unavailable cause must propagate un-retried.
+
+
+def _empty_payload():
+    return {"endpoint": "Realtime Options", "message": "success", "data": []}
+
+
+def _good_payload(contract="IWM260918C00200000"):
+    return {
+        "endpoint": "Realtime Options",
+        "message": "success",
+        "data": [{"contractID": contract, "type": "call",
+                  "expiration": "2026-09-18", "strike": "200", "last": "1.0"}],
+    }
+
+
+def _no_sleep(monkeypatch):
+    import time as _time
+    sleeps = []
+    monkeypatch.setattr(_time, "sleep", lambda s: sleeps.append(s))
+    return sleeps
+
+
+def test_process_ticker_retries_transient_empty_then_succeeds(monkeypatch):
+    from gcp.fetchers import fetch_av_realtime_options as mod
+
+    responses = [_FakeResponse(_empty_payload()), _FakeResponse(_good_payload())]
+    monkeypatch.setattr(mod.requests, "get", lambda *a, **k: responses.pop(0))
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: False)
+    sleeps = _no_sleep(monkeypatch)
+
+    rows = mod.process_ticker("IWM", "fake-key", _NOW)
+    assert rows == 1, "second attempt's chain must be used"
+    assert len(sleeps) == 1, "one pacing delay between the two attempts"
+
+
+def test_process_ticker_fails_loud_when_empty_on_every_attempt(monkeypatch):
+    """Persistently empty is a real outage / off-hours fire — the Rule 3.7
+    hard-fail survives the retry layer, and the job still exits non-zero."""
+    import pytest
+    from gcp.fetchers import fetch_av_realtime_options as mod
+
+    calls = []
+    monkeypatch.setattr(
+        mod.requests, "get",
+        lambda *a, **k: calls.append(1) or _FakeResponse(_empty_payload()))
+    _no_sleep(monkeypatch)
+
+    with pytest.raises(mod.RealtimeOptionsEmpty, match="attempts"):
+        mod.process_ticker("IWM", "fake-key", _NOW)
+    assert len(calls) == mod.EMPTY_RETRY_ATTEMPTS + 1
+
+
+def test_rate_limit_and_sample_payload_are_never_retried(monkeypatch):
+    """Retrying a rate-limited or unentitled endpoint burns quota for a
+    response that cannot change — exactly one API call each."""
+    import pytest
+    from gcp.fetchers import fetch_av_realtime_options as mod
+
+    for payload in (
+        {"Information": "rate limit reached for your key"},
+        {"endpoint": "Realtime Options", "message": "sample disclaimer",
+         "data": [{"contractID": "XXYYZZ999999C00020000"}]},
+    ):
+        calls = []
+        monkeypatch.setattr(
+            mod.requests, "get",
+            lambda *a, _p=payload, **k: calls.append(1) or _FakeResponse(_p))
+        _no_sleep(monkeypatch)
+        with pytest.raises(mod.RealtimeOptionsUnavailable):
+            mod.process_ticker("SPY", "fake-key", _NOW)
+        assert len(calls) == 1, f"non-empty cause was retried: {payload}"
+
+
+def test_empty_is_subclass_so_main_error_handling_is_unchanged():
+    from gcp.fetchers import fetch_av_realtime_options as mod
+    assert issubclass(mod.RealtimeOptionsEmpty, mod.RealtimeOptionsUnavailable)

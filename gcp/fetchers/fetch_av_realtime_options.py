@@ -65,6 +65,30 @@ class RealtimeOptionsUnavailable(RuntimeError):
     """
 
 
+class RealtimeOptionsEmpty(RealtimeOptionsUnavailable):
+    """A well-formed success response carrying zero contracts.
+
+    Split out from the parent 2026-08-26 (issue #770): AV intermittently
+    returns an empty chain for a single ticker for one 5-minute fire while
+    the sibling tickers succeed on the same key seconds apart, and a direct
+    re-probe minutes later returns the full chain. That specific shape is
+    worth ONE in-run retry (see process_ticker) before failing loud. Every
+    other Unavailable cause — rate-limit, sample payload, tier downgrade,
+    unexpected shape — must NOT be retried: re-hitting a rate-limited or
+    unentitled endpoint burns quota for a response that cannot change.
+    """
+
+
+# In-run retries for RealtimeOptionsEmpty only. 2 retries x ~1 pacing delay
+# adds at most ~2 extra API calls and a few seconds of wall-clock on the
+# rare empty fire — trivial against the 600 req/min tier and the job
+# timeout — and converts the sporadic vendor blip (a few per hundred
+# 5-minute fires, each paging Discord + appending to a gcp-job-failure
+# issue) into a green run. A ticker still empty after all attempts keeps
+# the Rule 3.7 hard-fail: no data is fabricated, the job exits non-zero.
+EMPTY_RETRY_ATTEMPTS = 2
+
+
 def fetch_av_realtime_options(ticker: str, api_key: str,
                               snapshot_ts: datetime) -> pd.DataFrame:
     """
@@ -133,12 +157,13 @@ def fetch_av_realtime_options(ticker: str, api_key: str,
         )
 
     if not records:
-        # Empty list during market hours is genuinely anomalous — treat as
-        # UNAVAILABLE rather than silently writing nothing. Caller logs and
-        # the Cloud Run Job exits non-zero so the scheduler surfaces it.
-        raise RealtimeOptionsUnavailable(
-            f"AV REALTIME_OPTIONS returned 0 contracts for {ticker} — "
-            "likely a tier-downgrade or off-hours fire"
+        # Empty list is never written (Rule 3.7). Observed cause profile
+        # (issue #770): usually a transient vendor blip that a re-probe
+        # resolves; persistently empty means an off-hours fire or a real
+        # outage. The caller retries this specific case before the job
+        # fails loud.
+        raise RealtimeOptionsEmpty(
+            f"AV REALTIME_OPTIONS returned 0 contracts for {ticker}"
         )
 
     df = pd.DataFrame(records)
@@ -194,10 +219,29 @@ def _normalize_av_response(df: pd.DataFrame, ticker: str,
 
 def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime) -> int:
     """Fetch realtime options for one ticker → Cloud SQL. Returns row count written."""
+    import time
+
     log.info("  Fetching %s realtime options at %s...",
              ticker, snapshot_ts.isoformat())
 
-    df = fetch_av_realtime_options(ticker, api_key, snapshot_ts)
+    # Retry ONLY the transient-empty shape; all other Unavailable causes
+    # propagate immediately (see RealtimeOptionsEmpty docstring).
+    for attempt in range(EMPTY_RETRY_ATTEMPTS + 1):
+        try:
+            df = fetch_av_realtime_options(ticker, api_key, snapshot_ts)
+            break
+        except RealtimeOptionsEmpty:
+            if attempt == EMPTY_RETRY_ATTEMPTS:
+                raise RealtimeOptionsEmpty(
+                    f"AV REALTIME_OPTIONS returned 0 contracts for {ticker} "
+                    f"on {EMPTY_RETRY_ATTEMPTS + 1} attempts — off-hours "
+                    "fire or vendor outage"
+                )
+            log.warning(
+                "    %s returned 0 contracts (attempt %d/%d) — retrying",
+                ticker, attempt + 1, EMPTY_RETRY_ATTEMPTS + 1,
+            )
+            time.sleep(_av_cfg.delay_between_calls)
     log.info("    %d contracts received", len(df))
 
     # Dedupe defensively — AV occasionally returns duplicate contract rows
