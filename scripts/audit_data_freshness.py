@@ -1002,14 +1002,18 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
     # outer :day lookup. That is what pushed freshness-watchdog past its
     # 3600s task-timeout (issue #765). Three changes fix it:
     #
-    #   1. `day_rows` first, so the expensive per-ticker history scan is
+    #   1. `day_rows` first, so the expensive per-ticker history work is
     #      bounded to tickers that actually traded on :day. It rides the
     #      new idx_market_data_daily_date.
-    #   2. `usable` carries a ticker predicate, so each ticker's 450-day
-    #      count is an index range scan on (ticker, date DESC).
-    #   3. HAVING count(*) >= 50 is pushed into the CTE instead of being
-    #      applied in the outer WHERE, so short-history tickers never
-    #      reach the join.
+    #   2. Eligibility (>= 50 usable bars in the window) is a per-ticker
+    #      EXISTS probe with OFFSET 49 LIMIT 1: the (ticker, date) index
+    #      walks each ticker's window and STOPS at the 50th valid bar, so
+    #      the whole check touches ~50 rows x ~2.5k tickers instead of
+    #      counting the full ~1.1M-row window. Measured on production
+    #      2026-08-25 (5.5M-row table, cold cache): 40s, vs a >120s
+    #      statement-timeout for the count()/GROUP BY/HAVING form this
+    #      replaces -- which was itself the first fix attempt for #765
+    #      and still failed its own per-query bound on a quiet instance.
     #
     # Also anchors the history window on :day rather than CURRENT_DATE.
     # The two differ whenever :day falls back a session (before 05:00 ET,
@@ -1022,20 +1026,17 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
             FROM market_data_daily
             WHERE date = CAST(:day AS date)
               AND num_nulls(open, high, low, close, volume) = 0
-        ),
-        usable AS (
-            SELECT m.ticker
-            FROM market_data_daily m
-            WHERE m.ticker IN (SELECT ticker FROM day_rows)
-              AND m.date >= CAST(:day AS date) - 450
-              AND m.date <= CAST(:day AS date)
-              AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
-            GROUP BY m.ticker
-            HAVING count(*) >= 50
         )
         SELECT count(*) AS total, count(d.atr_14) AS non_null
         FROM day_rows d
-        JOIN usable u ON u.ticker = d.ticker
+        WHERE EXISTS (
+            SELECT 1 FROM market_data_daily m
+            WHERE m.ticker = d.ticker
+              AND m.date >= CAST(:day AS date) - 450
+              AND m.date <= CAST(:day AS date)
+              AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
+            OFFSET 49 LIMIT 1
+        )
     """
     df = query_to_dataframe_strict(sql, {'day': latest_day},
                                    timeout_s=_CHECK_QUERY_TIMEOUT_S)

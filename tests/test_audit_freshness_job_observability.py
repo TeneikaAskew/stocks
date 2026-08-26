@@ -262,11 +262,14 @@ def test_enrichment_sql_is_bounded_to_the_days_tickers(monkeypatch):
     calls = _patch_strict(monkeypatch, pd.DataFrame([{"total": 10, "non_null": 10}]))
     _query_enrichment_coverage(datetime(2026, 8, 25, 14, 0))
     sql = calls[0]["sql"]
-    assert "m.ticker IN (SELECT ticker FROM day_rows)" in sql, (
-        "the 450-day scan lost its ticker predicate — this is the exact "
+    assert "m.ticker = d.ticker" in sql, (
+        "the history probe lost its per-ticker correlation — this is the "
         "shape that caused the #765 full-table scan")
-    assert "HAVING count(*) >= 50" in sql, (
-        "the >=50-bar filter belongs in the CTE, not the outer WHERE")
+    assert "OFFSET 49 LIMIT 1" in sql, (
+        "eligibility must be an early-exit EXISTS probe (~50 rows/ticker); "
+        "a count()/GROUP BY/HAVING form re-scans the full ~1.1M-row window "
+        "and exceeded the 120s per-query bound even on a quiet instance")
+    assert "EXISTS" in sql
 
 
 def test_enrichment_sql_anchors_on_day_not_wall_clock(monkeypatch):
