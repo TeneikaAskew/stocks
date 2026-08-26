@@ -588,6 +588,49 @@ reverse immediately and stay reversed. This independently corroborates
 trade-by-trade replay and a decade of directional persistence, making
 it the best-evidenced behavior change in this review.
 
+## 14. Holdout test (user-directed): train < Jul 22, score frozen policies on the last 35 days
+
+Protocol: all decisions derived ONLY from fires before 2026-07-22
+(training, n=2,584); policies then frozen and scored side-by-side on
+2026-07-22 → 2026-08-25 (holdout, n=304) — a September-style test run
+today.
+
+### Step 1 — what training alone would adopt
+
+| Decision input (train only) | Verdict |
+|---|---|
+| PUT exits: hold-30 vs engine — mean Δ +0.158%/trade, **86.4% of 1,324 trades improved (t≈37)**, totals +179.2 vs −30.5 | **Adopt** `put_exit_mode='fixed_horizon'` |
+| CALL exits: mean Δ −0.118%/trade, only 22.5% improved | **Keep** `call_exit_mode='target_stop'` |
+| Volume gate: rvol≥1 fires −0.020%/trade (48.1% win) vs rvol<1 −0.004%/trade (49.8%) | **REJECT the gate** — training says gated fires were *worse* |
+
+### Step 2 — frozen policies on the holdout (Jul 22 – Aug 25)
+
+| Policy | n | Total | Per-trade | Win % |
+|---|---|---|---|---|
+| A · engine as-is | 304 | +3.17 | +0.010% | 57.6 |
+| B · asymmetric exits (PUT hold-30) | 304 | **+3.65** | +0.012% | 57.2 |
+| C · volume gate only | 84 | +3.28 | +0.039% | 63.1 |
+| D · gate + asymmetric | 84 | +3.05 | +0.036% | 63.1 |
+
+Holdout per-direction detail: CALL engine +3.39 (56.9% win) vs CALL
+hold-30 +1.89 — confirming calls must NOT be held; PUT engine −0.21 vs
+PUT hold-30 **+0.27** (n=42, mean Δ +0.011, t=0.64 — direction agrees
+with training, sample too small to be significant alone).
+
+### Verdict
+
+- **Asymmetric exits: PASS.** Overwhelming on training (86% of 1,324
+  put trades improved), directionally confirmed on the frozen holdout
+  (PUT −0.21 → +0.27). The holdout effect is small in absolute terms
+  because the recent book is 86% CALLs — the change's real value is
+  insurance for PUT-heavy regimes (May: +203 pct swing).
+- **Volume gate: FAIL under this protocol.** A training-only decision
+  maker would never have adopted it (gated fires were worse before
+  Jul 22), consistent with the decade test (§13). Its entire case rests
+  on the Jun–Aug window it was discovered in. Status downgraded:
+  shadow-only, presumption *against* enforcement unless September's
+  frozen-rule data is strongly positive.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
