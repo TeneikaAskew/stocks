@@ -39,7 +39,7 @@ test.describe('Market data', () => {
     expect(json.dates.length).toBeGreaterThan(50);
   });
 
-  test('GET /api/market/reference/:ticker/:date populates prev session', async ({ request }) => {
+  test('GET /api/market/reference/:ticker/:date populates the week block', async ({ request }) => {
     const dates = await getOk(request, '/api/market/dates/IWM');
     const date = dates.dates[Math.floor(dates.dates.length / 2)];
     const ref = await getOk(request, `/api/market/reference/IWM/${date}`);
@@ -50,11 +50,20 @@ test.describe('Market data', () => {
     expect(ref).toHaveProperty('close');
     expect(ref.high).toBeGreaterThanOrEqual(ref.low);
 
-    // Previous session fields landed during the April 10 gap fix. They live
-    // under the `week` sub-object, not the top level.
+    // The `week` sub-object is the prior-5-trading-day window built by
+    // _fetch_week_range (api/main.py): high, low, avg_close, avg_rsi_14,
+    // start_date, end_date, sessions. There are no prev_session_* fields in
+    // this contract — the top-level OHLC row IS the previous session (the
+    // endpoint returns "the trading day immediately before the requested
+    // date", get_reference_levels docstring).
     expect(ref).toHaveProperty('week');
-    expect(ref.week).toHaveProperty('prev_session_close');
-    expect(ref.week).toHaveProperty('prev_session_date');
+    expect(ref.week).toHaveProperty('high');
+    expect(ref.week).toHaveProperty('low');
+    expect(ref.week).toHaveProperty('avg_close');
+    expect(ref.week).toHaveProperty('start_date');
+    expect(ref.week).toHaveProperty('end_date');
+    expect(ref.week).toHaveProperty('sessions');
+    expect(ref.week.high).toBeGreaterThanOrEqual(ref.week.low);
   });
 
   test('GET /api/market/data/:ticker/:date returns candlestick bars', async ({ request }) => {
@@ -79,9 +88,13 @@ test.describe('Live / signals / options / playbook routers', () => {
     expect(res.status(), `/api/signals/IWM returned ${res.status()}`).toBeLessThan(500);
   });
 
-  test('GET /api/playbook/rules responds without a server error', async ({ request }) => {
-    const res = await request.get(API + '/api/playbook/rules');
-    expect(res.status()).toBeLessThan(500);
+  test('GET /api/playbook/IWM responds without a server error', async ({ request }) => {
+    // There is no /api/playbook/rules route — the playbook router exposes
+    // /api/playbook/{ticker} and /api/playbook/evaluate (playbook.py), so
+    // "rules" was being swallowed as a ticker and 502'd on the GCS markdown
+    // bridge. Smoke the real per-ticker route instead.
+    const res = await request.get(API + '/api/playbook/IWM');
+    expect(res.status(), `/api/playbook/IWM returned ${res.status()}`).toBeLessThan(500);
   });
 
   test('GET /api/options/IWM responds without a server error', async ({ request }) => {

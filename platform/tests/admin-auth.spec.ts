@@ -216,6 +216,22 @@ test.describe('Admin — non-admin users', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('Sidebar — Admin link visibility', () => {
+  // The app's default nav shell is now top-tabs (settingsStore.ts DEFAULTS:
+  // navPattern 'top-tabs'), where the Admin link lives inside the collapsed
+  // SUPPORT dropdown and is not an always-visible <nav> anchor. This suite
+  // exercises the Sidebar component specifically (AppShell.tsx renders
+  // Sidebar only when navPattern === 'sidebar'), so pin the persisted shell
+  // setting before the app boots — same mechanism a user pinning the sidebar
+  // in Settings would produce.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem(
+        'platform-shell-settings',
+        JSON.stringify({ navPattern: 'sidebar', density: 'dense', accent: 'blue' }),
+      );
+    });
+  });
+
   test('admin email sees Admin link in sidebar', async ({ page }) => {
     await page.route('**/api/me', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
@@ -269,7 +285,13 @@ test.describe('Sidebar — Admin link visibility', () => {
     await expect(page.getByTestId('admin-routes-table')).toBeVisible();
   });
 
-  test('sidebar nav count is 11 for non-admin (no Admin link)', async ({ page }) => {
+  // Expected counts come from navConfig.ts NAV_GROUPS (the Sidebar renders
+  // every group item as a NavLink): TRADING 1 (dashboard) + MARKET 4 (live,
+  // charts, options, signals) + INTELLIGENCE 2 (insights, catalysts) +
+  // LEARN 3 (playbook, reports, journal) + SUPPORT 4 (admin*, settings,
+  // help, /#faq) = 14 links for an admin; the adminOnly /admin link is
+  // filtered out for everyone else (Sidebar.tsx) → 13.
+  test('sidebar nav count is 13 for non-admin (no Admin link)', async ({ page }) => {
     await page.route('**/api/me', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ email: null, is_admin: false }) }),
     );
@@ -279,10 +301,10 @@ test.describe('Sidebar — Admin link visibility', () => {
     // Wait for nav to fully render before counting
     await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const nav = page.locator('nav a');
-    await expect(nav).toHaveCount(11);
+    await expect(nav).toHaveCount(13);
   });
 
-  test('sidebar nav count is 12 for admin (includes Admin link)', async ({ page }) => {
+  test('sidebar nav count is 14 for admin (includes Admin link)', async ({ page }) => {
     await page.route('**/api/me', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL, is_admin: true }) }),
     );
@@ -292,6 +314,6 @@ test.describe('Sidebar — Admin link visibility', () => {
     // Wait for admin link to appear before counting
     await expect(page.locator('nav a[href="/admin"]')).toBeVisible();
     const nav = page.locator('nav a');
-    await expect(nav).toHaveCount(12);
+    await expect(nav).toHaveCount(14);
   });
 });

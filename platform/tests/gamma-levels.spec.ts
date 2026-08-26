@@ -15,6 +15,7 @@
  *   - Vite dev server on :5173
  */
 import { test, expect } from '@playwright/test';
+import { mockOptionsApi } from './helpers/mocks';
 
 const ETF_TICKER = 'QQQ'; // a ticker we know has chain data
 
@@ -103,12 +104,23 @@ test.describe('Gamma Levels: API contract', () => {
   });
 });
 
+// The /options page was restructured (OptionsFlowPage.tsx): it opens on the
+// Heatseeker tab (SwingMode gamma cockpit) and the original levels/chain
+// profile — spot-method chip, ★ King / ◆ Gate taxonomy chips, metric cards,
+// regime label — moved verbatim into the Profiles tab (ProfilesTab.tsx).
+// These tests run fully mocked via mockOptionsApi (dates + chain + grid +
+// levels + greeks — every request the page makes), so the assertions are
+// deterministic instead of the old "pass vacuously when Cloud SQL is empty"
+// conditionals.
 test.describe('Gamma Levels: OptionsFlowPage UI', () => {
   test.beforeEach(async ({ page }) => {
-    // Switch to an ETF ticker we know has chain data, then go to /options
-    await page.goto('/dashboard');
-    await page.waitForLoadState('networkidle');
+    await mockOptionsApi(page);
   });
+
+  /** The levels/chain profile view now lives behind the Profiles tab. */
+  async function openProfilesTab(page: import('@playwright/test').Page) {
+    await page.getByRole('button', { name: 'Profiles' }).click();
+  }
 
   test('options page renders without console errors', async ({ page }) => {
     const errors: string[] = [];
@@ -117,7 +129,10 @@ test.describe('Gamma Levels: OptionsFlowPage UI', () => {
     });
     await page.goto('/options');
     await page.waitForLoadState('networkidle');
-    await page.waitForTimeout(2500);
+    // Cover the Profiles tab too — it triggers the chain + greeks fetches.
+    await openProfilesTab(page);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
     // Filter out 3rd-party noise
     const real = errors.filter((e) => !e.includes('favicon') && !e.includes('extension'));
     expect(real, real.join('\n')).toHaveLength(0);
@@ -125,50 +140,45 @@ test.describe('Gamma Levels: OptionsFlowPage UI', () => {
 
   test('options page shows spot method chip when /levels resolves', async ({ page }) => {
     await page.goto('/options');
-    // Allow the levels query to resolve
-    await page.waitForTimeout(3500);
-    // The chip is a small badge with one of the method names
+    await openProfilesTab(page);
+    // The chip next to the spot input renders the server's estimation method
+    // (ProfilesTab.tsx spotMethod chip; fixture uses put-call parity). The
+    // same value appears in the Swing legend's "Spot method" chip.
     const chip = page.locator('text=/^(parity|delta|median_strike|override)$/').first();
-    // Don't fail hard if cloud sql is empty — just verify it's not silently broken
-    const count = await chip.count();
-    if (count > 0) {
-      await expect(chip).toBeVisible();
-    }
+    await expect(chip).toBeVisible();
   });
 
-  test('options page shows King/Gate or fallback message', async ({ page }) => {
+  test('options page shows King/Gate taxonomy chips', async ({ page }) => {
     await page.goto('/options');
-    await page.waitForTimeout(3500);
-    // Either we see the new King/Gate chips OR the legacy ★ King badge OR
-    // the explicit "couldn't estimate spot" fallback. One of the three must
-    // be present — the silent-disappearance bug is what we're regressing.
-    const newKing = page.locator('text=/★ King \\$/');
-    const legacyKing = page.locator('text=/★ King: \\$/');
-    const fallback = page.locator("text=/Couldn't estimate spot/");
-    const totalVisible =
-      (await newKing.count()) + (await legacyKing.count()) + (await fallback.count());
-    expect(totalVisible, 'at least one of: King chip, legacy King badge, or spot-fallback message').toBeGreaterThan(0);
+    await openProfilesTab(page);
+    // The King/Gate chips render from /levels kings[]/gates[]
+    // (ProfilesTab.tsx "★ King $…" / "◆ Gate $…"). With the populated
+    // fixture they MUST be present — the silent-disappearance bug is what
+    // we're regressing. The "Couldn't estimate spot" fallback branch is
+    // unreachable here because the fixture carries a parity spot.
+    await expect(page.locator('text=/★ King \\$/')).toBeVisible();
+    await expect(page.locator('text=/◆ Gate \\$/').first()).toBeVisible();
   });
 
-  test('options page renders metrics bar OR explicit fallback', async ({ page }) => {
+  test('options page renders the metrics bar', async ({ page }) => {
     await page.goto('/options');
-    await page.waitForTimeout(3500);
-    // Either Total GEX/Gamma Flip metric cards are visible OR the fallback message
-    const metricCard = page.getByText(/Gamma Flip|Total GEX|Total VEX/).first();
-    const fallback = page.locator("text=/Couldn't estimate spot/");
-    const oneOrOther = (await metricCard.count()) + (await fallback.count());
-    expect(oneOrOther).toBeGreaterThan(0);
+    await openProfilesTab(page);
+    // Metric cards render once spot resolves (ProfilesTab.tsx metrics bar):
+    // Total GEX/VEX from POST /greeks, Gamma Flip from /levels gamma_balance.
+    // exact:true keeps "Gamma Flip" from also matching the regime description
+    // text ("Above gamma flip — pinning / range-bound").
+    await expect(page.getByText('Total GEX', { exact: true })).toBeVisible();
+    await expect(page.getByText('Gamma Flip', { exact: true })).toBeVisible();
   });
 
-  test('regime chip uses Positive/Negative/Unclear wording when present', async ({ page }) => {
+  test('regime chip uses Positive/Negative/Unclear wording', async ({ page }) => {
     await page.goto('/options');
-    await page.waitForTimeout(3500);
-    // If a regime is shown, it must be one of the three labels
-    const regimeText = page.locator('text=/Positive gamma|Negative gamma|Regime unclear/').first();
-    const count = await regimeText.count();
-    if (count > 0) {
-      await expect(regimeText).toBeVisible();
-    }
+    await openProfilesTab(page);
+    // regimeLabel() (useGammaLevels.ts) maps positive_gamma → "Positive
+    // gamma", negative_gamma → "Negative gamma", unknown → "Regime unclear";
+    // the fixture pins positive_gamma so the chip must render its label
+    // (ProfilesTab.tsx regime chip).
+    await expect(page.getByText('Positive gamma', { exact: true })).toBeVisible();
   });
 });
 
@@ -215,9 +225,13 @@ test.describe('Gamma Levels: Help page glossary', () => {
     await page.goto('/help');
     await page.waitForLoadState('networkidle');
     await page.getByRole('button', { name: /Gamma Levels \(\d+\)/ }).click();
-    // Spot-check several gamma terms that must be present after filtering
+    // Spot-check several gamma terms that must be present after filtering.
+    // "Gamma Flip" needs exact matching: the regime entries' shorts also
+    // contain the phrase ("Price is above the gamma flip — …",
+    // HelpPage.tsx Regime entries), which trips strict mode on a substring
+    // match now that those entries exist.
     await expect(page.getByText('GEX (Gamma Exposure)')).toBeVisible();
-    await expect(page.getByText('Gamma Flip')).toBeVisible();
+    await expect(page.getByText('Gamma Flip', { exact: true })).toBeVisible();
     await expect(page.getByText('King Node (★)')).toBeVisible();
     await expect(page.getByText('Gate Node (◆)')).toBeVisible();
     await expect(page.getByText(/^Regime — Positive Gamma$/)).toBeVisible();
@@ -230,8 +244,11 @@ test.describe('Gamma Levels: Help page glossary', () => {
     await page.getByRole('button', { name: /The Strat \(\d+\)/ }).click();
     await expect(page.getByText('Failed 2U')).toBeVisible();
     await expect(page.getByText('Failed 2D')).toBeVisible();
-    await expect(page.getByText('2U Continuation')).toBeVisible();
-    await expect(page.getByText('2D Continuation')).toBeVisible();
+    // The per-direction "2U/2D Continuation" entries were consolidated into
+    // a single "22 Continuation" term (covering 22_bull/22_bear) alongside
+    // "212 Reversal" — see HelpPage.tsx's The Strat glossary entries.
+    await expect(page.getByText('22 Continuation')).toBeVisible();
+    await expect(page.getByText('212 Reversal')).toBeVisible();
   });
 
   test('search "King Node" returns the gamma entry', async ({ page }) => {
