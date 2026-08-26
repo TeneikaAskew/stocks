@@ -961,3 +961,35 @@ def test_build_summary_full_coverage_no_greeks_warning():
     rows = [_chain_row(s) for s in range(90, 110)]
     s = build_summary("SPY", "2026-08-25", rows)
     assert not any("gamma missing" in w for w in s.warnings), s.warnings
+
+
+def test_greeks_coverage_counts_nan_as_missing():
+    """Codex P1 #791: SQL NULL arrives as float('nan') through pandas-
+    backed loaders (p2_build_gamma_levels) — must count as missing, or a
+    chain-wide outage reads 100% coverage and NaN poisons every sum."""
+    from lib.gamma import greeks_coverage
+    rows = [_chain_row(100, gamma=float("nan")), _chain_row(101)]
+    cov, miss, total = greeks_coverage(rows)
+    assert miss == 1 and total == 2
+
+
+def test_build_summary_nan_outage_is_unavailable_and_not_nan():
+    from lib.gamma import build_summary
+    rows = [_chain_row(s, gamma=float("nan")) for s in (98, 99, 100, 101)]
+    s = build_summary("SPY", "2026-08-25", rows)
+    assert s.regime == "unknown"
+    assert s.total_gex == 0.0 and s.total_gex == s.total_gex  # not NaN
+
+
+def test_build_summary_outage_preserves_spot():
+    """Codex P2 #791: an all-missing-gamma outage must not discard an
+    independently available spot (override or parity/delta from the
+    chain) — only the gamma-derived fields go unavailable."""
+    from lib.gamma import build_summary
+    rows = [_chain_row(s, gamma=None) for s in (98, 99, 100, 101, 102)]
+    s = build_summary("SPY", "2026-08-25", rows, spot_override=101.5)
+    assert s.regime == "unknown"
+    assert s.spot.price == 101.5 and s.spot.method == "override"
+    # And without an override, the delta/parity estimate still resolves.
+    s2 = build_summary("SPY", "2026-08-25", rows)
+    assert s2.spot.price > 0, s2.spot

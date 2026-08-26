@@ -217,7 +217,12 @@ def greeks_coverage(options: Sequence[dict]) -> tuple[float, int, int]:
     n_missing = 0
     for opt in options:
         n_total += 1
-        if opt.get("gamma") is None:
+        g = opt.get("gamma")
+        # SQL NULL arrives as None on the dict path but as float('nan')
+        # through pandas-backed loaders (p2_build_gamma_levels) — both
+        # are "missing", and NaN would otherwise poison every sum
+        # downstream (Codex P1, PR #791).
+        if g is None or (isinstance(g, float) and math.isnan(g)):
             n_missing += 1
     if n_total == 0:
         return 1.0, 0, 0
@@ -265,9 +270,9 @@ def aggregate_by_strike(options: Sequence[dict]) -> list[dict]:
         # degrades/refuses the aggregate when the miss rate is material
         # (CLAUDE.md 3.7 — the envelope is loud even if the row is quiet).
         _g = opt.get("gamma")
-        gamma_g = 0.0 if _g is None else _g
+        gamma_g = 0.0 if (_g is None or (isinstance(_g, float) and math.isnan(_g))) else _g
         _v = opt.get("vega")
-        vega_v = 0.0 if _v is None else _v
+        vega_v = 0.0 if (_v is None or (isinstance(_v, float) and math.isnan(_v))) else _v
         oi = opt.get("open_interest") or 0.0
         gamma_oi = float(gamma_g) * float(oi)
         vega_oi = float(vega_v) * float(oi)
@@ -337,9 +342,9 @@ def aggregate_by_strike_expiration(options: Sequence[dict]) -> list[dict]:
         # degrades/refuses the aggregate when the miss rate is material
         # (CLAUDE.md 3.7 — the envelope is loud even if the row is quiet).
         _g = opt.get("gamma")
-        gamma_g = 0.0 if _g is None else _g
+        gamma_g = 0.0 if (_g is None or (isinstance(_g, float) and math.isnan(_g))) else _g
         _v = opt.get("vega")
-        vega_v = 0.0 if _v is None else _v
+        vega_v = 0.0 if (_v is None or (isinstance(_v, float) and math.isnan(_v))) else _v
         oi = opt.get("open_interest") or 0.0
         gamma_oi = float(gamma_g) * float(oi)
         vega_oi = float(vega_v) * float(oi)
@@ -939,31 +944,6 @@ def build_summary(
     if expiry_filter:
         chain = [o for o in chain if o.get("expiration") == expiry_filter]
 
-    # §3.7 gate: a vendor-feed outage must read as UNAVAILABLE/degraded,
-    # never as "zero gamma everywhere". Coverage is measured up front so
-    # the per-row aggregation below can stay simple.
-    coverage, n_missing, n_rows = greeks_coverage(chain)
-    if n_rows > 0 and coverage == 0.0:
-        warnings.append(
-            f"Vendor gamma missing on ALL {n_rows} contracts — GEX "
-            "unavailable for this snapshot (feed outage?), not zero."
-        )
-        return GammaSummary(
-            ticker=ticker.upper(), snapshot_date=snapshot_date,
-            spot=SpotEstimate(price=0.0, method="none",
-                              note="greeks unavailable"),
-            gamma_balance=None, gamma_flip=None, regime="unknown",
-            total_gex=0.0, levels=[], kings=[], gates=[],
-            gamma_balance_levels=[], window_pct=window_pct,
-            warnings=warnings,
-        )
-    if coverage < 0.98:
-        warnings.append(
-            f"Vendor gamma missing on {n_missing}/{n_rows} contracts "
-            f"({coverage:.1%} coverage) — GEX is understated; treat "
-            "levels as degraded."
-        )
-
     if spot_override is not None and spot_override > 0:
         spot = SpotEstimate(price=float(spot_override), method="override",
                             note="caller-supplied spot")
@@ -981,6 +961,31 @@ def build_summary(
             gamma_balance=None, gamma_flip=None, regime="unknown", total_gex=0.0,
             levels=[], kings=[], gates=[], gamma_balance_levels=[],
             window_pct=window_pct, warnings=warnings,
+        )
+
+    # §3.7 gate: a vendor-feed outage must read as UNAVAILABLE/degraded,
+    # never as "zero gamma everywhere". Runs AFTER spot resolution so an
+    # independently-derivable spot (override, parity, delta) survives the
+    # outage (Codex P2, PR #791) — only the gamma-derived fields go
+    # unavailable.
+    coverage, n_missing, n_rows = greeks_coverage(chain)
+    if n_rows > 0 and coverage == 0.0:
+        warnings.append(
+            f"Vendor gamma missing on ALL {n_rows} contracts — GEX "
+            "unavailable for this snapshot (feed outage?), not zero."
+        )
+        return GammaSummary(
+            ticker=ticker.upper(), snapshot_date=snapshot_date, spot=spot,
+            gamma_balance=None, gamma_flip=None, regime="unknown",
+            total_gex=0.0, levels=[], kings=[], gates=[],
+            gamma_balance_levels=[], window_pct=window_pct,
+            warnings=warnings,
+        )
+    if coverage < 0.98:
+        warnings.append(
+            f"Vendor gamma missing on {n_missing}/{n_rows} contracts "
+            f"({coverage:.1%} coverage) — GEX is understated; treat "
+            "levels as degraded."
         )
 
     strikes = aggregate_by_strike(chain)
