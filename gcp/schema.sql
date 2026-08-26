@@ -2748,6 +2748,15 @@ ALTER TABLE signal_alerts
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
     ON signal_alerts(gate_action) WHERE gate_action IS NOT NULL;
 
+-- RVOL entry gate (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §10).
+-- Shadow-mode verdict recorded at fire time: 'pass' (RVOL >= configured
+-- minimum, default 1.0) or 'below'. NULL when the gate ran in 'off' mode
+-- or the row predates the gate. In 'enforce' mode suppressed fires are
+-- not persisted at all, so this column only ever holds the verdicts of
+-- fires that actually went out.
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS rvol_gate VARCHAR(8);
+
 
 -- ─────────────────────────────────────────────────────────
 -- BACKTEST PIPELINE (Cloud Run job: backtest-pipeline)

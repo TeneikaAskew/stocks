@@ -354,3 +354,74 @@ def test_persist_appends_to_active_positions():
     assert pos['target_price'] == 679.66
     assert pos['time_stop_minutes'] == 30
     assert pos['entry_price'] == 677.63
+
+
+# ── fixed_horizon exit mode (audit 2026-08-25 §10) ──────────────────
+# Default mode is 'target_stop' — every test above exercises it
+# unchanged. These pin the opt-in mode: nothing exits before the
+# horizon (target crossed or not), everything exits at the horizon
+# with reason 'fixed_horizon'.
+
+def test_fixed_horizon_ignores_target_before_horizon():
+    monitor = _make_monitor()
+    monitor.exit.call_exit_mode = 'fixed_horizon'
+    monitor.exit.call_fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
+                   target_price=679.66)  # seeded 5 min ago
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire:
+        # Price is far past the target — target_stop mode would exit here.
+        monitor._check_exits('QQQ', _bar(685.00, 50.0), 685.00)
+    assert not mock_fire.called, \
+        "fixed_horizon must NOT exit on target before the horizon"
+    assert len(monitor.active_positions['QQQ']) == 1
+
+
+def test_fixed_horizon_exits_at_horizon():
+    from datetime import datetime as _dt, timedelta as _td
+    monitor = _make_monitor()
+    monitor.exit.put_exit_mode = 'fixed_horizon'
+    monitor.exit.put_fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'PUT', entry_price=677.63,
+                   target_price=670.00,
+                   alert_ts=_dt.now() - _td(minutes=31))
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire, \
+         patch.object(monitor, '_persist_exit') as mock_persist:
+        monitor._check_exits('QQQ', _bar(678.00, 50.0), 678.00)
+    assert mock_fire.called and mock_persist.called
+    args, _ = mock_fire.call_args
+    assert args[2] == 'fixed_horizon', f"expected fixed_horizon, got {args[2]}"
+    assert monitor.active_positions['QQQ'] == []
+
+
+def test_fixed_horizon_ignores_rsi_extreme():
+    monitor = _make_monitor()
+    monitor.exit.call_exit_mode = 'fixed_horizon'
+    monitor.exit.call_fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
+                   target_price=685.00)  # 5 min ago
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire:
+        monitor._check_exits('QQQ', _bar(678.00, 95.0), 678.00)  # RSI 95
+    assert not mock_fire.called, \
+        "fixed_horizon must NOT exit on extreme RSI before the horizon"
+
+
+def test_asymmetric_modes_call_targets_while_put_holds():
+    # The evidence-supported configuration (audit §12): CALLs keep the
+    # quick-target machinery, PUTs hold to a fixed horizon. Both legs
+    # cross their targets on this bar sequence — only the CALL may exit.
+    monitor = _make_monitor()
+    monitor.exit.call_exit_mode = 'target_stop'
+    monitor.exit.put_exit_mode = 'fixed_horizon'
+    monitor.exit.put_fixed_horizon_minutes = 30
+    _seed_position(monitor, 'QQQ', 'CALL', entry_price=677.63,
+                   target_price=679.66)
+    _seed_position(monitor, 'QQQ', 'PUT', entry_price=690.00,
+                   target_price=685.00)  # price 679.70 <= 685 → put target crossed
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire, \
+         patch.object(monitor, '_persist_exit'):
+        monitor._check_exits('QQQ', _bar(679.70, 50.0), 679.70)
+    reasons = [c.args[2] for c in mock_fire.call_args_list]
+    assert reasons == ['target_hit'], f"only the CALL may exit, got {reasons}"
+    remaining = monitor.active_positions['QQQ']
+    assert len(remaining) == 1 and remaining[0]['direction'] == 'PUT', \
+        "the PUT must still be open despite its target being crossed"

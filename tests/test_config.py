@@ -1468,3 +1468,60 @@ class TestConfigValidation:
         path = _write_config(tmp_path, data)
         with pytest.raises(ConfigValidationError, match="max_daily_trades"):
             load_config(path)
+
+
+class TestRvolGateAndExitModeLoading:
+    """JSON loading for the audit-2026-08-25 config levers (Codex P2s on
+    PR #774): rvol_gate_mode / rvol_gate_min in the signal section and
+    per-direction exit modes under alerts.exit_alerts.exit_mode. Without
+    these loader paths the levers could only be flipped by editing
+    Python source."""
+
+    def _load(self, tmp_path, payload):
+        import json as _json
+        p = tmp_path / "cfg.json"
+        p.write_text(_json.dumps(payload))
+        return load_config(config_path=str(p))
+
+    def test_defaults_without_json_keys(self, tmp_path):
+        cfg = self._load(tmp_path, {})
+        assert cfg.signal.rvol_gate_mode == 'shadow'
+        assert cfg.signal.rvol_gate_min == 1.0
+        assert cfg.exit.call_exit_mode == 'target_stop'
+        assert cfg.exit.put_exit_mode == 'target_stop'
+
+    def test_rvol_gate_loaded_from_signal_section(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "signal": {"rvol_gate_mode": "enforce", "rvol_gate_min": 1.5}})
+        assert cfg.signal.rvol_gate_mode == 'enforce'
+        assert cfg.signal.rvol_gate_min == 1.5
+
+    def test_rvol_gate_invalid_mode_fails_loud(self, tmp_path):
+        import pytest as _pytest
+        from lib.config import ConfigValidationError
+        with _pytest.raises(ConfigValidationError):
+            self._load(tmp_path, {"signal": {"rvol_gate_mode": "shdow"}})
+
+    def test_exit_modes_loaded_per_direction(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "alerts": {"exit_alerts": {"exit_mode": {
+                "put": "fixed_horizon", "put_fixed_horizon_minutes": 45}}}})
+        assert cfg.exit.put_exit_mode == 'fixed_horizon'
+        assert cfg.exit.put_fixed_horizon_minutes == 45
+        assert cfg.exit.call_exit_mode == 'target_stop', \
+            "call side must stay untouched when only put is configured"
+
+    def test_exit_mode_invalid_value_fails_loud(self, tmp_path):
+        import pytest as _pytest
+        from lib.config import ConfigValidationError
+        with _pytest.raises(ConfigValidationError):
+            self._load(tmp_path, {
+                "alerts": {"exit_alerts": {"exit_mode": {"call": "fixed"}}}})
+
+    def test_exit_mode_nonpositive_minutes_fails_loud(self, tmp_path):
+        import pytest as _pytest
+        from lib.config import ConfigValidationError
+        with _pytest.raises(ConfigValidationError):
+            self._load(tmp_path, {
+                "alerts": {"exit_alerts": {"exit_mode": {
+                    "put": "fixed_horizon", "put_fixed_horizon_minutes": 0}}}})

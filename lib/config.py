@@ -260,6 +260,30 @@ class ExitConfig:
     put_time_stop: int = 35       # minutes
     call_rsi_exit: float = 80.0
     put_rsi_exit: float = 20.0
+    # Per-direction exit-policy mode
+    # (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §12).
+    # 'target_stop' (both defaults) is the existing first-touch-target /
+    # time-stop / rsi-extreme machinery — zero behavior change.
+    # 'fixed_horizon' exits every position of that direction at its
+    # *_fixed_horizon_minutes, full stop — no target, no RSI exit.
+    # The modes are PER-DIRECTION because the paired per-trade tests
+    # (§12, n=2,888) show the effect is directional, not global:
+    #   - CALL: quick-target exits beat hold-30 in EVERY era (May
+    #     t=-44.8; Jun-Aug n.s. in the engine's favor) — upside
+    #     momentum fades. Never flip call_exit_mode on current evidence.
+    #   - PUT: hold-30 beats the engine in May (t=+58.6, 97% of trades)
+    #     AND the current era (t=+4.9, p<0.0001, totals +2.9 vs -7.3) —
+    #     downside moves trend and the +0.38% put target truncates
+    #     them. put_exit_mode='fixed_horizon' is the evidence-supported
+    #     flip.
+    # PRECONDITION for enabling either: the EOD resolver
+    # (gcp/signal_monitor_eod_resolver.py:_detect_exit) mirrors these
+    # modes, so live monitor and resolver stay comparable — flip the
+    # config, never just one code path.
+    call_exit_mode: str = 'target_stop'   # 'target_stop' | 'fixed_horizon'
+    put_exit_mode: str = 'target_stop'    # 'target_stop' | 'fixed_horizon'
+    call_fixed_horizon_minutes: int = 30
+    put_fixed_horizon_minutes: int = 30
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +379,21 @@ class SignalConfig:
     # estimates ~150-200 additional fires/day across SPY/IWM/QQQ at
     # MIN_CONDITIONS_MOMENTUM=5 + core gate.
     enable_standalone_momentum: bool = False
+    # RVOL entry gate (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §10).
+    # 71% of Jun-Aug fires carried RVOL < 1.0 and hit the called
+    # direction only 47.5% of the time at +30 min; the RVOL >= 1.0
+    # cohort hit ~62% and was net-positive under the live exit engine
+    # (+4.41 vs -5.37 summed pct). Modes:
+    #   'off'     — gate disabled, nothing recorded.
+    #   'shadow'  — fire exactly as today; persist the verdict to
+    #               signal_alerts.rvol_gate ('pass'/'below') so the
+    #               September out-of-sample check is a SQL query.
+    #               DEFAULT: measurement first, behavior change later
+    #               (May 2026 is a counterexample month — see audit).
+    #   'enforce' — suppress fires with RVOL below the threshold
+    #               (no Discord, no persist, no trade-cap increment).
+    rvol_gate_min: float = 1.0
+    rvol_gate_mode: str = 'shadow'  # 'off' | 'shadow' | 'enforce'
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
     # Task 4.3 fix (trading-logic review of 1c7a7f35): when set, restricts
@@ -641,6 +680,31 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
             app.exit.call_rsi_exit = rsi_exit.get('call_rsi_exit', app.exit.call_rsi_exit)
             app.exit.put_rsi_exit = rsi_exit.get('put_rsi_exit', app.exit.put_rsi_exit)
 
+        # Per-direction exit modes (audit 2026-08-25 §12). Shape:
+        #   "exit_mode": {"call": "target_stop", "put": "fixed_horizon",
+        #                 "call_fixed_horizon_minutes": 30,
+        #                 "put_fixed_horizon_minutes": 30}
+        # Invalid values fail loud (CLAUDE.md §3.7) — a typo'd mode must
+        # never silently fall back to the default exit behavior.
+        em = exit_alerts.get('exit_mode', {})
+        if em:
+            for side in ('call', 'put'):
+                mode = em.get(side)
+                if mode is not None:
+                    if mode not in ('target_stop', 'fixed_horizon'):
+                        raise ConfigValidationError(
+                            f"exit_mode.{side} must be 'target_stop' or "
+                            f"'fixed_horizon', got {mode!r}")
+                    setattr(app.exit, f'{side}_exit_mode', mode)
+                mins = em.get(f'{side}_fixed_horizon_minutes')
+                if mins is not None:
+                    mins = int(mins)
+                    if mins <= 0:
+                        raise ConfigValidationError(
+                            f"exit_mode.{side}_fixed_horizon_minutes must be "
+                            f"> 0, got {mins}")
+                    setattr(app.exit, f'{side}_fixed_horizon_minutes', mins)
+
     # --- Signal parameters (baseline from alerts, then signal section) ---
     call_alert = alerts.get('primary_call_alert', {}).get('conditions', {})
     if call_alert:
@@ -674,6 +738,23 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         app.signal.put_entry_end = sig_data.get('put_entry_end', app.signal.put_entry_end)
         app.signal.premarket_signal_threshold = sig_data.get('premarket_signal_threshold', app.signal.premarket_signal_threshold)
         app.signal.premarket_building_threshold = sig_data.get('premarket_building_threshold', app.signal.premarket_building_threshold)
+        # RVOL entry gate (audit 2026-08-25 §10/§13). Invalid values fail
+        # loud — the gate's whole point is that a fire's volume check is
+        # deliberate, so a typo'd mode must never silently mean 'shadow'.
+        gate_mode = sig_data.get('rvol_gate_mode')
+        if gate_mode is not None:
+            if gate_mode not in ('off', 'shadow', 'enforce'):
+                raise ConfigValidationError(
+                    f"signal.rvol_gate_mode must be 'off', 'shadow' or "
+                    f"'enforce', got {gate_mode!r}")
+            app.signal.rvol_gate_mode = gate_mode
+        gate_min = sig_data.get('rvol_gate_min')
+        if gate_min is not None:
+            gate_min = float(gate_min)
+            if gate_min < 0:
+                raise ConfigValidationError(
+                    f"signal.rvol_gate_min must be >= 0, got {gate_min}")
+            app.signal.rvol_gate_min = gate_min
 
     # --- Strat config ---
     strat_data = data.get('strat', {})

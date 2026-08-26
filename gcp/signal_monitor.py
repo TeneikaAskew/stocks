@@ -83,6 +83,21 @@ logger = logging.getLogger(__name__)
 AV_BASE_URL = 'https://www.alphavantage.co/query'
 
 
+def rvol_gate_verdict(rvol: float, min_rvol: float, mode: str):
+    """Pure verdict for the RVOL entry gate.
+
+    Returns 'pass' / 'below', or None when the gate is off. A missing or
+    zero RVOL counts as 'below' — an unconfirmed-volume fire is exactly
+    what the gate exists to flag (audit 2026-08-25 §10), and NaN must
+    never silently pass a gate (CLAUDE.md §3.7).
+    """
+    if mode == 'off':
+        return None
+    if rvol is None or not rvol == rvol:  # None or NaN
+        return 'below'
+    return 'pass' if rvol >= min_rvol else 'below'
+
+
 class SignalMonitor:
     """Real-time signal monitor for market hours."""
 
@@ -846,6 +861,23 @@ class SignalMonitor:
         price = latest.get('Close', latest.get('Last', 0))
         agreement = getattr(self, '_latest_agreement', None)
 
+        # RVOL entry gate (audit 2026-08-25 §10). Verdict is computed for
+        # every fire; 'shadow' (default) tags the persisted row and
+        # changes nothing else, 'enforce' suppresses the fire entirely —
+        # before Discord, persist, and the daily-trades counter, so a
+        # suppressed fire is invisible to the risk caps too.
+        rvol_value = float(latest.get('RVOL', 0) or 0)
+        self._latest_rvol_gate = rvol_gate_verdict(
+            rvol_value, self.signal_cfg.rvol_gate_min,
+            self.signal_cfg.rvol_gate_mode)
+        if (self.signal_cfg.rvol_gate_mode == 'enforce'
+                and self._latest_rvol_gate == 'below'):
+            logger.info(
+                "rvol_gate: suppressed %s %s fire (rvol=%.2f < min=%.2f)",
+                ticker, direction, rvol_value, self.signal_cfg.rvol_gate_min,
+            )
+            return
+
         # Per-ticker exit overrides (Tier-A). Falls back to ExitConfig
         # defaults when exit_config_overrides has no row / NULL / stale.
         from lib.strategies.exit_config_overrides import (
@@ -1064,6 +1096,10 @@ class SignalMonitor:
             'brief_bias':        (getattr(self, '_latest_brief_bias', {}) or {}).get('bias'),
             'brief_alignment':   getattr(self, '_latest_brief_alignment', None),
             'brief_setup_count': (getattr(self, '_latest_brief_bias', {}) or {}).get('setup_count'),
+            # RVOL entry-gate verdict ('pass'/'below', NULL when the gate
+            # is off). Shadow mode's whole output is this column — the
+            # out-of-sample check is a GROUP BY on it.
+            'rvol_gate':         getattr(self, '_latest_rvol_gate', None),
         }
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
@@ -1188,7 +1224,21 @@ class SignalMonitor:
             elapsed_min = (now_utc - pos['alert_ts']).total_seconds() / 60.0
             exit_reason = None
 
-            if pos['direction'] == 'CALL':
+            is_call = pos['direction'] == 'CALL'
+            dir_mode = (self.exit.call_exit_mode if is_call
+                        else self.exit.put_exit_mode)
+            if dir_mode == 'fixed_horizon':
+                # Audit 2026-08-25 §12: hold this direction's positions
+                # exactly N minutes — no target truncation, no RSI exit.
+                # Per-direction because the paired tests show upside
+                # fades (CALLs want quick targets) while downside trends
+                # (PUTs want the hold). Mirrored in the EOD resolver's
+                # _detect_exit; the two must stay in lock-step.
+                horizon = (self.exit.call_fixed_horizon_minutes if is_call
+                           else self.exit.put_fixed_horizon_minutes)
+                if elapsed_min >= horizon:
+                    exit_reason = 'fixed_horizon'
+            elif pos['direction'] == 'CALL':
                 if current_price >= pos['target_price']:
                     exit_reason = 'target_hit'
                 elif elapsed_min >= pos['time_stop_minutes']:

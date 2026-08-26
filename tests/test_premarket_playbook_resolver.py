@@ -265,3 +265,48 @@ def test_pnl_dollar_scales_with_notional():
     out_10k = resolve_leg('call', 100.0, 99.0, [101.0], bars, notional=10_000.0)
     out_100k = resolve_leg('call', 100.0, 99.0, [101.0], bars, notional=100_000.0)
     assert out_100k.eod_pnl_dollar == pytest.approx(out_10k.eod_pnl_dollar * 10)
+
+
+# ─── classify_date_outcome — sweep-mode exit semantics ──────────────────
+# The 2026-06-19 → 2026-08-25 outage happened because a same-day "no bars"
+# skip (the 16:30 ET run racing the ~21:00 ET intraday ingestion) exited 0
+# and the date was never revisited. These pin the classification that makes
+# that mode impossible: benign only for today-before-cutoff, red otherwise.
+
+from datetime import date as _date
+from zoneinfo import ZoneInfo as _ZoneInfo
+
+from gcp.premarket_playbook_resolver import classify_date_outcome
+
+_ET_TZ = _ZoneInfo('America/New_York')
+
+
+def test_classify_resolved_rows_is_ok():
+    now = datetime(2026, 8, 25, 21, 30, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 8, 25), 3, 0, now) == 'ok'
+
+
+def test_classify_partial_resolution_is_ok():
+    now = datetime(2026, 8, 25, 21, 30, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 8, 25), 1, 2, now) == 'ok'
+
+
+def test_classify_nothing_attempted_is_ok():
+    now = datetime(2026, 8, 25, 21, 30, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 8, 25), 0, 0, now) == 'ok'
+
+
+def test_classify_same_day_all_skipped_is_benign_any_hour():
+    # Ingestion time varies by weekday (Tue-Fri ~21:00 ET, Mon ~23:00 ET),
+    # so a same-day all-skip is always the pre-ingestion race; the sweep
+    # picks the date up on the next run. A real outage alarms the next
+    # night when the date ages into 'past'.
+    for hour in (16, 21, 23):
+        now = datetime(2026, 8, 25, hour, 30, tzinfo=_ET_TZ)
+        assert classify_date_outcome(_date(2026, 8, 25), 0, 3, now) == 'benign_pending'
+
+
+def test_classify_past_date_all_skipped_is_failed():
+    # A past date can never be a pre-ingestion race, whatever the hour.
+    now = datetime(2026, 8, 25, 16, 30, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2026, 8, 24), 0, 3, now) == 'failed'
