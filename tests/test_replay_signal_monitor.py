@@ -118,6 +118,7 @@ def test_capturing_fire_alert_records_basic_signal():
     monitor._latest_timeframe_tag = "30m"
     monitor._latest_expected_hold_min = 30
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
+    monitor._resolve_level_state.return_value = ('fresh', 'fresh')
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4,
@@ -157,6 +158,7 @@ def test_capturing_fire_alert_records_stacked_agreement():
     monitor._latest_timeframe_tag = "15m"
     monitor._latest_expected_hold_min = 15
     monitor._resolve_brief_alignment.return_value = ({'bias': 'UNAVAILABLE'}, None)
+    monitor._resolve_level_state.return_value = (None, None)
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["consecutive_down"]}
@@ -184,6 +186,7 @@ def test_capturing_fire_alert_to_dict_is_json_safe():
     monitor._latest_timeframe_tag = "60m"
     monitor._latest_expected_hold_min = 60
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'invalidated')
+    monitor._resolve_level_state.return_value = ('post_t1', 'fresh')
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "PUT", "base_score": 3, "conditions_met": ["consecutive_up"]}

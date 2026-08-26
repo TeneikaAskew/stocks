@@ -71,6 +71,79 @@ class LevelMap:
     put_levels: list = field(default_factory=list)
 
 
+# ─── Per-leg intraday state (resolver-parity) ─────────────────────────────
+
+# States a playbook leg moves through intraday, in escalation order.
+# 'invalidated' outranks 'post_t1' at read time: once the stop has traded
+# after the trigger, the leg is dead regardless of how many targets it
+# tagged on the way.
+LEG_STATES = ('no_setup', 'fresh', 'triggered', 'post_t1', 'invalidated')
+
+
+@dataclass
+class LegStateTracker:
+    """Incremental intraday state for ONE playbook leg (calls or puts).
+
+    Touch semantics deliberately mirror
+    ``gcp.premarket_playbook_resolver.resolve_leg`` so the live tag and
+    the nightly resolver can never disagree about what "triggered" or
+    "stopped" means:
+
+      * trigger — first bar whose high >= trigger (call) / low <= trigger
+        (put). Until then T1/stop touches DO NOT count (a session that
+        trades through the call-side stop without ever triggering the
+        call leg leaves that leg 'fresh', exactly as the resolver's
+        stop-scan starts at the trigger bar).
+      * T1 / stop — first touch from the trigger bar INCLUSIVE onward,
+        so a one-bar sweep through trigger+T1 (64.8%% of T1 hits in the
+        Mar–Aug 2026 sample — audit §15) lands in 'post_t1' immediately.
+
+    Feed bars in chronological order via ``update``; read ``state`` any
+    time. The 2026-08-26 audit §15 validated the states as an outcome
+    predictor: fires in 'post_t1'/'invalidated' lose (fwd30 t=-3.6,
+    holdout t=-2.7) while 'fresh'/'triggered' fires win.
+    """
+    direction: str                  # 'call' | 'put'
+    trigger: Optional[float] = None
+    t1: Optional[float] = None
+    stop: Optional[float] = None
+    triggered: bool = False
+    t1_hit: bool = False
+    stop_hit: bool = False
+
+    def update(self, bar_high: float, bar_low: float) -> None:
+        """Fold one bar's high/low into the leg state (chronological)."""
+        if self.trigger is None or self.trigger <= 0:
+            return
+        if bar_high != bar_high or bar_low != bar_low:  # NaN bar
+            return
+        is_call = (self.direction == 'call')
+        if not self.triggered:
+            crossed = (bar_high >= self.trigger) if is_call else (bar_low <= self.trigger)
+            if not crossed:
+                return
+            self.triggered = True
+        # From the trigger bar inclusive — same bar may sweep T1/stop.
+        if not self.t1_hit and self.t1 is not None and self.t1 > 0:
+            if (bar_high >= self.t1) if is_call else (bar_low <= self.t1):
+                self.t1_hit = True
+        if not self.stop_hit and self.stop is not None and self.stop > 0:
+            if (bar_low <= self.stop) if is_call else (bar_high >= self.stop):
+                self.stop_hit = True
+
+    @property
+    def state(self) -> str:
+        if self.trigger is None or self.trigger <= 0:
+            return 'no_setup'
+        if self.stop_hit:
+            return 'invalidated'
+        if self.t1_hit:
+            return 'post_t1'
+        if self.triggered:
+            return 'triggered'
+        return 'fresh'
+
+
 # ─── Level classification ─────────────────────────────────────────────────
 
 

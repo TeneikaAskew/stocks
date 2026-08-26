@@ -1511,6 +1511,21 @@ class TestRvolGateAndExitModeLoading:
         assert cfg.exit.call_exit_mode == 'target_stop', \
             "call side must stay untouched when only put is configured"
 
+    def test_level_gate_default_is_shadow(self, tmp_path):
+        cfg = self._load(tmp_path, {})
+        assert cfg.signal.level_gate_mode == 'shadow'
+
+    def test_level_gate_loaded_from_signal_section(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "signal": {"level_gate_mode": "enforce"}})
+        assert cfg.signal.level_gate_mode == 'enforce'
+
+    def test_level_gate_invalid_mode_fails_loud(self, tmp_path):
+        import pytest as _pytest
+        from lib.config import ConfigValidationError
+        with _pytest.raises(ConfigValidationError):
+            self._load(tmp_path, {"signal": {"level_gate_mode": "shdow"}})
+
     def test_exit_mode_invalid_value_fails_loud(self, tmp_path):
         import pytest as _pytest
         from lib.config import ConfigValidationError

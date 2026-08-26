@@ -78,7 +78,8 @@ def get_premarket_bias(ticker: str, target_date: _date) -> dict:
     sql = text(
         """
         SELECT signal_status, ftfc_direction, ftfc_score, strat_combo,
-               calls_stop_price, puts_stop_price
+               calls_trigger_price, calls_t1_price, calls_stop_price,
+               puts_trigger_price, puts_t1_price, puts_stop_price
           FROM premarket_analysis
          WHERE ticker = :ticker AND analysis_date = :d
          LIMIT 1
@@ -102,6 +103,12 @@ def get_premarket_bias(ticker: str, target_date: _date) -> dict:
     # and its existing unit tests keep driving it with minimal rows.
     out['calls_stop_price'] = _coerce_price(row.get('calls_stop_price'))
     out['puts_stop_price'] = _coerce_price(row.get('puts_stop_price'))
+    # Trigger/T1 ride along for the per-leg LegStateTracker (audit §15) —
+    # same reasoning as the stops: classify() stays brief-text-only.
+    out['calls_trigger_price'] = _coerce_price(row.get('calls_trigger_price'))
+    out['calls_t1_price'] = _coerce_price(row.get('calls_t1_price'))
+    out['puts_trigger_price'] = _coerce_price(row.get('puts_trigger_price'))
+    out['puts_t1_price'] = _coerce_price(row.get('puts_t1_price'))
     return out
 
 
