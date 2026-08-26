@@ -680,6 +680,31 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
             app.exit.call_rsi_exit = rsi_exit.get('call_rsi_exit', app.exit.call_rsi_exit)
             app.exit.put_rsi_exit = rsi_exit.get('put_rsi_exit', app.exit.put_rsi_exit)
 
+        # Per-direction exit modes (audit 2026-08-25 §12). Shape:
+        #   "exit_mode": {"call": "target_stop", "put": "fixed_horizon",
+        #                 "call_fixed_horizon_minutes": 30,
+        #                 "put_fixed_horizon_minutes": 30}
+        # Invalid values fail loud (CLAUDE.md §3.7) — a typo'd mode must
+        # never silently fall back to the default exit behavior.
+        em = exit_alerts.get('exit_mode', {})
+        if em:
+            for side in ('call', 'put'):
+                mode = em.get(side)
+                if mode is not None:
+                    if mode not in ('target_stop', 'fixed_horizon'):
+                        raise ConfigValidationError(
+                            f"exit_mode.{side} must be 'target_stop' or "
+                            f"'fixed_horizon', got {mode!r}")
+                    setattr(app.exit, f'{side}_exit_mode', mode)
+                mins = em.get(f'{side}_fixed_horizon_minutes')
+                if mins is not None:
+                    mins = int(mins)
+                    if mins <= 0:
+                        raise ConfigValidationError(
+                            f"exit_mode.{side}_fixed_horizon_minutes must be "
+                            f"> 0, got {mins}")
+                    setattr(app.exit, f'{side}_fixed_horizon_minutes', mins)
+
     # --- Signal parameters (baseline from alerts, then signal section) ---
     call_alert = alerts.get('primary_call_alert', {}).get('conditions', {})
     if call_alert:
@@ -713,6 +738,23 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         app.signal.put_entry_end = sig_data.get('put_entry_end', app.signal.put_entry_end)
         app.signal.premarket_signal_threshold = sig_data.get('premarket_signal_threshold', app.signal.premarket_signal_threshold)
         app.signal.premarket_building_threshold = sig_data.get('premarket_building_threshold', app.signal.premarket_building_threshold)
+        # RVOL entry gate (audit 2026-08-25 §10/§13). Invalid values fail
+        # loud — the gate's whole point is that a fire's volume check is
+        # deliberate, so a typo'd mode must never silently mean 'shadow'.
+        gate_mode = sig_data.get('rvol_gate_mode')
+        if gate_mode is not None:
+            if gate_mode not in ('off', 'shadow', 'enforce'):
+                raise ConfigValidationError(
+                    f"signal.rvol_gate_mode must be 'off', 'shadow' or "
+                    f"'enforce', got {gate_mode!r}")
+            app.signal.rvol_gate_mode = gate_mode
+        gate_min = sig_data.get('rvol_gate_min')
+        if gate_min is not None:
+            gate_min = float(gate_min)
+            if gate_min < 0:
+                raise ConfigValidationError(
+                    f"signal.rvol_gate_min must be >= 0, got {gate_min}")
+            app.signal.rvol_gate_min = gate_min
 
     # --- Strat config ---
     strat_data = data.get('strat', {})

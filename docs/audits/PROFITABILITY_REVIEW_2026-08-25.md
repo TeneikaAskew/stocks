@@ -462,15 +462,19 @@ max-total (no filter, eat June-size drawdowns) vs drawdown-capped
    is tagged `pass`/`below` into the new `signal_alerts.rvol_gate`
    column, zero behavior change; `'enforce'` suppresses below-threshold
    fires before Discord/persist/caps. Missing RVOL never passes.
-2. `ExitConfig.mode='fixed_horizon'` + `fixed_horizon_minutes=30` —
-   opt-in (default unchanged `target_stop`), mirrored in the EOD
-   resolver so live and resolver semantics stay comparable.
+2. Per-direction exit modes — `ExitConfig.call_exit_mode` /
+   `put_exit_mode` ('target_stop' default) with per-direction
+   `*_fixed_horizon_minutes`, loadable from `alert_config.json` under
+   `alerts.exit_alerts.exit_mode` — mirrored in the EOD resolver so
+   live and resolver semantics stay comparable.
 3. 11 new tests; monitor + resolver suites green (102 tests).
 
 Enforcement plan: run the shadow gate through September; the
 out-of-sample check is then one GROUP BY on `rvol_gate`. Flip
-`ExitConfig.mode` only together with its resolver counterpart and only
-after a replay-validated week (`scripts/replay_signal_monitor.py`).
+`put_exit_mode` (via `alerts.exit_alerts.exit_mode.put` in
+`alert_config.json`) only after a replay-validated week
+(`scripts/replay_signal_monitor.py`) — the resolver reads the same
+config, so one flip covers both code paths.
 
 ## 12. Evidence bounds — paired tests and stress tests on the two headline recommendations
 
