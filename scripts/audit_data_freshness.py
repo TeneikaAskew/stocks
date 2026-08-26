@@ -47,6 +47,26 @@ TICKERS = ("IWM", "SPY", "QQQ", "SPX")
 # that into one loud, attributable check failure instead.
 _CHECK_QUERY_TIMEOUT_S = 120.0
 
+# The enrichment-coverage scan gets its own, larger bound. Its quiet-hour
+# baseline is ~40-70s, so the shared 120s cap left <2x headroom -- crossed
+# under the 15:00-16:00 ET write peak on 2026-08-26 (freshness-watchdog-
+# gqws5, SQLSTATE 57014 at exactly 120.0s). 300s is >4x the in-window
+# baseline (Rule 0 sizing: timeout >= 4x wall-clock estimate) while still
+# a small slice of the 3600s task budget.
+_ENRICHMENT_QUERY_TIMEOUT_S = 300.0
+
+# ET wall-clock window [start, end) in which the enrichment-coverage
+# check actually queries. Its answer changes exactly once a day (the
+# 02:30 ET backfill-daily-indicators run, settled by 05:00 ET), so
+# re-running a minutes-long scan every hour -- including straight
+# through the heaviest market hours, where it was part of the very
+# contention that pushed it over its own timeout (gqws5) -- bought
+# nothing. 05:00-12:59 ET gives 8 executions/day starting the moment
+# the audited day settles; outside the window the check reports a
+# visible "skipped" row and issues no SQL. A real enrichment break is
+# still paged the same morning it becomes detectable.
+_ENRICHMENT_WINDOW_ET = (5, 13)
+
 # Tables to check. Each entry describes how to compute freshness for one table.
 #
 # Fields:
@@ -372,7 +392,7 @@ class FreshnessRow:
     expected_latest: str
     lag_hours: Optional[float]
     expected_max_hours: float
-    status: str  # ok | warn | stale | unknown
+    status: str  # ok | warn | stale | unknown | skipped
     row_count_recent: int = 0
     # Optional: name of the Cloud Run Job whose successful execution should
     # produce rows in this table. When set, a stale row points at the
@@ -985,9 +1005,33 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
     formula-domain NaN), computable for every ticker with ≥50 usable
     bars. Rows with NULL raw OHLCV and young tickers are excluded —
     same predicate family as the backfill's own convergent gap check.
-    Only failing rows are returned.
+    Returns failing rows only — except outside _ENRICHMENT_WINDOW_ET,
+    where it returns a single status="skipped" row and issues no SQL
+    (see the gate comment below).
     """
     from gcp.database import query_to_dataframe_strict
+
+    # Off-peak gate (freshness-watchdog-gqws5, 2026-08-26): only query
+    # during _ENRICHMENT_WINDOW_ET. The coverage answer is immutable
+    # between daily enrich runs, and executing this scan hourly through
+    # RTH both flapped on the statement timeout and added to the very
+    # write-peak contention that caused the flap. The skip is a visible
+    # report row, never a silent pass (Rule 3.7): "skipped" does not
+    # count as ok -- it says so, with the window, in the report.
+    et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(
+        ZoneInfo("America/New_York"))
+    lo, hi = _ENRICHMENT_WINDOW_ET
+    if not (lo <= et_now.hour < hi):
+        return [FreshnessRow(
+            table="market_data_daily.atr_14 enrichment coverage",
+            ticker=None,
+            last_row_at=(f"skipped — runs {lo:02d}:00-{hi - 1:02d}:59 ET "
+                         f"(now {et_now:%H:%M} ET)"),
+            expected_latest="",
+            lag_hours=None,
+            expected_max_hours=0,
+            status="skipped",
+        )]
 
     # Day D's ENRICHMENT is not expected until the 02:30 ET job on D+1
     # finishes (worst case ~2h ⇒ 05:00 ET on D+1) — but D's RAW bars land
@@ -999,38 +1043,41 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
     # runs saw zero D-rows and skipped, and #765's timeout killed the
     # evening runs before this check reported). settle_lag_days=1 is the
     # house idiom for delayed-cron writers: D settles at 05:00 ET on D+1.
+    # With the window gate above, every run that reaches this point is at
+    # or after 05:00 ET, so the audited day is always the fully-settled D.
     latest_day = most_recent_trading_day(now_utc, settle_hour_et=5,
                                          settle_lag_days=1)
-    # Driven by the settled day's own rows, NOT by a bare 450-day scan.
+    # Eligibility (>= 50 usable bars in the 450-day window) is ONE
+    # date-bounded aggregate scan riding idx_market_data_daily_date,
+    # joined back to the settled day's tickers. Shape history, each prior
+    # form with a production failure attached:
     #
-    # The original form (PR #759) opened with an unbounded
-    #   FROM market_data_daily WHERE date >= CURRENT_DATE - INTERVAL '450 days'
-    # which has no ticker predicate, so it could not use
-    # idx_market_data_daily_ticker_date (ticker-leading) and degraded to a
-    # full sequential scan -- twice, once for the CTE and once for the
-    # outer :day lookup. That is what pushed freshness-watchdog past its
-    # 3600s task-timeout (issue #765). Three changes fix it:
+    #   1. (PR #759) unbounded `date >= CURRENT_DATE - 450` with no
+    #      usable index — full sequential scan twice over, ate the 3600s
+    #      task-timeout (issue #765). Its GROUP BY was benchmarked BEFORE
+    #      idx_market_data_daily_date existed (that index landed in #771).
+    #   2. (PR #780) per-ticker EXISTS probe with OFFSET 49 LIMIT 1 — 40s
+    #      quiet-instance, but ~2.5k separate index probes; measured
+    #      130.7s under the 15:00-16:00 ET write peak and blew the 120s
+    #      statement timeout (freshness-watchdog-gqws5, 2026-08-26 19:00Z).
+    #   3. This form — measured 70.5s in the same peak-load minute as
+    #      form 2's 130.7s, identical result (2517/2517); expected well
+    #      under that in the gated 05:00-12:59 ET window.
     #
-    #   1. `day_rows` first, so the expensive per-ticker history work is
-    #      bounded to tickers that actually traded on :day. It rides the
-    #      new idx_market_data_daily_date.
-    #   2. Eligibility (>= 50 usable bars in the window) is a per-ticker
-    #      EXISTS probe with OFFSET 49 LIMIT 1: the (ticker, date) index
-    #      walks each ticker's window and STOPS at the 50th valid bar, so
-    #      the whole check touches ~50 rows x ~2.5k tickers instead of
-    #      counting the full ~1.1M-row window. Measured on production
-    #      2026-08-25 (5.5M-row table, cold cache): 40s, vs a >120s
-    #      statement-timeout for the count()/GROUP BY/HAVING form this
-    #      replaces -- which was itself the first fix attempt for #765
-    #      and still failed its own per-query bound on a quiet instance.
-    #
-    # Also anchors the history window on :day rather than CURRENT_DATE.
-    # The two differ whenever :day falls back a session (before 05:00 ET,
-    # or a holiday), and an as-of check must not let wall-clock decide
-    # which bars count -- that made the result irreproducible on replay
-    # and let bars dated AFTER :day into the eligibility count.
+    # The history window stays anchored on :day rather than CURRENT_DATE:
+    # an as-of check must not let wall-clock decide which bars count
+    # (irreproducible on replay; bars dated after :day would leak into
+    # the eligibility count).
     sql = """
-        WITH day_rows AS (
+        WITH counts AS (
+            SELECT ticker, count(*) AS n
+            FROM market_data_daily
+            WHERE date >= CAST(:day AS date) - 450
+              AND date <= CAST(:day AS date)
+              AND num_nulls(open, high, low, close, volume) = 0
+            GROUP BY ticker
+        ),
+        day_rows AS (
             SELECT ticker, atr_14
             FROM market_data_daily
             WHERE date = CAST(:day AS date)
@@ -1038,17 +1085,10 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
         )
         SELECT count(*) AS total, count(d.atr_14) AS non_null
         FROM day_rows d
-        WHERE EXISTS (
-            SELECT 1 FROM market_data_daily m
-            WHERE m.ticker = d.ticker
-              AND m.date >= CAST(:day AS date) - 450
-              AND m.date <= CAST(:day AS date)
-              AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
-            OFFSET 49 LIMIT 1
-        )
+        JOIN counts c ON c.ticker = d.ticker AND c.n >= 50
     """
     df = query_to_dataframe_strict(sql, {'day': latest_day},
-                                   timeout_s=_CHECK_QUERY_TIMEOUT_S)
+                                   timeout_s=_ENRICHMENT_QUERY_TIMEOUT_S)
     total = int(df.iloc[0]['total']) if not df.empty else 0
     non_null = int(df.iloc[0]['non_null']) if not df.empty else 0
     rate = (non_null / total) if total else None
@@ -1256,6 +1296,10 @@ def format_terminal(report: FreshnessReport) -> str:
         "warn": f"{YELLOW}●{RESET}",
         "stale": f"{RED}●{RESET}",
         "unknown": f"{DIM}●{RESET}",
+        # A gated check that deliberately did not run this hour (e.g.
+        # enrichment coverage outside its ET window). Not a failure and
+        # not an ok: the row says why, --strict ignores it.
+        "skipped": f"{DIM}○{RESET}",
     }
 
     lines = []

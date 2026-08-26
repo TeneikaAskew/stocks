@@ -18,7 +18,10 @@ interface FreshnessRow {
   expected_latest: string;
   lag_hours: number | null;
   expected_max_hours: number;
-  status: 'ok' | 'warn' | 'stale' | 'unknown';
+  // 'skipped': a gated check that deliberately did not run this hour
+  // (e.g. enrichment coverage outside its 05:00-12:59 ET window). Not a
+  // failure — last_row_at carries the reason, surfaced via the tooltip.
+  status: 'ok' | 'warn' | 'stale' | 'unknown' | 'skipped';
   row_count_recent: number;
 }
 
@@ -34,6 +37,8 @@ const STATUS_DOT: Record<FreshnessRow['status'], string> = {
   warn: 'bg-[var(--warn)]',
   stale: 'bg-[var(--bear)]',
   unknown: 'bg-[var(--on-surface-muted)]',
+  // Hollow dot — mirrors the CLI report's ○ for a deliberately-not-run check.
+  skipped: 'border border-[var(--on-surface-muted)] bg-transparent',
 };
 
 const STATUS_TEXT: Record<FreshnessRow['status'], string> = {
@@ -41,6 +46,7 @@ const STATUS_TEXT: Record<FreshnessRow['status'], string> = {
   warn: 'text-[var(--warn)]',
   stale: 'text-[var(--bear)]',
   unknown: 'text-[var(--on-surface-muted)]',
+  skipped: 'text-[var(--on-surface-muted)]',
 };
 
 function fmtLag(hours: number | null): string {
@@ -56,8 +62,8 @@ function rowLabel(row: FreshnessRow): string {
   return row.ticker ? `${row.table} · ${row.ticker}` : row.table;
 }
 
-function statusSummary(tables: FreshnessRow[]): { ok: number; warn: number; stale: number; unknown: number } {
-  const counts = { ok: 0, warn: 0, stale: 0, unknown: 0 };
+function statusSummary(tables: FreshnessRow[]): Record<FreshnessRow['status'], number> {
+  const counts: Record<FreshnessRow['status'], number> = { ok: 0, warn: 0, stale: 0, unknown: 0, skipped: 0 };
   for (const t of tables) counts[t.status] += 1;
   return counts;
 }
@@ -115,6 +121,7 @@ export function DataPipelineStatus() {
             {counts.warn > 0 && <> · <span className="text-[var(--warn)]">{counts.warn} warn</span></>}
             {counts.stale > 0 && <> · <span className="text-[var(--bear)]">{counts.stale} stale</span></>}
             {counts.unknown > 0 && <> · {counts.unknown} unknown</>}
+            {counts.skipped > 0 && <> · {counts.skipped} skipped</>}
           </span>
         </div>
         <div className="flex items-center gap-2 text-[10px] text-[var(--on-surface-muted)]">
