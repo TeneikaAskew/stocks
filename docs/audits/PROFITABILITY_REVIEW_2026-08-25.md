@@ -472,6 +472,75 @@ out-of-sample check is then one GROUP BY on `rvol_gate`. Flip
 `ExitConfig.mode` only together with its resolver counterpart and only
 after a replay-validated week (`scripts/replay_signal_monitor.py`).
 
+## 12. Evidence bounds — paired tests and stress tests on the two headline recommendations
+
+Demanded standard: per-claim facts with significance, including results
+that weaken the claims. Both delivered below.
+
+### Claim 1 — "flip exits to fixed 30-min" : REFUTED as stated; replaced
+
+Paired per-trade test: for each of the 2,888 resolved fires, delta =
+(30-min-hold return) − (engine's actual exit return). Same fires, same
+bars — cross-trade variance cancels.
+
+| Group | n | mean Δ/trade | t-stat | % trades improved | fixed-30 total | engine total |
+|---|---|---|---|---|---|---|
+| All fires | 2,888 | +0.021% | +4.9 | 54.8 | +43.6 | −15.9 |
+| **Ex-May** | 1,172 | **−0.005%** | **−0.7 (n.s.)** | **47.5** | +3.5 | **+9.2** |
+| May only | 1,716 | +0.038% | +7.0 | 59.7 | +40.1 | −25.2 |
+| Jun–Aug | 740 | +0.000% | 0.0 (n.s.) | 49.9 | −5.2 | −5.4 |
+| Jun–Aug ∧ RVOL≥1 | 212 | +0.042% | +2.5 (p≈.01) | 56.1 | +13.4 | +4.4 |
+
+**Outside May, fixed-30 does not beat the engine** (the engine wins
+ex-May, +9.2 vs +3.5). The aggregate +43.7-vs-−15.9 headline was
+Simpson's paradox: May's 1,716 fires carried it. Recommendation 1 as
+previously stated is withdrawn.
+
+**What the paired data actually proves — the effect is directional:**
+
+| Direction × era | n | mean Δ/trade | t-stat | % improved | fixed-30 | engine |
+|---|---|---|---|---|---|---|
+| CALL Mar–Apr | 216 | −0.013% | −0.8 (n.s.) | 42.1 | −2.4 | +0.5 |
+| CALL May | 697 | **−0.198%** | **−44.8** | 5.0 | −125.4 | +12.3 |
+| CALL Jun–Aug | 609 | −0.016% | −1.6 (n.s.) | 48.1 | −8.0 | +2.0 |
+| PUT Mar–Apr | 216 | −0.014% | −1.1 (n.s.) | 44.9 | +11.1 | +14.1 |
+| PUT May | 1,019 | **+0.199%** | **+58.6** | 97.2 | +165.5 | −37.5 |
+| PUT Jun–Aug | 131 | **+0.078%** | **+4.9 (p<.0001)** | 58.0 | +2.9 | −7.3 |
+
+**Evidence-bound replacement: direction-asymmetric exits.** For CALLs
+the engine's quick-target structure is right in every era (upside
+momentum fades — never hold calls longer). For PUTs, holding ~30 min
+beats the engine in May (t=58.6, 97% of trades) AND in the current
+config era (t=4.9, p<0.0001, +0.078%/trade, totals +2.9 vs −7.3), and
+is neutral in Mar–Apr. Downside moves trend; the engine's +0.38% put
+target truncates them. This is the only exit change supported in more
+than one era.
+
+### Claim 2 — "the levels are the demonstrated edge" : TRUE ONLY WITH RESTING-ORDER FILLS
+
+- **The stored edge and its accounting**: +0.358%/leg (CALL, n=211) and
+  +0.291%/leg (PUT, n=184) on SPY/QQQ/IWM; positive 7/7 months
+  (sign-test p=0.008); 58–97% of triggered legs reach T1. Note the
+  resolver's realized price rides to the DEEPEST target hit (T3>T2>T1,
+  `resolve_leg` line ~283) — a hold-through convention, not
+  first-touch-T1.
+- **Fill-sensitivity stress (same exit model both sides)**: re-pricing
+  every leg's entry at the trigger BAR'S CLOSE instead of the trigger
+  touch costs **0.255%/leg (CALL) and 0.306%/leg (PUT)** — the same
+  order of magnitude as the edge itself. Best estimate under worst-case
+  chase fills: ≈ +0.10%/leg CALL, ≈ 0.00 PUT.
+- **Conclusion, bounded**: the levels edge is real under resting stop
+  orders placed AT the trigger (fills at trigger ± spread; ETF spreads
+  are 1–2 bp round trip vs a ~30 bp edge), and it does NOT survive
+  chasing the breakout by even one 1-minute bar. Execution discipline
+  is a precondition, not a nicety. Recommendation 2 stands with that
+  bound attached.
+- Reconstruction validation: with trigger-touch entry and a
+  first-T1 exit model, my SQL reconstruction differs from stored P&L by
+  −0.17 to −0.20%/leg — fully explained by the deepest-target
+  convention above; the fill-sensitivity delta is computed under one
+  consistent model so it is unaffected.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
