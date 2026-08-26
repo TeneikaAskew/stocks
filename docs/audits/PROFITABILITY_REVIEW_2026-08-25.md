@@ -631,6 +631,199 @@ with training, sample too small to be significant alone).
   shadow-only, presumption *against* enforcement unless September's
   frozen-rule data is strongly positive.
 
+## 15. Level study (user-directed): build-time counterfactual, breakthrough continuation, and level-state at fire time
+
+User questions (2026-08-26): (a) would the playbook differ if built at
+9:31 instead of 8:31? (b) when price breaks through 1–2 levels and keeps
+going, is that a usable continuation indicator — "enter at the second
+level"? (c) is invalidation/confirmation tracked when levels are hit?
+(d) should the alerts consider levels in addition to indicators? Method
+constraint: validate against ~30 days of data before proposing anything.
+
+### 15.1 Data and method
+
+- 328 resolver-graded `premarket_analysis` rows (Mar 19 – Aug 25; SPY/
+  QQQ/IWM since June, plus 10 legacy single-name rows) with per-leg
+  trigger/T1/T2/T3/stop prices AND first-touch timestamps.
+- 740 live fires (`run_kind='live'`, Jun 1 – Aug 25) with engine exits.
+- ~70k 1-min RTH bars (Jun 1 – Aug 25) for bar-precise entry tests.
+- All level rebuilds use the PRODUCTION builder
+  (`lib.strat_levels.build_level_map`) with the brief's exact call-site
+  inputs; all outcome resolution uses the PRODUCTION resolver
+  (`gcp.premarket_playbook_resolver.resolve_leg`). Harness parity was
+  proven first: the 8:31 rebuild reproduces the stored playbook fields
+  exactly on 314/328 rows — the 14 misses are all legacy single-name
+  rows whose daily history wasn't pulled locally; on SPY/QQQ/IWM parity
+  is 100%.
+- Where fires cluster within a day, effects were re-tested on
+  day-clustered means; entry-filter effects were re-run under the §14
+  train (< Jul 22) / holdout (Jul 22 – Aug 25) split.
+
+### 15.2 Is invalidation/confirmation tracked today? (question c)
+
+Partially, and never where the money is:
+
+| Layer | What it tracks | When |
+|---|---|---|
+| Nightly resolver (21:15 ET) | full leg lifecycle: trigger/T1/T2/T3/stop first-touch timestamps | after the close — nothing feeds back intraday |
+| Live monitor `level_broken` | which strat level a fire's bar crossed | at fire time, but stored as a tag only — never a condition |
+| Live monitor `brief_alignment` | since 2026-08-26 (`f1b6752`): 'aligned' downgrades to 'invalidated' on a bias-side stop breach | at fire time, informational only |
+
+Nothing conditioned the FIRE DECISION on level state. §15.4 shows that
+is the single largest measured leak in the alert book.
+
+### 15.3 Breakthrough continuation (question b)
+
+Conditional next-level probabilities, full sample (655 published legs):
+
+| Given | Next event | Probability |
+|---|---|---|
+| trigger published | trigger hit that day | 61% |
+| trigger hit, T1 exists | T1 hit | **75.3%** (284/377) |
+| T1 hit, T2 exists | T2 hit | **72.8%** (182/250) |
+| T2 hit, T3 exists | T3 hit | **69.6%** (119/171) |
+| T1 hit | stop traded after T1 | only 21.5% |
+
+The chain is real and stable by side (calls 76/77/70%, puts 75/69/69%)
+and in the last-30-day window (71/73/65%). **The user's intuition is
+statistically correct: once one level breaks, the next one breaks
+roughly three times out of four, and the retrace-to-stop rate is ~20%.**
+
+But the tape mechanics gut the "watch the first break, then enter at the
+second level" execution: **64.8% of T1 hits happen in the SAME MINUTE as
+the trigger hit** (58.8% for T2 after T1; ~74%/68% within 5 minutes).
+The levels sit close together and one impulse bar sweeps several at
+once — most of the time there is no second entry moment to wait for.
+
+Bar-precise entry tests (Jun 1 – Aug 25, production-fill at the level =
+resting order; day-clustered t in parentheses):
+
+| Entry rule | n | fwd 15m | fwd 30m | fwd EOD | next-level rule mean | chase fill instead |
+|---|---|---|---|---|---|---|
+| E1: enter at TRIGGER break (1 level) | 218 | +0.236% (t 5.5) | +0.198% (4.5) | +0.283% (3.9) | **+0.111%/trade (3.0)** | **−0.151%** |
+| E2: enter at T1 break (2 levels), stop=trigger | 160 | +0.158% (3.0) | +0.122% (1.8) | +0.183% (2.1) | +0.069% (2.0) | −0.128% |
+| E2b: same, stop=playbook stop | 160 | — | — | — | +0.086% | −0.111% |
+
+Verdict on (b): **breaking two levels IS a continuation signal, but the
+drift decays with each level already broken — the first break carries
+more forward edge than the second.** Entering at the second level is
+playable (+0.07–0.09%/trade) ONLY with resting orders at the level
+price; filling at the bar close after watching the break flips every
+variant negative (the same −0.2 to −0.3% chase cost §12 measured). The
+better use of the continuation fact is E1 with resting orders, and as an
+alert-side filter (next section) rather than a manual entry pattern.
+
+### 15.4 Level-state at fire time (questions c/d)
+
+Every live fire was classified by the state of its OWN direction's
+playbook leg at the fire timestamp (resolver first-touch semantics):
+
+| State at fire | n | engine mean | engine sum | fwd30 mean | fwd30 t |
+|---|---|---|---|---|---|
+| fresh (before trigger) | 346 | +0.025% | +8.7 | **+0.047%** | +2.2 |
+| triggered (1 level broken) | 97 | −0.033% | −3.2 | +0.005% | +0.2 |
+| **post_t1 (2+ levels broken)** | 246 | −0.050% | **−12.4** | **−0.089%** | **−3.6** |
+| invalidated (stop traded) | 21 | −0.056% | −1.2 | −0.052% | −0.7 |
+| no playbook row | 30 | +0.091% | +2.7 | +0.048% | +0.8 |
+
+The gradient is monotone: **the further into the level sequence the
+indicators fire, the worse the fire does.** This is the two studies
+reconciled: the continuation profits of §15.3 accrue to resting orders
+AT the levels; by the time volume/StochRSI/VWAP confirm and fire at
+market — post-sweep, at an extended price — the forward drift from THAT
+price is negative. The indicator engine is systematically late to moves
+the levels called in advance.
+
+Robustness (the same protocol the RVOL gate failed in §14):
+
+- **Holdout split**: late (post_t1+invalidated) vs early states — train
+  Welch t = −3.45, **holdout t = −2.71**. Replicates out of sample.
+- **Not a time-of-day artifact**: median fire hour is ~9.8 ET for BOTH
+  fresh and post_t1; restricted to before-11:00 fires the contrast is
+  strongest (t = −4.76); after 11:00 it disappears (level states are
+  stale by then).
+- **Opposite-leg check**: fires placed after the tape had already broken
+  the FAR side's stop (n=32) won 25% with fwd30 −0.185% — the extreme
+  chase case.
+
+Counterfactual (Jun 1 – Aug 25): suppressing post_t1 + invalidated
+fires keeps 473/740 fires and flips the engine book **from −5.4pct to
++8.2pct** (CALLs +2.0 → +10.3; PUTs −7.3 → −2.1 — puts stay negative
+until the §12/§14 PUT-hold exit change is enabled; the two changes are
+complementary: one fixes which fires happen, the other fixes how puts
+exit).
+
+Answer to (d): yes — on this evidence the alerts should consider level
+state, and it is the best-validated entry-side filter found in this
+review (unlike the RVOL gate, it passes train AND holdout).
+
+### 15.5 8:31 vs 9:31 build (question a)
+
+Mechanism first: the level PRICES cannot differ — every structural
+level (PDH/PDL/PWH/…) derives from completed prior periods, exactly as
+the user suspected. What CAN differ is the playbook's ASSIGNMENT of
+those levels to trigger/stop/targets, because `identify_triggers`
+anchors on `current_price`, which at 8:31 is yesterday's close and at
+9:31 is the open (mean |overnight gap| 0.62% in the window).
+
+Counterfactual on 174 ticker-days (Jun 1 – Aug 25), production builder +
+resolver, both variants resolved from 9:31 onward:
+
+- At least one published field changes on **100% of days** (calls
+  trigger reassigned on 82% of legs, puts on 86%).
+- Naive comparison: 8:31 levels +37.8 (calls) / +26.8 (puts) vs
+  9:31-rebuilt +7.0 / +26.5 — the 8:31 build looks far better. **That
+  is mostly a fill artifact**: 66 call and 52 put legs had their
+  trigger GAPPED THROUGH at the open, and the resolver credits them a
+  fill at a price the market never offered again. Correcting those legs
+  to an open fill (stop-order reality) gives +10.2 / −3.6; skipping
+  them entirely (stand-down rule) gives +6.1 / +4.5. The 9:31 rebuild
+  needs no correction — its triggers are re-anchored around the open
+  and cannot be pre-gapped.
+- Like-for-like realistic comparison (resting orders, no impossible
+  fills): **9:31 rebuild +33.5 vs 8:31-with-stand-down +10.7.** Paired
+  per-leg: calls are a WASH (t = +0.17); **puts are significantly
+  better re-anchored (mean +0.126%/leg, t = +3.75; day-clustered
+  +0.066, t = +2.51, 67% positive days; survives dropping the top-3
+  days: +16.5 ex-top-3; last-30 window +11.1 vs +1.0).**
+- Gap decomposition: rebuilding at 9:31 hurts calls on gap-up days
+  (−0.46%/day — the rebuild chases the gap) and helps puts on the same
+  days (+0.30%/day — the put trigger re-anchors just under the open
+  and catches the morning fade).
+
+Answer to (a): possible, and the honest version of "would anything
+change" is: the levels wouldn't, the plan built on them would — every
+day. The data does NOT support moving the brief to 9:31 (calls gain
+nothing; the 8:31 brief also carries bias/premarket context used
+elsewhere). It DOES support two follow-ups: (1) treat a trigger that
+was gapped through at the open as invalid-at-open (never chase it —
+LegStateTracker already sees this as an opening-bar sweep), and (2) a
+put-side 9:31 re-anchor (second lightweight publish or monitor-side
+re-anchor of the put trigger at the open) — the only variant with a
+significant paired improvement. Neither is implemented yet; (2) is
+proposed for a follow-up PR after review.
+
+### 15.6 What shipped with this section
+
+Shadow-first, mirroring the RVOL gate rollout:
+
+- `lib/strat_levels.LegStateTracker` — per-leg intraday state machine
+  with RESOLVER-PARITY touch semantics (trigger first; T1/stop counted
+  from the trigger bar inclusive — a session through the call stop with
+  the leg never triggered stays 'fresh', matching how this study and
+  the nightly resolver classify it).
+- `gcp/signal_monitor.py` — trackers advance per bar in
+  `update_window` (the replay-parity choke point); every fire persists
+  `level_state` + `opp_level_state`; `signal.level_gate_mode`
+  ('off'/'shadow'/'enforce', default **shadow**) with 'enforce'
+  suppressing post_t1/invalidated fires before Discord, persist, and
+  the trade-cap counter.
+- `gcp/schema.sql` — `signal_alerts.level_state` /
+  `opp_level_state` (VARCHAR(12)).
+- Not shipped (proposed, pending review + shadow confirmation):
+  enforce-by-default, the put-side 9:31 re-anchor, and any
+  second-level manual-entry playbook change.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
