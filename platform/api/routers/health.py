@@ -58,7 +58,7 @@ async def get_freshness():
           "expected_latest": "2026-04-13",
           "lag_hours": 7.5,
           "expected_max_hours": 30,
-          "status": "ok",
+          "status": "ok",   # ok | warn | stale | unknown | skipped
           "row_count_recent": 1
         },
         ...
