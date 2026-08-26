@@ -3508,6 +3508,18 @@ deploy_schedulers() {
     # harness's fast join + the frontend options-flow series current.
     _schedule "options-daily-features" "0 22 * * 1-5"  "build-options-daily-features"
 
+    # Materialize daily directional greeks (DEX / short-DTE DEX / vanna /
+    # charm) into etf_options_daily_greeks at 10:30 PM ET weekdays —
+    # after av-options-daily (21:00) lands and staggered 30 min behind
+    # options-daily-features so the two materializers never scan
+    # etf_options_snapshots concurrently (Rule 0: no concurrent full
+    # scans of the shared DB). The job's default args run
+    # --incremental --days=7; the 7-day lookback re-covers weekends,
+    # holidays and heals a missed night. The table had been frozen at
+    # 2026-05-22 because this scheduler was never created when the job
+    # shipped (job's own runbook said "run on a scheduler" — Rule 0.1).
+    _schedule "options-daily-greeks" "30 22 * * 1-5"  "build-options-greeks"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
