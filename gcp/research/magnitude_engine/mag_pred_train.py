@@ -59,7 +59,29 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         if enc[c].dtype == object and enc[c].isna().all():
             enc[c] = enc[c].astype(np.float64)
 
+    # Raw gamma LEVEL columns are non-stationary dollar prices (IWM ~$130
+    # in 2019 → ~$230 in 2026): a tree split learned on them is a time
+    # proxy that cannot generalize out-of-fold. Verified 2026-08-26: after
+    # the #771 gamma rebuild densified these columns (22-60% → ~100%
+    # non-null), the phase0 15m/30m log-loss beat collapsed from ~+0.01
+    # (6-8/8 folds) to ~-0.10 (0/8) on identical fold windows, while 5m
+    # (where the columns carried no weight) was unchanged. Only NORMALIZED
+    # distances transfer across years: derive dist_to_balance_pct here
+    # (mirror of the persisted dist_to_gamma_flip_pct) and drop the raw
+    # levels via the set below. NaN where balance is missing or close<=0
+    # (§3.7); the matrix-level fillna(0) then treats it like every other
+    # sparse feature.
+    if "gamma_balance_price" in enc.columns and "close" in enc.columns:
+        _close = pd.to_numeric(enc["close"], errors="coerce")
+        _gbp = pd.to_numeric(enc["gamma_balance_price"], errors="coerce")
+        enc["dist_to_balance_pct"] = pd.Series(
+            np.where((_close > 0) & _gbp.notna(),
+                     (_close - _gbp) / _close * 100.0, np.nan),
+            index=enc.index, dtype=np.float64)
+
     drop = {
+        # Raw gamma dollar levels — see the derivation comment above.
+        "gamma_balance_price", "gamma_flip",
         "ticker", "ts", "tf", "bar_date",
         "open", "high", "low", "close", "volume",
         "fwd_close_5bars", "fwd_close_15bars", "fwd_close_30bars", "fwd_close_60bars",

@@ -812,10 +812,21 @@ TASK_PLANS: dict[str, list[tuple[str, str, str]]] = {
 }
 
 
+# Sentinel: a task-parallel dispatch whose index is beyond the plan —
+# a DELIBERATE no-op (job tasks > plan cells), distinct from "not
+# task-parallel at all" (None). Before this existed, the 18 out-of-plan
+# tasks of the 2026-08-26 MAG_PLAN=phase0 dispatch (27-task job, 9-cell
+# plan) logged "no-op exit" and then fell through main()'s CLI validation
+# to the usage SystemExit(1), marking 18/27 tasks failed on a fully
+# successful run.
+_NOOP_TASK = ("__noop__", "", "")
+
+
 def _resolve_task() -> tuple[str, str, str] | None:
     """Resolve (phase, ticker, tf) from CLOUD_RUN_TASK_INDEX + MAG_PLAN env.
 
-    Returns None when not running in a task-parallel Cloud Run dispatch.
+    Returns None when not running in a task-parallel Cloud Run dispatch;
+    _NOOP_TASK when task-parallel but this index has no cell to run.
     """
     plan_name = os.environ.get("MAG_PLAN", "")
     idx_str = os.environ.get("CLOUD_RUN_TASK_INDEX", "")
@@ -827,7 +838,7 @@ def _resolve_task() -> tuple[str, str, str] | None:
     idx = int(idx_str)
     if idx >= len(plan):
         log.info("task-index %d ≥ plan size %d — no-op exit", idx, len(plan))
-        return None
+        return _NOOP_TASK
     return plan[idx]
 
 
@@ -880,6 +891,8 @@ def main():
     #   3. --all-cells with --phase (in-process loop — legacy)
     #   4. --phase --ticker --tf (single cell)
     cell = _resolve_task()
+    if cell == _NOOP_TASK:
+        return
     if cell:
         phase, ticker, tf = cell
         log.info("task-parallel dispatch: plan=%s idx=%s → %s/%s/%s",
