@@ -2157,12 +2157,17 @@ deploy_fetch_earnings_history() {
     # 2.2h, blowing the budget on retry. We're on premium AV (75 RPM),
     # so 1.0s/call is safe and cuts wall-clock to ~10 min.
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    # task-timeout 28800 (8h = 4x wall): the days_stale<=0 fix (PR #758)
+    # made the chained _run_backfill refresh the FULL ~2,400-ticker
+    # universe nightly — measured 77-120 min (2026-08-24..26), and the
+    # 08-25 run finished within seconds of the old 7200s cap. Rule 0:
+    # timeout >= 4x wall-clock; Cloud Run bills runtime, not the cap.
     local env_string
     env_string="$(_env_string),BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
-        --task-timeout 7200 \
+        --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
@@ -2170,7 +2175,7 @@ deploy_fetch_earnings_history() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 7200 \
+        --task-timeout 28800 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${env_string}" \
