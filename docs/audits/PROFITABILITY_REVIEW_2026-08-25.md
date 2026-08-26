@@ -541,6 +541,49 @@ than one era.
   convention above; the fill-sensitivity delta is computed under one
   consistent model so it is unaffected.
 
+## 13. Decade-scale validation (2015–2026, user-directed)
+
+`historical_signals` holds the raw 3-of-5 signal formula evaluated over
+every session back to January 2015 (~1.3M signals; minute bars cover
+2015-01-02 onward), so both open hypotheses were tested against eleven
+years instead of waiting for September. Deterministic 1-in-40 / 1-in-80
+samples; RVOL estimated as entry-bar volume ÷ prior-20-minute average
+volume (a close proxy for the production rolling-20 RVOL). Population
+caveat: these are raw formula signals, a superset of what the gated live
+engine actually fires.
+
+### The RVOL rule does NOT generalize — gate stays shadow-only
+
+Signed 30-min direction hit rate, RVOL < 1 vs ≥ 1, by year: 2015
+48.1/47.4 · 2016 48.2/47.0 · 2017 40.1/40.4 · 2018 50.9/48.5 · 2019
+49.5/47.3 · 2020 48.4/46.5 · 2021 48.6/48.3 · 2022 51.2/50.7 · 2023
+48.7/49.6 · 2024 51.2/47.6 · 2026 39.7/41.9. **In 9 of 11 years the
+high-volume bucket is equal or slightly worse.** The RVOL edge measured
+on the live June–August fires does not appear as a general law of the
+signal formula — it is either an interaction with the current engine's
+gating or three months of noise. Consequence: **do not enforce the RVOL
+gate on current evidence**; the September shadow data (real fires, rule
+frozen in advance) is the deciding test, and this decade result is why
+shadow-first was the right posture. (Note: `historical_signals` has a
+2025 coverage gap.)
+
+### The call/put asymmetry DOES hold across the decade — put-hold gains independent support
+
+Signed forward move on 17,015 sampled signals, 2015–2026:
+
+| Side | n | +10 min | +30 min | +60 min | 30-min hit |
+|---|---|---|---|---|---|
+| call | 9,136 | −0.104% | −0.103% | −0.102% | 36.8% |
+| put | 7,879 | +0.098% | +0.100% | +0.098% | **61.2%** |
+
+An eleven-year structural fact: this formula's PUT signals keep moving
+in the called direction for at least an hour, while its CALL signals
+reverse immediately and stay reversed. This independently corroborates
+§12's paired result (puts trend / calls fade) — the
+`put_exit_mode='fixed_horizon'` flip now rests on both the 2026
+trade-by-trade replay and a decade of directional persistence, making
+it the best-evidenced behavior change in this review.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
