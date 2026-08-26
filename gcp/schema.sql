@@ -195,6 +195,24 @@ CREATE TABLE IF NOT EXISTS etf_options_snapshots (
         UNIQUE (ticker, snapshot_ts, option_type, expiration, strike)
 );
 
+-- BSM sidecar Greeks (added in prod 2026-06 by the compute-spx-greeks
+-- backfill; schema.sql caught up 2026-08-26 — the columns pre-exist in
+-- prod, this block is the drift fix). Written by
+-- scripts/maintenance/compute_spx_greeks.py via
+-- lib/options_greeks.enrich_av_chain_with_greeks for chains where the
+-- vendor returns no Greeks (SPX). The original AV delta/gamma/... columns
+-- above preserve vendor provenance and are never overwritten. Read by
+-- lib/options_exec_backtest/iv_lookup.py; the live grid endpoint
+-- (platform/api/routers/grid.py) computes the same enrichment on the fly
+-- and does not depend on these stored values.
+ALTER TABLE etf_options_snapshots
+    ADD COLUMN IF NOT EXISTS delta_computed              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS gamma_computed              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS theta_computed              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS vega_computed               DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rho_computed                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS implied_volatility_computed DOUBLE PRECISION;
+
 CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_date
     ON etf_options_snapshots (ticker, snapshot_date DESC);
 CREATE INDEX IF NOT EXISTS idx_etf_options_expiry
