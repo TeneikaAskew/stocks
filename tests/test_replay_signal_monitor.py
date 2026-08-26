@@ -117,6 +117,7 @@ def test_capturing_fire_alert_records_basic_signal():
     monitor._latest_agreement = None
     monitor._latest_timeframe_tag = "30m"
     monitor._latest_expected_hold_min = 30
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4,
@@ -138,6 +139,8 @@ def test_capturing_fire_alert_records_basic_signal():
     assert f.strategy_agreement is None
     assert "[30m]" in f.embed_title
     assert "STACKED" not in f.embed_title
+    assert f.brief_alignment == "aligned"
+    assert "[brief:aligned]" in f.embed_title
 
 
 def test_capturing_fire_alert_records_stacked_agreement():
@@ -153,6 +156,7 @@ def test_capturing_fire_alert_records_stacked_agreement():
     }
     monitor._latest_timeframe_tag = "15m"
     monitor._latest_expected_hold_min = 15
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'UNAVAILABLE'}, None)
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["consecutive_down"]}
@@ -179,6 +183,7 @@ def test_capturing_fire_alert_to_dict_is_json_safe():
     monitor._latest_agreement = None
     monitor._latest_timeframe_tag = "60m"
     monitor._latest_expected_hold_min = 60
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'invalidated')
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "PUT", "base_score": 3, "conditions_met": ["consecutive_up"]}

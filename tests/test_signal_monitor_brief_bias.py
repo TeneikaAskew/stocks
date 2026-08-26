@@ -306,3 +306,259 @@ def test_persist_row_brief_columns_null_when_no_bias_attrs():
     assert row['brief_bias'] is None
     assert row['brief_alignment'] is None
     assert row['brief_setup_count'] is None
+
+
+# ── level_aware_alignment (stop-breach downgrade) ──────────────────
+
+def _call_bias(stop=725.33, **kw):
+    b = {'bias': 'CALL', 'alignment': None, 'setup_count': 3,
+         'ftfc_direction': 'bullish', 'ftfc_score': 0.8,
+         'reason': 'aligned', 'calls_stop_price': stop,
+         'puts_stop_price': None}
+    b.update(kw)
+    return b
+
+
+def _put_bias(stop=745.0, **kw):
+    b = {'bias': 'PUT', 'alignment': None, 'setup_count': 3,
+         'ftfc_direction': 'bearish', 'ftfc_score': -0.8,
+         'reason': 'aligned', 'calls_stop_price': None,
+         'puts_stop_price': stop}
+    b.update(kw)
+    return b
+
+
+def test_level_aware_call_breach_is_invalidated():
+    """SPY 2026-06-11 shape: session low dipped through the call stop
+    before the CALL fired."""
+    from lib.strategies.brief_bias import level_aware_alignment
+    tag = level_aware_alignment('CALL', _call_bias(stop=725.33),
+                                session_high=727.24, session_low=725.04)
+    assert tag == 'invalidated'
+
+
+def test_level_aware_call_intact_stays_aligned():
+    from lib.strategies.brief_bias import level_aware_alignment
+    tag = level_aware_alignment('CALL', _call_bias(stop=725.33),
+                                session_high=727.24, session_low=725.90)
+    assert tag == 'aligned'
+
+
+def test_level_aware_put_breach_is_invalidated():
+    """2026-05-07/08 QQQ shape: session high traded through the put stop
+    before the PUT fired."""
+    from lib.strategies.brief_bias import level_aware_alignment
+    tag = level_aware_alignment('PUT', _put_bias(stop=745.0),
+                                session_high=748.36, session_low=745.68)
+    assert tag == 'invalidated'
+
+
+def test_level_aware_touch_counts_as_breach():
+    """A stop executes at touch — equality is a breach, not a survive."""
+    from lib.strategies.brief_bias import level_aware_alignment
+    assert level_aware_alignment('CALL', _call_bias(stop=291.17),
+                                 session_high=293.29,
+                                 session_low=291.17) == 'invalidated'
+    assert level_aware_alignment('PUT', _put_bias(stop=745.0),
+                                 session_high=745.0,
+                                 session_low=740.0) == 'invalidated'
+
+
+def test_level_aware_opposed_never_downgrades():
+    """Breach only re-labels agreement; disagreement stays 'opposed'."""
+    from lib.strategies.brief_bias import level_aware_alignment
+    tag = level_aware_alignment('PUT', _call_bias(stop=725.33),
+                                session_high=727.24, session_low=725.04)
+    assert tag == 'opposed'
+
+
+def test_level_aware_no_stop_degrades_to_aligned():
+    from lib.strategies.brief_bias import level_aware_alignment
+    tag = level_aware_alignment('CALL', _call_bias(stop=None),
+                                session_high=727.24, session_low=700.0)
+    assert tag == 'aligned'
+
+
+def test_level_aware_missing_extremes_degrades_to_aligned():
+    """First bars of the session / replay edge: no extremes yet must
+    never produce a false 'invalidated'."""
+    from lib.strategies.brief_bias import level_aware_alignment
+    tag = level_aware_alignment('CALL', _call_bias(stop=725.33),
+                                session_high=None, session_low=None)
+    assert tag == 'aligned'
+
+
+def test_level_aware_neutral_bias_returns_none():
+    from lib.strategies.brief_bias import level_aware_alignment
+    bias = {'bias': 'NEUTRAL', 'calls_stop_price': 100.0,
+            'puts_stop_price': 110.0}
+    assert level_aware_alignment('CALL', bias, 120.0, 90.0) is None
+
+
+def test_get_premarket_bias_attaches_stop_levels():
+    """The brief's stop prices ride along on the resolved bias dict —
+    NaN (pandas NULL) must come back as None, not NaN (a NaN stop makes
+    every comparison False and silently disables the breach check)."""
+    get_premarket_bias.cache_clear()
+    df = pd.DataFrame([{'signal_status': 'CALL setup (3/5)',
+                        'ftfc_direction': 'bullish', 'ftfc_score': 0.8,
+                        'strat_combo': None,
+                        'calls_stop_price': 293.41,
+                        'puts_stop_price': float('nan')}])
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.get_engine', return_value=object()), \
+         patch('pandas.read_sql', return_value=df):
+        bias = get_premarket_bias('IWM', date(2026, 7, 23))
+    assert bias['bias'] == 'CALL'
+    assert bias['calls_stop_price'] == 293.41
+    assert bias['puts_stop_price'] is None
+
+
+# ── SignalMonitor session-extremes tracking ────────────────────────
+
+def _bars(times, highs, lows):
+    return pd.DataFrame({
+        'Time': pd.to_datetime(times),
+        'Open': lows, 'High': highs, 'Low': lows,
+        'Close': highs, 'Volume': [100] * len(times),
+    })
+
+
+def test_session_extremes_accumulate_across_polls():
+    from gcp.signal_monitor import SignalMonitor
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor.replay_clock_ts = pd.Timestamp('2026-07-23 14:00:00')  # UTC
+    monitor.session_extremes.setdefault('IWM', {})
+    # Replay convention: naive-UTC Times (13:30 UTC == 09:30 ET in July)
+    monitor._update_session_extremes(
+        'IWM', _bars(['2026-07-23 13:30', '2026-07-23 13:31'],
+                     highs=[291.0, 292.0], lows=[290.34, 290.9]))
+    monitor._update_session_extremes(
+        'IWM', _bars(['2026-07-23 14:00'], highs=[293.01], lows=[291.5]))
+    ext = monitor.session_extremes['IWM']
+    assert ext['high'] == 293.01
+    assert ext['low'] == 290.34
+
+
+def test_session_extremes_exclude_premarket_bars():
+    """Premarket bars must not count as 'the session traded through the
+    stop' — the brief's plan is an RTH plan."""
+    from gcp.signal_monitor import SignalMonitor
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor.replay_clock_ts = pd.Timestamp('2026-07-23 13:45:00')
+    # 12:00 UTC == 08:00 ET (premarket), 13:31 UTC == 09:31 ET (RTH)
+    monitor._update_session_extremes(
+        'IWM', _bars(['2026-07-23 12:00', '2026-07-23 13:31'],
+                     highs=[299.0, 291.0], lows=[280.0, 290.5]))
+    ext = monitor.session_extremes['IWM']
+    assert ext['high'] == 291.0, "premarket high leaked into session high"
+    assert ext['low'] == 290.5, "premarket low leaked into session low"
+
+
+def test_session_extremes_live_mode_treats_times_as_eastern():
+    """Live AV bars carry naive US/Eastern stamps; with no replay clock
+    a 09:31 stamp is RTH as-is (it would be 05:31 ET if misread as UTC,
+    and the bar would be dropped)."""
+    from gcp.signal_monitor import SignalMonitor
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _zi
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    assert monitor.replay_clock_ts is None
+    today = _dt.now(_zi('America/New_York')).date()
+    bars = _bars([f'{today} 09:31', f'{today} 10:15'],
+                 highs=[500.0, 501.5], lows=[498.0, 499.0])
+    monitor._update_session_extremes('SPY', bars)
+    ext = monitor.session_extremes['SPY']
+    assert ext['high'] == 501.5
+    assert ext['low'] == 498.0
+
+
+def test_session_extremes_reset_on_new_date():
+    from gcp.signal_monitor import SignalMonitor
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor.replay_clock_ts = pd.Timestamp('2026-07-23 14:00:00')
+    monitor._update_session_extremes(
+        'IWM', _bars(['2026-07-23 13:31'], highs=[291.0], lows=[290.0]))
+    # Next session: clock moves to 7/24, stale 7/23 extremes must drop
+    monitor.replay_clock_ts = pd.Timestamp('2026-07-24 13:35:00')
+    monitor._update_session_extremes(
+        'IWM', _bars(['2026-07-24 13:31'], highs=[295.0], lows=[294.0]))
+    ext = monitor.session_extremes['IWM']
+    assert ext['low'] == 294.0, "prior session's low survived the rollover"
+
+
+def test_update_window_feeds_session_extremes():
+    """update_window is the choke point — extremes must advance without
+    any separate call."""
+    from gcp.signal_monitor import SignalMonitor
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor.replay_clock_ts = pd.Timestamp('2026-07-23 13:31:00')
+    monitor.update_window(
+        'IWM', _bars(['2026-07-23 13:31'], highs=[291.0], lows=[290.34]))
+    assert monitor.session_extremes['IWM']['low'] == 290.34
+
+
+def test_fire_alert_tags_invalidated_when_stop_breached():
+    """End-to-end through fire_alert: IWM 2026-07-23 shape — CALL-bias
+    brief with stop 293.41, session low already at 290.34, CALL fires →
+    persisted row must carry brief_alignment='invalidated'."""
+    from gcp.signal_monitor import SignalMonitor
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor._brief_bias_cache['IWM'] = _call_bias(stop=293.41)
+    monitor.session_extremes['IWM'] = {
+        'date': date(2026, 7, 23), 'high': 293.01, 'low': 290.34}
+    sig = {"direction": "CALL", "base_score": 3,
+           "conditions_met": ["rsi_oversold_zone"]}
+    latest = pd.Series({
+        "Close": 291.51, "RSI14": 35.0, "VWAP": 291.0, "EMA9": 291.5,
+        "EMA20": 291.8, "StochRSI_K": 25.0,
+        "Price_vs_VWAP": -0.05, "Price_vs_EMA9": 0.02,
+        "Price_vs_EMA20": -0.13,
+        "Consecutive_Down": 3, "Consecutive_Up": 0,
+        "RVOL": 1.2, "ATR14": 1.0,
+        "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
+    })
+    with patch("gcp.database.upsert_dataframe") as mock_upsert, \
+         patch("gcp.database.is_cloud_sql_configured", return_value=True):
+        mock_upsert.return_value = 1
+        monitor.fire_alert(ticker='IWM', sig=sig, total_score=3.0,
+                           strength='medium', size=0.10, strat_bonus=0,
+                           latest=latest)
+    assert monitor._latest_brief_alignment == 'invalidated'
+    df = mock_upsert.call_args[0][0]
+    assert df.iloc[0]['brief_alignment'] == 'invalidated'
+
+
+def test_fire_alert_stays_aligned_when_stop_intact():
+    from gcp.signal_monitor import SignalMonitor
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor._brief_bias_cache['IWM'] = _call_bias(stop=289.00)
+    monitor.session_extremes['IWM'] = {
+        'date': date(2026, 7, 23), 'high': 293.01, 'low': 290.34}
+    sig = {"direction": "CALL", "base_score": 3,
+           "conditions_met": ["rsi_oversold_zone"]}
+    latest = pd.Series({
+        "Close": 291.51, "RSI14": 35.0, "VWAP": 291.0, "EMA9": 291.5,
+        "EMA20": 291.8, "StochRSI_K": 25.0,
+        "Price_vs_VWAP": -0.05, "Price_vs_EMA9": 0.02,
+        "Price_vs_EMA20": -0.13,
+        "Consecutive_Down": 3, "Consecutive_Up": 0,
+        "RVOL": 1.2, "ATR14": 1.0,
+        "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
+    })
+    with patch("gcp.database.upsert_dataframe") as mock_upsert, \
+         patch("gcp.database.is_cloud_sql_configured", return_value=True):
+        mock_upsert.return_value = 1
+        monitor.fire_alert(ticker='IWM', sig=sig, total_score=3.0,
+                           strength='medium', size=0.10, strat_bonus=0,
+                           latest=latest)
+    assert monitor._latest_brief_alignment == 'aligned'
+    df = mock_upsert.call_args[0][0]
+    assert df.iloc[0]['brief_alignment'] == 'aligned'

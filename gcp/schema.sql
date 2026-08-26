@@ -2708,7 +2708,15 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_open
 -- brief_bias values match lib/strategies/brief_bias.py:
 --   CALL | PUT | NEUTRAL | CONFLICTED | UNAVAILABLE
 -- brief_alignment values:
---   aligned | opposed | NULL (when bias is NEUTRAL/CONFLICTED/UNAVAILABLE)
+--   aligned     — live direction matches brief bias, brief's stop intact
+--   invalidated — live direction matches brief bias, but the session had
+--                 already traded through the brief's stop for that side
+--                 at fire time (CALL bias: session low <= calls_stop_price;
+--                 PUT bias: session high >= puts_stop_price). Added
+--                 2026-08-26 (lib/strategies/brief_bias.level_aware_alignment);
+--                 rows before that date carry 'aligned' even when breached.
+--   opposed     — live direction contradicts brief bias
+--   NULL        — bias is NEUTRAL/CONFLICTED/UNAVAILABLE
 -- brief_setup_count: 0..5 (the N from "CALL setup (N/5)" in signal_status)
 
 ALTER TABLE signal_alerts

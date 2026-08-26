@@ -70,6 +70,7 @@ class FireRecord:
     strategy_agreement: Optional[dict]
     conditions_met:    list[str]
     embed_title:       str
+    brief_alignment:   Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -78,6 +79,7 @@ class FireRecord:
             "direction":          self.direction,
             "base_score":         self.base_score,
             "total_score":        self.total_score,
+            "brief_alignment":    self.brief_alignment,
             "timeframe_tag":      self.timeframe_tag,
             "expected_hold_min":  self.expected_hold_min,
             "strategy_agreement": self.strategy_agreement,
@@ -297,10 +299,16 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
         agreement = getattr(self, "_latest_agreement", None)
         tf_tag = getattr(self, "_latest_timeframe_tag", None)
         tf_hold = getattr(self, "_latest_expected_hold_min", None)
+        # Same brief-tag resolution live fire_alert runs — shared method
+        # so the replay can never drift from production tag semantics
+        # (Rule 3.6). Session extremes are fed by update_window, which
+        # this harness already drives bar-by-bar.
+        brief, align = self._resolve_brief_alignment(ticker, sig["direction"])
         title_prefix = "STACKED " if agreement else ""
         tf_label = f" [{tf_tag}]" if tf_tag else ""
+        brief_label = f" [brief:{align}]" if align else ""
         title = (
-            f"{title_prefix}{sig['direction']} SIGNAL{tf_label} "
+            f"{title_prefix}{sig['direction']} SIGNAL{tf_label}{brief_label} "
             f"@ ${latest.get('Close', 0):.2f}"
         )
         captured.append(FireRecord(
@@ -314,6 +322,7 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
             strategy_agreement=agreement,
             conditions_met=list(sig["conditions_met"]),
             embed_title=title,
+            brief_alignment=align,
         ))
     return _capture
 
@@ -446,6 +455,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Direction split
     dirs = Counter(f.direction for f in captured_fires)
     print(f"Direction:  CALL={dirs.get('CALL', 0)}  PUT={dirs.get('PUT', 0)}")
+
+    # Brief-alignment distribution (level-aware tag)
+    aligns = Counter(f.brief_alignment for f in captured_fires)
+    print("Brief alignment: "
+          + "  ".join(f"{k or 'untagged'}={n}"
+                      for k, n in sorted(aligns.items(),
+                                         key=lambda x: (x[0] or ''))))
 
     # Timeframe distribution
     tfs = Counter(f.timeframe_tag for f in captured_fires)
