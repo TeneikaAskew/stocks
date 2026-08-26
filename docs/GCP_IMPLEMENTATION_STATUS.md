@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-07-05 (Solyra landing page live: public / route, /dashboard app move, waitlist API + waitlist_signups table, both services deployed)
+**Last Updated**: 2026-08-26 (PR #774/#785 deployed: playbook-resolver self-healing sweep + loud failure, resolver cron 21:15 ET, av-intraday-nightly Mon-Sat, RVOL shadow gate + signal_alerts.rvol_gate column, per-direction exit modes; full suite 3,943 passed / 0 failed)
 
 ---
 
