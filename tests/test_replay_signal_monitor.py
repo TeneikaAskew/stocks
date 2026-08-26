@@ -251,3 +251,26 @@ def test_replay_ticker_swallows_evaluate_exceptions():
     assert n_bars == 3
     assert monitor.update_window.call_count == 3
     assert monitor.evaluate_ticker.call_count == 3
+
+
+def test_persist_fire_includes_brief_alignment():
+    """--persist mode must write the captured brief_alignment — a NULL
+    there would defeat the replay's database-analysis path."""
+    from unittest.mock import MagicMock
+    from scripts.replay_signal_monitor import persist_fire_to_signal_alerts
+    fire = FireRecord(
+        timestamp=pd.Timestamp("2026-07-23 14:00", tz="UTC"),
+        ticker="IWM", direction="CALL", base_score=3, total_score=3.0,
+        timeframe_tag="30m", expected_hold_min=30,
+        strategy_agreement=None, conditions_met=["rsi_oversold_zone"],
+        embed_title="CALL SIGNAL [30m] [brief:invalidated] @ $291.51",
+        brief_alignment="invalidated",
+    )
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    persist_fire_to_signal_alerts(fire, monitor=MagicMock(), engine=engine,
+                                  replay_id="rid-1")
+    params = conn.execute.call_args[0][1]
+    assert params["brief_alignment"] == "invalidated"
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "brief_alignment" in sql_text

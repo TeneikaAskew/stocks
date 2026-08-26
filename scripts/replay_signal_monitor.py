@@ -260,13 +260,13 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
             ticker, alert_ts, alert_date, direction,
             base_score, total_score, strength_label,
             position_size, time_stop_minutes,
-            conditions_met, run_kind, replay_id,
+            conditions_met, brief_alignment, run_kind, replay_id,
             inserted_at
         ) VALUES (
             :ticker, :alert_ts, :alert_date, :direction,
             :base_score, :total_score, :strength,
             :size, :time_stop,
-            :conditions, 'replay', :replay_id,
+            :conditions, :brief_alignment, 'replay', :replay_id,
             NOW()
         )
         ON CONFLICT DO NOTHING
@@ -284,6 +284,7 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
                 'size': 1.0,
                 'time_stop': fire.expected_hold_min or 60,
                 'conditions': json.dumps(fire.conditions_met),
+                'brief_alignment': fire.brief_alignment,
                 'replay_id': replay_id,
             })
     except Exception as e:
