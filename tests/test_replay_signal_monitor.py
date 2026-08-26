@@ -144,6 +144,33 @@ def test_capturing_fire_alert_records_basic_signal():
     assert "[brief:aligned]" in f.embed_title
 
 
+def test_capturing_fire_alert_mirrors_level_gate_enforce():
+    """Under enforce, live fire_alert suppresses post_t1/invalidated fires
+    before persist — the replay capture must mirror that or replay counts
+    include fires the live monitor would suppress (Codex P2 on PR #799)."""
+    captured: list[FireRecord] = []
+    monitor = MagicMock()
+    monitor._latest_agreement = None
+    monitor._latest_timeframe_tag = "30m"
+    monitor._latest_expected_hold_min = 30
+    monitor.signal_cfg.level_gate_mode = "enforce"
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
+    monitor._resolve_level_state.return_value = ('post_t1', 'fresh')
+
+    fire_fn = make_capturing_fire_alert(captured, monitor)
+    sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["below_vwap"]}
+    latest = pd.Series({"Time": pd.Timestamp("2026-05-01 14:30", tz="UTC"),
+                        "Close": 720.0})
+    fire_fn(monitor, "SPY", sig, total_score=4.0, strength="STRONG",
+            size=0.10, strat_bonus=0, latest=latest)
+    assert captured == [], "enforce + post_t1 must not be captured"
+
+    monitor._resolve_level_state.return_value = ('fresh', 'fresh')
+    fire_fn(monitor, "SPY", sig, total_score=4.0, strength="STRONG",
+            size=0.10, strat_bonus=0, latest=latest)
+    assert len(captured) == 1 and captured[0].level_state == 'fresh'
+
+
 def test_capturing_fire_alert_records_stacked_agreement():
     """A stacked-agreement fire records the payload AND the STACKED prefix."""
     captured: list[FireRecord] = []

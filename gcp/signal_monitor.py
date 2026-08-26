@@ -440,6 +440,17 @@ class SignalMonitor:
             trackers = self.leg_trackers.get(ticker) or {}
             if trackers.get('date') != today:
                 brief = self._resolve_brief_bias(ticker)
+                # No playbook row / failed lookup → no trackers at all, so
+                # fires tag NULL ("we weren't looking") rather than
+                # 'no_setup' ("a real row published no trigger for this
+                # leg"). Merging missing-data days into the no_setup
+                # cohort would bias the shadow GROUP BY (Codex P2 on
+                # PR #799). The 'unavailable' sentinel keeps the day
+                # keyed so the (cached) lookup isn't re-derived per bar.
+                if brief.get('bias') == 'UNAVAILABLE':
+                    self.leg_trackers[ticker] = {'date': today,
+                                                 'unavailable': True}
+                    return
                 trackers = {
                     'date': today,
                     'call': LegStateTracker(
@@ -454,6 +465,8 @@ class SignalMonitor:
                         stop=brief.get('puts_stop_price')),
                 }
                 self.leg_trackers[ticker] = trackers
+            if trackers.get('unavailable'):
+                return
             bars = new_data.loc[rth.values]
             h_col = 'High' if 'High' in bars.columns else 'Close'
             l_col = 'Low' if 'Low' in bars.columns else 'Close'
@@ -462,9 +475,27 @@ class SignalMonitor:
                 '_h': pd.to_numeric(bars[h_col].values, errors='coerce'),
                 '_l': pd.to_numeric(bars[l_col].values, errors='coerce'),
             }).sort_values('_et')
+            # Live polls re-deliver an overlapping snapshot of the session
+            # (fetch_latest_bar returns the last ~100 bars each cycle).
+            # The tracker is ORDER-dependent, so re-folding bars older
+            # than the watermark would replay pre-trigger bars with
+            # `triggered` already set and let an earlier, correctly-
+            # ignored stop touch flip the leg 'invalidated' (Codex P1 on
+            # PR #799). Fold only bars AT or after the watermark: the
+            # at-watermark bar is re-folded on purpose — it may be the
+            # still-forming current minute whose H/L are still widening,
+            # and re-folding it is safe because it is never earlier than
+            # the trigger bar when `triggered` is set (trigger-bar-
+            # inclusive semantics, same as the resolver).
+            last_ts = trackers.get('last_ts')
+            if last_ts is not None:
+                sub = sub[sub['_et'] >= last_ts]
+            if sub.empty:
+                return
             for hi, lo in zip(sub['_h'], sub['_l']):
                 trackers['call'].update(float(hi), float(lo))
                 trackers['put'].update(float(hi), float(lo))
+            trackers['last_ts'] = sub['_et'].iloc[-1]
         except Exception:
             # Same posture as the extremes tracker: a malformed batch must
             # never crash the monitor; the state simply doesn't advance
@@ -1405,6 +1436,10 @@ class SignalMonitor:
             return None, None
         trackers = self.leg_trackers.get(ticker) or {}
         if trackers.get('date') != self._now(_ET).date():
+            return None, None
+        if trackers.get('unavailable'):
+            # No playbook row / failed brief lookup for today — NULL tags,
+            # never 'no_setup' (see _update_leg_trackers).
             return None, None
         own_key = 'call' if direction == 'CALL' else 'put'
         opp_key = 'put' if own_key == 'call' else 'call'

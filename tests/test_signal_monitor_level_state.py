@@ -190,6 +190,56 @@ def test_off_mode_never_builds_trackers_or_tags():
     assert own is None and opp is None
 
 
+def test_overlapping_poll_snapshot_does_not_replay_pre_trigger_bars():
+    # Codex P1 on PR #799: live polls re-deliver the session's last ~100
+    # bars every cycle. Re-folding a pre-trigger stop touch AFTER the
+    # trigger has set would falsely flip the leg 'invalidated'. Bar 1
+    # touches the call stop (99.0) pre-trigger; bar 2 crosses the
+    # trigger. Re-delivering the same snapshot must leave the state as
+    # the first pass computed it.
+    monitor = _make_monitor()
+    batch = [(99.4, 98.9),    # stop touch, leg still dormant
+             (100.1, 99.9)]   # trigger crosses
+    _feed(monitor, 'QQQ', batch)
+    assert monitor._resolve_level_state('QQQ', 'CALL')[0] == 'triggered'
+    _feed(monitor, 'QQQ', batch)          # overlapping re-delivery
+    assert monitor._resolve_level_state('QQQ', 'CALL')[0] == 'triggered', \
+        "re-folded pre-trigger stop touch must not invalidate the leg"
+
+
+def test_forming_bar_at_watermark_still_advances_state():
+    # The at-watermark bar is re-folded on purpose: the current minute's
+    # bar keeps widening while it forms, and its final form may carry
+    # the touch. Same Time stamp, wider range on the second delivery.
+    monitor = _make_monitor()
+    _feed(monitor, 'QQQ', [(99.8, 99.5)])          # forming: nothing crossed
+    assert monitor._resolve_level_state('QQQ', 'CALL')[0] == 'fresh'
+    _feed(monitor, 'QQQ', [(100.6, 99.4)])         # same minute, final form
+    assert monitor._resolve_level_state('QQQ', 'CALL')[0] == 'post_t1'
+
+
+def test_unavailable_brief_tags_none_not_no_setup():
+    # Codex P2 on PR #799: a failed lookup / missing playbook row must
+    # tag NULL, not 'no_setup' — 'no_setup' is reserved for a real row
+    # that published no trigger for the leg.
+    monitor = _make_monitor()
+    unavailable = {'bias': 'UNAVAILABLE', 'alignment': None,
+                   'setup_count': 0, 'ftfc_direction': None,
+                   'ftfc_score': None, 'reason': 'no_brief_row'}
+    with patch.object(monitor, '_resolve_brief_bias',
+                      return_value=unavailable) as mock_bias:
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.9)]))
+        monitor.update_window('QQQ', _rth_bars([(100.8, 100.0)]))
+    assert mock_bias.call_count == 1, \
+        "the unavailable sentinel must not re-derive the lookup per batch"
+    own, opp = monitor._resolve_level_state('QQQ', 'CALL')
+    assert own is None and opp is None
+    with patch.object(monitor, '_persist_signal_alert') as mock_persist:
+        monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
+    assert mock_persist.called, "shadow mode still fires on unavailable brief"
+    assert monitor._latest_level_state is None
+
+
 def test_fire_with_no_bars_seen_tags_none_not_no_setup():
     # None = "we weren't looking / trackers not built"; 'no_setup' is
     # reserved for a real playbook row with no trigger on that leg.

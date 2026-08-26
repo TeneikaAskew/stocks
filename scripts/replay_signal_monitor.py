@@ -317,6 +317,14 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
         # trackers are fed by update_window, which this harness already
         # drives bar-by-bar, so replay tags carry production semantics.
         own_state, opp_state = self._resolve_level_state(ticker, sig["direction"])
+        # Mirror production enforcement (Codex P2 on PR #799): under
+        # `enforce`, live fire_alert returns before Discord/persist for
+        # late-state fires, so the replay must not capture them either —
+        # otherwise replay counts and --persist rows include fires the
+        # live monitor would suppress.
+        if (getattr(self.signal_cfg, "level_gate_mode", "shadow") == "enforce"
+                and own_state in ("post_t1", "invalidated")):
+            return
         title_prefix = "STACKED " if agreement else ""
         tf_label = f" [{tf_tag}]" if tf_tag else ""
         brief_label = f" [brief:{align}]" if align else ""
