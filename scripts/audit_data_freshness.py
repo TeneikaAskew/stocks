@@ -989,9 +989,18 @@ def _query_enrichment_coverage(now_utc: datetime) -> list[FreshnessRow]:
     """
     from gcp.database import query_to_dataframe_strict
 
-    # Settled after the enrich job finishes: 02:30 ET start + worst-case
-    # ~2h ⇒ 05:00 ET. Before 05:00 ET the check anchors one day back.
-    latest_day = most_recent_trading_day(now_utc, settle_hour_et=5)
+    # Day D's ENRICHMENT is not expected until the 02:30 ET job on D+1
+    # finishes (worst case ~2h ⇒ 05:00 ET on D+1) — but D's RAW bars land
+    # the evening of D itself (~21:00-23:00 ET). Anchoring D as settled at
+    # 05:00 ET on D (the original #759 shape) therefore made every evening
+    # run between raw-bar landing and next-morning enrichment report a
+    # truthful-but-expected 0% and page (first surfaced 2026-08-25 22:05 ET,
+    # freshness-watchdog-vwtk9, 0/2501 — previously masked because daytime
+    # runs saw zero D-rows and skipped, and #765's timeout killed the
+    # evening runs before this check reported). settle_lag_days=1 is the
+    # house idiom for delayed-cron writers: D settles at 05:00 ET on D+1.
+    latest_day = most_recent_trading_day(now_utc, settle_hour_et=5,
+                                         settle_lag_days=1)
     # Driven by the settled day's own rows, NOT by a bare 450-day scan.
     #
     # The original form (PR #759) opened with an unbounded
