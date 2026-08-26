@@ -1224,12 +1224,19 @@ class SignalMonitor:
             elapsed_min = (now_utc - pos['alert_ts']).total_seconds() / 60.0
             exit_reason = None
 
-            if self.exit.mode == 'fixed_horizon':
-                # Audit 2026-08-25 §10: hold every position exactly
-                # fixed_horizon_minutes — no target truncation, no RSI
-                # exit. Mirrored in the EOD resolver's _detect_exit; the
-                # two must stay in lock-step.
-                if elapsed_min >= self.exit.fixed_horizon_minutes:
+            is_call = pos['direction'] == 'CALL'
+            dir_mode = (self.exit.call_exit_mode if is_call
+                        else self.exit.put_exit_mode)
+            if dir_mode == 'fixed_horizon':
+                # Audit 2026-08-25 §12: hold this direction's positions
+                # exactly N minutes — no target truncation, no RSI exit.
+                # Per-direction because the paired tests show upside
+                # fades (CALLs want quick targets) while downside trends
+                # (PUTs want the hold). Mirrored in the EOD resolver's
+                # _detect_exit; the two must stay in lock-step.
+                horizon = (self.exit.call_fixed_horizon_minutes if is_call
+                           else self.exit.put_fixed_horizon_minutes)
+                if elapsed_min >= horizon:
                     exit_reason = 'fixed_horizon'
             elif pos['direction'] == 'CALL':
                 if current_price >= pos['target_price']:

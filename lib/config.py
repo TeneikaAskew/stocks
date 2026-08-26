@@ -260,20 +260,30 @@ class ExitConfig:
     put_time_stop: int = 35       # minutes
     call_rsi_exit: float = 80.0
     put_rsi_exit: float = 20.0
-    # Exit-policy mode (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §10).
-    # The default 'target_stop' is the existing first-touch-target /
-    # time-stop / rsi-extreme machinery — zero behavior change. The
-    # counterfactual replay of all live fires (Mar 19 - Aug 25) measured
-    # that machinery at -15.9 summed pct while a plain hold-30-minutes
-    # exit measured +43.7: the target-first structure truncates winners
-    # at +0.30% and rides losers to the time stop. 'fixed_horizon' exits
-    # every position at fixed_horizon_minutes, full stop — no target, no
-    # RSI exit. PRECONDITION for enabling: the EOD resolver
-    # (gcp/signal_monitor_eod_resolver.py:_detect_exit) mirrors this
-    # mode, so live monitor and resolver stay comparable — flip the
+    # Per-direction exit-policy mode
+    # (docs/audits/PROFITABILITY_REVIEW_2026-08-25.md §12).
+    # 'target_stop' (both defaults) is the existing first-touch-target /
+    # time-stop / rsi-extreme machinery — zero behavior change.
+    # 'fixed_horizon' exits every position of that direction at its
+    # *_fixed_horizon_minutes, full stop — no target, no RSI exit.
+    # The modes are PER-DIRECTION because the paired per-trade tests
+    # (§12, n=2,888) show the effect is directional, not global:
+    #   - CALL: quick-target exits beat hold-30 in EVERY era (May
+    #     t=-44.8; Jun-Aug n.s. in the engine's favor) — upside
+    #     momentum fades. Never flip call_exit_mode on current evidence.
+    #   - PUT: hold-30 beats the engine in May (t=+58.6, 97% of trades)
+    #     AND the current era (t=+4.9, p<0.0001, totals +2.9 vs -7.3) —
+    #     downside moves trend and the +0.38% put target truncates
+    #     them. put_exit_mode='fixed_horizon' is the evidence-supported
+    #     flip.
+    # PRECONDITION for enabling either: the EOD resolver
+    # (gcp/signal_monitor_eod_resolver.py:_detect_exit) mirrors these
+    # modes, so live monitor and resolver stay comparable — flip the
     # config, never just one code path.
-    mode: str = 'target_stop'     # 'target_stop' | 'fixed_horizon'
-    fixed_horizon_minutes: int = 30
+    call_exit_mode: str = 'target_stop'   # 'target_stop' | 'fixed_horizon'
+    put_exit_mode: str = 'target_stop'    # 'target_stop' | 'fixed_horizon'
+    call_fixed_horizon_minutes: int = 30
+    put_fixed_horizon_minutes: int = 30
 
 
 # ---------------------------------------------------------------------------

@@ -3510,8 +3510,15 @@ deploy_schedulers() {
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
 
-    # AlphaVantage nightly intraday — 9 PM ET Tue–Sat (after each weekday's
-    # session settles). Tue 9 PM picks up Mon's bars, Sat 9 PM picks up Fri's.
+    # AlphaVantage nightly intraday — 9 PM ET Mon–Sat, after the extended
+    # session ends at 8 PM ET. The default date range runs through
+    # "today", so each evening's run captures that same day's complete
+    # session (measured from market_data_intraday.inserted_at: Tue–Fri
+    # sessions land ~21:01 ET same evening). Monday was added 2026-08-26:
+    # the old Tue–Sat cron assumed each run only picked up the PRIOR
+    # session, which left Monday's bars to arrive late (~23 PM via other
+    # paths) and pushed Monday's playbook-outcome grading to Tuesday
+    # night; with Mon–Sat every weekday grades same-night at 21:15.
     # Passes --force so the GCS parquet-exists short-circuit doesn't skip
     # the still-incomplete current month; the DB upsert is idempotent on
     # (ticker,interval,ts) so re-fetching is safe. The default date range
@@ -3519,7 +3526,7 @@ deploy_schedulers() {
     # month too — that's ~26s of redundant AV calls per night, well below
     # the 150 RPM premium budget. Closes the month-end-to-1st-of-next-month
     # gap that left the table stale for fresh signal-quality analysis.
-    _schedule_with_args "av-intraday-nightly"  "0 21 * * 2-6"  "fetch-alphavantage-intraday" \
+    _schedule_with_args "av-intraday-nightly"  "0 21 * * 1-6"  "fetch-alphavantage-intraday" \
         "--symbol=ALL" "--force"
 
     # FRED rates — 6:30 AM ET daily (after FRED's nightly publication ~04:30 UTC)
