@@ -117,6 +117,7 @@ def test_capturing_fire_alert_records_basic_signal():
     monitor._latest_agreement = None
     monitor._latest_timeframe_tag = "30m"
     monitor._latest_expected_hold_min = 30
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4,
@@ -138,6 +139,8 @@ def test_capturing_fire_alert_records_basic_signal():
     assert f.strategy_agreement is None
     assert "[30m]" in f.embed_title
     assert "STACKED" not in f.embed_title
+    assert f.brief_alignment == "aligned"
+    assert "[brief:aligned]" in f.embed_title
 
 
 def test_capturing_fire_alert_records_stacked_agreement():
@@ -153,6 +156,7 @@ def test_capturing_fire_alert_records_stacked_agreement():
     }
     monitor._latest_timeframe_tag = "15m"
     monitor._latest_expected_hold_min = 15
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'UNAVAILABLE'}, None)
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["consecutive_down"]}
@@ -179,6 +183,7 @@ def test_capturing_fire_alert_to_dict_is_json_safe():
     monitor._latest_agreement = None
     monitor._latest_timeframe_tag = "60m"
     monitor._latest_expected_hold_min = 60
+    monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'invalidated')
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "PUT", "base_score": 3, "conditions_met": ["consecutive_up"]}
@@ -246,3 +251,26 @@ def test_replay_ticker_swallows_evaluate_exceptions():
     assert n_bars == 3
     assert monitor.update_window.call_count == 3
     assert monitor.evaluate_ticker.call_count == 3
+
+
+def test_persist_fire_includes_brief_alignment():
+    """--persist mode must write the captured brief_alignment — a NULL
+    there would defeat the replay's database-analysis path."""
+    from unittest.mock import MagicMock
+    from scripts.replay_signal_monitor import persist_fire_to_signal_alerts
+    fire = FireRecord(
+        timestamp=pd.Timestamp("2026-07-23 14:00", tz="UTC"),
+        ticker="IWM", direction="CALL", base_score=3, total_score=3.0,
+        timeframe_tag="30m", expected_hold_min=30,
+        strategy_agreement=None, conditions_met=["rsi_oversold_zone"],
+        embed_title="CALL SIGNAL [30m] [brief:invalidated] @ $291.51",
+        brief_alignment="invalidated",
+    )
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    persist_fire_to_signal_alerts(fire, monitor=MagicMock(), engine=engine,
+                                  replay_id="rid-1")
+    params = conn.execute.call_args[0][1]
+    assert params["brief_alignment"] == "invalidated"
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "brief_alignment" in sql_text

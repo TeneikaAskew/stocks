@@ -23,6 +23,12 @@ from zoneinfo import ZoneInfo
 # matches the configured market_close='16:00' under naive comparison).
 _ET = ZoneInfo("America/New_York")
 
+# RTH bounds for the session-extremes tracker (level-aware brief
+# alignment). Premarket/afterhours bars must not count as "the session
+# traded through the brief's stop" — the brief's plan is an RTH plan.
+_RTH_OPEN = time(9, 30)
+_RTH_CLOSE = time(16, 0)
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
@@ -36,8 +42,8 @@ from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
-from lib.strategies.brief_bias import alignment as _brief_alignment
 from lib.strategies.brief_bias import get_premarket_bias
+from lib.strategies.brief_bias import level_aware_alignment as _level_aware_alignment
 from lib.strategies.insight_cache import (
     InsightCache,
     evaluate_direction_gate,
@@ -170,6 +176,13 @@ class SignalMonitor:
         # so in-memory tracking is sufficient for now.
         self.active_positions: dict = {t: [] for t in self.tickers}
         self.orb_levels: dict = {t: {} for t in self.tickers}
+        # Running RTH high/low for today's session, per ticker — fed
+        # incrementally by update_window because the rolling window keeps
+        # only rolling_window_bars (200) bars, less than a full 390-bar
+        # session, so an early stop breach would age out of the window by
+        # the afternoon. Consumed by the level-aware brief-alignment tag
+        # in fire_alert. Shape: {'date': date, 'high': float, 'low': float}.
+        self.session_extremes: dict = {t: {} for t in self.tickers}
 
         # Strat level map per ticker, refreshed each loop iteration. Used to
         # detect level breaks (PDH, PDL, PWH, PWL, ...) once per crossing.
@@ -333,6 +346,59 @@ class SignalMonitor:
         existing = self.windows[ticker]
         combined = pd.concat([existing, new_data]).drop_duplicates(subset=['Time'], keep='last')
         self.windows[ticker] = combined.tail(self.monitor_cfg.rolling_window_bars).reset_index(drop=True)
+        self._update_session_extremes(ticker, new_data)
+
+    def _update_session_extremes(self, ticker: str, new_data: pd.DataFrame) -> None:
+        """Fold new bars into the running RTH high/low for today's session.
+
+        Called from update_window — the one choke point both the live
+        loop and scripts/replay_signal_monitor.py feed bars through, so
+        replay parity is free.
+
+        Bar `Time` tz convention differs by mode, mirroring `_now`:
+        live AV bars carry naive US/Eastern stamps (fetch_latest_bar),
+        replay bars from market_data_intraday carry naive UTC
+        (replay_clock_ts is set per-bar before update_window). tz-aware
+        stamps are converted outright.
+        """
+        if new_data is None or new_data.empty or 'Time' not in new_data.columns:
+            return
+        try:
+            times = pd.to_datetime(new_data['Time'])
+            if getattr(times.dt, 'tz', None) is not None:
+                times_et = times.dt.tz_convert(_ET)
+            elif self.replay_clock_ts is not None:
+                times_et = times.dt.tz_localize('UTC').dt.tz_convert(_ET)
+            else:
+                times_et = times
+            today = self._now(_ET).date()
+            rth = ((times_et.dt.date == today)
+                   & (times_et.dt.time >= _RTH_OPEN)
+                   & (times_et.dt.time < _RTH_CLOSE))
+            if not bool(rth.any()):
+                return
+            bars = new_data.loc[rth.values]
+            bar_high = float(bars['High'].max()) if 'High' in bars.columns \
+                else float(bars['Close'].max())
+            bar_low = float(bars['Low'].min()) if 'Low' in bars.columns \
+                else float(bars['Close'].min())
+        except Exception:
+            # Malformed bar batch (garbage Time, non-numeric OHLC).
+            # Extremes simply don't advance this poll — the level-aware
+            # tag degrades to plain alignment (never a false
+            # 'invalidated'), and the window/indicator path will surface
+            # the bad batch on its own. Log so it's not invisible.
+            logger.warning("session-extremes update skipped for %s: bad bar batch",
+                           ticker, exc_info=True)
+            return
+        if bar_high != bar_high or bar_low != bar_low:  # all-NaN batch
+            return
+        ext = self.session_extremes.get(ticker) or {}
+        if ext.get('date') != today:
+            ext = {'date': today, 'high': None, 'low': None}
+        ext['high'] = bar_high if ext['high'] is None else max(ext['high'], bar_high)
+        ext['low'] = bar_low if ext['low'] is None else min(ext['low'], bar_low)
+        self.session_extremes[ticker] = ext
 
     def calculate_indicators(self, ticker: str) -> pd.DataFrame:
         """Calculate indicators on the rolling window via the ONE shared
@@ -933,15 +999,15 @@ class SignalMonitor:
         # Phase 2: brief-bias tag — surfaces alignment between this fired
         # signal and the morning premarket brief. Visibility only — does
         # not modify the fire decision, score, or position size.
-        brief = self._resolve_brief_bias(ticker)
-        align = _brief_alignment(direction, brief)
-        self._latest_brief_bias = brief
-        self._latest_brief_alignment = align
+        brief, align = self._resolve_brief_alignment(ticker, direction)
         brief_label = ''
         if brief['bias'] == 'CONFLICTED':
             brief_label = ' [brief: CONFLICTED]'
         elif align == 'aligned':
             brief_label = f" [brief: {brief['bias']} ✓ ({brief['setup_count']}/5)]"
+        elif align == 'invalidated':
+            brief_label = (f" [brief: {brief['bias']} ✗ stop broken "
+                           f"({brief['setup_count']}/5)]")
         elif align == 'opposed':
             brief_label = f" [AGAINST BRIEF: {brief['bias']} ({brief['setup_count']}/5)]"
 
@@ -1189,6 +1255,39 @@ class SignalMonitor:
                 ts = ts.replace(tzinfo=ZoneInfo("UTC"))
             return ts.astimezone(tz)
         return datetime.now(tz)
+
+    def _resolve_brief_alignment(self, ticker: str, direction: str) -> tuple:
+        """Resolve the brief bias + level-aware alignment tag for a fire.
+
+        Stashes _latest_brief_bias / _latest_brief_alignment for
+        _persist_signal_alert and returns (brief, align). Shared by
+        fire_alert and the replay harness's capturing fire stub
+        (scripts/replay_signal_monitor.make_capturing_fire_alert) so
+        replay exercises the exact tag logic live runs — Rule 3.6
+        parity: the tag must never be re-derived in a harness.
+
+        Level-aware: 'aligned' downgrades to 'invalidated' when today's
+        session has already traded through the brief's stop for the
+        recommended side, so a frozen 8:31 opinion can't keep endorsing
+        a plan whose protective level broke intraday (the 2026-05-07/08
+        QQQ put-leg days: 176 'aligned' PUT fires past a broken stop).
+        """
+        brief = self._resolve_brief_bias(ticker)
+        _ext = self.session_extremes.get(ticker) or {}
+        align = _level_aware_alignment(direction, brief,
+                                       _ext.get('high'), _ext.get('low'))
+        if align == 'invalidated':
+            logger.info(
+                "brief_alignment invalidated for %s %s: bias=%s stop=%s "
+                "session_low=%s session_high=%s",
+                ticker, direction, brief.get('bias'),
+                brief.get('calls_stop_price') if brief.get('bias') == 'CALL'
+                else brief.get('puts_stop_price'),
+                _ext.get('low'), _ext.get('high'),
+            )
+        self._latest_brief_bias = brief
+        self._latest_brief_alignment = align
+        return brief, align
 
     def _resolve_brief_bias(self, ticker: str) -> dict:
         """Lookup-and-cache the premarket-brief bias for this ticker today."""

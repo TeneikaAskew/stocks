@@ -77,7 +77,8 @@ def get_premarket_bias(ticker: str, target_date: _date) -> dict:
 
     sql = text(
         """
-        SELECT signal_status, ftfc_direction, ftfc_score, strat_combo
+        SELECT signal_status, ftfc_direction, ftfc_score, strat_combo,
+               calls_stop_price, puts_stop_price
           FROM premarket_analysis
          WHERE ticker = :ticker AND analysis_date = :d
          LIMIT 1
@@ -95,7 +96,13 @@ def get_premarket_bias(ticker: str, target_date: _date) -> dict:
         return _unavailable('no_brief_row')
 
     row = df.iloc[0].to_dict()
-    return classify(row)
+    out = classify(row)
+    # The brief's stop levels ride along for level_aware_alignment().
+    # Kept out of classify() so the pure classifier stays brief-text-only
+    # and its existing unit tests keep driving it with minimal rows.
+    out['calls_stop_price'] = _coerce_price(row.get('calls_stop_price'))
+    out['puts_stop_price'] = _coerce_price(row.get('puts_stop_price'))
+    return out
 
 
 def classify(row: dict) -> dict:
@@ -171,6 +178,65 @@ def alignment(live_direction: str, bias: dict) -> Optional[str]:
     if b not in ('CALL', 'PUT'):
         return None  # NEUTRAL / CONFLICTED / UNAVAILABLE → no opinion
     return 'aligned' if live_direction == b else 'opposed'
+
+
+def _coerce_price(raw) -> Optional[float]:
+    """Normalise a price column from a SQL row to float or None.
+
+    NaN (pandas' NULL for float columns) must come back as None so
+    level_aware_alignment's comparisons can't silently evaluate against
+    NaN (always-False) and mask a real stop level as "no stop"."""
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v != v:  # NaN
+        return None
+    return v
+
+
+def level_aware_alignment(live_direction: str, bias: dict,
+                          session_high: Optional[float],
+                          session_low: Optional[float]) -> Optional[str]:
+    """Alignment that respects intraday violations of the brief's stop.
+
+    Same contract as `alignment(...)` plus one more value:
+
+      'invalidated' — the live signal agrees with the brief's bias, but
+      today's session has already traded through the stop level the brief
+      attached to that side (CALL bias: session low <= calls_stop_price;
+      PUT bias: session high >= puts_stop_price). The brief's protective
+      level is broken, so tagging the fire 'aligned' would let a frozen
+      8:31 opinion endorse a plan whose level structure has failed
+      intraday.
+
+    Note this deliberately does NOT require the brief's trigger to have
+    been hit first ("stopped out" in the strict trade sense). A session
+    trading beyond the stop while the plan is still dormant also breaks
+    the level structure the plan was built on — the 2026-05-07/08 QQQ
+    gap-over-put-stop days are the canonical case (176 'aligned' PUT
+    fires into a broken put leg).
+
+    Visibility-only, like the rest of Phase 1/2 — callers persist and
+    display the tag; it does not gate the fire. Missing stop or missing
+    extremes (first bars of the session) degrade to the plain alignment
+    answer, never to a false 'invalidated'.
+    """
+    base = alignment(live_direction, bias)
+    if base != 'aligned':
+        return base
+    b = bias.get('bias')
+    if b == 'CALL':
+        stop = bias.get('calls_stop_price')
+        if stop is not None and session_low is not None and session_low <= stop:
+            return 'invalidated'
+    elif b == 'PUT':
+        stop = bias.get('puts_stop_price')
+        if stop is not None and session_high is not None and session_high >= stop:
+            return 'invalidated'
+    return 'aligned'
 
 
 def _bias(bias_value: str, reason: str,
