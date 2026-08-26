@@ -866,14 +866,18 @@ class SignalMonitor:
         # changes nothing else, 'enforce' suppresses the fire entirely —
         # before Discord, persist, and the daily-trades counter, so a
         # suppressed fire is invisible to the risk caps too.
-        rvol_value = float(latest.get('RVOL', 0) or 0)
+        # No `.get('RVOL', 0)` default here (CLAUDE.md §3.7): a missing
+        # RVOL must reach rvol_gate_verdict() as None/NaN so its
+        # always-'below' guarantee applies — coercing to 0 would let a
+        # missing value PASS the gate under a legal rvol_gate_min=0.
+        rvol_value = latest.get('RVOL')
         self._latest_rvol_gate = rvol_gate_verdict(
             rvol_value, self.signal_cfg.rvol_gate_min,
             self.signal_cfg.rvol_gate_mode)
         if (self.signal_cfg.rvol_gate_mode == 'enforce'
                 and self._latest_rvol_gate == 'below'):
             logger.info(
-                "rvol_gate: suppressed %s %s fire (rvol=%.2f < min=%.2f)",
+                "rvol_gate: suppressed %s %s fire (rvol=%s < min=%.2f)",
                 ticker, direction, rvol_value, self.signal_cfg.rvol_gate_min,
             )
             return

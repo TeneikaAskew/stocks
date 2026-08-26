@@ -90,3 +90,32 @@ def test_shadow_mode_fires_and_stashes_verdict():
         monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar(0.4))
     assert mock_persist.called, "shadow mode must never suppress a fire"
     assert monitor._latest_rvol_gate == 'below'
+
+
+def test_missing_rvol_key_is_below_not_pass():
+    # Pre-deploy-gate finding (PR #782): the fire path must NOT coerce a
+    # missing RVOL key to 0 before the verdict — under a legal
+    # rvol_gate_min=0 that would silently PASS the gate. The bar here has
+    # no 'RVOL' key at all (not 0, not None-valued).
+    monitor = _make_monitor()
+    monitor.signal_cfg.rvol_gate_mode = 'shadow'
+    monitor.signal_cfg.rvol_gate_min = 0.0  # the config where the bug bites
+    bar = _bar(1.0)
+    del bar['RVOL']
+    with patch.object(monitor, '_persist_signal_alert') as mock_persist:
+        monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, bar)
+    assert mock_persist.called
+    assert monitor._latest_rvol_gate == 'below', \
+        "a bar with no RVOL key must never pass the gate, even at min=0"
+
+
+def test_missing_rvol_key_suppressed_in_enforce_mode():
+    monitor = _make_monitor()
+    monitor.signal_cfg.rvol_gate_mode = 'enforce'
+    monitor.signal_cfg.rvol_gate_min = 0.0
+    bar = _bar(1.0)
+    del bar['RVOL']
+    with patch.object(monitor, '_persist_signal_alert') as mock_persist:
+        monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, bar)
+    assert not mock_persist.called, \
+        "enforce mode must suppress a fire whose bar has no RVOL key"
