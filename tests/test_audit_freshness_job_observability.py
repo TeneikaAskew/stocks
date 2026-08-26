@@ -272,6 +272,29 @@ def test_enrichment_sql_is_bounded_to_the_days_tickers(monkeypatch):
     assert "EXISTS" in sql
 
 
+def test_enrichment_settles_next_morning_not_same_day(monkeypatch):
+    """Day D's enrichment is produced by the 02:30 ET job on D+1, but D's
+    raw bars land the evening of D. Same-day settling (the original #759
+    anchor) made every evening run page on a truthful-but-expected 0%
+    (freshness-watchdog-vwtk9, 2026-08-25 22:05 ET, 0/2501). The check
+    must audit D-1 until 05:00 ET on D+1.
+
+    2026-08-26 02:05 UTC is 22:05 ET on Aug 25: raw Aug-25 bars are down,
+    enrichment is not — the audited day must be Aug 22 (Fri; Aug 23/24
+    weekend... Aug 25 is Tuesday, so D-1 = Mon Aug 24)."""
+    from scripts.audit_data_freshness import _query_enrichment_coverage
+    calls = _patch_strict(monkeypatch, pd.DataFrame([{"total": 10, "non_null": 10}]))
+    _query_enrichment_coverage(datetime(2026, 8, 26, 2, 5))   # 22:05 ET Aug 25
+    from datetime import date
+    assert calls[0]["params"]["day"] == date(2026, 8, 24), (
+        f"evening run must audit the prior settled session, got "
+        f"{calls[0]['params']['day']}")
+    calls2 = _patch_strict(monkeypatch, pd.DataFrame([{"total": 10, "non_null": 10}]))
+    _query_enrichment_coverage(datetime(2026, 8, 26, 10, 0))  # 06:00 ET Aug 26
+    assert calls2[0]["params"]["day"] == date(2026, 8, 25), (
+        "after 05:00 ET on D+1 the audited day advances to D")
+
+
 def test_enrichment_sql_anchors_on_day_not_wall_clock(monkeypatch):
     """An as-of check must not let CURRENT_DATE pick the history window.
 
