@@ -895,3 +895,101 @@ class TestGammaDensityAcrossEtfSweep:
                 assert s.gamma_flip is not None, (
                     f"flip NULL at spot={spot} skew={skew:.2f}")
         assert neg_seen > 0, "sweep must exercise the negative-gamma regime"
+
+
+# ── §3.7: missing vendor gamma must be loud, never silent zeros ──────────────
+#
+# lib/gamma.py:239 previously read `opt.get("gamma") or 0.0` with no
+# accounting: a vendor-feed outage (gamma NULL chain-wide) produced
+# total_gex=0.0 / regime from zeros — indistinguishable from a real
+# flat-gamma day. greeks_coverage + the build_summary gate make the
+# outage explicit (PROFITABILITY/e2e review 2026-08-26 concern 5.2).
+
+
+def _chain_row(strike, typ="call", gamma=0.001, oi=100, delta=0.5):
+    return {
+        "type": typ, "strike": strike, "gamma": gamma, "vega": 0.1,
+        "open_interest": oi, "volume": 10, "delta": delta,
+        "bid": 1.0, "ask": 1.2, "expiration": "2026-09-18",
+    }
+
+
+def test_greeks_coverage_full():
+    from lib.gamma import greeks_coverage
+    cov, miss, total = greeks_coverage([_chain_row(100), _chain_row(101)])
+    assert (cov, miss, total) == (1.0, 0, 2)
+
+
+def test_greeks_coverage_counts_none_not_zero():
+    """A legitimate 0.0 gamma (far-OTM) is PRESENT; only None is missing."""
+    from lib.gamma import greeks_coverage
+    rows = [_chain_row(100, gamma=0.0), _chain_row(101, gamma=None)]
+    cov, miss, total = greeks_coverage(rows)
+    assert miss == 1 and total == 2
+    assert abs(cov - 0.5) < 1e-9
+
+
+def test_greeks_coverage_empty_chain_is_full():
+    from lib.gamma import greeks_coverage
+    assert greeks_coverage([]) == (1.0, 0, 0)
+
+
+def test_build_summary_all_gamma_missing_is_unavailable_not_zero():
+    """The outage signature: every row's gamma is NULL. Must come back
+    regime='unknown' with a loud warning — NOT a quiet total_gex=0.0
+    summary that downstream reads as a flat-gamma day."""
+    from lib.gamma import build_summary
+    rows = [_chain_row(s, gamma=None) for s in (98, 99, 100, 101, 102)]
+    s = build_summary("SPY", "2026-08-25", rows)
+    assert s.regime == "unknown"
+    assert s.total_gex == 0.0
+    assert any("ALL" in w and "unavailable" in w for w in s.warnings), s.warnings
+
+
+def test_build_summary_partial_missing_warns_degraded():
+    from lib.gamma import build_summary
+    rows = [_chain_row(s) for s in range(90, 110)]
+    rows += [_chain_row(s, gamma=None) for s in (110, 111)]  # 2/22 ≈ 9% missing
+    s = build_summary("SPY", "2026-08-25", rows)
+    assert any("degraded" in w for w in s.warnings), s.warnings
+    # The computable part still computes.
+    assert s.regime in ("positive_gamma", "negative_gamma")
+
+
+def test_build_summary_full_coverage_no_greeks_warning():
+    from lib.gamma import build_summary
+    rows = [_chain_row(s) for s in range(90, 110)]
+    s = build_summary("SPY", "2026-08-25", rows)
+    assert not any("gamma missing" in w for w in s.warnings), s.warnings
+
+
+def test_greeks_coverage_counts_nan_as_missing():
+    """Codex P1 #791: SQL NULL arrives as float('nan') through pandas-
+    backed loaders (p2_build_gamma_levels) — must count as missing, or a
+    chain-wide outage reads 100% coverage and NaN poisons every sum."""
+    from lib.gamma import greeks_coverage
+    rows = [_chain_row(100, gamma=float("nan")), _chain_row(101)]
+    cov, miss, total = greeks_coverage(rows)
+    assert miss == 1 and total == 2
+
+
+def test_build_summary_nan_outage_is_unavailable_and_not_nan():
+    from lib.gamma import build_summary
+    rows = [_chain_row(s, gamma=float("nan")) for s in (98, 99, 100, 101)]
+    s = build_summary("SPY", "2026-08-25", rows)
+    assert s.regime == "unknown"
+    assert s.total_gex == 0.0 and s.total_gex == s.total_gex  # not NaN
+
+
+def test_build_summary_outage_preserves_spot():
+    """Codex P2 #791: an all-missing-gamma outage must not discard an
+    independently available spot (override or parity/delta from the
+    chain) — only the gamma-derived fields go unavailable."""
+    from lib.gamma import build_summary
+    rows = [_chain_row(s, gamma=None) for s in (98, 99, 100, 101, 102)]
+    s = build_summary("SPY", "2026-08-25", rows, spot_override=101.5)
+    assert s.regime == "unknown"
+    assert s.spot.price == 101.5 and s.spot.method == "override"
+    # And without an override, the delta/parity estimate still resolves.
+    s2 = build_summary("SPY", "2026-08-25", rows)
+    assert s2.spot.price > 0, s2.spot
