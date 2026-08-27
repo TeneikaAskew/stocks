@@ -12,6 +12,7 @@ target breaches the per-tf ceiling (per the spec).
 """
 from __future__ import annotations
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -71,7 +72,17 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # levels via the set below. NaN where balance is missing or close<=0
     # (§3.7); the matrix-level fillna(0) then treats it like every other
     # sparse feature.
-    if "gamma_balance_price" in enc.columns and "close" in enc.columns:
+    # MAG_ABLATE — experiment knob, MAG_FEATURES-style env plumbing.
+    # "gamma_dist" additionally removes the normalized gamma distance
+    # features (and skips the dist_to_balance derivation) so a phase0 run
+    # can measure the no-gamma-distance baseline: the 2026-08-26 ablation
+    # showed dropping only the raw levels left the 15m/30m collapse
+    # intact, implicating the rebuilt dist_to_gamma_flip_pct values.
+    # Unset (production) leaves standard behavior untouched.
+    _ablate = set(filter(None, os.environ.get("MAG_ABLATE", "").split(",")))
+
+    if ("gamma_dist" not in _ablate
+            and "gamma_balance_price" in enc.columns and "close" in enc.columns):
         _close = pd.to_numeric(enc["close"], errors="coerce")
         _gbp = pd.to_numeric(enc["gamma_balance_price"], errors="coerce")
         enc["dist_to_balance_pct"] = pd.Series(
@@ -82,6 +93,8 @@ def featurize(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     drop = {
         # Raw gamma dollar levels — see the derivation comment above.
         "gamma_balance_price", "gamma_flip",
+        *(("dist_to_gamma_flip_pct", "dist_to_balance_pct")
+          if "gamma_dist" in _ablate else ()),
         "ticker", "ts", "tf", "bar_date",
         "open", "high", "low", "close", "volume",
         "fwd_close_5bars", "fwd_close_15bars", "fwd_close_30bars", "fwd_close_60bars",
