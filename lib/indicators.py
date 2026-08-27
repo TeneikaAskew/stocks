@@ -228,6 +228,70 @@ def calculate_rvol_recent(volume: pd.Series, period: int = 20) -> pd.Series:
     return volume / rolling_med.where(rolling_med > 0, np.nan)
 
 
+def calculate_rvol_vs_baseline(
+    times: pd.Series,
+    volume: pd.Series,
+    baseline: dict,
+) -> pd.Series:
+    """Relative volume against a HISTORICAL minute-of-day baseline.
+
+    `calculate_rvol` divides a bar's volume by a rolling mean of the same
+    session's recent bars. In a live intraday window (which
+    ``gcp.signal_monitor.fetch_latest_bar`` filters to today only) that
+    denominator is "the last 20 bars of this morning" — no historical
+    reference is involved, so the result is not relative volume in the
+    sense a trader means. Two consequences, both measured in audit §16:
+
+      * The opening bar (2026-08-27: 669x the premarket median for SPY)
+        enters its own rolling denominator and depresses every following
+        bar for 20 minutes. Live fires read a median RVOL of 1.80 in the
+        first five minutes, 0.64 by minute 5-15, and 0.51 by minute
+        15-30 — a mechanical decay, not a volume collapse.
+      * Across 740 live fires, 80% read below 1.0. A ratio that sits
+        below 1 four times out of five is mis-specified by construction:
+        a relative measure should centre on 1.
+
+    This function compares each bar to the MEDIAN volume historically
+    traded at that same minute of the session, which is what "relative
+    volume" means. `baseline` maps minute-of-day (``hour*60 + minute``,
+    US/Eastern) to that median, built by
+    ``minute_of_day_volume_baseline`` from prior sessions.
+
+    Minutes absent from `baseline` yield NaN, never a fabricated 1.0
+    (CLAUDE.md §3.7) — the caller decides whether an unknown baseline
+    means "skip the gate" or "surface data-unavailable".
+    """
+    minute_of_day = times.dt.hour * 60 + times.dt.minute
+    ref = minute_of_day.map(baseline)
+    ref = pd.to_numeric(ref, errors='coerce')
+    return volume / ref.where(ref > 0, np.nan)
+
+
+def minute_of_day_volume_baseline(
+    times: pd.Series,
+    volume: pd.Series,
+    exclude_date=None,
+) -> dict:
+    """Median volume per minute-of-day, built from PRIOR sessions.
+
+    Returns ``{minute_of_day: median_volume}``. Median (not mean) so a
+    single news-spike session cannot move the reference — the same
+    reasoning that motivated ``calculate_rvol_recent``.
+
+    `exclude_date` drops that session before aggregating, which is how
+    callers avoid feeding the current day into its own baseline (the
+    look-ahead the research-path `exclude_current` flag guards against
+    in ``lib.trading_analysis``).
+    """
+    df = pd.DataFrame({'t': pd.to_datetime(times), 'v': volume})
+    if exclude_date is not None:
+        df = df[df['t'].dt.date != exclude_date]
+    if df.empty:
+        return {}
+    mod = df['t'].dt.hour * 60 + df['t'].dt.minute
+    return df.groupby(mod)['v'].median().to_dict()
+
+
 def calculate_rvol_minute_of_day(
     times: pd.Series, volume: pd.Series,
 ) -> pd.Series:
