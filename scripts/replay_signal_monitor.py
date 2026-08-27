@@ -71,6 +71,8 @@ class FireRecord:
     conditions_met:    list[str]
     embed_title:       str
     brief_alignment:   Optional[str] = None
+    level_state:       Optional[str] = None
+    opp_level_state:   Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -80,6 +82,8 @@ class FireRecord:
             "base_score":         self.base_score,
             "total_score":        self.total_score,
             "brief_alignment":    self.brief_alignment,
+            "level_state":        self.level_state,
+            "opp_level_state":    self.opp_level_state,
             "timeframe_tag":      self.timeframe_tag,
             "expected_hold_min":  self.expected_hold_min,
             "strategy_agreement": self.strategy_agreement,
@@ -260,13 +264,15 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
             ticker, alert_ts, alert_date, direction,
             base_score, total_score, strength_label,
             position_size, time_stop_minutes,
-            conditions_met, brief_alignment, run_kind, replay_id,
+            conditions_met, brief_alignment, level_state, opp_level_state,
+            run_kind, replay_id,
             inserted_at
         ) VALUES (
             :ticker, :alert_ts, :alert_date, :direction,
             :base_score, :total_score, :strength,
             :size, :time_stop,
-            :conditions, :brief_alignment, 'replay', :replay_id,
+            :conditions, :brief_alignment, :level_state, :opp_level_state,
+            'replay', :replay_id,
             NOW()
         )
         ON CONFLICT DO NOTHING
@@ -285,6 +291,8 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
                 'time_stop': fire.expected_hold_min or 60,
                 'conditions': json.dumps(fire.conditions_met),
                 'brief_alignment': fire.brief_alignment,
+                'level_state': fire.level_state,
+                'opp_level_state': fire.opp_level_state,
                 'replay_id': replay_id,
             })
     except Exception as e:
@@ -305,6 +313,18 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
         # (Rule 3.6). Session extremes are fed by update_window, which
         # this harness already drives bar-by-bar.
         brief, align = self._resolve_brief_alignment(ticker, sig["direction"])
+        # Same level-state resolution live fire_alert runs (audit §15) —
+        # trackers are fed by update_window, which this harness already
+        # drives bar-by-bar, so replay tags carry production semantics.
+        own_state, opp_state = self._resolve_level_state(ticker, sig["direction"])
+        # Mirror production enforcement (Codex P2 on PR #799): under
+        # `enforce`, live fire_alert returns before Discord/persist for
+        # late-state fires, so the replay must not capture them either —
+        # otherwise replay counts and --persist rows include fires the
+        # live monitor would suppress.
+        if (getattr(self.signal_cfg, "level_gate_mode", "shadow") == "enforce"
+                and own_state in ("post_t1", "invalidated")):
+            return
         title_prefix = "STACKED " if agreement else ""
         tf_label = f" [{tf_tag}]" if tf_tag else ""
         brief_label = f" [brief:{align}]" if align else ""
@@ -324,6 +344,8 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
             conditions_met=list(sig["conditions_met"]),
             embed_title=title,
             brief_alignment=align,
+            level_state=own_state,
+            opp_level_state=opp_state,
         ))
     return _capture
 

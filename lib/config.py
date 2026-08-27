@@ -394,6 +394,21 @@ class SignalConfig:
     #               (no Discord, no persist, no trade-cap increment).
     rvol_gate_min: float = 1.0
     rvol_gate_mode: str = 'shadow'  # 'off' | 'shadow' | 'enforce'
+    # Playbook level-state gate (audit 2026-08-26 §15). The live monitor
+    # tracks each brief leg (calls/puts trigger→T1→stop) with resolver-
+    # parity touch semantics and tags every fire with the state of its
+    # own-direction leg. Validated Jun–Aug 2026 + 35-day holdout: fires
+    # in 'post_t1'/'invalidated' states lose (fwd30 t=-3.6, holdout
+    # Welch t=-2.7); suppressing them flips the book -5.4 → +8.2 pct.
+    # Modes mirror rvol_gate_mode:
+    #   'off'     — no tracking, nothing recorded.
+    #   'shadow'  — fire exactly as today; persist level_state /
+    #               opp_level_state so the live out-of-sample check is a
+    #               GROUP BY. DEFAULT: measurement first.
+    #   'enforce' — suppress fires whose own-direction leg state is
+    #               'post_t1' or 'invalidated' (no Discord, no persist,
+    #               no trade-cap increment).
+    level_gate_mode: str = 'shadow'  # 'off' | 'shadow' | 'enforce'
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
     # Task 4.3 fix (trading-logic review of 1c7a7f35): when set, restricts
@@ -755,6 +770,16 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
                 raise ConfigValidationError(
                     f"signal.rvol_gate_min must be >= 0, got {gate_min}")
             app.signal.rvol_gate_min = gate_min
+        # Level-state gate (audit 2026-08-26 §15) — same fail-loud
+        # contract as rvol_gate_mode: a typo'd mode must never silently
+        # mean 'shadow'.
+        level_mode = sig_data.get('level_gate_mode')
+        if level_mode is not None:
+            if level_mode not in ('off', 'shadow', 'enforce'):
+                raise ConfigValidationError(
+                    f"signal.level_gate_mode must be 'off', 'shadow' or "
+                    f"'enforce', got {level_mode!r}")
+            app.signal.level_gate_mode = level_mode
 
     # --- Strat config ---
     strat_data = data.get('strat', {})

@@ -38,7 +38,7 @@ from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
-from lib.strat_levels import LevelMap, build_level_map
+from lib.strat_levels import LegStateTracker, LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
@@ -183,6 +183,12 @@ class SignalMonitor:
         # the afternoon. Consumed by the level-aware brief-alignment tag
         # in fire_alert. Shape: {'date': date, 'high': float, 'low': float}.
         self.session_extremes: dict = {t: {} for t in self.tickers}
+        # Per-ticker playbook leg-state trackers (audit §15). Shape:
+        # {ticker: {'date': date, 'call': LegStateTracker,
+        #           'put': LegStateTracker}} — built lazily on the first
+        # RTH bar of the session from the cached brief-bias dict (one DB
+        # read per ticker per session, shared with _resolve_brief_bias).
+        self.leg_trackers: dict = {t: {} for t in self.tickers}
 
         # Strat level map per ticker, refreshed each loop iteration. Used to
         # detect level breaks (PDH, PDL, PWH, PWL, ...) once per crossing.
@@ -347,6 +353,7 @@ class SignalMonitor:
         combined = pd.concat([existing, new_data]).drop_duplicates(subset=['Time'], keep='last')
         self.windows[ticker] = combined.tail(self.monitor_cfg.rolling_window_bars).reset_index(drop=True)
         self._update_session_extremes(ticker, new_data)
+        self._update_leg_trackers(ticker, new_data)
 
     def _update_session_extremes(self, ticker: str, new_data: pd.DataFrame) -> None:
         """Fold new bars into the running RTH high/low for today's session.
@@ -399,6 +406,103 @@ class SignalMonitor:
         ext['high'] = bar_high if ext['high'] is None else max(ext['high'], bar_high)
         ext['low'] = bar_low if ext['low'] is None else min(ext['low'], bar_low)
         self.session_extremes[ticker] = ext
+
+    def _update_leg_trackers(self, ticker: str, new_data: pd.DataFrame) -> None:
+        """Advance the per-leg playbook state machines with today's RTH bars.
+
+        Unlike ``_update_session_extremes`` (batch min/max is order-free),
+        leg state is ORDER-dependent — the resolver-parity contract in
+        ``lib.strat_levels.LegStateTracker`` counts T1/stop touches only
+        from the trigger bar onward — so bars are folded in one at a time,
+        chronologically. Called from update_window, the shared choke point
+        with the replay harness (Rule 3.6 parity, same as the extremes).
+
+        Gate mode 'off' skips everything, including the lazy brief lookup.
+        """
+        if self.signal_cfg.level_gate_mode == 'off':
+            return
+        if new_data is None or new_data.empty or 'Time' not in new_data.columns:
+            return
+        try:
+            times = pd.to_datetime(new_data['Time'])
+            if getattr(times.dt, 'tz', None) is not None:
+                times_et = times.dt.tz_convert(_ET)
+            elif self.replay_clock_ts is not None:
+                times_et = times.dt.tz_localize('UTC').dt.tz_convert(_ET)
+            else:
+                times_et = times
+            today = self._now(_ET).date()
+            rth = ((times_et.dt.date == today)
+                   & (times_et.dt.time >= _RTH_OPEN)
+                   & (times_et.dt.time < _RTH_CLOSE))
+            if not bool(rth.any()):
+                return
+            trackers = self.leg_trackers.get(ticker) or {}
+            if trackers.get('date') != today:
+                brief = self._resolve_brief_bias(ticker)
+                # No playbook row / failed lookup → no trackers at all, so
+                # fires tag NULL ("we weren't looking") rather than
+                # 'no_setup' ("a real row published no trigger for this
+                # leg"). Merging missing-data days into the no_setup
+                # cohort would bias the shadow GROUP BY (Codex P2 on
+                # PR #799). The 'unavailable' sentinel keeps the day
+                # keyed so the (cached) lookup isn't re-derived per bar.
+                if brief.get('bias') == 'UNAVAILABLE':
+                    self.leg_trackers[ticker] = {'date': today,
+                                                 'unavailable': True}
+                    return
+                trackers = {
+                    'date': today,
+                    'call': LegStateTracker(
+                        direction='call',
+                        trigger=brief.get('calls_trigger_price'),
+                        t1=brief.get('calls_t1_price'),
+                        stop=brief.get('calls_stop_price')),
+                    'put': LegStateTracker(
+                        direction='put',
+                        trigger=brief.get('puts_trigger_price'),
+                        t1=brief.get('puts_t1_price'),
+                        stop=brief.get('puts_stop_price')),
+                }
+                self.leg_trackers[ticker] = trackers
+            if trackers.get('unavailable'):
+                return
+            bars = new_data.loc[rth.values]
+            h_col = 'High' if 'High' in bars.columns else 'Close'
+            l_col = 'Low' if 'Low' in bars.columns else 'Close'
+            sub = pd.DataFrame({
+                '_et': times_et[rth].values,
+                '_h': pd.to_numeric(bars[h_col].values, errors='coerce'),
+                '_l': pd.to_numeric(bars[l_col].values, errors='coerce'),
+            }).sort_values('_et')
+            # Live polls re-deliver an overlapping snapshot of the session
+            # (fetch_latest_bar returns the last ~100 bars each cycle).
+            # The tracker is ORDER-dependent, so re-folding bars older
+            # than the watermark would replay pre-trigger bars with
+            # `triggered` already set and let an earlier, correctly-
+            # ignored stop touch flip the leg 'invalidated' (Codex P1 on
+            # PR #799). Fold only bars AT or after the watermark: the
+            # at-watermark bar is re-folded on purpose — it may be the
+            # still-forming current minute whose H/L are still widening,
+            # and re-folding it is safe because it is never earlier than
+            # the trigger bar when `triggered` is set (trigger-bar-
+            # inclusive semantics, same as the resolver).
+            last_ts = trackers.get('last_ts')
+            if last_ts is not None:
+                sub = sub[sub['_et'] >= last_ts]
+            if sub.empty:
+                return
+            for hi, lo in zip(sub['_h'], sub['_l']):
+                trackers['call'].update(float(hi), float(lo))
+                trackers['put'].update(float(hi), float(lo))
+            trackers['last_ts'] = sub['_et'].iloc[-1]
+        except Exception:
+            # Same posture as the extremes tracker: a malformed batch must
+            # never crash the monitor; the state simply doesn't advance
+            # this poll (tag degrades toward 'fresh', never a false
+            # 'invalidated' — LegStateTracker only escalates on real bars).
+            logger.warning("leg-state update skipped for %s: bad bar batch",
+                           ticker, exc_info=True)
 
     def calculate_indicators(self, ticker: str) -> pd.DataFrame:
         """Calculate indicators on the rolling window via the ONE shared
@@ -948,6 +1052,28 @@ class SignalMonitor:
             )
             return
 
+        # Playbook level-state gate (audit 2026-08-26 §15). The fire's
+        # own-direction leg state comes from the resolver-parity trackers
+        # advanced per bar in update_window. Validated Jun–Aug + 35-day
+        # holdout: fires placed after the leg already broke two levels
+        # ('post_t1') or broke its stop ('invalidated') lose (fwd30
+        # t=-3.6; holdout Welch t=-2.7) while 'fresh'/'triggered' fires
+        # win — suppressing the late states flips the book from -5.4pct
+        # to +8.2pct over the window. 'shadow' (default) only persists
+        # both states; 'enforce' suppresses late-state fires before
+        # Discord, persist, and the daily-trades counter (same contract
+        # as the RVOL gate above).
+        own_state, opp_state = self._resolve_level_state(ticker, direction)
+        self._latest_level_state = own_state
+        self._latest_opp_level_state = opp_state
+        if (self.signal_cfg.level_gate_mode == 'enforce'
+                and own_state in ('post_t1', 'invalidated')):
+            logger.info(
+                "level_gate: suppressed %s %s fire (level_state=%s opp=%s)",
+                ticker, direction, own_state, opp_state,
+            )
+            return
+
         # Per-ticker exit overrides (Tier-A). Falls back to ExitConfig
         # defaults when exit_config_overrides has no row / NULL / stale.
         from lib.strategies.exit_config_overrides import (
@@ -1170,6 +1296,13 @@ class SignalMonitor:
             # is off). Shadow mode's whole output is this column — the
             # out-of-sample check is a GROUP BY on it.
             'rvol_gate':         getattr(self, '_latest_rvol_gate', None),
+            # Playbook leg state at fire time (audit §15): the fire
+            # direction's leg ('fresh'/'triggered'/'post_t1'/
+            # 'invalidated'/'no_setup', NULL when the gate is off or no
+            # playbook row) and the opposite leg's state. Shadow mode's
+            # out-of-sample check is a GROUP BY on these.
+            'level_state':       getattr(self, '_latest_level_state', None),
+            'opp_level_state':   getattr(self, '_latest_opp_level_state', None),
         }
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
@@ -1288,6 +1421,29 @@ class SignalMonitor:
         self._latest_brief_bias = brief
         self._latest_brief_alignment = align
         return brief, align
+
+    def _resolve_level_state(self, ticker: str, direction: str) -> tuple:
+        """Read the fire direction's playbook leg state + the opposite leg's.
+
+        Returns ``(own_state, opp_state)`` — each one of
+        ``lib.strat_levels.LEG_STATES`` — or ``(None, None)`` when the
+        gate is 'off' or the trackers haven't been built for today (no
+        bars seen yet / no playbook row). None is deliberately distinct
+        from 'no_setup': None = "we weren't looking", 'no_setup' = "we
+        looked and the brief published no trigger for that leg".
+        """
+        if self.signal_cfg.level_gate_mode == 'off':
+            return None, None
+        trackers = self.leg_trackers.get(ticker) or {}
+        if trackers.get('date') != self._now(_ET).date():
+            return None, None
+        if trackers.get('unavailable'):
+            # No playbook row / failed brief lookup for today — NULL tags,
+            # never 'no_setup' (see _update_leg_trackers).
+            return None, None
+        own_key = 'call' if direction == 'CALL' else 'put'
+        opp_key = 'put' if own_key == 'call' else 'call'
+        return trackers[own_key].state, trackers[opp_key].state
 
     def _resolve_brief_bias(self, ticker: str) -> dict:
         """Lookup-and-cache the premarket-brief bias for this ticker today."""

@@ -2783,6 +2783,17 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS rvol_gate VARCHAR(8);
 
+-- Playbook level-state gate (audit 2026-08-26 §15). State of the fire
+-- direction's brief leg at fire time ('fresh' / 'triggered' / 'post_t1' /
+-- 'invalidated' / 'no_setup') and the opposite leg's state, tracked live
+-- with resolver-parity touch semantics (lib/strat_levels.LegStateTracker).
+-- NULL = gate 'off', no playbook row for the day, or the row predates the
+-- gate. Shadow mode's out-of-sample check is a GROUP BY on these columns.
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS level_state VARCHAR(12);
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS opp_level_state VARCHAR(12);
+
 
 -- ─────────────────────────────────────────────────────────
 -- BACKTEST PIPELINE (Cloud Run job: backtest-pipeline)
