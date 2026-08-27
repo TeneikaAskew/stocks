@@ -47,61 +47,97 @@ def test_stop_touch_before_trigger_does_not_invalidate():
     assert not t.stop_hit
 
 
-def test_same_bar_sweep_on_first_bar_is_post_t1_open():
-    # Audit §16.1: trigger AND T1 both cleared by the session's FIRST bar
-    # = the session opened through them (2026-08-27 QQQ). Tagged
-    # distinctly so the two routes into post_t1 are separable in the
-    # shadow data; enforce still suppresses both (see the enforce test).
+def test_gap_through_open_is_post_t1_open():
+    # Audit §16.1: the opening bar OPENED past the trigger and cleared T1
+    # — price never traded on the near side (2026-08-27 QQQ). Tagged
+    # distinctly so the two routes into post_t1 are separable in shadow
+    # data; enforce still suppresses both (see the enforce test).
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
-    t.update(100.8, 99.9)
+    t.update(100.8, 100.2, opening_price=100.6, bar_key='09:30')
     assert t.state == 'post_t1_open'
     assert t.opened_through
 
 
-def test_same_bar_sweep_after_the_open_is_plain_post_t1():
-    # Identical sweep, but on a later bar — intraday progression, which IS
-    # what the enforce rule targets.
+def test_first_minute_rally_is_not_a_gap_through():
+    # Codex review (PR #803): a call that OPENS BELOW the trigger and
+    # rallies through both inside the 09:30 minute is intraday
+    # progression that merely happened in minute one. Keying on the bar
+    # high alone conflated the two; the open price separates them.
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
-    t.update(99.8, 99.5)          # bar 1: nothing crossed
-    t.update(100.8, 99.9)         # bar 2: sweeps trigger + T1
+    t.update(100.8, 99.4, opening_price=99.5, bar_key='09:30')
     assert t.state == 'post_t1'
     assert not t.opened_through
 
 
-def test_trigger_on_first_bar_but_t1_later_is_not_opened_through():
-    # The split is defined by T1 clearing on bar one, not the trigger.
+def test_put_gap_through_mirrors():
+    t = LegStateTracker(direction='put', trigger=100.0, t1=99.5, stop=101.0)
+    t.update(99.8, 99.4, opening_price=99.9, bar_key='09:30')
+    assert t.state == 'post_t1_open'
+    assert t.opened_through
+
+
+def test_put_first_minute_selloff_is_not_a_gap_through():
+    t = LegStateTracker(direction='put', trigger=100.0, t1=99.5, stop=101.0)
+    t.update(100.6, 99.4, opening_price=100.5, bar_key='09:30')
+    assert t.state == 'post_t1'
+    assert not t.opened_through
+
+
+def test_redelivered_opening_snapshot_keeps_the_gap_through_tag():
+    # Codex review (PR #803): the live monitor re-folds the still-forming
+    # watermark bar every poll. A 09:30 snapshot crossing only the
+    # trigger, then a later 09:30 snapshot reaching T1, must still be ONE
+    # bar — otherwise the tag depends on poll timing and live diverges
+    # from replay.
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
-    t.update(100.1, 99.9)         # bar 1: trigger only
+    t.update(100.2, 100.1, opening_price=100.1, bar_key='09:30')
     assert t.state == 'triggered'
-    t.update(100.6, 100.0)        # bar 2: T1 reached by working up
+    t.update(100.8, 100.1, opening_price=100.1, bar_key='09:30')
+    assert t.state == 'post_t1_open', "re-delivered snapshot is not a new bar"
+    assert t.opened_through
+
+
+def test_new_bar_key_ends_the_opening_bar():
+    t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
+    t.update(100.2, 100.1, opening_price=100.1, bar_key='09:30')
+    t.update(100.8, 100.1, opening_price=100.3, bar_key='09:31')
+    assert t.state == 'post_t1'
+    assert not t.opened_through
+
+
+def test_missing_opening_price_never_guesses_gap_through():
+    # Without the open we cannot prove a gap-through, so the leg reports
+    # the conservative plain post_t1 rather than a guess.
+    t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
+    t.update(100.8, 99.9, bar_key='09:30')
     assert t.state == 'post_t1'
     assert not t.opened_through
 
 
 def test_opened_through_still_invalidates_on_stop():
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
-    t.update(100.8, 99.9)
+    t.update(100.8, 100.2, opening_price=100.6, bar_key='09:30')
     assert t.state == 'post_t1_open'
-    t.update(100.0, 98.9)
+    t.update(100.0, 98.9, opening_price=100.0, bar_key='09:31')
     assert t.state == 'invalidated'
 
 
 def test_stop_after_trigger_invalidates_and_outranks_post_t1():
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
-    t.update(99.9, 99.6)     # leading bar -> the sweep below is intraday
-    t.update(100.9, 100.0)   # trigger + t1
+    t.update(99.9, 99.6, opening_price=99.7, bar_key='09:30')
+    t.update(100.9, 100.0, opening_price=99.9, bar_key='09:31')
     assert t.state == 'post_t1'
-    t.update(100.1, 98.9)    # stop trades after trigger
+    t.update(100.1, 98.9, opening_price=100.5, bar_key='09:32')
     assert t.state == 'invalidated'
 
 
 def test_put_direction_mirrors():
     t = LegStateTracker(direction='put', trigger=100.0, t1=99.5, stop=101.0)
-    t.update(100.8, 100.2)
+    t.update(100.8, 100.2, opening_price=100.6, bar_key='09:30')
     assert t.state == 'fresh'
-    t.update(100.5, 99.4)    # crosses trigger and t1 downward
+    t.update(100.5, 99.4, opening_price=100.3, bar_key='09:31')
     assert t.state == 'post_t1'
-    t.update(101.2, 100.0)   # rips back up through the put stop
+    t.update(101.2, 100.0, opening_price=99.6, bar_key='09:32')
     assert t.state == 'invalidated'
 
 
@@ -202,11 +238,13 @@ def test_enforce_mode_still_suppresses_gap_through_open():
     # be reopened on live data — not so one session can decide it.
     monitor = _make_monitor()
     monitor.signal_cfg.level_gate_mode = 'enforce'
-    _feed(monitor, 'QQQ', [(100.6, 99.9)])   # first bar sweeps both
+    # opens at 100.4 (mid of 100.6/100.2), above the 100.0 trigger, and
+    # the same bar clears T1 100.5 -> a genuine gap-through.
+    _feed(monitor, 'QQQ', [(100.6, 100.2)])
     with patch.object(monitor, '_persist_signal_alert') as mock_persist:
         monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
     assert not mock_persist.called, \
-        "enforce must still suppress the gap-through route (n=197, t=-2.81)"
+        "enforce must still suppress the gap-through route (n=191, t=-3.01)"
     assert monitor._latest_level_state == 'post_t1_open', \
         "but the route must be tagged distinctly so it can be re-evaluated"
 
@@ -263,10 +301,14 @@ def test_forming_bar_at_watermark_still_advances_state():
     # The at-watermark bar is re-folded on purpose: the current minute's
     # bar keeps widening while it forms, and its final form may carry
     # the touch. Same Time stamp, wider range on the second delivery.
+    # _rth_bars synthesises Open as the mid of high/low, so (100.6, 99.2)
+    # opens at 99.9 — below the 100.0 trigger, and the 99.2 low stays
+    # above the 99.0 stop. The final state is therefore plain post_t1:
+    # not a gap-through, not invalidated.
     monitor = _make_monitor()
     _feed(monitor, 'QQQ', [(99.8, 99.5)])          # forming: nothing crossed
     assert monitor._resolve_level_state('QQQ', 'CALL')[0] == 'fresh'
-    _feed(monitor, 'QQQ', [(100.6, 99.4)])         # same minute, final form
+    _feed(monitor, 'QQQ', [(100.6, 99.2)])         # same minute, final form
     assert monitor._resolve_level_state('QQQ', 'CALL')[0] == 'post_t1'
 
 

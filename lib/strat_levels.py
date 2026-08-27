@@ -111,31 +111,56 @@ class LegStateTracker:
     triggered: bool = False
     t1_hit: bool = False
     stop_hit: bool = False
-    # True when trigger AND T1 were both cleared by the very first bar fed
-    # to this tracker — i.e. the session opened through them rather than
-    # working up to them during RTH.
+    # True when the session's FIRST bar OPENED at or beyond the trigger and
+    # also cleared T1 — a genuine gap-through, price never traded on the
+    # near side of the level during RTH.
     #
-    # Audit §16.1 found post_t1 hides two populations with different
-    # behaviour (Jun-Aug: gap-through n=197 fwd30 -0.077% t=-2.81;
-    # intraday progression n=49 fwd30 -0.141% t=-2.50 but holdout-
-    # POSITIVE), and 2026-08-27 was a live gap-and-go where the
+    # The opening PRICE is what makes this a gap-through. An earlier draft
+    # keyed only on the first bar's high/low reaching T1, which also
+    # captured a call that opened BELOW the trigger and rallied through
+    # both inside the 09:30 minute — intraday progression that merely
+    # happened in minute one (Codex review, PR #803). `opening_price` is
+    # therefore required; without it the flag stays False and the leg is
+    # reported as plain 'post_t1' rather than guessed at.
+    #
+    # Audit §16.1 splits post_t1 into these two routes because they behave
+    # differently, and 2026-08-27 was a live gap-and-go where the
     # gap-through fires won. Both remain suppressed under enforce — the
-    # historical gap-through sample is significantly negative and n=197
-    # outranks one session. This flag exists to make the two routes
-    # separable in the shadow data so the rule can be revisited per-route
-    # with evidence rather than anecdote.
+    # historical gap-through sample is significantly negative and outranks
+    # one session. The flag exists to make the routes separable in shadow
+    # data so the rule can be revisited per-route with evidence.
     opened_through: bool = False
-    _bars_seen: int = 0
+    # Identity of the first bar seen, so a re-delivered snapshot of the
+    # still-forming opening minute is still recognised as that same first
+    # bar. A plain call counter got this wrong: the live monitor re-folds
+    # the watermark bar every poll, so a 09:30 snapshot that crossed only
+    # the trigger followed by a later 09:30 snapshot that reached T1 would
+    # look like two bars and lose the gap-through tag, while a replay of
+    # the completed bar kept it (Codex review, PR #803).
+    _first_bar_key: object = None
+    _seen_any_bar: bool = False
 
-    def update(self, bar_high: float, bar_low: float) -> None:
-        """Fold one bar's high/low into the leg state (chronological)."""
+    def update(self, bar_high: float, bar_low: float,
+               opening_price: Optional[float] = None,
+               bar_key: object = None) -> None:
+        """Fold one bar's high/low into the leg state (chronological).
+
+        `opening_price` is that bar's open, required to recognise a
+        gap-through. `bar_key` identifies the bar (its timestamp); passing
+        it lets a re-delivered snapshot of the same minute be folded again
+        without being mistaken for a new bar.
+        """
         if self.trigger is None or self.trigger <= 0:
             return
         if bar_high != bar_high or bar_low != bar_low:  # NaN bar
             return
         is_call = (self.direction == 'call')
-        first_bar = (self._bars_seen == 0)
-        self._bars_seen += 1
+        if not self._seen_any_bar:
+            self._seen_any_bar = True
+            self._first_bar_key = bar_key
+        # Without a key we cannot tell a re-delivered snapshot from a new
+        # bar, so only the very first update can be the opening bar.
+        first_bar = (bar_key is not None and bar_key == self._first_bar_key)
         if not self.triggered:
             crossed = (bar_high >= self.trigger) if is_call else (bar_low <= self.trigger)
             if not crossed:
@@ -145,12 +170,13 @@ class LegStateTracker:
         if not self.t1_hit and self.t1 is not None and self.t1 > 0:
             if (bar_high >= self.t1) if is_call else (bar_low <= self.t1):
                 self.t1_hit = True
-                # Both levels cleared by the session's FIRST bar = the
-                # session opened through them. T1 reached on any later
-                # bar is intraday progression even if the trigger itself
-                # went on bar one, which is how audit §16 split the two.
-                if first_bar:
-                    self.opened_through = True
+                # Gap-through: the opening bar's OPEN was already past the
+                # trigger, and that same bar cleared T1.
+                if first_bar and opening_price is not None:
+                    gapped = ((opening_price >= self.trigger) if is_call
+                              else (opening_price <= self.trigger))
+                    if gapped:
+                        self.opened_through = True
         if not self.stop_hit and self.stop is not None and self.stop > 0:
             if (bar_low <= self.stop) if is_call else (bar_high >= self.stop):
                 self.stop_hit = True

@@ -847,12 +847,22 @@ It would have discarded **+1.32pct of winners** — five QQQ fires tagged
 `post_t1` because QQQ *opened through* its call trigger AND T1 on the
 09:30 bar and then trended, plus three small IWM winners.
 
-Splitting the Jun–Aug sample by HOW the leg reached post_t1:
+Splitting the Jun–Aug sample by HOW the leg reached post_t1. The first
+cut keyed on "T1 hit during the 09:30 bar", which Codex correctly flagged
+as conflating a true gap-through with a call that OPENED BELOW the
+trigger and rallied through both inside that minute. Re-cut on the
+opening PRICE (gap-through = the 09:30 open was already past the
+trigger), which is what the shipped tag now uses:
 
 | route into post_t1 | n | engine mean | fwd30 mean | t |
 |---|---|---|---|---|
-| gap-through at the open (T1 hit on the 09:30 bar) | 197 | −0.045% | −0.077% | −2.81 |
+| gap-through (opened past the trigger) | 191 | −0.051% | −0.083% | **−3.01** |
+| first-minute rally (opened inside, cleared both in minute one) | 6 | +0.138% | +0.143% | +1.14 |
 | intraday progression (T1 hit later) | 49 | −0.071% | −0.141% | −2.50 |
+
+The correction moves 6 fires and makes the gap-through group *more*
+negative (t −2.81 → −3.01), so it strengthens rather than weakens the
+conclusion below. The 6-fire rally group is too small to act on.
 
 Both are negative on average, but the intraday subgroup **flips positive
 in the holdout** (train n=28 fwd30 −0.357%; holdout n=21 **+0.148%**),
@@ -871,8 +881,8 @@ wrong and was reverted before merge. Checking it against the sample:
 | suppress post_t1 + post_t1_open + invalidated | 473 | **+8.20pct** |
 | carve out post_t1_open (the draft) | 670 | **−0.70pct** |
 
-The gap-through route carries most of the benefit: n=197, fwd30 −0.077%,
-**t=−2.81**. Against that, 2026-08-27 is n=5. Letting one good morning
+The gap-through route carries most of the benefit: n=191, fwd30 −0.083%,
+**t=−3.01**. Against that, 2026-08-27 is n=5. Letting one good morning
 override four months would be precisely the error §13/§14 caught in the
 RVOL gate. The tag exists so the question can be reopened per-route on
 live shadow data — not so a single session can decide it.
