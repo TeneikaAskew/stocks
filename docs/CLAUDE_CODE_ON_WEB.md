@@ -13,7 +13,7 @@ A field guide for using **Claude Code on the web** (claude.ai/code) with this re
 | Need | Path |
 |---|---|
 | Run a SQL query against Cloud SQL | Dispatch `.github/workflows/db-query.yml` |
-| Use `gh` / `gcloud` from the sandbox | Install via SessionStart script (not pre-installed) |
+| Use `gh` / `gcloud` from the sandbox | Pre-installed in the image as of 2026-08-27; SessionStart script installs them only if absent |
 | Authenticate to GCP | `gcloud auth activate-service-account` with `claude-web@` SA key |
 | Authenticate to GitHub | PAT pulled from GCP Secret Manager (`gh-stocks-repo-pat`) |
 | Make Claude react to PR events | Subscribe to PR webhooks; a `UserPromptSubmit` hook reminds Claude to fetch live state before reasoning |
@@ -27,7 +27,7 @@ A field guide for using **Claude Code on the web** (claude.ai/code) with this re
 Claude Code on the web runs in a sandbox that:
 
 - **Blocks all outbound TCP except port 443.** Cloud SQL Postgres (5432) and the Cloud SQL Auth Proxy (3307) are unreachable. Adding the sandbox's egress IP to authorized networks doesn't help — the binding constraint is the sandbox firewall, not the database ACL.
-- **Doesn't pre-install `gh` or `gcloud`.** Both must be installed per session via a SessionStart script.
+- **Base image contents change over time.** `gh` and `gcloud` used to be absent and had to be installed by the SessionStart script; as of 2026-08-27 the image ships `gcloud`, `gh`, `bq` and `gsutil` pre-installed. The script must therefore *detect* rather than assume — see **Incident: 2026-08-27**.
 - **Doesn't have native GitHub Actions dispatch tooling.** From the sandbox you can read GitHub state via the MCP tools (`mcp__github__*`) but you cannot trigger workflows, read run logs, or download artifacts via MCP — those need the REST API + a PAT.
 
 This guide captures the patterns that make this workable, distilled from a session that built the `db-query.yml` workflow specifically to work around these constraints.
@@ -57,35 +57,49 @@ Anything that resolves to a non-443 port — direct DB connections, SSH, custom 
 
 The harness runs a SessionStart hook each time a new web session begins. The script below installs `gcloud` and `gh`, activates GCP with the `claude-web@` service-account key, and authenticates `gh` with the PAT from the sandbox's environment variable. It self-tests every step so a missing dep, expired key, or revoked PAT fails loudly at session start instead of mid-task.
 
-> **Where to put this.** This script lives in your Claude Code on the web project settings as the SessionStart command. Use the [`session-start-hook` skill](https://docs.claude.com/) to wire it in if you're configuring it from a fresh session. The script is idempotent — re-running it on an already-set-up session is a no-op except for the smoke tests.
+> **Where to put this.** This script lives in your Claude Code on the web project settings as the SessionStart command. Use the [`session-start-hook` skill](https://docs.claude.com/) to wire it in if you're configuring it from a fresh session. The script is idempotent **as written below**. It was not always: until 2026-08-27 the install block re-ran unconditionally and `gpg --dearmor -o` aborts rather than overwrite an existing keyring, which took the whole environment down (see **Incident: 2026-08-27**). If you edit this script, re-check that every step is safe to run twice.
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
 # ---------------------------------------------------------------------
-# 0. Install gcloud SDK and GitHub CLI (neither is pre-installed)
+# 0. Install gcloud SDK and GitHub CLI IF the base image lacks them.
+#
+#    2026-08-27: the sandbox base image began shipping gcloud, gh, bq
+#    and gsutil pre-installed. The unconditional install block that used
+#    to live here then broke EVERY new session in the environment (see
+#    "Incident: 2026-08-27" below). Both guards must stay:
+#      - skip the whole block when both CLIs are already present, and
+#      - `gpg --yes` so re-running over an existing keyring cannot hang
+#        on an overwrite prompt.
 # ---------------------------------------------------------------------
-apt-get update -qq || true
-apt-get install -y -qq apt-transport-https ca-certificates gnupg curl
+if command -v gcloud >/dev/null 2>&1 && command -v gh >/dev/null 2>&1; then
+  echo "gcloud and gh already present — skipping install block"
+else
+  apt-get update -qq || true
+  apt-get install -y -qq apt-transport-https ca-certificates gnupg curl
 
-# gcloud repo
-curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
-  | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-  > /etc/apt/sources.list.d/google-cloud-sdk.list
+  # gcloud repo. --yes: gpg refuses to overwrite an existing file and
+  # tries to prompt on /dev/tty, which does not exist in the container;
+  # it exits 2 and `set -e` kills the script.
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+    | gpg --yes --dearmor -o /usr/share/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+    > /etc/apt/sources.list.d/google-cloud-sdk.list
 
-# gh repo
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-  | tee /usr/share/keyrings/githubcli-archive-keyring.gpg > /dev/null
-chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-  > /etc/apt/sources.list.d/github-cli.list
+  # gh repo (tee overwrites safely, no --yes equivalent needed)
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | tee /usr/share/keyrings/githubcli-archive-keyring.gpg > /dev/null
+  chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list
 
-apt-get update -qq || true
-apt-get install -y -qq google-cloud-cli gh
+  apt-get update -qq || true
+  apt-get install -y -qq google-cloud-cli gh
+fi
 
-# Smoke test 0
+# Smoke test 0 — runs on both paths, so a bad pre-installed CLI still fails loudly
 gcloud --version | head -1
 gh --version | head -1
 
@@ -130,11 +144,19 @@ ACTIVE_ACCT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)")
 # ---------------------------------------------------------------------
 # 3. Authenticate gh
 # ---------------------------------------------------------------------
-if [ -z "${CLAUDE_CODE_STOCKS_PAT:-}" ]; then
-  echo "ERROR: CLAUDE_CODE_STOCKS_PAT not set in environment variables."
-  exit 1
+if gh auth status >/dev/null 2>&1; then
+  echo "gh already authenticated — skipping login"
+elif [ -n "${CLAUDE_CODE_STOCKS_PAT:-}" ]; then
+  echo "$CLAUDE_CODE_STOCKS_PAT" | gh auth login --with-token
+else
+  # Fall back to Secret Manager (the documented migration target below);
+  # gcloud is already authenticated by step 2 at this point.
+  GH_PAT=$(gcloud secrets versions access latest \
+    --secret=gh-stocks-repo-pat --project=adept-mountain-474619-d4) \
+    || { echo "ERROR: no CLAUDE_CODE_STOCKS_PAT and Secret Manager read failed"; exit 1; }
+  echo "$GH_PAT" | gh auth login --with-token
+  unset GH_PAT
 fi
-echo "$CLAUDE_CODE_STOCKS_PAT" | gh auth login --with-token
 
 # Smoke test 3
 gh auth status
@@ -169,6 +191,63 @@ echo "==================================="
 - **Smoke test after every section.** Step 0 and step 3 caught real failures during development (missing apt key, expired PAT). The cost of the test is milliseconds; the cost of debugging a half-set-up session is much higher.
 - **`apt-get update -qq || true`** — apt updates can fail transiently in the sandbox image; we tolerate the failure but require the install step to succeed.
 - **`chmod 600 "$KEY_PATH"`** — the key is sensitive; restrict perms even though only one user runs in the sandbox.
+
+### Incident: 2026-08-27 — the setup script took down every new session
+
+**Symptom.** Every newly-spawned session in the `GCP+Stocks` environment
+failed 3-4 seconds after creation with
+`error_kind: init_script`, `message: "Setup script failed"`,
+`recoverable: false`. Long-lived sessions already running were
+unaffected, which is why it was invisible until a scheduled Routine
+fired: the twice-daily `Stocks failure triage` Routine — the loop that
+catches Cloud Run job failures overnight — could not start at all.
+
+**Root cause.** The sandbox base image began shipping `gcloud`, `gh`,
+`bq` and `gsutil` pre-installed, along with their apt keyrings. The
+script's install block ran unconditionally and included:
+
+```bash
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+  | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+```
+
+`gpg --dearmor -o` will not overwrite an existing file. Non-interactively
+it tries to prompt on `/dev/tty`, which does not exist in the container,
+and exits **2**. Under `set -euo pipefail` that killed the script at
+roughly line 18 — before any credential step ran, which is why the
+service-account key and the GitHub PAT both tested healthy while every
+session still died.
+
+Measured directly:
+
+| case | exit |
+|---|---|
+| existing keyring, `gpg --dearmor -o` | **2** |
+| existing keyring, `gpg --yes --dearmor -o` | 0 |
+| no keyring (the original, working path) | 0 |
+
+**Why it went unnoticed.** The failure is in session *initialization*, so
+there is no session to report it. A Routine bound to a fresh session per
+fire simply records `ROUTINE_RUN_STATUS_FAILED` with a four-second
+duration. Nothing pages, and the Routine list still shows it `enabled`.
+
+**Fixes applied.** (1) Skip the install block entirely when both CLIs are
+present. (2) `gpg --yes` so the keyring write is idempotent even when the
+block does run. (3) `gh auth login` is skipped when already
+authenticated, and falls back to Secret Manager when
+`CLAUDE_CODE_STOCKS_PAT` is unset instead of hard-failing.
+
+**Lesson — the one that generalizes.** This script is infrastructure
+whose only consumer is a container image *someone else* controls and
+changes without notice. Every step must be written as "converge to the
+desired state," never "perform this action." An unconditional mutation in
+a bootstrap script is a time bomb set by the next base-image update.
+
+**Operational note.** A `ROUTINE_RUN_STATUS_FAILED` with a sub-10-second
+duration means the worker never initialized — go straight to the setup
+script; do not look for application-level causes. Check with
+`get_session` on the run's `session_id` and read
+`external_metadata.last_init_error`.
 
 ### Migrating away from the env-var PAT
 
