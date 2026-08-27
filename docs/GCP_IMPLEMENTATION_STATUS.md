@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-08-26 (PR #774/#785 deployed: playbook-resolver self-healing sweep + loud failure, resolver cron 21:15 ET, av-intraday-nightly Mon-Sat, RVOL shadow gate + signal_alerts.rvol_gate column, per-direction exit modes; full suite 3,943 passed / 0 failed)
+**Last Updated**: 2026-08-27 (PR #799 deployed: playbook level-state shadow gate — LegStateTracker resolver-parity leg states, signal_alerts.level_state/opp_level_state columns live, signal.level_gate_mode default shadow; audit doc section 15 level study; full suite 4,004 passed / 0 failed)
 
 ---
 
