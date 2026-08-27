@@ -189,6 +189,13 @@ class SignalMonitor:
         # RTH bar of the session from the cached brief-bias dict (one DB
         # read per ticker per session, shared with _resolve_brief_bias).
         self.leg_trackers: dict = {t: {} for t in self.tickers}
+        # Per-ticker minute-of-day volume baselines for the corrected RVOL
+        # (audit §16). Shape: {ticker: {'date': date, 'baseline': {mod: med}}}
+        # — one bounded query per ticker per session, loaded lazily.
+        self.volume_baselines: dict = {t: {} for t in self.tickers}
+        # Timestamp of the most recent fire per ticker, for the
+        # fire-spacing measurement in audit §16.3.
+        self._last_fire_ts: dict = {}
 
         # Strat level map per ticker, refreshed each loop iteration. Used to
         # detect level breaks (PDH, PDL, PWH, PWL, ...) once per crossing.
@@ -470,10 +477,13 @@ class SignalMonitor:
             bars = new_data.loc[rth.values]
             h_col = 'High' if 'High' in bars.columns else 'Close'
             l_col = 'Low' if 'Low' in bars.columns else 'Close'
+            o_col = 'Open' if 'Open' in bars.columns else None
             sub = pd.DataFrame({
                 '_et': times_et[rth].values,
                 '_h': pd.to_numeric(bars[h_col].values, errors='coerce'),
                 '_l': pd.to_numeric(bars[l_col].values, errors='coerce'),
+                '_o': (pd.to_numeric(bars[o_col].values, errors='coerce')
+                       if o_col else pd.Series([float('nan')] * len(bars))),
             }).sort_values('_et')
             # Live polls re-deliver an overlapping snapshot of the session
             # (fetch_latest_bar returns the last ~100 bars each cycle).
@@ -492,9 +502,14 @@ class SignalMonitor:
                 sub = sub[sub['_et'] >= last_ts]
             if sub.empty:
                 return
-            for hi, lo in zip(sub['_h'], sub['_l']):
-                trackers['call'].update(float(hi), float(lo))
-                trackers['put'].update(float(hi), float(lo))
+            for et, hi, lo, op in zip(sub['_et'], sub['_h'], sub['_l'], sub['_o']):
+                # bar_key = the bar's ET minute, so a re-delivered snapshot
+                # of the still-forming minute is folded again WITHOUT being
+                # counted as a new bar (Codex review, PR #803).
+                key = pd.Timestamp(et).floor('min')
+                op_f = float(op) if op == op else None
+                trackers['call'].update(float(hi), float(lo), op_f, key)
+                trackers['put'].update(float(hi), float(lo), op_f, key)
             trackers['last_ts'] = sub['_et'].iloc[-1]
         except Exception:
             # Same posture as the extremes tracker: a malformed batch must
@@ -1066,8 +1081,20 @@ class SignalMonitor:
         own_state, opp_state = self._resolve_level_state(ticker, direction)
         self._latest_level_state = own_state
         self._latest_opp_level_state = opp_state
+        # Corrected RVOL against a historical minute-of-day baseline
+        # (audit §16). Shadow only — recorded, never gates.
+        self._latest_rvol_mod = self._corrected_rvol(ticker)
+        # Both post_t1 routes stay suppressed under enforce. 2026-08-27 was
+        # a live counterexample for the gap-through route (5 winners that
+        # a carve-out would have kept, +1.32pct), but that is n=5 against
+        # n=197 gap-through fires over Jun-Aug whose forward returns are
+        # significantly negative (fwd30 -0.077%, t=-2.81); carving them out
+        # historically turns -5.37 -> -0.70pct instead of -5.37 -> +8.20pct.
+        # One session does not outrank four months (audit §16.1). The tag
+        # is split so the question can be settled per-route on live shadow
+        # data; the enforce RULE is unchanged until it is.
         if (self.signal_cfg.level_gate_mode == 'enforce'
-                and own_state in ('post_t1', 'invalidated')):
+                and own_state in ('post_t1', 'post_t1_open', 'invalidated')):
             logger.info(
                 "level_gate: suppressed %s %s fire (level_state=%s opp=%s)",
                 ticker, direction, own_state, opp_state,
@@ -1303,6 +1330,20 @@ class SignalMonitor:
             # out-of-sample check is a GROUP BY on these.
             'level_state':       getattr(self, '_latest_level_state', None),
             'opp_level_state':   getattr(self, '_latest_opp_level_state', None),
+            # Corrected RVOL vs the historical minute-of-day median (audit
+            # §16). NULL when the baseline is unavailable — never a
+            # fabricated ratio. The legacy `rvol` column above stays as-is
+            # so the two can be compared on identical fires.
+            'rvol_mod':          getattr(self, '_latest_rvol_mod', None),
+            # Position of this fire in the ticker's day (1-based) and
+            # minutes since the previous fire for the same ticker (NULL on
+            # the first). Audit §16.3: 91% of ticker-days burn the 5-fire
+            # cap in a median 17 minutes across a median 0.16% price range,
+            # so a genuine later setup cannot fire. Recorded to measure
+            # that; no rule keys on it yet, because the P&L case for
+            # de-duplicating repeat fires did NOT survive the §14 holdout.
+            'fire_seq':          self.daily_trades.get(ticker, 0) + 1,
+            'min_since_prev_fire': self._minutes_since_prev_fire(ticker),
         }
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
@@ -1421,6 +1462,115 @@ class SignalMonitor:
         self._latest_brief_bias = brief
         self._latest_brief_alignment = align
         return brief, align
+
+    def _minutes_since_prev_fire(self, ticker: str) -> Optional[float]:
+        """Minutes since this ticker's previous fire today, None if first.
+
+        Measurement only (audit §16.3). Reads the in-process fire clock so
+        it costs no DB round-trip; resets per session with the process.
+        """
+        prev = self._last_fire_ts.get(ticker)
+        now = self._now(_ET)
+        self._last_fire_ts[ticker] = now
+        if prev is None:
+            return None
+        try:
+            return round((now - prev).total_seconds() / 60.0, 2)
+        except Exception:
+            return None
+
+    def _volume_baseline(self, ticker: str) -> dict:
+        """Median volume per minute-of-day from the prior N RTH sessions.
+
+        The corrected RVOL denominator (audit §16). Loaded once per ticker
+        per session — a single aggregate query returning at most 390 rows,
+        so this adds one bounded round-trip per ticker per day and nothing
+        per bar (CLAUDE.md §0).
+
+        Returns {} when the history is unavailable; callers then record a
+        NULL rvol_mod rather than a fabricated ratio (CLAUDE.md §3.7).
+        """
+        today = self._now(_ET).date()
+        cached = self.volume_baselines.get(ticker) or {}
+        if cached.get('date') == today:
+            return cached['baseline']
+        baseline: dict = {}
+        try:
+            from sqlalchemy import text
+            from gcp.database import get_engine
+            sql = text(
+                "SELECT EXTRACT(hour FROM ts AT TIME ZONE 'America/New_York') * 60 "
+                "       + EXTRACT(minute FROM ts AT TIME ZONE 'America/New_York') AS mod, "
+                "       percentile_cont(0.5) WITHIN GROUP (ORDER BY volume) AS med_vol "
+                "  FROM market_data_intraday "
+                " WHERE ticker = :t "
+                "   AND ts >= :start AND ts < :end "
+                "   AND volume > 0 "
+                " GROUP BY 1"
+            )
+            with get_engine().connect() as conn:
+                rows = conn.execute(sql, {
+                    't': ticker,
+                    'start': str(today - timedelta(days=self.monitor_cfg.rvol_baseline_lookback_days)),
+                    'end': str(today),
+                }).fetchall()
+            baseline = {int(r[0]): float(r[1]) for r in rows if r[1] is not None}
+            logger.info("rvol baseline loaded for %s: %d minute buckets", ticker, len(baseline))
+        except Exception as exc:
+            # EXTERNAL/INTERNAL split per CLAUDE.md §3.7: we cannot fix a
+            # missing baseline here, but we must not invent one. Log loudly
+            # and cache the empty result so the failing query is not retried
+            # every bar; rvol_mod then persists as NULL, which is
+            # distinguishable from a real ratio.
+            logger.warning("rvol baseline unavailable for %s: %s — rvol_mod will be NULL",
+                           ticker, exc)
+        self.volume_baselines[ticker] = {'date': today, 'baseline': baseline}
+        return baseline
+
+    def _corrected_rvol(self, ticker: str) -> Optional[float]:
+        """RVOL of the last COMPLETED bar vs the historical minute-of-day median.
+
+        Shadow metric (audit §16): recorded on every fire, read by nothing
+        that changes fire behavior. The scoring path still consumes the
+        legacy same-session `RVOL` column, so this deploy cannot alter
+        which alerts fire.
+
+        Completed-bar, not `latest`. `latest` is the minute currently
+        forming, whose volume is only what has accumulated so far, while
+        the baseline holds full-minute medians. Dividing a partial
+        numerator by a whole-minute denominator makes the ratio depend on
+        how far into the minute the poll landed — reintroducing the exact
+        irreproducibility this metric exists to remove (Codex review,
+        PR #803). Taking the last bar strictly before the current minute
+        makes both sides whole minutes, and yields the same value in live
+        and replay for a given clock.
+        """
+        baseline = self._volume_baseline(ticker)
+        if not baseline:
+            return None
+        window = self.windows.get(ticker)
+        if window is None or window.empty or 'Time' not in window.columns:
+            return None
+        try:
+            now_min = self._now(_ET).replace(second=0, microsecond=0, tzinfo=None)
+            times = pd.to_datetime(window['Time'])
+            if getattr(times.dt, 'tz', None) is not None:
+                times = times.dt.tz_convert(_ET).dt.tz_localize(None)
+            elif self.replay_clock_ts is not None:
+                times = times.dt.tz_localize('UTC').dt.tz_convert(_ET).dt.tz_localize(None)
+            completed = window.loc[(times < now_min).values]
+            if completed.empty or 'Volume' not in completed.columns:
+                return None
+            row = completed.iloc[-1]
+            t = pd.Timestamp(times.loc[completed.index[-1]])
+            ref = baseline.get(int(t.hour) * 60 + int(t.minute))
+            vol = float(row['Volume'])
+            if ref is None or ref <= 0 or vol != vol:
+                return None
+            return vol / ref
+        except Exception:
+            logger.warning("corrected rvol failed for %s", ticker, exc_info=True)
+            return None
 
     def _resolve_level_state(self, ticker: str, direction: str) -> tuple:
         """Read the fire direction's playbook leg state + the opposite leg's.

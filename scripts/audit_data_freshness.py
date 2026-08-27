@@ -61,7 +61,8 @@ _ENRICHMENT_QUERY_TIMEOUT_S = 300.0
 # re-running a minutes-long scan every hour -- including straight
 # through the heaviest market hours, where it was part of the very
 # contention that pushed it over its own timeout (gqws5) -- bought
-# nothing. 05:00-12:59 ET gives 8 executions/day starting the moment
+# nothing. 05:00-12:59 ET overlaps the hourly 9-19 ET scheduler at
+# 09:00/10:00/11:00/12:00 ET — 4 executions/day starting the moment
 # the audited day settles; outside the window the check reports a
 # visible "skipped" row and issues no SQL. A real enrichment break is
 # still paged the same morning it becomes detectable.

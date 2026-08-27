@@ -2780,6 +2780,10 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
 -- or the row predates the gate. In 'enforce' mode suppressed fires are
 -- not persisted at all, so this column only ever holds the verdicts of
 -- fires that actually went out.
+-- 2026-08-27: rows predating the gate were backfilled from the stored
+-- fire-time rvol (gcp/queries/backfill_rvol_gate.sql — same pure verdict
+-- as rvol_gate_verdict at gate_min=1.0), so NULL now only means the gate
+-- ran in 'off' mode after that date.
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS rvol_gate VARCHAR(8);
 
@@ -2790,9 +2794,37 @@ ALTER TABLE signal_alerts
 -- NULL = gate 'off', no playbook row for the day, or the row predates the
 -- gate. Shadow mode's out-of-sample check is a GROUP BY on these columns.
 ALTER TABLE signal_alerts
-    ADD COLUMN IF NOT EXISTS level_state VARCHAR(12);
+    ADD COLUMN IF NOT EXISTS level_state VARCHAR(16);
 ALTER TABLE signal_alerts
-    ADD COLUMN IF NOT EXISTS opp_level_state VARCHAR(12);
+    ADD COLUMN IF NOT EXISTS opp_level_state VARCHAR(16);
+-- Widen for the 'post_t1_open' tag added in audit §16 (12 chars exactly —
+-- VARCHAR(12) would fit but leaves no headroom for the next state name).
+-- No-ops on a fresh install where the column is already VARCHAR(16).
+ALTER TABLE signal_alerts
+    ALTER COLUMN level_state TYPE VARCHAR(16);
+ALTER TABLE signal_alerts
+    ALTER COLUMN opp_level_state TYPE VARCHAR(16);
+
+-- Corrected relative volume (audit §16): the bar's volume divided by the
+-- MEDIAN volume historically traded at that same minute of the session,
+-- over the prior ~20 sessions. The legacy `rvol` column divides by a
+-- rolling mean of the SAME session's recent bars, which has no historical
+-- reference and reads below 1.0 on 80% of live fires. Both are recorded so
+-- the gate can be re-evaluated on a metric that means what it says.
+-- NULL when the baseline is unavailable — never a fabricated ratio.
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS rvol_mod DOUBLE PRECISION;
+
+-- Fire spacing (audit §16.3). `fire_seq` is this fire's 1-based position in
+-- the ticker's day; `min_since_prev_fire` is minutes since that ticker's
+-- previous fire (NULL on the first). 91% of ticker-days burn the 5-fire
+-- cap in a median 17 minutes across a median 0.16% price range, so later
+-- setups cannot fire. Recorded to measure that; no rule reads them yet —
+-- the P&L case for de-duplicating repeat fires failed the §14 holdout.
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS fire_seq INTEGER;
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS min_since_prev_fire DOUBLE PRECISION;
 
 
 -- ─────────────────────────────────────────────────────────

@@ -323,7 +323,7 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
         # otherwise replay counts and --persist rows include fires the
         # live monitor would suppress.
         if (getattr(self.signal_cfg, "level_gate_mode", "shadow") == "enforce"
-                and own_state in ("post_t1", "invalidated")):
+                and own_state in ("post_t1", "post_t1_open", "invalidated")):
             return
         title_prefix = "STACKED " if agreement else ""
         tf_label = f" [{tf_tag}]" if tf_tag else ""
