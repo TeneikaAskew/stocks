@@ -210,6 +210,6 @@ Consistent with the week's verified findings:
 | 1 | Backfill `rvol_gate` over full history | SQL in this PR; dispatched post-merge |
 | 2 | RVOL gate enforcement | **Rejected on evidence**; re-test alignment×gate interaction ~mid-September |
 | 3 | Cap decoupling (`cap_suppressed` shadow persistence + consumer lifecycle, §4) | Proposed — needs decision + PR |
-| 4 | Movement statement: derive `size_class` from probabilities; **flag stays OFF until fixed** (§1) | Blocker before enabling `MOVEMENT_STATEMENT_ENABLED` |
+| 4 | Movement statement: derive `size_class` from probabilities, not argmax (§1) | **LIVE NOW — fix-forward, not a precondition.** `MOVEMENT_STATEMENT_ENABLED=true` at `platform/deploy.sh:87`, confirmed on the running service. All 6 servable rows are bucket-0, so the card reads "quiet, tighter stops OK" on every ticker/timeframe today. Either fix the derivation or set the flag false; leaving it as-is ships low-skill sizing advice. |
 | 5 | Playbook cards: schedule or retire | Needs decision |
 | 6 | #784 R4 gamma sizing ablation | Waiting on data accrual |
