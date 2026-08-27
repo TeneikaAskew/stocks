@@ -47,16 +47,48 @@ def test_stop_touch_before_trigger_does_not_invalidate():
     assert not t.stop_hit
 
 
-def test_same_bar_sweep_lands_post_t1():
-    # 64.8% of T1 hits happen in the trigger's own minute (§15 sample) —
-    # one bar may cross trigger AND t1 together.
+def test_same_bar_sweep_on_first_bar_is_post_t1_open():
+    # Audit §16.1: trigger AND T1 both cleared by the session's FIRST bar
+    # = the session opened through them (2026-08-27 QQQ). Tagged
+    # distinctly so the two routes into post_t1 are separable in the
+    # shadow data; enforce still suppresses both (see the enforce test).
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
     t.update(100.8, 99.9)
+    assert t.state == 'post_t1_open'
+    assert t.opened_through
+
+
+def test_same_bar_sweep_after_the_open_is_plain_post_t1():
+    # Identical sweep, but on a later bar — intraday progression, which IS
+    # what the enforce rule targets.
+    t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
+    t.update(99.8, 99.5)          # bar 1: nothing crossed
+    t.update(100.8, 99.9)         # bar 2: sweeps trigger + T1
     assert t.state == 'post_t1'
+    assert not t.opened_through
+
+
+def test_trigger_on_first_bar_but_t1_later_is_not_opened_through():
+    # The split is defined by T1 clearing on bar one, not the trigger.
+    t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
+    t.update(100.1, 99.9)         # bar 1: trigger only
+    assert t.state == 'triggered'
+    t.update(100.6, 100.0)        # bar 2: T1 reached by working up
+    assert t.state == 'post_t1'
+    assert not t.opened_through
+
+
+def test_opened_through_still_invalidates_on_stop():
+    t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
+    t.update(100.8, 99.9)
+    assert t.state == 'post_t1_open'
+    t.update(100.0, 98.9)
+    assert t.state == 'invalidated'
 
 
 def test_stop_after_trigger_invalidates_and_outranks_post_t1():
     t = LegStateTracker(direction='call', trigger=100.0, t1=100.5, stop=99.0)
+    t.update(99.9, 99.6)     # leading bar -> the sweep below is intraday
     t.update(100.9, 100.0)   # trigger + t1
     assert t.state == 'post_t1'
     t.update(100.1, 98.9)    # stop trades after trigger
@@ -132,14 +164,14 @@ def test_trackers_advance_through_bar_feed():
     monitor = _make_monitor()
     _feed(monitor, 'QQQ', [(99.8, 99.5), (100.6, 99.9)])
     own, opp = monitor._resolve_level_state('QQQ', 'CALL')
-    assert own == 'post_t1'       # one bar swept trigger 100.0 + t1 100.5
+    assert own == 'post_t1'       # bar 2 swept trigger 100.0 + t1 100.5
     assert opp == 'fresh'         # puts trigger 98.5 never touched
 
 
 def test_shadow_mode_fires_and_tags_states():
     monitor = _make_monitor()
     monitor.signal_cfg.level_gate_mode = 'shadow'
-    _feed(monitor, 'QQQ', [(100.6, 99.9)])
+    _feed(monitor, 'QQQ', [(99.8, 99.5), (100.6, 99.9)])
     with patch.object(monitor, '_persist_signal_alert') as mock_persist:
         monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
     assert mock_persist.called, "shadow mode must never suppress a fire"
@@ -150,13 +182,33 @@ def test_shadow_mode_fires_and_tags_states():
 def test_enforce_mode_suppresses_late_state_fire():
     monitor = _make_monitor()
     monitor.signal_cfg.level_gate_mode = 'enforce'
-    _feed(monitor, 'QQQ', [(100.6, 99.9)])   # call leg -> post_t1
+    # leading bar first, so T1 is reached by intraday progression rather
+    # than the opening print -> plain 'post_t1', which enforce targets.
+    _feed(monitor, 'QQQ', [(99.8, 99.5), (100.6, 99.9)])
     before = dict(monitor.daily_trades)
     with patch.object(monitor, '_persist_signal_alert') as mock_persist:
         monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
     assert not mock_persist.called, "enforce+post_t1 must not persist"
     assert monitor.daily_trades.get('QQQ', 0) == before.get('QQQ', 0), \
         "suppressed fire must not consume the daily-trades cap"
+
+
+def test_enforce_mode_still_suppresses_gap_through_open():
+    # Audit §16.1: the gap-through route is tagged separately for
+    # measurement, but enforce still suppresses it. 2026-08-27 was a live
+    # counterexample (n=5 winners); Jun-Aug has n=197 of these with fwd30
+    # -0.077% (t=-2.81), and carving them out turns the historical result
+    # from +8.20pct back to -0.70pct. The tag exists so the question can
+    # be reopened on live data — not so one session can decide it.
+    monitor = _make_monitor()
+    monitor.signal_cfg.level_gate_mode = 'enforce'
+    _feed(monitor, 'QQQ', [(100.6, 99.9)])   # first bar sweeps both
+    with patch.object(monitor, '_persist_signal_alert') as mock_persist:
+        monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
+    assert not mock_persist.called, \
+        "enforce must still suppress the gap-through route (n=197, t=-2.81)"
+    assert monitor._latest_level_state == 'post_t1_open', \
+        "but the route must be tagged distinctly so it can be re-evaluated"
 
 
 def test_enforce_mode_passes_fresh_state_fire():
@@ -250,3 +302,35 @@ def test_fire_with_no_bars_seen_tags_none_not_no_setup():
     assert mock_persist.called
     assert monitor._latest_level_state is None
     assert monitor._latest_opp_level_state is None
+
+
+# ── fire spacing measurement (audit §16.3) ──────────────────────────
+
+def test_fire_seq_and_spacing_are_recorded():
+    """91% of ticker-days burn the 5-fire cap in ~17 minutes (§16.3).
+    These columns measure that; no rule reads them."""
+    monitor = _make_monitor()
+    monitor.signal_cfg.level_gate_mode = 'off'
+    captured = []
+    with patch.object(monitor, '_persist_signal_alert',
+                      side_effect=lambda *a, **k: captured.append(
+                          (monitor.daily_trades.get('QQQ', 0) + 1,
+                           monitor._last_fire_ts.get('QQQ')))):
+        monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
+        monitor.fire_alert('QQQ', _sig(), 4.0, 'medium', 0.5, 0, _bar())
+    assert [c[0] for c in captured] == [1, 2], "seq must advance per fire"
+
+
+def test_minutes_since_prev_fire_is_none_on_first_fire():
+    monitor = _make_monitor()
+    assert monitor._minutes_since_prev_fire('SPY') is None
+    second = monitor._minutes_since_prev_fire('SPY')
+    assert second is not None and second >= 0.0
+
+
+def test_fire_spacing_is_tracked_per_ticker():
+    monitor = _make_monitor()
+    assert monitor._minutes_since_prev_fire('SPY') is None
+    assert monitor._minutes_since_prev_fire('QQQ') is None, \
+        "each ticker's clock is independent"
+    assert monitor._minutes_since_prev_fire('SPY') is not None

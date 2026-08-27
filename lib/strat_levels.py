@@ -77,7 +77,8 @@ class LevelMap:
 # 'invalidated' outranks 'post_t1' at read time: once the stop has traded
 # after the trigger, the leg is dead regardless of how many targets it
 # tagged on the way.
-LEG_STATES = ('no_setup', 'fresh', 'triggered', 'post_t1', 'invalidated')
+LEG_STATES = ('no_setup', 'fresh', 'triggered', 'post_t1', 'post_t1_open',
+              'invalidated')
 
 
 @dataclass
@@ -110,6 +111,21 @@ class LegStateTracker:
     triggered: bool = False
     t1_hit: bool = False
     stop_hit: bool = False
+    # True when trigger AND T1 were both cleared by the very first bar fed
+    # to this tracker — i.e. the session opened through them rather than
+    # working up to them during RTH.
+    #
+    # Audit §16.1 found post_t1 hides two populations with different
+    # behaviour (Jun-Aug: gap-through n=197 fwd30 -0.077% t=-2.81;
+    # intraday progression n=49 fwd30 -0.141% t=-2.50 but holdout-
+    # POSITIVE), and 2026-08-27 was a live gap-and-go where the
+    # gap-through fires won. Both remain suppressed under enforce — the
+    # historical gap-through sample is significantly negative and n=197
+    # outranks one session. This flag exists to make the two routes
+    # separable in the shadow data so the rule can be revisited per-route
+    # with evidence rather than anecdote.
+    opened_through: bool = False
+    _bars_seen: int = 0
 
     def update(self, bar_high: float, bar_low: float) -> None:
         """Fold one bar's high/low into the leg state (chronological)."""
@@ -118,6 +134,8 @@ class LegStateTracker:
         if bar_high != bar_high or bar_low != bar_low:  # NaN bar
             return
         is_call = (self.direction == 'call')
+        first_bar = (self._bars_seen == 0)
+        self._bars_seen += 1
         if not self.triggered:
             crossed = (bar_high >= self.trigger) if is_call else (bar_low <= self.trigger)
             if not crossed:
@@ -127,6 +145,12 @@ class LegStateTracker:
         if not self.t1_hit and self.t1 is not None and self.t1 > 0:
             if (bar_high >= self.t1) if is_call else (bar_low <= self.t1):
                 self.t1_hit = True
+                # Both levels cleared by the session's FIRST bar = the
+                # session opened through them. T1 reached on any later
+                # bar is intraday progression even if the trigger itself
+                # went on bar one, which is how audit §16 split the two.
+                if first_bar:
+                    self.opened_through = True
         if not self.stop_hit and self.stop is not None and self.stop > 0:
             if (bar_low <= self.stop) if is_call else (bar_high >= self.stop):
                 self.stop_hit = True
@@ -138,7 +162,7 @@ class LegStateTracker:
         if self.stop_hit:
             return 'invalidated'
         if self.t1_hit:
-            return 'post_t1'
+            return 'post_t1_open' if self.opened_through else 'post_t1'
         if self.triggered:
             return 'triggered'
         return 'fresh'
