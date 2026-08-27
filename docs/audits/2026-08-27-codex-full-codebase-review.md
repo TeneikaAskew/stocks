@@ -4,6 +4,17 @@
 **Scope:** all 1,436 tracked files, including production Python/GCP jobs, shared libraries, SQL schema, React/FastAPI platform, research engines, scripts, tests, notebooks, archives, CI/deployment, and historical audit/design documents. Generated/vendor files under `platform/node_modules` were inventoried but not treated as application source.  
 **Method:** repository-wide static tracing; targeted history review; reconciliation against the experiment registry and the 2026-08-25 profitability audit; full Python test suite; frontend unit/build/lint checks; no production writes, alerts, trades, or deployments. Production-result numbers below are evidence reported by the repository's production-query audits, not independently re-queried during this local review.
 
+> **Companion document.** A second, independent whole-codebase review ran
+> the same day and merged as #802: `docs/audits/codebase-review-2026-08-27/`
+> (nine specialist reports). The two audits are **complementary, not
+> duplicative** — each covers findings the other has zero mentions of. See
+> the reconciliation comment on PR #804 for the overlap analysis and the
+> two divergences that were resolved against live GCP state.
+>
+> Moved from `docs/audit/2026-08-27/` so both 2026-08-27 audits sit in one
+> tree. The wider `docs/audit/` vs `docs/audits/` split predates both PRs
+> and still needs its own cleanup.
+
 ## 1. Executive Summary
 
 ### The 10 most important things to know
