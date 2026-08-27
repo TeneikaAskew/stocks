@@ -199,6 +199,11 @@ class MonitorConfig:
     # always done regardless of this gate so analytics still capture
     # weak signals.
     discord_minimum_strength: str = 'medium'
+    # Calendar-day lookback for the corrected-RVOL minute-of-day volume
+    # baseline (audit §16). 30 calendar days ~= 20 trading sessions, enough
+    # for a stable per-minute median without reaching back into a different
+    # volatility regime. Read once per ticker per session.
+    rvol_baseline_lookback_days: int = 30
 
 
 # ---------------------------------------------------------------------------

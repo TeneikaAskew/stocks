@@ -824,6 +824,184 @@ Shadow-first, mirroring the RVOL gate rollout:
   enforce-by-default, the put-side 9:31 re-anchor, and any
   second-level manual-entry playbook change.
 
+## 16. Live-session review (2026-08-27): RVOL is mis-specified, the daily cap is burned in 17 minutes, and the level gate needs a gap-through carve-out
+
+Trigger: the 2026-08-27 session ran the level-state code deployed that
+morning (PR #799). Reviewing it surfaced three things — one confirmation,
+one code defect, one design gap. Everything below is computed with
+production code (`lib.strat_levels.LegStateTracker`,
+`gcp.premarket_playbook_resolver.resolve_leg`, `lib.indicators`) against
+live `signal_alerts` rows and AlphaVantage realtime 1-min bars.
+
+### 16.1 The day itself, and why enforce would have HURT
+
+15 fires, all CALL, 09:30–10:04 ET, all closed. Engine **+1.88pct, 87%
+win**. Applying the §15 enforce rule as written:
+
+| | fires | engine sum |
+|---|---|---|
+| as-is | 15 | **+1.88pct** |
+| enforce (suppress post_t1 + invalidated) | 7 | **+0.57pct** |
+
+It would have discarded **+1.32pct of winners** — five QQQ fires tagged
+`post_t1` because QQQ *opened through* its call trigger AND T1 on the
+09:30 bar and then trended, plus three small IWM winners.
+
+Splitting the Jun–Aug sample by HOW the leg reached post_t1. The first
+cut keyed on "T1 hit during the 09:30 bar", which Codex correctly flagged
+as conflating a true gap-through with a call that OPENED BELOW the
+trigger and rallied through both inside that minute. Re-cut on the
+opening PRICE (gap-through = the 09:30 open was already past the
+trigger), which is what the shipped tag now uses:
+
+| route into post_t1 | n | engine mean | fwd30 mean | t |
+|---|---|---|---|---|
+| gap-through (opened past the trigger) | 191 | −0.051% | −0.083% | **−3.01** |
+| first-minute rally (opened inside, cleared both in minute one) | 6 | +0.138% | +0.143% | +1.14 |
+| intraday progression (T1 hit later) | 49 | −0.071% | −0.141% | −2.50 |
+
+The correction moves 6 fires and makes the gap-through group *more*
+negative (t −2.81 → −3.01), so it strengthens rather than weakens the
+conclusion below. The 6-fire rally group is too small to act on.
+
+Both are negative on average, but the intraday subgroup **flips positive
+in the holdout** (train n=28 fwd30 −0.357%; holdout n=21 **+0.148%**),
+and 2026-08-27 is a live counterexample for the gap-through subgroup. One
+average was hiding two populations.
+
+**Shipped: the tag, not a rule change.** The tracker now emits
+`post_t1_open` when the session opened through both levels. The enforce
+rule still suppresses it. The first draft of this change carved
+`post_t1_open` out of enforce on the strength of 2026-08-27 — that was
+wrong and was reverted before merge. Checking it against the sample:
+
+| enforce variant, applied to Jun–Aug | fires kept | engine sum |
+|---|---|---|
+| as-is (no gate) | 740 | −5.37pct |
+| suppress post_t1 + post_t1_open + invalidated | 473 | **+8.20pct** |
+| carve out post_t1_open (the draft) | 670 | **−0.70pct** |
+
+The gap-through route carries most of the benefit: n=191, fwd30 −0.083%,
+**t=−3.01**. Against that, 2026-08-27 is n=5. Letting one good morning
+override four months would be precisely the error §13/§14 caught in the
+RVOL gate. The tag exists so the question can be reopened per-route on
+live shadow data — not so a single session can decide it.
+
+### 16.2 RVOL is not measuring relative volume (code defect)
+
+User observation: every fire landed in the first 30 minutes — the most
+volatile, highest-volume window of the day — yet RVOL read 0.06–0.88 on
+10 of 15 fires. That is not a market fact. It is the formula.
+
+**The mechanism, from the code.** `lib.indicators.calculate_rvol` is
+`volume / rolling_mean(volume, 20)`, computed over the monitor's window —
+and `gcp.signal_monitor.fetch_latest_bar` filters that window to **today
+only** (`df[df.index.date == today]`, with `extended_hours=true`). So the
+denominator is "the last 20 bars of this same morning", including the
+premarket bars and the opening print. **No historical reference is
+involved at all.** On 2026-08-27 the opening bar was **669x** the
+premarket median for SPY (212x QQQ, 612x IWM). Once it enters its own
+trailing mean, everything behind it is divided by an inflated number:
+
+| minutes after the open | n fires | median RVOL | share below 1.0 |
+|---|---|---|---|
+| 0–5 | 139 | 1.80 | 24% |
+| 5–15 | 233 | 0.64 | 74% |
+| 15–30 | 110 | 0.51 | 90% |
+| 30–60 | 103 | 0.44 | 85% |
+| 60–390 | 155 | ~0.45 | ~87% |
+
+**80% of all 740 live fires read below 1.0.** A ratio that sits below 1
+four times out of five is mis-specified by construction — a relative
+measure should centre on 1. The decay from 1.80 to 0.51 within half an
+hour is mechanical, not a volume collapse.
+
+Three aggravating findings:
+
+1. **The repo already documented this.** `calculate_rvol_recent`'s own
+   docstring says median is used because outlier bars — naming the
+   "opening minute" — "depress the mean-based RVOL on subsequent bars and
+   cause the gate to mis-fire". The gate uses the mean variant anyway.
+2. **The correct function exists but is not wired to live.**
+   `calculate_rvol_minute_of_day` lives in `lib/trading_analysis.py`
+   (research path) and is absent from `lib/indicators.add_all_indicators`
+   (live path) — a "one source of truth for math" divergence.
+3. **The stored values are not reproducible.** Recomputing the production
+   formula on the vendor's own consolidated bars for today's 15 fires
+   gives a median absolute error of **0.65** (complete-bar model) and
+   **0.53** (partial-bar model), with no clean correlation to the
+   fraction of the minute elapsed (r=−0.18). So the `rvol` recorded on
+   `signal_alerts` cannot be reconstructed by anyone — which is the
+   simplest explanation for why every out-of-sample test of the RVOL gate
+   (§13 decade, §14 holdout) failed: the gate keys on a number that does
+   not survive being recomputed.
+
+**Shipped:** `calculate_rvol_vs_baseline` + `minute_of_day_volume_baseline`
+in `lib/indicators.py` — a bar's volume over the MEDIAN volume
+historically traded at that same minute, from the prior ~20 sessions. The
+monitor loads one baseline per ticker per session (one bounded aggregate
+query, ≤390 rows, nothing per bar) and records `signal_alerts.rvol_mod`
+on every fire. Missing baseline ⇒ NULL, never a fabricated 1.0.
+
+**Deliberately NOT changed:** the scoring path still consumes the legacy
+`RVOL`, so this deploy cannot alter which alerts fire. Both numbers are
+now recorded on identical fires; the gate gets re-evaluated on the
+corrected metric once that data exists. Fixing the metric and changing
+firing behaviour in one step would make the next regression
+un-attributable.
+
+### 16.3 The daily cap is consumed by near-duplicates in 17 minutes
+
+User observation: signals stopped after 10:04 and never resumed. Cause,
+confirmed: all three tickers hit `max_daily_trades = 5` before 10:05.
+
+| ticker | fires | window | price range across all 5 |
+|---|---|---|---|
+| QQQ | 5 | 09:30–09:36 | 0.23% |
+| SPY | 5 | 09:33–09:57 | **0.06%** |
+| IWM | 5 | 09:49–10:04 | 0.15% |
+
+Across Jun–Aug this is the norm, not an outlier:
+
+- **91%** of ticker-days with any fire hit the 5-fire cap (144/159).
+- Median time to burn all five: **17 minutes**. 65% are capped within 30
+  minutes of the open.
+- Median price range across the five: **0.16%**.
+- Median gap between consecutive fires: **1.1 minutes**; **61%** of
+  repeat fires land within 5 minutes AND under a 0.1% price move of the
+  prior one.
+
+So the budget for the whole session is spent re-alerting one setup before
+10:00, and a genuine 11:00 setup cannot fire. **That is a coverage defect
+independent of P&L**: 65% of all fires occur in the first 30 minutes not
+because that is when the edge is, but because that is when the budget
+exists.
+
+**What the P&L does NOT support.** Fires ranked by sequence decay
+monotonically (#1 +0.022%, #2 +0.006%, #3 −0.009%, #4 −0.029%, #5
+−0.029%), and first-fires total +3.4pct against repeats at −8.8pct. That
+is tempting. It does not survive the §14 protocol: train repeats −10.2pct
+but **holdout repeats +1.3pct**, Welch t falls from +1.50 to +0.86.
+Cooldown-rule sweeps are non-monotone in their own parameters (5min/0.10%
+→ delta +1.96; 5min/0.30% → +3.82; 10min/0.20% → +0.31), which is
+parameter-fitting noise, not structure.
+
+**Therefore: no cooldown is proposed as a P&L improvement.** The
+defensible statement is the coverage one. Recommended next step is to
+measure, not to tune: record a `fire_seq` and time-since-prior-fire on
+each row and revisit after a live window — the same discipline that
+correctly killed the RVOL gate in §14.
+
+### 16.4 Status of the 9:31 put re-anchor
+
+§15.5 established the case (paired per-leg +0.126%/leg, t=+3.75;
+day-clustered t=+2.51; last-30 +11.1 vs +1.0). It is **not** in this PR:
+it changes the playbook published to the trader every morning, whereas
+everything here is shadow-only measurement. Mixing a published-output
+change into a measurement PR would mean any change in tomorrow's numbers
+has two candidate causes. It ships next, on its own, with §15.5 as the
+evidence and its own before/after.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
