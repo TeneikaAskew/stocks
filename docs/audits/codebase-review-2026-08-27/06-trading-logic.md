@@ -126,6 +126,15 @@ and the walk-forward objective in T2 are computed under a stop the live
 system does not have. `ExitConfig.call_stop`/`put_stop` are defined and
 validated in config but read by exactly one code path.
 
+> **VERIFIED BY CLAUDE — CONFIRMED.** Every `exit_reason` assignment in
+> `gcp/signal_monitor.py:1328-1357` enumerated: `fixed_horizon` (:1343),
+> `target_hit` (:1346, :1353), `time_stop` (:1348, :1355),
+> `rsi_extreme` (:1350, :1357). **No `stop_loss` branch exists**, and
+> the Discord label map (:1400-1402) has no stop entry either.
+> `lib/backtest.py:871-872` does have
+> `if unrealized <= -stop: return 'stop_loss', close_price`.
+> The divergence is exactly as described.
+
 ### T5 — `max_daily_trades=5` interacts badly with sizing; daily loss limit is structurally unenforceable
 `gcp/signal_monitor.py:749-761,1101,1216-1226`
 
@@ -134,6 +143,15 @@ validated in config but read by exactly one code path.
   634, 930` — definition, load, validation. Never read by signal_monitor
   or backtest. `_persist_signal_alert:1216` appends to a list with no
   length check.
+
+  > **VERIFIED BY CLAUDE — CONFIRMED, and worse than stated.** A
+  > repo-wide grep (excluding tests/`__pycache__`) returns exactly those
+  > three `lib/config.py` lines and nothing else. Note the declared
+  > **default is `1`** (`config.py:235`) — so the system's stated design
+  > intent is *one position at a time*, while the code actually permits
+  > `max_daily_trades` (5) concurrent positions per ticker, i.e. 15
+  > across the watchlist. The gap between intended and actual risk
+  > posture is 15×, not 5×.
 - **(b) Sizing is per-trade fraction-of-equity**, so the cap permits 5×
   leverage on one ticker (0.25/0.50/0.75/1.00 sizes), 15× across the
   3-ticker watchlist.
