@@ -2780,6 +2780,10 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
 -- or the row predates the gate. In 'enforce' mode suppressed fires are
 -- not persisted at all, so this column only ever holds the verdicts of
 -- fires that actually went out.
+-- 2026-08-27: rows predating the gate were backfilled from the stored
+-- fire-time rvol (gcp/queries/backfill_rvol_gate.sql — same pure verdict
+-- as rvol_gate_verdict at gate_min=1.0), so NULL now only means the gate
+-- ran in 'off' mode after that date.
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS rvol_gate VARCHAR(8);
 
