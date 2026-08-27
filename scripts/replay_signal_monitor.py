@@ -486,6 +486,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                       for k, n in sorted(aligns.items(),
                                          key=lambda x: (x[0] or ''))))
 
+    # Playbook leg-state distribution (audit §16). Printed so a replay can
+    # be read as a check on the tracker itself — in particular whether the
+    # gap-through route ('post_t1_open') separates from plain 'post_t1'.
+    states = Counter(f.level_state for f in captured_fires)
+    print("Level state:     "
+          + "  ".join(f"{k or 'untagged'}={n}"
+                      for k, n in sorted(states.items(),
+                                         key=lambda x: (x[0] or ''))))
+
     # Timeframe distribution
     tfs = Counter(f.timeframe_tag for f in captured_fires)
     print("Timeframe distribution:")
