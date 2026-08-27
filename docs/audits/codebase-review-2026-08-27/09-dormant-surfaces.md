@@ -38,31 +38,59 @@ But the **consumer is live and scheduled**:
 `gcp/earnings_long_watchlist.py`, which selects
 `calculation_date = (SELECT MAX(calculation_date) …)` at :86 and posts a
 "Next NVAX" long-side watchlist to Discord captioned
-`_Source: earnings_options_strategy_winners — top-10 long-side_`. Every
-Sunday since May it has published rankings derived from a May 22
-calibration.
+`_Source: earnings_options_strategy_winners — top-10 long-side_`.
 
-### S3 — `exit_config_overrides`: 111 days old, on the live fire path, guard trips ~2026-11-04
-`max(calibration_date) = 2026-05-08` (3 rows); writer `param-sweep` has
-**no scheduler**, last ran 2026-05-20.
+**Publication verified, not inferred (added after Codex round 3).**
+Codex correctly objected that an ENABLED scheduler proves only that
+executions were *requested* — `main()` returns 0 without posting when
+`DISCORD_WEBHOOK_URL` is absent, and returns 2 on an HTTP failure, so
+scheduler state alone cannot establish that anything reached Discord.
+Checked directly:
 
-Reader is `lib/strategies/exit_config_overrides.py`, consumed by
-`gcp/signal_monitor.py`. **Good news:** it has a staleness guard —
-`_STALE_DAYS = 180`, falling back to Tier-B `ExitConfig` with a warning.
-So this is not currently a silent lie. **The forward problem:** at 111
-days it is still inside the leash and still applied; with no scheduler
-it crosses 180 days around **2026-11-04**, at which point live exit
-params silently revert to defaults via a `logger.warning` nobody
-watches.
+- `DISCORD_WEBHOOK_URL` **is** set on the job (from the
+  `discord-webhook-insights` secret), so the silent no-post branch is
+  not in play.
+- `LONG_WATCHLIST_DRY_RUN` is **not** set, so the dry-run branch is not
+  in play.
+- **13 of 13 executions succeeded, 0 failed**, spanning 2026-05-24 →
+  2026-08-23 (every Sunday).
 
-> This is the **reference pattern** to copy — the only stale-data
-> consumer in the repo that checks its own age and degrades loudly.
+Since exit 2 is the only outcome on a failed POST, and the two exit-0
+non-posting branches are both excluded by config, 13 consecutive exit-0
+runs establish that the POSTs succeeded. **Every Sunday since May 24 it
+has published rankings derived from a May 22 calibration.**
 
 ### S4 — `signal_metrics` rolling classification (confirms report 08 D1)
 Independently confirmed: `signal-quality-report-hourly` is PAUSED; all
 executions are the 05:00 UTC nightly. **Adds to D1:** `signal_metrics`
 is **not** in `scripts/audit_data_freshness.py`'s check list, so the
 watchdog could not have caught it even if the nightly had also stopped.
+
+## TIER 1b — Stale but guarded (dated risk, NOT currently mis-served)
+
+> **Reclassified 2026-08-27 after Codex round 3.** This item was
+> originally counted in TIER 1, but it does not meet that tier's
+> definition — the tier is "stale and silently served as current," and
+> the guard below means the data is *not* currently served past its
+> configured freshness limit. Counting it inflated the tier-1 headline
+> from 3 to 4. It is a dated future risk, which is a different (and
+> schedulable) problem.
+
+### S3 — `exit_config_overrides`: 111 days old, on the live fire path, guard trips ~2026-11-04
+`max(calibration_date) = 2026-05-08` (3 rows); writer `param-sweep` has
+**no scheduler**, last ran 2026-05-20.
+
+Reader is `lib/strategies/exit_config_overrides.py`, consumed by
+`gcp/signal_monitor.py`. It has a staleness guard — `_STALE_DAYS = 180`
+(`exit_config_overrides.py:126-133`), falling back to Tier-B
+`ExitConfig` with a warning. At 111 days the rows are inside the
+intended validity window and legitimately applied, so **this is not a
+silent lie today**. **The forward problem:** with no scheduler it
+crosses 180 days around **2026-11-04**, at which point live exit params
+silently revert to defaults via a `logger.warning` nobody watches.
+
+> This is the **reference pattern** to copy — the only stale-data
+> consumer in the repo that checks its own age and degrades loudly.
 
 ## TIER 2 — Wired but no longer fed
 
@@ -144,9 +172,51 @@ consumed, but directly by `lib/movement_statement.py`, not this router)
   > user-facing**, not latent. `lib/movement_statement.py:421` sets
   > `size_class=_MAG_BUCKET_LABELS[bucket]` from the degenerate argmax,
   > and `expectedMove.ts` turns that class into stop distances and share
-  > counts on the dashboard. Current inference output is **478 bucket-0
-  > (TIGHT) vs 34 bucket-1** — ~93% TIGHT — so the Expected-Move card is
-  > effectively always advising "quiet, tighter stops OK".
+  > counts on the dashboard.
+  >
+  > **Cohort corrected after Codex round 3.** An earlier revision cited
+  > "478 bucket-0 vs 34 bucket-1 — ~93% TIGHT" with no query, date
+  > range, timeframe, ticker set, or model-version filter. Codex was
+  > right to reject it: those numbers do **not** reproduce from
+  > `magnitude_per_bar_predictions`, and an aggregate over historical
+  > rows and mixed model versions would not establish what the card
+  > serves anyway, because the card reads exactly one row —
+  > `movement_statement.py:381`, `WHERE ticker=:ticker AND tf=:tf ORDER
+  > BY ts DESC, computed_at DESC LIMIT 1`.
+  >
+  > Two reproducible cohorts, both scoped to the **current production
+  > model** `magnitude-engine-c49qf`:
+  >
+  > *(a) everything that model has produced* —
+  > ```sql
+  > SELECT tf, model_version, pred_bucket, count(*)
+  > FROM magnitude_per_bar_predictions
+  > GROUP BY tf, model_version, pred_bucket ORDER BY 1,2,3;
+  > ```
+  > → 15m: 69 rows, **all** bucket-0. 5m: 225 rows, **all** bucket-0.
+  > **294 of 294 = 100% TIGHT**, not 93%.
+  >
+  > *(b) the rows the card can actually serve* —
+  > ```sql
+  > SELECT DISTINCT ON (ticker, tf) ticker, tf, ts, pred_bucket,
+  >        p_tight, p_explosive, model_version
+  > FROM magnitude_per_bar_predictions
+  > ORDER BY ticker, tf, ts DESC, computed_at DESC;
+  > ```
+  > → 6 rows (IWM/QQQ/SPY x 5m/15m), ts 2026-08-26, all
+  > `magnitude-engine-c49qf`, **all bucket-0**, `p_tight` 0.605-0.800,
+  > `p_explosive` 0.011-0.067.
+  >
+  > So the Expected-Move card is advising "quiet, tighter stops OK" on
+  > every ticker and both timeframes it can currently render. The
+  > direction of the original claim holds and is in fact stronger than
+  > stated; the specific 478/34 figures were unsourced and are
+  > withdrawn.
+  >
+  > **Scope note:** this degeneracy is specific to the recal/c49qf
+  > generation. Earlier 5m models were not degenerate —
+  > `magnitude-engine-zwn6n` produced 1,400/303/185/955 across buckets
+  > 0/1/2/3.
   >
   > **Honest severity:** the bucket is *uninformative*, not *inverted* —
   > TIGHT genuinely is the modal outcome, and argmax accuracy equals the

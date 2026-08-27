@@ -22,7 +22,7 @@ numbered files for each domain.
 | 06 | `06-trading-logic.md` | Financial correctness | pending |
 | 07 | `07-replay-integrity.md` | Rule 3.6 parity + as-of leakage | pending |
 | 08 | `08-infra-drift.md` | Deployed GCP vs repo | pending |
-| 09 | `09-dormant-surfaces.md` | Wired-but-unfed / fed-but-unconsumed | 4 tier-1 stale-served / 7 tier-2 / 6 write-only / 20 dead endpoints |
+| 09 | `09-dormant-surfaces.md` | Wired-but-unfed / fed-but-unconsumed | 3 tier-1 stale-served (+1 stale-but-guarded) / 7 tier-2 / 6 write-only / 20 dead endpoints |
 
 ## Orchestrator verification — where the agents were right, and where they weren't
 
@@ -93,13 +93,25 @@ challenge to **overclaiming**. All were verified and applied:
    the rebuild path still loses them. Verified at deploy.sh:3896-3908.
 4. **A fourth dead risk control, missed by all nine reviewers (report
    06 T5e).** `daily_profit_target` stops the backtest opening trades at
-   +3%; the live monitor never reads it. Verified: zero reads outside
-   `lib/config.py`.
+   +3%; the live monitor never reads it. Verified: `gcp/signal_monitor.py`
+   contains **no read** of it.
+
+   > **Corrected after Codex round 3.** This bullet originally said
+   > "zero reads outside `lib/config.py`", which is **false** —
+   > `lib/backtest.py:548` reads it (`if day_pnl >=
+   > self.risk.daily_profit_target: break`), which is precisely the
+   > backtest behaviour the same sentence describes, and
+   > `alert_config.json:125` configures it (`3.0`, normalized to `0.03`
+   > by `lib/config.py:638-640`). The supported claim is the narrow one
+   > T5e actually makes: the control is live in the **backtest** and
+   > absent from the **live monitor**, so the two disagree. This was the
+   > same over-broad-grep pattern as the `MOVEMENT_STATEMENT_ENABLED`
+   > error below — the third instance in this review.
 5. **Capacity CRITICAL not yet earned (report 05 C1).** The timeout math
    rests on an unmeasured latency range. N+1 shape confirmed; severity
    downgraded to provisional-HIGH pending telemetry.
 
-## Two findings were the orchestrator's own errors
+## Three findings were the orchestrator's own errors
 
 Report 05 LOW #7 caught a factual mistake introduced by PR #793
 yesterday: `scripts/audit_data_freshness.py` claimed the gated
@@ -120,6 +132,54 @@ where it is set `true` at :87. Verified live:
 `MOVEMENT_STATEMENT_ENABLED=true`. **The chain is user-facing today** —
 see report 09 TIER 6. Lesson: "not set anywhere" claims need a
 repo-wide grep, not a grep of the file I expected it in.
+
+**Third error — caught by Codex round 3, same pattern again.** In the
+round-2 correction above I wrote that `daily_profit_target` had "zero
+reads outside `lib/config.py`". `lib/backtest.py:548` reads it, and
+`alert_config.json:125` configures it. The narrow claim T5e makes (the
+*live monitor* has no read) is correct and unaffected; the broad claim I
+added around it was not. Three instances of the same failure in one
+review — an unqualified "set/read nowhere" assertion backed by a grep
+narrower than the assertion — is a pattern, not three accidents. Any
+such claim in this review set should be read as unproven unless the
+grep's scope is stated next to it.
+
+## Codex review round 3 (post-report-09) — five corrections, all accepted
+
+Codex reviewed commit `8ac0311` (report 09 + the round-2 corrections)
+and filed five P2s. All five were verified against primary sources and
+applied:
+
+1. **The retracted movement-flag claim still stood in the primary
+   report.** `LIVE_PERFORMANCE_REVIEW_2026-08-27.md:41-47` still said the
+   flag was unset with "no live exposure today" — the exact claim
+   retracted above, in the document a reader is most likely to open.
+   Rewritten to state the live exposure. This was the most consequential
+   of the five: it inverted a user-facing risk statement.
+2. **`exit_config_overrides` did not belong in TIER 1** (report 09 S3).
+   The tier is "stale and silently served as current"; the body itself
+   says the 111-day rows are inside the intentional 180-day window and
+   the guard rejects them past it. Moved to a new **TIER 1b**; headline
+   count corrected 4 → 3 (+1 guarded).
+3. **The "~93% TIGHT" figure was unsourced and does not reproduce**
+   (report 09 TIER 6). No query, range, timeframe, ticker set, or
+   model-version filter was given, and the card reads a single latest
+   row rather than an aggregate. Re-derived with published SQL: for the
+   current production model `magnitude-engine-c49qf` it is **294/294 =
+   100% bucket-0**, and all 6 servable rows are bucket-0. Direction
+   holds and is stronger; the 478/34 figures are withdrawn.
+4. **The `daily_profit_target` grep claim was false as written** — see
+   "Third error" above.
+5. **Weekly Discord publication was asserted from scheduler state**
+   (report 09 S2). An ENABLED scheduler proves executions were
+   requested, not that a POST succeeded; the job exits 0 without posting
+   when the webhook is unset. Checked directly: webhook **is** set, dry-run
+   is **not**, and **13/13 executions succeeded** from 2026-05-24 to
+   2026-08-23. Claim now rests on evidence rather than inference.
+
+Four of the five were challenges to unproven claims; none reversed a
+finding's substance, and two (3 and 5) came back stronger after real
+verification.
 
 ## Cross-cutting themes
 

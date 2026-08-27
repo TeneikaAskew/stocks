@@ -38,16 +38,30 @@ cells).
 dial or top-decile threshold flag. Anything reading `pred_bucket` is
 reading noise.
 
-**Blocking precondition (verified after Codex P1 on the review PR):**
-`lib/movement_statement.py:393-421` already derives `size_class` from
+**THIS IS LIVE TODAY — corrected 2026-08-27 after Codex round 3.**
+`lib/movement_statement.py:393-421` derives `size_class` from
 `pred_bucket`, and `platform/src/components/dashboard/expectedMove.ts`
-turns that class into stop distances and share counts. The
-`MOVEMENT_STATEMENT_ENABLED` flag is default-OFF and set nowhere in
-`gcp/deploy.sh`, so there is **no live exposure today** — but with this
-batch the statement would read "quiet, tighter stops OK" on every bar.
-The flag MUST NOT be enabled until `size_class` derives from the
-probability columns (e.g. `p_expanded + p_explosive` thresholds), not
-argmax. Tracked as action item 4.
+turns that class into stop distances and share counts.
+
+An earlier revision of this section claimed the `MOVEMENT_STATEMENT_ENABLED`
+flag was "default-OFF and set nowhere in `gcp/deploy.sh`, so there is no
+live exposure today." **That was wrong.** The flag is default-OFF in
+code, but it is set `true` at `platform/deploy.sh:87` — the *frontend*
+service's separate deploy script, which the original grep never covered.
+Verified live: `gcloud run services describe trading-platform` returns
+`MOVEMENT_STATEMENT_ENABLED=true`. The Expected-Move card is rendering
+this chain to users now.
+
+What it is currently showing (reproducible, see report 09 §TIER 6):
+every one of the 6 rows the card can serve — 3 tickers x 2 timeframes,
+all from the current production model `magnitude-engine-c49qf` — is
+`pred_bucket = 0` (TIGHT). So the card reads "quiet, tighter stops OK"
+on every bar today.
+
+`size_class` MUST be re-derived from the probability columns (e.g.
+`p_expanded + p_explosive` thresholds) rather than argmax. Because the
+chain is live, this is a **fix-forward**, not a "do not enable"
+precondition. Tracked as action item 4.
 
 ## 2. Signals — 2026-08-26 (resolved) and 2026-08-27
 
