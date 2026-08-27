@@ -64,15 +64,29 @@ run. All calls used `env -u CLOUDSDK_AUTH_ACCESS_TOKEN`.
   docstring names — except 3+ months rather than 12 hours.
 - Fix: `./gcp/deploy.sh fred-rates` re-pins to `:latest`.
 
-> **VERIFIED BY CLAUDE — and it likely root-causes an open issue.**
-> Image tag confirmed verbatim. Checked the downstream table:
-> `daily_rates` latest row is **2026-08-25** with only **4 rows in the
-> last 7 days**. That is the staleness behind **issue #783**, which I
-> filed on 2026-08-25 without a root cause. The stale image pin is the
-> leading candidate. `daily_rates` feeds `get_rate_and_yield()`, whose
-> `_DEFAULT_RISK_FREE` fallback (report 02, C-03) then silently supplies
-> a hardcoded `r` to **both** options Greeks and — since #771 —
-> `compute_gamma_flip_bs`.
+> **VERIFIED BY CLAUDE — image pin confirmed; my root-cause claim was
+> WRONG and is withdrawn.**
+> The image tag is confirmed verbatim, so the drift finding stands.
+>
+> I initially wrote that this "likely root-causes issue #783" because
+> `daily_rates` had only 4 rows in the last 7 days. **Codex challenged
+> that and was correct.** Pulling the actual dates shows a clean,
+> gapless business-day series:
+> `2026-08-12 Wed, 08-13 Thu, 08-14 Fri, 08-17 Mon, 08-18 Tue,
+> 08-19 Wed, 08-20 Thu, 08-21 Fri, 08-24 Mon, 08-25 Tue`.
+> The "4 in 7 days" was simply the weekend (Aug 22-23) plus normal FRED
+> publication lag for 08-26/27 — not staleness. The job succeeds, and
+> its pinned entrypoint still performs the same 14-day DGS3MO
+> fetch/upsert.
+>
+> **Correct status:** infra drift is real (a daily job has run
+> 3.5-month-old code for months, and 15 commits to shared libs are
+> absent from its image), but there is **no evidence it is causing a
+> data problem**, and it should **not** be presented as the root cause
+> of #783. Establishing causality would require diffing the pinned
+> image's fetcher behaviour or reading its response/write logs.
+> Severity re-rated **CRITICAL → HIGH** (drift/maintainability, not an
+> active data outage).
 
 ## HIGH
 

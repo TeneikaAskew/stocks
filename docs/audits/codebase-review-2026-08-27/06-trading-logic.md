@@ -166,6 +166,20 @@ validated in config but read by exactly one code path.
 - **(d) `daily_loss_limit` is per-ticker, not portfolio** (`daily_pnl`
   is `{t: 0.0 for t in self.tickers}`, :143) — a "−2% limit" is −6%
   across three tickers.
+- **(e) `daily_profit_target` is a fourth dead control — found by
+  Codex, missed by all nine reviewers.** `lib/backtest.py:548` stops
+  opening trades once `day_pnl` reaches the configured target; the live
+  monitor never reads the setting, so it keeps adding exposure past the
+  configured +3%.
+
+  > **VERIFIED BY CLAUDE:** repo-wide grep for `daily_profit_target`
+  > returns only `lib/config.py:237` (definition), `:493-494`
+  > (validation) and `:638-640` (load). **Zero reads in
+  > `gcp/signal_monitor.py`.** Same shape as (a) — a risk control that
+  > exists in config and in the validating backtest, but not in the
+  > system that trades. Any cap-decoupling work must treat
+  > `max_concurrent_positions`, `daily_loss_limit` **and**
+  > `daily_profit_target` as prerequisites.
 
 > **Directly relevant to the cap question raised in
 > `LIVE_PERFORMANCE_REVIEW_2026-08-27.md` §4.** That review treated the

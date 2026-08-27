@@ -58,6 +58,21 @@ memory: 2N → 2.
 > **VERIFIED BY CLAUDE:** confirmed `for ticker in tickers:
 > process_ticker(...)` at :1147-1149 and the SELECT at :292. The N+1
 > shape is real and visible in source regardless of the auth failure.
+>
+> **CODEX CORRECTION — the CRITICAL rating is not yet earned.** Codex
+> noted that the 21-83 minute DB figure rests entirely on the
+> 0.5-2s/round-trip range quoted from CLAUDE.md Rule 0.2, never
+> measured for *this* job, after the report itself states telemetry was
+> unavailable. Distinguishing "maintainability problem" from
+> "90-minute-cap failure" needs the real pooled latency and the
+> scheduled run's **resolved** ticker count. The same applies to C3's
+> margin and C5's alleged pre-open failures.
+>
+> **Status: the N+1 shape is CONFIRMED; the severity is PROVISIONAL.**
+> Downgrade to HIGH until measured. The cheapest resolution is a
+> `job_runs` duration pull for `fetch-market-data` plus one log line
+> reporting the resolved ticker count — neither of which exists yet
+> (a `job_runs` query for this job name returned no rows).
 
 ## HIGH
 

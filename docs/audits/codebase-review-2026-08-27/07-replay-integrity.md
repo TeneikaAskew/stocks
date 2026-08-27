@@ -27,11 +27,21 @@ disables the RVOL gate (:940-949), and since `_persist_signal_alert`
 never runs, `active_positions` stays empty so `_check_exits` (:729) and
 the `daily_loss_limit` guard (:757) are dead in replay too.
 
-Production writes at most 5 fires/ticker/day; replay reports unlimited.
-The comment at :1090-1092 records IWM blowing the cap by **22×** on 5/7,
-so replay over-reports by roughly an order of magnitude. CLAUDE.md §3.6
-claims this path "Runs the EXACT production code path … → fire_alert".
-It does not.
+Production writes at most 5 fires/ticker/day; replay is uncapped.
+CLAUDE.md §3.6 claims this path "Runs the EXACT production code path …
+→ fire_alert". It does not.
+
+> **CORRECTED AFTER CODEX REVIEW — magnitude withdrawn.** This report
+> originally inferred "roughly an order of magnitude" of over-reporting
+> from the comment at `signal_monitor.py:1090-1092` recording IWM
+> blowing the cap by 22×. Codex correctly pointed out that comment
+> describes a **pre-fix production day when the counter itself was never
+> incremented** — not a run of this replay harness. The *mechanism* is
+> confirmed; the *magnitude* does not follow from that evidence and
+> depends on how many eligible fires each replay produces. **The
+> inflation factor is unquantified** pending a measured live-vs-replay
+> comparison — which is exactly the parity test recommended at the top
+> of this report.
 
 ### R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, in production code)
 `gcp/signal_monitor.py:548-551`

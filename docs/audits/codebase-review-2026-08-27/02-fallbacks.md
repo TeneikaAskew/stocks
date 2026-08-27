@@ -7,6 +7,18 @@ from the old inventory.
 **Result: 2 CRITICAL new regressions, 4 CRITICAL confirmed backlog,
 2 HIGH, 6 MEDIUM, 3 resolved-since-audit.**
 
+> **⚠ CORRECTION (added after report 09 landed).** An earlier revision
+> of this file stated that the `pred_bucket` consumer chain was not
+> live because `MOVEMENT_STATEMENT_ENABLED` is "default-OFF and set
+> nowhere in `gcp/deploy.sh`". **That was wrong.** The flag is set
+> `true` at **`platform/deploy.sh:87`** — the frontend service's
+> separate deploy script, which I had not grepped — and is confirmed
+> live on the `trading-platform` Cloud Run service. The
+> `pred_bucket → size_class → stop distances` chain **is user-facing
+> today**. See report 09 TIER 6 for the full correction and severity
+> assessment. The `$100` spot reachability finding below is unaffected
+> and was independently confirmed by report 09 TIER 5.
+
 ## CRITICAL — NEW
 
 ### C-N1 — Fabricated $100 underlying price

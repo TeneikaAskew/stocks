@@ -64,6 +64,21 @@ commands 404 on any environment built purely from `./gcp/deploy.sh`.
 > the same as K1: unmanageable by the deploy script, lost on rebuild.
 > Re-rated **HIGH**.
 > **Fix:** `discord) build_image && deploy_discord_interactions && deploy_backfill_ticker && deploy_validate_brief && deploy_backtest ;;`
+>
+> **CODEX CORRECTION — that fix alone is insufficient.** Codex noted
+> the `all)` block still invokes neither `deploy_discord_interactions`
+> nor the three helper jobs, despite its help text promising to deploy
+> "everything", so the standard fresh-environment rebuild path would
+> still lose the entire slash-command service. **Verified:**
+> `gcp/deploy.sh:3896-3908` — `all)` runs `build_image`,
+> `deploy_premarket`, `deploy_earnings_reactions_brief`,
+> `deploy_monitor`, `deploy_signal_monitor_eod_resolver`,
+> `deploy_premarket_playbook_resolver`, `deploy_weekend`,
+> `deploy_fetchers`, `setup_insight_tasks_queue`,
+> `deploy_insight_pipeline`, … — **no discord entry anywhere**. The
+> remedy must add these to `all)` as well (or the documented rebuild
+> procedure must explicitly invoke `discord`), otherwise the
+> disaster-recovery finding stands unresolved.
 
 ## HIGH
 
