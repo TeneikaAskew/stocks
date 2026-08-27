@@ -111,6 +111,29 @@ def test_featurize_without_gamma_columns_still_works():
     assert "rsi_14" in cols
 
 
+def test_mag_ablate_gamma_dist_drops_distance_features(monkeypatch):
+    """MAG_ABLATE=gamma_dist excludes the gamma DISTANCE features too.
+
+    Experiment knob (mirrors the MAG_FEATURES env precedent): the
+    2026-08-26 ablation showed dropping only the raw levels did NOT
+    recover the 15m/30m fold metrics, leaving dist_to_gamma_flip_pct
+    (the one remaining rebuilt column) as the candidate driver. This
+    knob removes dist_to_gamma_flip_pct and skips the dist_to_balance
+    derivation so one phase0 run can measure the no-gamma-distance
+    baseline. Unset env leaves the standard behavior untouched."""
+    from gcp.research.magnitude_engine.mag_pred_train import featurize
+    monkeypatch.setenv("MAG_ABLATE", "gamma_dist")
+    X, cols = featurize(_frame_with_gamma_columns())
+    assert "dist_to_gamma_flip_pct" not in cols
+    assert "dist_to_balance_pct" not in cols
+    assert "gamma_balance_price" not in cols and "gamma_flip" not in cols
+    assert "rsi_14" in cols
+    monkeypatch.delenv("MAG_ABLATE")
+    _, cols_default = featurize(_frame_with_gamma_columns())
+    assert "dist_to_gamma_flip_pct" in cols_default
+    assert "dist_to_balance_pct" in cols_default
+
+
 def test_out_of_plan_task_index_is_clean_noop(monkeypatch):
     """CLOUD_RUN_TASK_INDEX beyond the plan is a deliberate no-op, exit 0."""
     from gcp.research.magnitude_engine import mag_walk_forward as mwf
