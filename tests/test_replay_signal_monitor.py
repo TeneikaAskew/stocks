@@ -119,6 +119,7 @@ def test_capturing_fire_alert_records_basic_signal():
     monitor._latest_expected_hold_min = 30
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
     monitor._resolve_level_state.return_value = ('fresh', 'fresh')
+    monitor._corrected_rvol.return_value = 1.35
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4,
@@ -156,6 +157,7 @@ def test_capturing_fire_alert_mirrors_level_gate_enforce():
     monitor.signal_cfg.level_gate_mode = "enforce"
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
     monitor._resolve_level_state.return_value = ('post_t1', 'fresh')
+    monitor._corrected_rvol.return_value = 0.82
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["below_vwap"]}
@@ -166,6 +168,7 @@ def test_capturing_fire_alert_mirrors_level_gate_enforce():
     assert captured == [], "enforce + post_t1 must not be captured"
 
     monitor._resolve_level_state.return_value = ('fresh', 'fresh')
+    monitor._corrected_rvol.return_value = 1.35
     fire_fn(monitor, "SPY", sig, total_score=4.0, strength="STRONG",
             size=0.10, strat_bonus=0, latest=latest)
     assert len(captured) == 1 and captured[0].level_state == 'fresh'
@@ -186,6 +189,7 @@ def test_capturing_fire_alert_records_stacked_agreement():
     monitor._latest_expected_hold_min = 15
     monitor._resolve_brief_alignment.return_value = ({'bias': 'UNAVAILABLE'}, None)
     monitor._resolve_level_state.return_value = (None, None)
+    monitor._corrected_rvol.return_value = None
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["consecutive_down"]}
@@ -214,6 +218,7 @@ def test_capturing_fire_alert_to_dict_is_json_safe():
     monitor._latest_expected_hold_min = 60
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'invalidated')
     monitor._resolve_level_state.return_value = ('post_t1', 'fresh')
+    monitor._corrected_rvol.return_value = 0.82
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "PUT", "base_score": 3, "conditions_met": ["consecutive_up"]}
