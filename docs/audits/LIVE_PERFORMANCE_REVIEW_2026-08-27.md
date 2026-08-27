@@ -38,6 +38,17 @@ cells).
 dial or top-decile threshold flag. Anything reading `pred_bucket` is
 reading noise.
 
+**Blocking precondition (verified after Codex P1 on the review PR):**
+`lib/movement_statement.py:393-421` already derives `size_class` from
+`pred_bucket`, and `platform/src/components/dashboard/expectedMove.ts`
+turns that class into stop distances and share counts. The
+`MOVEMENT_STATEMENT_ENABLED` flag is default-OFF and set nowhere in
+`gcp/deploy.sh`, so there is **no live exposure today** — but with this
+batch the statement would read "quiet, tighter stops OK" on every bar.
+The flag MUST NOT be enabled until `size_class` derives from the
+probability columns (e.g. `p_expanded + p_explosive` thresholds), not
+argmax. Tracked as action item 4.
+
 ## 2. Signals — 2026-08-26 (resolved) and 2026-08-27
 
 **08-26:** 15 fires (cap-limited to 5/ticker): IWM 5 CALL, QQQ 5 CALL,
@@ -70,6 +81,11 @@ resolved non-replay fires since 2026-03-19, gate_min = 1.0:
 No dose-response: win rates across RVOL bands sit flat at 49–54%, and
 the ≥2.0 band is the *worst* performer (−0.028% avg). A real entry
 filter would show returns rising with the band.
+
+The exact cohort definition, monthly aggregation, band edges, and a
+composition slice (ticker × direction × fire-hour × verdict) are checked
+in as `gcp/queries/rvol_gate_analysis.sql` so the verdict is
+reproducible and adversarially sliceable.
 
 **Verdict: the gate stays in shadow.** The 08-26 pattern that motivated
 enforcement (below+unaligned 0/7) did not survive out-of-sample; on
@@ -115,10 +131,19 @@ week's changes altered firing capacity. What is new is the visibility.
 decouple recording from trading, mirroring the shadow-gate philosophy —
 persist every fire-quality signal with a `cap_suppressed` flag (alerts
 beyond the cap recorded but not alerted/traded), keep `max_daily_trades`
-as the trading throttle. Zero risk change; after 2–3 weeks the censored
-region becomes measurable and a market-based admission rule (e.g. best-
-score-wins with intraday budget) can be designed on evidence rather
-than guessed.
+as the trading throttle. After 2–3 weeks the censored region becomes
+measurable and a market-based admission rule (e.g. best-score-wins with
+an intraday budget) can be designed on evidence rather than guessed.
+
+This is **not** a flag-only change (Codex P2 on the review PR): current
+consumers assume every `signal_alerts` row is a tradeable fire. The
+implementing PR must, in the same change: exclude suppressed rows in
+`signal_monitor_eod_resolver.find_open_alerts` (else the resolver emits
+exits for trades that never existed) and give them their own outcome
+lifecycle (resolved for analytics, never alerted); exclude them from
+signal replay/repost paths; and default-filter them in analytics
+queries and the dashboard. A separate `signal_observations` table is
+the clean alternative if the filter surface proves too wide.
 
 ## 5. Playbook cards: actionable by design, dormant since 06-13
 
@@ -170,7 +195,7 @@ Consistent with the week's verified findings:
 |---|------|--------|
 | 1 | Backfill `rvol_gate` over full history | SQL in this PR; dispatched post-merge |
 | 2 | RVOL gate enforcement | **Rejected on evidence**; re-test alignment×gate interaction ~mid-September |
-| 3 | Cap decoupling (`cap_suppressed` shadow persistence) | Proposed — needs decision + PR |
-| 4 | `p_explosive` threshold consumption in monitor/brief | Proposed — needs design |
+| 3 | Cap decoupling (`cap_suppressed` shadow persistence + consumer lifecycle, §4) | Proposed — needs decision + PR |
+| 4 | Movement statement: derive `size_class` from probabilities; **flag stays OFF until fixed** (§1) | Blocker before enabling `MOVEMENT_STATEMENT_ENABLED` |
 | 5 | Playbook cards: schedule or retire | Needs decision |
 | 6 | #784 R4 gamma sizing ablation | Waiting on data accrual |
