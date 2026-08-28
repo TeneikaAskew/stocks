@@ -1136,6 +1136,58 @@ signal) and never the argmax, and the bar is a positive log-loss beat on
 a majority of folds in a configuration that also passes the promotion
 gate — a bar nothing tested so far clears.
 
+## 18. What shipped on 2026-08-28
+
+All four changes are measurement-first. Nothing published to the trader
+moves, and no fire decision changes, except the one feature that was
+turned OFF.
+
+| change | mode | why |
+|---|---|---|
+| Magnitude promotion gate | **enforcing** | Blocks a collapsed model from becoming LATEST. Verified against the real c49qf artifact: BLOCK. |
+| Expected-Move card | **off** | No magnitude configuration currently clears the bar (§17.3). |
+| Put-side 9:31 re-anchor | shadow | §15.5's paired +0.126%/leg needs live confirmation before the published playbook moves. |
+| Risk-control observability | shadow | Records what `max_concurrent_positions` and a mark-to-market `daily_loss_limit` would have done. |
+
+### 18.1 Why the risk controls are measured, not switched on
+
+The codebase review (T5) found three controls configured, validated and
+never consulted. Each was verified independently rather than taken on
+the review's word:
+
+* `max_concurrent_positions` (alert_config.json = 1) — read nowhere.
+  `active_positions` is only appended to and walked for exits, so the
+  monitor can carry an unbounded number of simultaneous positions per
+  ticker, bounded only by `max_daily_trades`.
+* `daily_loss_limit` — IS checked before a fire, but `daily_pnl` is
+  written only in the exit path. §16.3 measured the daily cap being
+  burned in a median 17 minutes, so most of a day's fires open before
+  anything has exited and the check reads 0.0. It cannot bind intraday
+  as written.
+* `daily_profit_target` — appears only in `lib/backtest.py`.
+
+The obvious move is to switch them on. The stop-loss counterfactual is
+why that would be a mistake to make blind: adding the backtest's stop to
+live cost **−12.70pct** over 736 real fires (52% stopped out; a third of
+those finished positive, worth +23.91), and **every** level swept from
+0.15% to 2.00% was worse than no stop. The tail this system actually has
+is already capped by the time-stop — worst observed −1.26%, two fires
+below −1%, none below −2%.
+
+So `signal_alerts` now carries `concurrent_positions` and `mtm_pnl`
+(realized + open mark-to-market — the number a loss limit would have to
+read to bind intraday, versus the realized-only number the live check
+reads), and a `risk_shadow:` log line names which control would have
+blocked each fire. Decide from that, not from first principles.
+
+### 18.2 A caveat on the level-state numbers this section rests on
+
+§15.4's +8.20pct is in-sample on the window the rule was derived from.
+The gate has run in shadow since 2026-08-27 so the same question can be
+asked out-of-sample; the decision checkpoint, its query, and its
+pre-registered pass/fail rule are filed as issue #808 rather than left
+to memory.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,
