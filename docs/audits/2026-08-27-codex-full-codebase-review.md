@@ -5,7 +5,7 @@
 **Method:** repository-wide static tracing; targeted history review; reconciliation against the experiment registry and the 2026-08-25 profitability audit; full Python test suite; frontend unit/build/lint checks; no production writes, alerts, trades, or deployments. Production-result numbers below are evidence reported by the repository's production-query audits, not independently re-queried during this local review.
 
 > **Companion document.** A second, independent whole-codebase review ran
-> the same day and merged as #802: `docs/audits/codebase-review-2026-08-27/`
+> the same day and merged as #802: `docs/audits/2026-08-27-claude-codebase-review/`
 > (nine specialist reports). The two audits are **complementary, not
 > duplicative** — each covers findings the other has zero mentions of. See
 > the reconciliation comment on PR #804 for the overlap analysis and the

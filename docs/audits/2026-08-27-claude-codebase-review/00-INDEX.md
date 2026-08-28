@@ -10,6 +10,16 @@ or Cloud SQL).
 Read `00-INDEX.md` (this file) for the cross-cutting picture; the
 numbered files for each domain.
 
+> **Companion document.** A second, independent whole-codebase review ran
+> the same day: `docs/audits/2026-08-27-codex-full-codebase-review.md`
+> (single-pass, Codex-authored, PR #804). The two are **complementary,
+> not duplicative** — each contains findings the other has zero mentions
+> of. Most notably, the companion's fill-model finding (the level edge is
+> evidence for resting orders, not for chasing alerts) has no equivalent
+> here, and this set's four-missing-risk-controls finding has no
+> equivalent there. The overlap analysis and the two resolved divergences
+> are in the reconciliation comment on PR #804.
+
 ## Reviewers and status
 
 | # | Report | Domain | Result |
