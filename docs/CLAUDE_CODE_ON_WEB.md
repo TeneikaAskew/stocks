@@ -202,9 +202,9 @@ unaffected, which is why it was invisible until a scheduled Routine
 fired: the twice-daily `Stocks failure triage` Routine — the loop that
 catches Cloud Run job failures overnight — could not start at all.
 
-**Root cause.** The sandbox base image began shipping `gcloud`, `gh`,
-`bq` and `gsutil` pre-installed, along with their apt keyrings. The
-script's install block ran unconditionally and included:
+**Root cause.** The script's install block ran unconditionally and
+included a step that is fatal the second time it runs against an
+already-provisioned container:
 
 ```bash
 curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
@@ -218,13 +218,41 @@ roughly line 18 — before any credential step ran, which is why the
 service-account key and the GitHub PAT both tested healthy while every
 session still died.
 
-Measured directly:
+Measured directly, in a container of the affected environment:
 
-| case | exit |
+| step | exit |
 |---|---|
-| existing keyring, `gpg --dearmor -o` | **2** |
-| existing keyring, `gpg --yes --dearmor -o` | 0 |
-| no keyring (the original, working path) | 0 |
+| `apt-get update` | 0 |
+| `apt-get install google-cloud-cli gh` (simulated) | 0 |
+| **`gpg --dearmor -o` — keyring already present** | **2** |
+| `gpg --yes --dearmor -o` — keyring already present | 0 |
+| `gpg --dearmor -o` — no keyring (the original path) | 0 |
+| `pip install -r requirements.txt` (dry-run) | 0 |
+| `npm ci` | 0 |
+| SA-key activation / GitHub PAT | healthy |
+
+Every step passes except the keyring write against an existing file.
+
+**What is measured vs. inferred.** The non-idempotency is fact: the
+same line exits 0 on a clean path and 2 on a second run. What is
+*inferred* is why the keyring now pre-exists at script time. File
+mtimes in a container that booted successfully on 2026-08-24 show
+`/usr/share/keyrings/cloud.google.gpg` and
+`/etc/apt/sources.list.d/google-cloud-sdk.list` written at
+`22:11:30.18` — nanosecond-precision runtime writes at that session's
+own start — with `/home/user/.gcp-key.json` following 33 s later. So
+on 2026-08-24 the image did **not** carry the keyring; the script
+created it and ran on past. The image evidently changed afterwards to
+pre-supply it. Note that binary mtimes (`/usr/bin/gcloud` dated
+2026-08-14) prove nothing here — dpkg preserves mtimes from the
+package, so they reflect when the `.deb` was built, not when it was
+installed.
+
+The dead container cannot be inspected — it fails before anything can
+run in it — so no log line names the failing step. The conclusion rests
+on the measured table above (only one candidate fails), the 3-4 second
+death consistent with dying ~line 18, and healthy credentials proving
+the later steps were never reached.
 
 **Why it went unnoticed.** The failure is in session *initialization*, so
 there is no session to report it. A Routine bound to a fresh session per
