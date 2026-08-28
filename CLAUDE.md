@@ -878,6 +878,28 @@ incident: backups are the floor under every other safety mechanism.
 
 ### GitHub API access from the sandbox
 
+> **Check which environment you are in first — this section does not apply
+> everywhere.** Two different environments run against this repo and they
+> reach GitHub in incompatible ways:
+>
+> | environment | `gh` / raw `curl api.github.com` | what to use |
+> |---|---|---|
+> | Claude Code on the web sandbox (original) | works with the PAT below | the `curl` pattern in this section |
+> | Claude Code Remote / Cowork sessions | **403** | the GitHub **MCP tools** (`mcp__github__*`) |
+>
+> In a Remote/Cowork session, GitHub is routed through the Claude GitHub
+> App rather than a PAT, and a direct call returns:
+> `{"message": "GitHub access is not enabled for this session. An org
+> admin must connect the Claude GitHub App for this organization."}`
+> That is **not** a revoked PAT — the same token returns HTTP 200 for
+> other callers. Verified 2026-08-27: a `curl` poll of
+> `/commits/<sha>/check-runs` 403'd on every one of 32 attempts while the
+> MCP tool returned the same data fine.
+>
+> Rule of thumb: if `mcp__github__*` tools are present in your tool list,
+> use them and ignore the `curl` recipe below. Only fall back to the PAT
+> when they are absent.
+
 The sandbox cannot run `gh` (not installed). To dispatch workflows, read
 runs, download artifacts, or post comments via the REST API, fetch the
 GitHub PAT from GCP Secret Manager and use `curl` against `api.github.com`.
