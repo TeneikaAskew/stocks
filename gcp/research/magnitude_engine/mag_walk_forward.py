@@ -37,6 +37,7 @@ from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
     DEFAULT_CALIBRATION, DEFAULT_CV,
+    PROMOTION_MAX_MODAL_SHARE, PROMOTION_MIN_DISTINCT_CLASSES,
     ECE_CEILING_BY_TF, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
@@ -364,6 +365,53 @@ def _persist_predictions_table(engine, ticker: str, tf: str,
              len(df))
 
 
+def promotion_verdict(y_pred: np.ndarray) -> dict:
+    """Decide whether a freshly-trained production candidate may be promoted.
+
+    Takes the candidate's argmax predictions over its own training matrix and
+    applies the SAME modal-dominance criterion the post-deployment detector
+    (gcp/audit_magnitude_drift.py) applies to live rows — see
+    mag_config.PROMOTION_MAX_MODAL_SHARE for the incident this encodes.
+
+    A model that argmax-picks one bucket on >= PROMOTION_MAX_MODAL_SHARE of the
+    data it was fit on has not learned the minority buckets; it has learned the
+    base rate. On the training matrix that is the most generous possible test —
+    a candidate that collapses HERE cannot do better out-of-sample.
+
+    Returns a dict with `ok` plus the numbers behind the decision, so the caller
+    can log exactly why a promotion was refused (and the same dict lands in the
+    run summary for later forensics).
+    """
+    y_pred = np.asarray(y_pred)
+    n = int(y_pred.size)
+    if n == 0:
+        return {"ok": False, "reason": "no predictions to evaluate",
+                "n": 0, "modal_share": None, "distinct_classes": 0,
+                "modal_class": None}
+    classes, counts = np.unique(y_pred, return_counts=True)
+    top = int(np.argmax(counts))
+    modal_share = float(counts[top]) / n
+    distinct = int(classes.size)
+    reasons = []
+    if distinct < PROMOTION_MIN_DISTINCT_CLASSES:
+        reasons.append(
+            f"predicts only {distinct} distinct bucket(s) "
+            f"(min {PROMOTION_MIN_DISTINCT_CLASSES})")
+    if modal_share >= PROMOTION_MAX_MODAL_SHARE:
+        reasons.append(
+            f"modal bucket {int(classes[top])} on {counts[top]}/{n} rows "
+            f"({modal_share:.1%} >= {PROMOTION_MAX_MODAL_SHARE:.0%})")
+    return {
+        "ok": not reasons,
+        "reason": "; ".join(reasons) if reasons else "passed",
+        "n": n,
+        "modal_share": modal_share,
+        "modal_class": int(classes[top]),
+        "distinct_classes": distinct,
+        "class_counts": {int(c): int(k) for c, k in zip(classes, counts)},
+    }
+
+
 def _persist_production_model_artifact(
     ticker: str, tf: str, run_id: str,
     X_full: np.ndarray, y_full: np.ndarray,
@@ -382,9 +430,10 @@ def _persist_production_model_artifact(
     --persist-production-model produces the artifact the inference job
     needs.
 
-    Returns the gs:// URI on success, None on failure (failure is logged
-    but does NOT raise — walk_forward's metric persistence is the
-    primary output of the job; this is a side effect).
+    Returns the gs:// URI on success, None on failure OR when the promotion
+    gate blocks the candidate (both are logged but do NOT raise — walk_forward's
+    metric persistence is the primary output of the job; this is a side effect).
+    A blocked promotion leaves LATEST pointing at the previous production model.
     """
     import io
     import joblib
@@ -417,6 +466,18 @@ def _persist_production_model_artifact(
         )
         model.fit(X_full, y_full)
 
+    # Promotion gate — refuse to make a collapsed model LATEST.
+    # Scored on the training matrix on purpose: it is the most generous test
+    # available, so a candidate that collapses here cannot do better live.
+    # See mag_config.PROMOTION_MAX_MODAL_SHARE for the c49qf incident.
+    verdict = promotion_verdict(model.predict(X_full))
+    log.info("promotion gate %s:%s — %s (n=%d modal_share=%s distinct=%d)",
+             ticker, tf, "PASS" if verdict["ok"] else "BLOCK",
+             verdict["n"],
+             "n/a" if verdict["modal_share"] is None
+             else f"{verdict['modal_share']:.3f}",
+             verdict["distinct_classes"])
+
     # Upload artifacts under run_prefix; update LATEST pointer LAST.
     try:
         bucket = gcs.Client().bucket(bucket_name)
@@ -428,6 +489,19 @@ def _persist_production_model_artifact(
             "\n".join(feature_cols), content_type="text/plain")
         bucket.blob(f"{run_prefix}/VERSION").upload_from_string(
             run_id, content_type="text/plain")
+        # Artifacts are uploaded even when the gate blocks: the run-scoped
+        # path is write-only forensics (nothing reads it without LATEST), and
+        # keeping the blocked candidate lets an operator diagnose WHY it
+        # collapsed without re-running an 8-fold job.
+        if not verdict["ok"]:
+            bucket.blob(f"{run_prefix}/PROMOTION_BLOCKED").upload_from_string(
+                json.dumps(verdict, indent=2), content_type="application/json")
+            log.error(
+                "PROMOTION BLOCKED for %s:%s (run=%s) — %s. LATEST left "
+                "pointing at the previous model; artifacts kept at "
+                "gs://%s/%s/ for diagnosis.",
+                ticker, tf, run_id, verdict["reason"], bucket_name, run_prefix)
+            return None
         # Atomic flip: LATEST is a single-blob write. Its presence/
         # contents is what mag_inference reads to choose which run to
         # load.

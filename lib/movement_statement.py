@@ -350,6 +350,80 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict) -> dict:
 # ── Piece 3: expected move (CONTEXT / sizing only — never the headline) ────
 
 
+# Modal-share ceiling for the served model. Mirrors the promotion gate in
+# gcp/research/magnitude_engine/mag_config.PROMOTION_MAX_MODAL_SHARE and the
+# post-deployment detector in gcp/audit_magnitude_drift.py. Not imported from
+# mag_config because lib/ must not depend on gcp/research/ (the research
+# package pulls LightGBM); the number is asserted equal in
+# tests/test_movement_statement.py so the two cannot silently drift.
+_MAG_DEGENERATE_MODAL_SHARE = 0.70
+_MAG_DEGENERACY_LOOKBACK_DAYS = 7
+
+
+def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict:
+    """Is the model that produced this prediction argmax-collapsed?
+
+    A 4-class softmax that argmax-picks the same bucket on ~every recent bar
+    has learned the base rate, not the signal. Its per-bar `pred_bucket` is a
+    constant and rendering it tells the user nothing — which is exactly what
+    `magnitude-engine-c49qf` did to the Expected-Move card from 2026-08-26
+    (TIGHT on 588/588 bars, fold accuracy equal to the base rate) until it was
+    caught on 2026-08-28.
+
+    The primary control is the promotion gate, which now refuses to make such a
+    model LATEST. This is the render-layer backstop for a model that reached
+    production by some other route (hand-copied pointer, restored bucket, a
+    model that collapses only on live inputs).
+
+    Returns an envelope, never a bare bool:
+      * OK + degenerate=True/False + the counts behind it, or
+      * UNAVAILABLE when the check itself could not run.
+    "Could not run" is deliberately NOT treated as degenerate: this is a
+    monitoring check, not a financial value, and taking a working card offline
+    on a transient aggregate failure would be the wrong trade. The state is
+    surfaced in the payload (never swallowed) so a check that stops running is
+    visible rather than silently absent.
+    """
+    if not model_version or ts is None:
+        return _unavailable("no model_version/ts on the prediction row")
+    sql = (
+        "SELECT pred_bucket, count(*) AS n "
+        "FROM magnitude_per_bar_predictions "
+        "WHERE ticker = :ticker AND tf = :tf AND model_version = :mv "
+        "  AND ts <= :ts "
+        f"  AND ts > :ts - INTERVAL '{_MAG_DEGENERACY_LOOKBACK_DAYS} days' "
+        "GROUP BY pred_bucket"
+    )
+    params = {"ticker": ticker.upper(), "tf": tf, "mv": model_version, "ts": ts}
+    try:
+        df = query_fn(sql, params)
+    except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
+        log.warning("degeneracy check failed for %s %s: %s", ticker, tf, e)
+        return _unavailable(f"degeneracy check query failed: {e}")
+
+    if df is None or getattr(df, "empty", True):
+        return _unavailable("no recent predictions for this model_version")
+    if "pred_bucket" not in getattr(df, "columns", []) or "n" not in df.columns:
+        # A caller-injected query_fn that does not answer this shape. Report
+        # it rather than guessing at degeneracy from the wrong frame.
+        return _unavailable("degeneracy check returned an unexpected shape")
+
+    counts = {int(r["pred_bucket"]): int(r["n"]) for _, r in df.iterrows()}
+    total = sum(counts.values())
+    if total <= 0:
+        return _unavailable("no recent predictions for this model_version")
+    modal_bucket = max(counts, key=counts.get)
+    modal_share = counts[modal_bucket] / total
+    return _ok(
+        degenerate=bool(modal_share >= _MAG_DEGENERATE_MODAL_SHARE),
+        modal_bucket=modal_bucket,
+        modal_share=modal_share,
+        n_bars=total,
+        distinct_buckets=len(counts),
+        lookback_days=_MAG_DEGENERACY_LOOKBACK_DAYS,
+    )
+
+
 def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     """Latest magnitude bucket distribution as a sizing/context modifier.
 
@@ -393,6 +467,22 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
     bucket = int(row["pred_bucket"])
     ts = row.get("ts")
 
+    # Backstop for an argmax-collapsed model reaching production (c49qf, 2026-08-26).
+    # A constant pred_bucket is not information; render it and the user reads a
+    # confident-looking size class that is really just the base rate.
+    degeneracy = _model_degeneracy(ticker, tf, row.get("model_version"), ts, query_fn)
+    if degeneracy.get("status") == "OK" and degeneracy.get("degenerate"):
+        return _unavailable(
+            "magnitude model is argmax-collapsed: "
+            f"{_MAG_BUCKET_LABELS[degeneracy['modal_bucket']]} on "
+            f"{degeneracy['modal_share']:.1%} of the last "
+            f"{degeneracy['n_bars']} bars "
+            f"(model={row.get('model_version')}) — the predicted bucket "
+            "carries no information and is withheld",
+            role="context",
+            degeneracy=degeneracy,
+        )
+
     # ATR-20 + current price for the Tier-3 sizing calculator. Read from the
     # same strat_features_{tf} bar the prediction was scored on (join on ts).
     # Rule 3.7: missing -> None (the calculator disables; never a fabricated
@@ -432,6 +522,7 @@ def _build_expected_move(ticker: str, tf: str, query_fn, as_of=None) -> dict:
         atr_20=atr_20,
         current_price=current_price,
         usage_guidance=_MAG_USAGE,
+        degeneracy=degeneracy,
     )
 
 
