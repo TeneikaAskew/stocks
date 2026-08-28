@@ -39,6 +39,7 @@ import argparse
 import json
 import logging
 import sys
+import statistics
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, date, time, timedelta, timezone
@@ -73,6 +74,7 @@ class FireRecord:
     brief_alignment:   Optional[str] = None
     level_state:       Optional[str] = None
     opp_level_state:   Optional[str] = None
+    rvol_mod:          Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -84,6 +86,7 @@ class FireRecord:
             "brief_alignment":    self.brief_alignment,
             "level_state":        self.level_state,
             "opp_level_state":    self.opp_level_state,
+            "rvol_mod":           self.rvol_mod,
             "timeframe_tag":      self.timeframe_tag,
             "expected_hold_min":  self.expected_hold_min,
             "strategy_agreement": self.strategy_agreement,
@@ -265,14 +268,14 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
             base_score, total_score, strength_label,
             position_size, time_stop_minutes,
             conditions_met, brief_alignment, level_state, opp_level_state,
-            run_kind, replay_id,
+            rvol_mod, run_kind, replay_id,
             inserted_at
         ) VALUES (
             :ticker, :alert_ts, :alert_date, :direction,
             :base_score, :total_score, :strength,
             :size, :time_stop,
             :conditions, :brief_alignment, :level_state, :opp_level_state,
-            'replay', :replay_id,
+            :rvol_mod, 'replay', :replay_id,
             NOW()
         )
         ON CONFLICT DO NOTHING
@@ -293,6 +296,7 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
                 'brief_alignment': fire.brief_alignment,
                 'level_state': fire.level_state,
                 'opp_level_state': fire.opp_level_state,
+                'rvol_mod': fire.rvol_mod,
                 'replay_id': replay_id,
             })
     except Exception as e:
@@ -317,6 +321,10 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
         # trackers are fed by update_window, which this harness already
         # drives bar-by-bar, so replay tags carry production semantics.
         own_state, opp_state = self._resolve_level_state(ticker, sig["direction"])
+        # Production fire_alert also records the corrected RVOL (audit §16);
+        # compute it here too or replay rows carry a NULL the live path
+        # would have filled, and the shadow comparison loses the replay arm.
+        rvol_mod = self._corrected_rvol(ticker)
         # Mirror production enforcement (Codex P2 on PR #799): under
         # `enforce`, live fire_alert returns before Discord/persist for
         # late-state fires, so the replay must not capture them either —
@@ -346,6 +354,7 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
             brief_alignment=align,
             level_state=own_state,
             opp_level_state=opp_state,
+            rvol_mod=rvol_mod,
         ))
     return _capture
 
@@ -485,6 +494,28 @@ def main(argv: Optional[list[str]] = None) -> int:
           + "  ".join(f"{k or 'untagged'}={n}"
                       for k, n in sorted(aligns.items(),
                                          key=lambda x: (x[0] or ''))))
+
+    # Playbook leg-state distribution (audit §16). Printed so a replay can
+    # be read as a check on the tracker itself — in particular whether the
+    # gap-through route ('post_t1_open') separates from plain 'post_t1'.
+    states = Counter(f.level_state for f in captured_fires)
+    print("Level state:     "
+          + "  ".join(f"{k or 'untagged'}={n}"
+                      for k, n in sorted(states.items(),
+                                         key=lambda x: (x[0] or ''))))
+
+    vals = [f.rvol_mod for f in captured_fires if f.rvol_mod is not None]
+    if vals:
+        # statistics.median averages the two middle values on an even
+        # sample; vals_sorted[n // 2] would report the upper middle and
+        # skew this headline regression number (Codex review, PR #806).
+        med = statistics.median(vals)
+        below = sum(1 for v in vals if v < 1.0) / len(vals)
+        print(f"Corrected RVOL:  n={len(vals)}/{len(captured_fires)} median "
+              f"{med:.2f}  below 1.0 {below:.0%}")
+    else:
+        print(f"Corrected RVOL:  no values (baseline unavailable for all "
+              f"{len(captured_fires)} fires)")
 
     # Timeframe distribution
     tfs = Counter(f.timeframe_tag for f in captured_fires)

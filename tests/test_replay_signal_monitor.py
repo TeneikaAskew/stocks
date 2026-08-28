@@ -119,6 +119,7 @@ def test_capturing_fire_alert_records_basic_signal():
     monitor._latest_expected_hold_min = 30
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
     monitor._resolve_level_state.return_value = ('fresh', 'fresh')
+    monitor._corrected_rvol.return_value = 1.35
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4,
@@ -156,6 +157,7 @@ def test_capturing_fire_alert_mirrors_level_gate_enforce():
     monitor.signal_cfg.level_gate_mode = "enforce"
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'aligned')
     monitor._resolve_level_state.return_value = ('post_t1', 'fresh')
+    monitor._corrected_rvol.return_value = 0.82
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["below_vwap"]}
@@ -166,6 +168,7 @@ def test_capturing_fire_alert_mirrors_level_gate_enforce():
     assert captured == [], "enforce + post_t1 must not be captured"
 
     monitor._resolve_level_state.return_value = ('fresh', 'fresh')
+    monitor._corrected_rvol.return_value = 1.35
     fire_fn(monitor, "SPY", sig, total_score=4.0, strength="STRONG",
             size=0.10, strat_bonus=0, latest=latest)
     assert len(captured) == 1 and captured[0].level_state == 'fresh'
@@ -186,6 +189,7 @@ def test_capturing_fire_alert_records_stacked_agreement():
     monitor._latest_expected_hold_min = 15
     monitor._resolve_brief_alignment.return_value = ({'bias': 'UNAVAILABLE'}, None)
     monitor._resolve_level_state.return_value = (None, None)
+    monitor._corrected_rvol.return_value = None
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "CALL", "base_score": 4, "conditions_met": ["consecutive_down"]}
@@ -214,6 +218,7 @@ def test_capturing_fire_alert_to_dict_is_json_safe():
     monitor._latest_expected_hold_min = 60
     monitor._resolve_brief_alignment.return_value = ({'bias': 'CALL'}, 'invalidated')
     monitor._resolve_level_state.return_value = ('post_t1', 'fresh')
+    monitor._corrected_rvol.return_value = 0.82
 
     fire_fn = make_capturing_fire_alert(captured, monitor)
     sig = {"direction": "PUT", "base_score": 3, "conditions_met": ["consecutive_up"]}
@@ -304,3 +309,44 @@ def test_persist_fire_includes_brief_alignment():
     assert params["brief_alignment"] == "invalidated"
     sql_text = str(conn.execute.call_args[0][0])
     assert "brief_alignment" in sql_text
+
+
+def test_persist_fire_includes_level_state_and_rvol_mod():
+    """--persist must write every tag the live path records.
+
+    Codex review (PR #806): adding a field to FireRecord does not put it in
+    signal_alerts — persist_fire_to_signal_alerts has an explicit column
+    list, so a captured rvol_mod was still written as NULL and the
+    live-vs-replay shadow comparison had no replay arm.
+    """
+    from unittest.mock import MagicMock
+    from scripts.replay_signal_monitor import persist_fire_to_signal_alerts
+    fire = FireRecord(
+        timestamp=pd.Timestamp("2026-08-26 14:00", tz="UTC"),
+        ticker="QQQ", direction="CALL", base_score=4, total_score=4.0,
+        timeframe_tag="30m", expected_hold_min=30,
+        strategy_agreement=None, conditions_met=["below_vwap"],
+        embed_title="CALL SIGNAL [30m] @ $715.00",
+        brief_alignment="aligned", level_state="post_t1_open",
+        opp_level_state="fresh", rvol_mod=1.42,
+    )
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    persist_fire_to_signal_alerts(fire, monitor=MagicMock(), engine=engine,
+                                  replay_id="rid-2")
+    params = conn.execute.call_args[0][1]
+    sql_text = str(conn.execute.call_args[0][0])
+    assert params["rvol_mod"] == 1.42
+    assert params["level_state"] == "post_t1_open"
+    assert params["opp_level_state"] == "fresh"
+    for col in ("rvol_mod", "level_state", "opp_level_state"):
+        assert col in sql_text, f"{col} missing from the INSERT column list"
+
+
+def test_summary_median_averages_the_middle_on_even_samples():
+    """statistics.median, not vals[n//2] — the upper-middle would skew the
+    headline regression number (Codex review, PR #806)."""
+    import statistics
+    assert statistics.median([0.8, 1.2]) == 1.0
+    assert sorted([0.8, 1.2])[len([0.8, 1.2]) // 2] == 1.2, \
+        "the old expression really did report the upper middle"
