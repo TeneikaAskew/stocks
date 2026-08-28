@@ -1749,6 +1749,26 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
 
+    -- ── SHADOW: put leg re-anchored on the 9:31 open (audit §15.5) ───
+    -- The brief anchors the playbook on the 8:31 price (yesterday's close).
+    -- Re-anchoring the PUT leg on the open measured significantly better
+    -- across 174 ticker-days (paired +0.126%/leg, t=+3.75; day-clustered
+    -- t=+2.51, 67% positive days; last-30 +11.1 vs +1.0); the CALL leg was a
+    -- wash (t=+0.17), so only puts are re-anchored. Written by signal_monitor
+    -- at the first RTH bar when signal.put_reanchor_mode != 'off'. NULL means
+    -- "not computed" (mode off, no level map, or no fresh level below the
+    -- open) — never a fabricated price. The published puts_* columns above are
+    -- untouched in 'shadow' mode; these exist so the counterfactual can be
+    -- resolved on LIVE data before the published leg is allowed to move.
+    ADD COLUMN IF NOT EXISTS puts_reanchor_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_reanchor_trigger  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_reanchor_trigger_name VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_reanchor_stop     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_reanchor_t1       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_reanchor_t2       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_reanchor_t3       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_reanchor_at       TIMESTAMPTZ,
+
     -- ── RESOLVED outcomes — CALLS leg ────────────────────────────────
     ADD COLUMN IF NOT EXISTS calls_trigger_hit_ts  TIMESTAMPTZ,   -- first bar where high >= trigger
     ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- after trigger, first bar where high >= t1

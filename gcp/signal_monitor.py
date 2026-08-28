@@ -38,7 +38,8 @@ from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
-from lib.strat_levels import LegStateTracker, LevelMap, build_level_map
+from lib.strat_levels import (LegStateTracker, LevelMap, build_level_map,
+                             reanchor_triggers)
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
@@ -414,6 +415,111 @@ class SignalMonitor:
         ext['low'] = bar_low if ext['low'] is None else min(ext['low'], bar_low)
         self.session_extremes[ticker] = ext
 
+    def _reanchor_put_leg(self, ticker, times_et, new_data, rth) -> Optional[dict]:
+        """Recompute the put leg against today's OPEN (audit §15.5).
+
+        The brief anchors the playbook on the 8:31 price — yesterday's close —
+        so an overnight gap (mean |gap| 0.62% in the study window) can leave
+        the published put trigger far from where the session actually starts.
+        Re-anchoring the put leg on the open was the one variant with a
+        significant paired improvement (+0.126%/leg, t=+3.75).
+
+        Returns None when the re-anchor cannot be computed — mode off, no
+        cached level map, no opening bar, or no fresh structural level below
+        the open. None means "not computed" and persists as NULL; it is never
+        substituted with the published trigger, which would make the shadow
+        comparison compare a leg against itself (Rule 3.7).
+
+        One aggregate-free, in-memory computation per ticker per day: the
+        structural levels are already in the cached LevelMap and
+        `identify_triggers` is pure. The single DB write is the shadow persist.
+        """
+        if self.signal_cfg.put_reanchor_mode == 'off':
+            return None
+        level_map = self.level_maps.get(ticker)
+        if level_map is None:
+            logger.info("put_reanchor: %s skipped — no level map cached", ticker)
+            return None
+        try:
+            bars = new_data.loc[rth.values]
+            if bars.empty:
+                return None
+            order = times_et[rth].argsort()
+            first = bars.iloc[order.values[0]] if hasattr(order, 'values') else bars.iloc[0]
+            o_col = 'Open' if 'Open' in bars.columns else 'Close'
+            open_px = float(pd.to_numeric(first[o_col], errors='coerce'))
+            if not (open_px == open_px) or open_px <= 0:
+                logger.info("put_reanchor: %s skipped — no usable open", ticker)
+                return None
+
+            legs = reanchor_triggers(level_map, open_px)
+            put = legs.get('puts')
+            if not put or put.get('trigger_level') is None:
+                logger.info(
+                    "put_reanchor: %s skipped — no fresh structural level "
+                    "below open=%.4f", ticker, open_px)
+                return None
+            tgts = [t.get('price') for t in (put.get('targets') or [])]
+            out = {
+                'open': open_px,
+                'trigger': float(put['trigger_level']),
+                'trigger_name': put.get('trigger_name'),
+                'stop': put.get('stop'),
+                't1': tgts[0] if len(tgts) > 0 else None,
+                't2': tgts[1] if len(tgts) > 1 else None,
+                't3': tgts[2] if len(tgts) > 2 else None,
+            }
+            self._persist_put_reanchor(ticker, out)
+            return out
+        except Exception:
+            # INTERNAL (Rule 3.7): this is our own pure math over a cached
+            # level map. Log the traceback rather than swallowing it, and
+            # return None so the tracker keeps the published leg — a failed
+            # SHADOW measurement must never change what the monitor trades.
+            logger.exception("put_reanchor: %s failed", ticker)
+            return None
+
+    def _persist_put_reanchor(self, ticker: str, r: dict) -> None:
+        """Write the shadow re-anchor onto today's premarket_analysis row.
+
+        One UPDATE per ticker per day. Never INSERTs: if the brief did not
+        publish a row there is nothing to attach the counterfactual to, and
+        fabricating one would put a playbook row in the table that no brief
+        ever produced.
+        """
+        try:
+            from gcp.database import execute_sql
+            today = (pd.Timestamp(self.replay_clock_ts).date()
+                     if self.replay_clock_ts is not None
+                     else self._now(_ET).date())
+            rows = execute_sql(
+                "UPDATE premarket_analysis SET "
+                "  puts_reanchor_open = :o, puts_reanchor_trigger = :t, "
+                "  puts_reanchor_trigger_name = :tn, puts_reanchor_stop = :s, "
+                "  puts_reanchor_t1 = :t1, puts_reanchor_t2 = :t2, "
+                "  puts_reanchor_t3 = :t3, puts_reanchor_at = NOW() "
+                "WHERE analysis_date = :d AND ticker = :tk",
+                {'o': r['open'], 't': r['trigger'], 'tn': r.get('trigger_name'),
+                 's': r.get('stop'), 't1': r.get('t1'), 't2': r.get('t2'),
+                 't3': r.get('t3'), 'd': today, 'tk': ticker},
+            )
+            if rows == 0:
+                logger.warning(
+                    "put_reanchor: %s computed (open=%.4f trigger=%.4f) but no "
+                    "premarket_analysis row for %s to attach it to — the "
+                    "shadow measurement is lost for this ticker-day",
+                    ticker, r['open'], r['trigger'], today)
+                return
+            logger.info(
+                "put_reanchor: %s open=%.4f trigger=%.4f (%s) stop=%s persisted",
+                ticker, r['open'], r['trigger'], r.get('trigger_name'),
+                r.get('stop'))
+        except Exception:
+            # EXTERNAL: DB round-trip. The measurement is lost for this
+            # ticker-day and that is visible in the traceback + a NULL row;
+            # it must not take the monitor down mid-session.
+            logger.exception("put_reanchor: %s persist failed", ticker)
+
     def _update_leg_trackers(self, ticker: str, new_data: pd.DataFrame) -> None:
         """Advance the per-leg playbook state machines with today's RTH bars.
 
@@ -424,7 +530,11 @@ class SignalMonitor:
         chronologically. Called from update_window, the shared choke point
         with the replay harness (Rule 3.6 parity, same as the extremes).
 
-        Gate mode 'off' skips everything, including the lazy brief lookup.
+        Gate mode 'off' skips everything, including the lazy brief lookup —
+        and therefore also skips the put-side re-anchor, which rides on this
+        same once-per-day setup (it needs the day's leg trackers and the
+        published put leg to fall back to). `put_reanchor_mode` is only
+        consulted when `level_gate_mode` is not 'off'.
         """
         if self.signal_cfg.level_gate_mode == 'off':
             return
@@ -458,6 +568,25 @@ class SignalMonitor:
                     self.leg_trackers[ticker] = {'date': today,
                                                  'unavailable': True}
                     return
+                # Put-side 9:31 re-anchor (audit §15.5). Computed from the
+                # session's OPEN — the first RTH bar's open, which is exactly
+                # the anchor the counterfactual measured. In 'shadow' the
+                # published leg still drives the tracker; in 'enforce' the
+                # re-anchored trigger/stop replace it.
+                reanchor = self._reanchor_put_leg(ticker, times_et, new_data, rth)
+                put_trigger = brief.get('puts_trigger_price')
+                put_t1 = brief.get('puts_t1_price')
+                put_stop = brief.get('puts_stop_price')
+                if (self.signal_cfg.put_reanchor_mode == 'enforce'
+                        and reanchor and reanchor.get('trigger') is not None):
+                    put_trigger = reanchor['trigger']
+                    put_t1 = reanchor.get('t1')
+                    put_stop = reanchor.get('stop')
+                    logger.info(
+                        "put_reanchor: %s put leg re-anchored on open=%.4f "
+                        "trigger %.4f -> %.4f", ticker, reanchor['open'],
+                        brief.get('puts_trigger_price') or float('nan'),
+                        put_trigger)
                 trackers = {
                     'date': today,
                     'call': LegStateTracker(
@@ -467,9 +596,10 @@ class SignalMonitor:
                         stop=brief.get('calls_stop_price')),
                     'put': LegStateTracker(
                         direction='put',
-                        trigger=brief.get('puts_trigger_price'),
-                        t1=brief.get('puts_t1_price'),
-                        stop=brief.get('puts_stop_price')),
+                        trigger=put_trigger,
+                        t1=put_t1,
+                        stop=put_stop),
+                    'reanchor': reanchor,
                 }
                 self.leg_trackers[ticker] = trackers
             if trackers.get('unavailable'):
