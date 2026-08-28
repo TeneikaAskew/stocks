@@ -1214,6 +1214,24 @@ class SignalMonitor:
         # Corrected RVOL against a historical minute-of-day baseline
         # (audit §16). Shadow only — recorded, never gates.
         self._latest_rvol_mod = self._corrected_rvol(ticker)
+        # Declared-but-unenforced risk controls (codebase review T5).
+        # Shadow only — records what max_concurrent_positions and a
+        # mark-to-market daily_loss_limit WOULD have done at this fire.
+        # Never gates: the stop-loss counterfactual (−12.70pct over 736 real
+        # fires, every swept level worse than none) is why a control that
+        # looks prudent gets measured here before it is switched on.
+        _risk_shadow = self._risk_control_shadow(ticker, float(price or 0))
+        self._latest_risk_shadow = _risk_shadow
+        if _risk_shadow['would_block_concurrent'] or _risk_shadow['would_block_mtm_loss']:
+            logger.info(
+                "risk_shadow: %s %s WOULD be blocked — concurrent=%d/%d(%s) "
+                "mtm=%.4f vs limit=%.4f(%s) [not enforced]",
+                ticker, direction,
+                _risk_shadow['concurrent_positions'],
+                self.risk.max_concurrent_positions,
+                _risk_shadow['would_block_concurrent'],
+                _risk_shadow['total_mtm_pnl'], self.risk.daily_loss_limit,
+                _risk_shadow['would_block_mtm_loss'])
         # Both post_t1 routes stay suppressed under enforce. 2026-08-27 was
         # a live counterexample for the gap-through route (5 winners that
         # a carve-out would have kept, +1.32pct), but that is n=5 against
@@ -1465,6 +1483,16 @@ class SignalMonitor:
             # fabricated ratio. The legacy `rvol` column above stays as-is
             # so the two can be compared on identical fires.
             'rvol_mod':          getattr(self, '_latest_rvol_mod', None),
+            # Declared-but-unenforced risk controls at fire time (review T5).
+            # `concurrent_positions` is what max_concurrent_positions (=1)
+            # would have capped; `mtm_pnl` is realized + open mark-to-market,
+            # the number a daily_loss_limit would need to read to bind
+            # intraday (the live check reads realized only, which is still
+            # 0.0 for most fires). Recorded, never enforced.
+            'concurrent_positions': (getattr(self, '_latest_risk_shadow', None)
+                                     or {}).get('concurrent_positions'),
+            'mtm_pnl':           (getattr(self, '_latest_risk_shadow', None)
+                                  or {}).get('total_mtm_pnl'),
             # Position of this fire in the ticker's day (1-based) and
             # minutes since the previous fire for the same ticker (NULL on
             # the first). Audit §16.3: 91% of ticker-days burn the 5-fire
@@ -1816,6 +1844,62 @@ class SignalMonitor:
                     + (pct / 100.0) * size
                 )
                 positions.remove(pos)
+
+    def _risk_control_shadow(self, ticker: str, price: float) -> dict:
+        """What the DECLARED-but-unenforced risk controls would say right now.
+
+        Codebase review 2026-08-27 (T5) found three controls that are
+        configured, validated, and never consulted in the live monitor:
+
+        * ``risk.max_concurrent_positions`` (alert_config.json: 1) — nothing
+          reads it. ``active_positions`` is only appended to and walked for
+          exits, so the monitor can carry an unbounded number of simultaneous
+          positions per ticker, bounded only by ``max_daily_trades``.
+        * ``risk.daily_loss_limit`` — IS checked before a fire, but
+          ``daily_pnl`` is written only in the exit path. Since §16 measured
+          the daily cap being burned in a median 17 minutes, most of a day's
+          fires open before any position has exited, so the value read at the
+          cap check is still 0.0. It cannot bind intraday as written.
+        * ``risk.daily_profit_target`` — referenced only by lib/backtest.py.
+
+        This does NOT enforce any of them. The stop-loss counterfactual
+        (§17-era work: adding the backtest's stop cost −12.70pct over 736 real
+        fires, and every swept level was worse than none) is a standing warning
+        that a control which looks prudent can be expensive here. So measure
+        first: record what each control would have done, and decide from live
+        data whether any of them is worth switching on.
+
+        Returns realized + mark-to-market P&L so a loss limit that COULD bind
+        intraday is measurable, not just the realized one that cannot.
+        """
+        positions = self.active_positions.get(ticker) or []
+        realized = float(self.daily_pnl.get(ticker, 0.0))
+        open_mtm = 0.0
+        for pos in positions:
+            try:
+                entry = float(pos['entry_price'])
+                if entry <= 0 or price <= 0:
+                    # No usable mark. Rule 3.7: skip this leg and say so
+                    # rather than folding a fabricated 0% into the total.
+                    logger.warning(
+                        "risk_shadow: %s skipping position with entry=%s "
+                        "mark=%s", ticker, entry, price)
+                    continue
+                pct = self._exit_return_pct(pos['direction'], entry, price)
+                open_mtm += (pct / 100.0) * float(pos.get('size', 1.0))
+            except Exception:
+                # One malformed position must not cost the whole measurement.
+                logger.exception("risk_shadow: bad position for %s", ticker)
+        return {
+            'concurrent_positions': len(positions),
+            'realized_pnl': realized,
+            'open_mtm_pnl': open_mtm,
+            'total_mtm_pnl': realized + open_mtm,
+            'would_block_concurrent': bool(
+                len(positions) >= self.risk.max_concurrent_positions),
+            'would_block_mtm_loss': bool(
+                (realized + open_mtm) <= self.risk.daily_loss_limit),
+        }
 
     @staticmethod
     def _exit_return_pct(direction, entry_price, exit_price):

@@ -491,3 +491,76 @@ def test_reanchor_failure_does_not_change_what_the_monitor_tracks():
     assert monitor.leg_trackers['QQQ']['reanchor'] is None
     # Falls back to the published leg rather than dropping the put tracker.
     assert monitor.leg_trackers['QQQ']['put'].trigger == 98.5
+
+
+# ── Declared-but-unenforced risk controls (review T5) ──────────────
+
+
+def test_risk_shadow_counts_concurrent_positions_and_marks_open_pnl():
+    """max_concurrent_positions (=1) is never read by the live monitor. This
+    records what it WOULD have blocked, plus the mark-to-market P&L a
+    daily_loss_limit would need in order to bind intraday."""
+    monitor = _make_monitor()
+    monitor.risk.max_concurrent_positions = 1
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 0.10},
+        {'ticker': 'QQQ', 'direction': 'PUT', 'entry_price': 100.0, 'size': 0.10},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 99.0)
+    assert out['concurrent_positions'] == 2
+    assert out['would_block_concurrent'] is True
+    # CALL -1% and PUT +1%, both sized 0.10 → net 0.0 mark-to-market.
+    assert abs(out['open_mtm_pnl']) < 1e-9
+
+
+def test_risk_shadow_mtm_sees_a_drawdown_realized_pnl_cannot():
+    """The live daily_loss_limit check reads realized P&L only, which stays
+    0.0 until a position exits. The mark-to-market view is what would actually
+    bind — this pins that difference."""
+    monitor = _make_monitor()
+    monitor.risk.daily_loss_limit = -0.02
+    monitor.daily_pnl['QQQ'] = 0.0            # nothing has exited yet
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 1.0},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 97.0)   # -3% open
+    assert out['realized_pnl'] == 0.0
+    assert out['would_block_mtm_loss'] is True, \
+        "a -3% open drawdown must trip a -2% limit the realized check misses"
+    assert abs(out['total_mtm_pnl'] - (-0.03)) < 1e-9
+
+
+def test_risk_shadow_is_measurement_only():
+    """No control is enforced. A fire that both controls would block must
+    still be recorded as a fire."""
+    monitor = _make_monitor()
+    monitor.risk.max_concurrent_positions = 1
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 1.0},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 97.0)
+    assert out['would_block_concurrent'] and out['would_block_mtm_loss']
+    # The helper reports; it must not mutate any live state.
+    assert len(monitor.active_positions['QQQ']) == 1
+    assert monitor.daily_pnl.get('QQQ', 0.0) == 0.0
+
+
+def test_risk_shadow_skips_unusable_marks_instead_of_scoring_them_zero():
+    """Rule 3.7: a position with no usable entry/mark is skipped and logged,
+    never folded in as a fabricated 0% leg."""
+    monitor = _make_monitor()
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 0.0, 'size': 1.0},
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 1.0},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 102.0)
+    assert out['concurrent_positions'] == 2      # still counted for the cap
+    assert abs(out['open_mtm_pnl'] - 0.02) < 1e-9  # only the usable leg marked
+
+
+def test_risk_shadow_empty_book_is_zero_not_none():
+    monitor = _make_monitor()
+    out = monitor._risk_control_shadow('QQQ', 100.0)
+    assert out['concurrent_positions'] == 0
+    assert out['open_mtm_pnl'] == 0.0
+    assert out['would_block_mtm_loss'] is False

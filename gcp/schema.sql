@@ -2846,6 +2846,27 @@ ALTER TABLE signal_alerts
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS min_since_prev_fire DOUBLE PRECISION;
 
+-- Declared-but-unenforced risk controls at fire time (codebase review
+-- 2026-08-27, T5). Three controls are configured, validated and never
+-- consulted by the live monitor:
+--   * risk.max_concurrent_positions (alert_config.json = 1) — nothing reads
+--     it; active_positions is only appended to and walked for exits.
+--   * risk.daily_loss_limit — IS checked before a fire, but daily_pnl is
+--     written only in the exit path, and §16.3 measured the daily cap being
+--     burned in a median 17 minutes, so the value read at the check is still
+--     0.0 for most fires. It cannot bind intraday as written.
+--   * risk.daily_profit_target — referenced only by lib/backtest.py.
+-- `concurrent_positions` is what the first control would have capped;
+-- `mtm_pnl` is realized + open mark-to-market, the number the second would
+-- need to read to bind intraday. Recorded, never enforced: the stop-loss
+-- counterfactual (adding the backtest's stop cost −12.70pct over 736 real
+-- fires, every swept level worse than none) is why a prudent-looking control
+-- gets measured on live data before it is switched on.
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS concurrent_positions INTEGER;
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS mtm_pnl DOUBLE PRECISION;
+
 
 -- ─────────────────────────────────────────────────────────
 -- BACKTEST PIPELINE (Cloud Run job: backtest-pipeline)
