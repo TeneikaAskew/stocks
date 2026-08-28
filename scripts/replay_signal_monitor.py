@@ -39,6 +39,7 @@ import argparse
 import json
 import logging
 import sys
+import statistics
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, date, time, timedelta, timezone
@@ -267,14 +268,14 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
             base_score, total_score, strength_label,
             position_size, time_stop_minutes,
             conditions_met, brief_alignment, level_state, opp_level_state,
-            run_kind, replay_id,
+            rvol_mod, run_kind, replay_id,
             inserted_at
         ) VALUES (
             :ticker, :alert_ts, :alert_date, :direction,
             :base_score, :total_score, :strength,
             :size, :time_stop,
             :conditions, :brief_alignment, :level_state, :opp_level_state,
-            'replay', :replay_id,
+            :rvol_mod, 'replay', :replay_id,
             NOW()
         )
         ON CONFLICT DO NOTHING
@@ -295,6 +296,7 @@ def persist_fire_to_signal_alerts(fire: 'FireRecord', monitor, engine, replay_id
                 'brief_alignment': fire.brief_alignment,
                 'level_state': fire.level_state,
                 'opp_level_state': fire.opp_level_state,
+                'rvol_mod': fire.rvol_mod,
                 'replay_id': replay_id,
             })
     except Exception as e:
@@ -504,8 +506,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     vals = [f.rvol_mod for f in captured_fires if f.rvol_mod is not None]
     if vals:
-        vals_sorted = sorted(vals)
-        med = vals_sorted[len(vals_sorted) // 2]
+        # statistics.median averages the two middle values on an even
+        # sample; vals_sorted[n // 2] would report the upper middle and
+        # skew this headline regression number (Codex review, PR #806).
+        med = statistics.median(vals)
         below = sum(1 for v in vals if v < 1.0) / len(vals)
         print(f"Corrected RVOL:  n={len(vals)}/{len(captured_fires)} median "
               f"{med:.2f}  below 1.0 {below:.0%}")
