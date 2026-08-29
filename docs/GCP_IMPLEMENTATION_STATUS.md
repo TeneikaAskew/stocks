@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-08-27 (PR #799 deployed: playbook level-state shadow gate — LegStateTracker resolver-parity leg states, signal_alerts.level_state/opp_level_state columns live, signal.level_gate_mode default shadow; audit doc section 15 level study; full suite 4,004 passed / 0 failed)
+**Last Updated**: 2026-08-29 (PR #810 deployed: magnitude promotion gate blocks argmax-collapsed models from becoming LATEST — magnitude-engine-c49qf had served TIGHT on 588/588 live bars since 08-26; MOVEMENT_STATEMENT_ENABLED=false live on trading-platform rev 00121-rkl; put-side 9:31 re-anchor and risk-control observability shipped shadow-only; 10 new columns applied via apply-schema-migrations (premarket_analysis.puts_reanchor_*, signal_alerts.concurrent_positions/mtm_pnl); images trading-system@a3adeff7 + :research@aa651cf0; full suite 4,076 passed / 0 failed)
 
 ---
 
