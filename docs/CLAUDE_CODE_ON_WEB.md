@@ -63,6 +63,14 @@ The harness runs a SessionStart hook each time a new web session begins. The scr
 #!/bin/bash
 set -euo pipefail
 
+# Anchor on the repo root before anything else. Steps 4 and 5 are guarded
+# by `[ -f requirements.txt ]` and `[ -f platform/package.json ]`, which
+# are relative tests: if the hook starts anywhere other than the repo
+# root, both guards are false and the dependency installs are SKIPPED
+# SILENTLY — no error, no output, just a session with no deps. Keep this
+# line first.
+cd "${CLAUDE_PROJECT_DIR:-/home/user/stocks}" 2>/dev/null || cd /home/user/stocks
+
 # ---------------------------------------------------------------------
 # 0. Install gcloud SDK and GitHub CLI IF the base image lacks them.
 #
@@ -191,6 +199,12 @@ echo "==================================="
 - **Smoke test after every section.** Step 0 and step 3 caught real failures during development (missing apt key, expired PAT). The cost of the test is milliseconds; the cost of debugging a half-set-up session is much higher.
 - **`apt-get update -qq || true`** — apt updates can fail transiently in the sandbox image; we tolerate the failure but require the install step to succeed.
 - **`chmod 600 "$KEY_PATH"`** — the key is sensitive; restrict perms even though only one user runs in the sandbox.
+- **`cd` to the repo root before any relative path test.** Steps 4 and 5
+  gate on `[ -f requirements.txt ]` / `[ -f platform/package.json ]`. A
+  false guard is indistinguishable from "nothing to install" — the script
+  exits 0 having installed no dependencies. This is a silent fallback in
+  the sense of CLAUDE.md Rule 3.7, in the bootstrap layer: the failure
+  mode is a session that looks healthy and fails on the first `pytest`.
 
 ### Incident: 2026-08-27 — the setup script took down every new session
 
