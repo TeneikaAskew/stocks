@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-08-29 (PR #810 deployed: magnitude promotion gate blocks argmax-collapsed models from becoming LATEST — magnitude-engine-c49qf had served TIGHT on 588/588 live bars since 08-26; MOVEMENT_STATEMENT_ENABLED=false live on trading-platform rev 00121-rkl; put-side 9:31 re-anchor and risk-control observability shipped shadow-only; 10 new columns applied via apply-schema-migrations (premarket_analysis.puts_reanchor_*, signal_alerts.concurrent_positions/mtm_pnl); images trading-system@a3adeff7 + :research@aa651cf0; full suite 4,076 passed / 0 failed)
+**Last Updated**: 2026-08-29 (PR #811 deployed: fixes four Codex findings on #810 — the put-side 9:31 re-anchor was a live no-op because run_loop calls update_window before evaluate_ticker's lazy refresh_level_map, so the level map was always None on the first RTH poll while the tracker was still stamped for the day; re-anchor now refreshes on demand and applies the brief's 3xATR staleness filter read from the LATEST daily row only; degeneracy backstop scoped to source='inference' so walk-forward fold rows sharing a run_id cannot contaminate it. Verified by replaying 2026-08-28 through the production signal-monitor path: all three tickers emitted a re-anchored put leg (SPY 768.84->767.16 PDL, QQQ 715.84->714.53 PDL, IWM 296.20->292.90 CMO). trading-platform rev 00123-kl4, MOVEMENT_STATEMENT_ENABLED=false; full suite 4,083 passed / 0 failed)
 
 ---
 
