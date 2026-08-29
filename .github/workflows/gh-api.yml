@@ -191,9 +191,14 @@ jobs:
           echo
           echo "----- END RESPONSE BODY -----"
 
+      # v4 targets Node 20, which the runner now force-migrates to Node 24 with
+      # a deprecation warning on every run. v5 still defaults to Node 20; v6 is
+      # the first release that actually switches (runs.using: node24). Pinned to
+      # v7 (current) — name/path/if-no-files-found/retention-days are unchanged
+      # from v4, and this is the repo's only use of the action.
       - name: Upload response
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gh-api-response
           path: response.json
