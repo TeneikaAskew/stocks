@@ -105,7 +105,7 @@ jobs:
           # Tokens go in a curl config file, never in argv — argv is readable
           # from /proc/<pid>/cmdline by any other process on the runner.
           attempt() {
-            local label="$1" tok="$2" cfg code
+            local label="$1" tok="$2" cfg code rc
             if [ -z "$tok" ]; then
               printf '  %-18s SKIP (secret not configured)\n' "$label"
               return 2
@@ -118,13 +118,26 @@ jobs:
             } > "$cfg"
             if [ "$METHOD" = "GET" ]; then
               code=$(curl -sS -K "$cfg" -X GET \
-                       -o response.json -w '%{http_code}' "$URL")
+                       -o response.json -w '%{http_code}' "$URL"); rc=$?
             else
               printf '%s' "$BODY" > body.json
               code=$(curl -sS -K "$cfg" -X "$METHOD" --data-binary @body.json \
-                       -o response.json -w '%{http_code}' "$URL")
+                       -o response.json -w '%{http_code}' "$URL"); rc=$?
             fi
             rm -f "$cfg"
+            code="${code:-000}"
+            # A transfer that never completed (DNS, TLS, connection refused)
+            # exits nonzero and reports http_code 000 — and `[ 000 -lt 400 ]`
+            # is TRUE, so without this the attempt scores as a SUCCESS: the
+            # PAT fallback is skipped and an empty body is published as if it
+            # were the answer. Reproduced against a refused port: curl exit 7,
+            # http_code 000, response.json never created. Check rc FIRST.
+            if [ "$rc" -ne 0 ]; then
+              printf '  %-18s TRANSFER FAILED (curl exit %s, http_code %s)\n' \
+                "$label" "$rc" "$code"
+              STATUS="000"
+              return 1
+            fi
             printf '  %-18s HTTP %s\n' "$label" "$code"
             STATUS="$code"
             [ "$code" -lt 400 ]
@@ -160,10 +173,23 @@ jobs:
 
           # A 4xx from GitHub is a RESULT, not a workflow failure — a 404 on a
           # lookup is a legitimate answer. Failing here would fire
-          # handle-failure and open a junk issue for every miss. Infrastructure
-          # errors (curl itself failing) still fail the step via set -o pipefail.
+          # handle-failure and open a junk issue for every miss.
           echo
           echo "Result: HTTP ${STATUS} via ${AUTH}"
+
+          # The body MUST go to stdout, and it is printed LAST so a tailed log
+          # still contains it. $GITHUB_STEP_SUMMARY and the artifact are both
+          # unreachable from the sessions this bridge serves: get_job_logs
+          # returns the runner's stdout/stderr and carries neither, while
+          # downloading an artifact needs /repos/*/actions/artifacts/*, which
+          # is precisely the REST path being worked around. Printing here is
+          # what makes the response readable at all; the summary and artifact
+          # are secondary copies for a human on the run page.
+          echo
+          echo "----- BEGIN RESPONSE BODY (first 30000 bytes) -----"
+          head -c 30000 response.json 2>/dev/null || echo '(no response body)'
+          echo
+          echo "----- END RESPONSE BODY -----"
 
       - name: Upload response
         if: always()

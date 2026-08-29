@@ -998,16 +998,27 @@ owner through creating.
 
 `.github/workflows/gh-api.yml` closes it. A GitHub Actions runner has
 unrestricted egress and a real token, so the call executes there and the
-response comes back via the job summary and a `gh-api-response` artifact.
-Same shape as `scripts/db_query_cr.sh`: dispatch over 443, privileged work
-happens elsewhere, results read back.
+response body is printed to **stdout**, between `----- BEGIN RESPONSE BODY`
+and `----- END RESPONSE BODY` markers, capped at 30000 bytes. Same shape as
+`scripts/db_query_cr.sh`: dispatch over 443, privileged work happens
+elsewhere, results read back.
+
+**Read it back with `get_job_logs`, not the artifact.** `get_job_logs`
+returns the runner's stdout/stderr only — it carries neither
+`$GITHUB_STEP_SUMMARY` nor artifact contents, and downloading an artifact
+needs `/repos/*/actions/artifacts/*`, which is exactly the blocked REST path
+this bridge works around. The step summary and the `gh-api-response`
+artifact are secondary copies for a human reading the run page; stdout is
+the machine-readable channel. The body is printed last so a tailed log still
+contains it — raise `tail_lines` for a large response.
 
 ```
 # from a Claude session
-mcp__github__actions_run_trigger(workflow_id="gh-api.yml", ref="main",
+mcp__github__actions_run_trigger(method="run_workflow",
+  workflow_id="gh-api.yml", ref="main",
   inputs={"endpoint": "repos/{owner}/{repo}/branches/main/protection"})
-# then read it back
-mcp__github__get_job_logs(run_id=<id>, ...)
+# then read it back — return_content is required, the default returns URLs
+mcp__github__get_job_logs(run_id=<id>, return_content=true, tail_lines=200)
 
 # from a desktop
 gh workflow run gh-api.yml \
