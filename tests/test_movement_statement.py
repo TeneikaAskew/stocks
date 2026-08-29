@@ -730,3 +730,29 @@ def test_render_guard_threshold_matches_promotion_gate():
     — this test is what stops the two copies from drifting apart."""
     from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_SHARE
     assert ms._MAG_DEGENERATE_MODAL_SHARE == PROMOTION_MAX_MODAL_SHARE
+
+
+def test_degeneracy_check_counts_only_inference_rows():
+    """Codex P2 on PR #810: a run that persists a production model writes its
+    walk-forward rows (source='walk_forward', one set per fold) under the SAME
+    model_version as the live inference rows scored by the promoted artifact.
+    Those fold rows come from different models than the one being served, so
+    counting them can mask a model that collapsed only on live inputs — or
+    withhold a healthy one. gcp/audit_magnitude_drift.py filters the same way.
+    """
+    seen = {}
+
+    def _q(sql, params=None):
+        if "magnitude_per_bar_predictions" in sql and "GROUP BY pred_bucket" in sql:
+            seen["sql"] = sql
+            return pd.DataFrame([{"pred_bucket": 0, "n": 5},
+                                 {"pred_bucket": 1, "n": 5}])
+        if "magnitude_per_bar_predictions" in sql:
+            return _mag_df()
+        return None
+
+    em = ms._build_expected_move("SPY", "15m", _q, as_of=None)
+    assert em["status"] == "OK"
+    assert "source = 'inference'" in seen["sql"], (
+        "walk-forward fold rows share the promoted run_id and would "
+        "contaminate the degeneracy sample")

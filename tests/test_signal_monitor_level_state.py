@@ -10,7 +10,7 @@ path).
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -564,3 +564,125 @@ def test_risk_shadow_empty_book_is_zero_not_none():
     assert out['concurrent_positions'] == 0
     assert out['open_mtm_pnl'] == 0.0
     assert out['would_block_mtm_loss'] is False
+
+
+# ── Codex review fixes on PR #810 ──────────────────────────────────
+
+
+def test_reanchor_refreshes_level_map_on_first_poll():
+    """Codex P1: run_loop calls update_window BEFORE evaluate_ticker, and
+    evaluate_ticker holds the only lazy refresh_level_map call. So on the first
+    RTH poll the map is None — and since the tracker is stamped with today's
+    date regardless, the init block never runs again. That made the re-anchor a
+    permanent no-op in live sessions.
+
+    The map must now be refreshed on demand so the FIRST poll produces a
+    re-anchor, using that poll's opening bar.
+    """
+    monitor = _make_monitor()
+    monitor.signal_cfg.put_reanchor_mode = 'shadow'
+    monitor.level_maps['QQQ'] = None          # the real first-poll state
+    lm = _level_map({'PDL': 99.6, 'PWL': 98.5, 'PDH': 101.0})
+
+    def _fake_refresh(ticker):
+        monitor.level_maps[ticker] = lm
+
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch.object(monitor, 'refresh_level_map', side_effect=_fake_refresh) as refresh, \
+         patch.object(monitor, '_persist_put_reanchor'):
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
+
+    assert refresh.called, "must refresh the map rather than give up on poll 1"
+    r = monitor.leg_trackers['QQQ']['reanchor']
+    assert r is not None, "the re-anchor must not be a permanent no-op"
+    assert r['trigger'] == 99.6
+
+
+def test_reanchor_gives_up_when_refresh_cannot_produce_a_map():
+    """A refresh that leaves the map None (empty daily df) still yields NULL —
+    it must not loop or fabricate."""
+    monitor = _make_monitor()
+    monitor.signal_cfg.put_reanchor_mode = 'shadow'
+    monitor.level_maps['QQQ'] = None
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch.object(monitor, 'refresh_level_map') as refresh, \
+         patch.object(monitor, '_persist_put_reanchor') as persist:
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
+    assert refresh.call_count == 1, "one attempt, not a retry loop"
+    assert monitor.leg_trackers['QQQ']['reanchor'] is None
+    assert not persist.called
+
+
+def test_reanchor_applies_the_briefs_atr_staleness_filter():
+    """Codex P2: the brief builds its playbook with build_level_map(atr=...),
+    which drops levels beyond 3xATR. Re-anchoring without that filter lets the
+    shadow leg select a stale trigger the brief deliberately excluded.
+
+    PDL sits 0.4 below the 100.0 open; with ATR=0.05 the 3xATR window is 0.15,
+    so PDL is stale and must NOT become the re-anchored trigger.
+    """
+    monitor = _make_monitor()
+    monitor.signal_cfg.put_reanchor_mode = 'shadow'
+    monitor.level_maps['QQQ'] = _level_map({'PDL': 99.6, 'PDH': 101.0})
+    monitor.level_map_atr['QQQ'] = 0.05
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch.object(monitor, '_persist_put_reanchor'):
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
+    assert monitor.leg_trackers['QQQ']['reanchor'] is None, \
+        "a level beyond 3xATR must not be re-anchored onto"
+
+
+def test_reanchor_keeps_a_level_inside_the_atr_window():
+    """Same geometry, a realistic ATR — the level is fresh and is selected.
+    Pins that the filter is applied, not that it rejects everything."""
+    monitor = _make_monitor()
+    monitor.signal_cfg.put_reanchor_mode = 'shadow'
+    monitor.level_maps['QQQ'] = _level_map({'PDL': 99.6, 'PDH': 101.0})
+    monitor.level_map_atr['QQQ'] = 2.0        # 3xATR = 6.0, PDL is 0.4 away
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch.object(monitor, '_persist_put_reanchor'):
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
+    r = monitor.leg_trackers['QQQ']['reanchor']
+    assert r is not None and r['trigger'] == 99.6
+
+
+def _daily_df(atr_values):
+    """Minimal daily frame shaped like DataLoader.load_daily output."""
+    n = len(atr_values)
+    base = datetime(2026, 8, 20)
+    return pd.DataFrame({
+        'Time': [base + timedelta(days=i) for i in range(n)],
+        'Open': [100.0] * n, 'High': [101.0] * n,
+        'Low': [99.0] * n, 'Close': [100.0] * n,
+        'ATR14': atr_values,
+    })
+
+
+def _capture_atr(monitor, ticker, daily):
+    """Run refresh_level_map against a stubbed loader and return the ATR it kept."""
+    loader = MagicMock()
+    loader.load_daily.return_value = daily
+    with patch('lib.data_loader.DataLoader', return_value=loader), \
+         patch('lib.strat_levels.build_level_map', return_value=_level_map({'PDL': 99.6})):
+        monitor.refresh_level_map(ticker)
+    return monitor.level_map_atr.get(ticker)
+
+
+def test_atr_comes_from_the_latest_daily_row_only():
+    """Codex P2 on #811: the brief takes atr14 from the LATEST row
+    (`_safe_float(latest.get('ATR14'))`) and disables the ATR axis when it is
+    missing. Falling back to an older row via dropna().iloc[-1] would apply a
+    staleness filter the published playbook did not, so the re-anchor could
+    reject levels the brief accepted — the same non-equivalence inverted.
+    """
+    monitor = _make_monitor()
+    # Latest row's ATR is missing; an older row has one. Must yield None.
+    assert _capture_atr(monitor, 'QQQ', _daily_df([2.0, 2.1, float('nan')])) is None
+    # Latest row usable -> that value, not an earlier one.
+    monitor2 = _make_monitor()
+    assert _capture_atr(monitor2, 'QQQ', _daily_df([2.0, 2.1, 3.5])) == 3.5
+
+
+def test_non_positive_latest_atr_is_treated_as_unavailable():
+    monitor = _make_monitor()
+    assert _capture_atr(monitor, 'QQQ', _daily_df([2.0, 0.0])) is None
