@@ -1,7 +1,7 @@
 # Full Codebase Review — Stocks / Market Intelligence System
 
-**Audit date:** 2026-08-27  
-**Scope:** all 1,436 tracked files, including production Python/GCP jobs, shared libraries, SQL schema, React/FastAPI platform, research engines, scripts, tests, notebooks, archives, CI/deployment, and historical audit/design documents. Generated/vendor files under `platform/node_modules` were inventoried but not treated as application source.  
+**Audit date:** 2026-08-27
+**Scope:** all 1,436 tracked files, including production Python/GCP jobs, shared libraries, SQL schema, React/FastAPI platform, research engines, scripts, tests, notebooks, archives, CI/deployment, and historical audit/design documents. Generated/vendor files under `platform/node_modules` were inventoried but not treated as application source.
 **Method:** repository-wide static tracing; targeted history review; reconciliation against the experiment registry and the 2026-08-25 profitability audit; full Python test suite; frontend unit/build/lint checks; no production writes, alerts, trades, or deployments. Production-result numbers below are evidence reported by the repository's production-query audits, not independently re-queried during this local review.
 
 > **Companion document.** A second, independent whole-codebase review ran
@@ -27,11 +27,11 @@
 6. **The live signal engine is late relative to the useful level event.** Fires after T1 or after invalidation have negative forward returns; suppressing them was positive in a train/holdout split. The new level-state gate is correctly shadow-only pending live prospective confirmation.
 7. **Most ML direction research is a well-documented negative result.** Direction classifiers failed exhaustive feature/target sweeps. The repository should retain these nulls and stop adding ordinary OHLCV/indicator features in the hope that an LLM or larger model will manufacture direction.
 8. **The one claimed structural ML edge is not yet production-grade.** Breakout meta-labeling is net-positive robustly only for IWM 5-minute data, lacks a formal purge/embargo and latency/tick execution model, and is explicitly not shippable across tickers.
-9. **The 11-node LLM pipeline is an expensive narrative layer, not a validated alpha engine.** July/August day-direction accuracy was approximately coin-flip; 89% of reports had low conviction. It receives structured deterministic inputs but can turn weak/conflicting evidence into polished trade plans. Its outputs are versioned by model route, but prompt/code/data versions are insufficient for exact reconstruction.
+9. **The 14-call LLM pipeline is an expensive narrative layer, not a validated alpha engine.** July/August day-direction accuracy was approximately coin-flip; 89% of reports had low conviction. It receives structured deterministic inputs but can turn weak/conflicting evidence into polished trade plans. Its outputs are versioned by model route, but prompt/code/data versions are insufficient for exact reconstruction.
 10. **Engineering quality is mixed: strong regression testing and substantial provenance improvements coexist with oversized modules, duplicated math, open-by-default API auth, schema-as-migration sprawl, and a deployment script that is itself an operational control plane.** These increase the chance that a correct research result and production behavior diverge.
 
-**Overall system health:** **High Risk**  
-**Analytical trustworthiness:** **Low** overall; **Moderate** for deterministic prior-period levels and Strat candle classification; **Unknown-to-low** for trade profitability.  
+**Overall system health:** **High Risk**
+**Analytical trustworthiness:** **Low** overall; **Moderate** for deterministic prior-period levels and Strat candle classification; **Unknown-to-low** for trade profitability.
 **Production readiness:** **Not ready** for automated recommendations or execution. It is usable as a research/decision-support platform with explicit caveats and alert gates kept in shadow mode.
 
 ## 2. Recommended Strategic Decision
@@ -75,7 +75,7 @@ flowchart LR
   end
   subgraph Reasoning[Probabilistic/narrative]
     Models[Strat/magnitude/meta research models]
-    Agents[11-node LLM insight graph]
+    Agents[14-call LLM insight graph]
   end
   subgraph Delivery
     Brief[Premarket brief/playbook]
@@ -446,7 +446,7 @@ No presently active defect was proven to be **Critical** (immediate uncontrolled
 | Mean reversion heuristic | Oversold/overbought reversals | Deterministic and interpretable | Overlaps momentum inputs; incremental lift unclear | **RETEST/MERGE** |
 | Agreement engine | Boost coincident strategies | Very rare tagged cohort | “Agreement” may duplicate correlated indicator evidence | **RETEST** |
 | Brief-bias scorer | Convert playbook/earnings signals to bias | Alignment predictive in a limited post-June cohort | Anti-predictive in May; sparse tags; nonstationary | **RETEST** |
-| Market/Strat/options/catalyst analysts | Summarize four context domains | Structured outputs and failure isolation | No incremental-value ablation | **MERGE** to deterministic summary + optional one model |
+| Market/Strat/options/gamma/catalyst/sentiment analysts | Summarize six context domains | Structured outputs and failure isolation | No incremental-value ablation | **MERGE** to deterministic summary + optional one model |
 | Bull/bear researchers + judge | Debate competing cases | May reduce one-sided prose | Three calls on same evidence; no measured lift | **RETEST**, likely **REMOVE/MERGE** |
 | Trader | Produce entry/exit plan | Useful UI format | Can confer certainty on weak upstream evidence | **REDESIGN** to template supplied deterministic levels |
 | Three risk personas + portfolio manager | Risk framing/final recommendation | Risk flags are potentially useful | Four more calls, no value evidence, confidence manufacture risk | **MERGE** into deterministic risk checks |
@@ -565,7 +565,7 @@ No presently active defect was proven to be **Critical** (immediate uncontrolled
 | `npm test -- --run` | **27 files / 253 tests passed.** |
 | `npm run build` | **Passed**; Vite warned that at least one output chunk exceeds 500 kB. |
 | `npm run lint` | **Failed: 31 errors, 11 warnings.** Dominant errors are `react-refresh/only-export-components` and synchronous state updates in effects; warnings include hook dependencies and TanStack Table compiler incompatibility. |
-| `git diff --check` | **Passed.** |
+| `git diff --check` | **Failed** (exit 2): trailing whitespace on the header lines. Corrected 2026-08-29; the Markdown two-space line breaks were replaced with explicit breaks. |
 
 ## 14. Documentation Drift
 
@@ -710,7 +710,7 @@ Only after P0/P1:
 
 - **Hypothesis:** Full debate improves calibrated no-trade/direction decisions over deterministic and single-model summaries.
 - **Data:** Frozen context bundles and later outcomes; blinded human ratings.
-- **Control:** Deterministic template; single LLM; four-analyst summary without debate/personas.
+- **Control:** Deterministic template; single LLM; six-analyst summary without debate/personas.
 - **Method:** Randomized blinded evaluation on identical bundles, fixed prompts/models, prospective holdout.
 - **Success:** Statistically meaningful lift in calibration/actionability large enough to justify cost/latency; no hallucinated levels.
 - **Failure:** Equivalent/worse performance or only stylistic preference.
