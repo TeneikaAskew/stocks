@@ -753,11 +753,19 @@ class SignalMonitor:
             # map so the put re-anchor can apply the SAME filter the premarket
             # brief applied when it published the playbook. None when the
             # column is absent or non-finite — never a fabricated ATR (§3.7).
+            # Codex P2 on PR #811: read the LATEST row's scalar, never
+            # dropna().iloc[-1]. The brief takes atr14 from that one row
+            # (`_safe_float(latest.get('ATR14'))`) and disables the ATR axis
+            # entirely when it is missing. Falling back to an older row's ATR
+            # would apply a staleness filter the published playbook did not,
+            # so the re-anchor could REJECT levels the brief accepted — the
+            # same non-equivalence this filter exists to prevent, just
+            # inverted. Unusable latest ATR -> None, matching the brief.
             _atr = None
             if 'ATR14' in df.columns:
-                _a = pd.to_numeric(df['ATR14'], errors='coerce').dropna()
-                if not _a.empty and float(_a.iloc[-1]) > 0:
-                    _atr = float(_a.iloc[-1])
+                _a = pd.to_numeric(df['ATR14'].iloc[-1], errors='coerce')
+                if _a is not None and _a == _a and float(_a) > 0:
+                    _atr = float(_a)
             self.level_map_atr[ticker] = _atr
             # PR #400 fix applied to this code path: pass analysis_date
             # so build_level_map → compute_previous_levels uses period-
