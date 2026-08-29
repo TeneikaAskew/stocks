@@ -67,9 +67,21 @@ set -euo pipefail
 # by `[ -f requirements.txt ]` and `[ -f platform/package.json ]`, which
 # are relative tests: if the hook starts anywhere other than the repo
 # root, both guards are false and the dependency installs are SKIPPED
-# SILENTLY — no error, no output, just a session with no deps. Keep this
-# line first.
-cd "${CLAUDE_PROJECT_DIR:-/home/user/stocks}" 2>/dev/null || cd /home/user/stocks
+# SILENTLY — no error, no output, just a session with no deps.
+#
+# Test the directory rather than cd-ing and hoping. `cd X || cd X` is fatal
+# under `set -e` when X does not exist (measured: exit 1, script dead), and
+# the repo dir may legitimately not be there yet at init time. Warn loudly
+# and continue instead — a missing anchor should degrade steps 4 and 5, not
+# kill the whole session. The echo makes a successful anchor visible in the
+# startup output so the next failure is diagnosable from the log alone.
+REPO="${CLAUDE_PROJECT_DIR:-/home/user/stocks}"
+if [ -d "$REPO" ]; then
+  cd "$REPO"
+  echo "Anchored at $REPO"
+else
+  echo "WARN: repo dir $REPO not present at init time — steps 4 & 5 may skip"
+fi
 
 # ---------------------------------------------------------------------
 # 0. Install gcloud SDK and GitHub CLI IF the base image lacks them.
