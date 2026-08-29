@@ -139,6 +139,65 @@ gh pr create --base main --head feature/short-description ...
 Never `git push origin main` to "just publish what I already did" — that
 defeats the entire purpose of the branch protection.
 
+### 2.5. Review Feedback — read it BEFORE merging, resolve it AFTER fixing
+
+**Added 2026-08-29 after merging two PRs past unresolved P1 findings.**
+On 2026-08-29 I merged #810 at 02:24:12 when Codex had posted three review
+comments at 02:22:15 — two minutes earlier, unread. All three were real. One
+(the put-side re-anchor never running, because `run_loop` calls
+`update_window` before `evaluate_ticker`'s lazy `refresh_level_map`) meant the
+feature shipped as a permanent no-op. I merged #804 the same way, past two
+factual errors in the audit document it added. Both needed follow-up PRs that
+should have been one PR.
+
+#### The gate
+
+**Codex posts its review roughly 3 minutes after a PR opens.** Never merge
+inside that window. Concretely, before any merge:
+
+1. `pull_request_read` with `method: "get_review_comments"` — **before**
+   checking CI, not after. An empty result 60 seconds after opening the PR
+   means nothing; wait and re-check.
+2. Every thread either resolved, or replied to with why it is not being
+   actioned. Zero unresolved threads is the bar.
+3. Only then CI, then merge.
+
+A PR is done when: CI green **and** no unresolved review threads **and** no
+merge conflict. Green CI alone is not done.
+
+#### Resolving is part of the fix
+
+A finding fixed in a later PR with the original thread left open still reads
+as unaddressed to everyone but you. When you fix a finding:
+
+- Reply on the thread with what you verified, what changed, and the test that
+  covers it — naming the commit.
+- Then resolve it.
+- If the fix landed in a different PR, say which one.
+
+#### Verify the claim before fixing it, and reproduce before you fix
+
+Reviewers are usually right here — Codex has been right on every finding it
+filed on this repo — but "usually" is not "always", and a fix built on a
+misread finding is worse than no fix. For each finding: confirm it against
+the code, write the failing test first, then fix, then show the same test
+passing. Every fix in #811 was reproduced against pre-fix code before it was
+written.
+
+#### Verify the behaviour, not a neighbour
+
+After deploying a fix, check the thing that was broken. On 2026-08-29 I
+"verified" a deploy by running `audit-magnitude-drift` — which passed while
+the re-anchor it shipped alongside recorded nothing at all. The real check
+was replaying a session and looking for the re-anchor's own output.
+
+#### Repo setting that enforces this
+
+**"Require conversation resolution before merging"** on `main`
+(Settings → Branches). This mechanically blocks the failure above. It cannot
+be set from a Claude Code session — the GitHub settings API returns 403 for
+both `gh api` and a PAT — so it is a manual one-time change.
+
 ### 3. Planning & Approval Process
 For major changes:
 1. **PLAN FIRST**: Create a detailed plan using the TodoWrite tool
