@@ -441,13 +441,16 @@ def test_expected_move_applies_as_of_cutoff():
     captured = {}
 
     def _recording_qf(sql, params=None):
-        # Capture ONLY the magnitude query (the ATR/price lookup is a second,
-        # separate query on strat_features and must not overwrite the capture).
-        if "magnitude_per_bar_predictions" in sql:
+        # Capture ONLY the FIRST magnitude query — the prediction read. Two
+        # other queries follow it: the ATR/price lookup on strat_features, and
+        # the model-degeneracy aggregate, which also hits
+        # magnitude_per_bar_predictions and would otherwise overwrite the
+        # capture.
+        if "magnitude_per_bar_predictions" in sql and "sql" not in captured:
             captured["sql"] = sql
             captured["params"] = params
             return _mag_df()
-        return None  # ATR/price lookup — not under test here
+        return None  # ATR/price + degeneracy lookups — not under test here
 
     cutoff = "2026-06-20T15:45:00+00:00"
     em = ms._build_expected_move("SPY", "15m", _recording_qf, as_of=cutoff)
@@ -463,13 +466,16 @@ def test_expected_move_no_as_of_is_latest_row():
     captured = {}
 
     def _recording_qf(sql, params=None):
-        # Capture ONLY the magnitude query (the ATR/price lookup is a second,
-        # separate query on strat_features and must not overwrite the capture).
-        if "magnitude_per_bar_predictions" in sql:
+        # Capture ONLY the FIRST magnitude query — the prediction read. Two
+        # other queries follow it: the ATR/price lookup on strat_features, and
+        # the model-degeneracy aggregate, which also hits
+        # magnitude_per_bar_predictions and would otherwise overwrite the
+        # capture.
+        if "magnitude_per_bar_predictions" in sql and "sql" not in captured:
             captured["sql"] = sql
             captured["params"] = params
             return _mag_df()
-        return None  # ATR/price lookup — not under test here
+        return None  # ATR/price + degeneracy lookups — not under test here
 
     em = ms._build_expected_move("SPY", "15m", _recording_qf, as_of=None)
     assert em["status"] == "OK"
@@ -611,3 +617,116 @@ def test_expected_move_atr_none_when_features_missing():
     assert em["status"] == "OK"
     assert em["atr_20"] is None
     assert em["current_price"] is None
+
+
+# ── Argmax-collapsed model backstop (c49qf incident, 2026-08-26) ───────────
+
+
+def _degeneracy_qf(bucket_counts, mag_df=None):
+    """query_fn that answers the prediction read, the ATR lookup, and the
+    degeneracy aggregate — the three queries _build_expected_move now makes.
+
+    `bucket_counts` is {pred_bucket: n} as the GROUP BY would return it.
+    """
+    state = {"pred_served": False}
+
+    def _q(sql, params=None):
+        if "magnitude_per_bar_predictions" in sql:
+            if "GROUP BY pred_bucket" in sql:
+                return pd.DataFrame(
+                    [{"pred_bucket": b, "n": n}
+                     for b, n in bucket_counts.items()])
+            if not state["pred_served"]:
+                state["pred_served"] = True
+                return _mag_df() if mag_df is None else mag_df
+        return None
+
+    return _q
+
+
+def test_collapsed_model_bucket_is_withheld():
+    """A model whose argmax is one bucket on >=70% of recent bars carries no
+    information; the card must return UNAVAILABLE rather than render it.
+
+    Reproduces magnitude-engine-c49qf: TIGHT on 100% of bars.
+    """
+    em = ms._build_expected_move(
+        "SPY", "15m", _degeneracy_qf({0: 588}), as_of=None)
+    assert em["status"] == "UNAVAILABLE"
+    assert "argmax-collapsed" in em["reason"]
+    assert "TIGHT" in em["reason"]
+    # The numbers behind the decision travel with the envelope.
+    assert em["degeneracy"]["modal_share"] == 1.0
+    assert em["degeneracy"]["n_bars"] == 588
+    # Rule 3.7 — no fabricated bucket smuggled alongside the refusal.
+    assert "pred_bucket" not in em
+    assert "size_class" not in em
+
+
+def test_healthy_spread_model_is_rendered_with_degeneracy_evidence():
+    """A model that spreads across buckets renders normally, and carries the
+    degeneracy numbers so a later collapse is visible in the payload."""
+    em = ms._build_expected_move(
+        "SPY", "15m", _degeneracy_qf({0: 60, 1: 25, 2: 10, 3: 5}), as_of=None)
+    assert em["status"] == "OK"
+    assert em["degeneracy"]["degenerate"] is False
+    assert em["degeneracy"]["modal_share"] == 0.60
+    assert em["degeneracy"]["distinct_buckets"] == 4
+
+
+def test_degeneracy_threshold_is_exclusive_of_just_under():
+    """69.9% renders; 70.0% is withheld. Guards the boundary against an
+    off-by-one that would either nag on healthy models or let c49qf through."""
+    just_under = ms._build_expected_move(
+        "SPY", "15m", _degeneracy_qf({0: 699, 1: 301}), as_of=None)
+    assert just_under["status"] == "OK"
+    at_threshold = ms._build_expected_move(
+        "SPY", "15m", _degeneracy_qf({0: 700, 1: 300}), as_of=None)
+    assert at_threshold["status"] == "UNAVAILABLE"
+
+
+def test_degeneracy_check_failure_does_not_take_the_card_down():
+    """The check is monitoring, not a financial value. When it cannot run the
+    card still renders — but the failure is surfaced in the payload, never
+    swallowed (Rule 3.7: the state is visible, not concealed)."""
+    def _q(sql, params=None):
+        if "magnitude_per_bar_predictions" in sql:
+            if "GROUP BY pred_bucket" in sql:
+                raise RuntimeError("connection reset")
+            return _mag_df()
+        return None
+
+    em = ms._build_expected_move("SPY", "15m", _q, as_of=None)
+    assert em["status"] == "OK"
+    assert em["degeneracy"]["status"] == "UNAVAILABLE"
+    assert "connection reset" in em["degeneracy"]["reason"]
+
+
+def test_degeneracy_query_cannot_leak_past_the_prediction_bar():
+    """Rule 3.6 — the degeneracy aggregate is bounded to the prediction row's
+    own ts, so a replayed as-of statement can't sample bars from its future."""
+    seen = {}
+
+    def _q(sql, params=None):
+        if "magnitude_per_bar_predictions" in sql and "GROUP BY pred_bucket" in sql:
+            seen["sql"] = sql
+            seen["params"] = params
+            return pd.DataFrame([{"pred_bucket": 0, "n": 5},
+                                 {"pred_bucket": 1, "n": 5}])
+        if "magnitude_per_bar_predictions" in sql:
+            return _mag_df()
+        return None
+
+    ms._build_expected_move("SPY", "15m", _q, as_of="2026-06-20T15:45:00+00:00")
+    assert "ts <= :ts" in seen["sql"]
+    # Bound to the PREDICTION row's ts (already <= the as-of cutoff), so the
+    # window can never reach past the bar being described.
+    assert seen["params"]["ts"] == _mag_df().iloc[0]["ts"]
+
+
+def test_render_guard_threshold_matches_promotion_gate():
+    """The render backstop and the promotion gate must use the same number.
+    lib/ cannot import gcp/research/ (LightGBM), so the constant is duplicated
+    — this test is what stops the two copies from drifting apart."""
+    from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_SHARE
+    assert ms._MAG_DEGENERATE_MODAL_SHARE == PROMOTION_MAX_MODAL_SHARE

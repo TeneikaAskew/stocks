@@ -1033,6 +1033,43 @@ def identify_triggers(
     return result
 
 
+def reanchor_triggers(
+    level_map: 'LevelMap',
+    price: float,
+    daily_strat_class: str = '',
+    combo: str = '',
+    atr: Optional[float] = None,
+) -> dict:
+    """Recompute the playbook's trigger legs against a DIFFERENT anchor price.
+
+    The structural levels themselves never move intraday — every one derives
+    from a completed prior period. What moves is which level sits nearest
+    above/below the anchor, and therefore which becomes the trigger, which
+    become the targets, and which becomes the opposite-side stop.
+
+    The premarket brief anchors on the 8:31 price (yesterday's close). Audit
+    §15.5 measured re-anchoring on the 9:31 open across 174 ticker-days and
+    found the PUT leg significantly better re-anchored (paired +0.126%/leg,
+    t=+3.75; day-clustered +0.066, t=+2.51, 67% positive days; survives
+    dropping the top-3 days; last-30 window +11.1 vs +1.0), while calls were a
+    wash (t=+0.17). This is the seam that makes that measurable on live data.
+
+    Reconstructs the SAME structural set `build_level_map` handed to
+    `identify_triggers` — prev + current period levels, no gap levels. Gap
+    levels are named `GAP_H_*` / `GAP_L_*` and are context for PMG clustering,
+    never first-class trigger candidates; excluding them here keeps the
+    re-anchor apples-to-apples with the published leg rather than quietly
+    widening the candidate set.
+
+    Returns the same {'calls': ..., 'puts': ...} shape as `identify_triggers`.
+    """
+    structural = {
+        lv.name: lv for lv in level_map.levels
+        if lv.name and not lv.name.startswith('GAP_')
+    }
+    return identify_triggers(price, structural, daily_strat_class, combo, atr=atr)
+
+
 # Level types that count as a "next level" for the brief's call/put display.
 # Prior-period HIGHS and LOWS (and gap highs/lows) are the structural lines
 # price breaks; closes and opens are reference lines, not breakout levels, so

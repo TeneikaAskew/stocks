@@ -15,6 +15,7 @@ file imports cleanly without google-cloud-* / sklearn installed.
 """
 from __future__ import annotations
 
+import json
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -53,6 +54,21 @@ def _toy_data(n_rows: int = 100, n_features: int = 4):
     # 4 labels (TIGHT/NORMAL/EXPANDED/EXPLOSIVE), unbalanced like real data
     y = rng.choice(4, size=n_rows, p=[0.6, 0.27, 0.1, 0.03]).astype(np.int64)
     return X, y
+
+
+def _promotable_model(y):
+    """A mock estimator whose argmax predictions pass the promotion gate.
+
+    Since 2026-08-28 _persist_production_model_artifact scores the fitted model
+    on X_full and refuses to flip LATEST when the argmax collapses onto one
+    bucket (mag_config.PROMOTION_MAX_MODAL_SHARE). A bare MagicMock returns a
+    MagicMock from .predict(), which reads as zero usable predictions and is
+    correctly blocked — so any test exercising the SUCCESSFUL publish path has
+    to hand back a realistic spread.
+    """
+    m = MagicMock()
+    m.predict.return_value = np.asarray(y)
+    return m
 
 
 def _capture_blob_uploads():
@@ -96,7 +112,7 @@ def test_persists_three_blobs_with_correct_names(monkeypatch, joblib_dump_stub):
     X, y = _toy_data()
     fake_client, captured = _capture_blob_uploads()
 
-    with patch.object(mwf, "make_lgbm", return_value=MagicMock()), \
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         uri = mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="testrun-001",
@@ -202,7 +218,7 @@ def test_latest_pointer_updated_last(monkeypatch, joblib_dump_stub):
     fake_client = MagicMock()
     fake_client.bucket.return_value = fake_bucket
 
-    with patch.object(mwf, "make_lgbm", return_value=MagicMock()), \
+    with patch.object(mwf, "make_lgbm", return_value=_promotable_model(y)), \
          patch.object(mwf.gcs, "Client", return_value=fake_client):
         mwf._persist_production_model_artifact(
             "IWM", "5m", run_id="rX", X_full=X, y_full=y,
@@ -380,3 +396,105 @@ def test_results_dataframe_coerces_all_none_float_cols():
         assert df[col].isna().all()
     # a populated column keeps its real values
     assert df["beat"].tolist() == [0.01, -0.02]
+
+
+# ── Promotion gate (c49qf incident, 2026-08-27) ────────────────────────────
+
+
+def test_promotion_verdict_blocks_collapsed_model():
+    """The exact c49qf signature: one bucket on every row."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    v = mwf.promotion_verdict(np.zeros(588, dtype=np.int64))
+    assert v["ok"] is False
+    assert v["modal_share"] == 1.0
+    assert v["distinct_classes"] == 1
+    assert "only 1 distinct bucket" in v["reason"]
+
+
+def test_promotion_verdict_blocks_at_threshold_passes_below():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+    from gcp.research.magnitude_engine.mag_config import PROMOTION_MAX_MODAL_SHARE
+
+    assert PROMOTION_MAX_MODAL_SHARE == 0.70
+    at = np.array([0] * 700 + [1] * 300)
+    under = np.array([0] * 699 + [1] * 301)
+    assert mwf.promotion_verdict(at)["ok"] is False
+    assert mwf.promotion_verdict(under)["ok"] is True
+
+
+def test_promotion_verdict_passes_realistic_base_rates():
+    """The real magnitude class balance (~64/27/7/2) must NOT be blocked —
+    the gate targets argmax collapse, not label imbalance."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    y = np.array([0] * 640 + [1] * 270 + [2] * 70 + [3] * 20)
+    v = mwf.promotion_verdict(y)
+    assert v["ok"] is True
+    assert v["distinct_classes"] == 4
+    assert v["class_counts"] == {0: 640, 1: 270, 2: 70, 3: 20}
+
+
+def test_promotion_verdict_handles_empty():
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    v = mwf.promotion_verdict(np.array([], dtype=np.int64))
+    assert v["ok"] is False
+    assert v["n"] == 0
+
+
+def test_blocked_promotion_leaves_latest_untouched(monkeypatch, joblib_dump_stub):
+    """The load-bearing assertion: a collapsed candidate must NOT become the
+    live model. Artifacts still land under the run prefix for diagnosis, plus a
+    PROMOTION_BLOCKED marker — but LATEST is never written, so mag_inference
+    keeps loading the previous production model.
+
+    This is the control that would have stopped magnitude-engine-c49qf.
+    """
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    collapsed = MagicMock()
+    collapsed.predict.return_value = np.zeros(len(y), dtype=np.int64)
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "make_lgbm", return_value=collapsed), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "IWM", "5m", run_id="collapsed-001",
+            X_full=X, y_full=y, feature_cols=["x"], calibration="none",
+        )
+
+    assert uri is None, "a blocked promotion must not report success"
+    assert "magnitude-models/production/IWM/5m/LATEST" not in captured, \
+        "LATEST was flipped to a collapsed model — the c49qf regression"
+    prefix = "magnitude-models/production/IWM/5m/collapsed-001"
+    assert f"{prefix}/model.joblib" in captured, "forensic artifacts still kept"
+    assert f"{prefix}/PROMOTION_BLOCKED" in captured
+    marker = json.loads(captured[f"{prefix}/PROMOTION_BLOCKED"].decode())
+    assert marker["ok"] is False
+    assert marker["modal_share"] == 1.0
+
+
+def test_isotonic_calibration_does_not_bypass_the_gate(monkeypatch, joblib_dump_stub):
+    """c49qf was a calibration=isotonic run. The gate scores whatever model the
+    calibration branch produced, so the wrapper is not an escape hatch."""
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    X, y = _toy_data()
+    collapsed = MagicMock()
+    collapsed.predict.return_value = np.zeros(len(y), dtype=np.int64)
+    fake_client, captured = _capture_blob_uploads()
+
+    with patch.object(mwf, "CalibratedClassifierCV", return_value=collapsed), \
+         patch.object(mwf, "make_lgbm", return_value=MagicMock()), \
+         patch.object(mwf.gcs, "Client", return_value=fake_client):
+        uri = mwf._persist_production_model_artifact(
+            "IWM", "15m", run_id="iso-001",
+            X_full=X, y_full=y, feature_cols=["x"], calibration="isotonic",
+        )
+
+    assert uri is None
+    assert "magnitude-models/production/IWM/15m/LATEST" not in captured

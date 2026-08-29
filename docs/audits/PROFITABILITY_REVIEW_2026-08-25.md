@@ -1002,6 +1002,192 @@ change into a measurement PR would mean any change in tomorrow's numbers
 has two candidate causes. It ships next, on its own, with §15.5 as the
 evidence and its own before/after.
 
+## 17. The Expected-Move card was rendering a constant, and the gamma investigation was chasing the wrong variable (2026-08-28)
+
+Two findings, one investigation. The first is a live user-facing defect
+with a complete causal chain. The second retracts a conclusion from
+§16-era work — including one I stated to the user.
+
+### 17.1 A collapsed model reached production and served users for two days
+
+`MOVEMENT_STATEMENT_ENABLED=true` has been live on `trading-platform`
+since 2026-07-12. It renders the Expected-Move card, whose `size_class`
+is the argmax of the magnitude engine's 4-class softmax.
+
+From 2026-08-26, that argmax was a constant:
+
+| tf | model | bars | argmax |
+|---|---|---|---|
+| 5m | `magnitude-engine-c49qf` | 450 | TIGHT on 450 (100%) |
+| 15m | `magnitude-engine-c49qf` | 138 | TIGHT on 138 (100%) |
+
+**588/588 bars, one bucket.** Verified directly against the promoted
+artifact, not inferred from the rows: loading
+`magnitude-models/production/SPY/15m/magnitude-engine-c49qf/model.joblib`
+and predicting on 4,000 synthetic rows swept from −500 to +500 across all
+253 features returns TIGHT on **4,000/4,000**. Mean predicted
+probabilities equal the class base rate (0.640/0.220/0.096/0.043) and
+`P(EXPLOSIVE)` never exceeds 0.379 anywhere in the sweep — so the argmax
+cannot reach EXPLOSIVE for any input. The model is a constant function.
+
+**The causal chain, every link verified from primary sources:**
+
+1. `magnitude-engine-c49qf` ran 2026-08-27 06:29 UTC. Its own log reads
+   `training production model on full dataset (58668 rows × 253
+   features, calibration=isotonic)`.
+2. `mag_pred_train.tempered_class_weight`'s docstring already documents
+   this exact failure: *"Isotonic calibration over-corrected the other
+   way (re-collapse to 100% TIGHT)."* The same collapse had happened
+   once before, as `magnitude-engine-rmcwj`.
+3. Fold logs show the signature: `acc=0.641 base=0.640`,
+   `EXPLOSIVE base=0.025 prec=— lift=—`.
+4. `_persist_production_model_artifact` flipped the GCS `LATEST` pointer
+   **unconditionally**. There was no promotion gate. Any
+   `--persist-production-model` run replaced the live model regardless
+   of what it had learned.
+5. `mag_inference` follows `LATEST`; `_build_expected_move` reads the
+   newest row; the card rendered the constant.
+
+**The detector was not the failure.** `audit-magnitude-drift` has fired
+correctly every day since, with 7 HIGH findings on 2026-08-28 alone
+(`argmax=TIGHT on 150/150 bars (100.0%)` for each of IWM/SPY/QQQ 5m).
+It posts to Discord. Nothing acted on it. The gap was that the check ran
+only *after* a model was already serving users.
+
+**Fixes shipped:**
+
+* **Promotion gate** (`mag_walk_forward.promotion_verdict`, threshold
+  `mag_config.PROMOTION_MAX_MODAL_SHARE = 0.70`). The candidate is scored
+  on its own training matrix before `LATEST` is flipped; a modal share
+  ≥ 70% or fewer than 2 distinct predicted buckets blocks promotion.
+  Artifacts still upload under the run prefix with a `PROMOTION_BLOCKED`
+  marker for diagnosis; `LATEST` keeps pointing at the previous model.
+  Scoring on the *training* matrix is deliberate — it is the most
+  generous test available, so a candidate that collapses there cannot do
+  better live. Verified against the real c49qf artifact: **BLOCK**.
+* **`audit_magnitude_drift` now imports that same constant** as its
+  `MODAL_DOMINANCE_HIGH`, so the pre-promotion gate and the
+  post-deployment detector cannot drift apart.
+* **Render-layer backstop** (`movement_statement._model_degeneracy`).
+  If a collapsed model reaches production by any other route, the card
+  returns an explicit UNAVAILABLE envelope naming the modal share
+  instead of a bucket. A check that cannot run does **not** take the
+  card down — it is monitoring, not a financial value — but its
+  unavailability is surfaced in the payload rather than swallowed.
+* **`MOVEMENT_STATEMENT_ENABLED=false`** in `platform/deploy.sh`.
+
+The threshold is deliberately not env-tunable: an operator racing a bad
+retrain must not be able to widen the gate to push it through.
+
+### 17.2 Retraction: gamma features were never the problem
+
+§16-era work (PRs #798, #800) pursued the hypothesis that the 15m/30m
+log-loss collapse was caused by gamma features — first the raw dollar
+levels (#798), then, when the collapse persisted, the normalized
+`dist_to_gamma_flip_pct` (#800's `MAG_ABLATE=gamma_dist` knob).
+
+**I told the user that ablation had been built but never run. That was
+wrong.** It ran as `magnitude-engine-nmwdl` on 2026-08-27 00:23 UTC,
+seven minutes after #800 merged — 250 features, no gamma-distance
+columns, 8 folds × 9 cells. Its results were in
+`magnitude_walk_forward_results` the whole time.
+
+They exonerate gamma completely. All 72 folds per run:
+
+| calibration | gamma variant | run | avg beat | folds beat | avg ECE | acc vs base |
+|---|---|---|---|---|---|---|
+| isotonic | dist-only | `c49qf` | **−0.0002** | 50/72 | 0.0481 | −0.004pp |
+| none | dist-only | `dqvr7` | −0.1076 | 1/72 | 0.0774 | −8.70pp |
+| none | **no gamma at all** | `nmwdl` | −0.1095 | 0/72 | 0.0769 | −8.90pp |
+| none | raw levels | `gv44w` | −0.1049 | 0/72 | 0.0778 | −8.64pp |
+
+The three uncalibrated variants span **−0.1049 to −0.1095** — a spread
+of 0.005 across "all the gamma features", "only normalized distance",
+and "no gamma at all". Removing gamma entirely made the model
+*marginally worse*, not better. The variable that actually moves the
+result is **calibration**: −0.0002 vs −0.105, a swing 20× larger than
+anything gamma does.
+
+Both #798 and #800 were reasonable hypotheses tested properly. The
+ablation is what a correctly-run experiment looks like when it says no.
+
+### 17.3 The uncomfortable consequence: neither configuration is usable
+
+Reading the same table for what it says about the engine rather than
+about gamma:
+
+* **Isotonic** (`c49qf`, shipped): avg beat −0.0002 over 72 folds,
+  accuracy −0.004pp vs base rate, EXPLOSIVE calls in 3/72 folds. It is
+  *exactly* as good as quoting the base rate — which is the definition
+  of the collapse. Useless, but harmless.
+* **Uncalibrated** (`dqvr7`/`gv44w`/`nmwdl`): spread argmax, but
+  **−8.7pp accuracy** vs the base rate and 0.105 worse log-loss, beating
+  base in 0–1 of 72 folds. Actively harmful.
+
+So the trade is between a model that says nothing and a model that says
+wrong things. `_MAG_USAGE` — the text shipped to users — still claims
+the model *"robustly beats the base rate on all three ETFs."* These 72
+folds do not support that claim in either configuration.
+
+**Recommendation:** keep the card off. Do not re-enable on a
+bucket-rendering design. If the engine is revived, the target is the
+probability vector (the only artifact with even marginal validated
+signal) and never the argmax, and the bar is a positive log-loss beat on
+a majority of folds in a configuration that also passes the promotion
+gate — a bar nothing tested so far clears.
+
+## 18. What shipped on 2026-08-28
+
+All four changes are measurement-first. Nothing published to the trader
+moves, and no fire decision changes, except the one feature that was
+turned OFF.
+
+| change | mode | why |
+|---|---|---|
+| Magnitude promotion gate | **enforcing** | Blocks a collapsed model from becoming LATEST. Verified against the real c49qf artifact: BLOCK. |
+| Expected-Move card | **off** | No magnitude configuration currently clears the bar (§17.3). |
+| Put-side 9:31 re-anchor | shadow | §15.5's paired +0.126%/leg needs live confirmation before the published playbook moves. |
+| Risk-control observability | shadow | Records what `max_concurrent_positions` and a mark-to-market `daily_loss_limit` would have done. |
+
+### 18.1 Why the risk controls are measured, not switched on
+
+The codebase review (T5) found three controls configured, validated and
+never consulted. Each was verified independently rather than taken on
+the review's word:
+
+* `max_concurrent_positions` (alert_config.json = 1) — read nowhere.
+  `active_positions` is only appended to and walked for exits, so the
+  monitor can carry an unbounded number of simultaneous positions per
+  ticker, bounded only by `max_daily_trades`.
+* `daily_loss_limit` — IS checked before a fire, but `daily_pnl` is
+  written only in the exit path. §16.3 measured the daily cap being
+  burned in a median 17 minutes, so most of a day's fires open before
+  anything has exited and the check reads 0.0. It cannot bind intraday
+  as written.
+* `daily_profit_target` — appears only in `lib/backtest.py`.
+
+The obvious move is to switch them on. The stop-loss counterfactual is
+why that would be a mistake to make blind: adding the backtest's stop to
+live cost **−12.70pct** over 736 real fires (52% stopped out; a third of
+those finished positive, worth +23.91), and **every** level swept from
+0.15% to 2.00% was worse than no stop. The tail this system actually has
+is already capped by the time-stop — worst observed −1.26%, two fires
+below −1%, none below −2%.
+
+So `signal_alerts` now carries `concurrent_positions` and `mtm_pnl`
+(realized + open mark-to-market — the number a loss limit would have to
+read to bind intraday, versus the realized-only number the live check
+reads), and a `risk_shadow:` log line names which control would have
+blocked each fire. Decide from that, not from first principles.
+
+### 18.2 A caveat on the level-state numbers this section rests on
+
+§15.4's +8.20pct is in-sample on the window the rule was derived from.
+The gate has run in shadow since 2026-08-27 so the same question can be
+asked out-of-sample; the decision checkpoint, its query, and its
+pre-registered pass/fail rule are filed as issue #808 rather than left
+to memory.
+
 ## Appendix — daily summed alert returns (pct, June–Aug)
 
 Jun: −0.20, +1.89, −3.78, +0.14, −4.40, +0.22, −1.15, −0.85, +4.49,

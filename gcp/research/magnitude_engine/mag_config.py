@@ -239,6 +239,35 @@ DEFAULT_CALIBRATION = "none"
 DEFAULT_CV = 3
 
 
+# ─────────────────── Production-promotion gate ───────────────────
+# A model is promoted to production by flipping the GCS `LATEST` pointer
+# (mag_walk_forward._persist_production_model_artifact). Until 2026-08-28
+# that flip was UNCONDITIONAL: any --persist-production-model run replaced
+# the live model regardless of what it had learned.
+#
+# That is how `magnitude-engine-c49qf` reached production. It was trained
+# 2026-08-27 06:38 UTC with calibration=isotonic — the configuration whose
+# failure mode is documented verbatim in mag_pred_train.tempered_class_weight
+# ("Isotonic calibration over-corrected the other way (re-collapse to 100%
+# TIGHT)"). It then argmax-predicted TIGHT on 588/588 live bars across
+# IWM/SPY/QQQ × 5m/15m, with fold accuracy exactly equal to the base rate
+# (acc=0.641 vs base=0.640) and no EXPLOSIVE calls at all. The same collapse
+# had already happened once before, as `magnitude-engine-rmcwj`.
+#
+# The post-deployment detector (gcp/audit_magnitude_drift.py) caught it
+# correctly and fired HIGH findings every day — but only AFTER the model was
+# already serving the user-facing Expected-Move card. These thresholds move
+# that same criterion in front of the promotion so a collapsed model cannot
+# become LATEST in the first place. audit_magnitude_drift imports
+# PROMOTION_MAX_MODAL_SHARE as its MODAL_DOMINANCE_HIGH so the pre-promotion
+# gate and the post-deployment detector can never disagree.
+#
+# Deliberately NOT env-tunable: an operator racing a bad retrain must not be
+# able to widen the gate to push it through. Changing it is a code change.
+PROMOTION_MAX_MODAL_SHARE = 0.70
+PROMOTION_MIN_DISTINCT_CLASSES = 2
+
+
 # ─────────────────────── Storage ───────────────────────
 GCS_BUCKET_DEFAULT = "adept-mountain-474619-d4-trading-data"
 GCS_PREFIX = "research/magnitude_engine"

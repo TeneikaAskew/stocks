@@ -38,7 +38,8 @@ from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
-from lib.strat_levels import LegStateTracker, LevelMap, build_level_map
+from lib.strat_levels import (LegStateTracker, LevelMap, build_level_map,
+                             reanchor_triggers)
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
@@ -414,6 +415,111 @@ class SignalMonitor:
         ext['low'] = bar_low if ext['low'] is None else min(ext['low'], bar_low)
         self.session_extremes[ticker] = ext
 
+    def _reanchor_put_leg(self, ticker, times_et, new_data, rth) -> Optional[dict]:
+        """Recompute the put leg against today's OPEN (audit §15.5).
+
+        The brief anchors the playbook on the 8:31 price — yesterday's close —
+        so an overnight gap (mean |gap| 0.62% in the study window) can leave
+        the published put trigger far from where the session actually starts.
+        Re-anchoring the put leg on the open was the one variant with a
+        significant paired improvement (+0.126%/leg, t=+3.75).
+
+        Returns None when the re-anchor cannot be computed — mode off, no
+        cached level map, no opening bar, or no fresh structural level below
+        the open. None means "not computed" and persists as NULL; it is never
+        substituted with the published trigger, which would make the shadow
+        comparison compare a leg against itself (Rule 3.7).
+
+        One aggregate-free, in-memory computation per ticker per day: the
+        structural levels are already in the cached LevelMap and
+        `identify_triggers` is pure. The single DB write is the shadow persist.
+        """
+        if self.signal_cfg.put_reanchor_mode == 'off':
+            return None
+        level_map = self.level_maps.get(ticker)
+        if level_map is None:
+            logger.info("put_reanchor: %s skipped — no level map cached", ticker)
+            return None
+        try:
+            bars = new_data.loc[rth.values]
+            if bars.empty:
+                return None
+            order = times_et[rth].argsort()
+            first = bars.iloc[order.values[0]] if hasattr(order, 'values') else bars.iloc[0]
+            o_col = 'Open' if 'Open' in bars.columns else 'Close'
+            open_px = float(pd.to_numeric(first[o_col], errors='coerce'))
+            if not (open_px == open_px) or open_px <= 0:
+                logger.info("put_reanchor: %s skipped — no usable open", ticker)
+                return None
+
+            legs = reanchor_triggers(level_map, open_px)
+            put = legs.get('puts')
+            if not put or put.get('trigger_level') is None:
+                logger.info(
+                    "put_reanchor: %s skipped — no fresh structural level "
+                    "below open=%.4f", ticker, open_px)
+                return None
+            tgts = [t.get('price') for t in (put.get('targets') or [])]
+            out = {
+                'open': open_px,
+                'trigger': float(put['trigger_level']),
+                'trigger_name': put.get('trigger_name'),
+                'stop': put.get('stop'),
+                't1': tgts[0] if len(tgts) > 0 else None,
+                't2': tgts[1] if len(tgts) > 1 else None,
+                't3': tgts[2] if len(tgts) > 2 else None,
+            }
+            self._persist_put_reanchor(ticker, out)
+            return out
+        except Exception:
+            # INTERNAL (Rule 3.7): this is our own pure math over a cached
+            # level map. Log the traceback rather than swallowing it, and
+            # return None so the tracker keeps the published leg — a failed
+            # SHADOW measurement must never change what the monitor trades.
+            logger.exception("put_reanchor: %s failed", ticker)
+            return None
+
+    def _persist_put_reanchor(self, ticker: str, r: dict) -> None:
+        """Write the shadow re-anchor onto today's premarket_analysis row.
+
+        One UPDATE per ticker per day. Never INSERTs: if the brief did not
+        publish a row there is nothing to attach the counterfactual to, and
+        fabricating one would put a playbook row in the table that no brief
+        ever produced.
+        """
+        try:
+            from gcp.database import execute_sql
+            today = (pd.Timestamp(self.replay_clock_ts).date()
+                     if self.replay_clock_ts is not None
+                     else self._now(_ET).date())
+            rows = execute_sql(
+                "UPDATE premarket_analysis SET "
+                "  puts_reanchor_open = :o, puts_reanchor_trigger = :t, "
+                "  puts_reanchor_trigger_name = :tn, puts_reanchor_stop = :s, "
+                "  puts_reanchor_t1 = :t1, puts_reanchor_t2 = :t2, "
+                "  puts_reanchor_t3 = :t3, puts_reanchor_at = NOW() "
+                "WHERE analysis_date = :d AND ticker = :tk",
+                {'o': r['open'], 't': r['trigger'], 'tn': r.get('trigger_name'),
+                 's': r.get('stop'), 't1': r.get('t1'), 't2': r.get('t2'),
+                 't3': r.get('t3'), 'd': today, 'tk': ticker},
+            )
+            if rows == 0:
+                logger.warning(
+                    "put_reanchor: %s computed (open=%.4f trigger=%.4f) but no "
+                    "premarket_analysis row for %s to attach it to — the "
+                    "shadow measurement is lost for this ticker-day",
+                    ticker, r['open'], r['trigger'], today)
+                return
+            logger.info(
+                "put_reanchor: %s open=%.4f trigger=%.4f (%s) stop=%s persisted",
+                ticker, r['open'], r['trigger'], r.get('trigger_name'),
+                r.get('stop'))
+        except Exception:
+            # EXTERNAL: DB round-trip. The measurement is lost for this
+            # ticker-day and that is visible in the traceback + a NULL row;
+            # it must not take the monitor down mid-session.
+            logger.exception("put_reanchor: %s persist failed", ticker)
+
     def _update_leg_trackers(self, ticker: str, new_data: pd.DataFrame) -> None:
         """Advance the per-leg playbook state machines with today's RTH bars.
 
@@ -424,7 +530,11 @@ class SignalMonitor:
         chronologically. Called from update_window, the shared choke point
         with the replay harness (Rule 3.6 parity, same as the extremes).
 
-        Gate mode 'off' skips everything, including the lazy brief lookup.
+        Gate mode 'off' skips everything, including the lazy brief lookup —
+        and therefore also skips the put-side re-anchor, which rides on this
+        same once-per-day setup (it needs the day's leg trackers and the
+        published put leg to fall back to). `put_reanchor_mode` is only
+        consulted when `level_gate_mode` is not 'off'.
         """
         if self.signal_cfg.level_gate_mode == 'off':
             return
@@ -458,6 +568,25 @@ class SignalMonitor:
                     self.leg_trackers[ticker] = {'date': today,
                                                  'unavailable': True}
                     return
+                # Put-side 9:31 re-anchor (audit §15.5). Computed from the
+                # session's OPEN — the first RTH bar's open, which is exactly
+                # the anchor the counterfactual measured. In 'shadow' the
+                # published leg still drives the tracker; in 'enforce' the
+                # re-anchored trigger/stop replace it.
+                reanchor = self._reanchor_put_leg(ticker, times_et, new_data, rth)
+                put_trigger = brief.get('puts_trigger_price')
+                put_t1 = brief.get('puts_t1_price')
+                put_stop = brief.get('puts_stop_price')
+                if (self.signal_cfg.put_reanchor_mode == 'enforce'
+                        and reanchor and reanchor.get('trigger') is not None):
+                    put_trigger = reanchor['trigger']
+                    put_t1 = reanchor.get('t1')
+                    put_stop = reanchor.get('stop')
+                    logger.info(
+                        "put_reanchor: %s put leg re-anchored on open=%.4f "
+                        "trigger %.4f -> %.4f", ticker, reanchor['open'],
+                        brief.get('puts_trigger_price') or float('nan'),
+                        put_trigger)
                 trackers = {
                     'date': today,
                     'call': LegStateTracker(
@@ -467,9 +596,10 @@ class SignalMonitor:
                         stop=brief.get('calls_stop_price')),
                     'put': LegStateTracker(
                         direction='put',
-                        trigger=brief.get('puts_trigger_price'),
-                        t1=brief.get('puts_t1_price'),
-                        stop=brief.get('puts_stop_price')),
+                        trigger=put_trigger,
+                        t1=put_t1,
+                        stop=put_stop),
+                    'reanchor': reanchor,
                 }
                 self.leg_trackers[ticker] = trackers
             if trackers.get('unavailable'):
@@ -1084,6 +1214,24 @@ class SignalMonitor:
         # Corrected RVOL against a historical minute-of-day baseline
         # (audit §16). Shadow only — recorded, never gates.
         self._latest_rvol_mod = self._corrected_rvol(ticker)
+        # Declared-but-unenforced risk controls (codebase review T5).
+        # Shadow only — records what max_concurrent_positions and a
+        # mark-to-market daily_loss_limit WOULD have done at this fire.
+        # Never gates: the stop-loss counterfactual (−12.70pct over 736 real
+        # fires, every swept level worse than none) is why a control that
+        # looks prudent gets measured here before it is switched on.
+        _risk_shadow = self._risk_control_shadow(ticker, float(price or 0))
+        self._latest_risk_shadow = _risk_shadow
+        if _risk_shadow['would_block_concurrent'] or _risk_shadow['would_block_mtm_loss']:
+            logger.info(
+                "risk_shadow: %s %s WOULD be blocked — concurrent=%d/%d(%s) "
+                "mtm=%.4f vs limit=%.4f(%s) [not enforced]",
+                ticker, direction,
+                _risk_shadow['concurrent_positions'],
+                self.risk.max_concurrent_positions,
+                _risk_shadow['would_block_concurrent'],
+                _risk_shadow['total_mtm_pnl'], self.risk.daily_loss_limit,
+                _risk_shadow['would_block_mtm_loss'])
         # Both post_t1 routes stay suppressed under enforce. 2026-08-27 was
         # a live counterexample for the gap-through route (5 winners that
         # a carve-out would have kept, +1.32pct), but that is n=5 against
@@ -1335,6 +1483,16 @@ class SignalMonitor:
             # fabricated ratio. The legacy `rvol` column above stays as-is
             # so the two can be compared on identical fires.
             'rvol_mod':          getattr(self, '_latest_rvol_mod', None),
+            # Declared-but-unenforced risk controls at fire time (review T5).
+            # `concurrent_positions` is what max_concurrent_positions (=1)
+            # would have capped; `mtm_pnl` is realized + open mark-to-market,
+            # the number a daily_loss_limit would need to read to bind
+            # intraday (the live check reads realized only, which is still
+            # 0.0 for most fires). Recorded, never enforced.
+            'concurrent_positions': (getattr(self, '_latest_risk_shadow', None)
+                                     or {}).get('concurrent_positions'),
+            'mtm_pnl':           (getattr(self, '_latest_risk_shadow', None)
+                                  or {}).get('total_mtm_pnl'),
             # Position of this fire in the ticker's day (1-based) and
             # minutes since the previous fire for the same ticker (NULL on
             # the first). Audit §16.3: 91% of ticker-days burn the 5-fire
@@ -1686,6 +1844,62 @@ class SignalMonitor:
                     + (pct / 100.0) * size
                 )
                 positions.remove(pos)
+
+    def _risk_control_shadow(self, ticker: str, price: float) -> dict:
+        """What the DECLARED-but-unenforced risk controls would say right now.
+
+        Codebase review 2026-08-27 (T5) found three controls that are
+        configured, validated, and never consulted in the live monitor:
+
+        * ``risk.max_concurrent_positions`` (alert_config.json: 1) — nothing
+          reads it. ``active_positions`` is only appended to and walked for
+          exits, so the monitor can carry an unbounded number of simultaneous
+          positions per ticker, bounded only by ``max_daily_trades``.
+        * ``risk.daily_loss_limit`` — IS checked before a fire, but
+          ``daily_pnl`` is written only in the exit path. Since §16 measured
+          the daily cap being burned in a median 17 minutes, most of a day's
+          fires open before any position has exited, so the value read at the
+          cap check is still 0.0. It cannot bind intraday as written.
+        * ``risk.daily_profit_target`` — referenced only by lib/backtest.py.
+
+        This does NOT enforce any of them. The stop-loss counterfactual
+        (§17-era work: adding the backtest's stop cost −12.70pct over 736 real
+        fires, and every swept level was worse than none) is a standing warning
+        that a control which looks prudent can be expensive here. So measure
+        first: record what each control would have done, and decide from live
+        data whether any of them is worth switching on.
+
+        Returns realized + mark-to-market P&L so a loss limit that COULD bind
+        intraday is measurable, not just the realized one that cannot.
+        """
+        positions = self.active_positions.get(ticker) or []
+        realized = float(self.daily_pnl.get(ticker, 0.0))
+        open_mtm = 0.0
+        for pos in positions:
+            try:
+                entry = float(pos['entry_price'])
+                if entry <= 0 or price <= 0:
+                    # No usable mark. Rule 3.7: skip this leg and say so
+                    # rather than folding a fabricated 0% into the total.
+                    logger.warning(
+                        "risk_shadow: %s skipping position with entry=%s "
+                        "mark=%s", ticker, entry, price)
+                    continue
+                pct = self._exit_return_pct(pos['direction'], entry, price)
+                open_mtm += (pct / 100.0) * float(pos.get('size', 1.0))
+            except Exception:
+                # One malformed position must not cost the whole measurement.
+                logger.exception("risk_shadow: bad position for %s", ticker)
+        return {
+            'concurrent_positions': len(positions),
+            'realized_pnl': realized,
+            'open_mtm_pnl': open_mtm,
+            'total_mtm_pnl': realized + open_mtm,
+            'would_block_concurrent': bool(
+                len(positions) >= self.risk.max_concurrent_positions),
+            'would_block_mtm_loss': bool(
+                (realized + open_mtm) <= self.risk.daily_loss_limit),
+        }
 
     @staticmethod
     def _exit_return_pct(direction, entry_price, exit_price):

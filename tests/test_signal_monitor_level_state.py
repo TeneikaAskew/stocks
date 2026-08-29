@@ -376,3 +376,191 @@ def test_fire_spacing_is_tracked_per_ticker():
     assert monitor._minutes_since_prev_fire('QQQ') is None, \
         "each ticker's clock is independent"
     assert monitor._minutes_since_prev_fire('SPY') is not None
+
+
+# ── Put-side 9:31 re-anchor (audit §15.5) ──────────────────────────
+
+
+def _level_map(prices):
+    """A LevelMap carrying only structural levels at the given prices."""
+    from lib.strat_levels import LevelMap, StratLevel
+    levels = [StratLevel(name=n, price=p, timeframe='daily', level_type='high')
+              for n, p in prices.items()]
+    return LevelMap(
+        ticker='QQQ', as_of='2026-08-28T09:31:00-04:00',
+        current_price=100.0, levels=levels, pmg_zones=[],
+        calls_trigger=None, puts_trigger=None,
+        room_to_run_up=0.0, room_to_run_down=0.0,
+        call_levels=[], put_levels=[],
+    )
+
+
+def _feed_reanchor(monitor, ticker, highs_lows, level_map, mode='shadow'):
+    monitor.signal_cfg.put_reanchor_mode = mode
+    monitor.level_maps[ticker] = level_map
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch.object(monitor, '_persist_put_reanchor') as persist:
+        monitor.update_window(ticker, _rth_bars(highs_lows))
+    return persist
+
+
+def test_reanchor_picks_nearest_structural_level_below_the_open():
+    """The re-anchored put trigger is the nearest fresh structural level BELOW
+    the session open — not the 8:31-anchored one from the brief."""
+    monitor = _make_monitor()
+    # Open of the first bar is the mid of (100.6, 99.4) = 100.0.
+    lm = _level_map({'PDL': 99.6, 'PWL': 98.5, 'PDH': 101.0})
+    _feed_reanchor(monitor, 'QQQ', [(100.6, 99.4)], lm)
+    r = monitor.leg_trackers['QQQ']['reanchor']
+    assert r is not None
+    assert r['open'] == 100.0
+    assert r['trigger'] == 99.6        # nearest below the OPEN, not 98.5
+    assert r['trigger_name'] == 'PDL'
+    assert r['t1'] == 98.5             # next level down becomes T1
+    assert r['stop'] == 101.0          # opposite-side fresh level
+
+
+def test_shadow_mode_leaves_the_published_put_leg_driving_the_tracker():
+    """Shadow computes and persists the counterfactual but must not change
+    what the monitor actually tracks — otherwise the comparison is against a
+    leg that already moved."""
+    monitor = _make_monitor()
+    lm = _level_map({'PDL': 99.6, 'PWL': 98.5, 'PDH': 101.0})
+    persist = _feed_reanchor(monitor, 'QQQ', [(100.6, 99.4)], lm, mode='shadow')
+    assert persist.called, "shadow still records the measurement"
+    # Tracker keeps the BRIEF's put trigger (98.5), not the re-anchor (99.6).
+    assert monitor.leg_trackers['QQQ']['put'].trigger == 98.5
+
+
+def test_enforce_mode_swaps_the_put_leg_only():
+    """Enforce moves the put leg to the re-anchored trigger. Calls are a wash
+    in the study (t=+0.17) and must be left alone."""
+    monitor = _make_monitor()
+    lm = _level_map({'PDL': 99.6, 'PWL': 98.5, 'PDH': 101.0})
+    _feed_reanchor(monitor, 'QQQ', [(100.6, 99.4)], lm, mode='enforce')
+    assert monitor.leg_trackers['QQQ']['put'].trigger == 99.6
+    assert monitor.leg_trackers['QQQ']['put'].t1 == 98.5
+    assert monitor.leg_trackers['QQQ']['put'].stop == 101.0
+    # CALL leg untouched — still the brief's published values.
+    assert monitor.leg_trackers['QQQ']['call'].trigger == 100.0
+    assert monitor.leg_trackers['QQQ']['call'].t1 == 100.5
+
+
+def test_off_mode_computes_nothing():
+    monitor = _make_monitor()
+    lm = _level_map({'PDL': 99.6, 'PWL': 98.5, 'PDH': 101.0})
+    persist = _feed_reanchor(monitor, 'QQQ', [(100.6, 99.4)], lm, mode='off')
+    assert monitor.leg_trackers['QQQ']['reanchor'] is None
+    assert not persist.called
+    assert monitor.leg_trackers['QQQ']['put'].trigger == 98.5
+
+
+def test_no_level_map_yields_none_not_the_published_trigger():
+    """Rule 3.7: 'could not compute' must persist as NULL, never as a copy of
+    the published leg — that would make the shadow comparison compare the 8:31
+    leg against itself and manufacture a null result."""
+    monitor = _make_monitor()
+    monitor.signal_cfg.put_reanchor_mode = 'shadow'
+    monitor.level_maps['QQQ'] = None
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch.object(monitor, '_persist_put_reanchor') as persist:
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
+    assert monitor.leg_trackers['QQQ']['reanchor'] is None
+    assert not persist.called
+
+
+def test_no_level_below_the_open_yields_none():
+    """A gap-down open that leaves every structural level ABOVE it has no put
+    trigger to re-anchor to; that is NULL, not the nearest level above."""
+    monitor = _make_monitor()
+    lm = _level_map({'PDH': 101.0, 'PWH': 102.0})
+    persist = _feed_reanchor(monitor, 'QQQ', [(100.6, 99.4)], lm)
+    assert monitor.leg_trackers['QQQ']['reanchor'] is None
+    assert not persist.called
+
+
+def test_reanchor_failure_does_not_change_what_the_monitor_tracks():
+    """A broken SHADOW measurement must never alter live behavior."""
+    monitor = _make_monitor()
+    monitor.signal_cfg.put_reanchor_mode = 'enforce'
+    monitor.level_maps['QQQ'] = _level_map({'PDL': 99.6, 'PDH': 101.0})
+    with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
+         patch('gcp.signal_monitor.reanchor_triggers',
+               side_effect=RuntimeError("boom")):
+        monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
+    assert monitor.leg_trackers['QQQ']['reanchor'] is None
+    # Falls back to the published leg rather than dropping the put tracker.
+    assert monitor.leg_trackers['QQQ']['put'].trigger == 98.5
+
+
+# ── Declared-but-unenforced risk controls (review T5) ──────────────
+
+
+def test_risk_shadow_counts_concurrent_positions_and_marks_open_pnl():
+    """max_concurrent_positions (=1) is never read by the live monitor. This
+    records what it WOULD have blocked, plus the mark-to-market P&L a
+    daily_loss_limit would need in order to bind intraday."""
+    monitor = _make_monitor()
+    monitor.risk.max_concurrent_positions = 1
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 0.10},
+        {'ticker': 'QQQ', 'direction': 'PUT', 'entry_price': 100.0, 'size': 0.10},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 99.0)
+    assert out['concurrent_positions'] == 2
+    assert out['would_block_concurrent'] is True
+    # CALL -1% and PUT +1%, both sized 0.10 → net 0.0 mark-to-market.
+    assert abs(out['open_mtm_pnl']) < 1e-9
+
+
+def test_risk_shadow_mtm_sees_a_drawdown_realized_pnl_cannot():
+    """The live daily_loss_limit check reads realized P&L only, which stays
+    0.0 until a position exits. The mark-to-market view is what would actually
+    bind — this pins that difference."""
+    monitor = _make_monitor()
+    monitor.risk.daily_loss_limit = -0.02
+    monitor.daily_pnl['QQQ'] = 0.0            # nothing has exited yet
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 1.0},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 97.0)   # -3% open
+    assert out['realized_pnl'] == 0.0
+    assert out['would_block_mtm_loss'] is True, \
+        "a -3% open drawdown must trip a -2% limit the realized check misses"
+    assert abs(out['total_mtm_pnl'] - (-0.03)) < 1e-9
+
+
+def test_risk_shadow_is_measurement_only():
+    """No control is enforced. A fire that both controls would block must
+    still be recorded as a fire."""
+    monitor = _make_monitor()
+    monitor.risk.max_concurrent_positions = 1
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 1.0},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 97.0)
+    assert out['would_block_concurrent'] and out['would_block_mtm_loss']
+    # The helper reports; it must not mutate any live state.
+    assert len(monitor.active_positions['QQQ']) == 1
+    assert monitor.daily_pnl.get('QQQ', 0.0) == 0.0
+
+
+def test_risk_shadow_skips_unusable_marks_instead_of_scoring_them_zero():
+    """Rule 3.7: a position with no usable entry/mark is skipped and logged,
+    never folded in as a fabricated 0% leg."""
+    monitor = _make_monitor()
+    monitor.active_positions['QQQ'] = [
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 0.0, 'size': 1.0},
+        {'ticker': 'QQQ', 'direction': 'CALL', 'entry_price': 100.0, 'size': 1.0},
+    ]
+    out = monitor._risk_control_shadow('QQQ', 102.0)
+    assert out['concurrent_positions'] == 2      # still counted for the cap
+    assert abs(out['open_mtm_pnl'] - 0.02) < 1e-9  # only the usable leg marked
+
+
+def test_risk_shadow_empty_book_is_zero_not_none():
+    monitor = _make_monitor()
+    out = monitor._risk_control_shadow('QQQ', 100.0)
+    assert out['concurrent_positions'] == 0
+    assert out['open_mtm_pnl'] == 0.0
+    assert out['would_block_mtm_loss'] is False

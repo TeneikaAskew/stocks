@@ -414,6 +414,21 @@ class SignalConfig:
     #               'post_t1' or 'invalidated' (no Discord, no persist,
     #               no trade-cap increment).
     level_gate_mode: str = 'shadow'  # 'off' | 'shadow' | 'enforce'
+    # Put-side 9:31 re-anchor (audit §15.5). The premarket brief anchors the
+    # playbook on the 8:31 price (yesterday's close); re-anchoring the PUT leg
+    # on the 9:31 open measured significantly better across 174 ticker-days
+    # (paired +0.126%/leg, t=+3.75; day-clustered t=+2.51; last-30 +11.1 vs
+    # +1.0), while the CALL leg was a wash (t=+0.17) — so this re-anchors puts
+    # ONLY. Modes mirror level_gate_mode:
+    #   'off'     — no re-anchor computed at all.
+    #   'shadow'  — compute at the first RTH bar and persist alongside the
+    #               published leg; the tracker and every published field keep
+    #               using the 8:31 leg. DEFAULT: the published playbook does
+    #               not move until live data confirms the counterfactual.
+    #   'enforce' — the put leg tracker uses the re-anchored trigger/stop.
+    # Rides on the leg-tracker machinery: when level_gate_mode is 'off' the
+    # per-day trackers are never built and this is not consulted at all.
+    put_reanchor_mode: str = 'shadow'  # 'off' | 'shadow' | 'enforce'
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
     # Task 4.3 fix (trading-logic review of 1c7a7f35): when set, restricts
@@ -785,6 +800,14 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
                     f"signal.level_gate_mode must be 'off', 'shadow' or "
                     f"'enforce', got {level_mode!r}")
             app.signal.level_gate_mode = level_mode
+        # Put-side 9:31 re-anchor (audit §15.5) — same fail-loud contract.
+        reanchor_mode = sig_data.get('put_reanchor_mode')
+        if reanchor_mode is not None:
+            if reanchor_mode not in ('off', 'shadow', 'enforce'):
+                raise ConfigValidationError(
+                    f"signal.put_reanchor_mode must be 'off', 'shadow' or "
+                    f"'enforce', got {reanchor_mode!r}")
+            app.signal.put_reanchor_mode = reanchor_mode
 
     # --- Strat config ---
     strat_data = data.get('strat', {})

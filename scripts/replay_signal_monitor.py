@@ -443,6 +443,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         capture_fn = make_capturing_fire_alert(captured_fires, monitor)
         monitor.fire_alert = capture_fn.__get__(monitor, type(monitor))
 
+        # The put-side 9:31 re-anchor (audit §15.5) is computed by
+        # update_window and normally UPDATEs the day's premarket_analysis row.
+        # A replay recomputes it from replayed bars, so letting that write
+        # through would overwrite the REAL playbook row for the replayed date
+        # with a shadow value the live session never produced. Capture it
+        # in-memory instead — the replay stays hermetic (only --persist writes,
+        # and only to signal_alerts), and the re-anchor is still visible in the
+        # summary for validation.
+        replay_reanchors: dict[str, dict] = {}
+
+        def _capture_reanchor(ticker, r):
+            replay_reanchors[ticker] = r
+
+        monitor._persist_put_reanchor = _capture_reanchor
+
         for ticker in tickers:
             bars = load_intraday_for_replay(engine, ticker, start, end)
             if persist_mode:
@@ -466,6 +481,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                             ticker, len(new_fires))
                 for f in new_fires:
                     persist_fire_to_signal_alerts(f, monitor, engine, replay_id)
+
+    if replay_reanchors:
+        logger.info("put re-anchor (shadow, NOT persisted in replay):")
+        for tk, r in sorted(replay_reanchors.items()):
+            logger.info("  %s open=%.4f trigger=%.4f (%s) stop=%s",
+                        tk, r['open'], r['trigger'], r.get('trigger_name'),
+                        r.get('stop'))
 
     # ── Summary ────────────────────────────────────────────────────
     print()
