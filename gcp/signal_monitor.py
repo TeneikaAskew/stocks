@@ -201,6 +201,9 @@ class SignalMonitor:
         # Strat level map per ticker, refreshed each loop iteration. Used to
         # detect level breaks (PDH, PDL, PWH, PWL, ...) once per crossing.
         self.level_maps: dict = {t: None for t in self.tickers}
+        # Daily ATR-14 used when each ticker's level map was built, so the
+        # put re-anchor can re-apply the brief's 3xATR staleness filter.
+        self.level_map_atr: dict = {}
         # Last seen price per ticker, for crossing detection. Avoids firing
         # the same level-break alert on every tick after the break.
         self.last_prices: dict = {t: None for t in self.tickers}
@@ -438,7 +441,21 @@ class SignalMonitor:
             return None
         level_map = self.level_maps.get(ticker)
         if level_map is None:
-            logger.info("put_reanchor: %s skipped — no level map cached", ticker)
+            # Codex P1 on PR #810: run_loop calls update_window BEFORE
+            # evaluate_ticker, and evaluate_ticker holds the ONLY lazy
+            # refresh_level_map call. So on the first RTH poll of the day the
+            # map is still None here — and because the tracker dict is stamped
+            # with today's date regardless, this whole initialization block
+            # never runs again. The re-anchor silently recorded nothing in
+            # live sessions and enforce mode could never take effect.
+            # Refresh on demand instead: this is the same load evaluate_ticker
+            # performs moments later (and caches), so it is a reorder, not
+            # extra load — one load_daily per ticker per day either way.
+            self.refresh_level_map(ticker)
+            level_map = self.level_maps.get(ticker)
+        if level_map is None:
+            logger.info("put_reanchor: %s skipped — level map unavailable "
+                        "after refresh", ticker)
             return None
         try:
             bars = new_data.loc[rth.values]
@@ -452,7 +469,17 @@ class SignalMonitor:
                 logger.info("put_reanchor: %s skipped — no usable open", ticker)
                 return None
 
-            legs = reanchor_triggers(level_map, open_px)
+            # Codex P2 on PR #810: the published playbook is built with
+            # build_level_map(atr=atr_for_filter), which drops levels beyond
+            # 3xATR. Re-anchoring with atr=None applies only identify_triggers'
+            # looser 8% bound, so on a low-volatility ticker the re-anchored leg
+            # could select a stale trigger the brief deliberately excluded —
+            # making the shadow comparison non-equivalent and, under enforce,
+            # arming an invalid leg. Pass the same daily ATR the level map was
+            # refreshed with; None only when the daily row carries no ATR, which
+            # is the same state the brief would have seen.
+            legs = reanchor_triggers(
+                level_map, open_px, atr=self.level_map_atr.get(ticker))
             put = legs.get('puts')
             if not put or put.get('trigger_level') is None:
                 logger.info(
@@ -722,6 +749,16 @@ class SignalMonitor:
             # Use the latest live close as current_price; the actual price
             # will be passed in check_level_breaks for crossing detection.
             current_price = float(df[close_col].iloc[-1])
+            # Daily ATR-14 for the level-staleness filter, kept alongside the
+            # map so the put re-anchor can apply the SAME filter the premarket
+            # brief applied when it published the playbook. None when the
+            # column is absent or non-finite — never a fabricated ATR (§3.7).
+            _atr = None
+            if 'ATR14' in df.columns:
+                _a = pd.to_numeric(df['ATR14'], errors='coerce').dropna()
+                if not _a.empty and float(_a.iloc[-1]) > 0:
+                    _atr = float(_a.iloc[-1])
+            self.level_map_atr[ticker] = _atr
             # PR #400 fix applied to this code path: pass analysis_date
             # so build_level_map → compute_previous_levels uses period-
             # filter semantics. Replay-aware: use the replay clock when

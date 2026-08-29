@@ -386,10 +386,20 @@ def _model_degeneracy(ticker: str, tf: str, model_version, ts, query_fn) -> dict
     """
     if not model_version or ts is None:
         return _unavailable("no model_version/ts on the prediction row")
+    # source = 'inference' is load-bearing, not defensive noise. A run that
+    # persists a production model uses the SAME run_id for its walk-forward
+    # rows (source='walk_forward', written per fold by
+    # mag_walk_forward._persist_per_bar_predictions) and for the live inference
+    # rows scored by the promoted artifact. Those fold rows come from different
+    # models than the one actually being served, so mixing them can either mask
+    # a model that collapsed only on live inputs or withhold a healthy one.
+    # gcp/audit_magnitude_drift.py filters the same way; this keeps the render
+    # backstop measuring exactly what the detector measures.
     sql = (
         "SELECT pred_bucket, count(*) AS n "
         "FROM magnitude_per_bar_predictions "
         "WHERE ticker = :ticker AND tf = :tf AND model_version = :mv "
+        "  AND source = 'inference' "
         "  AND ts <= :ts "
         f"  AND ts > :ts - INTERVAL '{_MAG_DEGENERACY_LOOKBACK_DAYS} days' "
         "GROUP BY pred_bucket"
