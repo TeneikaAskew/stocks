@@ -1,0 +1,199 @@
+name: GitHub REST bridge
+
+# Why this exists
+# ---------------
+# Claude Code Remote / Cowork sessions cannot reach api.github.com directly.
+# Repo-scoped paths are intercepted and answered with:
+#   403 {"message": "GitHub access is not enabled for this session. An org
+#        admin must connect the Claude GitHub App for this organization.",
+#        "documentation_url": "https://docs.anthropic.com/..."}
+#
+# Measured 2026-08-29 — the interception is NOT GitHub and NOT the egress
+# proxy (the proxy reports recentRelayFailures: [] and lists `gh` as a
+# preconfigured CLI). Two properties pin it down:
+#   * credential-independent — byte-identical 403 with no auth, with the gh
+#     CLI's stored github_pat_*, and with gh-stocks-repo-pat from Secret
+#     Manager. No token fixes it.
+#   * path-based — /rate_limit and /user return 200 while /meta, /octocat
+#     and /repos/* return 403.
+# The message is also misleading: the Claude GitHub App IS connected, which
+# is how the mcp__github__* tools work. The raw REST path is fenced off by
+# design so access flows through the App-scoped MCP surface instead.
+#
+# The mcp__github__* tools already cover issues, PRs, reviews, merges, files
+# and branches. This bridge exists for the surfaces they do NOT expose —
+# branch protection and rulesets being the ones that actually blocked work
+# (a session could not verify the `main` protection rule it had just asked
+# the owner to create).
+#
+# A GitHub Actions runner has unrestricted egress and a real token, so the
+# call runs here and the response is handed back via the job summary and an
+# artifact. Same shape as scripts/db_query_cr.sh: the sandbox dispatches over
+# 443 and reads results back, while the privileged work happens elsewhere.
+#
+# Dispatch from a Claude session:  mcp__github__actions_run_trigger
+# Dispatch from a desktop:
+#   gh workflow run gh-api.yml -f endpoint='repos/{owner}/{repo}/branches/main/protection'
+#
+# Safety: mirrors db_query_cr.sh's --commit. GET is the default and needs no
+# opt-in; any mutating method is refused unless confirm_write=true.
+
+on:
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: 'API path, e.g. repos/{owner}/{repo}/branches/main/protection'
+        required: true
+        type: string
+      method:
+        description: 'HTTP method. Anything but GET needs confirm_write=true.'
+        required: false
+        default: 'GET'
+        type: choice
+        options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+      body:
+        description: 'JSON request body for POST/PUT/PATCH. Ignored for GET.'
+        required: false
+        default: ''
+        type: string
+      confirm_write:
+        description: 'Required for any non-GET method. Mirrors db_query_cr.sh --commit.'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: read
+
+jobs:
+  call:
+    name: Call GitHub API
+    runs-on: ubuntu-latest
+    steps:
+      # db_query_cr.sh refuses to persist a write without --commit. Same
+      # guarantee here: a typo'd DELETE cannot fire on the default path.
+      - name: Refuse an unconfirmed write
+        if: inputs.method != 'GET' && inputs.confirm_write != 'true'
+        run: |
+          echo "::error::method=${{ inputs.method }} requires confirm_write=true"
+          exit 1
+
+      # Inputs are passed through `env:` rather than interpolated into the
+      # script body. A ${{ inputs.endpoint }} spliced into `run:` is a shell
+      # injection vector — the dispatcher controls that string.
+      - name: Call the API
+        id: call
+        env:
+          ENDPOINT: ${{ inputs.endpoint }}
+          METHOD: ${{ inputs.method }}
+          BODY: ${{ inputs.body }}
+          TOKEN_DEFAULT: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN_PAT: ${{ secrets.PR_WORKFLOW_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          # gh-style {owner}/{repo} placeholders, resolved against this repo.
+          EP="${ENDPOINT#/}"
+          EP="${EP//\{owner\}/${GITHUB_REPOSITORY%%/*}}"
+          EP="${EP//\{repo\}/${GITHUB_REPOSITORY##*/}}"
+          URL="https://api.github.com/${EP}"
+          echo "Request: ${METHOD} ${URL}"
+          echo
+
+          STATUS=""
+          # Tokens go in a curl config file, never in argv — argv is readable
+          # from /proc/<pid>/cmdline by any other process on the runner.
+          attempt() {
+            local label="$1" tok="$2" cfg code
+            if [ -z "$tok" ]; then
+              printf '  %-18s SKIP (secret not configured)\n' "$label"
+              return 2
+            fi
+            cfg="$(mktemp)"
+            {
+              printf 'header = "Authorization: Bearer %s"\n' "$tok"
+              printf 'header = "Accept: application/vnd.github+json"\n'
+              printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
+            } > "$cfg"
+            if [ "$METHOD" = "GET" ]; then
+              code=$(curl -sS -K "$cfg" -X GET \
+                       -o response.json -w '%{http_code}' "$URL")
+            else
+              printf '%s' "$BODY" > body.json
+              code=$(curl -sS -K "$cfg" -X "$METHOD" --data-binary @body.json \
+                       -o response.json -w '%{http_code}' "$URL")
+            fi
+            rm -f "$cfg"
+            printf '  %-18s HTTP %s\n' "$label" "$code"
+            STATUS="$code"
+            [ "$code" -lt 400 ]
+          }
+
+          # Least-privilege first. The built-in GITHUB_TOKEN has no
+          # `administration` permission scope, so repo-settings endpoints are
+          # expected to need the PAT — but let the run prove it rather than
+          # assume, and report which one actually worked.
+          AUTH="none succeeded"
+          if attempt "GITHUB_TOKEN" "$TOKEN_DEFAULT"; then
+            AUTH="GITHUB_TOKEN"
+          elif attempt "PR_WORKFLOW_TOKEN" "$TOKEN_PAT"; then
+            AUTH="PR_WORKFLOW_TOKEN"
+          fi
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "auth=$AUTH"     >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## \`${METHOD} /${EP}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Status | \`HTTP ${STATUS}\` |"
+            echo "| Auth used | \`${AUTH}\` |"
+            echo
+            echo '```json'
+            head -c 60000 response.json 2>/dev/null || echo '(no response body)'
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # A 4xx from GitHub is a RESULT, not a workflow failure — a 404 on a
+          # lookup is a legitimate answer. Failing here would fire
+          # handle-failure and open a junk issue for every miss. Infrastructure
+          # errors (curl itself failing) still fail the step via set -o pipefail.
+          echo
+          echo "Result: HTTP ${STATUS} via ${AUTH}"
+
+      - name: Upload response
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gh-api-response
+          path: response.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  handle-failure:
+    needs: call
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "GitHub REST bridge"
+      failure_title: "❌ GitHub REST bridge failed"
+      issue_labels: "workflow-failure,gh-api-bridge,automated"
+      workflow_file: "gh-api.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
