@@ -905,6 +905,35 @@ class TestComputeGammaFlipBS:
         expected = math.sqrt(40.0 * 180.0) * math.exp(-0.5 * 0.04 ** 2 / 365.0)
         assert flip == pytest.approx(expected, abs=1e-6)
 
+    def test_zero_run_finds_multiple_stable_crossings(self):
+        """Equal endpoint signs must not hide two roots inside a zero run (#812)."""
+        positions = (
+            ("call", 70.94097, 33.42834, 0.043906),
+            ("call", 172.28686, 44.51189, 0.103913),
+            ("put", 186.51450, 13.04986, 0.120317),
+        )
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": open_interest,
+                "implied_volatility": iv,
+                "expiration": "2026-08-31",
+            }
+            for option_type, strike, open_interest, iv in positions
+            for _ in range(4)
+        ]
+
+        flip = gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.0,
+            dividend_yield=0.0,
+            snapshot_date="2026-08-30",
+        )
+
+        assert flip == pytest.approx(104.1632, abs=1e-2)
+
     def test_none_when_thin_chain(self):
         opts = self._chain()[:4]
         assert gamma.compute_gamma_flip_bs(

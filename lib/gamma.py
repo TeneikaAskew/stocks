@@ -793,20 +793,31 @@ def compute_gamma_flip_bs(
             else:
                 # Ordinary gamma has underflowed across this interval.  The
                 # run may reach either search boundary—or cover the full
-                # grid—so evaluate stable signs at the widest available
-                # bracket before deciding that no crossing exists.
+                # grid—and an even number of roots can leave equal signs at
+                # the endpoints.  Sample the stable sum across every grid
+                # interval in the run so each internal root gets its own
+                # bracket instead of testing only the outer endpoints.
                 bracket_left = max(left, 0)
                 bracket_right = min(right, len(S_grid) - 1)
                 from scipy.optimize import brentq
-                stable_left = _stable_net_gamma(float(S_grid[bracket_left]))
-                stable_right = _stable_net_gamma(float(S_grid[bracket_right]))
-                if (stable_left != 0.0 and stable_right != 0.0
-                        and ((stable_left < 0.0) != (stable_right < 0.0))):
-                    found.append(float(brentq(
-                        _stable_net_gamma,
-                        float(S_grid[bracket_left]),
-                        float(S_grid[bracket_right]),
-                    )))
+                stable_values = [
+                    _stable_net_gamma(float(S_grid[j]))
+                    for j in range(bracket_left, bracket_right + 1)
+                ]
+                for offset, stable_value in enumerate(stable_values):
+                    if stable_value == 0.0:
+                        found.append(float(S_grid[bracket_left + offset]))
+                for offset in range(len(stable_values) - 1):
+                    stable_left = stable_values[offset]
+                    stable_right = stable_values[offset + 1]
+                    if (stable_left != 0.0 and stable_right != 0.0
+                            and ((stable_left < 0.0) != (stable_right < 0.0))):
+                        interval_left = bracket_left + offset
+                        found.append(float(brentq(
+                            _stable_net_gamma,
+                            float(S_grid[interval_left]),
+                            float(S_grid[interval_left + 1]),
+                        )))
             i += 1
         for i in range(len(S_grid) - 1):
             g1, g2 = G[i], G[i + 1]
