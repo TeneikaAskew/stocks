@@ -98,6 +98,15 @@ for that row — the previous revision emitted one identical document-level link
 | [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | — | `platform/src/App.tsx` | `navigation.spec.ts` | [#685](https://github.com/TeneikaAskew/stocks/issues/685) [#683](https://github.com/TeneikaAskew/stocks/issues/683) | [#546](https://github.com/TeneikaAskew/stocks/pull/546) [#611](https://github.com/TeneikaAskew/stocks/pull/611) [#703](https://github.com/TeneikaAskew/stocks/pull/703) [#715](https://github.com/TeneikaAskew/stocks/pull/715) | Production but needs remediation | P2 |
 | [FEAT-DEBT-001](02-FEATURE-CATALOG.md#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | — | `scripts/` | — | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#841](https://github.com/TeneikaAskew/stocks/issues/841) [#921](https://github.com/TeneikaAskew/stocks/issues/921) | UNKNOWN | Retire candidate | P3 |
 
+## Related planning artifacts
+
+This plan owns capability trust status and the roadmap. Two adjacent artifacts own questions it
+deliberately does not answer, and the three are reconciled in
+[12](12-PR-ISSUE-TRACEABILITY.md#reconciliation-with-the-audit-remediation-workstream):
+
+- [#924](https://github.com/TeneikaAskew/stocks/pull/924) — the canonical 105-issue inventory across 18 delivery streams.
+- [#941](https://github.com/TeneikaAskew/stocks/pull/941) — which issues actually have a remediation PR. As of 2026-08-30: **5 of 105 touched, 100 with no PR, 13 of 18 streams unstarted.**
+
 ## Snapshot
 
 | Metric | Value |
@@ -108,7 +117,7 @@ for that row — the previous revision emitted one identical document-level link
 | Cloud Run jobs / schedulers | 67 / 58 |
 | Database relations | 64 (62 tables + 2 materialized views) |
 | Models + LLM nodes | 21 registry entries + 14 routed LLM nodes |
-| Open issues mapped | 119 of 119 |
+| Open issues mapped | 120 of 120 (= 105 canonical audit + 13 pre-audit + 2 other) |
 | PRs mapped | 151 significant, #184–#932 |
 | Tests | 230 python · 29 Playwright · 27 Vitest |
 | Capabilities at Production (unqualified) | **2 of 25** (Landing, Help) |

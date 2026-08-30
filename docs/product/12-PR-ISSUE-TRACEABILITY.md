@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **119 of 119 (100%)** | `list_issues` (state OPEN, 2 pages), classified by label and title prefix |
+| Open issues mapped | **120 of 120 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Re-pulled 2026-08-30 15:02 UTC; #940 added |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -17,6 +17,57 @@
 > A PR listed against a capability provably concerns that subject; it is *not* proven to be the
 > only or earliest such PR. Anything before #184 is `UNKNOWN / NEEDS HISTORY TRACE` — resolve by
 > paging `list_pull_requests` further back, not by guessing from commit messages.
+
+
+## Reconciliation with the audit-remediation workstream
+
+**This document is not the authority on remediation coverage.** Two other planning artifacts own
+adjacent questions, and the three must not diverge:
+
+| Artifact | Owns | Authority for |
+|---|---|---|
+| This file (`12`) | capability → historical PR lineage → open issues | which PRs *built* a capability, and which issues block it |
+| [#924](https://github.com/TeneikaAskew/stocks/pull/924) → `docs/audit/2026-08-27/issue-reconciliation.md` | the **canonical 105-issue inventory**, partitioned across 18 delivery streams (PR-A … PR-R) plus PR-0 | stream membership and delivery gates |
+| [#941](https://github.com/TeneikaAskew/stocks/pull/941) | per-PR coverage with an explicit *does-NOT-fix* column | **which issues actually have a remediation PR** |
+
+### Why this file says 120 and #924 says 105
+
+Both are correct; they count different sets. Reconciled 2026-08-30:
+
+| | Count |
+|---|---|
+| All open issues in the repository | **120** |
+| − pre-audit issues (numbered below #812) | −13 |
+| − [#930](https://github.com/TeneikaAskew/stocks/issues/930), auto-created `gcp-job-failure` | −1 |
+| − [#940](https://github.com/TeneikaAskew/stocks/issues/940), created 2026-08-30, explicitly recorded by #924 as outside the original inventory | −1 |
+| **= canonical audit inventory** | **105** |
+
+The 13 pre-audit issues excluded from the canonical set are
+[#249](https://github.com/TeneikaAskew/stocks/issues/249),
+[#285](https://github.com/TeneikaAskew/stocks/issues/285),
+[#380](https://github.com/TeneikaAskew/stocks/issues/380),
+[#442](https://github.com/TeneikaAskew/stocks/issues/442),
+[#607](https://github.com/TeneikaAskew/stocks/issues/607),
+[#683](https://github.com/TeneikaAskew/stocks/issues/683),
+[#685](https://github.com/TeneikaAskew/stocks/issues/685),
+[#701](https://github.com/TeneikaAskew/stocks/issues/701),
+[#716](https://github.com/TeneikaAskew/stocks/issues/716),
+[#717](https://github.com/TeneikaAskew/stocks/issues/717),
+[#722](https://github.com/TeneikaAskew/stocks/issues/722),
+[#784](https://github.com/TeneikaAskew/stocks/issues/784) and
+[#808](https://github.com/TeneikaAskew/stocks/issues/808). They are real open work and remain
+mapped here even though no delivery stream owns them — a gap worth an explicit decision.
+
+### Remediation status, per #941 (2026-08-30)
+
+- **5 of 105** canonical issues are touched by any open PR ([#812](https://github.com/TeneikaAskew/stocks/issues/812), [#815](https://github.com/TeneikaAskew/stocks/issues/815), [#816](https://github.com/TeneikaAskew/stocks/issues/816), [#818](https://github.com/TeneikaAskew/stocks/issues/818), [#863](https://github.com/TeneikaAskew/stocks/issues/863)); **100 have no PR at all**.
+- **13 of 18 streams are entirely unstarted**, plus PR-0.
+- **No canonical issue can correctly close on the current PR set** — #941 found both `Fixes` claims over-claim against the issues' own Definition-of-done, and GitHub already lists each under its issue's *closed by* references.
+- Nothing has landed on `main` since #924 opened, so no finding was resolved silently outside these PRs.
+
+This does not change any status in [02](02-FEATURE-CATALOG.md) — a capability's trust state
+depends on defects being *fixed*, not on a PR existing. It does mean the roadmap in
+[13](13-ROADMAP.md) is sequencing work that is, with five exceptions, entirely unstarted.
 
 ## Audit PRs
 
@@ -42,7 +93,7 @@ unmeasured claims in this repository.
 | CRITICAL | 22 |
 | P0 | 14 |
 | HIGH | 16 |
-| P1 | 29 |
+| P1 | 30 |
 | MEDIUM | 9 |
 | P2 | 10 |
 | LOW | 5 |
@@ -51,7 +102,7 @@ unmeasured claims in this repository.
 | ENH | 5 |
 | DECISION | 1 |
 | ops | 1 |
-| **Total** | **119** |
+| **Total** | **120** |
 
 ## Full open-issue map by capability
 
@@ -163,7 +214,7 @@ Every open issue appears exactly once. **No range notation** — the previous re
 
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
-### FEAT-SIGNAL-001 — Signals / execution (9 open)
+### FEAT-SIGNAL-001 — Signals / execution (10 open)
 
 | Issue | Sev | Title |
 |---|---|---|

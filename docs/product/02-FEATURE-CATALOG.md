@@ -198,7 +198,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 |
 | Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
 | Tests | `signals.spec.ts`, `tests/test_signal*.py` |
-| Open issues | 9 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001-signals-execution-9-open) |
+| Open issues | 9 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001-signals-execution-10-open) |
 | Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#285](https://github.com/TeneikaAskew/stocks/issues/285) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
