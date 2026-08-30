@@ -219,6 +219,69 @@ Every repository PR numbered after #924 through #941 was inspected by body, chan
 
 **Required ordering corrections:** PR-A's repaired input semantics gate affected PR-B validation; PR-A followed by repaired replay/data paths in PR-F/PR-G gate PR-C research baselines; #818/PR-F gates calibration or activation of #816/PR-E; and the shared read-side freshness primitive (PR-0) must precede the overlapping #833/#922/#863 work in PR-M/PR-N. Code-only candidates may merge earlier when independently safe, but they do not discharge these validation and rerun gates.
 
+### Definition-of-done scoring for the closing-link decisions
+
+The reconciliation above records *that* the two `Fixes` links were over-broad. This records *why*, scored against each issue's own **Definition of done**, because the scoring is what justifies keeping the issues open after their PRs merge.
+
+| PR | Issue | DoD met | DoD outstanding |
+|---|---|---|---|
+| #936 / #942 | #812 | 1 of 3 — the spot-600 pure-put regression | (2) re-run the production query: zero flips >20% from spot, or every remaining one explained; (3) record a decision on the **54 contaminated `gamma_levels_eod` rows** |
+| #934 | #818 | 1 of 2 — the test asserting the replay stub stops at `max_daily_trades` | the **live-vs-replay fire-count comparison for one date** |
+
+Item (3) on #812 is the one that costs something if forgotten. The issue calls those rows "a silent lie to anything reading `gamma_levels_eod`", and it is the only artifact tracking them; closing #812 on a code-only merge drops them.
+
+**Closing-link status.** #818's link was cleared and #934 has since merged, so that path is closed correctly — #818 stays open pending the comparison. **#812 still shows both #936 and #942 as closing references** and both must be cleared manually (a GraphQL-only operation) before either merges.
+
+### Both open gamma PRs regress current `main`
+
+Measured 2026-08-30 against Codex's own repro on #942 — 5 calls at K=90, 5 puts at K=110, equal OI, 1 DTE, IV=0.04, spot=100:
+
+| Ref | Commit | `gamma_flip` |
+|---|---|---|
+| `main` | `d335f2f` | **100.0** |
+| #936 | `4ed8e4b` | `None` |
+| #942 | `6486742` | `None` |
+
+`main` returns the correct flip; **#936 introduces the regression and #942 does not fix it.** The lost value is legitimate by #812's own criterion — #812 defines the artifacts as flips **>20% from spot**, and this crossing sits at 0% from spot, between the call and put clusters rather than in a deep wing.
+
+Mechanism: #942's new loop accepts only a *single isolated* zero, while the original loop rejects every zero-adjacent pair, so a contiguous zero **run** between opposite-signed endpoints falls through both and returns `None`.
+
+Consequence for sequencing: **neither gamma PR is a safe merge, and closing #936 in favour of #942 is not a fallback** — both carry the regression. Both need the run-aware fix first.
+
+### Repository state since this reconciliation was created
+
+**Baseline: `main` was at `d335f2f` when PR #924 was opened** (2026-08-29 17:20:51 UTC). That commit was made at 17:06:35 UTC, fourteen minutes earlier, and it is also the `base.sha` GitHub recorded for #924 — two independent sources for the same baseline.
+
+```bash
+git fetch origin main && \
+git log --oneline d335f2f6b6656fb5f776c2b01d8a65e19c5023d2..origin/main
+```
+
+As of 2026-08-30 this returns the two remediation merges below and nothing else, so no canonical finding was resolved silently outside the tracked PRs:
+
+- `dd4421b` — #934, replay daily-cap accounting (#818, partial)
+- `8eccde7` — #933, emergency exposure ceiling (#816, mechanism only, defaults no-op)
+
+**Use the two-dot range with the fetch chained, not `--since`.** This check has been wrong twice, and both failures looked identical from outside — empty output for a reason unrelated to the question:
+
+| Revision | Defect |
+|---|---|
+| 1 | `--since` filters commit *timestamps*, not reachability, so a commit authored before the baseline and merged after it is invisible |
+| 2 | the range read a stale local `origin/main`; `git log` performs no network operation |
+| 3 | the fetch was not chained, so a failed fetch still ran the log against the unrefreshed ref |
+
+Because the check can only fail by returning empty, a wrong version is indistinguishable from a right one. **Re-derive the answer; do not assume the newest form is correct**, and record a new baseline SHA whenever something merges.
+
+This rules out silently landed work in one direction only. It does **not** rule out the converse — issues resolved *before* the audit window and mis-classified as open. That remains part of the outstanding 105-issue inventory.
+
+### Findings raised during remediation, outside the canonical 105
+
+Remediation review is producing findings that are not among the audit's 105 and belong to no stream. Tracked here so stream sizing does not silently omit them.
+
+| Issue | Origin | Status and sequencing |
+|---|---|---|
+| [#940](https://github.com/TeneikaAskew/stocks/issues/940) — session-scoped risk state does not survive a signal-monitor restart | Codex review of #933 at `7b82f10` | `daily_trades` (`:151`), `daily_pnl` (`:152`) and `active_positions` (`:186`) are all process-local while `fire_alert` writes `is_open=TRUE` (`:1533`), so a second execution starts from zero and can admit a full fresh set of positions past every bound. Not a regression from #933 — `max_daily_trades` has behaved this way throughout. **#933 merged under an explicit condition: its ceilings are a proven no-op, and #940 must land before any ceiling is lowered from its default.** Reversing that order produces a control that looks enforced and opens on restart. |
+
 ### Proposed grouped remediation PRs
 
 The 105 canonical issues partition into the following **18 candidate delivery streams** (each issue appears exactly once). Fifteen are intentionally multi-issue groups; three remain singleton PR candidates because their risk or refactor boundary should not be mixed with other work. These are proposed PR manifests, not already-open pull requests.
