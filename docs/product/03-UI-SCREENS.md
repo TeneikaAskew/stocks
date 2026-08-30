@@ -13,6 +13,36 @@ skeleton branch, `err` = an error branch, `empty` = an empty-result branch, `sta
 freshness/as-of/demo-data affordance. A missing marker is a concrete gap to close, not a
 statement that the screen is broken.
 
+## Live URLs
+
+**VERIFIED — DEPLOYMENT** (probed 2026-08-30). Production is IAP-gated: an unauthenticated
+request to any path below redirects to Google SSO for audience `bictech.org`. Full environment
+inventory, including the staging and Discord services whose URLs are not committed anywhere, is
+in [05](05-INFRASTRUCTURE.md#environments-and-urls).
+
+| Screen | Route | Production URL | Local dev |
+|---|---|---|---|
+| Landing | `/` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/` | `http://localhost:5173/` |
+| Welcome redirect | `/welcome` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/welcome` | `http://localhost:5173/welcome` |
+| Dashboard | `/dashboard` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/dashboard` | `http://localhost:5173/dashboard` |
+| Live Market | `/live` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/live` | `http://localhost:5173/live` |
+| Charts | `/charts` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/charts` | `http://localhost:5173/charts` |
+| Options Flow | `/options` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/options` | `http://localhost:5173/options` |
+| Playbook | `/playbook` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/playbook` | `http://localhost:5173/playbook` |
+| Reports | `/reports` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/reports` | `http://localhost:5173/reports` |
+| Signals | `/signals` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/signals` | `http://localhost:5173/signals` |
+| Journal | `/journal` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/journal` | `http://localhost:5173/journal` |
+| AI Insights | `/insights` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/insights` | `http://localhost:5173/insights` |
+| Catalysts | `/catalysts` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/catalysts` | `http://localhost:5173/catalysts` |
+| Admin | `/admin` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/admin` | `http://localhost:5173/admin` |
+| Help & Glossary | `/help` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/help` | `http://localhost:5173/help` |
+| Settings | `/settings` | `https://trading-platform-5sjtb3yl7a-ue.a.run.app/settings` | `http://localhost:5173/settings` |
+
+Operational endpoints outside the SPA router: `https://trading-platform-5sjtb3yl7a-ue.a.run.app/dev` (the unauthenticated-on-staging
+page — see [09](09-SECURITY-AUTH.md)), `https://trading-platform-5sjtb3yl7a-ue.a.run.app/api/health`, `https://trading-platform-5sjtb3yl7a-ue.a.run.app/api/health/freshness`.
+In local development the Vite server proxies `/api` to `http://localhost:8000`
+(`platform/vite.config.ts:21,27`), so the API is reachable at both ports.
+
 ## Screen inventory
 
 | Screen | Route | Component | LOC | APIs | Child cmpts | load | err | empty | stale | E2E specs | Status |

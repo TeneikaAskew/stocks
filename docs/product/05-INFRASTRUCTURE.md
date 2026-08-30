@@ -39,6 +39,49 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 [#835](https://github.com/TeneikaAskew/stocks/issues/835) five jobs on stale image tags · 
 [#859](https://github.com/TeneikaAskew/stocks/issues/859) five live-vs-repo config drifts.
 
+## Environments and URLs
+
+**VERIFIED — DEPLOYMENT.** The production URL was probed on 2026-08-30: both `/` and
+`/api/health` return a redirect to Google SSO carrying IAP OAuth client
+`369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58`, which is the same client ID hardcoded at
+`platform/deploy.sh:99`. The service is live and IAP is active on it.
+
+| Environment | Service | URL | Auth | Evidence |
+|---|---|---|---|---|
+| **Production** | `trading-platform` (us-east1) | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | `platform/playwright.config.ts:8`, `index.html:169`, `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
+| **Staging** | `trading-platform-staging` | `UNKNOWN` — Cloud Run assigns it; not committed anywhere | **public ingress + Firebase** (`PUBLIC=1`, `AUTH_MODE=firebase`) | `platform/deploy.sh:52-56` |
+| **Discord interactions** | `discord-interactions` | `UNKNOWN` — docs carry a redacted placeholder | Discord signature verification | `docs/*` show `https://discord-interactions-XXXXXXXXXX-ue.a.run.app/discord/interactions` |
+| **Failure notifier** | notifier service | `UNKNOWN` — redacted placeholder | internal | `https://failure-notifier-XXXXXXXXXX-ue.a.run.app` |
+| **Local dev (frontend)** | Vite | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | `platform/vite.config.ts:17`, `Makefile:75` |
+| **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; Vite proxies `/api` → `:8000` (`vite.config.ts:21,27`) |
+
+**No custom domain is committed anywhere in the repository.** The landing components brand the
+product **Solyra** (`platform/src/components/landing/*`, and [#685](https://github.com/TeneikaAskew/stocks/issues/685)
+"Rename internal Heatseeker/Flowseeker tabs before Solyra public launch"), but no `solyra.*`
+hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
+is **PRODUCT DECISION REQUIRED** / unknown — see [15](15-OPEN-DECISIONS.md).
+
+### Resolving the UNKNOWN URLs
+
+Cloud Run assigns service URLs, so they are not in source. To fill them in:
+
+```bash
+gcloud run services list --region=us-east1 \
+  --format="table(metadata.name,status.url)" --project=adept-mountain-474619-d4
+```
+
+This could not be run from the session that wrote this plan — `gcloud` reported
+`ACCESS_TOKEN_TYPE_UNSUPPORTED` because `CLOUDSDK_AUTH_ACCESS_TOKEN` held a harness placeholder
+rather than a real credential. Anyone with working GCP auth should paste the output here.
+
+### Staging exposure, corroborated
+
+`docs/BRIEFING_DECK.md:292` documents the `/dev` gate as *"Gated by
+`X-Goog-Authenticated-User-Email == teneika@bictech.org`. Local-dev requests (no header) bypass
+the gate."* That assumption holds only where IAP is in front. The staging service runs
+`PUBLIC=1` with **no IAP** (`platform/deploy.sh:52-56`), so "no header" describes the open
+internet, not a developer laptop — the exposure detailed in [09](09-SECURITY-AUTH.md).
+
 ## Cloud Run job inventory
 
 `—` in a config column means the flag is absent from the `deploy_*` function, so Cloud Run's

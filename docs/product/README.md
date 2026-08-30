@@ -25,6 +25,18 @@ The maintained index from product intent through implementation, evidence, risk 
 | [14 Work Breakdown](14-WORK-BREAKDOWN.md) | How does the work decompose into evidence? |
 | [15 Open Decisions](15-OPEN-DECISIONS.md) | Which product choices remain unresolved? |
 
+## Where the app lives
+
+| Environment | URL | Auth |
+|---|---|---|
+| Production | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
+| Staging | `UNKNOWN` (service `trading-platform-staging`) | **public + Firebase** |
+| Local dev | `http://localhost:5173` (API `http://localhost:8000`) | none (`AUTH_MODE` defaults to `open`) |
+
+No custom domain is committed in the repo despite the **Solyra** branding on the landing page.
+Per-screen URLs: [03](03-UI-SCREENS.md#live-urls). Full inventory and the command to resolve the
+unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
+
 ## Governance contract
 
 **Evidence tags:** `VERIFIED — CODE`, `VERIFIED — TEST`, `VERIFIED — DEPLOYMENT`,
