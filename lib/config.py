@@ -259,6 +259,20 @@ class RiskConfig:
 class ExitConfig:
     call_target: float = 0.0030   # +0.30%
     put_target: float = 0.0038    # +0.38%
+    # Backtest-only legacy stop levels. Do not wire these into live trading
+    # merely to manufacture parity (#815). Across 736 observed fires, applying
+    # these levels to fixed entries reduced the recorded-path result by 12.70
+    # percentage points. That is an exit-policy estimate, not a causal estimate
+    # of the stateful production strategy: stops can change later P&L gates,
+    # capital, concurrency, sizing, and which later trades are eligible.
+    #
+    # The live time stop bounds exposure duration, not loss magnitude. It does
+    # not protect against gaps, halts, slippage, or failed execution, and the
+    # observed worst loss is not a structural loss cap. Reconsider live stops
+    # only with execution-aware sequential replay, out-of-sample validation,
+    # and a predeclared portfolio tail-risk objective. Until #816 restores an
+    # enforceable daily boundary, the deliberate no-per-trade-stop policy must
+    # be treated as conditionally unbounded risk rather than a completed fix.
     call_stop: float = 0.0015     # -0.15%
     put_stop: float = 0.0020      # -0.20%
     call_time_stop: int = 30      # minutes
