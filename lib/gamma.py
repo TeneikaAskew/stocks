@@ -735,6 +735,13 @@ def compute_gamma_flip_bs(
         G = (gam * (sgn * oi)[None, :]).sum(axis=1)  # (M,)
         # Find sign changes; linearly interpolate each crossing.
         found: list[float] = []
+        # Preserve an exact sampled crossing when it is isolated between
+        # opposite signs.  Zero runs are still ignored: those occur when all
+        # contributions underflow together in a deep wing.
+        for i in range(1, len(S_grid) - 1):
+            if (G[i] == 0.0 and G[i - 1] != 0.0 and G[i + 1] != 0.0
+                    and ((G[i - 1] < 0.0) != (G[i + 1] < 0.0))):
+                found.append(float(S_grid[i]))
         for i in range(len(S_grid) - 1):
             g1, g2 = G[i], G[i + 1]
             # A zero can be numerical underflow in a deep wing, not a

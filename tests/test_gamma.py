@@ -818,6 +818,41 @@ class TestComputeGammaFlipBS:
             snapshot_date="2026-08-30",
         ) is None
 
+    def test_exact_grid_zero_between_opposite_signs_is_a_flip(self, monkeypatch):
+        """An isolated exact zero at spot must not be mistaken for underflow."""
+        import numpy as np
+        from lib import options_greeks
+
+        def fake_bs_gamma(S, K, *_args):
+            shape = np.broadcast_shapes(np.shape(S), np.shape(K))
+            prices = np.broadcast_to(S, shape)
+            strikes = np.broadcast_to(K, shape)
+            # Calls (K=90) vary through zero net GEX at spot; puts (K=110)
+            # provide the equal constant contribution being crossed.
+            call_gamma = np.where(prices < 100.0, 0.5,
+                                  np.where(prices > 100.0, 1.5, 1.0))
+            return np.where(strikes < 100.0, call_gamma, 1.0)
+
+        monkeypatch.setattr(options_greeks, "bs_gamma", fake_bs_gamma)
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": 100,
+                "implied_volatility": 0.20,
+                "expiration": "2026-09-30",
+            }
+            for option_type, strike in (("call", 90.0),) * 5 + (("put", 110.0),) * 5
+        ]
+
+        assert gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.045,
+            dividend_yield=0.013,
+            snapshot_date="2026-08-30",
+        ) == pytest.approx(100.0)
+
     def test_none_when_thin_chain(self):
         opts = self._chain()[:4]
         assert gamma.compute_gamma_flip_bs(
