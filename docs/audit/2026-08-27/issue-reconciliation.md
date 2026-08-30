@@ -244,12 +244,26 @@ Candidate work produced in issue-response environments is an urgent recovery inp
 
 | Issue | Candidate commit | State |
 |---|---|---|
-| #812 | `98dbd35` | Stranded; absent from this clone and not known to be on a remote. |
-| #815 | `c3f582a` | Stranded; absent from this clone and not known to be on a remote. |
-| #863 | `06b2d34` | Stranded; absent from this clone and not known to be on a remote. |
+| #812 | `98dbd35` | Original commit unrecoverable; reconstructed as `4ed8e4b` in PR #936 against `main`. |
+| #815 | `c3f582a` | Original commit unrecoverable; reconstructed as `daf9893` in PR #937 against `main`. |
+| #863 | `06b2d34` | Original commit unrecoverable; reconstructed as `32ab299` in PR #938 against `main`. |
 | #813, #814, #816 | — | Analysis-only; no candidate commit identified. |
 
 Before any stream is sized or scheduled, inventory **all 105 canonical issues** with candidate commit, producing environment, remote/PR reachability, patch recoverability, tests previously run, and revalidation needed against current HEAD. An absent commit must be recovered as a patch and retested; it must not be counted as delivered. Unknown entries remain blockers to stream sizing rather than being silently classified as either implemented or analysis-only.
+
+### Publication path and branch visibility
+
+The issue-response environment may omit a dedicated `make_pr` tool and may start without a configured Git remote. That does not by itself make publication impossible. The verified fallback used for PRs #935–#938 is:
+
+1. confirm GitHub CLI authentication with `gh auth status` and add or configure the intended repository as `origin`;
+2. push the named branch with authenticated Git, without printing or persisting the credential in documentation or logs;
+3. create the PR explicitly with `gh pr create --repo TeneikaAskew/stocks --base <base> --head <branch>`;
+4. verify publication independently with `git ls-remote origin refs/heads/<branch>` and `gh pr view <number> --json state,baseRefName,headRefName,headRefOid,url`;
+5. report the commit and PR as published only when the remote branch SHA and PR head SHA match the local commit.
+
+A missing `make_pr` command must be reported accurately, but it is no longer sufficient evidence that a tested commit is stranded. Conversely, a local commit, successful test run, or attempted CLI invocation is not publication evidence without the remote-SHA and open-PR checks above.
+
+PR #935 targets `work`, because it is stacked on PR #924's head. Therefore the dependency gates and this publication procedure are not visible on `main` until PR #924 and its stacked follow-up land. Anyone scheduling remediation from `main` before then must treat PR-A, PR-F, and PR-G as prerequisites to PR-C and must not start PR-C from the ungated manifest.
 
 ### Delivery rules
 
