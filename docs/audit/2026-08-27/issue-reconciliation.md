@@ -228,9 +228,39 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 1. Open a remediation PR only when it contains an implementation or a concrete validation artifact; do not create empty PRs merely to obtain a bot response.
 2. Start with the native dependency graph above. A blocked issue remains open until its blocker is resolved and its own acceptance criteria pass.
 3. Put every covered issue in the PR description. Use `Fixes #N` only when that PR fully closes #N; otherwise use `Related to #N` and leave it open.
-4. Ask `@claude` once on the grouped PR to review the complete diff against the enumerated issue acceptance criteria, and require a per-issue disposition in the review summary.
+4. Create **one top-level PR comment per included canonical issue** and invoke `@claude` in each comment. Do not collapse a nine-issue PR into one generic review request: it must have nine independently auditable issue-review comments.
 5. Keep high-risk live behavior, schema migrations, and broad refactors in independently reversible PRs even when they belong to the same stream.
 6. Target reviewable increments (normally one subsystem and one test contract). Split a candidate stream when it crosses deployment units, needs different owners, or cannot be rolled back atomically.
+
+### Per-issue Claude review threads on grouped PRs
+
+When an implementation PR is opened, the PR body provides the overall change summary and links every included issue. After the PR exists, create a separate top-level Conversation comment for each issue actually addressed by the diff. Each comment must:
+
+1. identify the canonical issue in its heading and link it;
+2. summarize the issue's verified defect, affected code, historical-evidence impact, and acceptance criteria (copying only the relevant current content, not stale or superseded wording);
+3. state which files, commits, and tests in the PR claim to satisfy that issue;
+4. mention `@claude` and ask for an explicit `PASS`, `PASS WITH CORRECTIONS`, or `FAIL` disposition for **that issue only**; and
+5. remain open for follow-up until Claude's response and any corrections are recorded.
+
+For example, a full PR-A implementation would have nine comments, in this order: #825, #826, #827, #828, #842, #848, #925, #926, and #928. If the actual diff implements only a subset, include and ping only that subset and leave the other issues for a later PR. This prevents a grouped PR from falsely implying that all issues in its candidate stream were implemented.
+
+Use the following comment template:
+
+```markdown
+## Claude review — Issue #NNN: <issue title>
+
+**Canonical issue:** #NNN
+**Verified defect and scope:** <current issue summary and affected components>
+**Historical evidence impact:** <NONE | REINTERPRET | RERUN | DISCARD | UNKNOWN>
+**Acceptance criteria claimed by this PR:**
+- [ ] <criterion>
+
+**Implementation evidence in this PR:**
+- `<file/function>` — <change>
+- `<test command or test file>` — <coverage>
+
+@claude Please review this PR specifically against issue #NNN. Return **PASS**, **PASS WITH CORRECTIONS**, or **FAIL**; verify the implementation evidence and every acceptance criterion, and identify any missing scope or regression coverage. Do not treat findings from the other issue comments as satisfying this issue.
+```
 
 ## Ticket-conversation evaluation status
 
