@@ -99,6 +99,19 @@ This does not change any status in [02](02-FEATURE-CATALOG.md) — a capability'
 depends on defects being *fixed*, not on a PR existing. It does mean the roadmap in
 [13](13-ROADMAP.md) is sequencing work that is, with five exceptions, entirely unstarted.
 
+
+### Note: #931 is being updated in parallel
+
+At 2026-08-30 21:24 a second commit (`6019ec27`) landed on `work-product-plan`, authored by a
+different session, porting the same post-audit remediation state this branch records. Its message
+cites the #924 reconciliation: *"#931 was not updated by the post-merge work, so it must not be
+treated as the current roadmap until the state is ported."*
+
+Both efforts now carry overlapping plan state, which is the divergence #924 exists to prevent.
+The counts agree (1 completed, 104 open, 100 without an implementation PR, 13 of 18 streams
+unstarted), so this is duplication rather than contradiction — but it needs an owner decision,
+recorded in [15](15-OPEN-DECISIONS.md).
+
 ## Audit PRs
 
 | PR | Merged | Scope |

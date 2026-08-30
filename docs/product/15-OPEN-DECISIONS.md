@@ -17,6 +17,7 @@ Every item is **PRODUCT DECISION REQUIRED**; no target implementation should sil
 | Market/vendor contracts | authoritative source per domain and fallback behavior | SLA, licensing, quotas, timestamp semantics | TBD |
 | SLO/RPO/RTO | numeric availability, latency, freshness and recovery objectives | usage windows, impact/cost analysis | TBD |
 | Portfolio scope | journal only vs positions/exposure/risk portfolio | product boundary and ownership model | TBD |
+| Which plan artifact is canonical | Three now carry plan state: PR [#931](https://github.com/TeneikaAskew/stocks/pull/931) (being updated by a second session as of `6019ec27`), this branch's rebuild, and [#924](https://github.com/TeneikaAskew/stocks/pull/924)'s stream manifest. The counts agree; the depth and the code-extracted inventories do not | pick one home for capability trust status, or the three will drift | TBD |
 | Legacy surfaces | Apps Script, Pine scripts, static reports, archives | current consumers/owners | TBD |
 | `/dev` on public staging | keep and gate it, or drop it from public deployments — it exposes service account, IAP audience, revision and model state without sign-in when `STAGING_SERVICE=1` (see [09](09-SECURITY-AUTH.md)) | who uses `/dev`, and whether staging must stay public | TBD |
 | Open registration | `AUTH_OPEN_SIGNUP` defaults to `1`, so any verified Firebase identity is admitted; closing it means operating `AUTH_ALLOWED_EMAILS` | intended audience and onboarding model | TBD |
