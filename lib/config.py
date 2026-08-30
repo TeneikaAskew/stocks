@@ -7,6 +7,7 @@ codebase — every tunable value flows from these config objects.
 """
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -240,6 +241,33 @@ class RiskConfig:
     max_concurrent_positions: int = 1
     daily_loss_limit: float = -0.02   # -2%
     daily_profit_target: float = 0.03  # +3%
+
+    # --- Emergency exposure ceiling (#816) --------------------------------
+    # An operational SAFETY INVARIANT, not a tuned policy. Codex's review of
+    # #816 made the distinction that matters: today's only bound on
+    # simultaneous exposure is `max_daily_trades`, which is an *accidental*
+    # boundary — it limits daily entries rather than concurrent positions, it
+    # is per-ticker, it says nothing about aggregate size, and raising the
+    # daily cap would silently raise maximum concurrent exposure with it.
+    #
+    # These three values are deliberately set to what that accidental bound
+    # already implies, so enabling them changes NO current behaviour:
+    #   count     = max_daily_trades                       = 5
+    #   gross     = max_daily_trades x max(position_sizing) = 5 x 1.00 = 5.0
+    #   portfolio = gross x len(watchlist)                  = 5.0 x 3  = 15.0
+    #
+    # What they buy is the decoupling: exposure can no longer move as a side
+    # effect of a change to an unrelated cap. Calibrating them DOWN is a
+    # separate decision that needs the shadow data — which does not exist yet
+    # (`signal_alerts.concurrent_positions` is 100% NULL; the shadow shipped
+    # after the 2026-08-28 session and the first rows land 2026-08-31).
+    #
+    # Deliberately NOT set to `max_concurrent_positions` (=1). That value may
+    # be stale, and enforcing it blind would censor nearly every repeated
+    # signal on a system that fires its full 5/ticker cap every session.
+    emergency_max_concurrent_positions: int = 5
+    emergency_max_gross_exposure: float = 5.0
+    emergency_max_portfolio_gross: float = 15.0
     position_sizing: Dict[str, float] = field(default_factory=lambda: {
         'weak': 0.25,
         'medium': 0.50,
@@ -667,6 +695,44 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
     if rp:
         app.risk.max_daily_trades = rp.get('max_daily_trades', app.risk.max_daily_trades)
         app.risk.max_concurrent_positions = rp.get('max_concurrent_positions', app.risk.max_concurrent_positions)
+        for _ec in ('emergency_max_concurrent_positions',
+                    'emergency_max_gross_exposure',
+                    'emergency_max_portfolio_gross'):
+            _v = rp.get(_ec, None)
+            if _v is not None:
+                # Fail loud. A ceiling of 0 or a negative would block every
+                # fire; silently accepting it would look like a dead strategy
+                # rather than a misconfiguration.
+                # bool before float: `float(True)` is 1.0, which clears every
+                # numeric check below and silently installs a ceiling of 1 —
+                # restrictive enough to block after a single position, and
+                # indistinguishable from a deliberate setting. Applies to all
+                # three fields; the count branch used to be the only one that
+                # caught it.
+                if isinstance(_v, bool):
+                    raise ValueError(
+                        f"risk_parameters.{_ec} must be a number, got {_v!r}")
+                try:
+                    _f = float(_v)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"risk_parameters.{_ec} must be a positive number, "
+                        f"got {_v!r}")
+                if not math.isfinite(_f) or _f <= 0:
+                    raise ValueError(
+                        f"risk_parameters.{_ec} must be > 0 and finite, "
+                        f"got {_v!r}")
+                if _ec == 'emergency_max_concurrent_positions':
+                    # A count. int(0.5) is 0, which would block every fire —
+                    # the exact dead-strategy state this validation exists to
+                    # prevent — so reject a fraction rather than truncate it.
+                    if _f != int(_f):
+                        raise ValueError(
+                            f"risk_parameters.{_ec} must be a whole number, "
+                            f"got {_v!r}")
+                    setattr(app.risk, _ec, int(_f))
+                else:
+                    setattr(app.risk, _ec, _f)
         dl = rp.get('daily_loss_limit', None)
         if dl is not None:
             app.risk.daily_loss_limit = dl / 100.0 if abs(dl) > 1 else dl

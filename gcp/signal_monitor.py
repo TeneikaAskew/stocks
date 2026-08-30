@@ -11,6 +11,7 @@ import sys
 import json
 import dataclasses
 import logging
+import math
 import time as time_module
 import requests
 from pathlib import Path
@@ -28,6 +29,13 @@ _ET = ZoneInfo("America/New_York")
 # traded through the brief's stop" — the brief's plan is an RTH plan.
 _RTH_OPEN = time(9, 30)
 _RTH_CLOSE = time(16, 0)
+
+# The definitional top of the position-sizing scale (RiskConfig.position_sizing
+# is documented as a fraction, max 1.00). Not a market value and not a default
+# for one — it is the last-resort conservative stand-in for the exposure
+# ceiling when the sizing config yields no usable maximum at all, and it is
+# only ever reached after a logged warning. See max_position_size().
+_FULL_POSITION_FRACTION = 1.0
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -1055,6 +1063,22 @@ class SignalMonitor:
             )
             return
 
+        # Emergency exposure ceiling (#816). Enforced, unlike the shadow
+        # controls below it. See the RiskConfig note for why the defaults are
+        # deliberately no-ops: they equal the bound `max_daily_trades` already
+        # implies, so this cannot censor a fire today. It exists so that
+        # exposure stops being a side effect of an unrelated cap, and so the
+        # ceiling can be tightened by config once shadow data exists.
+        _blocked, _why, _exposure = self._emergency_ceiling_block(ticker)
+        if _blocked:
+            logger.warning(
+                "EMERGENCY CEILING: blocked ticker=%s %s "
+                "(count=%d gross=%.2f portfolio_gross=%.2f)",
+                ticker, _why, _exposure['count'], _exposure['gross'],
+                _exposure['portfolio_gross'],
+            )
+            return
+
         # Evaluate signal — Phase 1.6: also runs momentum on the same
         # bar and detects agreement when both fire same direction.
         sig, agreement = self._evaluate_strategies_for_bar(latest, last_price, ticker)
@@ -1889,6 +1913,138 @@ class SignalMonitor:
                     + (pct / 100.0) * size
                 )
                 positions.remove(pos)
+
+    def _exposure_state(self, ticker: str) -> dict:
+        """Simultaneous exposure: count and gross size, ticker and portfolio.
+
+        `size` is the position-sizing fraction (see RiskConfig.position_sizing,
+        max 1.00), so `gross` is a sum of fractions rather than a currency
+        amount — the same unit the sizing config is expressed in.
+        """
+        per = self.active_positions.get(ticker) or []
+        gross = sum(self._usable_size(ticker, p) for p in per)
+        portfolio = 0.0
+        for _t, poss in (self.active_positions or {}).items():
+            for pos in (poss or []):
+                portfolio += self._usable_size(_t, pos)
+        return {'count': len(per), 'gross': gross,
+                'portfolio_gross': portfolio}
+
+    def max_position_size(self) -> float:
+        """Largest size the sizing config can produce. The conservative
+        stand-in for a size that is missing, malformed, or not yet known.
+
+        This helper is what `_usable_size` substitutes for an untrustworthy
+        value and what `_emergency_ceiling_block` uses as the pending size, so
+        it must never itself be NaN: a NaN here would flow straight back into
+        both gross accumulators and disable the ceilings it exists to defend.
+        `max()` offers no protection — it is order-dependent around NaN and
+        returns NaN whenever NaN is seen first, and `position_sizing['weak']`
+        is the first entry. Non-finite and non-positive entries are therefore
+        discarded before the maximum is taken, not after.
+
+        A zero entry is legal in the sizing config (it means "do not size this
+        bucket"), so it is skipped as a candidate rather than rejected.
+        """
+        cfg = getattr(self.risk, 'position_sizing', None)
+        try:
+            raw_values = list((cfg or {}).values())
+        except AttributeError:
+            # Not a mapping at all. The pre-hardening version caught this and
+            # fell through to the stand-in; keep that, because a TypeError out
+            # of a safety helper would take down evaluate_ticker.
+            raw_values = []
+        usable = []
+        for _v in raw_values:
+            try:
+                _f = float(_v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(_f) and _f > 0:
+                usable.append(_f)
+        if not usable:
+            logger.warning(
+                "exposure: position_sizing has no finite positive entry (%r); "
+                "using %.2f as the conservative stand-in",
+                cfg, _FULL_POSITION_FRACTION)
+            return _FULL_POSITION_FRACTION
+        return max(usable)
+
+    def _usable_size(self, ticker: str, pos: dict) -> float:
+        """A position's size, or the maximum if it cannot be trusted.
+
+        Rule 3.7, and the reason this is not a bare ``float()``: ``float`` is
+        happy to return NaN. A single NaN size poisons the gross accumulator,
+        and because every comparison against NaN is False it silently DISABLES
+        both gross ceilings rather than tripping them. Negative sizes are the
+        same hazard in the other direction — they shrink reported exposure.
+        Anything not finite, and anything negative, is counted at the maximum
+        so the ceiling errs toward blocking.
+
+        Zero is NOT in that set. A zero sizing bucket is legal — it means "do
+        not size this signal" — and `get_position_size` returns it verbatim,
+        so `fire_alert` stores a position with ``size=0.0``. Substituting the
+        maximum there would charge a full unit of gross against a position
+        that carries no exposure, and could block later alerts that should
+        have fired. The same reading governs `max_position_size`, where zero
+        is skipped as a candidate rather than rejected; treating it as
+        malformed in one place and legal in the other is the contradiction
+        this avoids.
+        """
+        raw = pos.get('size', 1.0) if isinstance(pos, dict) else None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = None
+        if val is None or not math.isfinite(val) or val < 0:
+            fallback = self.max_position_size()
+            logger.warning(
+                "exposure: %s position size=%r is negative or not finite; "
+                "counting %.2f", ticker, raw, fallback)
+            return fallback
+        return val
+
+    def _emergency_ceiling_block(self, ticker: str):
+        """Would the emergency exposure ceiling refuse another position?
+
+        Returns ``(blocked, reason, exposure_state)``. Three independent
+        bounds, any of which blocks:
+
+        * per-ticker concurrent count
+        * per-ticker gross size
+        * portfolio-wide gross size  (the only aggregate bound that exists;
+          nothing else in the system looks across tickers at all)
+
+        This is a circuit breaker, not a policy. See RiskConfig (#816).
+        """
+        st = self._exposure_state(ticker)
+        r = self.risk
+        # Bound the state the fire would PRODUCE, not the state before it.
+        # Comparing existing exposure only lets a fire cross the ceiling by up
+        # to one full position: gross 1.0 against a 1.5 ceiling would admit
+        # another 1.0 and land at 2.0.
+        #
+        # The gate runs before the signal is scored, so the candidate's size
+        # is not known yet; the maximum the sizing config can produce is used,
+        # which errs toward blocking.
+        #
+        # `>` rather than `>=` because the test is "would this EXCEED the
+        # ceiling", and because it keeps the shipped defaults a strict no-op:
+        # 4 existing + 1.0 pending = 5.0 against a 5.0 ceiling is allowed.
+        pending = self.max_position_size()
+        if st['count'] + 1 > r.emergency_max_concurrent_positions:
+            return True, ("concurrent %d+1 > %d"
+                          % (st['count'],
+                             r.emergency_max_concurrent_positions)), st
+        if st['gross'] + pending > r.emergency_max_gross_exposure:
+            return True, ("gross %.2f+%.2f > %.2f"
+                          % (st['gross'], pending,
+                             r.emergency_max_gross_exposure)), st
+        if st['portfolio_gross'] + pending > r.emergency_max_portfolio_gross:
+            return True, ("portfolio_gross %.2f+%.2f > %.2f"
+                          % (st['portfolio_gross'], pending,
+                             r.emergency_max_portfolio_gross)), st
+        return False, None, st
 
     def _risk_control_shadow(self, ticker: str, price: float) -> dict:
         """What the DECLARED-but-unenforced risk controls would say right now.
