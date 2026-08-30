@@ -1,5 +1,7 @@
 """Tests for lib/gamma.py — canonical gamma exposure analytics."""
 
+import math
+
 import pytest
 
 from lib import gamma
@@ -852,6 +854,32 @@ class TestComputeGammaFlipBS:
             dividend_yield=0.013,
             snapshot_date="2026-08-30",
         ) == pytest.approx(100.0)
+
+    def test_zero_run_between_opposite_signs_is_a_flip(self):
+        """Representable opposite signs separated by underflow still cross (#812)."""
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": 100,
+                "implied_volatility": 0.04,
+                "expiration": "2026-08-31",
+            }
+            for option_type, strike in (("call", 90.0),) * 5 + (("put", 110.0),) * 5
+        ]
+
+        flip = gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.0,
+            dividend_yield=0.0,
+            snapshot_date="2026-08-30",
+        )
+
+        # Equal weights/volatility make the stable Black-Scholes root
+        # analytically available for this two-strike chain.
+        expected = math.sqrt(90.0 * 110.0) * math.exp(-0.5 * 0.04 ** 2 / 365.0)
+        assert flip == pytest.approx(expected, abs=1e-6)
 
     def test_none_when_thin_chain(self):
         opts = self._chain()[:4]
