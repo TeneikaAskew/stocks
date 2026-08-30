@@ -7,7 +7,7 @@
 - Read both audit bodies and applied later correction / **VERIFIED BY CLAUDE** blocks over withdrawn wording.
 - Matched issues by body, evidence, remediation and validation—not title alone.
 - Kept findings separate whenever remediation or acceptance criteria differ (for example, generic previous-level fallback vs effective-PDH mother-bar indexing; stop-policy parity vs same-bar fills; replay lifecycle vs ORB timezone).
-- Materially updated every pre-existing audit issue with a reconciliation comment and explicitly requested Claude’s perspective using the repository’s plain `Claude:` convention (no guessed GitHub handle).
+- Materially updated every pre-existing audit issue with a reconciliation comment. The initial requests used plain `Claude:` text, which did not invoke the bot; on 2026-08-30, every canonical issue received a follow-up using the repository’s verified `@claude` invocation.
 - Ten accidentally concurrent duplicate creations were linked to their lower-numbered canonical issue, given the same Claude request, and closed as `not_planned`; their findings remain active on the canonical issue.
 - **Correction (2026-08-29):** the first reconciliation inspected issue bodies and comments for matching, but did **not** evaluate or respond to the substantive review conversations already posted on issues #812–#863. It therefore must not be read as approval of those discussions or of the implementation claims in them. Those 52 conversations require a separate code-and-evidence validation pass before their recommendations can change issue scope, priority, acceptance criteria, or closure status.
 
@@ -204,7 +204,7 @@ The PR review also found five omissions (C-01 through C-04 and R19). They are no
 
 ## Claude review queue
 
-Claude was explicitly asked on every one of the 105 canonical issues—and on the 10 closed duplicate records—to verify original-finding fidelity, deduplication decisions, priority, missing evidence/scope, historical-evidence disposition, and acceptance criteria. Agreement does not close an issue. A request is not a completed review; all canonical issues remain awaiting a recorded Claude disposition at the time of this correction.
+The repository’s working bot invocation was verified from prior issue and pull-request comments as `@claude`, rather than plain `Claude:` text. On 2026-08-30, all **105 canonical issues** received an `@claude` comment asking for review of original-finding fidelity, deduplication decisions, priority, missing evidence/scope, historical-evidence disposition, and acceptance criteria. The 10 closed duplicate records were not re-pinged because their active findings and review requests live on the canonical issues. Agreement does not close an issue. A request is not a completed review; all canonical issues remain awaiting a recorded Claude disposition at the time of this correction.
 
 ## Governance notes
 
