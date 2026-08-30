@@ -780,26 +780,33 @@ def compute_gamma_flip_bs(
             run_end = i
             left = run_start - 1
             right = run_end + 1
-            if (left >= 0 and right < len(S_grid)
-                    and G[left] != 0.0 and G[right] != 0.0
-                    and ((G[left] < 0.0) != (G[right] < 0.0))):
-                if run_start == run_end:
-                    # A single exact sampled zero is already the best root.
-                    found.append(float(S_grid[run_start]))
-                else:
-                    # Ordinary gamma has underflowed across this interval.
-                    # Recover the root from a row-scaled log-domain sum rather
-                    # than interpolating arbitrary underflow boundaries.
-                    from scipy.optimize import brentq
-                    stable_left = _stable_net_gamma(float(S_grid[left]))
-                    stable_right = _stable_net_gamma(float(S_grid[right]))
-                    if (stable_left != 0.0 and stable_right != 0.0
-                            and ((stable_left < 0.0) != (stable_right < 0.0))):
-                        found.append(float(brentq(
-                            _stable_net_gamma,
-                            float(S_grid[left]),
-                            float(S_grid[right]),
-                        )))
+            ordinary_bracket = (
+                left >= 0
+                and right < len(S_grid)
+                and G[left] != 0.0
+                and G[right] != 0.0
+                and ((G[left] < 0.0) != (G[right] < 0.0))
+            )
+            if run_start == run_end and ordinary_bracket:
+                # A single exact sampled zero is already the best root.
+                found.append(float(S_grid[run_start]))
+            else:
+                # Ordinary gamma has underflowed across this interval.  The
+                # run may reach either search boundary—or cover the full
+                # grid—so evaluate stable signs at the widest available
+                # bracket before deciding that no crossing exists.
+                bracket_left = max(left, 0)
+                bracket_right = min(right, len(S_grid) - 1)
+                from scipy.optimize import brentq
+                stable_left = _stable_net_gamma(float(S_grid[bracket_left]))
+                stable_right = _stable_net_gamma(float(S_grid[bracket_right]))
+                if (stable_left != 0.0 and stable_right != 0.0
+                        and ((stable_left < 0.0) != (stable_right < 0.0))):
+                    found.append(float(brentq(
+                        _stable_net_gamma,
+                        float(S_grid[bracket_left]),
+                        float(S_grid[bracket_right]),
+                    )))
             i += 1
         for i in range(len(S_grid) - 1):
             g1, g2 = G[i], G[i + 1]

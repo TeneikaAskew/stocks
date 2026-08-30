@@ -881,6 +881,30 @@ class TestComputeGammaFlipBS:
         expected = math.sqrt(90.0 * 110.0) * math.exp(-0.5 * 0.04 ** 2 / 365.0)
         assert flip == pytest.approx(expected, abs=1e-6)
 
+    def test_all_zero_grid_uses_stable_boundary_signs(self):
+        """A full underflowed grid can still bracket a real crossing (#812)."""
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": 100,
+                "implied_volatility": 0.04,
+                "expiration": "2026-08-31",
+            }
+            for option_type, strike in (("call", 40.0),) * 5 + (("put", 180.0),) * 5
+        ]
+
+        flip = gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.0,
+            dividend_yield=0.0,
+            snapshot_date="2026-08-30",
+        )
+
+        expected = math.sqrt(40.0 * 180.0) * math.exp(-0.5 * 0.04 ** 2 / 365.0)
+        assert flip == pytest.approx(expected, abs=1e-6)
+
     def test_none_when_thin_chain(self):
         opts = self._chain()[:4]
         assert gamma.compute_gamma_flip_bs(
