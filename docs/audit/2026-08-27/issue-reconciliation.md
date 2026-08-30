@@ -206,16 +206,16 @@ Every repository PR numbered after #924 through #941 was inspected by body, chan
 |---:|---|---|---|
 | [#931](https://github.com/TeneikaAskew/stocks/pull/931) | OPEN / `main` | Related to #924; no canonical issue closure | Complementary product-plan and traceability documentation. Keep linked to #924, but it does not supersede the audit mapping or implement a finding. |
 | [#932](https://github.com/TeneikaAskew/stocks/pull/932) | CLOSED, unmerged / `main` | No canonical issue | Proposed the missing Claude responder workflow. Its closure **supersedes the assumption that `@claude` comments automatically receive a response**; per-issue review threads remain useful, but require a human/available reviewer until an authenticated responder is merged and configured. |
-| [#933](https://github.com/TeneikaAskew/stocks/pull/933) | OPEN / `main` | Related to #816 and #924 (PR-E) | Adds a tested, default-no-op emergency exposure mechanism, not calibration, persistent-state restoration, daily-loss semantics, or the final policy. It must not close #816. It also discovered new issue #940, outside the canonical 105. |
-| [#934](https://github.com/TeneikaAskew/stocks/pull/934) | OPEN / `main` | Related to #818 and #924 (PR-F) | Repairs replay cap mutation, session rollover, and RVOL-gate parity with tests. The required live-vs-replay fire-count comparison is still missing, so it must not close #818. The closing link was cleared on 2026-08-30 by removing every closing-keyword/#818 pairing from the PR body; GitHub now reports zero closing references in both directions. |
+| [#933](https://github.com/TeneikaAskew/stocks/pull/933) | **MERGED 2026-08-30 (`8eccde7`)** / `main` | Related to #816 and #924 (PR-E) | Adds a tested, default-no-op emergency exposure mechanism, not calibration, persistent-state restoration, daily-loss semantics, or the final policy. It must not close #816, and #816 remains open. It also discovered new issue #940, outside the canonical 105. **Merged under an explicit condition: the shipped ceilings are a proven no-op, and #940 must land before any ceiling is lowered from its default** — otherwise the control reads as enforced and reopens on process restart. |
+| [#934](https://github.com/TeneikaAskew/stocks/pull/934) | **MERGED 2026-08-30 (`dd4421b`)** / `main` | Related to #818 and #924 (PR-F) | Repairs replay cap mutation, session rollover, and RVOL-gate parity with tests. The closing link was cleared on 2026-08-30, so the merge did not auto-close the issue. The live-vs-replay comparison was then run on the rebuilt image and **#818 is now closed as fully done** — see *Deployment and verification* below. |
 | [#935](https://github.com/TeneikaAskew/stocks/pull/935) | OPEN / `work` | Follow-up to #924 | Governance-only correction that adds stream gates, shared freshness PR-0, candidate-recovery inventory, and manual-review reality. It supersedes the corresponding delivery assumptions in the earlier #924 text, not any canonical finding. |
 | [#936](https://github.com/TeneikaAskew/stocks/pull/936) | OPEN / `main` | Related to #812 and #924 (PR-B) | Reconstructs the gamma-underflow code/test candidate. The production re-query and disposition of 54 contaminated rows remain outstanding, so it must not close #812. GitHub still reports #812 as a closing reference and that linkage must be cleared before merge. |
 | [#937](https://github.com/TeneikaAskew/stocks/pull/937) | OPEN / `main` | Related to #815, #816, and #924 (PR-D) | Qualifies the stop-loss evidence and policy documentation. It performs no within-live counterfactual and closes neither issue; it updates interpretation only. |
 | [#938](https://github.com/TeneikaAskew/stocks/pull/938) | OPEN / `main` | Related to #863 and #924 (PR-N) | Adds a tested stale-earnings surface guard. It is not the shared freshness primitive needed by #833/#922 and does not satisfy all of #863; keep the issue open. |
 | [#939](https://github.com/TeneikaAskew/stocks/pull/939) | OPEN / stacked on #935 | Follow-up to #924/#935 | Governance-only recovery/publication documentation. It supersedes candidate-recoverability and publication-path notes only after the #935 → #939 stack lands. |
-| [#941](https://github.com/TeneikaAskew/stocks/pull/941) | OPEN / stacked on #939 | Related to #924 | Governance-only coverage addendum. Its five-touched/100-untouched inventory and correction of the two over-broad closing links supersede the earlier claim that no remediation PR exists, after the #935 → #939 → #941 stack lands. |
+| [#941](https://github.com/TeneikaAskew/stocks/pull/941) | **Retargeted onto `work`; content landed here directly** | Related to #924 | Governance-only addendum. Its duplicate coverage table was dropped once this reconciliation covered the same ground; what survives is the definition-of-done scoring, the measured gamma regression, the repository-state baseline, and the #940 sequencing condition — all now in the sections below. #935 and #939 were left untouched rather than rebased. |
 
-**Current coverage:** five canonical issues are touched by implementation/documentation candidates (#812, #815, #816, #818, #863); **zero** is fully closed by the current PR set; 100 canonical issues have no remediation PR. Issue #940 is a newly discovered, cross-cutting risk-state defect and must be triaged separately rather than silently inserted into the original 105-count audit inventory.
+**Current coverage (2026-08-30, after the first two merges):** five canonical issues are touched (#812, #815, #816, #818, #863). **#818 is closed** — the first canonical issue resolved by this remediation effort. #816 is mechanism-only and stays open; #812, #815 and #863 stay open on partial coverage. **100 canonical issues still have no remediation PR**, and 13 of the 18 streams remain entirely unstarted plus the shared PR-0 primitive. Issue #940 is a newly discovered, cross-cutting risk-state defect and must be triaged separately rather than silently inserted into the original 105-count audit inventory.
 
 **Required ordering corrections:** PR-A's repaired input semantics gate affected PR-B validation; PR-A followed by repaired replay/data paths in PR-F/PR-G gate PR-C research baselines; #818/PR-F gates calibration or activation of #816/PR-E; and the shared read-side freshness primitive (PR-0) must precede the overlapping #833/#922/#863 work in PR-M/PR-N. Code-only candidates may merge earlier when independently safe, but they do not discharge these validation and rerun gates.
 
@@ -226,11 +226,48 @@ The reconciliation above records *that* the two `Fixes` links were over-broad. T
 | PR | Issue | DoD met | DoD outstanding |
 |---|---|---|---|
 | #936 / #942 | #812 | 1 of 3 — the spot-600 pure-put regression | (2) re-run the production query: zero flips >20% from spot, or every remaining one explained; (3) record a decision on the **54 contaminated `gamma_levels_eod` rows** |
-| #934 | #818 | 1 of 2 — the test asserting the replay stub stops at `max_daily_trades` | the **live-vs-replay fire-count comparison for one date** |
+| #934 | #818 | **2 of 2 — complete.** The test, plus the live-vs-replay comparison run post-deploy | — **issue closed 2026-08-30** |
 
 Item (3) on #812 is the one that costs something if forgotten. The issue calls those rows "a silent lie to anything reading `gamma_levels_eod`", and it is the only artifact tracking them; closing #812 on a code-only merge drops them.
 
 **Closing-link status.** #818's link was cleared and #934 has since merged, so that path is closed correctly — #818 stays open pending the comparison. **#812 still shows both #936 and #942 as closing references** and both must be cleared manually (a GraphQL-only operation) before either merges.
+
+### Deployment and verification (2026-08-30)
+
+Merging is not the delivery event for anything that runs in Cloud Run: the job keeps executing the previously built image until it is rebuilt. Both merges were therefore carried through to a deploy and a verification run.
+
+| Step | Result |
+|---|---|
+| #934 merged | `dd4421b` |
+| #933 merged | `8eccde7` |
+| Image rebuilt from `main` | `sha256:960cc43` (Cloud Build `ceb5b045`) |
+| `signal-monitor` job updated to resolve it | done — the job references the tag, not a pinned digest |
+| Verification replay | execution `signal-monitor-xkfzw`, `REPLAY_DATE=2026-08-28` |
+
+**Verification result — #818's live-vs-replay comparison:**
+
+```
+REPLAY SUMMARY
+Window: 2026-08-28 -> 2026-08-29
+
+Ticker  Bars      Fires
+SPY     1195      5
+IWM     1038      5
+QQQ     1200      5
+```
+
+| Measure | Value |
+|---|---|
+| Replay fires, pre-fix (recorded on #818) | 632 |
+| Replay fires, post-fix | **15** |
+| Live fires, 2026-08-28 | **15** |
+| Live maximum under the cap (3 × 5) | 15 |
+
+Exact parity. The inflation factor #818 deliberately left unquantified — Codex was right to withdraw the earlier "~10×" figure — measures at **42×** on this date. The cap is demonstrably binding rather than coincidentally matching: the execution logged 969 suppressions of the form `cap_diag: SKIP ticker=QQQ daily_trades=5 cap=5 (cap reached)`, where pre-fix `daily_trades` stayed at `0` for the whole session.
+
+**Gate discharged.** PR-E's prerequisite is *#818 in PR-F merged **and deployed***. Both halves now hold, with the deploy verified rather than assumed, ahead of the first `signal_alerts.concurrent_positions` shadow rows on **2026-08-31**. Shadow-control analysis of #816 may now use replay as a faithful baseline.
+
+**One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
 
 ### Both open gamma PRs regress current `main`
 
@@ -259,8 +296,8 @@ git log --oneline d335f2f6b6656fb5f776c2b01d8a65e19c5023d2..origin/main
 
 As of 2026-08-30 this returns the two remediation merges below and nothing else, so no canonical finding was resolved silently outside the tracked PRs:
 
-- `dd4421b` — #934, replay daily-cap accounting (#818, partial)
-- `8eccde7` — #933, emergency exposure ceiling (#816, mechanism only, defaults no-op)
+- `dd4421b` — #934, replay daily-cap accounting. **#818 closed** after the post-deploy comparison.
+- `8eccde7` — #933, emergency exposure ceiling (#816, mechanism only, defaults no-op). #816 stays open; #940 gates any calibration.
 
 **Use the two-dot range with the fetch chained, not `--since`.** This check has been wrong twice, and both failures looked identical from outside — empty output for a reason unrelated to the question:
 
