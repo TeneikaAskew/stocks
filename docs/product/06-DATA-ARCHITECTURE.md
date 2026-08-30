@@ -140,12 +140,14 @@ evidence, this table is a starting point.
 ## Point-in-time and provenance
 
 Point-in-time safety is the binding constraint on every evaluation claim in this repository.
-The replay-integrity issues below are **CRITICAL and open**; until they close, no historical
-result drawn from these tables is admissible as promotion evidence:
+The replay-integrity issues below were **CRITICAL**; one has since closed. Until the rest close, no
+historical result drawn from these tables is admissible as promotion evidence. The closed one now
+supplies a number rather than a suspicion: replay overstated trade counts **42×** on the measured
+date, so any counterfactual aggregating across fires must be re-checked against that factor.
 
 | Issue | Defect |
 |---|---|
-| [#818](https://github.com/TeneikaAskew/stocks/issues/818) | The daily-trade cap never engages in replay |
+| ~~[#818](https://github.com/TeneikaAskew/stocks/issues/818)~~ | ~~The daily-trade cap never engages in replay~~ — **CLOSED 2026-08-30**; replay-vs-live inflation measured at **42×**, see [12](12-PR-ISSUE-TRACEABILITY.md#remediation-status-2026-08-30-1755) |
 | [#819](https://github.com/TeneikaAskew/stocks/issues/819) | ORB session window applied against a UTC index in replay |
 | [#820](https://github.com/TeneikaAskew/stocks/issues/820) | `backfill_signals.py` silently scores zero into production `signal_alerts` |
 | [#821](https://github.com/TeneikaAskew/stocks/issues/821) | `compare_tier_fires.py` is a throwaway harness whose numbers gated a calibration PR |

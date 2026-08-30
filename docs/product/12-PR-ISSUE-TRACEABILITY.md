@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **120 of 120 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Re-pulled 2026-08-30 15:02 UTC; #940 added |
+| Open issues mapped | **119 of 119 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Re-pulled 2026-08-30 17:55 UTC; #940 added, #818 removed on closure |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -32,15 +32,15 @@ adjacent questions, and the three must not diverge:
 
 ### Why this file says 120 and #924 says 105
 
-Both are correct; they count different sets. Reconciled 2026-08-30:
+Both are correct; they count different sets. Reconciled 2026-08-30 17:55, after [#818](https://github.com/TeneikaAskew/stocks/issues/818) closed:
 
 | | Count |
 |---|---|
-| All open issues in the repository | **120** |
+| All open issues in the repository | **119** |
 | − pre-audit issues (numbered below #812) | −13 |
 | − [#930](https://github.com/TeneikaAskew/stocks/issues/930), auto-created `gcp-job-failure` | −1 |
 | − [#940](https://github.com/TeneikaAskew/stocks/issues/940), created 2026-08-30, explicitly recorded by #924 as outside the original inventory | −1 |
-| **= canonical audit inventory** | **105** |
+| **= canonical audit inventory** | **104** |
 
 The 13 pre-audit issues excluded from the canonical set are
 [#249](https://github.com/TeneikaAskew/stocks/issues/249),
@@ -58,12 +58,42 @@ The 13 pre-audit issues excluded from the canonical set are
 [#808](https://github.com/TeneikaAskew/stocks/issues/808). They are real open work and remain
 mapped here even though no delivery stream owns them — a gap worth an explicit decision.
 
-### Remediation status, per #941 (2026-08-30)
+### Remediation status (2026-08-30 17:55)
 
-- **5 of 105** canonical issues are touched by any open PR ([#812](https://github.com/TeneikaAskew/stocks/issues/812), [#815](https://github.com/TeneikaAskew/stocks/issues/815), [#816](https://github.com/TeneikaAskew/stocks/issues/816), [#818](https://github.com/TeneikaAskew/stocks/issues/818), [#863](https://github.com/TeneikaAskew/stocks/issues/863)); **100 have no PR at all**.
-- **13 of 18 streams are entirely unstarted**, plus PR-0.
-- **No canonical issue can correctly close on the current PR set** — #941 found both `Fixes` claims over-claim against the issues' own Definition-of-done, and GitHub already lists each under its issue's *closed by* references.
-- Nothing has landed on `main` since #924 opened, so no finding was resolved silently outside these PRs.
+`main` has advanced past the baseline this plan was first written against (`d335f2f`). Two
+remediation PRs landed:
+
+| Commit | PR | Issue | Outcome |
+|---|---|---|---|
+| `dd4421b` | [#934](https://github.com/TeneikaAskew/stocks/pull/934) | [#818](https://github.com/TeneikaAskew/stocks/issues/818) | **Closed — Definition of done met in full** |
+| `8eccde7` | [#933](https://github.com/TeneikaAskew/stocks/pull/933) | [#816](https://github.com/TeneikaAskew/stocks/issues/816) | Mechanism shipped; issue **correctly remains open** pending shadow data from 2026-09-01 and a per-control decision |
+
+[#941](https://github.com/TeneikaAskew/stocks/pull/941) had flagged #934 as over-claiming
+`Fixes #818` because the live-vs-replay comparison had not been run. **That concern is now
+discharged**, and the record is worth keeping because it shows the gate working rather than
+being bypassed: the comparison was executed after the merge and image rebuild
+(`signal-monitor-xkfzw`, image `sha256:960cc43`, built from `main` at `8eccde7`), and #818 was
+closed on the evidence rather than on the merge.
+
+**The measured result is a material fact for this plan**, not just an issue closure:
+
+| Measure | Value |
+|---|---|
+| Replay fires 2026-08-28, pre-fix | 632 |
+| Replay fires, post-fix | 15 |
+| Live fires, same date | 15 |
+| Cap maximum (3 tickers × 5) | 15 |
+| **Replay-vs-live trade-count inflation, measured** | **42×** |
+
+969 `cap_diag: SKIP … (cap reached)` suppressions were logged in the post-fix run; pre-fix,
+`daily_trades` stayed at `0` all session. Replay now reproduces live exactly on this date.
+
+This retires the first of the nine CRITICAL replay-integrity defects and, more importantly,
+**puts a number on how much historical replay output overstated trade counts.** Any
+counterfactual that aggregates across fires — rather than pairing within a fire — must be
+re-checked against 42× before being relied on. #818's own resolution item 3 ("re-state any
+counterfactual whose conclusion could turn on trade count") is explicitly **not** done and is
+tracked as outstanding work, not as part of the closure.
 
 This does not change any status in [02](02-FEATURE-CATALOG.md) — a capability's trust state
 depends on defects being *fixed*, not on a PR existing. It does mean the roadmap in
@@ -90,7 +120,7 @@ unmeasured claims in this repository.
 
 | Severity | Count |
 |---|---|
-| CRITICAL | 22 |
+| CRITICAL | 21 |
 | P0 | 14 |
 | HIGH | 16 |
 | P1 | 30 |
@@ -102,14 +132,14 @@ unmeasured claims in this repository.
 | ENH | 5 |
 | DECISION | 1 |
 | ops | 1 |
-| **Total** | **120** |
+| **Total** | **119** |
 
 ## Full open-issue map by capability
 
 Every open issue appears exactly once. **No range notation** — the previous revision wrote
 `#829–#850`, which reads as 22 issues while naming six. Ranges are replaced with explicit lists.
 
-### FEAT-REPLAY-001 — Replay / backtest / evaluation (22 open)
+### FEAT-REPLAY-001 — Replay / backtest / evaluation (21 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -119,7 +149,6 @@ Every open issue appears exactly once. **No range notation** — the previous re
 | [#821](https://github.com/TeneikaAskew/stocks/issues/821) | CRITICAL | [audit] R4 — scripts/compare_tier_fires.py is a throwaway harness whose numbers gated a calibration PR |
 | [#820](https://github.com/TeneikaAskew/stocks/issues/820) | CRITICAL | [audit] R3 — scripts/backfill_signals.py silently scores zero, into production signal_alerts |
 | [#819](https://github.com/TeneikaAskew/stocks/issues/819) | CRITICAL | [audit] R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, now in production code) |
-| [#818](https://github.com/TeneikaAskew/stocks/issues/818) | CRITICAL | [audit] R1 — The daily-trade cap never engages in replay |
 | [#814](https://github.com/TeneikaAskew/stocks/issues/814) | CRITICAL | [audit] T3 — Backtest signals and fills use the same bar's close; zero slippage/commission |
 | [#906](https://github.com/TeneikaAskew/stocks/issues/906) | P0 | [P0][Replay] Quarantine and rerun pre-PR-135 future-leaked artifacts |
 | [#898](https://github.com/TeneikaAskew/stocks/issues/898) | P0 | [P0][Replay] Apply RTH filtering regardless of persistence mode |

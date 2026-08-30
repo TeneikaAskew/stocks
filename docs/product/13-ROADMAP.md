@@ -22,7 +22,8 @@ flowchart TD
 ```
 
 **The load-bearing dependency:** every model and strategy claim rests on replay being
-point-in-time-safe. Nine CRITICAL replay-integrity issues are open. Until they close, model
+point-in-time-safe. Nine CRITICAL replay-integrity issues were open; [#818](https://github.com/TeneikaAskew/stocks/issues/818)
+closed 2026-08-30 with a measured 42× trade-count inflation, leaving **eight**. Until they close, model
 validation (Phase 4) cannot produce admissible evidence, so it is scheduled after Phase 2 —
 not because model defects are less severe, but because fixing them early yields numbers no
 one should trust.
@@ -76,7 +77,6 @@ These two carry the dependency load; their issue sets are listed completely rath
 | [#821](https://github.com/TeneikaAskew/stocks/issues/821) | CRITICAL | [audit] R4 — scripts/compare_tier_fires.py is a throwaway harness whose numbers gated a calibration PR |
 | [#820](https://github.com/TeneikaAskew/stocks/issues/820) | CRITICAL | [audit] R3 — scripts/backfill_signals.py silently scores zero, into production signal_alerts |
 | [#819](https://github.com/TeneikaAskew/stocks/issues/819) | CRITICAL | [audit] R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, now in production code) |
-| [#818](https://github.com/TeneikaAskew/stocks/issues/818) | CRITICAL | [audit] R1 — The daily-trade cap never engages in replay |
 | [#814](https://github.com/TeneikaAskew/stocks/issues/814) | CRITICAL | [audit] T3 — Backtest signals and fills use the same bar's close; zero slippage/commission |
 | [#906](https://github.com/TeneikaAskew/stocks/issues/906) | P0 | [P0][Replay] Quarantine and rerun pre-PR-135 future-leaked artifacts |
 | [#898](https://github.com/TeneikaAskew/stocks/issues/898) | P0 | [P0][Replay] Apply RTH filtering regardless of persistence mode |
@@ -97,7 +97,7 @@ These two carry the dependency load; their issue sets are listed completely rath
 
 1. Remove silent-empty and unresolved-configuration behavior from decision-critical paths — [#925](https://github.com/TeneikaAskew/stocks/issues/925), [#926](https://github.com/TeneikaAskew/stocks/issues/926), [#928](https://github.com/TeneikaAskew/stocks/issues/928)
 2. Quarantine and rerun leaked replay/model artifacts — [#906](https://github.com/TeneikaAskew/stocks/issues/906), [#822](https://github.com/TeneikaAskew/stocks/issues/822), [#823](https://github.com/TeneikaAskew/stocks/issues/823)
-3. Establish replay/live clock, session and persistence parity — [#873](https://github.com/TeneikaAskew/stocks/issues/873), [#818](https://github.com/TeneikaAskew/stocks/issues/818), [#819](https://github.com/TeneikaAskew/stocks/issues/819), [#898](https://github.com/TeneikaAskew/stocks/issues/898)
+3. Establish replay/live clock, session and persistence parity — [#873](https://github.com/TeneikaAskew/stocks/issues/873), [#819](https://github.com/TeneikaAskew/stocks/issues/819), [#898](https://github.com/TeneikaAskew/stocks/issues/898) — [#818](https://github.com/TeneikaAskew/stocks/issues/818) is **done**, and its 42× measurement is the template for the rest: fix, then quantify
 4. Fail closed on authentication outside local development, **covering `iap` as well as `open`** — [#911](https://github.com/TeneikaAskew/stocks/issues/911) + the unfiled `/dev` exposure in [09](09-SECURITY-AUTH.md)
 5. Correct signal, level, stop and exit semantics — [#815](https://github.com/TeneikaAskew/stocks/issues/815), [#816](https://github.com/TeneikaAskew/stocks/issues/816), [#866](https://github.com/TeneikaAskew/stocks/issues/866), [#908](https://github.com/TeneikaAskew/stocks/issues/908)
 6. Stop training from auto-writing production — [#813](https://github.com/TeneikaAskew/stocks/issues/813), [#817](https://github.com/TeneikaAskew/stocks/issues/817)

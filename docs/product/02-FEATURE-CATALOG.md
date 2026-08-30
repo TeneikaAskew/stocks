@@ -359,7 +359,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `lib/backtest.py`, `lib/walk_forward.py`, `lib/exec_backtest/`, `scripts/replay_signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py` |
 | Tests | `replay-trainer.spec.ts`, `tests/test_backtest*.py` |
-| Open issues | 22 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-replay-001-replay-backtest-evaluation-22-open) |
+| Open issues | 22 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-replay-001-replay-backtest-evaluation-21-open) |
 | Blocking issues | [#824](https://github.com/TeneikaAskew/stocks/issues/824) [#823](https://github.com/TeneikaAskew/stocks/issues/823) [#822](https://github.com/TeneikaAskew/stocks/issues/822) [#821](https://github.com/TeneikaAskew/stocks/issues/821) [#820](https://github.com/TeneikaAskew/stocks/issues/820) [#819](https://github.com/TeneikaAskew/stocks/issues/819) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 2 |
 
