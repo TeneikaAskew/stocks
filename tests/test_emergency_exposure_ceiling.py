@@ -159,8 +159,10 @@ def test_nan_size_does_not_disable_the_gross_ceilings():
     assert blocked, "NaN size must trip the ceiling, never disable it"
 
 
-@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -5.0, 0.0])
-def test_non_finite_or_non_positive_size_counts_at_maximum(bad):
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -5.0])
+def test_negative_or_non_finite_size_counts_at_maximum(bad):
+    """Zero is deliberately NOT in this list — see the zero-size tests below.
+    Only values that cannot represent real exposure err toward blocking."""
     m = _monitor()
     m.active_positions = {'SPY': [_pos(bad)]}
     assert m._exposure_state('SPY')['gross'] == pytest.approx(
@@ -295,3 +297,52 @@ def test_a_non_mapping_sizing_config_does_not_raise_out_of_the_helper(
     m = _monitor()
     m.risk.position_sizing = not_a_mapping
     assert m.max_position_size() == pytest.approx(_FULL_POSITION_FRACTION)
+
+
+# --------------------------------------------------------------------------
+# 4. A legal zero size must survive the accumulator.
+#
+#    `max_position_size` treats a zero bucket as legal ("don't size this
+#    signal") and skips it as a candidate. `_usable_size` used to treat the
+#    resulting zero-size POSITION as malformed and substitute the maximum —
+#    the same value read as legal in one place and malformed in the other.
+# --------------------------------------------------------------------------
+
+def test_a_zero_sized_position_consumes_no_gross_capacity():
+    """Pre-fix a size-0.0 position reported gross 1.0: a full unit of phantom
+    capacity charged against a position carrying no exposure."""
+    m = _monitor()
+    m.active_positions = {'SPY': [_pos(0.0)]}
+    assert m._exposure_state('SPY')['gross'] == pytest.approx(0.0)
+    assert m._exposure_state('SPY')['portfolio_gross'] == pytest.approx(0.0)
+
+
+def test_a_zero_sized_position_still_counts_toward_the_count_bound():
+    """Zero exposure is still an open position. Only the gross bounds ignore
+    it — otherwise a zero bucket would evade the ceiling entirely."""
+    m = _monitor(emergency_max_concurrent_positions=1,
+                 emergency_max_gross_exposure=99.0,
+                 emergency_max_portfolio_gross=99.0)
+    m.active_positions = {'SPY': [_pos(0.0)]}
+    blocked, why, st = m._emergency_ceiling_block('SPY')
+    assert st['count'] == 1
+    assert blocked and 'concurrent 1+1 > 1' in why
+
+
+def test_a_zero_bucket_does_not_spuriously_block_a_later_alert():
+    """The end-to-end chain Codex described: a legal zero bucket flows through
+    get_position_size into the stored position size, and pre-fix each such
+    position charged a full 1.0 against the ceiling."""
+    from lib.config import get_position_size
+    m = _monitor(emergency_max_concurrent_positions=99,
+                 emergency_max_gross_exposure=2.0,
+                 emergency_max_portfolio_gross=99.0)
+    m.risk.position_sizing = {'weak': 0.0, 'medium': 0.50,
+                              'strong': 0.75, 'perfect': 1.00}
+    weak = get_position_size(m.risk.score_thresholds[0], m.risk)
+    assert weak == pytest.approx(0.0), "precondition: the weak bucket is zero"
+
+    m.active_positions = {'SPY': [_pos(weak), _pos(weak)]}
+    blocked, why, st = m._emergency_ceiling_block('SPY')
+    assert st['gross'] == pytest.approx(0.0)
+    assert not blocked, f"two zero-sized positions blocked a fire: {why}"

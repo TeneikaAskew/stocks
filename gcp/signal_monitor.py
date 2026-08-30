@@ -1978,18 +1978,28 @@ class SignalMonitor:
         and because every comparison against NaN is False it silently DISABLES
         both gross ceilings rather than tripping them. Negative sizes are the
         same hazard in the other direction — they shrink reported exposure.
-        Anything not finite and positive is counted at the maximum so the
-        ceiling errs toward blocking.
+        Anything not finite, and anything negative, is counted at the maximum
+        so the ceiling errs toward blocking.
+
+        Zero is NOT in that set. A zero sizing bucket is legal — it means "do
+        not size this signal" — and `get_position_size` returns it verbatim,
+        so `fire_alert` stores a position with ``size=0.0``. Substituting the
+        maximum there would charge a full unit of gross against a position
+        that carries no exposure, and could block later alerts that should
+        have fired. The same reading governs `max_position_size`, where zero
+        is skipped as a candidate rather than rejected; treating it as
+        malformed in one place and legal in the other is the contradiction
+        this avoids.
         """
         raw = pos.get('size', 1.0) if isinstance(pos, dict) else None
         try:
             val = float(raw)
         except (TypeError, ValueError):
             val = None
-        if val is None or not math.isfinite(val) or val <= 0:
+        if val is None or not math.isfinite(val) or val < 0:
             fallback = self.max_position_size()
             logger.warning(
-                "exposure: %s position size=%r is not finite and positive; "
+                "exposure: %s position size=%r is negative or not finite; "
                 "counting %.2f", ticker, raw, fallback)
             return fallback
         return val
