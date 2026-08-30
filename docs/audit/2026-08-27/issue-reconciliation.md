@@ -151,6 +151,23 @@
 | [#893](https://github.com/TeneikaAskew/stocks/issues/893) | [#874](https://github.com/TeneikaAskew/stocks/issues/874) | Concurrent creation of the same root cause; identical remediation and acceptance criteria. |
 | [#895](https://github.com/TeneikaAskew/stocks/issues/895) | [#875](https://github.com/TeneikaAskew/stocks/issues/875) | Concurrent creation of the same root cause; identical remediation and acceptance criteria. |
 
+## Formal GitHub issue relationships
+
+Bare issue references in a `Related issues` section provide navigation, but they do not populate GitHub's issue-relationship controls. The following remediation dependencies were therefore also recorded with GitHub's native **blocked by / blocking** feature. A native dependency is used only where one issue must be resolved (or its contract established) before the dependent issue can be validated; related-but-independent findings remain cross-references rather than being given a false execution dependency.
+
+| Blocked issue | Formally blocked by | Dependency rationale |
+|---:|---:|---|
+| [#926](https://github.com/TeneikaAskew/stocks/issues/926) | [#925](https://github.com/TeneikaAskew/stocks/issues/925) | The loader can preserve query failures only after the lower data-access layer stops converting them to empty data. |
+| [#906](https://github.com/TeneikaAskew/stocks/issues/906) | [#822](https://github.com/TeneikaAskew/stocks/issues/822), [#823](https://github.com/TeneikaAskew/stocks/issues/823), [#910](https://github.com/TeneikaAskew/stocks/issues/910) | Trustworthy historical reruns require corrected as-of behavior for metrics and level maps plus a reproducible experiment manifest. |
+| [#908](https://github.com/TeneikaAskew/stocks/issues/908) | [#814](https://github.com/TeneikaAskew/stocks/issues/814) | Level outcomes cannot be repriced credibly until common fill and transaction-cost semantics are corrected. |
+| [#882](https://github.com/TeneikaAskew/stocks/issues/882) | [#814](https://github.com/TeneikaAskew/stocks/issues/814) | Position-size-aware aggregates still require valid underlying execution and fill semantics. |
+| [#890](https://github.com/TeneikaAskew/stocks/issues/890) | [#813](https://github.com/TeneikaAskew/stocks/issues/813) | The recomputation-based leakage check must exercise a corrected walk-forward and promotion pipeline. |
+| [#905](https://github.com/TeneikaAskew/stocks/issues/905) | [#816](https://github.com/TeneikaAskew/stocks/issues/816), [#817](https://github.com/TeneikaAskew/stocks/issues/817) | Prospective evidence requires enforceable risk semantics and an untouched holdout/multiple-testing framework. |
+| [#897](https://github.com/TeneikaAskew/stocks/issues/897) | [#823](https://github.com/TeneikaAskew/stocks/issues/823) | Replay-date cache scoping depends on eliminating future-date level-map inputs at the source. |
+| [#901](https://github.com/TeneikaAskew/stocks/issues/901) | [#822](https://github.com/TeneikaAskew/stocks/issues/822) | Premarket summaries require the corrected universal as-of contract. |
+| [#918](https://github.com/TeneikaAskew/stocks/issues/918) | [#860](https://github.com/TeneikaAskew/stocks/issues/860) | Ordered migrations require the live-versus-documented schema drift to be reconciled first. |
+| [#923](https://github.com/TeneikaAskew/stocks/issues/923) | [#821](https://github.com/TeneikaAskew/stocks/issues/821), [#824](https://github.com/TeneikaAskew/stocks/issues/824) | Legacy-stack isolation depends on disposing of the calibration harness and divergent replay/backfill path. |
+
 ## Withdrawn, superseded, and intentionally unticketed statements
 
 - **R1 “~10× replay inflation”** — magnitude withdrawn; #818 retains the verified bypass mechanism and requires measurement.
