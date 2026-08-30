@@ -798,6 +798,26 @@ class TestComputeGammaFlipBS:
             opts, 100.0, risk_free=0.045, dividend_yield=0.013,
             snapshot_date="2026-06-09") is None
 
+    def test_pure_put_underflow_does_not_fabricate_flip(self):
+        """Deep-wing PDF underflow is not a zero-gamma crossing (#812)."""
+        opts = [
+            {
+                "type": "put",
+                "strike": strike,
+                "open_interest": 1_000,
+                "implied_volatility": 0.05,
+                "expiration": "2026-08-31",
+            }
+            for strike in (400, 425, 450, 475, 500, 525)
+        ]
+        assert gamma.compute_gamma_flip_bs(
+            opts,
+            600.0,
+            risk_free=0.045,
+            dividend_yield=0.013,
+            snapshot_date="2026-08-30",
+        ) is None
+
     def test_none_when_thin_chain(self):
         opts = self._chain()[:4]
         assert gamma.compute_gamma_flip_bs(

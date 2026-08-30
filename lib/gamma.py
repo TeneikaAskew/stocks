@@ -737,9 +737,11 @@ def compute_gamma_flip_bs(
         found: list[float] = []
         for i in range(len(S_grid) - 1):
             g1, g2 = G[i], G[i + 1]
-            if g1 == 0.0:
-                found.append(float(S_grid[i]))
-            elif g1 * g2 < 0:
+            # A zero can be numerical underflow in a deep wing, not a
+            # dealer-gamma crossing. Require two representable, strictly
+            # opposite signs. Compare signs directly because multiplying two
+            # small, nonzero values can itself underflow to zero.
+            if g1 != 0.0 and g2 != 0.0 and ((g1 < 0.0) != (g2 < 0.0)):
                 frac = -g1 / (g2 - g1)
                 found.append(float(S_grid[i] + frac * (S_grid[i + 1] - S_grid[i])))
         return found
