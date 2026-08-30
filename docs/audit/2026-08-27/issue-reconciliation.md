@@ -187,6 +187,42 @@ Bare issue references in a `Related issues` section provide navigation, but they
 - **Gamma flip (#812):** artifacts are real; their hypothesized responsibility for the magnitude collapse is explicitly rejected.
 - **Level profitability (#908):** mechanical resting-trigger evidence is not treated as chase/alert profitability; executable prospective evidence is required.
 
+## Pull-request delivery strategy
+
+An issue does **not** need to be converted one-for-one into a pull request for Claude to review the governance work. Claude can review this reconciliation on PR #924, while implementation PRs use `Fixes #…` for every issue whose full acceptance criteria they satisfy. A PR should group issues only when they share an implementation boundary, test harness, and rollback unit; thematic similarity alone is not enough. If a bundle cannot be reviewed comfortably or deployed atomically, split it without duplicating or closing its issues prematurely.
+
+The 105 canonical issues partition into the following **18 candidate delivery streams** (each issue appears exactly once):
+
+| Candidate PR stream | Canonical issues | Bundling boundary |
+|---|---|---|
+| Data failure semantics | #825, #826, #827, #828, #842, #848, #925, #926, #928 | Shared fail-open/fallback contracts; split live override resolution if its deployment path differs. |
+| Rates and options/gamma math | #812, #845, #846, #871, #872, #876, #878, #880, #896, #927 | Shared fixtures and mathematical invariants; calculation changes and display-only semantics may be separate commits or PRs. |
+| Research validity and provenance | #813, #817, #886, #888, #890, #905, #906, #909, #910 | Build provenance/holdout foundations before quarantining and rerunning historical results; expect multiple ordered PRs within this stream. |
+| Execution and outcome parity | #814, #815, #869, #882, #908, #915 | Common fill/exit/outcome contract and parity fixtures; policy decisions must be resolved before implementation. |
+| Portfolio and daily risk controls | #816 | Keep standalone because it changes live portfolio-risk semantics. |
+| Replay time, sessions, and as-of boundaries | #818, #819, #822, #823, #873, #897, #898, #900, #901, #902, #904, #929 | One frozen-clock/session test framework; split source fixes from historical reruns. |
+| Replay/backfill lifecycle and persistence | #820, #821, #824, #899, #903, #923 | Shared production-path, schema, and legacy-harness convergence. |
+| Previous-level correctness | #866, #907 | Same level family, but retain separate regression cases for mother-bar and legacy positional defects. |
+| Indicator and calendar contracts | #870, #892, #894, #912, #913, #914 | Central metric/session contracts; corporate-action policy can split if it requires data migration. |
+| AI plan and agent validation | #867, #916 | Exact-plan handoff plus agent-value/numeric-output validation. |
+| Security and secret handling | #830, #836, #837, #838, #839, #840, #841, #850, #911 | Common security review, with secret rotation/deployment isolated from low-risk cleanup where necessary. |
+| Deployment and schema reproducibility | #829, #831, #834, #852, #853, #854, #859, #860, #918 | Make fresh-environment deployment reproducible before migration cleanup. |
+| Capacity, schedulers, and watchdogs | #832, #833, #835, #851, #855, #856, #857, #858, #922 | Validate telemetry first, then change timeout/concurrency/schedule controls. |
+| Dormant and stale production surfaces | #861, #862, #863, #919, #920, #921 | Decide restore-versus-retire per surface before changing consumers. |
+| Test and CI coverage | #843, #844, #847, #849, #868 | Shared CI wiring and integration fixtures; avoid mixing product behavior changes into the coverage PR. |
+| Magnitude feature semantics | #874, #875 | Shared Phase 2/4 feature recomputation and affected-model rerun contract. |
+| STRAT vote semantics | #884 | Standalone semantic/API decision. |
+| Architectural decomposition | #917 | Land after behavior contracts are protected; do not combine a broad refactor with correctness fixes. |
+
+### Delivery rules
+
+1. Open a remediation PR only when it contains an implementation or a concrete validation artifact; do not create empty PRs merely to obtain a bot response.
+2. Start with the native dependency graph above. A blocked issue remains open until its blocker is resolved and its own acceptance criteria pass.
+3. Put every covered issue in the PR description. Use `Fixes #N` only when that PR fully closes #N; otherwise use `Related to #N` and leave it open.
+4. Ask `@claude` once on the grouped PR to review the complete diff against the enumerated issue acceptance criteria, and require a per-issue disposition in the review summary.
+5. Keep high-risk live behavior, schema migrations, and broad refactors in independently reversible PRs even when they belong to the same stream.
+6. Target reviewable increments (normally one subsystem and one test contract). Split a candidate stream when it crosses deployment units, needs different owners, or cannot be rolled back atomically.
+
 ## Ticket-conversation evaluation status
 
 The answer to “were the conversations, discussions, and notes on the tickets evaluated for accuracy?” is **no for the original reconciliation**. The earlier run posted a standardized reconciliation/review-request comment after the existing automated responses on #812–#863, but it did not record a claim-by-claim validation of those responses against the current code, tests, linked commits, or production evidence. Asking Claude to review an issue is not the same as evaluating an answer already present on that issue.
