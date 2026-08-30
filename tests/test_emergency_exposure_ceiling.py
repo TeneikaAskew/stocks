@@ -10,9 +10,11 @@ The rest prove each of the three bounds actually bites once crossed, and that
 a malformed position size errs toward blocking rather than toward looking
 smaller than it is.
 """
+import math
+
 import pytest
 
-from lib.config import RiskConfig, AppConfig
+from lib.config import RiskConfig
 from gcp.signal_monitor import SignalMonitor
 
 
@@ -147,7 +149,6 @@ def test_nan_size_does_not_disable_the_gross_ceilings():
     comparison against NaN is False it SILENTLY DISABLES both gross bounds
     rather than tripping them. Reproduced pre-fix: ceiling 0.5 did not block.
     """
-    import math
     m = _monitor(emergency_max_concurrent_positions=99,
                  emergency_max_gross_exposure=0.5,
                  emergency_max_portfolio_gross=99.0)
@@ -206,9 +207,91 @@ def test_fractional_count_ceiling_is_rejected_not_truncated(tmp_path):
 
 
 def test_non_finite_ceiling_is_rejected(tmp_path):
-    import json
     from lib.config import load_config
     f = tmp_path / 'alert_config.json'
     f.write_text('{"risk_parameters": {"emergency_max_gross_exposure": 1e999}}')
     with pytest.raises(ValueError, match='finite'):
         load_config(str(f))
+
+
+# --------------------------------------------------------------------------
+# 3. The conservative stand-in must itself be trustworthy.
+#
+#    `max_position_size()` is what `_usable_size` substitutes for a bad size
+#    AND the pending size in `_emergency_ceiling_block`. If it can return NaN
+#    the fix above is undone one layer up: the NaN flows back into both gross
+#    accumulators and disables the very ceilings it defends.
+# --------------------------------------------------------------------------
+
+def _sizing(**kw):
+    base = {'weak': 0.25, 'medium': 0.50, 'strong': 0.75, 'perfect': 1.00}
+    base.update(kw)
+    return base
+
+
+def test_nan_in_the_sizing_config_does_not_poison_the_fallback():
+    """`json.loads` accepts a bare NaN, and 'weak' is the first entry, so
+    `max()` sees NaN first and returns it. Pre-fix that made the stand-in NaN
+    and both gross ceilings stopped tripping."""
+    m = _monitor(emergency_max_concurrent_positions=99,
+                 emergency_max_gross_exposure=0.5,
+                 emergency_max_portfolio_gross=0.5)
+    m.risk.position_sizing = _sizing(weak=float('nan'))
+
+    assert math.isfinite(m.max_position_size())
+    assert m.max_position_size() == pytest.approx(1.00)
+
+    m.active_positions = {'SPY': [_pos(float('nan'))]}
+    st = m._exposure_state('SPY')
+    assert math.isfinite(st['gross']), "the fallback re-poisoned the accumulator"
+    blocked, _why, _ = m._emergency_ceiling_block('SPY')
+    assert blocked, "ceiling silently disabled by the sizing config"
+
+
+@pytest.mark.parametrize('position', ['weak', 'perfect'])
+def test_bad_entry_is_discarded_wherever_it_sits(position):
+    """`max()` is order-dependent around NaN — it returns NaN only when NaN is
+    seen first. Filtering must happen BEFORE the maximum is taken, or this
+    passes for one position and fails for the other."""
+    m = _monitor()
+    m.risk.position_sizing = _sizing(**{position: float('nan')})
+    assert math.isfinite(m.max_position_size())
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -1.0, 'x', None])
+def test_a_single_bad_entry_does_not_discard_the_good_ones(bad):
+    m = _monitor()
+    m.risk.position_sizing = _sizing(weak=bad)
+    assert m.max_position_size() == pytest.approx(1.00)
+
+
+def test_zero_is_legal_in_the_sizing_config_and_simply_is_not_the_maximum():
+    """A zero bucket means 'do not size this signal', not a malformed config."""
+    m = _monitor()
+    m.risk.position_sizing = _sizing(weak=0.0, perfect=0.75)
+    assert m.max_position_size() == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize('unusable', [
+    {'weak': float('nan')},
+    {'weak': 0.0},
+    {},
+    None,
+])
+def test_no_usable_entry_falls_back_to_the_named_constant(unusable):
+    from gcp.signal_monitor import _FULL_POSITION_FRACTION
+    m = _monitor()
+    m.risk.position_sizing = unusable
+    assert m.max_position_size() == pytest.approx(_FULL_POSITION_FRACTION)
+    assert math.isfinite(_FULL_POSITION_FRACTION) and _FULL_POSITION_FRACTION > 0
+
+
+@pytest.mark.parametrize('not_a_mapping', [[0.25, 1.0], 'x', 1.0])
+def test_a_non_mapping_sizing_config_does_not_raise_out_of_the_helper(
+        not_a_mapping):
+    """A TypeError escaping a safety helper would take down evaluate_ticker.
+    The pre-hardening version caught this; the hardened one must too."""
+    from gcp.signal_monitor import _FULL_POSITION_FRACTION
+    m = _monitor()
+    m.risk.position_sizing = not_a_mapping
+    assert m.max_position_size() == pytest.approx(_FULL_POSITION_FRACTION)

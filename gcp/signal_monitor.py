@@ -30,6 +30,13 @@ _ET = ZoneInfo("America/New_York")
 _RTH_OPEN = time(9, 30)
 _RTH_CLOSE = time(16, 0)
 
+# The definitional top of the position-sizing scale (RiskConfig.position_sizing
+# is documented as a fraction, max 1.00). Not a market value and not a default
+# for one — it is the last-resort conservative stand-in for the exposure
+# ceiling when the sizing config yields no usable maximum at all, and it is
+# only ever reached after a logged warning. See max_position_size().
+_FULL_POSITION_FRACTION = 1.0
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
@@ -1925,11 +1932,43 @@ class SignalMonitor:
 
     def max_position_size(self) -> float:
         """Largest size the sizing config can produce. The conservative
-        stand-in for a size that is missing, malformed, or not yet known."""
+        stand-in for a size that is missing, malformed, or not yet known.
+
+        This helper is what `_usable_size` substitutes for an untrustworthy
+        value and what `_emergency_ceiling_block` uses as the pending size, so
+        it must never itself be NaN: a NaN here would flow straight back into
+        both gross accumulators and disable the ceilings it exists to defend.
+        `max()` offers no protection — it is order-dependent around NaN and
+        returns NaN whenever NaN is seen first, and `position_sizing['weak']`
+        is the first entry. Non-finite and non-positive entries are therefore
+        discarded before the maximum is taken, not after.
+
+        A zero entry is legal in the sizing config (it means "do not size this
+        bucket"), so it is skipped as a candidate rather than rejected.
+        """
+        cfg = getattr(self.risk, 'position_sizing', None)
         try:
-            return float(max(self.risk.position_sizing.values()))
-        except (ValueError, AttributeError, TypeError):
-            return 1.0
+            raw_values = list((cfg or {}).values())
+        except AttributeError:
+            # Not a mapping at all. The pre-hardening version caught this and
+            # fell through to the stand-in; keep that, because a TypeError out
+            # of a safety helper would take down evaluate_ticker.
+            raw_values = []
+        usable = []
+        for _v in raw_values:
+            try:
+                _f = float(_v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(_f) and _f > 0:
+                usable.append(_f)
+        if not usable:
+            logger.warning(
+                "exposure: position_sizing has no finite positive entry (%r); "
+                "using %.2f as the conservative stand-in",
+                cfg, _FULL_POSITION_FRACTION)
+            return _FULL_POSITION_FRACTION
+        return max(usable)
 
     def _usable_size(self, ticker: str, pos: dict) -> float:
         """A position's size, or the maximum if it cannot be trusted.
