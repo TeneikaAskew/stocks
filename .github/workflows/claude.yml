@@ -1,0 +1,117 @@
+name: Claude
+
+# Responds to @claude mentions on issues, pull requests and review comments.
+#
+# AUTH — subscription, not an API key.
+# Uses CLAUDE_CODE_OAUTH_TOKEN, which a Claude Pro/Max subscriber generates by
+# running `claude setup-token` in an interactive Claude Code terminal and then
+# stores as a repository secret. No ANTHROPIC_API_KEY and no per-token billing
+# is involved; usage counts against the subscription.
+#
+# Until that secret exists this workflow is INERT: the guard step below skips
+# the action and logs a warning rather than failing, so merging this file
+# changes nothing until the owner opts in.
+#
+# TRIGGER PHRASE is the default `@claude`, and that distinction is load-bearing.
+# The 2026-08-29 audit-reconciliation pass posted "Claude: please review this
+# reconciled audit issue..." on ~100 issues. That string does NOT contain
+# `@claude` and would not have fired this workflow. Any automation that wants a
+# response must emit `@claude` literally.
+#
+# It also cannot clear that backlog: `issue_comment` fires only on newly created
+# comments. GitHub never replays existing ones, so the ~100 already-posted
+# requests must be answered by hand regardless of this workflow.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened]
+
+# One run per thread. Replies are cumulative, so a cancelled in-flight run would
+# drop a response the commenter is waiting on — queue instead of cancelling.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  claude:
+    name: Respond to @claude
+    # Each event type is matched explicitly rather than OR-ing the three body
+    # fields: only one exists per event, and the others are null.
+    #
+    # The sender bot-check prevents a response loop. Codex reviews, this
+    # workflow's own replies, and the failure handler all land as comments on
+    # the same threads; without it, one bot quoting another's text containing
+    # `@claude` would ping-pong indefinitely against the owner's subscription.
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      (
+        ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment')
+          && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review'
+          && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues'
+          && contains(github.event.issue.body, '@claude'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check the subscription token is configured
+        id: token_check
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN is not set - skipping. Generate it with 'claude setup-token' (Pro/Max) and add it as a repository secret."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude
+        if: steps.token_check.outputs.configured == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  handle-failure:
+    needs: claude
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Claude responder"
+      failure_title: "❌ Claude responder failed"
+      issue_labels: "workflow-failure,claude-responder,automated"
+      workflow_file: "claude.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
