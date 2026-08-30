@@ -220,6 +220,23 @@ Every repository PR numbered after #924 through #942 was inspected by body, chan
 
 **Required ordering corrections:** PR-A's repaired input semantics gate affected PR-B validation; PR-A followed by repaired replay/data paths in PR-F/PR-G gate PR-C research baselines; #818/PR-F gates calibration or activation of #816/PR-E; and the shared read-side freshness primitive (PR-0) must precede the overlapping #833/#922/#863 work in PR-M/PR-N. Code-only candidates may merge earlier when independently safe, but they do not discharge these validation and rerun gates.
 
+### Backlog readiness and immediate completion queue
+
+The audit backlog is **already structured enough to begin implementation PRs**: all 105 canonical findings have an issue, priority, stream, and dependency policy. Findings do not need to be closed before their implementation PR is created—that would reverse the intended workflow. Create a scoped PR against one or more compatible open issues, prove each issue's acceptance criteria in its own review thread, merge and deploy where applicable, and only then close the satisfied issues. The current state is **1 completed canonical issue (#818), 104 open canonical issues, and one separately tracked post-audit issue (#940)**.
+
+Four open canonical issues already have partial candidate coverage and therefore need disposition before their streams are treated as untouched work:
+
+| Issue | Existing candidate | Work still required before closure |
+|---:|---|---|
+| [#812](https://github.com/TeneikaAskew/stocks/issues/812) | #936 and superseding #942 | **Complete this work; do not abandon the finding.** Amend #942 to handle a contiguous zero-gamma run bracketed by opposite nonzero endpoints; retain the pure-put underflow and isolated-zero regressions; rerun the gamma suite; merge and deploy only after review; rerun the production outlier query; then recompute rows with preserved point-in-time inputs and NULL the remainder of the 54 contaminated rows. Record both production results on #812 before closing it. #936 may then close as superseded without merging. |
+| [#815](https://github.com/TeneikaAskew/stocks/issues/815) | #937 documentation | Resolve the policy decision: either accept and record the verified no-live-stop decision next to the unused configuration, or disprove it with the required within-live counterfactual. Re-run the comparison if #814 materially changes the relevant fill assumptions. Documentation alone does not complete the issue. |
+| [#816](https://github.com/TeneikaAskew/stocks/issues/816) | merged mechanism in #933 | Keep the shipped ceilings at their default no-op until #940 restores risk state across restarts. After the shadow window, record a data-backed decision for each control, repair daily-loss P&L semantics, and either wire or delete the unused daily-profit target. |
+| [#863](https://github.com/TeneikaAskew/stocks/issues/863) | #938 freshness guard | Stop or refresh the stale weekly publication, diagnose the May/June writer stoppages, and land the shared read-side freshness primitive across all three affected surfaces. Coordinate the shared root cause with #833 and #922 rather than closing #863 on its one-surface guard. |
+
+The remaining 100 canonical issues have no implementation PR and can now enter the grouped streams below, subject to their recorded dependencies. A stream manifest is a planning boundary, not a requirement to put every listed issue into one oversized PR; start with the smallest independently testable and reversible subset.
+
+**Product-plan synchronization status:** PR [#931](https://github.com/TeneikaAskew/stocks/pull/931) remains on its separate `work-product-plan` branch and was **not updated by the post-merge reconciliation work on #924**. Before #931 is treated as the current roadmap, port this state into its capability, traceability, roadmap, and work-breakdown documents: #818 completed; #933/#934 merged and deployed; #812/#815/#816/#863 partial; #936/#942 held; #940 added as a pre-calibration gate; and 100 canonical issues still without implementation PRs. PR #924 remains authoritative for finding-to-issue/stream governance until that synchronization is reviewed.
+
 ### Definition-of-done scoring for the closing-link decisions
 
 The reconciliation above records *that* the two `Fixes` links were over-broad. This records *why*, scored against each issue's own **Definition of done**, because the scoring is what justifies keeping the issues open after their PRs merge.
