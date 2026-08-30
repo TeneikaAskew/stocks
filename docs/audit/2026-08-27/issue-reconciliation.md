@@ -195,6 +195,7 @@ An issue does **not** need to be converted one-for-one into a pull request for C
 
 - **PR #802** is the Claude audit source and **PR #804** is the Codex audit source; neither is a remediation PR for the canonical issues.
 - **PR #924** contains this governance reconciliation and is the single PR on which Claude was asked to review the mapping and grouping plan. It intentionally has **zero closing-issue links** because it does not implement any finding.
+- **PR #933** proposes a no-op-default emergency exposure ceiling related to #816, and **PR #934** proposes the replay daily-trade accounting fix for #818. Neither is treated here as merged, deployed, or sufficient to waive the gates below.
 - No remediation PR has been opened or linked by this reconciliation. The 14 relationships recorded above are **issue-to-issue dependencies**, not pull-request links.
 - A canonical issue should acquire a Development/closing PR link only when an implementation PR actually satisfies its acceptance criteria. Creating empty PRs to obtain a Claude response would misrepresent remediation status.
 
@@ -223,31 +224,58 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 | PR-Q — STRAT vote semantics | #884 | Standalone semantic/API decision. |
 | PR-R — Architectural decomposition | #917 | Land after behavior contracts are protected; do not combine a broad refactor with correctness fixes. |
 
+### Shared freshness prerequisite (PR-0)
+
+Before PR-M or PR-N changes freshness consumers, land a small **PR-0 read-side freshness primitive** shared by #833, #922, and #863. It must return structured freshness state without choosing a consumer action. PR-M and PR-N remain separate delivery streams because their policies differ: monitoring emits an upstream-stale alert, the Discord path suppresses and fails, and the API returns a typed unavailable response. Both streams depend on PR-0; neither may duplicate the primitive or silently make the other its implementation prerequisite.
+
+### Enforceable stream dependencies and definitions of done
+
+- **PR-A — no prerequisite.** It must merge and deploy before PR-B and PR-C.
+- **PR-B — prerequisite: PR-A merged and deployed.** Any Greeks or gamma baseline computed before PR-A must be discarded and recomputed under the repaired price, gamma, and open-interest input contract.
+- **PR-C — prerequisites: PR-A, PR-F, and PR-G merged and deployed.** #905 and #909 may not freeze, cohort, or adopt a baseline before all three prerequisites land. Earlier measurements are contaminated evidence and must be discarded and recomputed; later fixes cannot repair a baseline already accepted as validation evidence.
+- **PR-D — split validation boundary.** The within-live #815 counterfactual is independently actionable. Cross-system backtest-versus-live attribution is gated on PR-F being merged and deployed and must not be accepted until fill, signal timing, exit sampling, and cost semantics align.
+- **PR-E — prerequisite: #818 in PR-F merged and deployed.** Its definition of done requires a production-path replay demonstrating that the daily-trade cap engages. Analysis produced against a replay where the cap cannot bind is not acceptance evidence. The no-op-default ceiling in PR #933 may be reviewed independently but does not satisfy #816 or remove this gate.
+
+These are must-land-before constraints, not scheduling suggestions. The remaining streams may proceed in parallel subject to their issue-level native dependencies and PR-0.
+
+### Candidate-commit recoverability inventory
+
+Candidate work produced in issue-response environments is an urgent recovery input, not evidence that the repository contains a fix. The known seed inventory is:
+
+| Issue | Candidate commit | State |
+|---|---|---|
+| #812 | `98dbd35` | Stranded; absent from this clone and not known to be on a remote. |
+| #815 | `c3f582a` | Stranded; absent from this clone and not known to be on a remote. |
+| #863 | `06b2d34` | Stranded; absent from this clone and not known to be on a remote. |
+| #813, #814, #816 | — | Analysis-only; no candidate commit identified. |
+
+Before any stream is sized or scheduled, inventory **all 105 canonical issues** with candidate commit, producing environment, remote/PR reachability, patch recoverability, tests previously run, and revalidation needed against current HEAD. An absent commit must be recovered as a patch and retested; it must not be counted as delivered. Unknown entries remain blockers to stream sizing rather than being silently classified as either implemented or analysis-only.
+
 ### Delivery rules
 
 1. Open a remediation PR only when it contains an implementation or a concrete validation artifact; do not create empty PRs merely to obtain a bot response.
 2. Start with the native dependency graph above. A blocked issue remains open until its blocker is resolved and its own acceptance criteria pass.
 3. Put every covered issue in the PR description. Use `Fixes #N` only when that PR fully closes #N; otherwise use `Related to #N` and leave it open.
-4. Create **one top-level PR comment per included canonical issue** and invoke `@claude` in each comment. Do not collapse a nine-issue PR into one generic review request: it must have nine independently auditable issue-review comments.
+4. Create **one top-level manual-review thread per included canonical issue**. Do not collapse a nine-issue PR into one generic review request: it must have nine independently auditable issue-review comments and recorded dispositions.
 5. Keep high-risk live behavior, schema migrations, and broad refactors in independently reversible PRs even when they belong to the same stream.
 6. Target reviewable increments (normally one subsystem and one test contract). Split a candidate stream when it crosses deployment units, needs different owners, or cannot be rolled back atomically.
 
-### Per-issue Claude review threads on grouped PRs
+### Per-issue manual review threads on grouped PRs
 
-When an implementation PR is opened, the PR body provides the overall change summary and links every included issue. After the PR exists, create a separate top-level Conversation comment for each issue actually addressed by the diff. Each comment must:
+When an implementation PR is opened, the PR body provides the overall change summary and links every included issue. After the PR exists, create a separate top-level Conversation comment for each issue actually addressed by the diff. The author assigns or requests a human reviewer through the repository's actual manual review process; the protocol does not assume that a bot responder or issue-to-PR promotion workflow exists. Each comment must:
 
 1. identify the canonical issue in its heading and link it;
 2. summarize the issue's verified defect, affected code, historical-evidence impact, and acceptance criteria (copying only the relevant current content, not stale or superseded wording);
 3. state which files, commits, and tests in the PR claim to satisfy that issue;
-4. mention `@claude` and ask for an explicit `PASS`, `PASS WITH CORRECTIONS`, or `FAIL` disposition for **that issue only**; and
-5. remain open for follow-up until Claude's response and any corrections are recorded.
+4. name the requested reviewer and ask for an explicit `PASS`, `PASS WITH CORRECTIONS`, or `FAIL` disposition for **that issue only**; and
+5. remain open for follow-up until the reviewer's response and any corrections are recorded.
 
 For example, a full PR-A implementation would have nine comments, in this order: #825, #826, #827, #828, #842, #848, #925, #926, and #928. If the actual diff implements only a subset, include and ping only that subset and leave the other issues for a later PR. This prevents a grouped PR from falsely implying that all issues in its candidate stream were implemented.
 
 Use the following comment template:
 
 ```markdown
-## Claude review — Issue #NNN: <issue title>
+## Manual review — Issue #NNN: <issue title>
 
 **Canonical issue:** #NNN
 **Verified defect and scope:** <current issue summary and affected components>
@@ -259,7 +287,9 @@ Use the following comment template:
 - `<file/function>` — <change>
 - `<test command or test file>` — <coverage>
 
-@claude Please review this PR specifically against issue #NNN. Return **PASS**, **PASS WITH CORRECTIONS**, or **FAIL**; verify the implementation evidence and every acceptance criterion, and identify any missing scope or regression coverage. Do not treat findings from the other issue comments as satisfying this issue.
+**Requested reviewer:** @<reviewer>
+
+Please review this PR specifically against issue #NNN. Return **PASS**, **PASS WITH CORRECTIONS**, or **FAIL**; verify the implementation evidence and every acceptance criterion, and identify any missing scope or regression coverage. Do not treat findings from the other issue comments as satisfying this issue.
 ```
 
 ## Ticket-conversation evaluation status
