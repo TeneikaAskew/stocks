@@ -725,6 +725,34 @@ def compute_gamma_flip_bs(
     K = np.asarray(Ks); T = np.asarray(Ts); sig = np.asarray(sigs)
     sgn = np.asarray(signs); oi = np.asarray(ois)
 
+    def _stable_net_gamma(candidate_spot: float) -> float:
+        """Return a row-scaled net gamma without PDF underflow.
+
+        Only the sign and root matter here.  Subtracting the largest log
+        contribution keeps the weighted sum representable without changing
+        either, even when every ordinary Black-Scholes gamma is zero.
+        """
+        sqrt_t = np.sqrt(T)
+        d1 = (
+            np.log(candidate_spot / K)
+            + (risk_free - dividend_yield + 0.5 * sig ** 2) * T
+        ) / (sig * sqrt_t)
+        with np.errstate(divide="ignore"):
+            log_terms = (
+                -dividend_yield * T
+                - 0.5 * d1 ** 2
+                - 0.5 * np.log(2.0 * np.pi)
+                - np.log(candidate_spot)
+                - np.log(sig)
+                - np.log(sqrt_t)
+                + np.log(oi)
+            )
+        finite = np.isfinite(log_terms)
+        if not finite.any():
+            return 0.0
+        scale = float(np.max(log_terms[finite]))
+        return float(np.sum(sgn[finite] * np.exp(log_terms[finite] - scale)))
+
     def _crossings_at(pct: float) -> list[float]:
         S_grid = np.linspace(spot * (1 - pct), spot * (1 + pct), grid_points)
         # G(S_i) = Σ_j sign_j · gamma_BS(S_i, K_j, T_j, r, q, σ_j) · OI_j
@@ -735,11 +763,69 @@ def compute_gamma_flip_bs(
         G = (gam * (sgn * oi)[None, :]).sum(axis=1)  # (M,)
         # Find sign changes; linearly interpolate each crossing.
         found: list[float] = []
+        # A zero sample can be either an exact crossing or gamma underflow.
+        # Treat a contiguous zero run as a crossing only when its nearest
+        # representable endpoints have opposite signs.  A deep-wing run has
+        # no nonzero endpoint on one side (or equal signs) and stays rejected.
+        # Interpolate across the endpoints because the true crossing can lie
+        # anywhere inside a multi-point underflow gap.
+        i = 0
+        while i < len(S_grid):
+            if G[i] != 0.0:
+                i += 1
+                continue
+            run_start = i
+            while i + 1 < len(S_grid) and G[i + 1] == 0.0:
+                i += 1
+            run_end = i
+            left = run_start - 1
+            right = run_end + 1
+            ordinary_bracket = (
+                left >= 0
+                and right < len(S_grid)
+                and G[left] != 0.0
+                and G[right] != 0.0
+                and ((G[left] < 0.0) != (G[right] < 0.0))
+            )
+            if run_start == run_end and ordinary_bracket:
+                # A single exact sampled zero is already the best root.
+                found.append(float(S_grid[run_start]))
+            else:
+                # Ordinary gamma has underflowed across this interval.  The
+                # run may reach either search boundary—or cover the full
+                # grid—and an even number of roots can leave equal signs at
+                # the endpoints.  Sample the stable sum across every grid
+                # interval in the run so each internal root gets its own
+                # bracket instead of testing only the outer endpoints.
+                bracket_left = max(left, 0)
+                bracket_right = min(right, len(S_grid) - 1)
+                from scipy.optimize import brentq
+                stable_values = [
+                    _stable_net_gamma(float(S_grid[j]))
+                    for j in range(bracket_left, bracket_right + 1)
+                ]
+                for offset, stable_value in enumerate(stable_values):
+                    if stable_value == 0.0:
+                        found.append(float(S_grid[bracket_left + offset]))
+                for offset in range(len(stable_values) - 1):
+                    stable_left = stable_values[offset]
+                    stable_right = stable_values[offset + 1]
+                    if (stable_left != 0.0 and stable_right != 0.0
+                            and ((stable_left < 0.0) != (stable_right < 0.0))):
+                        interval_left = bracket_left + offset
+                        found.append(float(brentq(
+                            _stable_net_gamma,
+                            float(S_grid[interval_left]),
+                            float(S_grid[interval_left + 1]),
+                        )))
+            i += 1
         for i in range(len(S_grid) - 1):
             g1, g2 = G[i], G[i + 1]
-            if g1 == 0.0:
-                found.append(float(S_grid[i]))
-            elif g1 * g2 < 0:
+            # A zero can be numerical underflow in a deep wing, not a
+            # dealer-gamma crossing. Require two representable, strictly
+            # opposite signs. Compare signs directly because multiplying two
+            # small, nonzero values can itself underflow to zero.
+            if g1 != 0.0 and g2 != 0.0 and ((g1 < 0.0) != (g2 < 0.0)):
                 frac = -g1 / (g2 - g1)
                 found.append(float(S_grid[i] + frac * (S_grid[i + 1] - S_grid[i])))
         return found

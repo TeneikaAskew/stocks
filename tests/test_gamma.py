@@ -1,5 +1,7 @@
 """Tests for lib/gamma.py — canonical gamma exposure analytics."""
 
+import math
+
 import pytest
 
 from lib import gamma
@@ -797,6 +799,140 @@ class TestComputeGammaFlipBS:
         assert gamma.compute_gamma_flip_bs(
             opts, 100.0, risk_free=0.045, dividend_yield=0.013,
             snapshot_date="2026-06-09") is None
+
+    def test_pure_put_underflow_does_not_fabricate_flip(self):
+        """Deep-wing PDF underflow is not a zero-gamma crossing (#812)."""
+        opts = [
+            {
+                "type": "put",
+                "strike": strike,
+                "open_interest": 1_000,
+                "implied_volatility": 0.05,
+                "expiration": "2026-08-31",
+            }
+            for strike in (400, 425, 450, 475, 500, 525)
+        ]
+        assert gamma.compute_gamma_flip_bs(
+            opts,
+            600.0,
+            risk_free=0.045,
+            dividend_yield=0.013,
+            snapshot_date="2026-08-30",
+        ) is None
+
+    def test_exact_grid_zero_between_opposite_signs_is_a_flip(self, monkeypatch):
+        """An isolated exact zero at spot must not be mistaken for underflow."""
+        import numpy as np
+        from lib import options_greeks
+
+        def fake_bs_gamma(S, K, *_args):
+            shape = np.broadcast_shapes(np.shape(S), np.shape(K))
+            prices = np.broadcast_to(S, shape)
+            strikes = np.broadcast_to(K, shape)
+            # Calls (K=90) vary through zero net GEX at spot; puts (K=110)
+            # provide the equal constant contribution being crossed.
+            call_gamma = np.where(prices < 100.0, 0.5,
+                                  np.where(prices > 100.0, 1.5, 1.0))
+            return np.where(strikes < 100.0, call_gamma, 1.0)
+
+        monkeypatch.setattr(options_greeks, "bs_gamma", fake_bs_gamma)
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": 100,
+                "implied_volatility": 0.20,
+                "expiration": "2026-09-30",
+            }
+            for option_type, strike in (("call", 90.0),) * 5 + (("put", 110.0),) * 5
+        ]
+
+        assert gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.045,
+            dividend_yield=0.013,
+            snapshot_date="2026-08-30",
+        ) == pytest.approx(100.0)
+
+    def test_zero_run_between_opposite_signs_is_a_flip(self):
+        """Representable opposite signs separated by underflow still cross (#812)."""
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": 100,
+                "implied_volatility": 0.04,
+                "expiration": "2026-08-31",
+            }
+            for option_type, strike in (("call", 90.0),) * 5 + (("put", 110.0),) * 5
+        ]
+
+        flip = gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.0,
+            dividend_yield=0.0,
+            snapshot_date="2026-08-30",
+        )
+
+        # Equal weights/volatility make the stable Black-Scholes root
+        # analytically available for this two-strike chain.
+        expected = math.sqrt(90.0 * 110.0) * math.exp(-0.5 * 0.04 ** 2 / 365.0)
+        assert flip == pytest.approx(expected, abs=1e-6)
+
+    def test_all_zero_grid_uses_stable_boundary_signs(self):
+        """A full underflowed grid can still bracket a real crossing (#812)."""
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": 100,
+                "implied_volatility": 0.04,
+                "expiration": "2026-08-31",
+            }
+            for option_type, strike in (("call", 40.0),) * 5 + (("put", 180.0),) * 5
+        ]
+
+        flip = gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.0,
+            dividend_yield=0.0,
+            snapshot_date="2026-08-30",
+        )
+
+        expected = math.sqrt(40.0 * 180.0) * math.exp(-0.5 * 0.04 ** 2 / 365.0)
+        assert flip == pytest.approx(expected, abs=1e-6)
+
+    def test_zero_run_finds_multiple_stable_crossings(self):
+        """Equal endpoint signs must not hide two roots inside a zero run (#812)."""
+        positions = (
+            ("call", 70.94097, 33.42834, 0.043906),
+            ("call", 172.28686, 44.51189, 0.103913),
+            ("put", 186.51450, 13.04986, 0.120317),
+        )
+        opts = [
+            {
+                "type": option_type,
+                "strike": strike,
+                "open_interest": open_interest,
+                "implied_volatility": iv,
+                "expiration": "2026-08-31",
+            }
+            for option_type, strike, open_interest, iv in positions
+            for _ in range(4)
+        ]
+
+        flip = gamma.compute_gamma_flip_bs(
+            opts,
+            100.0,
+            risk_free=0.0,
+            dividend_yield=0.0,
+            snapshot_date="2026-08-30",
+        )
+
+        assert flip == pytest.approx(104.1632, abs=1e-2)
 
     def test_none_when_thin_chain(self):
         opts = self._chain()[:4]
