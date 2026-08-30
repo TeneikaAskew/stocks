@@ -78,3 +78,68 @@ def test_level_gate_suppressed_fire_does_not_consume_cap():
     assert captured == [], "enforce mode should suppress a post_t1 fire"
     assert m.daily_trades.get('SPY', 0) == 0, (
         "a suppressed fire must not consume cap")
+
+
+# --------------------------------------------------------------------------
+# Codex review of PR #934 — two defects, both reproduced before fixing.
+# --------------------------------------------------------------------------
+
+def test_rvol_enforce_below_does_not_capture_or_consume_cap():
+    """Production fire_alert returns on a 'below' verdict under enforce
+    BEFORE persist and before the counter — its own comment says a suppressed
+    fire is "invisible to the risk caps too". The stub must match, or every
+    below-threshold candidate burns cap and starves later valid signals."""
+    m = _monitor()
+    m.signal_cfg.rvol_gate_mode = 'enforce'
+    m.signal_cfg.rvol_gate_min = 1.5
+    captured = []
+    _install_stub(m, captured)
+    low = dict(_LATEST, RVOL=0.4)
+    m.fire_alert('SPY', dict(_SIG), 6.0, 'strong', 0.75, 0.0, low)
+    assert captured == [], "below-threshold fire must not be captured"
+    assert m.daily_trades.get('SPY', 0) == 0, "and must not consume cap"
+
+
+def test_rvol_enforce_above_still_fires_and_counts():
+    m = _monitor()
+    m.signal_cfg.rvol_gate_mode = 'enforce'
+    m.signal_cfg.rvol_gate_min = 1.5
+    captured = []
+    _install_stub(m, captured)
+    m.fire_alert('SPY', dict(_SIG), 6.0, 'strong', 0.75, 0.0,
+                 dict(_LATEST, RVOL=2.0))
+    assert len(captured) == 1 and m.daily_trades.get('SPY') == 1
+
+
+def test_rvol_shadow_mode_does_not_suppress():
+    """shadow is the default and must change nothing."""
+    m = _monitor()
+    m.signal_cfg.rvol_gate_mode = 'shadow'
+    m.signal_cfg.rvol_gate_min = 1.5
+    captured = []
+    _install_stub(m, captured)
+    m.fire_alert('SPY', dict(_SIG), 6.0, 'strong', 0.75, 0.0,
+                 dict(_LATEST, RVOL=0.1))
+    assert len(captured) == 1 and m.daily_trades.get('SPY') == 1
+
+
+def test_multi_date_replay_rolls_the_cap_counter_over():
+    """daily_trades is SESSION state — production runs one monitor per day.
+    Without a rollover, date 1 exhausting the cap silently suppresses every
+    later date in a --start/--end replay."""
+    from scripts.replay_signal_monitor import replay_ticker
+    m = _monitor()
+    m.risk.max_daily_trades = 2
+    captured = []
+    _install_stub(m, captured)
+    m.daily_trades['SPY'] = 2          # date 1 exhausted the cap
+
+    bars = pd.DataFrame([
+        {'Time': pd.Timestamp('2026-08-27 14:31:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+        {'Time': pd.Timestamp('2026-08-28 14:31:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+    ])
+    replay_ticker(m, 'SPY', bars, captured)
+    assert m.daily_trades.get('SPY') == 0, (
+        "crossing into a new session must reset the per-day fire counter")
