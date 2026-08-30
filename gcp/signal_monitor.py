@@ -1055,6 +1055,22 @@ class SignalMonitor:
             )
             return
 
+        # Emergency exposure ceiling (#816). Enforced, unlike the shadow
+        # controls below it. See the RiskConfig note for why the defaults are
+        # deliberately no-ops: they equal the bound `max_daily_trades` already
+        # implies, so this cannot censor a fire today. It exists so that
+        # exposure stops being a side effect of an unrelated cap, and so the
+        # ceiling can be tightened by config once shadow data exists.
+        _blocked, _why, _exposure = self._emergency_ceiling_block(ticker)
+        if _blocked:
+            logger.warning(
+                "EMERGENCY CEILING: blocked ticker=%s %s "
+                "(count=%d gross=%.2f portfolio_gross=%.2f)",
+                ticker, _why, _exposure['count'], _exposure['gross'],
+                _exposure['portfolio_gross'],
+            )
+            return
+
         # Evaluate signal — Phase 1.6: also runs momentum on the same
         # bar and detects agreement when both fire same direction.
         sig, agreement = self._evaluate_strategies_for_bar(latest, last_price, ticker)
@@ -1889,6 +1905,65 @@ class SignalMonitor:
                     + (pct / 100.0) * size
                 )
                 positions.remove(pos)
+
+    def _exposure_state(self, ticker: str) -> dict:
+        """Simultaneous exposure: count and gross size, ticker and portfolio.
+
+        `size` is the position-sizing fraction (see RiskConfig.position_sizing,
+        max 1.00), so `gross` is a sum of fractions rather than a currency
+        amount — the same unit the sizing config is expressed in.
+        """
+        per = self.active_positions.get(ticker) or []
+        gross = 0.0
+        for pos in per:
+            try:
+                gross += float(pos.get('size', 1.0))
+            except (TypeError, ValueError):
+                # Rule 3.7: a malformed size must not silently count as 0 and
+                # make exposure look smaller than it is. Count it at the
+                # maximum instead, so the ceiling errs toward blocking.
+                logger.warning(
+                    "exposure: %s position has unusable size=%r; counting 1.0",
+                    ticker, pos.get('size'))
+                gross += 1.0
+        portfolio = 0.0
+        for _t, poss in (self.active_positions or {}).items():
+            for pos in (poss or []):
+                try:
+                    portfolio += float(pos.get('size', 1.0))
+                except (TypeError, ValueError):
+                    portfolio += 1.0
+        return {'count': len(per), 'gross': gross,
+                'portfolio_gross': portfolio}
+
+    def _emergency_ceiling_block(self, ticker: str):
+        """Would the emergency exposure ceiling refuse another position?
+
+        Returns ``(blocked, reason, exposure_state)``. Three independent
+        bounds, any of which blocks:
+
+        * per-ticker concurrent count
+        * per-ticker gross size
+        * portfolio-wide gross size  (the only aggregate bound that exists;
+          nothing else in the system looks across tickers at all)
+
+        This is a circuit breaker, not a policy. See RiskConfig (#816).
+        """
+        st = self._exposure_state(ticker)
+        r = self.risk
+        if st['count'] >= r.emergency_max_concurrent_positions:
+            return True, ("concurrent=%d >= %d"
+                          % (st['count'],
+                             r.emergency_max_concurrent_positions)), st
+        if st['gross'] >= r.emergency_max_gross_exposure:
+            return True, ("gross=%.2f >= %.2f"
+                          % (st['gross'],
+                             r.emergency_max_gross_exposure)), st
+        if st['portfolio_gross'] >= r.emergency_max_portfolio_gross:
+            return True, ("portfolio_gross=%.2f >= %.2f"
+                          % (st['portfolio_gross'],
+                             r.emergency_max_portfolio_gross)), st
+        return False, None, st
 
     def _risk_control_shadow(self, ticker: str, price: float) -> dict:
         """What the DECLARED-but-unenforced risk controls would say right now.
