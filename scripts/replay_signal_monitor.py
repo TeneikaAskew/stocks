@@ -51,6 +51,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from gcp.signal_monitor import rvol_gate_verdict
+
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
@@ -149,10 +151,25 @@ def replay_ticker(
     # _now() to bar-time so brief-bias and catalyst-proximity lookups
     # use the bar's date, not wall-clock-today (the bug that made the
     # PR #379 FTFC fix architecturally inert during replay).
+    prev_date = None
     for i in range(len(bars)):
         single_bar = bars.iloc[i:i + 1].copy()
         if 'Time' in single_bar.columns:
-            monitor.replay_clock_ts = pd.Timestamp(single_bar['Time'].iloc[0])
+            _ts = pd.Timestamp(single_bar['Time'].iloc[0])
+            monitor.replay_clock_ts = _ts
+            # `daily_trades` is SESSION state: production runs one
+            # SignalMonitor per trading day, so the counter starts at 0 each
+            # morning. A --start/--end replay drives many dates through one
+            # instance, so without this rollover date 1 exhausting the cap
+            # would suppress every candidate on every later date (Codex P1 on
+            # PR #934). Harmless for a single-date replay.
+            _bar_date = _ts.date()
+            if prev_date is not None and _bar_date != prev_date:
+                monitor.daily_trades[ticker] = 0
+                logger.info(
+                    "replay: %s session rollover %s -> %s, daily_trades reset",
+                    ticker, prev_date, _bar_date)
+            prev_date = _bar_date
         monitor.update_window(ticker, single_bar)
         try:
             monitor.evaluate_ticker(ticker)
@@ -325,6 +342,21 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
         # compute it here too or replay rows carry a NULL the live path
         # would have filled, and the shadow comparison loses the replay arm.
         rvol_mod = self._corrected_rvol(ticker)
+        # Mirror the production RVOL gate (Codex P2 on PR #934). Live
+        # fire_alert returns on a 'below' verdict under `enforce` BEFORE
+        # Discord, persist and the daily-trades counter — its own comment
+        # says a suppressed fire is "invisible to the risk caps too". The
+        # raw bar RVOL is used, not self._corrected_rvol(): the gate reads
+        # latest['RVOL'] in production, and passing a missing value through
+        # as None is deliberate (§3.7) so rvol_gate_verdict's always-'below'
+        # guarantee applies instead of a 0 default sneaking past a legal
+        # rvol_gate_min=0.
+        if getattr(self.signal_cfg, "rvol_gate_mode", "shadow") == "enforce":
+            if rvol_gate_verdict(latest.get("RVOL"),
+                                 self.signal_cfg.rvol_gate_min,
+                                 self.signal_cfg.rvol_gate_mode) == "below":
+                return
+
         # Mirror production enforcement (Codex P2 on PR #799): under
         # `enforce`, live fire_alert returns before Discord/persist for
         # late-state fires, so the replay must not capture them either —
@@ -356,6 +388,18 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
             opp_level_state=opp_state,
             rvol_mod=rvol_mod,
         ))
+        # Production `fire_alert` increments the per-ticker fire counter at
+        # this point — AFTER the level-gate early return above, so a
+        # suppressed fire does not consume cap. Replacing fire_alert wholesale
+        # dropped that mutation, so `daily_trades` stayed 0 for the whole
+        # replay and the `max_daily_trades` gate in evaluate_ticker never
+        # engaged (#818).
+        #
+        # This is not only replay fidelity. Per Codex's #816 review the daily
+        # cap is currently the ONLY bound on concurrent exposure, so a replay
+        # where it never binds cannot reproduce today's behaviour as the
+        # baseline for any shadow-control analysis.
+        self.daily_trades[ticker] = self.daily_trades.get(ticker, 0) + 1
     return _capture
 
 
