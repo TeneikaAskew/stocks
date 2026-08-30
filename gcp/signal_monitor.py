@@ -11,6 +11,7 @@ import sys
 import json
 import dataclasses
 import logging
+import math
 import time as time_module
 import requests
 from pathlib import Path
@@ -1914,27 +1915,45 @@ class SignalMonitor:
         amount — the same unit the sizing config is expressed in.
         """
         per = self.active_positions.get(ticker) or []
-        gross = 0.0
-        for pos in per:
-            try:
-                gross += float(pos.get('size', 1.0))
-            except (TypeError, ValueError):
-                # Rule 3.7: a malformed size must not silently count as 0 and
-                # make exposure look smaller than it is. Count it at the
-                # maximum instead, so the ceiling errs toward blocking.
-                logger.warning(
-                    "exposure: %s position has unusable size=%r; counting 1.0",
-                    ticker, pos.get('size'))
-                gross += 1.0
+        gross = sum(self._usable_size(ticker, p) for p in per)
         portfolio = 0.0
         for _t, poss in (self.active_positions or {}).items():
             for pos in (poss or []):
-                try:
-                    portfolio += float(pos.get('size', 1.0))
-                except (TypeError, ValueError):
-                    portfolio += 1.0
+                portfolio += self._usable_size(_t, pos)
         return {'count': len(per), 'gross': gross,
                 'portfolio_gross': portfolio}
+
+    def max_position_size(self) -> float:
+        """Largest size the sizing config can produce. The conservative
+        stand-in for a size that is missing, malformed, or not yet known."""
+        try:
+            return float(max(self.risk.position_sizing.values()))
+        except (ValueError, AttributeError, TypeError):
+            return 1.0
+
+    def _usable_size(self, ticker: str, pos: dict) -> float:
+        """A position's size, or the maximum if it cannot be trusted.
+
+        Rule 3.7, and the reason this is not a bare ``float()``: ``float`` is
+        happy to return NaN. A single NaN size poisons the gross accumulator,
+        and because every comparison against NaN is False it silently DISABLES
+        both gross ceilings rather than tripping them. Negative sizes are the
+        same hazard in the other direction — they shrink reported exposure.
+        Anything not finite and positive is counted at the maximum so the
+        ceiling errs toward blocking.
+        """
+        raw = pos.get('size', 1.0) if isinstance(pos, dict) else None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = None
+        if val is None or not math.isfinite(val) or val <= 0:
+            fallback = self.max_position_size()
+            logger.warning(
+                "exposure: %s position size=%r is not finite and positive; "
+                "counting %.2f", ticker, raw, fallback)
+            return fallback
+        return val
 
     def _emergency_ceiling_block(self, ticker: str):
         """Would the emergency exposure ceiling refuse another position?
@@ -1951,17 +1970,30 @@ class SignalMonitor:
         """
         st = self._exposure_state(ticker)
         r = self.risk
-        if st['count'] >= r.emergency_max_concurrent_positions:
-            return True, ("concurrent=%d >= %d"
+        # Bound the state the fire would PRODUCE, not the state before it.
+        # Comparing existing exposure only lets a fire cross the ceiling by up
+        # to one full position: gross 1.0 against a 1.5 ceiling would admit
+        # another 1.0 and land at 2.0.
+        #
+        # The gate runs before the signal is scored, so the candidate's size
+        # is not known yet; the maximum the sizing config can produce is used,
+        # which errs toward blocking.
+        #
+        # `>` rather than `>=` because the test is "would this EXCEED the
+        # ceiling", and because it keeps the shipped defaults a strict no-op:
+        # 4 existing + 1.0 pending = 5.0 against a 5.0 ceiling is allowed.
+        pending = self.max_position_size()
+        if st['count'] + 1 > r.emergency_max_concurrent_positions:
+            return True, ("concurrent %d+1 > %d"
                           % (st['count'],
                              r.emergency_max_concurrent_positions)), st
-        if st['gross'] >= r.emergency_max_gross_exposure:
-            return True, ("gross=%.2f >= %.2f"
-                          % (st['gross'],
+        if st['gross'] + pending > r.emergency_max_gross_exposure:
+            return True, ("gross %.2f+%.2f > %.2f"
+                          % (st['gross'], pending,
                              r.emergency_max_gross_exposure)), st
-        if st['portfolio_gross'] >= r.emergency_max_portfolio_gross:
-            return True, ("portfolio_gross=%.2f >= %.2f"
-                          % (st['portfolio_gross'],
+        if st['portfolio_gross'] + pending > r.emergency_max_portfolio_gross:
+            return True, ("portfolio_gross %.2f+%.2f > %.2f"
+                          % (st['portfolio_gross'], pending,
                              r.emergency_max_portfolio_gross)), st
         return False, None, st
 

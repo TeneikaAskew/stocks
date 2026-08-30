@@ -60,7 +60,7 @@ def test_count_bound_blocks():
                  emergency_max_portfolio_gross=99.0)
     m.active_positions = {'SPY': [_pos(0.25), _pos(0.25)]}
     blocked, why, st = m._emergency_ceiling_block('SPY')
-    assert blocked and 'concurrent=2' in why and st['count'] == 2
+    assert blocked and 'concurrent 2+1 > 2' in why and st['count'] == 2
 
 
 def test_gross_bound_blocks_even_when_count_is_low():
@@ -70,7 +70,7 @@ def test_gross_bound_blocks_even_when_count_is_low():
                  emergency_max_portfolio_gross=99.0)
     m.active_positions = {'SPY': [_pos(1.0), _pos(0.75)]}
     blocked, why, st = m._emergency_ceiling_block('SPY')
-    assert blocked and 'gross=1.75' in why and st['gross'] == pytest.approx(1.75)
+    assert blocked and 'gross 1.75' in why and st['gross'] == pytest.approx(1.75)
 
 
 def test_portfolio_bound_blocks_when_no_single_ticker_would():
@@ -81,7 +81,7 @@ def test_portfolio_bound_blocks_when_no_single_ticker_would():
     m.active_positions = {'SPY': [_pos(1.0)], 'QQQ': [_pos(1.0)],
                           'IWM': [_pos(0.5)]}
     blocked, why, st = m._emergency_ceiling_block('SPY')
-    assert blocked and 'portfolio_gross=2.50' in why
+    assert blocked and 'portfolio_gross 2.50' in why
     assert st['gross'] == pytest.approx(1.0)      # this ticker alone is fine
     assert st['portfolio_gross'] == pytest.approx(2.5)
 
@@ -136,3 +136,79 @@ def test_valid_override_is_applied(tmp_path):
     app = load_config(str(cfg_file))
     assert app.risk.emergency_max_concurrent_positions == 3
     assert app.risk.emergency_max_gross_exposure == pytest.approx(2.5)
+
+
+# --------------------------------------------------------------------------
+# 5. Codex review of PR #933 — three defects, each reproduced before fixing.
+# --------------------------------------------------------------------------
+
+def test_nan_size_does_not_disable_the_gross_ceilings():
+    """`float('nan')` parses fine, poisons the accumulator, and because every
+    comparison against NaN is False it SILENTLY DISABLES both gross bounds
+    rather than tripping them. Reproduced pre-fix: ceiling 0.5 did not block.
+    """
+    import math
+    m = _monitor(emergency_max_concurrent_positions=99,
+                 emergency_max_gross_exposure=0.5,
+                 emergency_max_portfolio_gross=99.0)
+    m.active_positions = {'SPY': [_pos(float('nan'))]}
+    st = m._exposure_state('SPY')
+    assert math.isfinite(st['gross']), "a NaN size must not reach the accumulator"
+    blocked, _why, _ = m._emergency_ceiling_block('SPY')
+    assert blocked, "NaN size must trip the ceiling, never disable it"
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -5.0, 0.0])
+def test_non_finite_or_non_positive_size_counts_at_maximum(bad):
+    m = _monitor()
+    m.active_positions = {'SPY': [_pos(bad)]}
+    assert m._exposure_state('SPY')['gross'] == pytest.approx(
+        m.max_position_size())
+
+
+def test_negative_size_cannot_shrink_reported_exposure():
+    """Pre-fix a -5.0 alongside a 1.0 reported gross = -4.0."""
+    m = _monitor()
+    m.active_positions = {'SPY': [_pos(1.0), _pos(-5.0)]}
+    assert m._exposure_state('SPY')['gross'] == pytest.approx(2.0)
+
+
+def test_pending_position_counts_toward_the_gross_ceiling():
+    """The ceiling must bound the state the fire PRODUCES. Pre-fix, gross 1.0
+    against a 1.5 ceiling admitted another 1.0 and landed at 2.0."""
+    m = _monitor(emergency_max_concurrent_positions=99,
+                 emergency_max_gross_exposure=1.5,
+                 emergency_max_portfolio_gross=99.0)
+    m.active_positions = {'SPY': [_pos(1.0)]}
+    blocked, why, _ = m._emergency_ceiling_block('SPY')
+    assert blocked and '1.00+1.00 > 1.50' in why
+
+
+def test_pending_position_counts_toward_the_portfolio_ceiling():
+    m = _monitor(emergency_max_concurrent_positions=99,
+                 emergency_max_gross_exposure=99.0,
+                 emergency_max_portfolio_gross=2.0)
+    m.active_positions = {'SPY': [_pos(0.5)], 'QQQ': [_pos(0.75)]}
+    blocked, why, _ = m._emergency_ceiling_block('SPY')
+    assert blocked and 'portfolio_gross 1.25+1.00 > 2.00' in why
+
+
+def test_fractional_count_ceiling_is_rejected_not_truncated(tmp_path):
+    """int(0.5) == 0 would block every fire — the dead-strategy state the
+    validation exists to prevent. Pre-fix 0.5 was accepted and became 0."""
+    import json
+    from lib.config import load_config
+    f = tmp_path / 'alert_config.json'
+    f.write_text(json.dumps({'risk_parameters': {
+        'emergency_max_concurrent_positions': 0.5}}))
+    with pytest.raises(ValueError, match='whole number'):
+        load_config(str(f))
+
+
+def test_non_finite_ceiling_is_rejected(tmp_path):
+    import json
+    from lib.config import load_config
+    f = tmp_path / 'alert_config.json'
+    f.write_text('{"risk_parameters": {"emergency_max_gross_exposure": 1e999}}')
+    with pytest.raises(ValueError, match='finite'):
+        load_config(str(f))

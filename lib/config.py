@@ -7,6 +7,7 @@ codebase — every tunable value flows from these config objects.
 """
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -699,13 +700,30 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
                     'emergency_max_portfolio_gross'):
             _v = rp.get(_ec, None)
             if _v is not None:
-                if float(_v) <= 0:
-                    # Fail loud. A ceiling of 0 or a negative would block every
-                    # fire; silently accepting it would look like a dead
-                    # strategy rather than a misconfiguration.
+                # Fail loud. A ceiling of 0 or a negative would block every
+                # fire; silently accepting it would look like a dead strategy
+                # rather than a misconfiguration.
+                try:
+                    _f = float(_v)
+                except (TypeError, ValueError):
                     raise ValueError(
-                        f"risk_parameters.{_ec} must be > 0, got {_v!r}")
-                setattr(app.risk, _ec, type(getattr(app.risk, _ec))(_v))
+                        f"risk_parameters.{_ec} must be a positive number, "
+                        f"got {_v!r}")
+                if not math.isfinite(_f) or _f <= 0:
+                    raise ValueError(
+                        f"risk_parameters.{_ec} must be > 0 and finite, "
+                        f"got {_v!r}")
+                if _ec == 'emergency_max_concurrent_positions':
+                    # A count. int(0.5) is 0, which would block every fire —
+                    # the exact dead-strategy state this validation exists to
+                    # prevent — so reject a fraction rather than truncate it.
+                    if isinstance(_v, bool) or _f != int(_f):
+                        raise ValueError(
+                            f"risk_parameters.{_ec} must be a whole number, "
+                            f"got {_v!r}")
+                    setattr(app.risk, _ec, int(_f))
+                else:
+                    setattr(app.risk, _ec, _f)
         dl = rp.get('daily_loss_limit', None)
         if dl is not None:
             app.risk.daily_loss_limit = dl / 100.0 if abs(dl) > 1 else dl
