@@ -356,6 +356,18 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
             opp_level_state=opp_state,
             rvol_mod=rvol_mod,
         ))
+        # Production `fire_alert` increments the per-ticker fire counter at
+        # this point — AFTER the level-gate early return above, so a
+        # suppressed fire does not consume cap. Replacing fire_alert wholesale
+        # dropped that mutation, so `daily_trades` stayed 0 for the whole
+        # replay and the `max_daily_trades` gate in evaluate_ticker never
+        # engaged (#818).
+        #
+        # This is not only replay fidelity. Per Codex's #816 review the daily
+        # cap is currently the ONLY bound on concurrent exposure, so a replay
+        # where it never binds cannot reproduce today's behaviour as the
+        # baseline for any shadow-control analysis.
+        self.daily_trades[ticker] = self.daily_trades.get(ticker, 0) + 1
     return _capture
 
 
