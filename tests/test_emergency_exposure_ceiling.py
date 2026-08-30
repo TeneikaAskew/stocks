@@ -346,3 +346,21 @@ def test_a_zero_bucket_does_not_spuriously_block_a_later_alert():
     blocked, why, st = m._emergency_ceiling_block('SPY')
     assert st['gross'] == pytest.approx(0.0)
     assert not blocked, f"two zero-sized positions blocked a fire: {why}"
+
+
+@pytest.mark.parametrize('field', ['emergency_max_concurrent_positions',
+                                   'emergency_max_gross_exposure',
+                                   'emergency_max_portfolio_gross'])
+@pytest.mark.parametrize('boolean', [True, False])
+def test_a_boolean_ceiling_is_rejected_on_every_field(tmp_path, field, boolean):
+    """`float(True)` is 1.0, which clears every numeric check and installs a
+    ceiling of 1 — restrictive enough to block after one position, and
+    indistinguishable from a deliberate setting. The guard used to sit inside
+    the count-specific branch, so the two gross fields never saw it: pre-fix
+    `emergency_max_gross_exposure: true` was accepted and stored as 1.0."""
+    import json
+    from lib.config import load_config
+    f = tmp_path / 'alert_config.json'
+    f.write_text(json.dumps({'risk_parameters': {field: boolean}}))
+    with pytest.raises(ValueError, match='must be a number'):
+        load_config(str(f))

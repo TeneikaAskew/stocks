@@ -703,6 +703,15 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
                 # Fail loud. A ceiling of 0 or a negative would block every
                 # fire; silently accepting it would look like a dead strategy
                 # rather than a misconfiguration.
+                # bool before float: `float(True)` is 1.0, which clears every
+                # numeric check below and silently installs a ceiling of 1 —
+                # restrictive enough to block after a single position, and
+                # indistinguishable from a deliberate setting. Applies to all
+                # three fields; the count branch used to be the only one that
+                # caught it.
+                if isinstance(_v, bool):
+                    raise ValueError(
+                        f"risk_parameters.{_ec} must be a number, got {_v!r}")
                 try:
                     _f = float(_v)
                 except (TypeError, ValueError):
@@ -717,7 +726,7 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
                     # A count. int(0.5) is 0, which would block every fire —
                     # the exact dead-strategy state this validation exists to
                     # prevent — so reject a fraction rather than truncate it.
-                    if isinstance(_v, bool) or _f != int(_f):
+                    if _f != int(_f):
                         raise ValueError(
                             f"risk_parameters.{_ec} must be a whole number, "
                             f"got {_v!r}")
