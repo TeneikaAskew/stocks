@@ -7,7 +7,7 @@
 | Premarket → plan generation | FEAT-MARKET/PLAYBOOK | REQ-MARKET/PLAYBOOK | #861 | history trace needed | dashboard/playbook routers/jobs | fresh-input journey and unavailable-state E2E |
 | Live intelligence → signal lifecycle | FEAT-LIVE/SIGNAL/STRAT | REQ-SIGNAL/REL | #873–#875 | #802/#804 | `lib/signals.py`, strategies, live router | shared live/replay golden fixtures |
 | Options/catalysts → contextual evidence | FEAT-OPTION/CATALYST | REQ-DATA/UX | #884 | history trace needed | gamma/options/earnings modules | missing-data, timestamp and vendor-contract tests |
-| Evaluation → replay/backtest | FEAT-REPLAY/REPORT | REQ-DATA-002, MODEL-001 | #813/#906 | #802/#804 | replay engines and result tables | temporal adversarial and frozen rerun evidence |
+| Evaluation → replay/backtest | FEAT-REPLAY/REPORT | REQ-DATA-002, MODEL-001 | #813/#906; **#818 delivered 2026-08-30** | #802/#804; **#934 (`dd4421b`, deployed)** | replay engines and result tables | temporal adversarial and frozen rerun evidence — replay cap parity **proved in production**: 15 replay fires vs a live 15 on 2026-08-28 |
 | Models → governance | FEAT-MODEL-001 | REQ-MODEL-001..003 | #909/#910 | history trace needed | research engines/artifacts/router | model card, shadow, threshold, rollback |
 | AI → explanations and risk | FEAT-INSIGHT-001 | REQ-LLM-001 | #916 | #804 | `lib/agents`, insights jobs/router | schema/citation/abstention/cost evaluation |
 | User outcomes → journal | FEAT-JOURNAL-001 | REQ-JOURNAL/TENANCY | TBD | history trace needed | journal router/UI/import | owner isolation and import audit tests |
