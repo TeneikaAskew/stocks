@@ -32,10 +32,23 @@ on:
   issues:
     types: [opened]
 
-# One run per thread. Replies are cumulative, so a cancelled in-flight run would
-# drop a response the commenter is waiting on — queue instead of cancelling.
+# Keyed per EVENT, not per thread.
+#
+# A per-thread group silently drops mentions. GitHub allows one running plus one
+# pending run per group, and "any existing pending job or workflow in the same
+# concurrency group will be canceled and the new queued job or workflow will
+# take its place." cancel-in-progress: false governs only the in-progress job,
+# not the pending slot — so with three rapid mentions on one thread the second
+# is evicted by the third and never answered, with no error anywhere.
+#
+# That is not hypothetical here: the 2026-08-29 reconciliation pass posted
+# duplicate comments 6 seconds apart on the same issues.
+#
+# Keying on the event id gives every distinct mention its own group, so nothing
+# can evict anything, while still collapsing a redelivery of the SAME event.
+# The event name is included because ids are only unique within their own type.
 concurrency:
-  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  group: claude-${{ github.event_name }}-${{ github.event.comment.id || github.event.review.id || github.event.issue.number }}
   cancel-in-progress: false
 
 permissions:
