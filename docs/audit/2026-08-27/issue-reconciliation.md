@@ -24,7 +24,7 @@
 | Cross-audit source descriptions consolidated into canonical root causes | **34** |
 | Withdrawn/superseded claims not ticketed | **7** |
 | Documentation-only / verified-clean statements not ticketed | **6** |
-| Canonical issues awaiting Claude review | **105** |
+| Canonical issues awaiting a recorded review disposition | **105** |
 
 ## Complete canonical mapping
 
@@ -195,8 +195,29 @@ An issue does **not** need to be converted one-for-one into a pull request for C
 
 - **PR #802** is the Claude audit source and **PR #804** is the Codex audit source; neither is a remediation PR for the canonical issues.
 - **PR #924** contains this governance reconciliation and is the single PR on which Claude was asked to review the mapping and grouping plan. It intentionally has **zero closing-issue links** because it does not implement any finding.
-- No remediation PR has been opened or linked by this reconciliation. The 14 relationships recorded above are **issue-to-issue dependencies**, not pull-request links.
+- Remediation candidates now exist, but none was merged when this addendum was verified. PRs #933, #934, and #936–#938 touch five of the 105 canonical issues; all are partial and must use `Related to`, not `Fixes`. The 14 relationships recorded above are **issue-to-issue dependencies**, not pull-request links.
 - A canonical issue should acquire a Development/closing PR link only when an implementation PR actually satisfies its acceptance criteria. Creating empty PRs to obtain a Claude response would misrepresent remediation status.
+
+### Post-#924 pull-request reconciliation (2026-08-30)
+
+Every repository PR numbered after #924 through #941 was inspected by body, changed files, commits, issue Definition of Done, state, and base branch. (Numbers #925–#930 and #940 are issues, not pull requests.) Nothing had merged to `main` since #924 opened, so none of the canonical findings was silently resolved by these PRs.
+
+| PR | State / base | Canonical linkage | Coverage and supersession decision |
+|---:|---|---|---|
+| [#931](https://github.com/TeneikaAskew/stocks/pull/931) | OPEN / `main` | Related to #924; no canonical issue closure | Complementary product-plan and traceability documentation. Keep linked to #924, but it does not supersede the audit mapping or implement a finding. |
+| [#932](https://github.com/TeneikaAskew/stocks/pull/932) | CLOSED, unmerged / `main` | No canonical issue | Proposed the missing Claude responder workflow. Its closure **supersedes the assumption that `@claude` comments automatically receive a response**; per-issue review threads remain useful, but require a human/available reviewer until an authenticated responder is merged and configured. |
+| [#933](https://github.com/TeneikaAskew/stocks/pull/933) | OPEN / `main` | Related to #816 and #924 (PR-E) | Adds a tested, default-no-op emergency exposure mechanism, not calibration, persistent-state restoration, daily-loss semantics, or the final policy. It must not close #816. It also discovered new issue #940, outside the canonical 105. |
+| [#934](https://github.com/TeneikaAskew/stocks/pull/934) | OPEN / `main` | Related to #818 and #924 (PR-F) | Repairs replay cap mutation, session rollover, and RVOL-gate parity with tests. The required live-vs-replay fire-count comparison is still missing, so it must not close #818. GitHub still reports #818 as a closing reference and that linkage must be cleared before merge. |
+| [#935](https://github.com/TeneikaAskew/stocks/pull/935) | OPEN / `work` | Follow-up to #924 | Governance-only correction that adds stream gates, shared freshness PR-0, candidate-recovery inventory, and manual-review reality. It supersedes the corresponding delivery assumptions in the earlier #924 text, not any canonical finding. |
+| [#936](https://github.com/TeneikaAskew/stocks/pull/936) | OPEN / `main` | Related to #812 and #924 (PR-B) | Reconstructs the gamma-underflow code/test candidate. The production re-query and disposition of 54 contaminated rows remain outstanding, so it must not close #812. GitHub still reports #812 as a closing reference and that linkage must be cleared before merge. |
+| [#937](https://github.com/TeneikaAskew/stocks/pull/937) | OPEN / `main` | Related to #815, #816, and #924 (PR-D) | Qualifies the stop-loss evidence and policy documentation. It performs no within-live counterfactual and closes neither issue; it updates interpretation only. |
+| [#938](https://github.com/TeneikaAskew/stocks/pull/938) | OPEN / `main` | Related to #863 and #924 (PR-N) | Adds a tested stale-earnings surface guard. It is not the shared freshness primitive needed by #833/#922 and does not satisfy all of #863; keep the issue open. |
+| [#939](https://github.com/TeneikaAskew/stocks/pull/939) | OPEN / stacked on #935 | Follow-up to #924/#935 | Governance-only recovery/publication documentation. It supersedes candidate-recoverability and publication-path notes only after the #935 → #939 stack lands. |
+| [#941](https://github.com/TeneikaAskew/stocks/pull/941) | OPEN / stacked on #939 | Related to #924 | Governance-only coverage addendum. Its five-touched/100-untouched inventory and correction of the two over-broad closing links supersede the earlier claim that no remediation PR exists, after the #935 → #939 → #941 stack lands. |
+
+**Current coverage:** five canonical issues are touched by implementation/documentation candidates (#812, #815, #816, #818, #863); **zero** is fully closed by the current PR set; 100 canonical issues have no remediation PR. Issue #940 is a newly discovered, cross-cutting risk-state defect and must be triaged separately rather than silently inserted into the original 105-count audit inventory.
+
+**Required ordering corrections:** PR-A's repaired input semantics gate affected PR-B validation; PR-A followed by repaired replay/data paths in PR-F/PR-G gate PR-C research baselines; #818/PR-F gates calibration or activation of #816/PR-E; and the shared read-side freshness primitive (PR-0) must precede the overlapping #833/#922/#863 work in PR-M/PR-N. Code-only candidates may merge earlier when independently safe, but they do not discharge these validation and rerun gates.
 
 ### Proposed grouped remediation PRs
 
@@ -228,7 +249,7 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 1. Open a remediation PR only when it contains an implementation or a concrete validation artifact; do not create empty PRs merely to obtain a bot response.
 2. Start with the native dependency graph above. A blocked issue remains open until its blocker is resolved and its own acceptance criteria pass.
 3. Put every covered issue in the PR description. Use `Fixes #N` only when that PR fully closes #N; otherwise use `Related to #N` and leave it open.
-4. Create **one top-level PR comment per included canonical issue** and invoke `@claude` in each comment. Do not collapse a nine-issue PR into one generic review request: it must have nine independently auditable issue-review comments.
+4. Create **one top-level PR comment per included canonical issue**. Do not collapse a nine-issue PR into one generic review request: it must have nine independently auditable issue-review comments. Mention `@claude` only when the repository has an operational authenticated responder; otherwise assign the thread for manual Claude/human review rather than promising automation that does not exist.
 5. Keep high-risk live behavior, schema migrations, and broad refactors in independently reversible PRs even when they belong to the same stream.
 6. Target reviewable increments (normally one subsystem and one test contract). Split a candidate stream when it crosses deployment units, needs different owners, or cannot be rolled back atomically.
 
@@ -239,7 +260,7 @@ When an implementation PR is opened, the PR body provides the overall change sum
 1. identify the canonical issue in its heading and link it;
 2. summarize the issue's verified defect, affected code, historical-evidence impact, and acceptance criteria (copying only the relevant current content, not stale or superseded wording);
 3. state which files, commits, and tests in the PR claim to satisfy that issue;
-4. mention `@claude` and ask for an explicit `PASS`, `PASS WITH CORRECTIONS`, or `FAIL` disposition for **that issue only**; and
+4. ask the available reviewer for an explicit `PASS`, `PASS WITH CORRECTIONS`, or `FAIL` disposition for **that issue only**; mention `@claude` only if an authenticated responder is operational; and
 5. remain open for follow-up until Claude's response and any corrections are recorded.
 
 For example, a full PR-A implementation would have nine comments, in this order: #825, #826, #827, #828, #842, #848, #925, #926, and #928. If the actual diff implements only a subset, include and ping only that subset and leave the other issues for a later PR. This prevents a grouped PR from falsely implying that all issues in its candidate stream were implemented.
@@ -259,8 +280,10 @@ Use the following comment template:
 - `<file/function>` — <change>
 - `<test command or test file>` — <coverage>
 
-@claude Please review this PR specifically against issue #NNN. Return **PASS**, **PASS WITH CORRECTIONS**, or **FAIL**; verify the implementation evidence and every acceptance criterion, and identify any missing scope or regression coverage. Do not treat findings from the other issue comments as satisfying this issue.
+Reviewer request (use `@claude` only when the responder is operational): Please review this PR specifically against issue #NNN. Return **PASS**, **PASS WITH CORRECTIONS**, or **FAIL**; verify the implementation evidence and every acceptance criterion, and identify any missing scope or regression coverage. Do not treat findings from the other issue comments as satisfying this issue.
 ```
+
+PR #932, which would have supplied the authenticated responder, was closed without merge. Existing `@claude` comments therefore do not prove that a review was delivered. Until a replacement is merged and configured, the PR author must arrange manual review and record the reviewer and disposition in each per-issue thread.
 
 ## Ticket-conversation evaluation status
 
@@ -294,9 +317,9 @@ The PR review also found five omissions (C-01 through C-04 and R19). They are no
 
 [#836](https://github.com/TeneikaAskew/stocks/issues/836), [#838](https://github.com/TeneikaAskew/stocks/issues/838), [#839](https://github.com/TeneikaAskew/stocks/issues/839), [#840](https://github.com/TeneikaAskew/stocks/issues/840), [#841](https://github.com/TeneikaAskew/stocks/issues/841), [#849](https://github.com/TeneikaAskew/stocks/issues/849), [#920](https://github.com/TeneikaAskew/stocks/issues/920), [#921](https://github.com/TeneikaAskew/stocks/issues/921)
 
-## Claude review queue
+## Review queue and delivery status
 
-The repository’s working bot invocation was verified from prior issue and pull-request comments as `@claude`, rather than plain `Claude:` text. On 2026-08-30, all **105 canonical issues** received an `@claude` comment asking for review of original-finding fidelity, deduplication decisions, priority, missing evidence/scope, historical-evidence disposition, and acceptance criteria. The 10 closed duplicate records were not re-pinged because their active findings and review requests live on the canonical issues. Agreement does not close an issue. A request is not a completed review; all canonical issues remain awaiting a recorded Claude disposition at the time of this correction.
+On 2026-08-30, all **105 canonical issues** received an `@claude` comment asking for review of original-finding fidelity, deduplication decisions, priority, missing evidence/scope, historical-evidence disposition, and acceptance criteria. That proves the requests were posted, not delivered: PR #932, which proposed the authenticated responder, was closed unmerged, and GitHub does not replay old comment events if a replacement is enabled later. The 10 closed duplicate records were not re-pinged because their active findings live on the canonical issues. All 105 therefore remain awaiting a recorded manual or Claude disposition; agreement alone does not close an issue.
 
 ## Governance notes
 
