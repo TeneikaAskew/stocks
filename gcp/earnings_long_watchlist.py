@@ -44,7 +44,7 @@ import json
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +62,42 @@ log = logging.getLogger("earnings-long-watchlist")
 # Discord limits
 MAX_EMBED_CHARS = 6000
 MAX_FIELD_VALUE = 1024
+MAX_SOURCE_AGE_DAYS = 14
+
+
+def _normalize_source_date(value) -> date | None:
+    """Normalize common database date representations to a plain date."""
+    if value is None:
+        return None
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_source_date() -> date | None:
+    """Return the newest earnings winner snapshot independently of candidates."""
+    df = query_to_dataframe(
+        "SELECT MAX(calculation_date) AS calculation_date "
+        "FROM earnings_options_strategy_winners"
+    )
+    if df is None or df.empty:
+        return None
+    return _normalize_source_date(df.iloc[0]["calculation_date"])
+
+
+def _source_is_fresh(source_date: date | None, today: date) -> bool:
+    """Accept at most one missed weekly refresh; reject missing/future data."""
+    if source_date is None:
+        return False
+    age = (today - source_date).days
+    return 0 <= age <= MAX_SOURCE_AGE_DAYS
 
 
 def _query_watchlist(days_ahead: int, min_prior_wins: int = 2) -> "pd.DataFrame":
@@ -284,13 +320,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.error("Cloud SQL not configured — cannot run watchlist")
         return 1
 
-    log.info("loading watchlist — days_ahead=%d min_wins=%d",
-             args.days, args.min_wins)
+    today = date.today()
+    source_date = _latest_source_date()
+    if not _source_is_fresh(source_date, today):
+        log.error(
+            "earnings winner snapshot is missing, future-dated, or older than "
+            "%d days (latest=%s); suppressing Discord post",
+            MAX_SOURCE_AGE_DAYS,
+            source_date,
+        )
+        return 1
+
+    log.info("loading watchlist — days_ahead=%d min_wins=%d source_date=%s",
+             args.days, args.min_wins, source_date)
     df = _query_watchlist(args.days, args.min_wins)
     log.info("found %d candidate (ticker, earnings_date) rows",
              0 if df is None else len(df))
 
-    message = build_discord_message(df, date.today(), args.days)
+    message = build_discord_message(df, today, args.days)
 
     dry_run = args.dry_run or os.environ.get("LONG_WATCHLIST_DRY_RUN")
     if dry_run:
