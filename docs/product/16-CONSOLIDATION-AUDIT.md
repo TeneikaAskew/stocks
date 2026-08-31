@@ -1,6 +1,6 @@
 # Plan Consolidation and Preservation Audit
 
-**Verified:** 2026-08-31 · **Owner:** TBD · **Canonical PR:** [#931](https://github.com/TeneikaAskew/stocks/pull/931)
+**Verified:** 2026-08-31 · **Owner:** TBD · **Merged canonical baseline:** [#931](https://github.com/TeneikaAskew/stocks/pull/931) · **Open follow-up:** [#945](https://github.com/TeneikaAskew/stocks/pull/945)
 
 ## Direct answer
 
@@ -20,7 +20,8 @@ its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on
 |---|---|---|---|
 | Claude rebuild | `826ca943dafb5b6ca2062b8575e90ab86bea05eb` | 17 `docs/product/*.md` files | `git diff --no-renames <sha> -- docs/product/` plus per-file SHA-256 |
 | PR #924 | `5427960964fe9d57b22a04c3a1fe663f6faabb1f` | `docs/audit/2026-08-27/issue-reconciliation.md` | 448 lines, 74,190 bytes, SHA-256 `6f253957f515a4c6de8da0d10daf6d22a3edadec714197841f445de55d946f49` |
-| Canonical plan | PR #931 head | `docs/product/` | validated by the checks below |
+| Merged canonical baseline | PR #931 merge `c93197e` | `docs/product/` on `main` | validated by the checks below |
+| Current follow-up | PR #945 | updates to the merged #931 baseline | open; not on `main` until merged |
 
 At this snapshot, 8 Claude files are byte-for-byte identical. Nine differ because the canonical
 copy contains reviewed corrections or newer state. Every changed hunk was inspected; the allowed

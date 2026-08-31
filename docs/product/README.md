@@ -40,9 +40,16 @@ unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
 
 ## Canonical-plan decision
 
-**`docs/product/` on the default branch is the single canonical product plan.** PR #931 is the integration vehicle for this directory; the deeper evidence-backed rebuild from `claude/stocks-plan-feedback-ipzxm0` has been folded into it. PR #924 remains an upstream issue-to-workstream governance manifest, not a competing product plan. Its delivery-state changes must be synchronized into this directory, and no parallel branch is authoritative after consolidation.
+**`docs/product/` on the default branch is the single canonical product plan.** PR #931—the original Codex product-plan PR after the Claude rebuild was folded into it—merged to `main` on 2026-08-31. PR #945 is the open follow-up against that merged version; it carries the consolidation proof and the evidence-validated PR #924 dependency gates. PR #924 remains the separate issue-to-workstream governance manifest, not a competing product plan.
 
-Authority is therefore: **merged `docs/product/` → capability status and roadmap; #924 manifest → audit issue/workstream assignment; GitHub issues/PRs and current code/deployment → underlying evidence.** A conflict is resolved by updating `docs/product/` from the underlying evidence rather than maintaining another plan copy.
+| PR / branch | Role | Current state at 2026-08-31 |
+|---|---|---|
+| [#931](https://github.com/TeneikaAskew/stocks/pull/931) (`work-product-plan`) | Original Codex plan, rebuilt and consolidated with Claude's branch | **MERGED** — canonical baseline on `main` (`c93197e`) |
+| [#945](https://github.com/TeneikaAskew/stocks/pull/945) (`codex/product-plan-preservation-audit`) | Follow-up to the merged #931 plan: preservation proof, validated gates, current traceability | **OPEN** — must merge for the newest corrections to reach `main` |
+| [#924](https://github.com/TeneikaAskew/stocks/pull/924) (`work`) | Audit finding → issue → delivery-workstream manifest | **OPEN**, updated at `5427960`; not a second product plan |
+| `claude/stocks-plan-feedback-ipzxm0` | Evidence-backed rebuild source folded into #931 | **SUPERSEDED provenance branch**; no longer maintained |
+
+Authority is therefore: **merged `docs/product/` → capability status and roadmap; #924 manifest → audit issue/workstream assignment; GitHub issues/PRs and current code/deployment → underlying evidence.** Until #945 merges, its changes are the reviewed follow-up candidate, not yet default-branch state. A conflict is resolved by updating `docs/product/` from underlying evidence rather than maintaining another plan copy.
 
 ### Consolidation verification
 
