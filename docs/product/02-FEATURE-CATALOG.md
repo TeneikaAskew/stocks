@@ -34,7 +34,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | Incomplete | P3 | 5 | 0 | — |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 12 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
 | [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 67 jobs, 58 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) [#831](https://github.com/TeneikaAskew/stocks/issues/831) |
-| [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 3 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) |
+| [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 4 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 9 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [#685](https://github.com/TeneikaAskew/stocks/issues/685) [#683](https://github.com/TeneikaAskew/stocks/issues/683) |
 | [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 3 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#841](https://github.com/TeneikaAskew/stocks/issues/841) [#921](https://github.com/TeneikaAskew/stocks/issues/921) |
@@ -566,8 +566,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `gcp/freshness_watchdog.py`, `gcp/notifier*.py`, `platform/api/routers/health.py` |
 | Tests | `data-pipeline-status.spec.ts` |
-| Open issues | 3 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ops-001-operations-reliability-3-open) |
-| Blocking issues | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) |
+| Open issues | 4 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ops-001-operations-reliability-4-open) |
+| Blocking issues | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
 
 ### FEAT-CICD-001

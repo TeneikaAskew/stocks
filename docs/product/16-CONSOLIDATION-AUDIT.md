@@ -12,8 +12,7 @@ its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on
 - **Claude rebuild:** byte-compared and semantic differences reviewed.
 - **PR #924:** every issue reference is represented, including the ten closed duplicates; the
   447-line source file itself is linked rather than duplicated.
-- **Not yet final upstream:** PR #924 has unresolved review feedback. Those proposed corrections
-  are recorded below as pending and must not be presented as accepted workstream policy.
+- **Review feedback incorporated:** each substantive PR #924 review finding was revalidated against issue contracts, current code, tests, PR state and GitHub timelines, then converted into canonical requirements, roadmap gates, WBS prerequisites and candidate inventory.
 
 ## Immutable source snapshots
 
@@ -55,20 +54,38 @@ are **not lost**: the manifest is linked, pinned above by commit and hash, and i
 checked. Once PR #924 merges, that exact file should live beside the product plan on the default
 branch.
 
-## Pending PR #924 review findings
+## PR #924 review findings — validation and incorporation
 
-PR #924 is currently blocked by unresolved review feedback. These findings are preserved here so
-consolidation cannot make them disappear, but they are not accepted policy until #924 addresses
-and resolves them:
+The seven substantive review findings were not accepted from prose alone. Each was checked against
+current code, issue acceptance criteria, PR state and targeted tests. All seven are now incorporated:
 
-1. Gate PR-C research validation on repaired PR-A data semantics and PR-F/PR-G replay paths.
-2. Gate PR-E risk-control validation on a replay path that demonstrably engages the cap.
-3. Unify or explicitly depend the shared freshness primitive spanning #833, #863 and #922.
-4. Inventory candidate commits and recoverability before scheduling remediation work.
-5. Use an available manual review process rather than promising the unavailable #932 responder.
-6. Gate PR-B gamma validation on repaired #825/#826 input semantics.
-7. Gate replay-dependent portions of PR-D execution parity on PR-F while leaving an independently
-   measurable #815 counterfactual unblocked.
+| Finding | Evidence run/reviewed | Validity result | Canonical incorporation |
+|---|---|---|---|
+| PR-C must follow repaired inputs and replay/data | #825/#826, #822–#824, #905/#909 bodies; current zero-fill, `date <= cutoff`, as-of level load and duplicated backfill code | **VALID** — a frozen baseline before repair would canonize known-invalid inputs/cohorts | REQ-VALID-001; [13 delivery gates](13-ROADMAP.md#validated-delivery-stream-gates); EPIC 0 |
+| PR-E risk controls need working replay | #818 DoD and production verification; `tests/test_signal_monitor_caps.py` | **VALID; first gate satisfied** — #818 closed with 15=15 parity; activation still blocked by #940 | REQ-RISK-001; PR-E gate records satisfied and open halves |
+| #833/#863/#922 share freshness primitive | all three issue bodies and current watchdog scope | **VALID** — same stopped-writer/still-reading class; consumer policy remains separate | REQ-FRESH-002; shared PR-0 WBS prerequisite |
+| Candidate/recoverability inventory before scheduling | GraphQL `CrossReferencedEvent` scan across all 105 canonical issues; PR state, files and DoD review | **VALID** — five issues have actionable/partial candidates; 100 do not; dependency mentions excluded | REQ-GOV-002; [12 candidate inventory](12-PR-ISSUE-TRACEABILITY.md#candidate-and-recoverability-inventory--verified--github) |
+| Do not require unavailable automated Claude responder | #932 is closed and unmerged; no replacement workflow verified | **VALID** | REQ-REVIEW-001; manual/authenticated disposition gate |
+| PR-B validation must follow #825/#826 semantics | issue contracts plus current `open_interest or 0`/gamma zero-fill paths | **VALID** — coverage/zero-fill changes the quantity being validated | REQ-VALID-001; PR-A → PR-B validation gate |
+| Replay-dependent PR-D work must follow PR-F; #815 can proceed | #814/#815 and replay issue contracts | **VALID WITH SPLIT** — cross-system parity blocked; within-live stop counterfactual independent | split PR-D gate in [13](13-ROADMAP.md#validated-delivery-stream-gates) |
+
+### Defect-validity probes
+
+The validation suite intentionally distinguishes “tests pass” from “defect disproved.” The targeted
+suite passed **132 tests**, proving the current cap, summarizer, refresh and gamma contracts remain
+stable. Static probes then confirmed the open boundary defects are still reachable or untested:
+
+- `summarize_backtest_metrics` queries `date <= cutoff`, the exact #822 boundary under dispute;
+- `refresh_level_map` loads the full daily frame and takes its latest row before supplying
+  `analysis_date`, preserving #823's as-of concern;
+- `scripts/backfill_and_replay.py` still calls `add_all_indicators` instead of the production
+  fetcher, preserving #824's duplicated-pipeline concern;
+- missing open interest is still converted with `or 0` in gamma/grid paths, preserving #826's
+  validation dependency;
+- #932 remains closed and unmerged; and #940 remains open.
+
+These probes validate **the need for the gates**, not completion of the underlying fixes. No open
+issue is marked fixed by this documentation change.
 
 ## Section-by-section validation
 
@@ -87,7 +104,7 @@ and resolves them:
 | 09 Security/auth | middleware, deploy defaults, handlers and UI auth | mode/default/open-prefix/perimeter comparison | auth layers and #943 exposure retained |
 | 10 Operations | watchdog/jobs/issues/incidents | evidence/status review; proposed SLOs kept distinct | Current versus target remains explicit |
 | 11 Code traceability | feature catalog IDs and referenced paths/tests | feature-set equality and filesystem existence | Every capability has a locus |
-| 12 PR/issue traceability | live open issues, PR API, PR #924 | live set equality and PR #924 reference-set comparison | 120 open issues plus closed duplicates retained at snapshot |
+| 12 PR/issue traceability | live open issues, PR API, PR #924 | live set equality and PR #924 reference-set comparison | 121 open issues plus closed duplicates retained at snapshot |
 | 13 Roadmap | feature IDs, issue dependencies, audit trust gates | phase/gate/dependency review | Phases 0–7 retained |
 | 14 Work breakdown | epics, features, requirements, issues, PRs, code, tests | required-chain field review | Delivery chains retained |
 | 15 Open decisions | Claude rebuild and unresolved owner choices | row comparison | Canonical-plan question removed only because resolved; product decisions retained |
@@ -102,5 +119,5 @@ A future consolidation is acceptable only when:
 3. The live open-issue set equals the canonical full open-issue map.
 4. AST-extracted endpoint method/route pairs equal the API inventory.
 5. Route, schema, feature, model/node, job and scheduler sets have no unexplained difference.
-6. PR review findings are either resolved or recorded as pending; they are never silently treated
-   as incorporated.
+6. PR review findings are reproduced and either incorporated with evidence or explicitly rejected with evidence; thread state alone is not a validity result.
+7. Candidate/recoverability state is regenerated from GitHub timelines before scheduling any stream.

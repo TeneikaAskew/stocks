@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **120 of 120 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; #943 added after the staging `/dev` exposure was confirmed |
+| Open issues mapped | **121 of 121 (100%)** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; #943 security exposure and automated failure #944 included |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -36,9 +36,9 @@ Both are correct; they count different sets. Reconciled 2026-08-31, after [#818]
 
 | | Count |
 |---|---|
-| All open issues in the repository | **120** |
+| All open issues in the repository | **121** |
 | − pre-audit issues (numbered below #812) | −13 |
-| − [#930](https://github.com/TeneikaAskew/stocks/issues/930), auto-created `gcp-job-failure` | −1 |
+| − [#930](https://github.com/TeneikaAskew/stocks/issues/930) and [#944](https://github.com/TeneikaAskew/stocks/issues/944), auto-created `gcp-job-failure` records | −2 |
 | − [#940](https://github.com/TeneikaAskew/stocks/issues/940), created 2026-08-30, explicitly recorded by #924 as outside the original inventory | −1 |
 | − [#943](https://github.com/TeneikaAskew/stocks/issues/943), created 2026-08-31 after the public staging exposure was confirmed | −1 |
 | **= currently open canonical audit inventory** | **104** |
@@ -121,17 +121,31 @@ depends on defects being *fixed*, not on a PR existing. It does mean the roadmap
 [13](13-ROADMAP.md) is sequencing work that is, with five exceptions, entirely unstarted.
 
 
-### Note: #931 is being updated in parallel
+### Canonical-plan synchronization
 
-At 2026-08-30 21:24 a second commit (`6019ec27`) landed on `work-product-plan`, authored by a
-different session, porting the same post-audit remediation state this branch records. Its message
-cites the #924 reconciliation: *"#931 was not updated by the post-merge work, so it must not be
-treated as the current roadmap until the state is ported."*
+PR #931 merged and `docs/product/` is canonical. PR #924 remains the single workstream manifest;
+its validated dependency gates and candidate state are incorporated below rather than maintained
+as a competing roadmap.
 
-Both efforts now carry overlapping plan state, which is the divergence #924 exists to prevent.
-The counts agree (1 completed, 104 open, 100 without an implementation PR, 13 of 18 streams
-unstarted), so this is duplication rather than contradiction — but it needs an owner decision,
-recorded in [15](15-OPEN-DECISIONS.md).
+### Candidate and recoverability inventory — VERIFIED — GITHUB
+
+A 2026-08-31 GraphQL scan queried `CrossReferencedEvent` timeline items for all 105 canonical
+issues, then inspected post-#924 PR state, changed-file scope and each issue Definition of Done.
+Cross-reference alone is not coverage: #938 mentions #833/#922 as dependencies but implements only
+part of #863. The actionable candidate inventory is:
+
+| Issue | Candidate | State / recoverability | DoD disposition |
+|---|---|---|---|
+| [#812](https://github.com/TeneikaAskew/stocks/issues/812) | [#942](https://github.com/TeneikaAskew/stocks/pull/942), superseding closed #936 | merged on `main`; code recoverable from merge | Underflow code/tests landed; production outlier re-query and 54-row disposition outstanding |
+| [#815](https://github.com/TeneikaAskew/stocks/issues/815) | [#937](https://github.com/TeneikaAskew/stocks/pull/937) | open documentation candidate | Policy decision or disproof via within-live counterfactual outstanding |
+| [#816](https://github.com/TeneikaAskew/stocks/issues/816) | [#933](https://github.com/TeneikaAskew/stocks/pull/933) | merged default-no-op mechanism | #940 state restore, shadow analysis, P&L semantics and per-control decision outstanding |
+| [#818](https://github.com/TeneikaAskew/stocks/issues/818) | [#934](https://github.com/TeneikaAskew/stocks/pull/934) | merged, deployed, production-verified | Complete and closed; 15 replay fires = 15 live, with 969 cap suppressions |
+| [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#938](https://github.com/TeneikaAskew/stocks/pull/938) | open one-surface guard | Weekly publication/writer diagnosis and shared #833/#922 freshness primitive outstanding |
+
+The other **100 canonical issues have no implementation candidate** at this snapshot. Governance
+PRs (#924/#931/#935/#939/#941/#945) and dependency-only cross-references are excluded. Every
+future scheduling pass SHALL regenerate this inventory under REQ-GOV-002; an old “none” is not
+proof that no candidate exists now.
 
 ## Audit PRs
 
@@ -165,9 +179,9 @@ unmeasured claims in this repository.
 | DEBT | 5 |
 | ENH | 5 |
 | DECISION | 1 |
-| ops | 1 |
+| ops | 2 |
 | UNTRIAGED | 1 |
-| **Total** | **120** |
+| **Total** | **121** |
 
 ## Full open-issue map by capability
 
@@ -357,13 +371,14 @@ Every open issue appears exactly once. **No range notation** — the previous re
 
 **PR lineage:** [#242](https://github.com/TeneikaAskew/stocks/pull/242) *origin* · [#244](https://github.com/TeneikaAskew/stocks/pull/244) *origin* · [#379](https://github.com/TeneikaAskew/stocks/pull/379) *remediation* · [#381](https://github.com/TeneikaAskew/stocks/pull/381) *evolution* · [#400](https://github.com/TeneikaAskew/stocks/pull/400) *remediation* · [#445](https://github.com/TeneikaAskew/stocks/pull/445) *remediation* · [#592](https://github.com/TeneikaAskew/stocks/pull/592) *origin* · [#633](https://github.com/TeneikaAskew/stocks/pull/633) *evolution* · [#796](https://github.com/TeneikaAskew/stocks/pull/796) *evolution* · [#799](https://github.com/TeneikaAskew/stocks/pull/799) *evolution*
 
-### FEAT-OPS-001 — Operations / reliability (3 open)
+### FEAT-OPS-001 — Operations / reliability (4 open)
 
 | Issue | Sev | Title |
 |---|---|---|
 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) | P1 | [P1][Freshness] Extend watchdog coverage to every served and decision-critical table |
 | [#920](https://github.com/TeneikaAskew/stocks/issues/920) | P3 | [P3][Operations] Retire or consume write-only scheduled production surfaces |
 | [#930](https://github.com/TeneikaAskew/stocks/issues/930) | ops | GCP job failed: freshness-watchdog |
+| [#944](https://github.com/TeneikaAskew/stocks/issues/944) | ops | GCP job failed: fetch-sec-filings |
 
 **PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation*
 
