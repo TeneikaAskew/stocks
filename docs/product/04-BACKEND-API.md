@@ -187,8 +187,8 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
 |---|---|---|---|---|---|
-| GET | `/api/magnitude/{ticker}/{tf}/latest` | Return the latest stored magnitude prediction for ticker and timeframe. | Gated in `firebase`; **unenforced in `iap`/`open`** | magnitude prediction storage via `lib/` | ✓ |
-| GET | `/api/magnitude/{ticker}/{tf}/at/{ts}` | Return the point-in-time magnitude prediction at a requested timestamp. | Gated in `firebase`; **unenforced in `iap`/`open`** | magnitude prediction storage via `lib/` | ✓ |
+| GET | `/api/magnitude/{ticker}/{tf}/latest` | Return the latest stored magnitude prediction for ticker and timeframe. | Gated in `firebase`; **unenforced in `iap`/`open`** | inline SQL on `magnitude_per_bar_predictions` ⚠ **not in `schema.sql`** | — |
+| GET | `/api/magnitude/{ticker}/{tf}/at/{ts}` | Return the point-in-time magnitude prediction at a requested timestamp. | Gated in `firebase`; **unenforced in `iap`/`open`** | inline SQL on `magnitude_per_bar_predictions` ⚠ **not in `schema.sql`** | — |
 
 ### `platform/api/routers/options.py` — 5 endpoints
 
@@ -237,6 +237,28 @@ intended architecture (one source of truth for math; see [11](11-CODE-TRACEABILI
 UI column: `✓` = the route string appears in `platform/src`; `—` = no frontend caller found
 (external consumer, dead endpoint, or dynamically constructed). Dead-endpoint cleanup is
 tracked by [#921](https://github.com/TeneikaAskew/stocks/issues/921).
+
+
+### Runtime relation not declared in `schema.sql`
+
+`magnitude_per_bar_predictions` is marked ⚠ above because it is **not among the 64 relations in
+`gcp/schema.sql`**. Both `/api/magnitude/*` handlers reach it with inline SQL through
+`gcp.database.query_to_dataframe` (`platform/api/routers/magnitude.py:40,137`) rather than through
+`lib/`. The table is created at runtime by
+`gcp/research/magnitude_engine/mag_walk_forward.py:118` (`CREATE TABLE IF NOT EXISTS`).
+
+So a production API surface reads a table whose definition lives in a research module and never
+appears in the declared schema. That is the drift class tracked by
+[#860](https://github.com/TeneikaAskew/stocks/issues/860) (live columns absent from
+`gcp/schema.sql`) and [#918](https://github.com/TeneikaAskew/stocks/issues/918) (schema
+convergence sprawl), and it is why the Tables column names the relation and the access path
+instead of reporting "via `lib/`".
+
+Neither endpoint has a frontend caller — a repository-wide search of `platform/src` finds no
+`/api/magnitude` reference — so both are `—` in the UI column and are candidates for the dead-
+endpoint review in [#921](https://github.com/TeneikaAskew/stocks/issues/921). MODEL-MAG-001 is
+**Invalidated** ([07](07-MODEL-REGISTRY.md)), so serving it over HTTP at all is a product decision,
+not just a cleanup question.
 
 ## Known defects
 

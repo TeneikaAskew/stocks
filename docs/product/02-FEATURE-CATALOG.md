@@ -60,7 +60,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | Firebase / IAP |
 | Code | `platform/api/auth.py`, `platform/api/main.py:51`, `platform/src/components/auth` |
 | Tests | `platform/tests/auth-gate.spec.ts`, `admin-auth.spec.ts` |
-| Open issues | 7 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-auth-001-auth-security-7-open) |
+| Open issues | 8 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-auth-001-auth-security-8-open) |
 | Blocking issues | [#830](https://github.com/TeneikaAskew/stocks/issues/830) [#850](https://github.com/TeneikaAskew/stocks/issues/850) [#911](https://github.com/TeneikaAskew/stocks/issues/911) [#837](https://github.com/TeneikaAskew/stocks/issues/837) [#836](https://github.com/TeneikaAskew/stocks/issues/836) [#839](https://github.com/TeneikaAskew/stocks/issues/839) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
@@ -198,7 +198,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 |
 | Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
 | Tests | `signals.spec.ts`, `tests/test_signal*.py` |
-| Open issues | 9 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001-signals-execution-10-open) |
+| Open issues | 10 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001-signals-execution-10-open) |
 | Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#285](https://github.com/TeneikaAskew/stocks/issues/285) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
@@ -359,7 +359,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `lib/backtest.py`, `lib/walk_forward.py`, `lib/exec_backtest/`, `scripts/replay_signal_monitor.py`, `gcp/signal_monitor_eod_resolver.py` |
 | Tests | `replay-trainer.spec.ts`, `tests/test_backtest*.py` |
-| Open issues | 22 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-replay-001-replay-backtest-evaluation-21-open) |
+| Open issues | 21 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-replay-001-replay-backtest-evaluation-21-open) |
 | Blocking issues | [#824](https://github.com/TeneikaAskew/stocks/issues/824) [#823](https://github.com/TeneikaAskew/stocks/issues/823) [#822](https://github.com/TeneikaAskew/stocks/issues/822) [#821](https://github.com/TeneikaAskew/stocks/issues/821) [#820](https://github.com/TeneikaAskew/stocks/issues/820) [#819](https://github.com/TeneikaAskew/stocks/issues/819) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 2 |
 
