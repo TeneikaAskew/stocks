@@ -20,7 +20,8 @@ its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on
 |---|---|---|---|
 | Claude rebuild | `826ca943dafb5b6ca2062b8575e90ab86bea05eb` | 17 `docs/product/*.md` files | `git diff --no-renames <sha> -- docs/product/` plus per-file SHA-256 |
 | PR #924 | `5427960964fe9d57b22a04c3a1fe663f6faabb1f` | `docs/audit/2026-08-27/issue-reconciliation.md` | 448 lines, 74,190 bytes, SHA-256 `6f253957f515a4c6de8da0d10daf6d22a3edadec714197841f445de55d946f49` |
-| Merged canonical baseline | PR #931 merge `c93197e` | `docs/product/` on `main` | validated by the checks below |
+| Merged canonical baseline | PR #931 merge `c93197e` | `docs/product/` on `main` | merged baseline identity |
+| Byte-comparison tree | `a518585` | the 17 original requested product files after Claude consolidation corrections | exact canonical side used for the 8-identical/9-different result |
 | Current follow-up | PR #945 | updates to the merged #931 baseline | open; not on `main` until merged |
 
 At this snapshot, 8 Claude files are byte-for-byte identical. Nine differ because the canonical
@@ -72,9 +73,22 @@ current code, issue acceptance criteria, PR state and targeted tests. All seven 
 
 ### Defect-validity probes
 
-The validation suite intentionally distinguishes “tests pass” from “defect disproved.” The targeted
-suite passed **132 tests**, proving the current cap, summarizer, refresh and gamma contracts remain
-stable. Static probes then confirmed the open boundary defects are still reachable or untested:
+The validation suite intentionally distinguishes “tests pass” from “defect disproved.” At repository
+source commit `bacc9be`, the targeted suite passed **132 tests** with this exact invocation:
+
+```bash
+pytest -q \
+  tests/test_signal_monitor_caps.py \
+  tests/test_agent_summarizers.py \
+  tests/test_signal_monitor_level_refresh.py \
+  tests/test_gamma.py \
+  tests/test_gamma_never_null.py
+```
+
+No external artifact or environment override was supplied. Pytest reported 132 passed and four
+non-failing warnings (two `datetime.utcnow()` deprecations and two pandas fragmentation warnings).
+This proves the selected current contracts remain stable; it does not disprove an untested boundary.
+Static probes then confirmed the open boundary defects are still reachable or untested:
 
 - `summarize_backtest_metrics` queries `date <= cutoff`, the exact #822 boundary under dispute;
 - `refresh_level_map` loads the full daily frame and takes its latest row before supplying
