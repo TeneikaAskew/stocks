@@ -88,8 +88,7 @@ is a no-op without an IAP header. `_DEV_ALLOWED_EMAIL` defaults to a hardcoded a
 (`main.py:160`). Covered by `platform/tests/dev.spec.ts`; that spec does not exercise the
 staging (`PUBLIC=1`, no-IAP) configuration.
 
-**Status:** no issue filed as of 2026-08-30. **Next action:** file one; do not treat as
-covered by #911, whose scope is the `AUTH_MODE` default.
+**Status:** tracked by [#943](https://github.com/TeneikaAskew/stocks/issues/943). **Next action:** choose whether to authenticate, remove, or explicitly accept the endpoint after security review; do not treat it as covered by #911, whose scope is the `AUTH_MODE` default.
 
 ## Authorization
 
