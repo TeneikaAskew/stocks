@@ -1,42 +1,200 @@
 # Infrastructure Plan
 
-## Actual component inventory
-| Component | Purpose/runtime | Deployment source | Identity/secrets/network/data | Trigger/monitoring/recovery | Current gap |
+**Last reviewed:** 2026-08-30 · **Owner:** TBD
+
+**VERIFIED — CODE.** Parsed from `gcp/deploy.sh` at `d335f2f` by resolving each
+`deploy_*()` function body, so flags built into a `common_flags=( ... )` bash array are
+captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler entries**.
+
+> **Parser discipline.** An earlier revision reported 68 jobs. The 68th, `leaves`, was a word
+> captured from the prose comment `gcloud run jobs update leaves omitted flags untouched`
+> at `gcp/deploy.sh:1466`. Comment lines are now stripped before parsing. The count is **67**.
+> A naive parse also reported 18 jobs missing `--task-timeout`; function-scoped resolution gives
+> **5**, which matches [#851](https://github.com/TeneikaAskew/stocks/issues/851) independently.
+
+## Platform components
+
+| Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |
 |---|---|---|---|---|---|
-| React web service | Vite static application on Cloud Run | `platform/Dockerfile`, `platform/cloudbuild.yaml`, `platform/deploy.sh` | IAP/Firebase mode; API URL | HTTPS; Cloud logging | deployed configuration drift must be reconciled |
-| FastAPI service | API on Cloud Run | `platform/api`, platform build/deploy files | service account, Cloud SQL, Secret Manager | HTTPS/health | fail-closed auth and endpoint SLO proof |
-| Cloud Run jobs (68 names parsed) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh`, Docker/build files | service accounts, vendor/API secrets, Cloud SQL/GCS | Scheduler/manual; job logs/`job_runs` | create/update convergence, retry/timeout/drift |
-| Cloud Scheduler | invokes jobs/services | `gcp/deploy.sh` | OIDC/IAM | cron; scheduler/job logs | schedule source-of-truth and stale jobs |
-| Cloud SQL PostgreSQL | analytical and application persistence | `gcp/schema.sql`, migrations/scripts | private/connector path and DB secret | backups/logs | ordered migrations and restore drills |
-| GCS | model/report/artifact storage | GCS readers/jobs/deploy config | service IAM | object/version monitoring | retention/provenance/rollback |
-| Cloud Build + GitHub Actions | image/test/deploy automation | `gcp/cloudbuild`, `.github/workflows`, platform cloudbuild | build identities/secrets | commit/manual | coverage and reproducibility |
-| Secret Manager | vendor, DB, auth, Discord credentials | deploy bindings | least privilege | rotation/audit logs | ownership/rotation evidence |
-| Firebase / IAP / Cloud Run IAM | app identity and perimeter | auth code + deployment flags | token/header/service IAM | request | default-mode/perimeter coupling |
-| External vendors | Alpha Vantage, FRED, SEC, Discord and code-verified providers | ingestion/client modules | API tokens, egress | scheduled/request | quotas, contracts, fallback semantics |
+| React web + FastAPI service | SPA + API on one Cloud Run service | `platform/Dockerfile`, `platform/cloudbuild.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` default; `firebase` in staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
+| Cloud Run jobs (67) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (58) / manual | see per-job table |
+| Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
+| Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
+| GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |
+| Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([#868](https://github.com/TeneikaAskew/stocks/issues/868)) |
+| Secret Manager | vendor, DB, auth, Discord credentials | `--set-secrets` bindings | least privilege | — | several secrets still via `--set-env-vars` ([#830](https://github.com/TeneikaAskew/stocks/issues/830), [#850](https://github.com/TeneikaAskew/stocks/issues/850)) |
 
-**Parsed deployed job tokens:** apply-schema-migrations, audit-brief-bias, audit-infra-drift, audit-magnitude-drift, audit-walkforward, auto-refresh-top-n, backfill-daily-indicators, backfill-ticker, backtest, backtest-pipeline, build-options-daily-features, build-options-greeks, build-realtime-gex, calibrate-thresholds, cloud-sql-weekly-export, compute-earnings-reactions, compute-spx-greeks-backfill, db-query, direction-baseline, direction-importance, direction-phase2, direction-probe, earnings-long-watchlist, earnings-options-backfill, earnings-reactions-brief, earnings-sweep, etf-options-retention, evaluate-ew-strikes, fetch-alphavantage-intraday, fetch-av-options-backfill, fetch-av-options-realtime, fetch-earnings-calendar, fetch-earnings-history, fetch-economic-events, fetch-fred-rates, fetch-insider-transactions, fetch-market-data, fetch-news-sentiment, fetch-news-sentiment-earnings, fetch-news-sentiment-topics, fetch-premarket-refresh, fetch-sec-filings, fetch-top-movers, freshness-watchdog, historical-signals-watchlist, indicator-correlation, insight-discord-push, insight-pipeline, intraday-bulk-backfill, leaves, magnitude-engine, magnitude-inference, magnitude-recal, options-exec-backtest, param-sweep, phase6-playbook, premarket-brief, premarket-playbook-resolver, refresh-earnings-views, regime-combo, signal-monitor, signal-monitor-eod-resolver, signal-quality-alarm, signal-quality-report, signal-replay, strat-engine, validate-brief, weekend-review
+## Deploy-time drift detected mechanically
 
-**Deployment functions (89):** `_build_secret_flag, _env_string, _job_uri, _schedule, _schedule_args, _schedule_brief, _schedule_insight, _schedule_with_args, _secret, backfill_watchlist, build_image, build_research_image, deploy_apply_schema_migrations, deploy_audit_brief_bias, deploy_audit_infra_drift, deploy_audit_magnitude_drift, deploy_audit_walkforward, deploy_auto_refresh_top_n, deploy_av_options_backfill, deploy_av_options_realtime, deploy_backfill_daily_indicators, deploy_backfill_ticker, deploy_backtest, deploy_backtest_pipeline, deploy_build_options_daily_features, deploy_build_options_greeks, deploy_build_realtime_gex, deploy_calibrate_thresholds, deploy_compute_earnings_reactions, deploy_compute_spx_greeks_backfill, deploy_db_query, deploy_direction_baseline, deploy_direction_importance, deploy_direction_phase2, deploy_direction_probe, deploy_discord_interactions, deploy_earnings_long_watchlist, deploy_earnings_options_backfill, deploy_earnings_reactions_brief, deploy_earnings_sweep, deploy_evaluate_ew_strikes, deploy_fetch_alphavantage, deploy_fetch_earnings_calendar, deploy_fetch_earnings_history, deploy_fetch_economic_events, deploy_fetch_fred_rates, deploy_fetch_insider_transactions, deploy_fetch_market_data, deploy_fetch_news_sentiment, deploy_fetch_news_sentiment_earnings, deploy_fetch_news_sentiment_topics, deploy_fetch_premarket_refresh, deploy_fetch_sec_filings, deploy_fetch_top_movers, deploy_fetchers, deploy_freshness_watchdog, deploy_historical_signals_watchlist, deploy_indicator_correlation, deploy_insight_discord_push, deploy_insight_pipeline, deploy_intraday_bulk_backfill, deploy_magnitude_engine, deploy_magnitude_inference, deploy_magnitude_recal, deploy_monitor, deploy_notifier, deploy_options_exec_backtest, deploy_options_retention, deploy_p7b_classifier_DEPRECATED, deploy_param_sweep, deploy_phase6_playbook, deploy_premarket, deploy_premarket_playbook_resolver, deploy_refresh_earnings_views, deploy_regime_combo, deploy_schedulers, deploy_signal_monitor_eod_resolver, deploy_signal_quality_alarm, deploy_signal_quality_report, deploy_signal_replay, deploy_strat_engine, deploy_validate_brief, deploy_weekend, deploy_weekly_pg_dump, migrate, setup, setup_insight_tasks_queue, setup_notifier_secrets, setup_pg_dump_iam`. Functions prove deploy intent, not live resources. Live environment reconciliation is `UNKNOWN / NEEDS HISTORY TRACE`.
+Diffing scheduler targets against created job names reproduces a known CRITICAL finding
+without reading the audit — the plan should carry this check, not just cite it:
 
-## Dependency/deployment architecture
+| Scheduler | Cron (UTC) | Targets job | Exists in `deploy.sh`? | Issue |
+|---|---|---|---|---|
+| `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | **NO** | [#829](https://github.com/TeneikaAskew/stocks/issues/829) |
+
+Related infra-drift issues not detectable from source alone (they compare *live* state):
+[#833](https://github.com/TeneikaAskew/stocks/issues/833) `signal-quality-report-hourly` PAUSED live · 
+[#834](https://github.com/TeneikaAskew/stocks/issues/834) `p2-build-gamma-levels` has zero IaC · 
+[#835](https://github.com/TeneikaAskew/stocks/issues/835) five jobs on stale image tags · 
+[#859](https://github.com/TeneikaAskew/stocks/issues/859) five live-vs-repo config drifts.
+
+## Environments and URLs
+
+**VERIFIED — DEPLOYMENT.** The production URL was probed on 2026-08-30: both `/` and
+`/api/health` return a redirect to Google SSO carrying IAP OAuth client
+`369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58`, which is the same client ID hardcoded at
+`platform/deploy.sh:99`. The service is live and IAP is active on it.
+
+| Environment | Service | URL | Auth | Evidence |
+|---|---|---|---|---|
+| **Production** | `trading-platform` (us-east1) | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | `platform/playwright.config.ts:8`, `index.html:169`, `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
+| **Staging** | `trading-platform-staging` | `UNKNOWN` — Cloud Run assigns it; not committed anywhere | **public ingress + Firebase** (`PUBLIC=1`, `AUTH_MODE=firebase`) | `platform/deploy.sh:52-56` |
+| **Discord interactions** | `discord-interactions` | `UNKNOWN` — docs carry a redacted placeholder | Discord signature verification | `docs/*` show `https://discord-interactions-XXXXXXXXXX-ue.a.run.app/discord/interactions` |
+| **Failure notifier** | notifier service | `UNKNOWN` — redacted placeholder | internal | `https://failure-notifier-XXXXXXXXXX-ue.a.run.app` |
+| **Local dev (frontend)** | Vite | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | `platform/vite.config.ts:17`, `Makefile:75` |
+| **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; Vite proxies `/api` → `:8000` (`vite.config.ts:21,27`) |
+
+**No custom domain is committed anywhere in the repository.** The landing components brand the
+product **Solyra** (`platform/src/components/landing/*`, and [#685](https://github.com/TeneikaAskew/stocks/issues/685)
+"Rename internal Heatseeker/Flowseeker tabs before Solyra public launch"), but no `solyra.*`
+hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
+is **PRODUCT DECISION REQUIRED** / unknown — see [15](15-OPEN-DECISIONS.md).
+
+### Resolving the UNKNOWN URLs
+
+Cloud Run assigns service URLs, so they are not in source. To fill them in:
+
+```bash
+gcloud run services list --region=us-east1 \
+  --format="table(metadata.name,status.url)" --project=adept-mountain-474619-d4
+```
+
+This could not be run from the session that wrote this plan — `gcloud` reported
+`ACCESS_TOKEN_TYPE_UNSUPPORTED` because `CLOUDSDK_AUTH_ACCESS_TOKEN` held a harness placeholder
+rather than a real credential. Anyone with working GCP auth should paste the output here.
+
+### Staging exposure, corroborated
+
+`docs/BRIEFING_DECK.md:292` documents the `/dev` gate as *"Gated by
+`X-Goog-Authenticated-User-Email == teneika@bictech.org`. Local-dev requests (no header) bypass
+the gate."* That assumption holds only where IAP is in front. The staging service runs
+`PUBLIC=1` with **no IAP** (`platform/deploy.sh:52-56`), so "no header" describes the open
+internet, not a developer laptop — the exposure detailed in [09](09-SECURITY-AUTH.md).
+
+## Cloud Run job inventory
+
+`—` in a config column means the flag is absent from the `deploy_*` function, so Cloud Run's
+default applies (task-timeout **600s**, max-retries **3**).
+
+| Job | Deploy fn | Schedule (UTC) | Timeout | Retries | Mem | CPU | Secrets |
+|---|---|---|---|---|---|---|---|
+| `apply-schema-migrations` | `deploy_apply_schema_migrations` | manual | `600` | `0` | `512Mi` | `1` | — |
+| `audit-brief-bias` | `deploy_audit_brief_bias` | `0 10 * * 0` | `1800` | `0` | `1Gi` | `1` | `DB_PASS` |
+| `audit-infra-drift` | `deploy_audit_infra_drift` | `30 12 * * *` | `300` | `0` | `512Mi` | `1` | `DISCORD_WEBHOOK_URL` |
+| `audit-magnitude-drift` | `deploy_audit_magnitude_drift` | `55 9 * * 1-5` | `180` | `0` | `512Mi` | `1` | `DB_PASS`, `DISCORD_WEBHOOK_URL` |
+| `audit-walkforward` | `deploy_audit_walkforward` | `0 9 * * 6` | `1800` | `0` | `1Gi` | `1` | `DB_PASS` |
+| `auto-refresh-top-n` | `deploy_auto_refresh_top_n` | `10 8 * * 1-5` | `600` | **`1`** | `1Gi` | `1` | — |
+| `backfill-daily-indicators` | `deploy_backfill_daily_indicators` | `30 2 * * 1-6` | `36000` | `0` | `2Gi` | `2` | — |
+| `backfill-ticker` | `deploy_backfill_ticker` | manual | `600` | **`1`** | `1Gi` | `1` | — |
+| `backtest` | `deploy_backtest` | manual | `900` | **`1`** | `2Gi` | `1` | — |
+| `backtest-pipeline` | `deploy_backtest_pipeline` | manual | `28800` | `0` | `8Gi` | `2` | — |
+| `build-options-daily-features` | `deploy_build_options_daily_features` | `0 22 * * 1-5` | `3600` | `0` | `4Gi` | `2` | — |
+| `build-options-greeks` | `deploy_build_options_greeks` | `15 23 * * 1-5` | `3600` | `0` | `4Gi` | `2` | — |
+| `build-realtime-gex` | `deploy_build_realtime_gex` | `0 17 * * 1-5` | `1800` | **`1`** | `4Gi` | `2` | — |
+| `calibrate-thresholds` | `deploy_calibrate_thresholds` | `0 2 1 1,4,7,10 *` | `600` | **`1`** | `1Gi` | `1` | — |
+| `cloud-sql-weekly-export` | `deploy_weekly_pg_dump` | `0 4 * * 0` | `21600` | `0` | `512Mi` | `1` | — |
+| `compute-earnings-reactions` | `deploy_compute_earnings_reactions` | `30 19 * * 1-5`; `30 19 * * 0` | `1800` | **`1`** | `1Gi` | `1` | — |
+| `compute-spx-greeks-backfill` | `deploy_compute_spx_greeks_backfill` | manual | `43200` | `0` | `2Gi` | `1` | — |
+| `db-query` | `deploy_db_query` | manual | `600` | `0` | `512Mi` | `1` | `DB_PASS` |
+| `direction-baseline` | `deploy_direction_baseline` | manual | `10800` | `0` | `8Gi` | `4` | — |
+| `direction-importance` | `deploy_direction_importance` | manual | `10800` | `0` | `8Gi` | `4` | — |
+| `direction-phase2` | `deploy_direction_phase2` | manual | `10800` | `0` | `8Gi` | `4` | — |
+| `direction-probe` | `deploy_direction_probe` | manual | `5400` | `0` | `8Gi` | `4` | — |
+| `earnings-long-watchlist` | `deploy_earnings_long_watchlist` | `45 19 * * 0` | `600` | `0` | `512Mi` | `1` | — |
+| `earnings-options-backfill` | `deploy_earnings_options_backfill` | manual | `32400` | `0` | `1Gi` | `1` | `DB_PASS` |
+| `earnings-reactions-brief` | `deploy_earnings_reactions_brief` | `35 8 * * 1-5` | `600` | `0` | `1Gi` | `1` | — |
+| `earnings-sweep` | `deploy_earnings_sweep` | manual | `1800` | `0` | `4Gi` | `2` | — |
+| `etf-options-retention` | `deploy_options_retention` | `0 2 * * *` | `3600` | `0` | `512Mi` | `1` | `DB_PASS` |
+| `evaluate-ew-strikes` | `deploy_evaluate_ew_strikes` | `0 23 * * 1-5` | `600` | **`1`** | `512Mi` | `1` | — |
+| `fetch-alphavantage-intraday` | `deploy_fetch_alphavantage` | `0 21 1 * *`; `0 21 * * 1-6` | `3600` | **`1`** | `2Gi` | `1` | — |
+| `fetch-av-options-backfill` | `deploy_av_options_backfill` | `0 21 * * 1-5`; `0 5 1 * *` | `43200` | `0` | `2Gi` | `1` | `DB_PASS` |
+| `fetch-av-options-realtime` | `deploy_av_options_realtime` | `*/5 9-15 * * 1-5` | `600` | `0` | `512Mi` | `1` | `DB_PASS` |
+| `fetch-earnings-calendar` | `deploy_fetch_earnings_calendar` | `0 19 * * 1-5`; `0 19 * * 0` | `1800` | **`1`** | `512Mi` | `1` | — |
+| `fetch-earnings-history` | `deploy_fetch_earnings_history` | `15 19 * * 1-5`; `15 19 * * 0` | `28800` | **`1`** | `1Gi` | `1` | — |
+| `fetch-economic-events` | `deploy_fetch_economic_events` | `0 7 * * 1-5` | **— (600s)** | **`1`** | `512Mi` | `1` | — |
+| `fetch-fred-rates` | `deploy_fetch_fred_rates` | `30 6 * * *` | `600` | **`1`** | `512Mi` | `1` | — |
+| `fetch-insider-transactions` | `deploy_fetch_insider_transactions` | `0 7 * * 1-5` | `1800` | **`1`** | `512Mi` | `1` | — |
+| `fetch-market-data` | `deploy_fetch_market_data` | `0 23 * * 1-5` | `5400` | **`2`** | `1Gi` | `1` | — |
+| `fetch-news-sentiment` | `deploy_fetch_news_sentiment` | manual | **— (600s)** | **`1`** | `512Mi` | `1` | — |
+| `fetch-news-sentiment-earnings` | `deploy_fetch_news_sentiment_earnings` | `0 6 * * 1-5` | **— (600s)** | **`1`** | `512Mi` | `1` | — |
+| `fetch-news-sentiment-topics` | `deploy_fetch_news_sentiment_topics` | manual | **— (600s)** | **`1`** | `512Mi` | `1` | — |
+| `fetch-premarket-refresh` | `deploy_fetch_premarket_refresh` | `20 8 * * 1-5` | `300` | **`1`** | `512Mi` | `1` | — |
+| `fetch-sec-filings` | `deploy_fetch_sec_filings` | `0 7 * * 1-5`; `0 10 * * 1-5`; `0 13 * * 1-5`; `0 17 * * 1-5` | `1800` | **`1`** | `512Mi` | `1` | — |
+| `fetch-top-movers` | `deploy_fetch_top_movers` | `15 16 * * 1-5`; `30 9-15 * * 1-5`; `5 16 * * 1-5` | `300` | `0` | `512Mi` | `1` | — |
+| `freshness-watchdog` | `deploy_freshness_watchdog` | `0 9-19 * * 1-5`; `30 19 * * *` | `3600` | `0` | `512Mi` | `1` | `DB_PASS` |
+| `historical-signals-watchlist` | `deploy_historical_signals_watchlist` | `0 1 * * 2-6` | `1800` | **`1`** | `2Gi` | `1` | — |
+| `indicator-correlation` | `deploy_indicator_correlation` | manual | `1800` | **`1`** | `1Gi` | `1` | — |
+| `insight-discord-push` | `deploy_insight_discord_push` | `15 9 * * 1-5` | `120` | **`1`** | `512Mi` | `1` | — |
+| `insight-pipeline` | `deploy_insight_pipeline` | `45 8 * * 1-5` | `1800` | **`1`** | `2Gi` | `1` | — |
+| `intraday-bulk-backfill` | `deploy_intraday_bulk_backfill` | manual | `86400` | `0` | `1Gi` | `1` | `DB_PASS` |
+| `magnitude-engine` | `deploy_magnitude_engine` | manual | `5400` | `0` | `8Gi` | `4` | — |
+| `magnitude-inference` | `deploy_magnitude_inference` | `25 9 * * 1-5` | `300` | `0` | `1Gi` | `1` | — |
+| `magnitude-recal` | `deploy_magnitude_recal` | manual | `10800` | `0` | `8Gi` | `4` | — |
+| `options-exec-backtest` | `deploy_options_exec_backtest` | manual | `14400` | `0` | `8Gi` | `2` | `DB_PASS` |
+| `param-sweep` | `deploy_param_sweep` | manual | `21600` | `0` | `4Gi` | `1` | — |
+| `phase6-playbook` | `deploy_phase6_playbook` | manual | `3600` | `0` | `8Gi` | `4` | — |
+| `premarket-brief` | `deploy_premarket` | `30 8 * * 1-5`; `0 21 * * 0` | `1800` | `0` | `1Gi` | `1` | — |
+| `premarket-playbook-resolver` | `deploy_premarket_playbook_resolver` | `15 21 * * 1-5` | `3600` | `0` | `1Gi` | `1` | — |
+| `refresh-earnings-views` | `deploy_refresh_earnings_views` | `0 20 * * 0`; `30 7 * * 1-5` | `1200` | `0` | `1Gi` | `1` | — |
+| `regime-combo` | `deploy_regime_combo` | `0 5 * * 0` | `3600` | **`1`** | `2Gi` | `2` | — |
+| `signal-monitor` | `deploy_monitor` | `25 9 * * 1-5`; `45 9 * * 1-5`; `0 10 * * 1-5` | `28800` | `0` | `2Gi` | `1` | — |
+| `signal-monitor-eod-resolver` | `deploy_signal_monitor_eod_resolver` | `30 16 * * 1-5` | `3600` | `0` | `1Gi` | `1` | — |
+| `signal-quality-alarm` | `deploy_signal_quality_alarm` | manual | `120` | `0` | `512Mi` | `1` | — |
+| `signal-quality-report` | `deploy_signal_quality_report` | manual | `3600` | `0` | `1Gi` | `1` | — |
+| `signal-replay` | `deploy_signal_replay` | manual | `900` | `0` | `512Mi` | `1` | — |
+| `strat-engine` | `deploy_strat_engine` | `35 23 * * 1-5` | `5400` | `0` | `8Gi` | `4` | — |
+| `validate-brief` | `deploy_validate_brief` | manual | `300` | **`1`** | `1Gi` | `1` | — |
+| `weekend-review` | `deploy_weekend` | `0 9 * * 6` | **— (600s)** | **`1`** | `1Gi` | `1` | — |
+
+### Config findings from this table
+
+- **5 jobs have no `--task-timeout`** and silently inherit 600s: `fetch-economic-events`, `fetch-news-sentiment`, `fetch-news-sentiment-earnings`, `fetch-news-sentiment-topics`, `weekend-review`. Matches [#851](https://github.com/TeneikaAskew/stocks/issues/851).
+- **26 jobs carry a non-zero `--max-retries`** against CLAUDE.md Rule 0's default of 0. Matches [#853](https://github.com/TeneikaAskew/stocks/issues/853) ("~23 jobs").
+- Capacity issues on specific jobs: [#832](https://github.com/TeneikaAskew/stocks/issues/832) `fetch-market-data` N+1 · [#855](https://github.com/TeneikaAskew/stocks/issues/855) `backtest-pipeline` 1.8× not 4× · [#856](https://github.com/TeneikaAskew/stocks/issues/856) `fetch-premarket-refresh` 1.2× headroom · [#857](https://github.com/TeneikaAskew/stocks/issues/857) `magnitude-engine` 27-way fan-out.
+- Reachability/dead code: [#831](https://github.com/TeneikaAskew/stocks/issues/831) · [#852](https://github.com/TeneikaAskew/stocks/issues/852) 19 `deploy_*` reachable only via the bundled fetchers target · [#854](https://github.com/TeneikaAskew/stocks/issues/854) update branches mirror create flags inconsistently.
+
+## Deployment architecture
+
 ```mermaid
 flowchart TB
  GH[GitHub] --> CI[Actions / Cloud Build]
- CI --> IMG[Container images]
- IMG --> WEB[Cloud Run web/API]
- IMG --> JOB[Cloud Run jobs]
- SCH[Cloud Scheduler] -->|OIDC/IAM| JOB
+ CI --> IMG[Artifact Registry images]
+ IMG --> WEB[Cloud Run: trading-platform]
+ IMG --> JOB[Cloud Run: 67 jobs]
+ SCH[Cloud Scheduler x58] -->|OIDC| JOB
+ SCH -.->|BROKEN: gamma-levels-daily| MISSING[p2-build-gamma-levels — no IaC]
  SM[Secret Manager] --> WEB
  SM --> JOB
  WEB --> SQL[(Cloud SQL)]
  JOB --> SQL
- JOB --> GCS[(GCS)]
- V[External vendors] --> JOB
+ JOB --> GCS[(GCS artifacts)]
+ V[AlphaVantage / FRED / SEC / Yahoo] --> JOB
+ JOB --> DISCORD[Discord]
  IAP[IAP / Cloud Run IAM] --> WEB
  FB[Firebase identity] --> WEB
- WEB --> LOG[Cloud Logging/Monitoring]
+ WEB --> LOG[Cloud Logging]
  JOB --> LOG
+ JOB --> JR[(job_runs telemetry)]
 ```
 
-## Reproducibility target
-Reviewed declarative configuration shall own runtime, IAM, secrets, network, schedule, timeout/retry, database attachment and alerts. Recovery is redeploy + documented data replay/restore; until restore and drift checks pass, reproducibility remains **Production but needs remediation**.
+## Traceability
+
+| Aspect | Reference |
+|---|---|
+| Job telemetry origin | [#759](https://github.com/TeneikaAskew/stocks/pull/759) `job_runs` + enrichment-coverage and duration-trend watchdog |
+| DR | [#389](https://github.com/TeneikaAskew/stocks/pull/389) weekly Cloud SQL→GCS `pg_dump` · [#392](https://github.com/TeneikaAskew/stocks/pull/392) DR documentation |
+| Config remediation | [#507](https://github.com/TeneikaAskew/stocks/pull/507) CPU throttling · [#515](https://github.com/TeneikaAskew/stocks/pull/515) backtest-pipeline 2Gi→8Gi OOM · [#552](https://github.com/TeneikaAskew/stocks/pull/552) premarket-brief timeout + retries 0 · [#782](https://github.com/TeneikaAskew/stocks/pull/782) 8h timeout for fetch-earnings-history · [#385](https://github.com/TeneikaAskew/stocks/pull/385) capture backfill job in deploy.sh |
+| Scheduler migration | [#489](https://github.com/TeneikaAskew/stocks/pull/489) av-options GH workflow → Cloud Scheduler · [#499](https://github.com/TeneikaAskew/stocks/pull/499) drop redundant crons · [#211](https://github.com/TeneikaAskew/stocks/pull/211) retire GH economic-events pipeline |
+| Drift monitoring | [#601](https://github.com/TeneikaAskew/stocks/pull/601) audit-infra-drift uses Python SDKs · [#641](https://github.com/TeneikaAskew/stocks/pull/641) magnitude drift monitor · [#644](https://github.com/TeneikaAskew/stocks/pull/644) column-nullity checks |
+| Code | `gcp/deploy.sh`, `gcp/cloudbuild/`, `platform/deploy.sh`, `.github/workflows/` |

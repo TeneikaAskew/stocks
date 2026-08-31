@@ -1,72 +1,101 @@
 # Product Overview
 
-## Definition and vision
+**Last reviewed:** 2026-08-30 · **Owner:** TBD
 
-**CURRENT — VERIFIED — CODE:** a single-repository market-intelligence platform combining a public site, authenticated React decision-support UI, FastAPI read/write layer, PostgreSQL analytical store, scheduled ingestion/analysis jobs, deterministic market structure and strategies, experimental predictive models, LLM-produced insights, replay/backtesting, journaling, and Discord delivery. It provides intelligence and simulation; no verified broker-order execution surface was found.
+## What this is — VERIFIED — CODE
 
-**Vision — PROPOSED — TARGET:** give an individual trader a point-in-time-safe, explainable path from market/event data to context, plan, alert, review, and evidence-based improvement—without representing research output as trade-ready evidence.
+A single-repository market-intelligence platform: a public landing site, an authenticated React
+decision-support UI (15 routes), a FastAPI read/write layer (87 endpoints), a PostgreSQL
+analytical store (64 relations), 67 scheduled Cloud Run jobs driven by 58 Cloud Scheduler
+entries, deterministic market-structure and strategy logic in `lib/`, experimental predictive
+models, a 14-node LLM insight pipeline, replay and backtesting engines, a per-user trade journal,
+and Discord delivery.
 
-**Primary goal:** one trustworthy workflow: authenticate → establish data freshness → review market/premarket state → inspect an instrument → assess levels/options/catalysts → create a bounded plan → monitor signals → journal outcome → evaluate with reproducible evidence.
+**There is no broker-order execution surface.** The product produces intelligence and simulation.
 
-## Evidence-backed users
+## Vision — PROPOSED — TARGET
 
-| User | Evidence and journey |
+Give an individual trader a point-in-time-safe, explainable path from market and event data to
+context, plan, alert, review and evidence-based improvement — **without presenting research
+output as trade-ready evidence.**
+
+**Primary goal:** one trustworthy workflow — authenticate → establish data freshness → review
+market and premarket state → inspect an instrument → assess levels, options and catalysts →
+form a bounded plan → monitor signals → journal the outcome → evaluate with reproducible evidence.
+
+## Users — evidence-backed
+
+| User | Evidence in the repository |
 |---|---|
-| Individual trader/analyst | Dashboard, live, charts, signals, playbook, journal, insights. |
-| Platform operator/admin | Admin, health/freshness, routing/calibration, deployment jobs. |
-| Model researcher | `gcp/research`, backtest/walk-forward tables and reports. |
-| Public visitor | Landing and waitlist. |
+| Individual trader / analyst | `/dashboard`, `/live`, `/charts`, `/signals`, `/playbook`, `/journal`, `/insights` |
+| Platform operator / admin | `/admin`, `/api/health/freshness`, `job_runs`, model routing, deploy scripts |
+| Model researcher | `gcp/research/`, walk-forward and backtest tables, the experiment registry |
+| Public visitor | `/` landing and waitlist |
 
-Multi-tenant enterprise roles and broker execution are **not verified**.
+Multi-tenant enterprise roles and broker execution are **not verified** and are not assumed.
 
 ## Architecture
+
 ```mermaid
 flowchart LR
- U[User] --> WEB[React/Vite UI]
- WEB -->|Firebase bearer / IAP identity / open local| API[FastAPI]
- API --> LIB[Domain logic]
- API --> DB[(Cloud SQL PostgreSQL)]
- SRC[Market/event/options vendors] --> JOBS[Cloud Run jobs]
+ U[User] --> WEB[React / Vite SPA — 15 routes]
+ WEB -->|Firebase bearer, IAP header, or unauthenticated| API[FastAPI — 87 endpoints]
+ API --> LIB[lib/ — the shared math spine]
+ API --> DB[(Cloud SQL — 64 relations)]
+ SRC[AlphaVantage / FRED / SEC / Yahoo] --> JOBS[67 Cloud Run jobs]
+ SCH[58 Cloud Scheduler entries] --> JOBS
  JOBS --> DB
- LIB --> RULES[STRAT / strategies / indicators]
- LIB --> ML[Research and predictive models]
- LIB --> LLM[LLM orchestrator]
+ LIB --> RULES[STRAT / indicators / strategies]
+ LIB --> ML[research + predictive models]
+ LIB --> LLM[14-node agent graph]
  LLM --> DB
- DB --> API
  JOBS --> DISCORD[Discord]
+ DB --> API
  GCS[(GCS artifacts)] --> ML
 ```
 
-## Current → target assessment
+## Current vs. target
 
-| Workstream | Current/partial evidence | Target | Gap | Status |
+| Workstream | Current | Target | Gap | Status |
 |---|---|---|---|---|
-| Web/UI | 15 declared route paths including redirect; protected shell and public landing | coherent, accessible decision workflow | screen trust/freshness and consistent states | Production but needs remediation |
-| Auth/user management | Firebase, IAP, open modes; admin checks | fail-closed identity and explicit roles/ownership | unsafe default and incomplete tenancy policy | Production but needs remediation |
-| Dashboard/ticker/premarket/live | implemented UI/API/jobs | traceable, fresh, parity-tested context | stale/unfed data and semantic parity defects | Production but needs remediation |
-| Signals/trade planning | strategies, alerts, playbook and replay | bounded, explainable decisions with live/replay parity | correctness and provenance gates | Production but needs remediation |
-| Options/gamma/catalysts | schemas, jobs, APIs and screens | fresh point-in-time context with graceful unknowns | missing/empty-data semantics and validation | Incomplete |
-| AI insights | orchestrator, prompts, routing, persistence | evidence-only explanation with constrained numeric authority | evaluation, provenance, fallback policy | Experimental |
-| Models/research | deterministic and learned systems coexist | governed promotion/rollback lifecycle | leakage and untouched-validation gaps | Retest Required |
-| Journal/portfolio | CRUD/import-oriented surfaces | user-owned outcome feedback loop | tenancy, completeness, analytics | Incomplete |
-| Replay/backtest | engines and result stores | clock-safe production-parity evaluation | leakage and live/replay divergence | Invalidated |
-| Data platform | broad scheduled ingestion and SQL domains | contracts, provenance, freshness SLOs | schema drift, silent-empty paths, monitoring coverage | Production but needs remediation |
-| Infrastructure/CI/CD | Cloud Run/SQL/Scheduler/Build/scripts/actions | reproducible IaC and least privilege | deployment drift and script asymmetry | Production but needs remediation |
-| Operations/security | health, job runs, audits/incidents | SLOs, alerts, DR drills, fail-closed secrets/auth | incomplete monitors/runbooks and recovery evidence | Incomplete |
-| Legacy surfaces | Apps Script/Pine/archive/static reports exist | explicit owners or retirement | unclear consumers and lifecycle | Retire candidate |
+| Web / UI | 15 routes, shared shell, error boundary, 29 E2E + 27 unit tests | coherent, accessible, honest-about-freshness workflow | per-screen state gaps; frontend suites absent from CI | Production but needs remediation |
+| Auth / identity | three modes; **only `firebase` enforces at the app layer** | fail-closed identity with explicit roles and ownership | `iap`/`open` pass through; `/dev` public on staging; open signup by default | Production but needs remediation |
+| Dashboard / live / charts | implemented UI, API and jobs | traceable, fresh, parity-tested context | stale inputs and semantic parity defects | Production but needs remediation |
+| Premarket / playbook | brief job, resolver, cards, as-of review | a plan a trader can act on today | `playbook_cards` 77 days stale, rendered as current | **Broken** |
+| Signals / execution | strategies, alerts, exits, Discord routing | bounded, explainable, parity-tested decisions | live has no stop-loss while the validating backtest does; daily loss limit unenforceable | Production but needs remediation |
+| Options / gamma | schemas, jobs, APIs, grid UI | fresh point-in-time context with graceful unknowns | fabricated flips, `or 0` on gamma/OI, multiplier and scaling defects | Retest Required |
+| AI insights | 14 routed LLM nodes, routing, persistence, cost tracking | evidence-only explanation with constrained numeric authority | no ablation, no outcome evaluation, risk/plan mismatch | Experimental |
+| Models / research | deterministic and learned systems coexist | governed promotion and rollback | in-sample calibration auto-writes production; leakage | **Invalidated / Failed** (mixed) |
+| Journal / portfolio | per-user trades, CSV import, chart marking | user-owned outcome feedback loop | return-unit mix, tenancy invariants | Production but needs remediation |
+| Replay / backtest | replay mode in the production job, walk-forward, EOD resolver | clock-safe production-parity evaluation | nine CRITICAL leakage and parity defects open | **Invalidated** |
+| Data platform | broad scheduled ingestion, 64 relations | contracts, provenance, freshness SLOs | silent-empty paths, schema drift, partial monitoring | Production but needs remediation |
+| Infrastructure / CI | Cloud Run, SQL, Scheduler, Build, Actions | reproducible IaC, least privilege | scheduler→job drift, secrets via env, no restore drill | Production but needs remediation |
+| Legacy surfaces | Apps Script, Pine scripts, archived apps, orphan tables | explicit owner or retirement | unclear consumers | Retire candidate |
 
-## Core dependency graph
+**Two of 25 capabilities are at unqualified Production** (Landing, Help). That is the honest
+headline, and it is what makes the roadmap's dependency ordering necessary rather than optional.
+
+## Dependency graph
+
 ```mermaid
 flowchart TD
  D[Data contracts + point-in-time clock] --> F[Freshness and provenance]
- F --> S[Signals/levels/options]
+ F --> S[Signals / levels / options]
  S --> P[Premarket and playbook]
  S --> A[Alerts]
- S --> R[Replay/evaluation]
+ S --> R[Replay and evaluation]
  R --> M[Model promotion]
  P --> UI[User experience]
  M --> AI[AI insight evidence]
- AUTH[Fail-closed auth/ownership] --> UI
- OPS[Observability/DR] --> D
+ AUTH[Fail-closed auth and ownership] --> UI
+ OPS[Observability and DR] --> D
  OPS --> UI
 ```
+
+## How to use this plan
+
+Start at the [README](README.md) master matrix. Each row links to the capability record
+([02](02-FEATURE-CATALOG.md)), its code ([11](11-CODE-TRACEABILITY.md)) and its open issues and
+PR lineage ([12](12-PR-ISSUE-TRACEABILITY.md)). What to do next is
+[13](13-ROADMAP.md); how the work decomposes is [14](14-WORK-BREAKDOWN.md); what only you can
+decide is [15](15-OPEN-DECISIONS.md).
