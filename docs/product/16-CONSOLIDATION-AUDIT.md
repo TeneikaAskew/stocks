@@ -11,7 +11,7 @@ its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on
 
 - **Claude rebuild:** byte-compared and semantic differences reviewed.
 - **PR #924:** every issue reference is represented, including the ten closed duplicates; the
-  447-line source file itself is linked rather than duplicated.
+  448-line source file itself is linked rather than duplicated.
 - **Review feedback incorporated:** each substantive PR #924 review finding was revalidated against issue contracts, current code, tests, PR state and GitHub timelines, then converted into canonical requirements, roadmap gates, WBS prerequisites and candidate inventory.
 
 ## Immutable source snapshots
@@ -19,7 +19,7 @@ its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on
 | Source | Snapshot | Scope | Byte evidence |
 |---|---|---|---|
 | Claude rebuild | `826ca943dafb5b6ca2062b8575e90ab86bea05eb` | 17 `docs/product/*.md` files | `git diff --no-renames <sha> -- docs/product/` plus per-file SHA-256 |
-| PR #924 | `33dc3ccbb14a576295c0dcc42b8a2aa3734f7321` | `docs/audit/2026-08-27/issue-reconciliation.md` | 447 lines, 73,447 bytes, SHA-256 `11ce7a95683f29925aeaed0bdfb21442865235639c1e4444217e5fd3321ebe45` |
+| PR #924 | `5427960964fe9d57b22a04c3a1fe663f6faabb1f` | `docs/audit/2026-08-27/issue-reconciliation.md` | 448 lines, 74,190 bytes, SHA-256 `6f253957f515a4c6de8da0d10daf6d22a3edadec714197841f445de55d946f49` |
 | Canonical plan | PR #931 head | `docs/product/` | validated by the checks below |
 
 At this snapshot, 8 Claude files are byte-for-byte identical. Nine differ because the canonical
@@ -47,7 +47,7 @@ semantic preservation; the section checks below provide that second layer.
 
 ### What is deliberately not duplicated
 
-The 447 lines of PR #924 are not pasted into a second `docs/product` file. In particular, its
+The 448 lines of PR #924 are not pasted into a second `docs/product` file. In particular, its
 per-finding Claude/Codex source citations, `Claude review requested?` cells, conversation template,
 and full withdrawn-statement prose remain in the manifest. This avoids two editable copies. They
 are **not lost**: the manifest is linked, pinned above by commit and hash, and its issue/link set is
