@@ -303,21 +303,27 @@ Aggregate count parity, not fire-set parity. The inflation factor #818 deliberat
 
 **One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
 
-### Both open gamma PRs regress current `main`
+### The gamma regression was found, fixed, and merged — #812 is not yet done
 
-Measured 2026-08-30 against Codex's own repro on #942 — 5 calls at K=90, 5 puts at K=110, equal OI, 1 DTE, IV=0.04, spot=100:
+This section previously said both gamma PRs regressed `main` and neither was safe to merge. **That was true when written on 2026-08-30 and is now resolved.** #942 gained run-aware handling and merged as `b9621c4`; #936 is superseded.
 
-| Ref | Commit | `gamma_flip` |
-|---|---|---|
-| `main` | `d335f2f` | **100.0** |
-| #936 | `4ed8e4b` | `None` |
-| #942 | `6486742` | `None` |
+Measured against Codex's repro — 5 calls at K=90, 5 puts at K=110, equal OI, 1 DTE, IV=0.04, spot=100:
 
-`main` returns the correct flip; **#936 introduces the regression and #942 does not fix it.** The lost value is legitimate by #812's own criterion — #812 defines the artifacts as flips **>20% from spot**, and this crossing sits at 0% from spot, between the call and put clusters rather than in a deep wing.
+| Ref | Commit | `gamma_flip` | |
+|---|---|---|---|
+| `main` before the fix chain | `d335f2f` | 100.0 | correct |
+| #936 | `4ed8e4b` | `None` | regression introduced |
+| #942, first head | `6486742` | `None` | not yet fixed |
+| **`main` today** | **`7aab698`** | **99.4876** | **resolved** |
 
-Mechanism: #942's new loop accepts only a *single isolated* zero, while the original loop rejects every zero-adjacent pair, so a contiguous zero **run** between opposite-signed endpoints falls through both and returns `None`.
+The merged implementation treats a contiguous zero **run** as a crossing when its nearest representable endpoints have opposite signs, and interpolates across those endpoints rather than snapping to a grid point — which is why the value is 99.4876 rather than exactly 100.0. Both are inside the call/put cluster and nowhere near #812's >20%-from-spot artifact criterion.
 
-Consequence for sequencing: **neither gamma PR is a safe merge, and closing #936 in favour of #942 is not a fallback** — both carry the regression. Both need the run-aware fix first.
+**#812 remains open, and the remaining work is production data, not code.** Two of its three definition-of-done items are outstanding:
+
+- [ ] Re-run the production query: zero flips >20% from spot, or every remaining one explained.
+- [ ] Record a decision on the **54 contaminated `gamma_levels_eod` rows** (corrected or nulled).
+
+Do not read the merged code fix as satisfying either. The 54 rows predate it, are indistinguishable from real flips to every downstream consumer, and this issue is the only artifact tracking them.
 
 ### Repository state since this reconciliation was created
 
