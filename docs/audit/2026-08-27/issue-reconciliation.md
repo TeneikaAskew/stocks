@@ -303,7 +303,6 @@ Aggregate count parity, not fire-set parity. The inflation factor #818 deliberat
 
 **One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
 
-<<<<<<< HEAD
 ### The gamma regression was found, fixed, and merged — #812 is not yet done
 
 This section previously said both gamma PRs regressed `main` and neither was safe to merge. **That was true when written on 2026-08-30 and is now resolved.** #942 gained run-aware handling and merged as `b9621c4`; #936 is superseded.
@@ -325,19 +324,6 @@ The merged implementation treats a contiguous zero **run** as a crossing when it
 - [ ] Record a decision on the **54 contaminated `gamma_levels_eod` rows** (corrected or nulled).
 
 Do not read the merged code fix as satisfying either. The 54 rows predate it, are indistinguishable from real flips to every downstream consumer, and this issue is the only artifact tracking them.
-=======
-### Historical gamma candidate regression and merged resolution
-
-The 2026-08-30 candidate measurement found that then-heads #936 (`4ed8e4b`) and #942
-(`6486742`) returned `None` for a valid spot-100 contiguous zero run while then-`main` returned
-`100.0`. That finding blocked those candidate heads correctly. It is now superseded by the final
-[#942](https://github.com/TeneikaAskew/stocks/pull/942) merge `b9621c4`, which includes the
-run-aware implementation and regression tests. #936 closed unmerged.
-
-This resolves the code-candidate regression, **not #812 in full**. The production outlier query and
-disposition of 54 contaminated `gamma_levels_eod` rows remain outstanding and keep #812 open.
->>>>>>> 93a980e (docs(audit): refresh gamma and product-plan state)
-
 ### Repository state since this reconciliation was created
 
 **Baseline: `main` was at `d335f2f` when PR #924 was opened** (2026-08-29 17:20:51 UTC). That commit was made at 17:06:35 UTC, fourteen minutes earlier, and it is also the `base.sha` GitHub recorded for #924 — two independent sources for the same baseline.
