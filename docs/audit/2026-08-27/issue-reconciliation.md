@@ -283,7 +283,23 @@ QQQ     1200      5
 
 Exact parity. The inflation factor #818 deliberately left unquantified — Codex was right to withdraw the earlier "~10×" figure — measures at **42×** on this date. The cap is demonstrably binding rather than coincidentally matching: the execution logged 969 suppressions of the form `cap_diag: SKIP ticker=QQQ daily_trades=5 cap=5 (cap reached)`, where pre-fix `daily_trades` stayed at `0` for the whole session.
 
-**Gate discharged.** PR-E's prerequisite is *#818 in PR-F merged **and deployed***. Both halves now hold, with the deploy verified rather than assumed, ahead of the first `signal_alerts.concurrent_positions` shadow rows on **2026-08-31**. Shadow-control analysis of #816 may now use replay as a faithful baseline.
+**Gate discharged.** PR-E's prerequisite is *#818 in PR-F merged **and deployed***. Both halves now hold, with the deploy verified rather than assumed. Shadow-control analysis of #816 may now use replay as a faithful baseline.
+
+**The shadow window has opened but is still empty — measured, not assumed.** As of 2026-08-31 11:27 UTC:
+
+| alert_date | fires | with_shadow | with_mtm |
+|---|---|---|---|
+| 2026-08-24 | 15 | 0 | 0 |
+| 2026-08-25 | 5 | 0 | 0 |
+| 2026-08-26 | 15 | 0 | 0 |
+| 2026-08-27 | 15 | 0 | 0 |
+| 2026-08-28 | 15 | 0 | 0 |
+
+`concurrent_positions` is **0 of 65** across the last five sessions and the latest `alert_date` is still **2026-08-28**; 2026-08-31 is the first session that *can* populate it, not a date on which rows are known to exist. Earlier revisions of this document said rows "land 2026-08-31", which was a forecast written before the date arrived. **Do not begin #816 calibration from the date alone** — query the column first and confirm a populated window. `mtm_pnl` is 0 across the same rows, consistent with #816's daily-loss semantics still being unrepaired.
+
+```bash
+./scripts/db_query_cr.sh -q "SELECT alert_date, count(*) AS fires, count(concurrent_positions) AS with_shadow, count(mtm_pnl) AS with_mtm FROM signal_alerts WHERE alert_date > current_date - 8 GROUP BY alert_date ORDER BY alert_date"
+```
 
 **One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
 
