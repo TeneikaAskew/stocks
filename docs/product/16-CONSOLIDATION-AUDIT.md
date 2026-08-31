@@ -7,11 +7,11 @@
 The Claude rebuild was folded into the canonical plan without dropping a product record. PR #924
 was **not copied byte-for-byte into `docs/product/`**: it remains the upstream, single-owner
 workstream manifest. Its identifiers and relationships were cross-checked and retained here, while
-its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on PR #924. Therefore:
+its full narrative now lives on `main` in `docs/audit/2026-08-27/issue-reconciliation.md` after PR #924 merged. Therefore:
 
 - **Claude rebuild:** byte-compared and semantic differences reviewed.
 - **PR #924:** every issue reference is represented, including the ten closed duplicates; the
-  448-line source file itself is linked rather than duplicated.
+  469-line merged source file itself is linked rather than duplicated.
 - **Review feedback incorporated:** each substantive PR #924 review finding was revalidated against issue contracts, current code, tests, PR state and GitHub timelines, then converted into canonical requirements, roadmap gates, WBS prerequisites and candidate inventory.
 
 ## Immutable source snapshots
@@ -19,7 +19,7 @@ its full narrative remains in `docs/audit/2026-08-27/issue-reconciliation.md` on
 | Source | Snapshot | Scope | Byte evidence |
 |---|---|---|---|
 | Claude rebuild | `826ca943dafb5b6ca2062b8575e90ab86bea05eb` | 17 `docs/product/*.md` files | `git diff --no-renames <sha> -- docs/product/` plus per-file SHA-256 |
-| PR #924 | `5427960964fe9d57b22a04c3a1fe663f6faabb1f` | `docs/audit/2026-08-27/issue-reconciliation.md` | 448 lines, 74,190 bytes, SHA-256 `6f253957f515a4c6de8da0d10daf6d22a3edadec714197841f445de55d946f49` |
+| PR #924 merged manifest | `a8e307586e86c0cf1658061e04511ebe972a44f5` | `docs/audit/2026-08-27/issue-reconciliation.md` on `main` | 469 lines, 75,580 bytes, SHA-256 `b51ab16564a72d07a02c80578b108960158424c46bbfc14488209efbe45911ff` |
 | Merged canonical baseline | PR #931 merge `c93197e` | `docs/product/` on `main` | merged baseline identity |
 | Byte-comparison tree | `a518585` | the 17 original requested product files after Claude consolidation corrections | exact canonical side used for the 8-identical/9-different result |
 | Current follow-up | PR #945 | updates to the merged #931 baseline | open; not on `main` until merged |
@@ -49,12 +49,11 @@ semantic preservation; the section checks below provide that second layer.
 
 ### What is deliberately not duplicated
 
-The 448 lines of PR #924 are not pasted into a second `docs/product` file. In particular, its
+The 469 lines of the merged PR #924 manifest are not pasted into a second `docs/product` file. In particular, its
 per-finding Claude/Codex source citations, `Claude review requested?` cells, conversation template,
 and full withdrawn-statement prose remain in the manifest. This avoids two editable copies. They
 are **not lost**: the manifest is linked, pinned above by commit and hash, and its issue/link set is
-checked. Once PR #924 merges, that exact file should live beside the product plan on the default
-branch.
+checked. PR #924 has now merged, so that exact authoritative file lives beside the product plan on the default branch.
 
 ## PR #924 review findings — validation and incorporation
 

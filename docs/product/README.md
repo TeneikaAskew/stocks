@@ -46,7 +46,7 @@ unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
 |---|---|---|
 | [#931](https://github.com/TeneikaAskew/stocks/pull/931) (`work-product-plan`) | Original Codex plan, rebuilt and consolidated with Claude's branch | **MERGED** — canonical baseline on `main` (`c93197e`) |
 | [#945](https://github.com/TeneikaAskew/stocks/pull/945) (`codex/product-plan-preservation-audit`) | Follow-up to the merged #931 plan: preservation proof, validated gates, current traceability | **OPEN** — must merge for the newest corrections to reach `main` |
-| [#924](https://github.com/TeneikaAskew/stocks/pull/924) (`work`) | Audit finding → issue → delivery-workstream manifest | **OPEN**, updated at `5427960`; not a second product plan |
+| [#924](https://github.com/TeneikaAskew/stocks/pull/924) (`work`) | Audit finding → issue → delivery-workstream manifest | **MERGED** as `a8e3075`; authoritative manifest on `main`, not a second product plan |
 | `claude/stocks-plan-feedback-ipzxm0` | Evidence-backed rebuild source folded into #931 | **SUPERSEDED provenance branch**; no longer maintained |
 
 Authority is therefore: **merged `docs/product/` → capability status and roadmap; #924 manifest → audit issue/workstream assignment; GitHub issues/PRs and current code/deployment → underlying evidence.** Until #945 merges, its changes are the reviewed follow-up candidate, not yet default-branch state. A conflict is resolved by updating `docs/product/` from underlying evidence rather than maintaining another plan copy.
