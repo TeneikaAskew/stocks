@@ -343,11 +343,12 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 
 | Proposed PR | Canonical issues | Bundling boundary |
 |---|---|---|
-| PR-A — Data failure semantics | #825, #826, #827, #828, #842, #848, #925, #926, #928 | Shared fail-open/fallback contracts; split live override resolution if its deployment path differs. |
-| PR-B — Rates and options/gamma math | #812, #845, #846, #871, #872, #876, #878, #880, #896, #927 | Shared fixtures and mathematical invariants; calculation changes and display-only semantics may be separate commits or PRs. |
-| PR-C — Research validity and provenance | #813, #817, #886, #888, #890, #905, #906, #909, #910 | Build provenance/holdout foundations before quarantining and rerunning historical results; expect multiple ordered PRs within this stream. |
-| PR-D — Execution and outcome parity | #814, #815, #869, #882, #908, #915 | Common fill/exit/outcome contract and parity fixtures; policy decisions must be resolved before implementation. |
-| PR-E — Portfolio and daily risk controls | #816 | Keep standalone because it changes live portfolio-risk semantics. |
+| PR-0 — Shared read-side freshness primitive | shared prerequisite; no issue removed from its owning stream | **Precedes the overlapping #833/#922/#863 work in PR-M/PR-N.** One registry/age/unavailable contract; consumer-specific restore/retire policy stays in its owning stream. |
+| PR-A — Data failure semantics | #825, #826, #827, #828, #842, #848, #925, #926, #928 | Shared fail-open/fallback contracts; split live override resolution if its deployment path differs. **Its repaired #825/#826 input semantics gate affected PR-B validation and PR-C baseline work.** |
+| PR-B — Rates and options/gamma math | #812, #845, #846, #871, #872, #876, #878, #880, #896, #927 | Shared fixtures and mathematical invariants. Safe code changes may land independently, but **validation/reruns are blocked by PR-A's repaired #825/#826 semantics**. |
+| PR-C — Research validity and provenance | #813, #817, #886, #888, #890, #905, #906, #909, #910 | Build provenance/holdout foundations before reruns. **Baseline freeze and promotion evidence are blocked by PR-A, then repaired PR-F/PR-G replay/data paths.** |
+| PR-D — Execution and outcome parity | #814, #815, #869, #882, #908, #915 | **Split gate:** cross-system backtest/live parity waits for PR-F; #815's within-live stop counterfactual is independently measurable and may proceed. Policy decisions remain explicit. |
+| PR-E — Portfolio and daily risk controls | #816 | Keep standalone. #818's deployed 15=15 cap parity satisfies the replay prerequisite; **#940 persistent-state restore blocks calibration/activation or lowering any default-no-op ceiling**. |
 | PR-F — Replay time, sessions, and as-of boundaries | #818, #819, #822, #823, #873, #897, #898, #900, #901, #902, #904, #929 | One frozen-clock/session test framework; split source fixes from historical reruns. |
 | PR-G — Replay/backfill lifecycle and persistence | #820, #821, #824, #899, #903, #923 | Shared production-path, schema, and legacy-harness convergence. |
 | PR-H — Previous-level correctness | #866, #907 | Same level family, but retain separate regression cases for mother-bar and legacy positional defects. |
@@ -355,8 +356,8 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 | PR-J — AI plan and agent validation | #867, #916 | Exact-plan handoff plus agent-value/numeric-output validation. |
 | PR-K — Security and secret handling | #830, #836, #837, #838, #839, #840, #841, #850, #911 | Common security review, with secret rotation/deployment isolated from low-risk cleanup where necessary. |
 | PR-L — Deployment and schema reproducibility | #829, #831, #834, #852, #853, #854, #859, #860, #918 | Make fresh-environment deployment reproducible before migration cleanup. |
-| PR-M — Capacity, schedulers, and watchdogs | #832, #833, #835, #851, #855, #856, #857, #858, #922 | Validate telemetry first, then change timeout/concurrency/schedule controls. |
-| PR-N — Dormant and stale production surfaces | #861, #862, #863, #919, #920, #921 | Decide restore-versus-retire per surface before changing consumers. |
+| PR-M — Capacity, schedulers, and watchdogs | #832, #833, #835, #851, #855, #856, #857, #858, #922 | **Depends on PR-0 for #833/#922 shared read-side freshness**; then validate telemetry before timeout/concurrency/schedule changes. |
+| PR-N — Dormant and stale production surfaces | #861, #862, #863, #919, #920, #921 | **Depends on PR-0 for #863 shared read-side freshness**; consumer-specific restore-versus-retire decisions remain here. |
 | PR-O — Test and CI coverage | #843, #844, #847, #849, #868 | Shared CI wiring and integration fixtures; avoid mixing product behavior changes into the coverage PR. |
 | PR-P — Magnitude feature semantics | #874, #875 | Shared Phase 2/4 feature recomputation and affected-model rerun contract. |
 | PR-Q — STRAT vote semantics | #884 | Standalone semantic/API decision. |
