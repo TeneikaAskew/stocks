@@ -195,7 +195,7 @@ An issue does **not** need to be converted one-for-one into a pull request for C
 
 - **PR #802** is the Claude audit source and **PR #804** is the Codex audit source; neither is a remediation PR for the canonical issues.
 - **PR #924** contains this governance reconciliation and is the single PR on which Claude was asked to review the mapping and grouping plan. It intentionally has **zero closing-issue links** because it does not implement any finding.
-- Remediation candidates now exist. PRs #933 and #934 have merged; #934 plus its post-deployment parity evidence completed #818, while #933 remains partial coverage of #816. Open PRs #936–#938 and #942 provide candidate or documentation coverage but do not complete their linked canonical issues. The 14 relationships recorded above are **issue-to-issue dependencies**, not pull-request links.
+- Remediation candidates now exist. PRs #933 and #934 have merged; #934 plus its post-deployment parity evidence completed #818, while #933 remains partial coverage of #816. Open PRs #937–#938 provide partial documentation/guard coverage; #936 closed unmerged and #942 merged its run-aware gamma code, while #812 remains open for production-data work. The 14 relationships recorded above are **issue-to-issue dependencies**, not pull-request links.
 - A canonical issue should acquire a Development/closing PR link only when an implementation PR actually satisfies its acceptance criteria. Creating empty PRs to obtain a Claude response would misrepresent remediation status.
 
 ### Post-#924 pull-request reconciliation (2026-08-30)
@@ -214,7 +214,7 @@ Every repository PR numbered after #924 through #942 was inspected by body, chan
 | [#938](https://github.com/TeneikaAskew/stocks/pull/938) | OPEN / `main` | Related to #863 and #924 (PR-N) | Adds a tested stale-earnings surface guard. It is not the shared freshness primitive needed by #833/#922 and does not satisfy all of #863; keep the issue open. |
 | [#939](https://github.com/TeneikaAskew/stocks/pull/939) | OPEN / stacked on #935 | Follow-up to #924/#935 | Governance-only recovery/publication documentation. It supersedes candidate-recoverability and publication-path notes only after the #935 → #939 stack lands. |
 | [#941](https://github.com/TeneikaAskew/stocks/pull/941) | **MERGED 2026-08-30 (`4eba353`)** / `work` | Related to #924; no canonical issue closure | Governance-only addendum. Its duplicate coverage table was dropped once this reconciliation covered the same ground; what survives is the definition-of-done scoring, the measured gamma regression, the repository-state baseline, and the #940 sequencing condition — all now in the sections below. #935 and #939 were left untouched rather than rebased. |
-| [#942](https://github.com/TeneikaAskew/stocks/pull/942) | OPEN / `main` | Related to #812 and #924 (PR-B); **zero closing links verified** | Supersedes #936's intended gamma approach only after its run-aware correction is implemented. At the current head it retains the same valid spot-100 zero-run regression and does not satisfy #812's production-query or contaminated-row criteria. Do not merge as-is and do not close #812. |
+| [#942](https://github.com/TeneikaAskew/stocks/pull/942) | **MERGED 2026-08-30 (`b9621c4`)** / `main` | Partial remediation of #812 and PR-B | Includes the run-aware implementation and regressions, superseding closed-unmerged #936. Code remediation landed; #812 remains open for the production outlier re-query and disposition of 54 contaminated rows. |
 
 **Current coverage (2026-08-30, after the first two merges):** five canonical issues are touched (#812, #815, #816, #818, #863). **#818 is closed** — the first canonical issue resolved by this remediation effort. #816 is mechanism-only and stays open; #812, #815 and #863 stay open on partial coverage. **100 canonical issues still have no remediation PR**, and 13 of the 18 streams remain entirely unstarted plus the shared PR-0 primitive. Issue #940 is a newly discovered, cross-cutting risk-state defect and must be triaged separately rather than silently inserted into the original 105-count audit inventory.
 
@@ -228,14 +228,14 @@ Four open canonical issues already have partial candidate coverage and therefore
 
 | Issue | Existing candidate | Work still required before closure |
 |---:|---|---|
-| [#812](https://github.com/TeneikaAskew/stocks/issues/812) | #936 and superseding #942 | **Complete this work; do not abandon the finding.** Amend #942 to handle a contiguous zero-gamma run bracketed by opposite nonzero endpoints; retain the pure-put underflow and isolated-zero regressions; rerun the gamma suite; merge and deploy only after review; rerun the production outlier query; then recompute rows with preserved point-in-time inputs and NULL the remainder of the 54 contaminated rows. Record both production results on #812 before closing it. #936 may then close as superseded without merging. |
+| [#812](https://github.com/TeneikaAskew/stocks/issues/812) | merged #942; #936 closed unmerged | Run-aware code and regressions landed. **Complete the production work:** rerun the outlier query, recompute rows with preserved point-in-time inputs, NULL the remainder of the 54 contaminated rows, and record both results on #812 before closure. |
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | #937 documentation | Resolve the policy decision: either accept and record the verified no-live-stop decision next to the unused configuration, or disprove it with the required within-live counterfactual. Re-run the comparison if #814 materially changes the relevant fill assumptions. Documentation alone does not complete the issue. |
 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) | merged mechanism in #933 | Keep the shipped ceilings at their default no-op until #940 restores risk state across restarts. After the shadow window, record a data-backed decision for each control, repair daily-loss P&L semantics, and either wire or delete the unused daily-profit target. |
 | [#863](https://github.com/TeneikaAskew/stocks/issues/863) | #938 freshness guard | Stop or refresh the stale weekly publication, diagnose the May/June writer stoppages, and land the shared read-side freshness primitive across all three affected surfaces. Coordinate the shared root cause with #833 and #922 rather than closing #863 on its one-surface guard. |
 
 The remaining 100 canonical issues have no implementation PR and can now enter the grouped streams below, subject to their recorded dependencies. A stream manifest is a planning boundary, not a requirement to put every listed issue into one oversized PR; start with the smallest independently testable and reversible subset.
 
-**Product-plan synchronization status:** PR [#931](https://github.com/TeneikaAskew/stocks/pull/931) remains on its separate `work-product-plan` branch and was **not updated by the post-merge reconciliation work on #924**. Before #931 is treated as the current roadmap, port this state into its capability, traceability, roadmap, and work-breakdown documents: #818 completed; #933/#934 merged and deployed; #812/#815/#816/#863 partial; #936/#942 held; #940 added as a pre-calibration gate; and 100 canonical issues still without implementation PRs. PR #924 remains authoritative for finding-to-issue/stream governance until that synchronization is reviewed.
+**Product-plan synchronization status:** PR [#931](https://github.com/TeneikaAskew/stocks/pull/931) merged to `main` (`7aab698`) and `docs/product/README.md` now defines the ownership boundary: merged `docs/product/` owns capability status and roadmap; this #924 manifest owns audit finding-to-issue and issue-to-stream assignment. The post-merge #945 follow-up carries newer consolidation proof and gates. Synchronize state through those owned surfaces; do not maintain a second roadmap here.
 
 ### Definition-of-done scoring for the closing-link decisions
 
@@ -303,6 +303,7 @@ Aggregate count parity, not fire-set parity. The inflation factor #818 deliberat
 
 **One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
 
+<<<<<<< HEAD
 ### The gamma regression was found, fixed, and merged — #812 is not yet done
 
 This section previously said both gamma PRs regressed `main` and neither was safe to merge. **That was true when written on 2026-08-30 and is now resolved.** #942 gained run-aware handling and merged as `b9621c4`; #936 is superseded.
@@ -324,6 +325,18 @@ The merged implementation treats a contiguous zero **run** as a crossing when it
 - [ ] Record a decision on the **54 contaminated `gamma_levels_eod` rows** (corrected or nulled).
 
 Do not read the merged code fix as satisfying either. The 54 rows predate it, are indistinguishable from real flips to every downstream consumer, and this issue is the only artifact tracking them.
+=======
+### Historical gamma candidate regression and merged resolution
+
+The 2026-08-30 candidate measurement found that then-heads #936 (`4ed8e4b`) and #942
+(`6486742`) returned `None` for a valid spot-100 contiguous zero run while then-`main` returned
+`100.0`. That finding blocked those candidate heads correctly. It is now superseded by the final
+[#942](https://github.com/TeneikaAskew/stocks/pull/942) merge `b9621c4`, which includes the
+run-aware implementation and regression tests. #936 closed unmerged.
+
+This resolves the code-candidate regression, **not #812 in full**. The production outlier query and
+disposition of 54 contaminated `gamma_levels_eod` rows remain outstanding and keep #812 open.
+>>>>>>> 93a980e (docs(audit): refresh gamma and product-plan state)
 
 ### Repository state since this reconciliation was created
 
