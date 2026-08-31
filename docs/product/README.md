@@ -24,6 +24,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [13 Roadmap](13-ROADMAP.md) | What should be sequenced next? |
 | [14 Work Breakdown](14-WORK-BREAKDOWN.md) | How does the work decompose into evidence? |
 | [15 Open Decisions](15-OPEN-DECISIONS.md) | Which product choices remain unresolved? |
+| [16 Consolidation Audit](16-CONSOLIDATION-AUDIT.md) | What was preserved from Claude and PR #924, and how was every section validated? |
 
 ## Where the app lives
 
