@@ -281,9 +281,9 @@ QQQ     1200      5
 | Live fires, 2026-08-28 | **15** |
 | Live maximum under the cap (3 × 5) | 15 |
 
-Exact parity. The inflation factor #818 deliberately left unquantified — Codex was right to withdraw the earlier "~10×" figure — measures at **42×** on this date. The cap is demonstrably binding rather than coincidentally matching: the execution logged 969 suppressions of the form `cap_diag: SKIP ticker=QQQ daily_trades=5 cap=5 (cap reached)`, where pre-fix `daily_trades` stayed at `0` for the whole session.
+Aggregate count parity, not fire-set parity. The inflation factor #818 deliberately left unquantified — Codex was right to withdraw the earlier "~10×" figure — measures at **42×** on this date. The cap is demonstrably binding rather than coincidentally matching: the execution logged 969 suppressions of the form `cap_diag: SKIP ticker=QQQ daily_trades=5 cap=5 (cap reached)`, where pre-fix `daily_trades` stayed at `0` for the whole session.
 
-**Gate discharged.** PR-E's prerequisite is *#818 in PR-F merged **and deployed***. Both halves now hold, with the deploy verified rather than assumed. Shadow-control analysis of #816 may now use replay as a faithful baseline.
+**Cap-engagement gate discharged; fire-set gate still open.** #818 proves the cap mutates and binds, but capped 5-per-ticker totals can match while live and replay select different signals, timestamps, directions, or positions. Before #816 calibration uses replay, compare the live and replay fire identities. #940 persistent-state restoration remains a separate activation gate.
 
 **The shadow window has opened but is still empty — measured, not assumed.** As of 2026-08-31 11:27 UTC:
 
@@ -298,7 +298,7 @@ Exact parity. The inflation factor #818 deliberately left unquantified — Codex
 `concurrent_positions` is **0 of 65** across the last five sessions and the latest `alert_date` is still **2026-08-28**; 2026-08-31 is the first session that *can* populate it, not a date on which rows are known to exist. Earlier revisions of this document said rows "land 2026-08-31", which was a forecast written before the date arrived. **Do not begin #816 calibration from the date alone** — query the column first and confirm a populated window. `mtm_pnl` is 0 across the same rows, consistent with #816's daily-loss semantics still being unrepaired.
 
 ```bash
-./scripts/db_query_cr.sh -q "SELECT alert_date, count(*) AS fires, count(concurrent_positions) AS with_shadow, count(mtm_pnl) AS with_mtm FROM signal_alerts WHERE alert_date > current_date - 8 GROUP BY alert_date ORDER BY alert_date"
+./scripts/db_query_cr.sh -q "SELECT alert_date, count(*) AS fires, count(concurrent_positions) AS with_shadow, count(mtm_pnl) AS with_mtm FROM signal_alerts WHERE run_kind = 'live' AND alert_date > current_date - 8 GROUP BY alert_date ORDER BY alert_date"
 ```
 
 **One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
@@ -364,7 +364,7 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 | PR-B — Rates and options/gamma math | #812, #845, #846, #871, #872, #876, #878, #880, #896, #927 | Shared fixtures and mathematical invariants. Safe code changes may land independently, but **validation/reruns are blocked by PR-A's repaired #825/#826 semantics**. |
 | PR-C — Research validity and provenance | #813, #817, #886, #888, #890, #905, #906, #909, #910 | Build provenance/holdout foundations before reruns. **Baseline freeze and promotion evidence are blocked by PR-A, then repaired PR-F/PR-G replay/data paths.** |
 | PR-D — Execution and outcome parity | #814, #815, #869, #882, #908, #915 | **Split gate:** cross-system backtest/live parity waits for PR-F; #815's within-live stop counterfactual is independently measurable and may proceed. Policy decisions remain explicit. |
-| PR-E — Portfolio and daily risk controls | #816 | Keep standalone. #818's deployed 15=15 cap parity satisfies the replay prerequisite; **#940 persistent-state restore blocks calibration/activation or lowering any default-no-op ceiling**. |
+| PR-E — Portfolio and daily risk controls | #816 | Keep standalone. #818 proves cap engagement, but **live/replay fire identities must match before calibration**; #940 persistent-state restore separately blocks activation or lowering any default-no-op ceiling. |
 | PR-F — Replay time, sessions, and as-of boundaries | #818, #819, #822, #823, #873, #897, #898, #900, #901, #902, #904, #929 | One frozen-clock/session test framework; split source fixes from historical reruns. |
 | PR-G — Replay/backfill lifecycle and persistence | #820, #821, #824, #899, #903, #923 | Shared production-path, schema, and legacy-harness convergence. |
 | PR-H — Previous-level correctness | #866, #907 | Same level family, but retain separate regression cases for mother-bar and legacy positional defects. |
