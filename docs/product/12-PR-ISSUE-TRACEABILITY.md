@@ -30,7 +30,7 @@ adjacent questions, and the three must not diverge:
 | [#924](https://github.com/TeneikaAskew/stocks/pull/924) → `docs/audit/2026-08-27/issue-reconciliation.md` | the **canonical 105-issue inventory**, partitioned across 18 delivery streams (PR-A … PR-R) plus PR-0 | stream membership and delivery gates |
 | [#941](https://github.com/TeneikaAskew/stocks/pull/941) | per-PR coverage with an explicit *does-NOT-fix* column | **which issues actually have a remediation PR** |
 
-### Why this file says 120 and #924 tracks the audit inventory
+### Why this file says 121 and #924 tracks the audit inventory
 
 Both are correct; they count different sets. Reconciled 2026-08-31, after [#818](https://github.com/TeneikaAskew/stocks/issues/818) closed:
 
@@ -107,7 +107,7 @@ closed on the evidence rather than on the merge.
 | **Replay-vs-live trade-count inflation, measured** | **42×** |
 
 969 `cap_diag: SKIP … (cap reached)` suppressions were logged in the post-fix run; pre-fix,
-`daily_trades` stayed at `0` all session. Replay now reproduces live exactly on this date.
+`daily_trades` stayed at `0` all session. The cap now engages and aggregate counts match on this date. That does **not** establish fire-set parity: once each ticker has more than five candidates, both paths can report 5 while selecting different signals, timestamps, or positions. A live/replay fire-identity comparison remains required before replay is a faithful #816 calibration baseline.
 
 This retires the first of the nine CRITICAL replay-integrity defects and, more importantly,
 **puts a number on how much historical replay output overstated trade counts.** Any
@@ -139,7 +139,7 @@ part of #863. The actionable candidate inventory is:
 | [#812](https://github.com/TeneikaAskew/stocks/issues/812) | [#942](https://github.com/TeneikaAskew/stocks/pull/942), superseding closed #936 | merged on `main`; code recoverable from merge | Underflow code/tests landed; production outlier re-query and 54-row disposition outstanding |
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | [#937](https://github.com/TeneikaAskew/stocks/pull/937) | open documentation candidate | Policy decision or disproof via within-live counterfactual outstanding |
 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) | [#933](https://github.com/TeneikaAskew/stocks/pull/933) | merged default-no-op mechanism | #940 state restore, shadow analysis, P&L semantics and per-control decision outstanding |
-| [#818](https://github.com/TeneikaAskew/stocks/issues/818) | [#934](https://github.com/TeneikaAskew/stocks/pull/934) | merged, deployed, production-verified | Complete and closed; 15 replay fires = 15 live, with 969 cap suppressions |
+| [#818](https://github.com/TeneikaAskew/stocks/issues/818) | [#934](https://github.com/TeneikaAskew/stocks/pull/934) | merged, deployed, cap engagement production-verified | Closed on its count/cap DoD; 15 replay fires = 15 live with 969 suppressions, but fire identities remain unverified and gate #816 calibration |
 | [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#938](https://github.com/TeneikaAskew/stocks/pull/938) | open one-surface guard | Weekly publication/writer diagnosis and shared #833/#922 freshness primitive outstanding |
 
 The other **100 canonical issues have no implementation candidate** at this snapshot. Governance
