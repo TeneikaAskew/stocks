@@ -271,7 +271,8 @@ def test_cache_read_failure_is_not_mistaken_for_a_fresh_map(monkeypatch, caplog)
 
     assert out == {}
     joined = " ".join(r.getMessage() for r in caplog.records)
-    assert "Could not read CIK cache" in joined
+    assert "CIK cache read FAILED" in joined
+    assert "does not fix itself" in joined
     assert "no usable cache exists" in joined
 
 
@@ -331,3 +332,95 @@ def test_budget_resets_per_run():
 
     fsf._reset_retry_budget()
     assert fsf._claim_retry_budget(1.0)
+
+
+# ── cache read: "not there yet" vs "path is broken" ──────────────────
+
+
+class NotFound(Exception):
+    """Stands in for google.api_core.exceptions.NotFound (lib absent here).
+
+    The class is really named NotFound: _is_missing_blob falls back to
+    type(exc).__name__, and a class-body __name__ = "NotFound" would NOT
+    change that (the metaclass descriptor wins over the class __dict__).
+    """
+
+
+def _fake_gcs(monkeypatch, exc):
+    """Install a google.cloud.storage whose Client() raises `exc`."""
+    mod = types.ModuleType("google.cloud.storage")
+    mod.Client = MagicMock(side_effect=exc)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
+    return mod
+
+
+def test_absent_cache_is_not_reported_as_broken(monkeypatch, caplog):
+    """A missing blob is the expected first-run state — not an ERROR.
+
+    Conflating it with a broken read sends an operator chasing IAM during an
+    incident whose real fix is "wait for one good run".
+    """
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    _fake_gcs(monkeypatch, NotFound("no such object"))
+
+    with caplog.at_level("INFO"):
+        mapping, age = fsf._read_cik_cache()
+
+    assert (mapping, age) == ({}, None)
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "yet" in joined
+    assert not [r for r in caplog.records if r.levelname == "ERROR"], (
+        "a missing cache must not be logged as a failure"
+    )
+
+
+def test_broken_cache_read_is_reported_as_broken(monkeypatch, caplog):
+    """An operational read failure is permanent and must be loud."""
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    _fake_gcs(monkeypatch, PermissionError("403 caller lacks storage.objects.get"))
+
+    with caplog.at_level("INFO"):
+        mapping, age = fsf._read_cik_cache()
+
+    assert (mapping, age) == ({}, None)
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "a broken cache read must be an ERROR"
+    assert "PermissionError" in errors[0], "name the exception type for triage"
+
+
+def test_malformed_cache_is_reported_as_broken(monkeypatch, caplog):
+    """Readable-but-garbage JSON is a broken fallback, not an absent one."""
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    mod = types.ModuleType("google.cloud.storage")
+    blob = MagicMock()
+    blob.download_as_text.return_value = '{"mapping": {}, "fetched_at": null}'
+    mod.Client = MagicMock(return_value=MagicMock(
+        **{"bucket.return_value.blob.return_value": blob}))
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
+
+    with caplog.at_level("INFO"):
+        mapping, age = fsf._read_cik_cache()
+
+    assert (mapping, age) == ({}, None)
+    assert any("malformed" in r.getMessage()
+               for r in caplog.records if r.levelname == "ERROR")
+
+
+def test_cache_write_failure_is_logged_at_error(monkeypatch, caplog):
+    """A failed write silently disarms the fallback — WARNING buries that."""
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    monkeypatch.setenv("GCS_BUCKET", "test-bucket")
+    _fake_gcs(monkeypatch, RuntimeError("gcs down"))
+
+    with caplog.at_level("WARNING"):
+        fsf._write_cik_cache({"AAPL": "0000320193"})
+
+    assert any(r.levelname == "ERROR" and "Could not write CIK cache" in r.getMessage()
+               for r in caplog.records)

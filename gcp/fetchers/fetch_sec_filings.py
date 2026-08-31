@@ -122,6 +122,11 @@ def _http_get(url: str, user_agent: str, timeout: int = 30) -> dict | None:
 
     Returns ``None`` when every attempt fails. The caller decides what that
     means; this function never fabricates a result (CLAUDE.md 3.7).
+
+    AUDIT-2026-05-13: the None-on-failure sentinel is the EXTERNAL-fetcher
+    pattern in docs/audits/FALLBACK_AUDIT_2026-05-13.md §7.3. It should become
+    a typed DataResult(UNAVAILABLE, ...) envelope once §8.1 lands; until that
+    type exists, every path to None here is logged with URL, status and reason.
     """
     headers = {"User-Agent": user_agent, "Accept": "application/json"}
     for attempt in range(SEC_MAX_ATTEMPTS):
@@ -205,15 +210,42 @@ def _write_cik_cache(mapping: dict[str, str]) -> None:
                  len(mapping), bucket, CIK_CACHE_BLOB)
     except Exception as e:
         # Cache write is best-effort: the live fetch already succeeded, so
-        # failing here must not fail the run. The next throttled run just
-        # won't have a fallback, and will say so.
-        log.warning("Could not write CIK cache: %s", e)
+        # failing here must not fail the run. ERROR rather than WARNING
+        # because a failed write silently disarms the fallback this whole
+        # change exists to provide — it needs to be noticed BEFORE the next
+        # throttle, not discovered during it.
+        log.error("Could not write CIK cache to gs://%s/%s (%s: %s) — the "
+                  "throttle fallback will be stale or absent next run.",
+                  bucket, CIK_CACHE_BLOB, type(e).__name__, e)
+
+
+def _is_missing_blob(exc: Exception) -> bool:
+    """True when the cache object simply isn't there yet, vs. a broken read.
+
+    Imported lazily and with a name fallback so this works whether or not the
+    google-cloud libraries are installed in the calling environment.
+    """
+    try:
+        from google.api_core.exceptions import NotFound
+        if isinstance(exc, NotFound):
+            return True
+    except Exception:
+        pass  # google-cloud libs absent — fall back to the class name
+    return type(exc).__name__ == "NotFound"
 
 
 def _read_cik_cache() -> tuple[dict[str, str], float | None]:
-    """Return (mapping, age_hours) from the cache, or ({}, None) if unusable."""
+    """Return (mapping, age_hours) from the cache, or ({}, None) if unusable.
+
+    "Not there yet" and "the read is broken" both yield ({}, None), but they
+    need very different operator responses — the first resolves itself on the
+    next good run, the second never will — so they are logged differently.
+    Collapsing them into one indistinguishable message is the ambiguity
+    CLAUDE.md 3.7 forbids (see docs/audits/FALLBACK_AUDIT_2026-05-13.md §7.3).
+    """
     bucket = _cache_bucket()
     if not bucket:
+        log.info("No cache bucket configured; CIK-map fallback is unavailable.")
         return {}, None
     try:
         import json as _json
@@ -223,13 +255,28 @@ def _read_cik_cache() -> tuple[dict[str, str], float | None]:
         mapping = obj.get("mapping") or {}
         fetched = obj.get("fetched_at")
         if not mapping or not fetched:
+            log.error(
+                "CIK cache at gs://%s/%s is malformed (mapping=%d entries, "
+                "fetched_at=%r) — the throttle fallback is broken, not empty.",
+                bucket, CIK_CACHE_BLOB, len(mapping), fetched,
+            )
             return {}, None
         age_h = (
             datetime.now(timezone.utc) - datetime.fromisoformat(fetched)
         ).total_seconds() / 3600.0
         return mapping, age_h
     except Exception as e:
-        log.warning("Could not read CIK cache: %s", e)
+        if _is_missing_blob(e):
+            log.info(
+                "No CIK cache at gs://%s/%s yet — it is written on the next "
+                "successful fetch.", bucket, CIK_CACHE_BLOB,
+            )
+            return {}, None
+        log.error(
+            "CIK cache read FAILED (%s: %s) — gs://%s/%s is unreadable, so the "
+            "throttle fallback will NOT be available. This does not fix itself.",
+            type(e).__name__, e, bucket, CIK_CACHE_BLOB,
+        )
         return {}, None
 
 
