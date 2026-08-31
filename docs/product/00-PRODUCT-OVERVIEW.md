@@ -5,7 +5,7 @@
 ## What this is — VERIFIED — CODE
 
 A single-repository market-intelligence platform: a public landing site, an authenticated React
-decision-support UI (15 routes), a FastAPI read/write layer (87 endpoints), a PostgreSQL
+decision-support UI (15 routes), a FastAPI read/write layer (92 platform endpoints), a PostgreSQL
 analytical store (64 relations), 67 scheduled Cloud Run jobs driven by 58 Cloud Scheduler
 entries, deterministic market-structure and strategy logic in `lib/`, experimental predictive
 models, a 14-node LLM insight pipeline, replay and backtesting engines, a per-user trade journal,
@@ -39,7 +39,7 @@ Multi-tenant enterprise roles and broker execution are **not verified** and are 
 ```mermaid
 flowchart LR
  U[User] --> WEB[React / Vite SPA — 15 routes]
- WEB -->|Firebase bearer, IAP header, or unauthenticated| API[FastAPI — 87 endpoints]
+ WEB -->|Firebase bearer, IAP header, or unauthenticated| API[FastAPI — 92 platform endpoints]
  API --> LIB[lib/ — the shared math spine]
  API --> DB[(Cloud SQL — 64 relations)]
  SRC[AlphaVantage / FRED / SEC / Yahoo] --> JOBS[67 Cloud Run jobs]

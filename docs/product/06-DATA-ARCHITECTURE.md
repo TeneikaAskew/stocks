@@ -1,6 +1,6 @@
 # Data Architecture
 
-**Last reviewed:** 2026-08-30 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Owner:** TBD
 
 **VERIFIED — CODE.** 64 relations declared in `gcp/schema.sql` (62 tables + 2 materialized
 views), extracted from **line-start, comment-stripped** `CREATE` statements.
@@ -44,9 +44,9 @@ evidence, this table is a starting point.
 | `earnings_options_snapshots` | table | `gcp/fetchers/fetch_av_earnings_options_backfill.py`, `gcp/migrate_to_gcp.py` | `gcp/fetchers/fetch_av_earnings_options_backfill.py`, `scripts/backtest_playability.py` | TBD | — |
 | `archive_yahoo_etf_options_snapshots` | table | **none found** | **none found** | TBD | — |
 | `archive_yahoo_earnings_options_snapshots` | table | **none found** | **none found** | TBD | — |
-| `intraday_flow_15m` | table | **none found** | `gcp/build_intraday_flow.py`, `lib/features/intraday_flow.py` | TBD | — |
-| `intraday_gex_15m` | table | **none found** | `gcp/build_intraday_gex.py` | TBD | — |
-| `realtime_gex_15m` | table | **none found** | `gcp/build_realtime_gex.py` | TBD | — |
+| `intraday_flow_15m` | table | `gcp/build_intraday_flow.py` (`db.bulk_copy_upsert`) | `gcp/build_intraday_flow.py`, `lib/features/intraday_flow.py` | TBD | — |
+| `intraday_gex_15m` | table | `gcp/build_intraday_gex.py` (`db.bulk_copy_upsert`) | `gcp/build_intraday_gex.py` | TBD | — |
+| `realtime_gex_15m` | table | `gcp/build_realtime_gex.py` (`db.bulk_copy_upsert`) | `gcp/build_realtime_gex.py` | TBD | — |
 
 ## earnings / catalysts
 

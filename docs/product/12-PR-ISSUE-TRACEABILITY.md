@@ -59,6 +59,25 @@ The 13 pre-audit issues excluded from the canonical set are
 [#808](https://github.com/TeneikaAskew/stocks/issues/808). They are real open work and remain
 mapped here even though no delivery stream owns them — a gap worth an explicit decision.
 
+### Closed duplicate records retained from PR #924
+
+PR #924 also records ten concurrently created duplicate issues. They are closed as
+`not_planned`, so they do not belong in the open-issue count, but their provenance is retained
+here so consolidation does not discard any manifest linkage:
+
+| Closed duplicate | Active canonical issue |
+|---|---|
+| [#877](https://github.com/TeneikaAskew/stocks/issues/877) | [#866](https://github.com/TeneikaAskew/stocks/issues/866) |
+| [#879](https://github.com/TeneikaAskew/stocks/issues/879) | [#867](https://github.com/TeneikaAskew/stocks/issues/867) |
+| [#881](https://github.com/TeneikaAskew/stocks/issues/881) | [#868](https://github.com/TeneikaAskew/stocks/issues/868) |
+| [#883](https://github.com/TeneikaAskew/stocks/issues/883) | [#869](https://github.com/TeneikaAskew/stocks/issues/869) |
+| [#885](https://github.com/TeneikaAskew/stocks/issues/885) | [#870](https://github.com/TeneikaAskew/stocks/issues/870) |
+| [#887](https://github.com/TeneikaAskew/stocks/issues/887) | [#871](https://github.com/TeneikaAskew/stocks/issues/871) |
+| [#889](https://github.com/TeneikaAskew/stocks/issues/889) | [#872](https://github.com/TeneikaAskew/stocks/issues/872) |
+| [#891](https://github.com/TeneikaAskew/stocks/issues/891) | [#873](https://github.com/TeneikaAskew/stocks/issues/873) |
+| [#893](https://github.com/TeneikaAskew/stocks/issues/893) | [#874](https://github.com/TeneikaAskew/stocks/issues/874) |
+| [#895](https://github.com/TeneikaAskew/stocks/issues/895) | [#875](https://github.com/TeneikaAskew/stocks/issues/875) |
+
 ### Remediation status (2026-08-30 17:55)
 
 `main` has advanced past the baseline this plan was first written against (`d335f2f`). Two

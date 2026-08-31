@@ -42,8 +42,8 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 |---|---|---|
 | `platform/src/routes` | screen composition (15 routes) | one file per route, lazy-loaded; see [03](03-UI-SCREENS.md) |
 | `platform/src/components`, `stores`, `hooks` | interaction and client state | `settingsStore`/`themeStore` persist to `localStorage`, **not** the API |
-| `platform/api/routers` | the HTTP contract (87 endpoints) | auth is middleware, not per-router; see [09](09-SECURITY-AUTH.md) |
-| `lib/` | **all** reusable financial math | the React app never duplicates it (`docs/HARDCODED_VALUES_REMEDIATION.md`); 33 of 87 endpoints hold inline SQL, the rest go through `lib/` |
+| `platform/api/routers` | the HTTP contract (92 platform endpoints) | auth is middleware, not per-router; see [09](09-SECURITY-AUTH.md) |
+| `lib/` | **all** reusable financial math | the React app never duplicates it (`docs/HARDCODED_VALUES_REMEDIATION.md`); 33 of 92 platform endpoints hold inline SQL, the rest go through `lib/` |
 | `gcp/` | scheduled ingestion, analysis, notification (67 jobs) | `gcp/research/` is **not** production by location alone |
 | `scripts/analysis/` | analysis scripts — **but also feeds `playbook_cards`** | a production user-facing table is written from here; weakest coverage ([#849](https://github.com/TeneikaAskew/stocks/issues/849)) |
 | `gcp/schema.sql` | 64 relations | runtime SQL must be reconciled ([#860](https://github.com/TeneikaAskew/stocks/issues/860)) |

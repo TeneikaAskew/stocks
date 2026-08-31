@@ -1,10 +1,9 @@
 # Backend and API Product Plan
 
-**Last reviewed:** 2026-08-30 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Owner:** TBD
 
 **VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` at `d335f2f` by
-`scripts` parsing of `@router|@app.<method>("<path>")` plus the enclosing handler, its
-docstring, and the SQL identifiers in its body. **87 endpoints** resolved this way.
+`scripts` parsing of Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line, plus the enclosing handler, docstring, and SQL identifiers in its body. **92 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 
 ## How to read the Auth column
 
@@ -22,9 +21,9 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 
 | Auth posture | Endpoints |
 |---|---|
-| Gated in `firebase`; **unenforced in `iap`/`open`** | 75 |
+| Gated in `firebase`; **unenforced in `iap`/`open`** | 78 |
 | **OPEN prefix — never gated** | 5 |
-| Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 5 |
+| Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 7 |
 | **Not gated in any mode** (non-`/api/`) | 2 |
 
 ## Capability map
@@ -52,7 +51,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/market/most-active` | Most-active tickers snapshot, with per-ticker snapshot sparklines. | Gated in `firebase`; **unenforced in `iap`/`open`** | `market_data_intraday`, `top_movers_intraday` | ✓ |
 | GET | `/{full_path:path}` | SPA fallback — serve index.html for any non-API, non-asset route. | **Not gated in any mode** (non-`/api/`) | via `lib/` | — |
 
-### `platform/api/routers/admin.py` — 5 endpoints
+### `platform/api/routers/admin.py` — 7 endpoints
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
 |---|---|---|---|---|---|
@@ -61,6 +60,8 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/admin/models` | Load the most recent structure-brief snapshot from GCS. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | via `lib/` | ✓ |
 | GET | `/api/admin/structure-brief` | Dev-only readout of the strat-engine type model's structure predictions. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | via `lib/` | ✓ |
 | GET | `/api/admin/strat-engine/state` | Operator snapshot of the on-shelf strat-engine model state. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | via `lib/` | ✓ |
+| POST | `/api/admin/strat-engine/predict` | Run an operator-authorized STRAT engine prediction. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | model artifacts via `lib/` | ✓ |
+| POST | `/api/admin/strat-engine/structure-continuation` | Evaluate operator-authorized structure-continuation evidence. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | model artifacts via `lib/` | ✓ |
 
 ### `platform/api/routers/analytics.py` — 2 endpoints
 
@@ -140,7 +141,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 |---|---|---|---|---|---|
 | GET | `/api/health/freshness` | Return a freshness report for every tracked Cloud SQL data table. | **OPEN prefix — never gated** | via `lib/` | ✓ |
 
-### `platform/api/routers/insights.py` — 12 endpoints
+### `platform/api/routers/insights.py` — 13 endpoints
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
 |---|---|---|---|---|---|
@@ -154,6 +155,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/insights/report/{ticker}` | Return the most recent InsightReport for the ticker. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 | GET | `/api/insights/report/{ticker}/history` | Return a scannable list of recent reports for the ticker. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 | GET | `/api/insights/reports/{report_id}` | Return a single insight report by row id. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
+| POST | `/api/insights/report/{ticker}/refresh` | Queue or execute an on-demand insight-report refresh for a ticker. | Gated in `firebase`; **unenforced in `iap`/`open`** | `insight_runs`, `insight_reports` | ✓ |
 | GET | `/api/insights/runs/{run_id}` | Poll the status of a refresh run. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 | POST | `/api/insights/chat` | Stream a Gemini response for the given mode and message. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 
@@ -181,6 +183,13 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/live/avg-volume/{ticker}` | Return the 20-day average daily volume for RVOL calculation. | Gated in `firebase`; **unenforced in `iap`/`open`** | `market_data_daily` | ✓ |
 | POST | `/api/live/indicators` | Compute indicators and CALL/PUT signals from a bar series. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 | POST | `/api/live/signal-series` | Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
+
+### `platform/api/routers/magnitude.py` — 2 endpoints
+
+| Method | Route | Purpose | Auth | Tables touched | UI |
+|---|---|---|---|---|---|
+| GET | `/api/magnitude/{ticker}/{tf}/latest` | Return the latest stored magnitude prediction for ticker and timeframe. | Gated in `firebase`; **unenforced in `iap`/`open`** | magnitude prediction storage via `lib/` | ✓ |
+| GET | `/api/magnitude/{ticker}/{tf}/at/{ts}` | Return the point-in-time magnitude prediction at a requested timestamp. | Gated in `firebase`; **unenforced in `iap`/`open`** | magnitude prediction storage via `lib/` | ✓ |
 
 ### `platform/api/routers/options.py` — 5 endpoints
 
@@ -214,7 +223,14 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 |---|---|---|---|---|---|
 | POST | `/api/waitlist` | INSERT INTO waitlist_signups (email, source, user_agent) | **OPEN prefix — never gated** | `waitlist_signups` | ✓ |
 
-Table column: names are **validated against the 69 relations declared in `gcp/schema.sql`**;
+### `gcp/discord_interactions/main.py` — 2 service endpoints
+
+| Method | Route | Purpose | Auth | Tables touched | UI |
+|---|---|---|---|---|---|
+| GET | `/health` | Return the Discord interaction service health state. | Public health endpoint; no Discord signature required | none | — |
+| POST | `/discord/interactions` | Verify and process Discord interaction webhooks. | Discord Ed25519 request-signature verification | watchlists and insight-run paths via service code | — |
+
+Table column: names are **validated against the 64 relations declared in `gcp/schema.sql`**;
 unmatched identifiers are discarded rather than reported. `via lib/` means the handler issues
 no inline SQL and reaches data through `lib/data_loader.py` or another `lib/` module — the
 intended architecture (one source of truth for math; see [11](11-CODE-TRACEABILITY.md)).

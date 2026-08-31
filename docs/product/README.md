@@ -12,7 +12,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [01 Product Requirements](01-PRODUCT-REQUIREMENTS.md) | What shall it do, and when is it done? |
 | [02 Feature Catalog](02-FEATURE-CATALOG.md) | What capabilities exist and what is their trust state? |
 | [03 Ui Screens](03-UI-SCREENS.md) | What does each of the 15 screens do? |
-| [04 Backend Api](04-BACKEND-API.md) | Which of the 87 endpoints support it, and how is each authenticated? |
+| [04 Backend Api](04-BACKEND-API.md) | Which of the 92 platform endpoints support it, and how is each authenticated? |
 | [05 Infrastructure](05-INFRASTRUCTURE.md) | What runs and deploys it — 67 jobs, 58 schedulers? |
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
@@ -42,6 +42,17 @@ unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
 **`docs/product/` on the default branch is the single canonical product plan.** PR #931 is the integration vehicle for this directory; the deeper evidence-backed rebuild from `claude/stocks-plan-feedback-ipzxm0` has been folded into it. PR #924 remains an upstream issue-to-workstream governance manifest, not a competing product plan. Its delivery-state changes must be synchronized into this directory, and no parallel branch is authoritative after consolidation.
 
 Authority is therefore: **merged `docs/product/` → capability status and roadmap; #924 manifest → audit issue/workstream assignment; GitHub issues/PRs and current code/deployment → underlying evidence.** A conflict is resolved by updating `docs/product/` from the underlying evidence rather than maintaining another plan copy.
+
+### Consolidation verification
+
+The canonical tree was compared directly with `claude/stocks-plan-feedback-ipzxm0` at
+`826ca94`. No feature, requirement, screen, job, data domain, model, decision, issue, or PR record
+was removed. Differences are limited to corrections and superseding state: canonical ownership,
+the filed #943 security issue, current issue counts, multiline endpoint coverage, three confirmed
+derived-table producers, and removal of the resolved "which plan is canonical" question. The PR
+#924 manifest was separately cross-checked: every issue reference is retained in
+[12](12-PR-ISSUE-TRACEABILITY.md), including its ten closed duplicate-to-canonical links. PR #924
+remains linked rather than copied wholesale so one manifest, not two, owns workstream membership.
 
 ## Governance contract
 
@@ -119,7 +130,7 @@ deliberately does not answer, and the three are reconciled in
 |---|---|
 | Capabilities | 26 |
 | Routed screens | 15 |
-| API endpoints | 87 |
+| API endpoints | 92 platform + 2 Discord |
 | Cloud Run jobs / schedulers | 67 / 58 |
 | Database relations | 64 (62 tables + 2 materialized views) |
 | Models + LLM nodes | 21 registry entries + 14 routed LLM nodes |
