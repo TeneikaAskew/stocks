@@ -2,8 +2,7 @@
 
 **Last reviewed:** 2026-08-31 · **Owner:** TBD
 
-**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` at `d335f2f` by
-`scripts` parsing of Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line, plus the enclosing handler, docstring, and SQL identifiers in its body. **92 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
+**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **92 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 
 ## How to read the Auth column
 
