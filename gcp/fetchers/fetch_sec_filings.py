@@ -29,7 +29,7 @@ import logging
 import os
 import sys
 import time as time_module
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -49,17 +49,188 @@ DEFAULT_FORMS = ("8-K", "10-Q", "10-K")
 SEC_RATE_DELAY_S = 0.15  # ~7 RPS, well under the 10 RPS limit
 DEFAULT_USER_AGENT = "Trading System Research research@example.com"
 
+# Retry policy for SEC throttling. EDGAR returns 429 when the *egress IP*
+# exceeds its budget — on Cloud Run that IP is shared with other tenants, so a
+# 429 can arrive on our first request of a run through no fault of our pacing.
+# It is a "wait and retry" signal, not a permanent failure.
+SEC_MAX_ATTEMPTS = 4
+SEC_BACKOFF_BASE_S = 1.0          # 1s, 2s, 4s between attempts
+SEC_BACKOFF_MAX_S = 30.0          # cap a hostile Retry-After
+SEC_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# The ticker→CIK map changes rarely (SEC refreshes it ~weekly) but is fetched
+# on every run and is a single point of failure for the whole job. Cache it so
+# a throttled run can still proceed — LOUDLY, never silently (CLAUDE.md 3.7).
+CIK_CACHE_BLOB = "sec/company_tickers.json"
+CIK_CACHE_MAX_AGE_H = 168         # 7 days; beyond that, fail rather than guess
+
+# Global ceiling on time this run may spend asleep in backoff. Retrying is
+# per-request, so without a shared budget a sustained throttle would multiply:
+# ~500 tickers x 3 backoffs x up to 30s of Retry-After is ~45,000s against an
+# 1800s task-timeout. The task would be KILLED mid-loop, and because filings
+# accumulate in memory until the post-loop write, every fetched row would be
+# lost. Bounding total backoff keeps the worst case at roughly
+# baseline (~225s) + 300s, so the job always reaches its write path and fails
+# with partial data rather than nothing (CLAUDE.md Rule 0).
+SEC_RETRY_BUDGET_S = 300.0
+
+_retry_budget_spent = 0.0
+
+
+def _reset_retry_budget() -> None:
+    """Zero the per-run backoff budget. Called once at job start."""
+    global _retry_budget_spent
+    _retry_budget_spent = 0.0
+
+
+def _claim_retry_budget(wait: float) -> bool:
+    """Reserve ``wait`` seconds of backoff; False when the budget is spent."""
+    global _retry_budget_spent
+    if _retry_budget_spent + wait > SEC_RETRY_BUDGET_S:
+        return False
+    _retry_budget_spent += wait
+    return True
+
+
+def _retry_after_seconds(resp, attempt: int) -> float:
+    """Seconds to wait before the next attempt.
+
+    Honours SEC's ``Retry-After`` header when present (integer seconds form),
+    otherwise exponential backoff. Capped so a hostile or bogus header cannot
+    park the job past its task-timeout.
+    """
+    hdr = None
+    if resp is not None:
+        try:
+            hdr = resp.headers.get("Retry-After")
+        except Exception:
+            hdr = None
+    if hdr:
+        try:
+            return min(float(int(str(hdr).strip())), SEC_BACKOFF_MAX_S)
+        except (TypeError, ValueError):
+            pass  # non-integer (HTTP-date) form — fall through to backoff
+    return min(SEC_BACKOFF_BASE_S * (2 ** attempt), SEC_BACKOFF_MAX_S)
+
 
 def _http_get(url: str, user_agent: str, timeout: int = 30) -> dict | None:
-    """GET an EDGAR JSON endpoint with the required User-Agent header."""
+    """GET an EDGAR JSON endpoint with the required User-Agent header.
+
+    Retries on throttling (429) and transient server errors with exponential
+    backoff, honouring ``Retry-After``. Permanent failures (404, 403, malformed
+    JSON) return immediately — retrying them only burns the rate budget.
+
+    Returns ``None`` when every attempt fails. The caller decides what that
+    means; this function never fabricates a result (CLAUDE.md 3.7).
+    """
     headers = {"User-Agent": user_agent, "Accept": "application/json"}
+    for attempt in range(SEC_MAX_ATTEMPTS):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            status = resp.status_code
+            if status in SEC_RETRY_STATUSES:
+                if attempt == SEC_MAX_ATTEMPTS - 1:
+                    log.error(
+                        "SEC GET %s: HTTP %d after %d attempts — giving up",
+                        url, status, SEC_MAX_ATTEMPTS,
+                    )
+                    return None
+                wait = _retry_after_seconds(resp, attempt)
+                if not _claim_retry_budget(wait):
+                    log.error(
+                        "SEC GET %s: HTTP %d and the %.0fs run-wide retry "
+                        "budget is exhausted — not retrying",
+                        url, status, SEC_RETRY_BUDGET_S,
+                    )
+                    return None
+                log.warning(
+                    "SEC GET %s: HTTP %d (attempt %d/%d) — retrying in %.1fs",
+                    url, status, attempt + 1, SEC_MAX_ATTEMPTS, wait,
+                )
+                time_module.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as e:
+            # Connection/timeout errors are transient; HTTP errors that reached
+            # raise_for_status() are not in SEC_RETRY_STATUSES, so they are not.
+            transient = not isinstance(e, requests.exceptions.HTTPError)
+            if transient and attempt < SEC_MAX_ATTEMPTS - 1:
+                wait = _retry_after_seconds(None, attempt)
+                if not _claim_retry_budget(wait):
+                    log.error(
+                        "SEC GET %s: %s and the %.0fs run-wide retry budget is "
+                        "exhausted — not retrying", url, e, SEC_RETRY_BUDGET_S,
+                    )
+                    return None
+                log.warning(
+                    "SEC GET %s: %s (attempt %d/%d) — retrying in %.1fs",
+                    url, e, attempt + 1, SEC_MAX_ATTEMPTS, wait,
+                )
+                time_module.sleep(wait)
+                continue
+            log.warning("SEC GET failed for %s: %s", url, e)
+            return None
+        except Exception as e:
+            log.warning("SEC GET failed for %s: %s", url, e)
+            return None
+    return None
+
+
+def _cache_bucket() -> str | None:
+    """GCS bucket for the CIK-map cache, or None when unconfigured."""
+    b = os.environ.get("GCS_BUCKET")
+    if b:
+        return b
+    project = os.environ.get("GCP_PROJECT_ID")
+    return f"{project}-trading-data" if project else None
+
+
+def _write_cik_cache(mapping: dict[str, str]) -> None:
+    """Persist the CIK map so a throttled run has something to fall back to."""
+    bucket = _cache_bucket()
+    if not bucket:
+        return
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout)
-        resp.raise_for_status()
-        return resp.json()
+        import json as _json
+        from google.cloud import storage as gcs
+        payload = _json.dumps({
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "mapping": mapping,
+        })
+        gcs.Client().bucket(bucket).blob(CIK_CACHE_BLOB).upload_from_string(
+            payload, content_type="application/json"
+        )
+        log.info("Cached CIK map (%d tickers) to gs://%s/%s",
+                 len(mapping), bucket, CIK_CACHE_BLOB)
     except Exception as e:
-        log.warning("SEC GET failed for %s: %s", url, e)
-        return None
+        # Cache write is best-effort: the live fetch already succeeded, so
+        # failing here must not fail the run. The next throttled run just
+        # won't have a fallback, and will say so.
+        log.warning("Could not write CIK cache: %s", e)
+
+
+def _read_cik_cache() -> tuple[dict[str, str], float | None]:
+    """Return (mapping, age_hours) from the cache, or ({}, None) if unusable."""
+    bucket = _cache_bucket()
+    if not bucket:
+        return {}, None
+    try:
+        import json as _json
+        from google.cloud import storage as gcs
+        raw = gcs.Client().bucket(bucket).blob(CIK_CACHE_BLOB).download_as_text()
+        obj = _json.loads(raw)
+        mapping = obj.get("mapping") or {}
+        fetched = obj.get("fetched_at")
+        if not mapping or not fetched:
+            return {}, None
+        age_h = (
+            datetime.now(timezone.utc) - datetime.fromisoformat(fetched)
+        ).total_seconds() / 3600.0
+        return mapping, age_h
+    except Exception as e:
+        log.warning("Could not read CIK cache: %s", e)
+        return {}, None
 
 
 def load_ticker_to_cik(user_agent: str) -> dict[str, str]:
@@ -67,9 +238,30 @@ def load_ticker_to_cik(user_agent: str) -> dict[str, str]:
 
     Response shape: { "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ... }
     Returns: {"AAPL": "0000320193", ...} — CIKs zero-padded to 10 digits.
+
+    On fetch failure, falls back to the GCS cache **only** when it is fresher
+    than CIK_CACHE_MAX_AGE_H, and says so at ERROR level. This is a declared,
+    logged degradation with a measured age — not a silent substitution
+    (CLAUDE.md 3.7). With no usable cache it returns {} and the caller aborts.
     """
     data = _http_get(TICKERS_URL, user_agent)
     if not data:
+        cached, age_h = _read_cik_cache()
+        if cached and age_h is not None and age_h <= CIK_CACHE_MAX_AGE_H:
+            log.error(
+                "SEC ticker→CIK fetch failed — PROCEEDING ON CACHED MAP: "
+                "%d tickers, %.1fh old (limit %dh). Filings for tickers listed "
+                "since that snapshot will be missed.",
+                len(cached), age_h, CIK_CACHE_MAX_AGE_H,
+            )
+            return cached
+        if cached:
+            log.error(
+                "SEC ticker→CIK fetch failed and cache is %.1fh old, past the "
+                "%dh limit — refusing to use it.", age_h or -1, CIK_CACHE_MAX_AGE_H,
+            )
+        else:
+            log.error("SEC ticker→CIK fetch failed and no usable cache exists.")
         return {}
     mapping: dict[str, str] = {}
     for entry in data.values():
@@ -78,6 +270,8 @@ def load_ticker_to_cik(user_agent: str) -> dict[str, str]:
         if tk and cik is not None:
             mapping[tk] = f"{int(cik):010d}"
     log.info("Loaded SEC ticker→CIK map: %d tickers", len(mapping))
+    if mapping:
+        _write_cik_cache(mapping)
     return mapping
 
 
@@ -247,6 +441,9 @@ def main():
         log.warning("Ticker count %d exceeds cap %d; truncating",
                     len(tickers), args.max_tickers)
         tickers = tickers[:args.max_tickers]
+
+    # Backoff budget is per-run, not per-process.
+    _reset_retry_budget()
 
     # Build CIK map (one shared call)
     ticker_to_cik = load_ticker_to_cik(user_agent)
