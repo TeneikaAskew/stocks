@@ -67,6 +67,7 @@ remediation PRs landed:
 |---|---|---|---|
 | `dd4421b` | [#934](https://github.com/TeneikaAskew/stocks/pull/934) | [#818](https://github.com/TeneikaAskew/stocks/issues/818) | **Closed — Definition of done met in full** |
 | `8eccde7` | [#933](https://github.com/TeneikaAskew/stocks/pull/933) | [#816](https://github.com/TeneikaAskew/stocks/issues/816) | Mechanism shipped; issue **correctly remains open** pending shadow data from 2026-09-01 and a per-control decision |
+| `b9621c4` | [#942](https://github.com/TeneikaAskew/stocks/pull/942) | [#812](https://github.com/TeneikaAskew/stocks/issues/812) | Underflow guard + log-space `_stable_net_gamma` + 136 lines of tests; subsumes [#936](https://github.com/TeneikaAskew/stocks/pull/936). Issue **correctly remains open** — the production re-query and the decision on 54 contaminated `gamma_levels_eod` rows are outstanding. See the measurement caveat in [07](07-MODEL-REGISTRY.md) |
 
 [#941](https://github.com/TeneikaAskew/stocks/pull/941) had flagged #934 as over-claiming
 `Fixes #818` because the live-vs-replay comparison had not been run. **That concern is now

@@ -28,37 +28,46 @@ see [#906](https://github.com/TeneikaAskew/stocks/issues/906).
 | MODEL-AGREE-001 | Agreement scoring | Heuristic / ensemble | combine strategy evidence into a score | `lib/strategies/agreement.py` | Production but needs remediation | RESTRUCTURE | [#905](https://github.com/TeneikaAskew/stocks/issues/905) freeze and prospectively validate expectancy |
 | MODEL-EXIT-001 | Exit / stop / target policy | Heuristic | exit, stop, target selection | `lib/strategies`, `gcp/signal_monitor.py`, `exit_config_overrides` | **Broken** | RESTRUCTURE | [#815](https://github.com/TeneikaAskew/stocks/issues/815) live has no stop-loss, backtest does · [#816](https://github.com/TeneikaAskew/stocks/issues/816) daily loss limit structurally unenforceable · [#862](https://github.com/TeneikaAskew/stocks/issues/862) overrides 113 days stale on the live fire path · [#915](https://github.com/TeneikaAskew/stocks/issues/915) same-minute ordering |
 | MODEL-BRIEF-001 | Brief bias / movement statement | Heuristic | market bias and explanation | `lib/strategies/brief_bias.py`, `lib/movement_statement.py` | Experimental | RETEST | [#900](https://github.com/TeneikaAskew/stocks/issues/900) cache not keyed by session date |
-| MODEL-GAMMA-001 | Gamma / GEX regime and proximity | Deterministic / statistical | gamma exposure and regime context | `lib/gamma.py`, `lib/features/intraday_gex.py`, `lib/strategies/gamma_proximity.py` | **Broken on `main`** | RETEST | [#812](https://github.com/TeneikaAskew/stocks/issues/812) fabricated flips from float underflow · [#826](https://github.com/TeneikaAskew/stocks/issues/826) `or 0` on gamma/OI · [#871](https://github.com/TeneikaAskew/stocks/issues/871) contract multiplier · [#872](https://github.com/TeneikaAskew/stocks/issues/872) implied-move scaling · [#876](https://github.com/TeneikaAskew/stocks/issues/876) balance semantics · [#880](https://github.com/TeneikaAskew/stocks/issues/880) GEX scope · [#896](https://github.com/TeneikaAskew/stocks/issues/896) VEX invariants |
+| MODEL-GAMMA-001 | Gamma / GEX regime and proximity | Deterministic / statistical | gamma exposure and regime context | `lib/gamma.py`, `lib/features/intraday_gex.py`, `lib/strategies/gamma_proximity.py` | **Retest Required** | RETEST | [#812](https://github.com/TeneikaAskew/stocks/issues/812) fabricated flips from float underflow · [#826](https://github.com/TeneikaAskew/stocks/issues/826) `or 0` on gamma/OI · [#871](https://github.com/TeneikaAskew/stocks/issues/871) contract multiplier · [#872](https://github.com/TeneikaAskew/stocks/issues/872) implied-move scaling · [#876](https://github.com/TeneikaAskew/stocks/issues/876) balance semantics · [#880](https://github.com/TeneikaAskew/stocks/issues/880) GEX scope · [#896](https://github.com/TeneikaAskew/stocks/issues/896) VEX invariants |
 | MODEL-OPT-001 | Options Greeks / parity / theta | Statistical | Greeks, parity spot, theta path | `lib/options_greeks.py`, `platform/src/lib/greeksCalculator.ts` | Production but needs remediation | RETEST | [#825](https://github.com/TeneikaAskew/stocks/issues/825) fabricated $100 underlying · [#878](https://github.com/TeneikaAskew/stocks/issues/878) discount parity spot · [#927](https://github.com/TeneikaAskew/stocks/issues/927) hard-coded rates · [#607](https://github.com/TeneikaAskew/stocks/issues/607) 0DTE theta anchored to EOD |
 | MODEL-EARN-001 | Earnings reaction analytics | Statistical / heuristic | event reaction and strategy lean | `lib/earnings_reactions.py` | Experimental | RETEST | [#863](https://github.com/TeneikaAskew/stocks/issues/863) winners posted to Discord at 99 days old |
 | MODEL-RANK-001 | Candidate ranker | Heuristic / ensemble | rank trade candidates | `lib/agents/ranker` | Experimental | RESTRUCTURE | — |
 
-### MODEL-GAMMA-001 — reproduced on `main`, 2026-08-30
+### MODEL-GAMMA-001 — what was and was not reproduced, 2026-08-30
 
-[#812](https://github.com/TeneikaAskew/stocks/issues/812) is **live on `main` at `8eccde7`**,
-not merely reported. Reproduced directly against `lib/gamma.py::compute_gamma_flip_bs`: a chain
-whose contracts all underflow to zero BS gamma (deep-OTM strikes, near-zero IV) at `spot=100.0`
-returns **`100.0`** — a fabricated gamma flip located exactly at spot, which downstream code
-cannot distinguish from a real one.
+**Correction.** An earlier revision of this section claimed
+[#812](https://github.com/TeneikaAskew/stocks/issues/812) reproduced live on `main`. That
+attribution was wrong and is withdrawn. The test used a chain with equal calls and puts at
+identical strikes, so net gamma is zero by **symmetry**, not by the float underflow #812
+describes. It demonstrated a real defect, but not that one.
 
-```
-main @ 8eccde7, all-underflow chain, spot=100 -> 100.0
-```
+Measured across the #942 merge (`lib/gamma.py::compute_gamma_flip_bs`):
 
-The docstring promises the opposite: *"NO SILENT FALLBACK (§3.7): returns `None` — never a
-fabricated 0"*. The guard covers too few contracts and unusable IV, but not the case where every
-gamma underflows and `G(S)` is identically zero, so every grid point reads as a crossing.
+| Case | `8eccde7` (pre-#942) | `b9621c4` (post-#942) |
+|---|---|---|
+| #812's own DoD case — pure-put 0DTE @ spot 600 | `None` | `None` |
+| Balanced-symmetry chain @ spot 100 | **`100.0`** | **`100.0`** |
 
-Two open PRs fix it and **both return `None`** on this case:
-[#936](https://github.com/TeneikaAskew/stocks/pull/936) (reject gamma underflow as a flip) and
-[#942](https://github.com/TeneikaAskew/stocks/pull/942) (preserve isolated zero-gamma grid
-crossings). Neither is merged. Until one lands, any `gamma_flip` value at or very near spot
-should be treated as suspect, and #812's own note about **54 contaminated `gamma_levels_eod`
-rows** remains outstanding — the issue calls those "a silent lie to anything reading
-`gamma_levels_eod`".
+**On #812 itself:** not reproduced here on either commit. The constructed pure-put 0DTE case
+returns `None` both before and after the fix, so this plan has **no evidence** that #812's
+underflow mechanism is currently live. #812 remains **open** and its production evidence — 54
+`gamma_levels_eod` flips >20% from spot, all on negative-GEX days — stands on its own; it was
+established from production data, not from a synthetic chain, and nothing here contradicts it.
+Reproducing it needs the real chain that produced `gamma_flip = 424.5 at spot 600`, not a
+constructed one.
 
-This is why MODEL-GAMMA-001 reads **Broken on `main`** rather than Retest Required: the defect is
-not awaiting re-evaluation, it is presently emitting wrong values in production.
+**Separately, a degenerate case that survives #942:** a chain whose net gamma is identically zero
+at every candidate spot returns the spot itself rather than `None`. The docstring's own contract
+says it should return `None` when *"G(S) does not change sign anywhere"*, and an identically-zero
+G(S) never changes sign. This is narrow — it needs matched call/put open interest at identical
+strikes and expiries — and it is **not** filed as an issue. Treat it as an unverified observation
+needing a production-data check before anyone opens one.
+
+**#942 merged** (`b9621c4`, 2026-08-30) and carries the "reject gamma underflow as a flip" change
+originally proposed in [#936](https://github.com/TeneikaAskew/stocks/pull/936), plus log-space
+`_stable_net_gamma` so the PDF cannot underflow, and 136 lines of new tests. #812's remaining
+Definition-of-done items — re-running the production query and deciding on the 54 contaminated
+rows — are what keep it open.
 
 ## Learned models
 
