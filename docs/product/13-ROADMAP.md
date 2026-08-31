@@ -1,6 +1,6 @@
 # Dependency-Driven Roadmap
 
-**Last reviewed:** 2026-08-30 · Dates, releases and owners are **TBD**. Status is planning
+**Last reviewed:** 2026-08-31 · Dates, releases and owners are **TBD**. Status is planning
 status, never a production claim.
 
 Sequenced by **dependency**, not severity: a CRITICAL issue whose fix cannot be validated
@@ -27,6 +27,20 @@ closed 2026-08-30 with a measured 42× trade-count inflation, leaving **eight**.
 validation (Phase 4) cannot produce admissible evidence, so it is scheduled after Phase 2 —
 not because model defects are less severe, but because fixing them early yields numbers no
 one should trust.
+
+## Validated delivery-stream gates
+
+These gates were re-derived from current issue contracts and code on 2026-08-31. “Depends on”
+means **validation/rerun is blocked**; an independently safe code correction may land earlier but
+cannot establish a baseline or promotion result.
+
+| Work | Required predecessor | Evidence and executable gate | Current disposition |
+|---|---|---|---|
+| PR-B options/gamma validation | PR-A input semantics (#825/#826) | `lib/gamma.py` and `platform/api/routers/grid.py` still contain missing-OI/gamma zero-fill paths; rerun gamma tests and coverage distribution only after null/coverage semantics land | **Blocked for validation** |
+| PR-C research validity (#813/#817/#905/#909) | PR-A, then remaining PR-F/PR-G replay/data repairs (#822/#823/#824 et al.) | #905 requires untouched prospective evidence; #909 rejects mixed cohorts; current summarizer reads `date <= cutoff`, level refresh loads an unbounded full daily frame and selects its latest row before applying `analysis_date`, and `backfill_and_replay.py` duplicates production enrichment | **Blocked for baseline freeze** |
+| PR-D cross-system parity | PR-F repaired replay | Backtest/live comparison cannot isolate fill/exit semantics on a known-invalid replay; #815’s within-live stop counterfactual is independent and may proceed | **Split gate** |
+| PR-E risk controls (#816) | cap-engaging replay, live/replay fire-identity parity, then #940 persistent-state restore | #818 proves cap engagement (15 replay = 15 live counts; 969 suppressions) but capped counts can hide different fire sets. Compare ticker/direction/timestamp/position identities before calibration; #940 blocks activation | **Calibration and activation blocked** |
+| PR-M/PR-N freshness (#833/#863/#922) | shared PR-0 read-side freshness primitive | Issue bodies identify the same stopped-writer/still-reading class; one registry/age/error contract must precede consumer-specific policy | **Blocked on PR-0** |
 
 ## Phases
 

@@ -1,6 +1,6 @@
 # Product Requirements and Definition of Done
 
-**Last reviewed:** 2026-08-30 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Owner:** TBD
 
 Requirements are **PROPOSED — TARGET** unless marked otherwise. They state intent; they do not
 claim implementation. Each is written to be testable — a reviewer should be able to name the
@@ -23,6 +23,11 @@ one, and each names the agent that enforces it.
 | **REQ-REPLAY-002:** Where a production job lacks the as-of flag an audit needs, the flag SHALL be added to the production job first; the audit SHALL NOT proceed on a bespoke harness. | Rule 3.6 | `replay-integrity-reviewer` |
 | **REQ-DATA-001:** Decision-critical reads SHALL fail explicitly on missing or stale upstream data and SHALL NOT substitute a silent empty result. Financial fields SHALL NOT be defaulted to `0`, `0.5` or a neutral constant; unavailability SHALL propagate as `null`/`NaN` to a display layer that renders it as unavailable. | Rule 3.7 | `fallback-guard` |
 | **REQ-GOV-001:** A pull request SHALL NOT merge while any review thread is unresolved. Review comments SHALL be read before CI is checked, and a finding SHALL be reproduced against pre-fix code before a fix is written. | Rule 2.5 | branch protection ("Require conversation resolution") |
+| **REQ-GOV-002:** Before a remediation stream is scheduled, every included issue SHALL have a GitHub-timeline candidate inventory recording candidate PR/commit, merge state, recoverability, acceptance criteria met, and remaining work. A cross-reference SHALL NOT be treated as implementation coverage without changed-file and DoD review. | PR #924 review | product-plan governance |
+| **REQ-VALID-001:** Validation or calibration SHALL NOT freeze a baseline until all upstream input-semantics and replay/data-path blockers are repaired and the affected dataset is regenerated. Code may land independently when safe, but its validation result is inadmissible before those gates pass. | audit dependency review | `replay-integrity-reviewer` + model reviewer |
+| **REQ-FRESH-002:** A shared read-side freshness primitive SHALL serve every current-facing consumer; overlapping stopped-writer/still-reading defects SHALL depend on that primitive rather than implementing divergent freshness checks. | #833/#863/#922 root-cause review | operations review |
+| **REQ-REVIEW-001:** A required issue-level review SHALL name an available human or authenticated reviewer and record `PASS`, `PASS WITH CORRECTIONS`, or `FAIL`. Posting to an unavailable bot SHALL NOT count as delivered review. | PR #932 closure | review-feedback gate |
+| **REQ-RISK-001:** Risk-control calibration or activation SHALL use a production replay path proven to exercise the control **and match live fire identities (ticker, direction, timestamp and position context)**; aggregate capped counts are insufficient. Persisted session state SHALL be restored before any default-no-op ceiling is lowered. | #818/#816/#940 | replay + trading-logic reviewers |
 
 **Rule 3.6 in the acceptance gate.** REQ-REL-001 below requires shared live/replay fixtures.
 Fixtures alone are insufficient: a feature can pass shared fixtures while the evidence that
@@ -114,7 +119,8 @@ A significant feature is done only when **all** hold:
 7. Deployment is reproducible and reversible (REQ-DEPLOY-001).
 8. **Scheduled workloads meet REQ-CAP-001..003.**
 9. **Evidence was produced through a production replay path (REQ-REPLAY-001).**
-10. **No review thread is unresolved (REQ-GOV-001).**
-11. Model-based features additionally meet REQ-MODEL-001..003 and REQ-LLM-001..002.
+10. **No review thread is unresolved (REQ-GOV-001), and issue-level review uses an available reviewer (REQ-REVIEW-001).**
+11. **Candidate/recoverability inventory and upstream validation gates pass (REQ-GOV-002, REQ-VALID-001).**
+12. Model-based features additionally meet REQ-MODEL-001..003 and REQ-LLM-001..002.
 
 **Existence of code is never evidence that any of these hold.**

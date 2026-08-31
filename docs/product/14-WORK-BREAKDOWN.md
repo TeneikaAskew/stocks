@@ -1,10 +1,20 @@
 # Work Breakdown Structure
 
-**Last reviewed:** 2026-08-30 · Owners, estimates and target releases are **TBD** until assigned.
+**Last reviewed:** 2026-08-31 · Owners, estimates and target releases are **TBD** until assigned.
 
 Each epic decomposes **EPIC → capability → requirement → issue → PR evidence → code → test
 deliverable**. The PR column carries real numbers or an explicit `UNKNOWN`; the previous revision
 read "history trace needed" on five of ten rows with no explanation of why.
+
+## EPIC 0 — Governance and shared prerequisites (Phase 0)
+
+| Capability | Requirement | Blocking issues | Evidence | Deliverable / gate |
+|---|---|---|---|---|
+| Candidate recovery | REQ-GOV-002 | all remediation streams | GitHub `CrossReferencedEvent` timeline scan + PR changed-file/DoD review | Per-issue candidate, state, recoverability, met/outstanding DoD before scheduling |
+| Shared freshness primitive (PR-0) | REQ-FRESH-002 | [#833](https://github.com/TeneikaAskew/stocks/issues/833) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#922](https://github.com/TeneikaAskew/stocks/issues/922) | issue root-cause text + `gcp/freshness_watchdog.py` | One registry-driven read-side age/unavailable contract used by PR-M and PR-N |
+| Available issue review | REQ-REVIEW-001 | every grouped remediation PR | [#932](https://github.com/TeneikaAskew/stocks/pull/932) closed unmerged | Named manual/authenticated reviewer and recorded disposition per issue |
+| Validation ordering | REQ-VALID-001 | PR-B, PR-C, replay-dependent PR-D | [13 § Validated delivery-stream gates](13-ROADMAP.md#validated-delivery-stream-gates) | Upstream repairs deployed; affected data regenerated before baseline freeze |
+| Risk-control activation | REQ-RISK-001 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#940](https://github.com/TeneikaAskew/stocks/issues/940) | #818 cap engagement complete; fire-set identity parity unverified; #940 open | Match live/replay fire identities, restore persistent state, exercise each control, then make per-control shadow decision |
 
 ## EPIC 1 — Trust foundation (Phase 1)
 

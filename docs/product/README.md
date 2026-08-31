@@ -24,6 +24,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [13 Roadmap](13-ROADMAP.md) | What should be sequenced next? |
 | [14 Work Breakdown](14-WORK-BREAKDOWN.md) | How does the work decompose into evidence? |
 | [15 Open Decisions](15-OPEN-DECISIONS.md) | Which product choices remain unresolved? |
+| [16 Consolidation Audit](16-CONSOLIDATION-AUDIT.md) | What was preserved from Claude and PR #924, and how was every section validated? |
 
 ## Where the app lives
 
@@ -39,9 +40,16 @@ unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
 
 ## Canonical-plan decision
 
-**`docs/product/` on the default branch is the single canonical product plan.** PR #931 is the integration vehicle for this directory; the deeper evidence-backed rebuild from `claude/stocks-plan-feedback-ipzxm0` has been folded into it. PR #924 remains an upstream issue-to-workstream governance manifest, not a competing product plan. Its delivery-state changes must be synchronized into this directory, and no parallel branch is authoritative after consolidation.
+**`docs/product/` on the default branch is the single canonical product plan.** PR #931—the original Codex product-plan PR after the Claude rebuild was folded into it—merged to `main` on 2026-08-31. PR #945 is the open follow-up against that merged version; it carries the consolidation proof and the evidence-validated PR #924 dependency gates. PR #924 remains the separate issue-to-workstream governance manifest, not a competing product plan.
 
-Authority is therefore: **merged `docs/product/` → capability status and roadmap; #924 manifest → audit issue/workstream assignment; GitHub issues/PRs and current code/deployment → underlying evidence.** A conflict is resolved by updating `docs/product/` from the underlying evidence rather than maintaining another plan copy.
+| PR / branch | Role | Current state at 2026-08-31 |
+|---|---|---|
+| [#931](https://github.com/TeneikaAskew/stocks/pull/931) (`work-product-plan`) | Original Codex plan, rebuilt and consolidated with Claude's branch | **MERGED** — canonical baseline on `main` (`c93197e`) |
+| [#945](https://github.com/TeneikaAskew/stocks/pull/945) (`codex/product-plan-preservation-audit`) | Follow-up to the merged #931 plan: preservation proof, validated gates, current traceability | **OPEN** — must merge for the newest corrections to reach `main` |
+| [#924](https://github.com/TeneikaAskew/stocks/pull/924) (`work`) | Audit finding → issue → delivery-workstream manifest | **MERGED** as `a8e3075`; authoritative manifest on `main`, not a second product plan |
+| `claude/stocks-plan-feedback-ipzxm0` | Evidence-backed rebuild source folded into #931 | **SUPERSEDED provenance branch**; no longer maintained |
+
+Authority is therefore: **merged `docs/product/` → capability status and roadmap; #924 manifest → audit issue/workstream assignment; GitHub issues/PRs and current code/deployment → underlying evidence.** Until #945 merges, its changes are the reviewed follow-up candidate, not yet default-branch state. A conflict is resolved by updating `docs/product/` from underlying evidence rather than maintaining another plan copy.
 
 ### Consolidation verification
 
@@ -110,7 +118,7 @@ for that row — the previous revision emitted one identical document-level link
 | [FEAT-SETTINGS-001](02-FEATURE-CATALOG.md#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | — | `platform/src/routes/SettingsPage.tsx` | **none** | — | UNKNOWN | Incomplete | P3 |
 | [FEAT-DATA-001](02-FEATURE-CATALOG.md#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | — | `gcp/fetchers/` | `tests/test_data_loader*.py` | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#205](https://github.com/TeneikaAskew/stocks/pull/205) [#518](https://github.com/TeneikaAskew/stocks/pull/518) [#760](https://github.com/TeneikaAskew/stocks/pull/760) | Production but needs remediation | P0 |
 | [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | Infrastructure / deploy | 67 jobs, 58 schedulers, Cloud Run | — | — | — | — | `gcp/deploy.sh` | static checks only | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) | [#507](https://github.com/TeneikaAskew/stocks/pull/507) | Production but needs remediation | P1 |
-| [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | — | `gcp/freshness_watchdog.py` | `data-pipeline-status.spec.ts` | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) | [#189](https://github.com/TeneikaAskew/stocks/pull/189) [#235](https://github.com/TeneikaAskew/stocks/pull/235) [#494](https://github.com/TeneikaAskew/stocks/pull/494) [#771](https://github.com/TeneikaAskew/stocks/pull/771) | Incomplete | P1 |
+| [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | — | `gcp/freshness_watchdog.py` | `data-pipeline-status.spec.ts` | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) | [#189](https://github.com/TeneikaAskew/stocks/pull/189) [#235](https://github.com/TeneikaAskew/stocks/pull/235) [#494](https://github.com/TeneikaAskew/stocks/pull/494) [#771](https://github.com/TeneikaAskew/stocks/pull/771) | Incomplete | P1 |
 | [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | — | `.github/workflows/` | 230 python tests | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) | [#364](https://github.com/TeneikaAskew/stocks/pull/364) [#378](https://github.com/TeneikaAskew/stocks/pull/378) | Production but needs remediation | P1 |
 | [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | — | `platform/src/App.tsx` | `navigation.spec.ts` | [#685](https://github.com/TeneikaAskew/stocks/issues/685) [#683](https://github.com/TeneikaAskew/stocks/issues/683) | [#546](https://github.com/TeneikaAskew/stocks/pull/546) [#611](https://github.com/TeneikaAskew/stocks/pull/611) [#703](https://github.com/TeneikaAskew/stocks/pull/703) [#715](https://github.com/TeneikaAskew/stocks/pull/715) | Production but needs remediation | P2 |
 | [FEAT-DEBT-001](02-FEATURE-CATALOG.md#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | — | `scripts/` | — | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#841](https://github.com/TeneikaAskew/stocks/issues/841) [#921](https://github.com/TeneikaAskew/stocks/issues/921) | UNKNOWN | Retire candidate | P3 |
@@ -134,7 +142,7 @@ deliberately does not answer, and the three are reconciled in
 | Cloud Run jobs / schedulers | 67 / 58 |
 | Database relations | 64 (62 tables + 2 materialized views) |
 | Models + LLM nodes | 21 registry entries + 14 routed LLM nodes |
-| Open issues mapped | 120 of 120 (= 104 canonical audit + 13 pre-audit + 3 post-audit/ops) |
+| Open issues mapped | 121 of 121 (= 104 canonical audit + 13 pre-audit + 4 post-audit/ops) |
 | PRs mapped | 151 significant, #184–#932 |
 | Tests | 230 python · 29 Playwright · 27 Vitest |
 | Capabilities at Production (unqualified) | **2 of 25** (Landing, Help) |
