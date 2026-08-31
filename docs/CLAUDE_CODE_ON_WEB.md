@@ -75,12 +75,18 @@ set -euo pipefail
 # and continue instead — a missing anchor should degrade steps 4 and 5, not
 # kill the whole session. The echo makes a successful anchor visible in the
 # startup output so the next failure is diagnosable from the log alone.
+# Any step that degrades rather than fails appends a token here. The footer
+# refuses to claim success while it is non-empty — a bootstrap that skipped
+# the dependency installs must not print "All setup steps passed".
+SETUP_DEGRADED=""
+
 REPO="${CLAUDE_PROJECT_DIR:-/home/user/stocks}"
 if [ -d "$REPO" ]; then
   cd "$REPO"
   echo "Anchored at $REPO"
 else
-  echo "WARN: repo dir $REPO not present at init time — steps 4 & 5 may skip"
+  echo "WARN: repo dir $REPO not present at init time — steps 4 & 5 will skip"
+  SETUP_DEGRADED="${SETUP_DEGRADED}repo-anchor-missing "
 fi
 
 # ---------------------------------------------------------------------
@@ -187,6 +193,10 @@ gh auth status
 if [ -f requirements.txt ]; then
   pip install --quiet -r requirements.txt
   pip check || echo "WARN: pip check reported issues (non-fatal)"
+  echo "Step 4 OK: python deps installed"
+else
+  echo "WARN: no requirements.txt in $(pwd) — python deps NOT installed"
+  SETUP_DEGRADED="${SETUP_DEGRADED}python-deps-skipped "
 fi
 
 # ---------------------------------------------------------------------
@@ -195,10 +205,20 @@ fi
 if [ -f platform/package.json ]; then
   (cd platform && npm ci --silent)
   [ -d platform/node_modules ] || { echo "ERROR: node_modules not created"; exit 1; }
+  echo "Step 5 OK: frontend deps installed"
+else
+  echo "WARN: no platform/package.json in $(pwd) — frontend deps NOT installed"
+  SETUP_DEGRADED="${SETUP_DEGRADED}frontend-deps-skipped "
 fi
 
 echo "==================================="
-echo "All setup steps passed"
+if [ -n "$SETUP_DEGRADED" ]; then
+  echo "SETUP INCOMPLETE — degraded: $SETUP_DEGRADED"
+  echo "  The session will start, but tests and linters will fail until the"
+  echo "  skipped steps are run by hand from the repo root."
+else
+  echo "All setup steps passed"
+fi
 echo "  gcloud account: $ACTIVE_ACCT"
 echo "  gcloud project: $(gcloud config get-value project)"
 echo "  gh user:        $(gh api user -q .login)"
