@@ -148,15 +148,17 @@ fi
 rm -f "$EXEC_ERR"
 log "execution: $EXEC_NAME"
 
-# Statement timeout is enforced inside the job; allow headroom for container
-# start plus result upload before we give up on it.
+# Poll for TERMINALITY via completionTime, not the Completed condition.
+#
+# Cloud Run reports Completed=False while an execution is still RUNNING, so
+# treating False as an outcome ends the wait early: the script reported
+# failure for a job that went on to succeed, and read the GCS summary before
+# it had been uploaded. completionTime is only set once the execution has
+# actually finished; succeeded/failed counts then give the real outcome.
 DEADLINE=$(( $(date +%s) + WAIT_MAX_S ))
-CONCLUSION=""
 while :; do
-    CONCLUSION=$($EXEC_CMD describe "$EXEC_NAME" \
-        --region="$REGION" \
-        --format="value(status.conditions[0].status)" 2>/dev/null || true)
-    if [[ "$CONCLUSION" == "True" || "$CONCLUSION" == "False" ]]; then
+    COMPLETION=$($EXEC_CMD describe "$EXEC_NAME"         --region="$REGION"         --format="value(status.completionTime)" 2>/dev/null || true)
+    if [[ -n "$COMPLETION" ]]; then
         break
     fi
     if (( $(date +%s) >= DEADLINE )); then
@@ -168,11 +170,50 @@ while :; do
     sleep 3
 done
 
+FAILED_N=$($EXEC_CMD describe "$EXEC_NAME" --region="$REGION"     --format="value(status.failedCount)" 2>/dev/null || true)
+SUCCEEDED_N=$($EXEC_CMD describe "$EXEC_NAME" --region="$REGION"     --format="value(status.succeededCount)" 2>/dev/null || true)
+if [[ "${FAILED_N:-0}" -gt 0 || "${SUCCEEDED_N:-0}" -lt 1 ]]; then
+    CONCLUSION="False"
+else
+    CONCLUSION="True"
+fi
+log "execution finished: succeeded=${SUCCEEDED_N:-0} failed=${FAILED_N:-0}"
+
 PREFIX="gs://${PROJECT_ID}-trading-data/query-results/${EXEC_NAME}"
 log "results at: $PREFIX"
 
 # Always emit the summary to stdout — it has the result tables either way.
-gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null || \
-    echo "warn: ${PREFIX}/summary.md not found" >&2
+#
+# Bounded, with a fallback. `gcloud storage` is a separate component: it can be
+# absent, and it has been observed hanging here long enough to stall the script
+# AFTER the query had already succeeded. An unbounded read at this point throws
+# away work that is finished and paid for. The Storage JSON API needs only curl
+# and a token, and is equally 443-only, so it is a genuinely different path
+# rather than a retry of the same tool.
+BUCKET="${PROJECT_ID}-trading-data"
+OBJECT="query-results/${EXEC_NAME}/summary.md"
+
+_read_summary_gcloud() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null
+    else
+        gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null
+    fi
+}
+
+_read_summary_api() {
+    local token encoded
+    token=$(gcloud auth print-access-token 2>/dev/null) || return 1
+    # The JSON API's single-object GET needs the path percent-encoded.
+    encoded=${OBJECT//\//%2F}
+    curl -fsS --max-time 60 -H "Authorization: Bearer ${token}" \
+        "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${encoded}?alt=media"
+}
+
+if ! _read_summary_gcloud && ! _read_summary_api; then
+    echo "warn: could not read ${PREFIX}/summary.md via gcloud storage or the" >&2
+    echo "      Storage JSON API. The query itself may still have succeeded;" >&2
+    echo "      results are at ${PREFIX}/" >&2
+fi
 
 [[ "$CONCLUSION" == "True" ]] && exit 0 || exit 1
