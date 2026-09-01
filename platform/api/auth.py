@@ -199,8 +199,11 @@ def is_admin_email(email: Optional[str]) -> bool:
     try:
         from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
 
+        # `:name` binding, not `%(name)s` — the helper wraps the SQL in
+        # sqlalchemy.text(), which only understands the colon form. The
+        # psycopg2 style silently fails to bind rather than erroring.
         df = query_to_dataframe_strict(
-            "SELECT 1 FROM user_roles WHERE email = %(email)s "
+            "SELECT 1 FROM user_roles WHERE email = :email "
             "AND role = 'admin' LIMIT 1",
             {"email": normalized},
             timeout_s=5,

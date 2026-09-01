@@ -13,6 +13,7 @@ real token. Run with `make test` or `pytest tests/test_platform_auth.py`.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -225,3 +226,57 @@ def test_no_identity_is_not_admin(monkeypatch):
     _stub_db(monkeypatch, rows=1)
     assert auth_mod.is_admin_email(None) is False
     assert auth_mod.is_admin_email("") is False
+
+
+# ─── is_admin_email against a REAL engine ───────────────────────────────────
+# The stubbed tests above cover precedence and failure handling, but they
+# replace the DB helper wholesale — so the SQL string itself is never executed
+# and a malformed one passes. That is exactly what happened: the query was
+# written with psycopg2 `%(email)s` placeholders while the helper wraps SQL in
+# sqlalchemy.text(), which only binds `:name`. Nothing raised; the parameter
+# simply never bound, and every table-based admin silently resolved to False
+# in production. This test runs the real query so that cannot recur.
+
+_DB_HOST = os.environ.get("DB_HOST")
+pytestmark_db = pytest.mark.skipif(
+    not _DB_HOST, reason="no test Postgres configured (set DB_HOST)"
+)
+
+
+@pytestmark_db
+def test_is_admin_email_binds_against_a_real_engine(monkeypatch):
+    from sqlalchemy import text
+
+    from gcp.database import get_engine
+
+    monkeypatch.setenv("ADMIN_EMAIL", "not-the-user@example.com")
+    granted = "role-binding-test@example.com"
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_roles (
+                email       TEXT PRIMARY KEY,
+                role        TEXT NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_by  TEXT,
+                note        TEXT
+            )
+        """))
+        conn.execute(text("DELETE FROM user_roles WHERE email = :e"), {"e": granted})
+
+    try:
+        # Absent from the table, and not ADMIN_EMAIL → not an admin.
+        assert auth_mod.is_admin_email(granted) is False
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO user_roles (email, role) VALUES (:e, 'admin')"),
+                {"e": granted},
+            )
+
+        # Present with role=admin → admin. Fails if the placeholder never binds.
+        assert auth_mod.is_admin_email(granted) is True
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM user_roles WHERE email = :e"), {"e": granted})
