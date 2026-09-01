@@ -102,7 +102,12 @@ log() { if [[ "$QUIET" != "true" ]]; then echo "$@" >&2; fi; }
 
 # Build env-var overrides. Use the ^|^ delimiter so embedded commas in the
 # SQL don't confuse gcloud's default CSV parsing.
-ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT_SECONDS=${TIMEOUT_S}"
+# A nonce that only this dispatch's execution can carry. Creation time cannot
+# establish ownership — the job is shared, and the start bound is deliberately
+# slack for clock skew — so a candidate recovered from stderr is confirmed by
+# this marker instead. The job does not read it; it exists to be matched.
+DISPATCH_ID="d$(date -u +%s)-$$-${RANDOM}"
+ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT_SECONDS=${TIMEOUT_S}|DB_QUERY_DISPATCH_ID=${DISPATCH_ID}"
 
 log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#SQL} chars)..."
 
@@ -167,17 +172,30 @@ if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
     #    rejected after it.)
     RECOVERED=$(grep -oE "^(Execution \[|gcloud( beta)? run jobs executions describe )${JOB}-[a-z0-9]{5}" "$ERR_FILE" 2>/dev/null \
                 | grep -oE "${JOB}-[a-z0-9]{5}" | head -1 || true)
-    RECOVERED_CREATED=""
+    #    Ownership is established by the dispatch marker, NOT by creation
+    #    time. A time bound cannot prove ownership: the job is shared, and
+    #    START_TS is deliberately backed off 60s for clock skew, so another
+    #    execution created inside that slack would satisfy it. Only this
+    #    dispatch's execution carries this DISPATCH_ID.
+    RECOVERED_OWNED=""
     if [[ -n "$RECOVERED" ]]; then
-        RECOVERED_CREATED=$(gcloud beta run jobs executions describe "$RECOVERED" \
-            --region="$REGION" --format="value(metadata.creationTimestamp)" 2>/dev/null \
-            | cut -c1-19 || true)
+        if gcloud beta run jobs executions describe "$RECOVERED" \
+               --region="$REGION" --format=json 2>/dev/null \
+           | python3 -c 'import sys, json
+d = json.load(sys.stdin)
+want = sys.argv[1]
+for c in d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
+    for e in c.get("env", []):
+        if e.get("name") == "DB_QUERY_DISPATCH_ID" and e.get("value") == want:
+            sys.exit(0)
+sys.exit(1)' "$DISPATCH_ID"; then
+            RECOVERED_OWNED="yes"
+        fi
     fi
 
-    if [[ -n "$RECOVERED" && -n "$RECOVERED_CREATED" \
-          && ! "$RECOVERED_CREATED" < "$START_TS" ]]; then
+    if [[ -n "$RECOVERED" && -n "$RECOVERED_OWNED" ]]; then
         EXEC_NAME="$RECOVERED"
-        log "gcloud exited $RC but named execution $EXEC_NAME (created $RECOVERED_CREATED) — using it"
+        log "gcloud exited $RC but named execution $EXEC_NAME, confirmed ours by dispatch id — using it"
     elif grep -qE '^ERROR: \(gcloud\.[a-z.]+\) (UNAUTHENTICATED|PERMISSION_DENIED|INVALID_ARGUMENT|NOT_FOUND|FAILED_PRECONDITION)\b' <<<"$ERROR_LINES" \
       || grep -qE '^(ERROR: )?.*(unrecognized arguments|argument .*: expected|Invalid choice)' <<<"$ERROR_LINES"; then
         # 2. The API rejected the request, or gcloud refused to send one.
@@ -194,8 +212,8 @@ if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
         echo "error: dispatch outcome is UNKNOWN (gcloud exit $RC, no execution id)." >&2
         echo "       The request may have been accepted and may be running now." >&2
         if [[ -n "$RECOVERED" ]]; then
-            echo "       stderr mentioned $RECOVERED, but it could not be confirmed as" >&2
-            echo "       created by this dispatch, so it is NOT being treated as yours." >&2
+            echo "       stderr mentioned $RECOVERED, but it does not carry this" >&2
+            echo "       dispatch's id, so it is NOT being treated as yours." >&2
         fi
         if [[ "$COMMIT" == "true" ]]; then
             echo "       This was a --commit run: DO NOT RETRY before reconciling," >&2
@@ -206,10 +224,11 @@ if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
         echo "       of them is identified as yours by timing alone. List them:" >&2
         echo "         gcloud beta run jobs executions list --job=$JOB --region=$REGION \\" >&2
         echo "           --format='table(name,metadata.creationTimestamp,status.conditions[0].status)'" >&2
-        echo "       Identify yours by matching your SQL against each candidate's" >&2
-        echo "       DB_QUERY_SQL override:" >&2
+        echo "       Yours, if it exists, is the one whose DB_QUERY_DISPATCH_ID is" >&2
+        echo "         $DISPATCH_ID" >&2
+        echo "       Check a candidate with:" >&2
         echo "         gcloud beta run jobs executions describe <name> --region=$REGION \\" >&2
-        echo "           --format='value(spec.template.spec.template.spec.containers[0].env)'" >&2
+        echo "           --format=json | grep -c '$DISPATCH_ID'" >&2
         sed 's/^/       | /' "$ERR_FILE" >&2
         rm -f "$ERR_FILE"
         exit 1
@@ -237,14 +256,18 @@ for c in d.get("status", {}).get("conditions", []):
 # batch that is behaving perfectly — abandoning a healthy execution before
 # its summary exists. The task timeout is the real ceiling: nothing this job
 # runs can outlast it. Add slack for image pull and provisioning.
-TASK_TIMEOUT_S=$(gcloud run jobs describe "$JOB" --region="$REGION" \
-    --format="value(spec.template.spec.template.spec.timeoutSeconds)" 2>/dev/null || true)
+# Read it from THIS EXECUTION, not from the job. The execution inherited an
+# immutable copy of the template at creation; the job's own template can be
+# changed by a deploy while we are still polling, and then the budget would
+# move underneath a run that is behaving correctly.
+TASK_TIMEOUT_S=$(gcloud beta run jobs executions describe "$EXEC_NAME" --region="$REGION" \
+    --format="value(spec.template.spec.timeoutSeconds)" 2>/dev/null || true)
 if ! [[ "$TASK_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
     # Could not read it — take a generous constant rather than a tight guess.
     # Waiting too long costs a slow failure; waiting too little reports an
     # unknown outcome for a run that was fine.
     TASK_TIMEOUT_S=3600
-    log "could not read $JOB task timeout; assuming ${TASK_TIMEOUT_S}s"
+    log "could not read $EXEC_NAME task timeout; assuming ${TASK_TIMEOUT_S}s"
 fi
 WAIT_BUDGET_S=$(( TASK_TIMEOUT_S + 900 ))
 log "waiting up to ${WAIT_BUDGET_S}s for $EXEC_NAME..."
