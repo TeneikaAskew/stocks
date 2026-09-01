@@ -24,7 +24,7 @@ What the system does, who runs it, primary delivery surfaces (Discord + dashboar
 A row of badges showing:
 - Last architecture-doc refresh date (today's date when this prompt runs)
 - Monthly cost (pull the headline number from `COST_ANALYSIS.md` §1)
-- Number of Cloud Run Jobs (pull from `ARCHITECTURE.md` §2 inventory or `gcp_inventory.json` filtered to `assetType=run.googleapis.com/Job`)
+- Number of Cloud Run Jobs (pull from `ARCHITECTURE.md` §2 inventory or `refresh-inputs/gcp_inventory.json` filtered to `assetType=run.googleapis.com/Job`)
 - Number of scheduled crons (count `gcloud scheduler jobs list` or grep `_schedule(` in `gcp/deploy.sh`)
 - GitHub Actions status badge for the architecture-refresh workflow
 
@@ -74,6 +74,7 @@ Preserve whatever exists in the previous README. If there's no explicit license 
 - **Under 400 lines.** It's a map, not a manual.
 - **Direct, terse.** No marketing language. No "Welcome to..." / "This amazing system..." / etc.
 - **Every link must be a real file path that exists.** Don't link to docs that haven't been created yet.
+- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
 - **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
 
 When done, write the file and exit. Do not narrate.
