@@ -24,7 +24,7 @@ What the system does, who runs it, primary delivery surfaces (Discord + dashboar
 A row of badges showing:
 - Last architecture-doc refresh date (today's date when this prompt runs)
 - Monthly cost (pull the headline number from `COST_ANALYSIS.md` §1)
-- Number of Cloud Run Jobs (pull from `ARCHITECTURE.md` §2 inventory or `refresh-inputs/gcp_inventory.json` filtered to `assetType=run.googleapis.com/Job`)
+- Number of Cloud Run Jobs (pull from `ARCHITECTURE.md` §2 inventory or `refresh-inputs/inventory.json` filtered to `assetType=run.googleapis.com/Job`)
 - Number of scheduled crons (count `gcloud scheduler jobs list` or grep `_schedule(` in `gcp/deploy.sh`)
 - GitHub Actions status badge for the architecture-refresh workflow
 

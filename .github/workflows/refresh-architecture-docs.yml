@@ -148,6 +148,15 @@ jobs:
       # glob/list couldn't see the files at all, and each doc was generated
       # blind (ARCHITECTURE.md gave up, COST_ANALYSIS.md wrote a placeholder,
       # DATA_DEPENDENCIES.md was improvised from source grep alone).
+      # The files are also RENAMED (inventory.json / iam.json / billing.json),
+      # not just relocated: the root .gitignore entries are BASENAME patterns,
+      # which match at any directory depth, so refresh-inputs/gcp_inventory.json
+      # would still be ignored (caught by Codex on #961; verified with
+      # `git check-ignore -v`). The guard below asserts none of the input
+      # paths are ignored, so a future .gitignore edit that re-hides them
+      # fails here with a precise message instead of resurfacing as
+      # mysteriously blind docs.
+      #
       # refresh-inputs/ is untracked-but-not-ignored: visible to the model,
       # never staged (the PR step adds only the named docs), and it only
       # ever exists on the runner.
@@ -158,10 +167,16 @@ jobs:
       - name: Dump asset inventory
         run: |
           mkdir -p refresh-inputs
+          for F in refresh-inputs/inventory.json refresh-inputs/iam.json refresh-inputs/billing.json; do
+            if PATTERN=$(git check-ignore -v "$F"); then
+              echo "::error::${F} is gitignored (${PATTERN}) — Gemini's file tools respect .gitignore, so the model would generate docs blind. Rename the file or fix .gitignore."
+              exit 1
+            fi
+          done
           gcloud asset search-all-resources \
             --scope="projects/${GCP_PROJECT}" \
-            --format=json > refresh-inputs/gcp_inventory.json
-          ROWS=$(jq 'length' refresh-inputs/gcp_inventory.json)
+            --format=json > refresh-inputs/inventory.json
+          ROWS=$(jq 'length' refresh-inputs/inventory.json)
           echo "Inventory rows: ${ROWS}"
           if [ "${ROWS}" -eq 0 ]; then
             echo "::error::asset inventory returned 0 resources — dump is broken, refusing to generate docs from it"
@@ -170,8 +185,8 @@ jobs:
 
       - name: Dump IAM policy
         run: |
-          gcloud projects get-iam-policy "${GCP_PROJECT}" --format=json > refresh-inputs/gcp_iam.json
-          BINDINGS=$(jq '.bindings | length' refresh-inputs/gcp_iam.json)
+          gcloud projects get-iam-policy "${GCP_PROJECT}" --format=json > refresh-inputs/iam.json
+          BINDINGS=$(jq '.bindings | length' refresh-inputs/iam.json)
           echo "IAM bindings: ${BINDINGS}"
           if [ "${BINDINGS}" -eq 0 ]; then
             echo "::error::IAM policy dump has 0 bindings — dump is broken, refusing to generate docs from it"
@@ -234,9 +249,9 @@ jobs:
               if isinstance(o, (datetime.date, datetime.datetime)): return o.isoformat()
               raise TypeError(f"unhandled {type(o)}")
 
-          with open("refresh-inputs/billing_90d.json", "w") as f:
+          with open("refresh-inputs/billing.json", "w") as f:
               json.dump(rows, f, default=enc)
-          print(f"wrote refresh-inputs/billing_90d.json with {len(rows)} rows")
+          print(f"wrote refresh-inputs/billing.json with {len(rows)} rows")
           PY
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────

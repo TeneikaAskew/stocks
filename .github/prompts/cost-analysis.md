@@ -6,7 +6,7 @@ You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from scr
 
 ## Inputs
 
-- `refresh-inputs/billing_90d.json` — output of a BigQuery query against `adept-mountain-474619-d4.billing_export.gcp_billing_export_v1_*`. Schema: `[{service, sku, cost_usd, month}]`. Window: trailing 90 days from run time.
+- `refresh-inputs/billing.json` — output of a BigQuery query against `adept-mountain-474619-d4.billing_export.gcp_billing_export_v1_*`. Schema: `[{service, sku, cost_usd, month}]`. Window: trailing 90 days from run time.
 - `ARCHITECTURE.md` — fresh component inventory (regenerated in the same workflow run, before this prompt fires)
 - The previous `COST_ANALYSIS.md` if one exists (style reference only)
 
