@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -240,9 +240,7 @@ def test_cache_write_failure_does_not_fail_the_run(monkeypatch, caplog):
 
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
 
-    fake_storage = types.ModuleType("google.cloud.storage")
-    fake_storage.Client = MagicMock(side_effect=RuntimeError("gcs down"))
-    monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage)
+    fake_storage = _fake_gcs(monkeypatch, RuntimeError("gcs down"))
 
     with patch.object(fsf, "_http_get", return_value=OK_BODY):
         with caplog.at_level("WARNING"):
@@ -261,9 +259,7 @@ def test_cache_read_failure_is_not_mistaken_for_a_fresh_map(monkeypatch, caplog)
 
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
 
-    fake_storage = types.ModuleType("google.cloud.storage")
-    fake_storage.Client = MagicMock(side_effect=RuntimeError("gcs down"))
-    monkeypatch.setitem(sys.modules, "google.cloud.storage", fake_storage)
+    _fake_gcs(monkeypatch, RuntimeError("gcs down"))
 
     with patch.object(fsf, "_http_get", return_value=None):
         with caplog.at_level("WARNING"):
@@ -346,12 +342,26 @@ class NotFound(Exception):
     """
 
 
+def _install_fake_gcs(monkeypatch, client):
+    """Install a google.cloud.storage whose Client is `client`.
+
+    Patches BOTH sys.modules and the attribute on the `google.cloud` parent
+    package. `from google.cloud import storage` resolves via the parent's
+    attribute when the real library is installed (as it is in CI) and via
+    sys.modules when it is not (as in the sandbox) — so patching only
+    sys.modules passes locally while silently mocking nothing in CI.
+    """
+    mod = types.ModuleType("google.cloud.storage")
+    mod.Client = client
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
+    import google.cloud as _gc
+    monkeypatch.setattr(_gc, "storage", mod, raising=False)
+    return mod
+
+
 def _fake_gcs(monkeypatch, exc):
     """Install a google.cloud.storage whose Client() raises `exc`."""
-    mod = types.ModuleType("google.cloud.storage")
-    mod.Client = MagicMock(side_effect=exc)
-    monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
-    return mod
+    return _install_fake_gcs(monkeypatch, MagicMock(side_effect=exc))
 
 
 def test_absent_cache_is_not_reported_as_broken(monkeypatch, caplog):
@@ -397,12 +407,10 @@ def test_malformed_cache_is_reported_as_broken(monkeypatch, caplog):
     from gcp.fetchers import fetch_sec_filings as fsf
 
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
-    mod = types.ModuleType("google.cloud.storage")
     blob = MagicMock()
     blob.download_as_text.return_value = '{"mapping": {}, "fetched_at": null}'
-    mod.Client = MagicMock(return_value=MagicMock(
-        **{"bucket.return_value.blob.return_value": blob}))
-    monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
+    _install_fake_gcs(monkeypatch, MagicMock(return_value=MagicMock(
+        **{"bucket.return_value.blob.return_value": blob})))
 
     with caplog.at_level("INFO"):
         mapping, age = fsf._read_cik_cache()
@@ -424,3 +432,84 @@ def test_cache_write_failure_is_logged_at_error(monkeypatch, caplog):
 
     assert any(r.levelname == "ERROR" and "Could not write CIK cache" in r.getMessage()
                for r in caplog.records)
+
+
+# ── outage must not masquerade as an empty day (Codex P1, #947) ──────
+
+
+def test_failed_submissions_fetch_raises_rather_than_returning_empty():
+    """A failed fetch must be distinguishable from "this ticker filed nothing".
+
+    Returning [] for both is what let a total outage look like a quiet day.
+    """
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    with patch.object(fsf, "_http_get", return_value=None):
+        with pytest.raises(fsf.SECFetchError):
+            fsf.fetch_submissions("AAPL", "0000320193", "ua")
+
+
+def test_genuinely_empty_filings_still_returns_empty_list():
+    """A 200 with no `recent` block is a real empty result, not a failure."""
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    with patch.object(fsf, "_http_get", return_value={"filings": {"recent": {}}}):
+        assert fsf.fetch_submissions("AAPL", "0000320193", "ua") == []
+
+    with patch.object(fsf, "_http_get", return_value={}):
+        assert fsf.fetch_submissions("AAPL", "0000320193", "ua") == []
+
+
+def test_total_outage_on_cached_map_exits_nonzero(monkeypatch, caplog):
+    """REGRESSION (Codex P1): a sustained SEC outage must fail the run.
+
+    With the CIK cache in play the map request no longer aborts the job, so
+    every submissions fetch failing would leave all_filings empty and reach
+    "No filings fetched" -> exit 0. That reports SUCCESS through a total
+    outage and suppresses the Cloud Run failure signal that surfaced this
+    incident in the first place.
+    """
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    mapping = {"AAPL": "0000320193", "MSFT": "0000789019"}
+    monkeypatch.setattr(sys, "argv", ["fetch_sec_filings", "--tickers", "AAPL,MSFT"])
+
+    with patch.object(fsf, "_http_get", return_value=None), \
+         patch.object(fsf, "_read_cik_cache", return_value=(mapping, 2.0)), \
+         patch.object(fsf.time_module, "sleep"):
+        with caplog.at_level("ERROR"):
+            with pytest.raises(SystemExit) as exc:
+                fsf.main()
+
+    assert exc.value.code == 1, "a total outage must exit nonzero"
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "2" in joined and "fail" in joined.lower()
+
+
+def test_partial_failure_with_real_filings_still_succeeds():
+    """One bad ticker among many must not fail a run that got real data."""
+    from gcp.fetchers import fetch_sec_filings as fsf
+
+    good = {"filings": {"recent": {
+        "accessionNumber": ["acc-1"], "form": ["8-K"],
+        "filingDate": [date.today().isoformat()], "reportDate": [None],
+        "items": [""], "primaryDocument": ["d1.htm"],
+    }}}
+
+    tickers_payload = {
+        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+        "1": {"cik_str": 789019, "ticker": "MSFT", "title": "Microsoft"},
+    }
+
+    def _side_effect(url, *a, **k):
+        if url == fsf.TICKERS_URL:
+            return tickers_payload
+        return None if "0000789019" in url else good   # MSFT fails, AAPL works
+
+    with patch.object(fsf, "_http_get", side_effect=_side_effect), \
+         patch.object(fsf, "_write_cik_cache"), \
+         patch.object(fsf.time_module, "sleep"), \
+         patch.object(fsf, "is_cloud_sql_configured", return_value=False):
+        with patch.object(sys, "argv",
+                          ["fetch_sec_filings", "--tickers", "AAPL,MSFT"]):
+            fsf.main()  # must not raise SystemExit

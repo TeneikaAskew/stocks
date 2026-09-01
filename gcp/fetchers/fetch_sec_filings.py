@@ -74,6 +74,15 @@ CIK_CACHE_MAX_AGE_H = 168         # 7 days; beyond that, fail rather than guess
 # with partial data rather than nothing (CLAUDE.md Rule 0).
 SEC_RETRY_BUDGET_S = 300.0
 
+
+class SECFetchError(RuntimeError):
+    """A SEC request failed after retries.
+
+    Distinct from "EDGAR returned no filings" so an outage cannot be read as
+    a quiet day. Raised rather than returned because the per-ticker loop
+    already funnels exceptions into its error list (CLAUDE.md 3.7).
+    """
+
 _retry_budget_spent = 0.0
 
 
@@ -336,8 +345,13 @@ def fetch_submissions(ticker: str, cik: str, user_agent: str) -> list[dict]:
     """
     url = f"{EDGAR_BASE}/submissions/CIK{cik}.json"
     data = _http_get(url, user_agent)
-    if not data:
-        return []
+    if data is None:
+        # None means every retry failed. Returning [] here would be
+        # indistinguishable from "this ticker filed nothing" and would let a
+        # total SEC outage look like a quiet day.
+        raise SECFetchError(
+            f"submissions fetch failed for {ticker} (CIK {cik}) after retries"
+        )
     recent = (data.get("filings") or {}).get("recent") or {}
     if not recent:
         return []
@@ -506,6 +520,7 @@ def main():
 
     all_filings: list[dict] = []
     skipped_no_cik = 0
+    attempted = 0
     errors: list[str] = []
 
     for i, tk in enumerate(tickers):
@@ -513,6 +528,7 @@ def main():
         if not cik:
             skipped_no_cik += 1
             continue
+        attempted += 1
         if i > 0:
             time_module.sleep(SEC_RATE_DELAY_S)
         try:
@@ -525,7 +541,25 @@ def main():
     log.info("Pulled %d raw filing rows (%d tickers without CIK)",
              len(all_filings), skipped_no_cik)
 
+    # Report failures BEFORE any early return — the old summary sat after the
+    # persist step, so a run that fetched nothing exited without ever saying
+    # what had failed.
+    if errors:
+        log.error("Submissions fetch FAILED for %d/%d tickers: %s",
+                  len(errors), attempted, errors[:20])
+
     if not all_filings:
+        if errors:
+            # "No filings" is only a legitimate conclusion when nothing failed.
+            # With the CIK cache in play a throttled map fetch no longer aborts
+            # the job, so without this an outage would fetch nothing, exit 0,
+            # and report SUCCESS — suppressing the Cloud Run failure signal
+            # (CLAUDE.md 3.7).
+            log.error(
+                "No filings retrieved and %d/%d fetches failed — failing the "
+                "run rather than reporting an empty day.", len(errors), attempted,
+            )
+            sys.exit(1)
         log.info("No filings fetched")
         return
 
@@ -549,9 +583,6 @@ def main():
         print(f"Persisted {n} sec_filings rows to Cloud SQL")
     else:
         log.warning("Cloud SQL not configured — skipping persist")
-
-    if errors:
-        log.warning("Failed (%d): %s", len(errors), errors[:20])
 
 
 if __name__ == "__main__":
