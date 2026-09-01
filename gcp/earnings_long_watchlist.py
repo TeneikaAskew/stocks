@@ -53,7 +53,10 @@ import requests
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from gcp.database import is_cloud_sql_configured, query_to_dataframe  # noqa: E402
+from gcp.database import (  # noqa: E402
+    is_cloud_sql_configured,
+    query_to_dataframe_strict,
+)
 from lib.logging_config import setup_logging  # noqa: E402
 
 setup_logging()
@@ -82,8 +85,17 @@ def _normalize_source_date(value) -> date | None:
 
 
 def _latest_source_date() -> date | None:
-    """Return the newest earnings winner snapshot independently of candidates."""
-    df = query_to_dataframe(
+    """Return the newest earnings winner snapshot independently of candidates.
+
+    Uses the strict query so an internal failure — connection, permission,
+    missing relation, SQL error — propagates instead of being masked as an
+    empty DataFrame. `None` therefore means unambiguously "the query ran and
+    the table holds no snapshot", never "the database was unreachable"
+    (CLAUDE.md Rule 3.7). The plain `query_to_dataframe` collapses those two
+    into the same answer, which would make this guard report a database
+    outage as stale data and send an operator to re-run the fetcher.
+    """
+    df = query_to_dataframe_strict(
         "SELECT MAX(calculation_date) AS calculation_date "
         "FROM earnings_options_strategy_winners"
     )
@@ -159,7 +171,7 @@ def _query_watchlist(days_ahead: int, min_prior_wins: int = 2) -> "pd.DataFrame"
                  MAX(lw.pnl_pct) DESC
         LIMIT 25
     """
-    return query_to_dataframe(
+    return query_to_dataframe_strict(
         sql,
         {"days_ahead": days_ahead, "min_wins": min_prior_wins},
     )
@@ -321,7 +333,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     today = date.today()
-    source_date = _latest_source_date()
+    try:
+        source_date = _latest_source_date()
+    except Exception as exc:
+        # Fail closed, but as a distinct finding. "The probe could not run"
+        # and "the snapshot is stale" both suppress the post, yet only the
+        # second is fixed by re-running the upstream fetcher — so the log
+        # must not report the first as the second. Nothing is fabricated
+        # here: the error is named and the exit is non-zero.
+        log.error(
+            "cannot determine earnings winner snapshot freshness (%s: %s); "
+            "suppressing Discord post",
+            type(exc).__name__,
+            exc,
+        )
+        return 1
+
     if not _source_is_fresh(source_date, today):
         log.error(
             "earnings winner snapshot is missing, future-dated, or older than "
@@ -333,7 +360,21 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     log.info("loading watchlist — days_ahead=%d min_wins=%d source_date=%s",
              args.days, args.min_wins, source_date)
-    df = _query_watchlist(args.days, args.min_wins)
+    try:
+        df = _query_watchlist(args.days, args.min_wins)
+    except Exception as exc:
+        # Same reasoning as the freshness probe above, and the consequence
+        # here is worse: swallowed, this failure produced an empty frame that
+        # built a well-formed "No candidate reporters this week." post and
+        # exited 0 — a database outage published as a finding about the
+        # market.
+        log.error(
+            "candidate query failed (%s: %s); suppressing Discord post",
+            type(exc).__name__,
+            exc,
+        )
+        return 1
+
     log.info("found %d candidate (ticker, earnings_date) rows",
              0 if df is None else len(df))
 
