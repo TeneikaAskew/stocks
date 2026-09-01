@@ -92,27 +92,33 @@ ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT
 
 log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#SQL} chars)..."
 
-# Execute synchronously (--wait); capture the execution id from stdout.
+# Create the execution with --async so the execution id comes from the CREATE
+# call. `--wait` cannot supply it: when the execution's task fails, gcloud exits
+# non-zero and prints NOTHING to stdout, so a --wait dispatcher cannot tell
+# "no execution was created" from "an execution ran and failed". Those two need
+# opposite handling — the second one has a summary in GCS and, under --commit,
+# may have already persisted statements (gcp/queries/run_query.py commits each
+# statement independently and halts the batch on a system error). Reporting it
+# as "nothing ran" hides that record and invites a retry that re-commits.
 #
-# stderr is captured rather than discarded, and a dispatch failure is fatal.
-# The previous version sent stderr to /dev/null and, when the name came back
-# empty, fell back to `executions list --limit=1` — i.e. to whatever execution
-# already existed. That prints a PREVIOUS run's summary as the answer to the
-# query you just asked, with no indication it is stale. A wrong answer that
-# looks right is worse than no answer (CLAUDE.md Rule 3.7).
+# The previous version compounded this: it sent stderr to /dev/null and, when
+# the name came back empty, fell back to `executions list --limit=1` — i.e. to
+# whatever execution already existed, printing a PREVIOUS run's summary as the
+# answer to the query you just asked. A wrong answer that looks right is worse
+# than no answer (CLAUDE.md Rule 3.7).
 ERR_FILE=$(mktemp)
 set +e
 EXEC_NAME=$(gcloud run jobs execute "$JOB" \
     --region="$REGION" \
     --update-env-vars="$ENV_OVERRIDES" \
-    --wait \
+    --async \
     --format="value(metadata.name)" 2>"$ERR_FILE")
 RC=$?
 set -e
 
 if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
-    echo "error: dispatching the db-query Cloud Run Job failed (gcloud exit $RC)." >&2
-    echo "       No query was run. Nothing below is a result." >&2
+    echo "error: creating the db-query Cloud Run execution failed (gcloud exit $RC)." >&2
+    echo "       No execution was created, so no query was run." >&2
     sed 's/^/       | /' "$ERR_FILE" >&2
     rm -f "$ERR_FILE"
     exit 1
@@ -120,20 +126,57 @@ fi
 rm -f "$ERR_FILE"
 log "execution: $EXEC_NAME"
 
-CONCLUSION=$(gcloud beta run jobs executions describe "$EXEC_NAME" \
-    --region="$REGION" \
-    --format="value(status.conditions[0].status)" 2>/dev/null)
+# From here the execution EXISTS. Every exit path below names it, and none of
+# them may claim that nothing ran.
+completed_status() {
+    gcloud beta run jobs executions describe "$EXEC_NAME" \
+        --region="$REGION" --format=json 2>/dev/null \
+    | python3 -c 'import sys, json
+d = json.load(sys.stdin)
+for c in d.get("status", {}).get("conditions", []):
+    if c.get("type") == "Completed":
+        print(c.get("status") or "Unknown")
+        break'
+}
+
+# Budget = the statement timeout the caller asked for, plus room for image
+# pull and provisioning. Overrunning it is reported as an unknown outcome,
+# never as a failure to run.
+WAIT_BUDGET_S=$(( TIMEOUT_S + 900 ))
+log "waiting up to ${WAIT_BUDGET_S}s for $EXEC_NAME..."
+CONCLUSION=""
+while [[ "$CONCLUSION" != "True" && "$CONCLUSION" != "False" ]]; do
+    if (( SECONDS >= WAIT_BUDGET_S )); then
+        echo "error: execution $EXEC_NAME did not reach a terminal state within" >&2
+        echo "       ${WAIT_BUDGET_S}s. It WAS created and may still be running; under" >&2
+        echo "       --commit some statements may already have persisted. Do not retry" >&2
+        echo "       before checking:" >&2
+        echo "         gcloud beta run jobs executions describe $EXEC_NAME --region=$REGION" >&2
+        exit 1
+    fi
+    sleep 5
+    CONCLUSION=$(completed_status || true)
+done
 
 PREFIX="gs://${PROJECT_ID}-trading-data/query-results/${EXEC_NAME}"
 log "results at: $PREFIX"
 
-# Always emit the summary to stdout — it has the result tables either way.
+# Emit the summary for a FAILED execution too. gcp/db_query_job.py uploads the
+# artifacts before propagating the runner's exit code, so a failed execution
+# still has one — and under --commit its per-statement records are the only
+# evidence of which statements persisted before the batch halted.
 # The summary is read from the execution THIS invocation created, so it can
 # never be another run's output.
 if ! gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null; then
-    echo "error: ${PREFIX}/summary.md not found — the job ran but wrote no result." >&2
+    echo "error: ${PREFIX}/summary.md not found — execution $EXEC_NAME wrote no summary." >&2
     echo "       Do not treat any earlier output as the answer to this query." >&2
     exit 1
 fi
 
-[[ "$CONCLUSION" == "True" ]] && exit 0 || exit 1
+if [[ "$CONCLUSION" != "True" ]]; then
+    echo "error: execution $EXEC_NAME failed. The summary above is that execution's own" >&2
+    echo "       record, not a previous run's — statements it reports as committed HAVE" >&2
+    echo "       persisted. Read it before retrying." >&2
+    exit 1
+fi
+exit 0
