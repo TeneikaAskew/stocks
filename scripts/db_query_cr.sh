@@ -84,7 +84,11 @@ if [[ -n "$SQL_FILE" ]]; then
     SQL="$(cat "$SQL_FILE")"
 fi
 
-log() { [[ "$QUIET" != "true" ]] && echo "$@" >&2; }
+# NB: the `if` matters. Written as `[[ ... ]] && echo`, this function returns 1
+# whenever QUIET is true, and under `set -e` that aborted the script at the
+# first log call -- so `--quiet` exited 1 having printed nothing at all, which
+# a caller could easily read as "the query returned no rows".
+log() { if [[ "$QUIET" != "true" ]]; then echo "$@" >&2; fi; }
 
 # Build env-var overrides. Use the ^|^ delimiter so embedded commas in the
 # SQL don't confuse gcloud's default CSV parsing.
