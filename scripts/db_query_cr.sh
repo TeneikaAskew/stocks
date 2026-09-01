@@ -271,9 +271,16 @@ if ! [[ "$TASK_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
 fi
 WAIT_BUDGET_S=$(( TASK_TIMEOUT_S + 900 ))
 log "waiting up to ${WAIT_BUDGET_S}s for $EXEC_NAME..."
+# Elapsed is measured as a DELTA from here, not as bare $SECONDS. Bash inherits
+# SECONDS from the environment (`SECONDS=2000 ./db_query_cr.sh ...` starts the
+# script with the clock already at 2000), so comparing it directly to the
+# budget can time out on the first pass — dispatching an execution, possibly a
+# --commit one, and then abandoning it without ever polling. A delta is also
+# immune to any later reassignment, which `SECONDS=0` here would not be.
+WAIT_START=$SECONDS
 CONCLUSION=""
 while [[ "$CONCLUSION" != "True" && "$CONCLUSION" != "False" ]]; do
-    if (( SECONDS >= WAIT_BUDGET_S )); then
+    if (( SECONDS - WAIT_START >= WAIT_BUDGET_S )); then
         echo "error: execution $EXEC_NAME did not reach a terminal state within" >&2
         echo "       ${WAIT_BUDGET_S}s. It WAS created and may still be running; under" >&2
         echo "       --commit some statements may already have persisted. Do not retry" >&2
