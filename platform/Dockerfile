@@ -1,13 +1,12 @@
-# Multi-stage build for the unified trading platform.
-# Stage 1: build Vite/React frontend → platform/dist
-# Stage 2: run FastAPI which serves both /api and the SPA from dist
-
-FROM node:20-slim AS frontend
-WORKDIR /build/platform
-COPY platform/package.json platform/package-lock.json ./
-RUN npm ci
-COPY platform/ ./
-RUN npm run build
+# Build for the trading platform API.
+#
+# This image serves /api only. The frontend moved to its own repository
+# (github.com/TeneikaAskew/solyra), so there is no longer a Node stage
+# building a Vite bundle, and nothing copies a dist/ in.
+#
+# api/main.py mounts the SPA only when platform/dist exists, so it simply
+# does not mount here — no code change was needed to drop the frontend, and
+# dropping a dist/ back in would light it up again.
 
 FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -44,7 +43,6 @@ COPY gcp/ /app/gcp/
 # for /api/health/freshness (powers the Dashboard DataPipelineStatus widget).
 COPY scripts/ /app/scripts/
 COPY platform/api/ /app/platform/api/
-COPY --from=frontend /build/platform/dist /app/platform/dist
 
 EXPOSE 8080
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT} --app-dir /app/platform"]

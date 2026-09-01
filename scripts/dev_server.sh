@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 #
-# Start the platform API (uvicorn on 8000) and Vite dev server (port 5173)
-# in parallel. Logs are prefixed [api] and [web] so you can tell them apart.
-# Ctrl+C stops both cleanly.
+# Start the platform API (uvicorn on 8000). Logs are prefixed [api].
+# Ctrl+C stops it cleanly.
+#
+# The Vite dev server used to start alongside this one. The frontend now lives
+# in github.com/TeneikaAskew/solyra; run `npm run dev` there. Its proxy probes
+# :8000 and uses this API when it is up, so the two halves still compose — they
+# are just started from their own repositories.
 #
 # Used by `make dev`. Not meant to be run directly but safe to do so.
 
@@ -56,13 +60,7 @@ echo ""
 ) &
 API_PID=$!
 
-# Vite dev server — prefix every line with [web]
-(
-  cd platform || exit 1
-  npm run dev 2>&1 | sed -u 's/^/[web] /'
-) &
-WEB_PID=$!
+echo "[dev] frontend: run 'npm run dev' in the solyra repo (it proxies to :8000)"
 
-# Wait for either child to exit. When one exits, tear down the other.
-wait -n "$API_PID" "$WEB_PID" 2>/dev/null || true
+wait "$API_PID" 2>/dev/null || true
 cleanup
