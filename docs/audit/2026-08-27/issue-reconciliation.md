@@ -390,10 +390,20 @@ Candidate work produced in issue-response environments is an urgent recovery inp
 
 | Issue | Candidate commit | State — verified 2026-09-01 |
 |---|---|---|
-| #812 | `98dbd35` | Original unrecoverable. Reconstructed as `4ed8e4b` in [#936](https://github.com/TeneikaAskew/stocks/pull/936) — **closed without merging**, because it regressed `main`. Superseded by [#942](https://github.com/TeneikaAskew/stocks/pull/942), merged `ed0077f`. |
+| #812 | `98dbd35` | Original unrecoverable. Reconstructed as `4ed8e4b` in [#936](https://github.com/TeneikaAskew/stocks/pull/936) — **closed without merging**, because it regressed `main`. Superseded by [#942](https://github.com/TeneikaAskew/stocks/pull/942), which **merged as `b9621c4`** on `main` (`ed0077f` was its final branch head before the squash, and is not reachable from `main`). |
 | #815 | `c3f582a` | Original unrecoverable. Reconstructed as `daf9893` in [#937](https://github.com/TeneikaAskew/stocks/pull/937) — **open**, base `main`, head now `ea24170`. |
 | #863 | `06b2d34` | Original unrecoverable. Reconstructed as `32ab299` in [#938](https://github.com/TeneikaAskew/stocks/pull/938) — **open**, base `main`, head now `66f5f5f`. |
 | #813, #814, #816 | — | Analysis-only; no candidate commit identified. |
+
+**Merge commit, not branch head.** For a merged PR this table records the commit
+on `main`, because that is the only one a reader can `git show`. GitHub's PR API
+reports `head.sha` — the last commit on the branch — which for a squash merge is
+a *different* SHA that is unreachable from `main` and, once the branch is
+deleted, absent from a fresh clone entirely. An earlier revision of this row
+recorded #942's `head.sha`, contradicting the two places this document already
+gives `b9621c4`. Check every merged-PR SHA with `git merge-base --is-ancestor
+<sha> origin/main` before recording it; the open rows above deliberately record
+branch heads instead, and say so.
 
 Before any stream is sized or scheduled, inventory **all 105 canonical issues** with candidate commit, producing environment, remote/PR reachability, patch recoverability, tests previously run, and revalidation needed against current HEAD. Unknown entries remain blockers to stream sizing rather than being silently classified as either implemented or analysis-only.
 
