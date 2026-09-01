@@ -384,6 +384,35 @@ The 105 canonical issues partition into the following **18 candidate delivery st
 | PR-Q — STRAT vote semantics | #884 | Standalone semantic/API decision. |
 | PR-R — Architectural decomposition | #917 | Land after behavior contracts are protected; do not combine a broad refactor with correctness fixes. |
 
+### Candidate-commit recovery inventory
+
+Candidate work produced in issue-response environments is an urgent recovery input, not a delivery. An absent commit must be recovered as a patch and retested; it must not be counted as delivered.
+
+| Issue | Candidate commit | State — verified 2026-09-01 |
+|---|---|---|
+| #812 | `98dbd35` | Original unrecoverable. Reconstructed as `4ed8e4b` in [#936](https://github.com/TeneikaAskew/stocks/pull/936) — **closed without merging**, because it regressed `main`. Superseded by [#942](https://github.com/TeneikaAskew/stocks/pull/942), merged `ed0077f`. |
+| #815 | `c3f582a` | Original unrecoverable. Reconstructed as `daf9893` in [#937](https://github.com/TeneikaAskew/stocks/pull/937) — **open**, base `main`, head now `ea24170`. |
+| #863 | `06b2d34` | Original unrecoverable. Reconstructed as `32ab299` in [#938](https://github.com/TeneikaAskew/stocks/pull/938) — **open**, base `main`, head now `66f5f5f`. |
+| #813, #814, #816 | — | Analysis-only; no candidate commit identified. |
+
+Before any stream is sized or scheduled, inventory **all 105 canonical issues** with candidate commit, producing environment, remote/PR reachability, patch recoverability, tests previously run, and revalidation needed against current HEAD. Unknown entries remain blockers to stream sizing rather than being silently classified as either implemented or analysis-only.
+
+### Publication path and verification
+
+The issue-response environment may omit a dedicated `make_pr` tool and may start without a configured Git remote. That does not by itself make publication impossible. The verified fallback is:
+
+1. confirm GitHub CLI authentication with `gh auth status` and add or configure the intended repository as `origin`;
+2. push the named branch with authenticated Git, without printing or persisting the credential in documentation or logs;
+3. create the PR explicitly with `gh pr create --repo TeneikaAskew/stocks --base <base> --head <branch>`;
+4. verify publication independently with `git ls-remote origin refs/heads/<branch>` and `gh pr view <number> --json state,baseRefName,headRefName,headRefOid,url`;
+5. report the commit as **available for review** only when *all four* hold: `state == OPEN`, `baseRefName` is the intended base, `headRefName` is the intended branch, and the remote branch SHA and `headRefOid` both equal the local commit.
+
+**A SHA match alone is not the check.** Step 4 gathers `state`, `baseRefName` and `headRefName` precisely because a matching head OID is compatible with a closed PR, or one aimed at the wrong base — either of which would be reported as remediation awaiting review when no reviewer will ever see it.
+
+That is not hypothetical here. An earlier revision of this table recorded #812 as "reconstructed as `4ed8e4b` in PR #936 against `main`", which is true of the SHA and the base and still wrong: #936 was closed without merging because it regressed `main`, and the actual delivery was #942. A SHA-only rule reports a rejected candidate as published work.
+
+A missing `make_pr` command must be reported accurately, but it is not sufficient evidence that a tested commit is stranded. Conversely, a local commit, a successful test run, or an attempted CLI invocation is not publication evidence without the checks above.
+
 ### Delivery rules
 
 1. Open a remediation PR only when it contains an implementation or a concrete validation artifact; do not create empty PRs merely to obtain a bot response.
