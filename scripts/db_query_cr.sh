@@ -21,24 +21,15 @@ set -euo pipefail
 
 # Claude Code Remote / Cowork sessions export CLOUDSDK_AUTH_ACCESS_TOKEN as a
 # short placeholder, not a real OAuth token. Bare `gcloud` then fails with
-# ACCESS_TOKEN_TYPE_UNSUPPORTED.
+# ACCESS_TOKEN_TYPE_UNSUPPORTED, and every dispatch dies.
 #
-# Discriminate on LENGTH, not on a `ya29.` prefix. Google access tokens are
-# opaque: the prefix is a convention, not a contract, so a prefix test would
-# silently discard a legitimate token in some other format and fall back to
-# whatever ambient account gcloud has — a different identity, or none. Length
-# is format-agnostic and the gap is not close: the placeholder is 14
-# characters, real access tokens run to hundreds. Anything under 40 is not a
-# credential in any format.
-_TOKEN_MIN_LEN=40
-if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" \
-      && ${#CLOUDSDK_AUTH_ACCESS_TOKEN} -lt $_TOKEN_MIN_LEN ]]; then
-    echo "note: CLOUDSDK_AUTH_ACCESS_TOKEN is ${#CLOUDSDK_AUTH_ACCESS_TOKEN} chars," >&2
-    echo "      too short to be a real access token — ignoring it and using" >&2
-    echo "      gcloud's configured credentials instead." >&2
-    unset CLOUDSDK_AUTH_ACCESS_TOKEN
-fi
-
+# Whether the token is usable is decided by ASKING THE API, further down, just
+# before dispatch — not by inspecting the token here. Two representation tests
+# have already been wrong in this file: a `ya29.` prefix (a convention, not a
+# contract) and a minimum length (no contract either). Both silently discarded
+# a caller's credential on a guess about its format and fell back to whatever
+# ambient identity gcloud had. An opaque value is exactly the thing you cannot
+# validate by looking at it, so the only honest test is to use it.
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-east1}"
 JOB="db-query"
@@ -108,6 +99,31 @@ log() { if [[ "$QUIET" != "true" ]]; then echo "$@" >&2; fi; }
 # this marker instead. The job does not read it; it exists to be matched.
 DISPATCH_ID="d$(date -u +%s)-$$-${RANDOM}"
 ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT_SECONDS=${TIMEOUT_S}|DB_QUERY_DISPATCH_ID=${DISPATCH_ID}"
+
+# Validate the caller's access token against the API before dispatching, and
+# drop it only if the API itself rejects it as a credential. A read-only
+# describe, so a failure here cannot have started anything.
+#
+# PERMISSION_DENIED is deliberately NOT a reason to drop it: that means the
+# token is valid and its identity lacks a role, and substituting a different
+# identity would hide exactly the problem the operator needs to see.
+if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]]; then
+    PROBE_ERR=$(mktemp)
+    if ! gcloud run jobs describe "$JOB" --region="$REGION" \
+             --format="value(metadata.name)" >/dev/null 2>"$PROBE_ERR"; then
+        if grep -qE '^ERROR: \(gcloud\.[a-z.]+\) UNAUTHENTICATED' "$PROBE_ERR" \
+           || grep -q 'ACCESS_TOKEN_TYPE_UNSUPPORTED' "$PROBE_ERR"; then
+            echo "note: the Cloud Run API rejected CLOUDSDK_AUTH_ACCESS_TOKEN as a" >&2
+            echo "      credential (asked, not inferred from its format) — ignoring it" >&2
+            echo "      and using gcloud's configured credentials instead." >&2
+            unset CLOUDSDK_AUTH_ACCESS_TOKEN
+        fi
+        # Any other probe failure — network, PERMISSION_DENIED, an outage —
+        # leaves the token in place. The dispatch below reports the real error
+        # rather than this one guessing at it.
+    fi
+    rm -f "$PROBE_ERR"
+fi
 
 log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#SQL} chars)..."
 
@@ -301,11 +317,36 @@ log "results at: $PREFIX"
 # evidence of which statements persisted before the batch halted.
 # The summary is read from the execution THIS invocation created, so it can
 # never be another run's output.
-if ! gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null; then
-    echo "error: ${PREFIX}/summary.md not found — execution $EXEC_NAME wrote no summary." >&2
+SUMMARY_ERR=$(mktemp)
+if ! gcloud storage cat "${PREFIX}/summary.md" 2>"$SUMMARY_ERR"; then
+    echo "error: could not read ${PREFIX}/summary.md" >&2
+    if grep -qiE 'matched no objects|does not exist|not found|404' "$SUMMARY_ERR"; then
+        echo "       The object is absent: execution $EXEC_NAME wrote no summary." >&2
+    else
+        echo "       The READ failed. That is not evidence the object is absent, and" >&2
+        echo "       says nothing about whether the query ran." >&2
+    fi
+    # The execution's outcome is already known from the poll above and must be
+    # reported here. Failing to read the artifact does not un-run the query,
+    # and under --commit the difference decides whether a retry is safe.
+    if [[ "$CONCLUSION" == "True" ]]; then
+        echo "       Execution $EXEC_NAME COMPLETED SUCCESSFULLY." >&2
+        if [[ "$COMMIT" == "true" ]]; then
+            echo "       This was a --commit run and it succeeded: THE WRITES ARE" >&2
+            echo "       APPLIED. Do NOT retry — that would apply them twice." >&2
+        fi
+        echo "       Retry the read instead:" >&2
+        echo "         gcloud storage cat ${PREFIX}/summary.md" >&2
+    else
+        echo "       Execution $EXEC_NAME did not complete successfully; under --commit," >&2
+        echo "       statements before the failure may still have persisted." >&2
+    fi
     echo "       Do not treat any earlier output as the answer to this query." >&2
+    sed 's/^/       | /' "$SUMMARY_ERR" >&2
+    rm -f "$SUMMARY_ERR"
     exit 1
 fi
+rm -f "$SUMMARY_ERR"
 
 if [[ "$CONCLUSION" != "True" ]]; then
     echo "error: execution $EXEC_NAME failed. The summary above is that execution's own" >&2
