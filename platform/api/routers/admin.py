@@ -45,7 +45,16 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 
 
-_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").lower()
+_DEFAULT_ADMIN_EMAIL = "teneika@bictech.org"
+
+
+def _admin_email() -> str:
+    """Resolved per call, not captured at import.
+
+    Matches how /api/me computes `is_admin`, so the flag the frontend renders
+    and the check that actually gates the routes can never disagree.
+    """
+    return os.environ.get("ADMIN_EMAIL", _DEFAULT_ADMIN_EMAIL).strip().lower()
 
 
 def _require_admin(request: Request) -> None:
@@ -59,7 +68,7 @@ def _require_admin(request: Request) -> None:
     email = current_user_email(request)
     if not email:
         raise HTTPException(status_code=401, detail="sign-in required")
-    if email.strip().lower() != _ADMIN_EMAIL:
+    if email.strip().lower() != _admin_email():
         raise HTTPException(status_code=403, detail="admin access required")
 
 
