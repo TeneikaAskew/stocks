@@ -3869,3 +3869,29 @@ CREATE TABLE IF NOT EXISTS job_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_job_started
     ON job_runs (job_name, started_at DESC);
+
+-- ─────────────────────────────────────────────────────────
+-- USER ROLES
+-- ─────────────────────────────────────────────────────────
+-- Authorization for people, as data rather than configuration.
+--
+-- Identity itself stays in Firebase Auth (or the IAP header) — this table
+-- never stores credentials, only what a verified identity is allowed to do.
+-- Before it existed, admin was the single ADMIN_EMAIL env var: one admin,
+-- and changing them meant a redeploy because platform/deploy.sh uses
+-- --set-env-vars, which replaces the whole set.
+--
+-- ADMIN_EMAIL remains a fallback so an empty table, a failed migration, or a
+-- database outage cannot lock every admin out of the admin routes.
+CREATE TABLE IF NOT EXISTS user_roles (
+    email       TEXT PRIMARY KEY,
+    role        TEXT         NOT NULL,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by  TEXT,                      -- who granted it, for audit
+    note        TEXT,
+    CONSTRAINT user_roles_role_valid CHECK (role IN ('admin', 'user')),
+    -- Stored lower-case so lookups can compare directly against the
+    -- normalized identity without a functional index or a LOWER() scan.
+    CONSTRAINT user_roles_email_lower CHECK (email = LOWER(email))
+);
+CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles (role);

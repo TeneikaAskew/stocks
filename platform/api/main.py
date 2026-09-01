@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist
-from api.auth import auth_middleware, current_user_email
+from api.auth import auth_middleware, current_user_email, is_admin_email
 
 logger = logging.getLogger(__name__)
 
@@ -167,8 +167,7 @@ async def get_current_user(request: Request):
     is computed server-side (vs ADMIN_EMAIL) so the frontend can't spoof it.
     """
     email = current_user_email(request)
-    admin_email = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lower()
-    return {"email": email, "is_admin": bool(email and email == admin_email)}
+    return {"email": email, "is_admin": is_admin_email(email)}
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
