@@ -321,13 +321,36 @@ figures were read from a cached artifact of execution `db-query-w85s9`, written
 it was cited as evidence about. The conclusion it supported ("the window has
 opened but is still empty") was the opposite of the truth.
 
-Two defects in `scripts/db_query_cr.sh` produced it. The dispatcher discarded
-`gcloud`'s stderr and, when no execution name came back, fell back to
-`executions list --limit=1` — printing whatever execution already existed as the
-answer to the query just asked. Separately, `CLOUDSDK_AUTH_ACCESS_TOKEN` is a
-short placeholder in this session type, so every dispatch was failing
-authentication and taking that fallback. The two compose into a dispatcher that
-never runs a query and always prints a plausible-looking stale one.
+Two defects in `scripts/db_query_cr.sh` are involved. They are **separate**
+failure modes, not one compound one — an earlier revision of this paragraph
+said they composed into a dispatcher that "never runs a query and always prints
+a plausible-looking stale one", and that was wrong.
+
+**A silent death.** `CLOUDSDK_AUTH_ACCESS_TOKEN` is a short placeholder in this
+session type, so every dispatch failed authentication, and the execute call
+sent `gcloud`'s stderr to `/dev/null`, hiding the reason. But the script runs
+under `set -euo pipefail`, so the failing command substitution terminates it at
+the assignment — it never reaches the fallback below. Verified by running
+`main`'s copy with an invalid token: the entire output is one `dispatching…`
+line, then exit 1. Empty, not stale.
+
+**A stale answer.** Separately, when the execute call exits *successfully* but
+prints nothing to stdout — the case the script's own comment anticipates, where
+some gcloud versions report the name on stderr instead — the fallback runs
+`executions list --limit=1` and prints whatever execution already existed as the
+answer to the query just asked, with exit 0 and nothing marking it stale.
+
+Only the second makes a wrong answer look right. The first makes a missing
+answer look like nothing happened, which is bad but not misleading.
+
+**Which one produced the 0-of-65 figure is not established.** The auth-failure
+path prints no numbers at all, so those figures reached this document by a path
+that did print them — the fallback firing, or a cached artifact read directly.
+Reconstructing which is not possible from the record now, and inventing one
+would repeat the original error. What *is* established is the part that
+matters: the figures are the contents of `db-query-w85s9`, written
+2026-08-30T13:32Z, and they were recorded here as a measurement taken
+2026-08-31 11:27 UTC.
 
 > **The repair is not on `main` yet.** It is pending in
 > [#948](https://github.com/TeneikaAskew/stocks/pull/948). Until that merges,
