@@ -37,6 +37,17 @@ except Exception:
 
 app = FastAPI(title="Trading Platform API", version="0.1.0")
 
+# App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
+# mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
+app.middleware("http")(auth_middleware)
+
+# Registered AFTER the auth middleware ON PURPOSE. Starlette builds the stack so
+# the last-added middleware is the OUTERMOST one, and CORS has to be outermost:
+# when auth short-circuits with a 401 it returns its own response, and anything
+# registered outside it never runs. With the order reversed, that 401 went back
+# without Access-Control-Allow-Origin, so the browser blocked the response
+# outright and every failed call surfaced as an opaque "Failed to fetch" — the
+# app could not even see the 401 to redirect to sign-in.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -57,10 +68,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
-# mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
-app.middleware("http")(auth_middleware)
 
 # ── Router includes ──────────────────────────────────────────────────────────
 app.include_router(live.router, prefix="")
