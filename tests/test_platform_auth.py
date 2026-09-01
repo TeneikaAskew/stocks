@@ -160,3 +160,68 @@ def test_verify_bearer_email_tolerates_clock_skew(monkeypatch):
     skew = captured["kwargs"].get("clock_skew_seconds")
     assert skew is not None, "verify_id_token called with zero clock-skew tolerance"
     assert 0 < skew <= 60
+
+
+# ─── Authorization: is_admin_email (user_roles table + ADMIN_EMAIL) ─────────
+# The table is the source of truth; ADMIN_EMAIL is a fallback so an empty
+# table, an unapplied migration, or a DB outage cannot lock every admin out.
+# Hermetic: the DB helper is stubbed, so these assert OUR precedence and
+# failure handling without a Postgres.
+
+import types  # noqa: E402
+
+from api import auth as auth_mod  # noqa: E402
+
+
+def _stub_db(monkeypatch, *, rows: int = 0, raises: bool = False):
+    """Stand in for gcp.database.query_to_dataframe_strict."""
+    import pandas as pd
+
+    def fake(sql, params=None, timeout_s=None):
+        if raises:
+            raise RuntimeError("connection refused")
+        return pd.DataFrame({"?column?": [1] * rows})
+
+    module = types.ModuleType("gcp.database")
+    module.query_to_dataframe_strict = fake
+    monkeypatch.setitem(sys.modules, "gcp.database", module)
+
+
+def test_admin_env_fallback_matches_without_touching_db(monkeypatch):
+    """ADMIN_EMAIL is checked first, so it works even if the DB is down."""
+    monkeypatch.setenv("ADMIN_EMAIL", "boss@example.com")
+    _stub_db(monkeypatch, raises=True)
+    assert auth_mod.is_admin_email("boss@example.com") is True
+
+
+def test_admin_from_user_roles_table(monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAIL", "someone-else@example.com")
+    _stub_db(monkeypatch, rows=1)
+    assert auth_mod.is_admin_email("granted@example.com") is True
+
+
+def test_non_admin_denied(monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAIL", "someone-else@example.com")
+    _stub_db(monkeypatch, rows=0)
+    assert auth_mod.is_admin_email("nobody@example.com") is False
+
+
+def test_admin_check_denies_when_lookup_fails(monkeypatch):
+    """A broken lookup denies — it must never grant on error."""
+    monkeypatch.setenv("ADMIN_EMAIL", "someone-else@example.com")
+    _stub_db(monkeypatch, raises=True)
+    assert auth_mod.is_admin_email("granted@example.com") is False
+
+
+def test_admin_email_is_normalized(monkeypatch):
+    """Casing and whitespace must not decide authorization."""
+    monkeypatch.setenv("ADMIN_EMAIL", "boss@example.com")
+    _stub_db(monkeypatch, rows=0)
+    assert auth_mod.is_admin_email("  BOSS@Example.COM  ") is True
+
+
+def test_no_identity_is_not_admin(monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAIL", "boss@example.com")
+    _stub_db(monkeypatch, rows=1)
+    assert auth_mod.is_admin_email(None) is False
+    assert auth_mod.is_admin_email("") is False

@@ -35,7 +35,7 @@ from lib.agents.model_routing import (  # noqa: E402
     set_route,
 )
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
-from api.auth import current_user_email  # noqa: E402
+from api.auth import current_user_email, is_admin_email  # noqa: E402
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -45,30 +45,21 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_ADMIN_EMAIL = "teneika@bictech.org"
-
-
-def _admin_email() -> str:
-    """Resolved per call, not captured at import.
-
-    Matches how /api/me computes `is_admin`, so the flag the frontend renders
-    and the check that actually gates the routes can never disagree.
-    """
-    return os.environ.get("ADMIN_EMAIL", _DEFAULT_ADMIN_EMAIL).strip().lower()
-
-
 def _require_admin(request: Request) -> None:
-    """Allow only the signed-in admin user.
+    """Allow only a signed-in user holding the admin role.
 
     `current_user_email` returns the identity the auth middleware verified —
     the Firebase token's email in firebase mode, the IAP header in iap mode.
     It is None in open mode, so admin routes are closed there rather than
     falling back to a shared secret.
+
+    `is_admin_email` is shared with /api/me so the flag the frontend renders
+    and the check gating these routes cannot drift apart.
     """
     email = current_user_email(request)
     if not email:
         raise HTTPException(status_code=401, detail="sign-in required")
-    if email.strip().lower() != _admin_email():
+    if not is_admin_email(email):
         raise HTTPException(status_code=403, detail="admin access required")
 
 
