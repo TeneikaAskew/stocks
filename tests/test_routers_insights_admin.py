@@ -12,7 +12,7 @@ Skipped when DB_HOST / CLOUD_SQL_URL isn't configured. Run locally:
         -e POSTGRES_PASSWORD=test -e POSTGRES_DB=trading \
         pgvector/pgvector:pg15
     export DB_HOST=localhost DB_PORT=55432 DB_NAME=trading \
-           DB_USER=postgres DB_PASSWORD=test ADMIN_TOKEN=test-token
+           DB_USER=postgres DB_PASSWORD=test
     pytest tests/test_routers_insights_admin.py
 """
 
@@ -114,13 +114,22 @@ def _schema():
     conn.close()
 
 
+# Admin is now the signed-in user, not a shared token. iap mode lets a test
+# present an identity via the header IAP would inject; AUTH_MODE is read at
+# import in api.auth, so patch the attribute rather than the env var.
+ADMIN_EMAIL = "admin@example.com"
+ADMIN_HEADERS = {"x-goog-authenticated-user-email": f"accounts.google.com:{ADMIN_EMAIL}"}
+OTHER_HEADERS = {"x-goog-authenticated-user-email": "accounts.google.com:someone@example.com"}
+
+
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "test-token")
+    monkeypatch.setenv("ADMIN_EMAIL", ADMIN_EMAIL)
     monkeypatch.setenv("ENV", "local")
-    # Import app *after* env is set so the admin token check uses it
     from api.main import app
+    import api.auth
 
+    monkeypatch.setattr(api.auth, "AUTH_MODE", "iap")
     return TestClient(app)
 
 
@@ -305,18 +314,19 @@ def test_run_status_404(client):
 # ---------------------------------------------------------------------------
 
 
-def test_admin_requires_token(client):
+def test_admin_requires_sign_in(client):
     r = client.get("/api/admin/routes")
     assert r.status_code == 401
 
 
-def test_admin_wrong_token_401(client):
-    r = client.get("/api/admin/routes", headers={"X-Admin-Token": "nope"})
-    assert r.status_code == 401
+def test_admin_non_admin_user_403(client):
+    """Signed in, but not the admin — forbidden, not unauthorized."""
+    r = client.get("/api/admin/routes", headers=OTHER_HEADERS)
+    assert r.status_code == 403
 
 
 def test_admin_list_routes(client):
-    r = client.get("/api/admin/routes", headers={"X-Admin-Token": "test-token"})
+    r = client.get("/api/admin/routes", headers=ADMIN_HEADERS)
     assert r.status_code == 200
     body = r.json()
     assert len(body["routes"]) == 7
@@ -327,7 +337,7 @@ def test_admin_list_routes(client):
 def test_admin_update_route(client):
     r = client.put(
         "/api/admin/routes/trader",
-        headers={"X-Admin-Token": "test-token"},
+        headers=ADMIN_HEADERS,
         json={"provider": "anthropic", "model": "claude-sonnet-4-6"},
     )
     assert r.status_code == 200
@@ -337,7 +347,7 @@ def test_admin_update_route(client):
     # Restore
     client.put(
         "/api/admin/routes/trader",
-        headers={"X-Admin-Token": "test-token"},
+        headers=ADMIN_HEADERS,
         json={"provider": "vertex", "model": "gemini-2.0-flash"},
     )
 
@@ -345,7 +355,7 @@ def test_admin_update_route(client):
 def test_admin_update_route_unknown_role(client):
     r = client.put(
         "/api/admin/routes/wizard",
-        headers={"X-Admin-Token": "test-token"},
+        headers=ADMIN_HEADERS,
         json={"provider": "vertex", "model": "gemini-2.0-flash"},
     )
     assert r.status_code == 400
@@ -354,24 +364,33 @@ def test_admin_update_route_unknown_role(client):
 def test_admin_update_route_unpriced_model(client):
     r = client.put(
         "/api/admin/routes/trader",
-        headers={"X-Admin-Token": "test-token"},
+        headers=ADMIN_HEADERS,
         json={"provider": "vertex", "model": "gemini-imaginary"},
     )
     assert r.status_code == 400
 
 
 def test_admin_list_models(client):
-    r = client.get("/api/admin/models", headers={"X-Admin-Token": "test-token"})
+    r = client.get("/api/admin/models", headers=ADMIN_HEADERS)
     assert r.status_code == 200
     body = r.json()
     assert len(body["models"]) > 0
     assert all("provider" in m for m in body["models"])
 
 
-def test_admin_503_when_token_unset(monkeypatch):
-    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
-    from api.main import app
+def test_admin_closed_in_open_mode(monkeypatch):
+    """AUTH_MODE=open resolves no identity, so admin is closed.
 
+    This is deliberate: the previous shared-token path let anyone holding the
+    secret through in open mode. With identity-based admin there is nothing to
+    check, so the routes stay shut rather than falling open.
+    """
+    monkeypatch.setenv("ADMIN_EMAIL", ADMIN_EMAIL)
+    from api.main import app
+    import api.auth
+
+    monkeypatch.setattr(api.auth, "AUTH_MODE", "open")
     c = TestClient(app)
-    r = c.get("/api/admin/routes", headers={"X-Admin-Token": "anything"})
-    assert r.status_code == 503
+    # Even presenting the admin identity gets nowhere — open mode ignores it.
+    r = c.get("/api/admin/routes", headers=ADMIN_HEADERS)
+    assert r.status_code == 401

@@ -44,6 +44,21 @@ SCOPE_STATEMENT = (
 )
 
 
+# Admin is the signed-in user now, not a shared token. iap mode lets a test
+# present an identity via the header IAP injects; AUTH_MODE is read at import
+# in api.auth, so patch the attribute rather than the env var.
+ADMIN_EMAIL = "admin@example.com"
+ADMIN_HEADERS = {"x-goog-authenticated-user-email": f"accounts.google.com:{ADMIN_EMAIL}"}
+OTHER_HEADERS = {"x-goog-authenticated-user-email": "accounts.google.com:someone@example.com"}
+
+
+def _as_admin(monkeypatch):
+    """Make the request identity the configured admin."""
+    monkeypatch.setenv("ADMIN_EMAIL", ADMIN_EMAIL)
+    import api.auth
+    monkeypatch.setattr(api.auth, "AUTH_MODE", "iap")
+
+
 def _build_app() -> FastAPI:
     app = FastAPI()
     app.include_router(admin_router.router)
@@ -121,11 +136,11 @@ def _stub_predict_response(
     }
 
 
-def _post(client, *, ticker="IWM", tf="15m", token="secret-token"):
+def _post(client, *, ticker="IWM", tf="15m", headers=ADMIN_HEADERS):
     return client.post(
         "/api/admin/strat-engine/structure-continuation",
         json={"ticker": ticker, "timeframe": tf},
-        headers={"X-Admin-Token": token},
+        headers=headers,
     )
 
 
@@ -134,7 +149,7 @@ def _post(client, *, ticker="IWM", tf="15m", token="secret-token"):
 
 def test_flag_off_returns_404(monkeypatch):
     """Flag OFF (default) → endpoint behaves as if it doesn't exist."""
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.delenv("STRUCTURE_CONTINUATION_ENABLED", raising=False)
     stub = _stub_predict_response()
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
@@ -146,7 +161,7 @@ def test_flag_off_returns_404(monkeypatch):
 
 
 def test_flag_explicitly_false_returns_404(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "false")
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=_stub_predict_response()), \
@@ -158,7 +173,7 @@ def test_flag_explicitly_false_returns_404(monkeypatch):
 
 def test_flag_on_returns_continuation_prob(monkeypatch):
     """Flag ON → the continuation probability field appears."""
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     stub = _stub_predict_response(current_type="2U", continuation_prob=0.58)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
@@ -179,7 +194,7 @@ def test_flag_on_returns_continuation_prob(monkeypatch):
 
 @pytest.mark.parametrize("tf", ["5m", "15m"])
 def test_allowed_timeframes(monkeypatch, tf):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "1")
     stub = _stub_predict_response(timeframe=tf)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
@@ -192,7 +207,7 @@ def test_allowed_timeframes(monkeypatch, tf):
 
 def test_30m_is_rejected(monkeypatch):
     """30m is NOT cleared — must be rejected even with the flag ON."""
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "on")
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=_stub_predict_response()), \
@@ -204,7 +219,7 @@ def test_30m_is_rejected(monkeypatch):
 
 
 def test_unknown_ticker_rejected(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "on")
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=_stub_predict_response()), \
@@ -225,7 +240,7 @@ def test_30m_never_exposed_constant():
 
 
 def test_scope_statement_present_when_ok(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=_stub_predict_response()), \
@@ -240,7 +255,7 @@ def test_scope_statement_present_when_ok(monkeypatch):
 
 
 def test_unavailable_when_no_model(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     stub = _stub_predict_response(available=False)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
@@ -257,7 +272,7 @@ def test_unavailable_when_no_model(monkeypatch):
 
 
 def test_unavailable_when_muted(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     stub = _stub_predict_response(muted=True)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
@@ -275,7 +290,7 @@ def test_unavailable_when_muted(monkeypatch):
 def test_unavailable_when_no_current_type(monkeypatch):
     """Available + un-muted but no anchorable current type → UNAVAILABLE,
     not a fabricated continuation probability."""
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     stub = _stub_predict_response(current_type=None, continuation_prob=None)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
@@ -294,7 +309,7 @@ def test_unavailable_when_no_current_type(monkeypatch):
 
 
 def test_requires_admin_token_even_with_flag_on(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     monkeypatch.delenv("ADMIN_EMAIL", raising=False)
     client = TestClient(_build_app())
@@ -305,13 +320,18 @@ def test_requires_admin_token_even_with_flag_on(monkeypatch):
     assert r.status_code == 401
 
 
-def test_rejects_wrong_token(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+def test_rejects_non_admin_user(monkeypatch):
+    """Identity does not match ADMIN_EMAIL: forbidden, not unauthorized.
+
+    ADMIN_EMAIL is cleared so it falls back to the default, which the
+    presented identity deliberately is not.
+    """
+    _as_admin(monkeypatch)
     monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "true")
     monkeypatch.delenv("ADMIN_EMAIL", raising=False)
     client = TestClient(_build_app())
-    r = _post(client, token="wrong-token")
-    assert r.status_code == 401
+    r = _post(client, headers=OTHER_HEADERS)
+    assert r.status_code == 403
 
 
 # ─── predict_one() continuation derivation (model-layer unit tests) ─────────

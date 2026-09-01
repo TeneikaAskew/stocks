@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist
-from api.auth import auth_middleware, current_user_email
+from api.auth import auth_middleware, current_user_email, is_admin_email
 
 logger = logging.getLogger(__name__)
 
@@ -37,18 +37,37 @@ except Exception:
 
 app = FastAPI(title="Trading Platform API", version="0.1.0")
 
+# App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
+# mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
+app.middleware("http")(auth_middleware)
+
+# Registered AFTER the auth middleware ON PURPOSE. Starlette builds the stack so
+# the last-added middleware is the OUTERMOST one, and CORS has to be outermost:
+# when auth short-circuits with a 401 it returns its own response, and anything
+# registered outside it never runs. With the order reversed, that 401 went back
+# without Access-Control-Allow-Origin, so the browser blocked the response
+# outright and every failed call surfaced as an opaque "Failed to fetch" — the
+# app could not even see the 401 to redirect to sign-in.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        # Solyra frontend (github.com/TeneikaAskew/solyra) — the SPA lives in its
+        # own repo and calls this API cross-origin when built as static assets,
+        # where there is no dev-server proxy to keep requests same-origin.
+        # Listed explicitly rather than matched by a `.*\.lovable\.app` regex:
+        # that would let any Lovable project on the platform call this API with
+        # credentials, and the Firebase web config is public, so the origin list
+        # is the control that keeps it to ours.
+        "https://solyra-stocks.lovable.app",
+        "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovable.app",
+    ],
     allow_origin_regex=r"https://.*\.app\.github\.dev",  # GitHub Codespace tunnel URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
-# mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
-app.middleware("http")(auth_middleware)
 
 # ── Router includes ──────────────────────────────────────────────────────────
 app.include_router(live.router, prefix="")
@@ -148,8 +167,7 @@ async def get_current_user(request: Request):
     is computed server-side (vs ADMIN_EMAIL) so the frontend can't spoof it.
     """
     email = current_user_email(request)
-    admin_email = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").strip().lower()
-    return {"email": email, "is_admin": bool(email and email == admin_email)}
+    return {"email": email, "is_admin": is_admin_email(email)}
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────

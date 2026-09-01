@@ -22,11 +22,14 @@ No silent fallbacks (CLAUDE.md Rule 3.7): a missing/invalid token is an explicit
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Awaitable, Callable, Optional
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 AUTH_MODE = os.environ.get("AUTH_MODE", "open").strip().lower()
 
@@ -157,3 +160,59 @@ async def auth_middleware(
 
     request.state.user_email = email
     return await call_next(request)
+
+
+# ── Authorization: who is an admin ──────────────────────────────────────────
+# Identity (above) answers "who is this"; this answers "what may they do".
+# Kept here, and used by BOTH /api/me and the admin router, so the flag the
+# frontend renders can never disagree with the check that gates the routes.
+
+_DEFAULT_ADMIN_EMAIL = "teneika@bictech.org"
+
+
+def configured_admin_email() -> str:
+    """The ADMIN_EMAIL fallback, resolved per call rather than at import."""
+    return os.environ.get("ADMIN_EMAIL", _DEFAULT_ADMIN_EMAIL).strip().lower()
+
+
+def is_admin_email(email: Optional[str]) -> bool:
+    """True when `email` holds the admin role.
+
+    The `user_roles` table is the source of truth, so admins can be added or
+    removed with a SQL statement instead of a redeploy. `ADMIN_EMAIL` stays a
+    fallback, checked FIRST and without touching the database, so that an
+    empty table, an unapplied migration, or a database outage cannot lock
+    every admin out of the admin routes.
+
+    A failed lookup is logged at ERROR and denies (the env fallback has
+    already been tried). It never grants on error, and it never reports the
+    failure as a plain "not an admin" without a log line — an operator must be
+    able to tell a denied user from a broken query.
+    """
+    if not email:
+        return False
+    normalized = email.strip().lower()
+
+    if normalized == configured_admin_email():
+        return True
+
+    try:
+        from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+
+        # `:name` binding, not `%(name)s` — the helper wraps the SQL in
+        # sqlalchemy.text(), which only understands the colon form. The
+        # psycopg2 style silently fails to bind rather than erroring.
+        df = query_to_dataframe_strict(
+            "SELECT 1 FROM user_roles WHERE email = :email "
+            "AND role = 'admin' LIMIT 1",
+            {"email": normalized},
+            timeout_s=5,
+        )
+        return not df.empty
+    except Exception:
+        logger.exception(
+            "user_roles admin lookup failed for %s — denying. Admin access is "
+            "limited to ADMIN_EMAIL until this is resolved.",
+            normalized,
+        )
+        return False

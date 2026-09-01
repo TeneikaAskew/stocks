@@ -40,6 +40,21 @@ SCOPE_STATEMENT = (
 )
 
 
+# Admin is the signed-in user now, not a shared token. iap mode lets a test
+# present an identity via the header IAP injects; AUTH_MODE is read at import
+# in api.auth, so patch the attribute rather than the env var.
+ADMIN_EMAIL = "admin@example.com"
+ADMIN_HEADERS = {"x-goog-authenticated-user-email": f"accounts.google.com:{ADMIN_EMAIL}"}
+OTHER_HEADERS = {"x-goog-authenticated-user-email": "accounts.google.com:someone@example.com"}
+
+
+def _as_admin(monkeypatch):
+    """Make the request identity the configured admin."""
+    monkeypatch.setenv("ADMIN_EMAIL", ADMIN_EMAIL)
+    import api.auth
+    monkeypatch.setattr(api.auth, "AUTH_MODE", "iap")
+
+
 def _build_app() -> FastAPI:
     app = FastAPI()
     app.include_router(admin_router.router)
@@ -116,43 +131,41 @@ def _stub_predict_response(
 # ─── Auth tests ──────────────────────────────────────────────────────────────
 
 
-def test_predict_requires_admin_token(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
-    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+def test_predict_requires_sign_in(monkeypatch):
+    _as_admin(monkeypatch)
     client = TestClient(_build_app())
     r = client.post("/api/admin/strat-engine/predict",
                      json={"ticker": "IWM", "timeframe": "15m"})
-    # 401 when token absent, 503 when ADMIN_TOKEN env var unset. We set
-    # it above so 401 is the expected response.
+    # No identity presented at all -> 401.
     assert r.status_code == 401
 
 
-def test_predict_rejects_wrong_token(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
-    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+def test_predict_rejects_non_admin_user(monkeypatch):
+    """Signed in as someone else: forbidden, not unauthorized."""
+    _as_admin(monkeypatch)
     client = TestClient(_build_app())
     r = client.post("/api/admin/strat-engine/predict",
                      json={"ticker": "IWM", "timeframe": "15m"},
-                     headers={"X-Admin-Token": "wrong-token"})
-    assert r.status_code == 401
+                     headers=OTHER_HEADERS)
+    assert r.status_code == 403
 
 
 def test_predict_rejects_unknown_ticker(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     client = TestClient(_build_app())
     r = client.post("/api/admin/strat-engine/predict",
                      json={"ticker": "TSLA", "timeframe": "15m"},
-                     headers={"X-Admin-Token": "secret-token"})
+                     headers=ADMIN_HEADERS)
     assert r.status_code == 400
     assert "ticker must be one of" in r.text
 
 
 def test_predict_rejects_unknown_timeframe(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     client = TestClient(_build_app())
     r = client.post("/api/admin/strat-engine/predict",
                      json={"ticker": "IWM", "timeframe": "4h"},
-                     headers={"X-Admin-Token": "secret-token"})
+                     headers=ADMIN_HEADERS)
     assert r.status_code == 400
     assert "timeframe must be one of" in r.text
 
@@ -161,7 +174,7 @@ def test_predict_rejects_unknown_timeframe(monkeypatch):
 
 
 def test_predict_returns_valid_shape(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     stub = _stub_predict_response()
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=stub), \
@@ -169,7 +182,7 @@ def test_predict_returns_valid_shape(monkeypatch):
         client = TestClient(_build_app())
         r = client.post("/api/admin/strat-engine/predict",
                          json={"ticker": "IWM", "timeframe": "15m"},
-                         headers={"X-Admin-Token": "secret-token"})
+                         headers=ADMIN_HEADERS)
     assert r.status_code == 200, r.text
     data = r.json()
     # Spec contract — every field must be present
@@ -187,7 +200,7 @@ def test_predict_returns_valid_shape(monkeypatch):
 
 
 def test_predict_normalizes_ticker_casing(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     stub = _stub_predict_response(ticker="IWM")
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=stub), \
@@ -195,7 +208,7 @@ def test_predict_normalizes_ticker_casing(monkeypatch):
         client = TestClient(_build_app())
         r = client.post("/api/admin/strat-engine/predict",
                          json={"ticker": "iwm", "timeframe": "15m"},
-                         headers={"X-Admin-Token": "secret-token"})
+                         headers=ADMIN_HEADERS)
     assert r.status_code == 200, r.text
     # Endpoint upper-cases the ticker before validation + dispatch
     assert r.json()["ticker"] == "IWM"
@@ -205,7 +218,7 @@ def test_predict_normalizes_ticker_casing(monkeypatch):
 
 
 def test_predict_returns_muted_payload(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     stub = _stub_predict_response(muted=True)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=stub), \
@@ -213,7 +226,7 @@ def test_predict_returns_muted_payload(monkeypatch):
         client = TestClient(_build_app())
         r = client.post("/api/admin/strat-engine/predict",
                          json={"ticker": "IWM", "timeframe": "15m"},
-                         headers={"X-Admin-Token": "secret-token"})
+                         headers=ADMIN_HEADERS)
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["muted"] is True
@@ -229,7 +242,7 @@ def test_predict_returns_muted_payload(monkeypatch):
 
 
 def test_predict_returns_unavailable_when_no_model(monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "secret-token")
+    _as_admin(monkeypatch)
     stub = _stub_predict_response(available=False)
     with patch("gcp.research.strat_engine.strat_pred_serve.predict_one",
                return_value=stub), \
@@ -237,7 +250,7 @@ def test_predict_returns_unavailable_when_no_model(monkeypatch):
         client = TestClient(_build_app())
         r = client.post("/api/admin/strat-engine/predict",
                          json={"ticker": "SPY", "timeframe": "30m"},
-                         headers={"X-Admin-Token": "secret-token"})
+                         headers=ADMIN_HEADERS)
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["available"] is False

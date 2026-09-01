@@ -97,6 +97,13 @@ fi
 # --set-env-vars replaces the whole set on each deploy, so the flag must live
 # here to persist across deploys.
 ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com,AUTH_MODE=${AUTH_MODE_VAL},MOVEMENT_STATEMENT_ENABLED=false"
+
+# Who gets /api/admin/* and the is_admin flag on /api/me. Must be deployed
+# here rather than patched on afterwards: this script uses --set-env-vars,
+# which REPLACES the whole set, so a hand-applied --update-env-vars would be
+# silently dropped by the next deploy. Falls back to the same default the app
+# uses, so omitting it changes nothing.
+ENV_VARS="${ENV_VARS},ADMIN_EMAIL=${ADMIN_EMAIL:-teneika@bictech.org}"
 SECRETS="DB_PASS=${DB_PASS_SECRET}:latest,AV_API_KEY=av-api-key:latest,ALPHA_VANTAGE_API_KEY=av-api-key:latest"
 
 # Firebase-mode services need the web SDK config (apiKey/authDomain/appId are

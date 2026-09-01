@@ -1,12 +1,11 @@
 """
 Admin router — model-routing dashboard backend.
 
-All endpoints require the `X-Admin-Token` header to match the
-`ADMIN_TOKEN` environment variable on the server. The token is
-NEVER exposed in the frontend bundle — the browser fetches it from
-sessionStorage (entered once per tab) and sends it as a header.
-If the token is unset or the header doesn't match, every endpoint
-returns 401.
+All endpoints require the signed-in user to BE the admin: the
+server-verified identity (Firebase token in firebase mode, IAP header in
+iap mode) must equal `ADMIN_EMAIL`. There is no shared admin token —
+identity is per-user, revocable, and attributable in a way a shared
+secret pasted into sessionStorage is not.
 
 Endpoints:
   GET    /api/admin/routes         — list per-role provider/model
@@ -22,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -36,6 +35,7 @@ from lib.agents.model_routing import (  # noqa: E402
     set_route,
 )
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
+from api.auth import current_user_email, is_admin_email  # noqa: E402
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -45,34 +45,22 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 
 
-_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").lower()
+def _require_admin(request: Request) -> None:
+    """Allow only a signed-in user holding the admin role.
 
+    `current_user_email` returns the identity the auth middleware verified —
+    the Firebase token's email in firebase mode, the IAP header in iap mode.
+    It is None in open mode, so admin routes are closed there rather than
+    falling back to a shared secret.
 
-def _iap_user_email(request: Request) -> Optional[str]:
-    """Extract email from the IAP-injected header."""
-    raw = request.headers.get("x-goog-authenticated-user-email")
-    if not raw:
-        return None
-    return raw.split(":", 1)[-1].strip().lower()
-
-
-def _require_admin(
-    request: Request,
-    x_admin_token: Optional[str],
-) -> None:
-    # Allow the admin email through without a token (IAP-authenticated)
-    iap_email = _iap_user_email(request)
-    if iap_email and iap_email == _ADMIN_EMAIL:
-        return
-
-    expected = os.environ.get("ADMIN_TOKEN", "").strip()
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="ADMIN_TOKEN not configured on the server",
-        )
-    if not x_admin_token or x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="invalid admin token")
+    `is_admin_email` is shared with /api/me so the flag the frontend renders
+    and the check gating these routes cannot drift apart.
+    """
+    email = current_user_email(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="sign-in required")
+    if not is_admin_email(email):
+        raise HTTPException(status_code=403, detail="admin access required")
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +123,8 @@ def _model_to_row(m: AvailableModel) -> AvailableModelRow:
 
 
 @router.get("/routes", response_model=RouteListResponse)
-async def admin_list_routes(request: Request, x_admin_token: Optional[str] = Header(None)):
-    _require_admin(request, x_admin_token)
+async def admin_list_routes(request: Request):
+    _require_admin(request)
     rows = [_route_to_row(r) for r in list_routes()]
     return RouteListResponse(routes=rows)
 
@@ -146,9 +134,8 @@ async def admin_update_route(
     role: str,
     body: RouteUpdateRequest,
     request: Request,
-    x_admin_token: Optional[str] = Header(None),
 ):
-    _require_admin(request, x_admin_token)
+    _require_admin(request)
     if role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown role: {role}")
     try:
@@ -163,8 +150,8 @@ async def admin_update_route(
 
 
 @router.get("/models", response_model=AvailableModelsResponse)
-async def admin_list_models(request: Request, x_admin_token: Optional[str] = Header(None)):
-    _require_admin(request, x_admin_token)
+async def admin_list_models(request: Request):
+    _require_admin(request)
     return AvailableModelsResponse(
         models=[_model_to_row(m) for m in list_available_models()]
     )
@@ -298,15 +285,15 @@ def _build_brief_cell(ticker: str, tf: str, snap: Optional[dict]) -> StructureBr
 
 @router.get("/structure-brief", response_model=StructureBriefResponse)
 async def admin_structure_brief(
-    request: Request, x_admin_token: Optional[str] = Header(None)
+    request: Request
 ):
     """Dev-only readout of the strat-engine type model's structure predictions.
 
     Dev-only: this endpoint sits behind the existing admin auth (IAP email
-    OR X-Admin-Token header). It is NOT wired into any user-facing route
+    via ADMIN_EMAIL). It is NOT wired into any user-facing route
     and is NOT triggered by any scheduler.
     """
-    _require_admin(request, x_admin_token)
+    _require_admin(request)
     snap = _load_structure_brief_snapshot()
     cells = [
         _build_brief_cell(ticker, tf, snap)
@@ -490,7 +477,7 @@ def _strat_engine_state_cells() -> list[StratEngineCellState]:
 
 @router.get("/strat-engine/state", response_model=StratEngineStateResponse)
 async def admin_strat_engine_state(
-    request: Request, x_admin_token: Optional[str] = Header(None)
+    request: Request
 ):
     """Operator snapshot of the on-shelf strat-engine model state.
 
@@ -498,7 +485,7 @@ async def admin_strat_engine_state(
     `live_ece` for each deployed (ticker, timeframe). No model is loaded,
     no Cloud SQL query happens — this is GCS metadata only.
     """
-    _require_admin(request, x_admin_token)
+    _require_admin(request)
     return StratEngineStateResponse(
         cells=_strat_engine_state_cells(),
         ece_ceiling=STRUCTURE_BRIEF_ECE_CEILING,
@@ -512,7 +499,6 @@ async def admin_strat_engine_state(
 async def admin_strat_engine_predict(
     body: StratEnginePredictRequest,
     request: Request,
-    x_admin_token: Optional[str] = Header(None),
 ):
     """Run the frozen strat-engine type model for ONE bar.
 
@@ -523,7 +509,7 @@ async def admin_strat_engine_predict(
     ECE exceeds the per-cell ceiling, the prediction is muted (top_class
     null, mute_reason populated).
     """
-    _require_admin(request, x_admin_token)
+    _require_admin(request)
 
     ticker = body.ticker.upper().strip()
     tf = body.timeframe.strip()
@@ -621,7 +607,6 @@ class StructureContinuationResponse(BaseModel):
 async def admin_structure_continuation(
     body: StructureContinuationRequest,
     request: Request,
-    x_admin_token: Optional[str] = Header(None),
 ):
     """Read-only, feature-flagged calibrated structure-continuation probability.
 
@@ -634,7 +619,7 @@ async def admin_structure_continuation(
     probability, or an explicit UNAVAILABLE envelope when the model can't
     produce one — never a fabricated number (Rule 3.7).
     """
-    _require_admin(request, x_admin_token)
+    _require_admin(request)
 
     # Feature flag — when OFF the endpoint behaves as if it doesn't exist.
     if not _structure_continuation_enabled():

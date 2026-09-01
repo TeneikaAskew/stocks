@@ -19,31 +19,22 @@
 
 set -euo pipefail
 
-# Claude Code Remote / Cowork sessions export CLOUDSDK_AUTH_ACCESS_TOKEN as a
-# short placeholder, not a real OAuth token. Bare `gcloud` then fails with
-# ACCESS_TOKEN_TYPE_UNSUPPORTED, and every dispatch dies.
-#
-# Whether the token is usable is decided by ASKING THE API, further down, just
-# before dispatch — not by inspecting the token here. Two representation tests
-# have already been wrong in this file: a `ya29.` prefix (a convention, not a
-# contract) and a minimum length (no contract either). Both silently discarded
-# a caller's credential on a guess about its format and fell back to whatever
-# ambient identity gcloud had. An opaque value is exactly the thing you cannot
-# validate by looking at it, so the only honest test is to use it.
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-east1}"
 JOB="db-query"
 
 usage() {
     cat <<EOF
-Usage: $0 (-q SQL | -f SQL_FILE) [--commit] [--timeout SECONDS] [--quiet]
+Usage: $0 (-q SQL | -f SQL_FILE) [--commit] [--timeout SECONDS]
+          [--wait-timeout SECONDS] [--quiet]
 
 Options:
-  -q SQL          inline SQL (multi-statement separated by ;)
-  -f SQL_FILE     path to .sql file (sent as ONE statement, supports DO blocks)
-  --commit        persist writes (default: rollback)
-  --timeout SECS  per-statement statement_timeout (default 120)
-  --quiet         suppress all output except the final summary path
+  -q SQL               inline SQL (multi-statement separated by ;)
+  -f SQL_FILE          path to .sql file (sent as ONE statement, supports DO blocks)
+  --commit             persist writes (default: rollback)
+  --timeout SECS       per-statement statement_timeout (default 120)
+  --wait-timeout SECS  give up waiting for the execution (default: timeout + 180)
+  --quiet              suppress progress logs; the summary still prints
 EOF
     exit 2
 }
@@ -52,6 +43,7 @@ SQL=""
 SQL_FILE=""
 COMMIT="false"
 TIMEOUT_S="120"
+WAIT_MAX_S=""      # defaults to TIMEOUT_S + 180 once args are parsed
 QUIET="false"
 
 while [[ $# -gt 0 ]]; do
@@ -60,11 +52,16 @@ while [[ $# -gt 0 ]]; do
         -f) SQL_FILE="$2"; shift 2 ;;
         --commit) COMMIT="true"; shift ;;
         --timeout) TIMEOUT_S="$2"; shift 2 ;;
+        --wait-timeout) WAIT_MAX_S="$2"; shift 2 ;;
         --quiet) QUIET="true"; shift ;;
         -h|--help) usage ;;
         *) echo "unknown arg: $1" >&2; usage ;;
     esac
 done
+
+# Container start + query + result upload all happen inside the wait window,
+# so give the statement timeout meaningful headroom rather than racing it.
+: "${WAIT_MAX_S:=$(( TIMEOUT_S + 180 ))}"
 
 if [[ -z "$SQL" && -z "$SQL_FILE" ]]; then
     echo "error: provide -q SQL or -f SQL_FILE" >&2
@@ -85,28 +82,39 @@ if [[ -n "$SQL_FILE" ]]; then
     SQL="$(cat "$SQL_FILE")"
 fi
 
-# NB: the `if` matters. Written as `[[ ... ]] && echo`, this function returns 1
-# whenever QUIET is true, and under `set -e` that aborted the script at the
-# first log call -- so `--quiet` exited 1 having printed nothing at all, which
-# a caller could easily read as "the query returned no rows".
-log() { if [[ "$QUIET" != "true" ]]; then echo "$@" >&2; fi; }
+# NOTE: written as an `if`, not `[[ ... ]] && echo`. The && form returns the
+# status of the failed test when QUIET=true, and under `set -e` that aborted
+# the whole script at the first log call — so `--quiet` exited 1 immediately,
+# before dispatching anything, with no output at all. It looked like a hang.
+log() {
+    if [[ "$QUIET" != "true" ]]; then
+        echo "$@" >&2
+    fi
+}
 
 # Build env-var overrides. Use the ^|^ delimiter so embedded commas in the
 # SQL don't confuse gcloud's default CSV parsing.
-# A nonce that only this dispatch's execution can carry. Creation time cannot
-# establish ownership — the job is shared, and the start bound is deliberately
-# slack for clock skew — so a candidate recovered from stderr is confirmed by
-# this marker instead. The job does not read it; it exists to be matched.
+# A nonce only this dispatch's execution can carry. Used below to PROVE that a
+# recovered execution id is ours; nothing in the job reads it.
 DISPATCH_ID="d$(date -u +%s)-$$-${RANDOM}"
 ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT_SECONDS=${TIMEOUT_S}|DB_QUERY_DISPATCH_ID=${DISPATCH_ID}"
 
-# Validate the caller's access token against the API before dispatching, and
-# drop it only if the API itself rejects it as a credential. A read-only
-# describe, so a failure here cannot have started anything.
+# Claude Code Remote / Cowork sessions export CLOUDSDK_AUTH_ACCESS_TOKEN as a
+# short placeholder rather than a real OAuth token, and every gcloud call then
+# fails UNAUTHENTICATED. Without this the failure surfaces at the GA/beta probe
+# below, which blames a missing beta component -- the wrong cause, and one that
+# sends an operator to install something they already have.
 #
-# PERMISSION_DENIED is deliberately NOT a reason to drop it: that means the
-# token is valid and its identity lacks a role, and substituting a different
-# identity would hide exactly the problem the operator needs to see.
+# Whether the token is usable is decided by ASKING THE API, not by inspecting
+# the token. Two representation tests were tried first and both were wrong: a
+# `ya29.` prefix (a convention, not a contract) and a minimum length (no
+# contract either). An opaque value is precisely what you cannot validate by
+# looking at it. This describe is read-only, so a failure here cannot have
+# started anything.
+#
+# PERMISSION_DENIED deliberately does NOT qualify: that means the token is
+# valid and its identity lacks a role, and silently substituting a different
+# identity would hide the very problem the operator needs to see.
 if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]]; then
     PROBE_ERR=$(mktemp)
     if ! gcloud run jobs describe "$JOB" --region="$REGION" \
@@ -118,86 +126,72 @@ if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]]; then
             echo "      and using gcloud's configured credentials instead." >&2
             unset CLOUDSDK_AUTH_ACCESS_TOKEN
         fi
-        # Any other probe failure — network, PERMISSION_DENIED, an outage —
-        # leaves the token in place. The dispatch below reports the real error
-        # rather than this one guessing at it.
+        # Anything else — network, PERMISSION_DENIED, an outage — leaves the
+        # token alone so the real error surfaces below rather than here.
     fi
     rm -f "$PROBE_ERR"
 fi
 
 log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#SQL} chars)..."
 
-# Create the execution with --async so the execution id comes from the CREATE
-# call. `--wait` cannot supply it: when the execution's task fails, gcloud exits
-# non-zero and prints NOTHING to stdout, so a --wait dispatcher cannot tell
-# "no execution was created" from "an execution ran and failed". Those two need
-# opposite handling — the second one has a summary in GCS and, under --commit,
-# may have already persisted statements (gcp/queries/run_query.py commits each
-# statement independently and halts the batch on a system error). Reporting it
-# as "nothing ran" hides that record and invites a retry that re-commits.
+# `executions` is GA, but older SDKs only expose it under `beta` — and on a
+# machine where the beta component is not installed, every beta call errors.
+# That silently starved the poll loop below of a status and made a job that had
+# already SUCCEEDED look like a timeout. Resolve the working form once.
+EXEC_CMD=""
+_resolve_exec_cmd() {
+    if gcloud run jobs executions list --job="$JOB" --region="$REGION"             --limit=1 --format="value(name)" >/dev/null 2>&1; then
+        EXEC_CMD="gcloud run jobs executions"
+    elif gcloud beta run jobs executions list --job="$JOB" --region="$REGION"             --limit=1 --format="value(name)" >/dev/null 2>&1; then
+        EXEC_CMD="gcloud beta run jobs executions"
+    else
+        echo "error: cannot list Cloud Run job executions with either the GA or" >&2
+        echo "       beta gcloud command. Check auth and 'gcloud components install beta'." >&2
+        exit 1
+    fi
+}
+_resolve_exec_cmd
+
+# Dispatch with --async, then poll under our own deadline.
 #
-# The previous version compounded this: it sent stderr to /dev/null and, when
-# the name came back empty, fell back to `executions list --limit=1` — i.e. to
-# whatever execution already existed, printing a PREVIOUS run's summary as the
-# answer to the query you just asked. A wrong answer that looks right is worse
-# than no answer (CLAUDE.md Rule 3.7).
-ERR_FILE=$(mktemp)
-# Bounds the candidate set for the ambiguous case below, and verifies any id
-# recovered from stderr. Backed off 60s so clock skew between here and GCP
-# cannot make a genuinely new execution look old.
-START_TS=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%S 2>/dev/null \
-           || date -u -v-60S +%Y-%m-%dT%H:%M:%S)
-set +e
-EXEC_NAME=$(gcloud run jobs execute "$JOB" \
-    --region="$REGION" \
-    --update-env-vars="$ENV_OVERRIDES" \
-    --async \
-    --format="value(metadata.name)" 2>"$ERR_FILE")
-RC=$?
-set -e
+# --wait polls forever: a job that never reaches a terminal state (stuck
+# pull, quota wait, an image that won't start) blocks the caller with no
+# output and no way out but Ctrl-C. Owning the loop means a stall fails
+# loudly with the execution name still printed, so it stays diagnosable.
+EXEC_ERR="$(mktemp)"
+if ! EXEC_NAME=$(gcloud run jobs execute "$JOB" \
+        --region="$REGION" \
+        --update-env-vars="$ENV_OVERRIDES" \
+        --async \
+        --format="value(metadata.name)" 2>"$EXEC_ERR"); then
+    echo "error: dispatching the db-query job failed:" >&2
+    cat "$EXEC_ERR" >&2
+    rm -f "$EXEC_ERR"
+    exit 1
+fi
 
-# A non-zero exit does not by itself prove the execution was never created.
-# If the API accepted the request and the response was then lost — connection
-# reset, timeout, the CLI interrupted — gcloud exits non-zero with nothing on
-# stdout while the execution runs on regardless. Claiming "nothing ran" there
-# is the same false negative this script exists to remove, and under --commit
-# it invites a retry that applies the writes twice. So: prove it, or say the
-# outcome is unknown. Three tiers, conservative by default.
-if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
-    # Both tiers below read gcloud's stderr, and stderr is NOT a trusted
-    # channel: with HTTP logging on it carries the request payload, which
-    # carries this invocation's SQL. An unanchored scan would let the query
-    # text decide the dispatcher's behaviour — SQL containing something shaped
-    # like an execution id would be adopted as one, and SQL containing the word
-    # NOT_FOUND would be read as a rejection. Both recreate the stale-result
-    # and unsafe-retry defects this script exists to remove. So match only
-    # against gcloud's own message forms, anchored at line start, and then
-    # verify the result against the API rather than trusting the text.
-    ERROR_LINES=$(grep -E '^ERROR: \(gcloud\.' "$ERR_FILE" || true)
-
-    # 1. gcloud names the execution in two known message forms. Extract from
-    #    those only, then confirm with the API that the candidate is real and
-    #    was created in this dispatch window — an id echoed from the payload
-    #    would name an older execution and fail the window check.
-    #    Anchored at line start, because that is where gcloud puts them:
-    #      Execution [db-query-gc6ns] is being started asynchronously.
-    #      gcloud run jobs executions describe db-query-gc6ns
-    #    A logged request payload appears mid-line after `body:` or a JSON
-    #    key, so it cannot match. (Verified: SQL containing the text
-    #    `Execution [db-query-xxxxx]` was adopted before this anchor and is
-    #    rejected after it.)
-    RECOVERED=$(grep -oE "^(Execution \[|gcloud( beta)? run jobs executions describe )${JOB}-[a-z0-9]{5}" "$ERR_FILE" 2>/dev/null \
+# Some gcloud versions print the execution name on stderr rather than stdout.
+#
+# Recovering it must not become "adopt whatever execution exists". Listing the
+# most recent one is what this script used to do, and it printed a PREVIOUS
+# query's summary as the answer to the one just asked -- a wrong answer that
+# looks right, which is the whole reason this file is being changed
+# (CLAUDE.md Rule 3.7). Two guards instead:
+#
+#   1. Match only gcloud's own message forms, ANCHORED AT LINE START. stderr is
+#      not a trusted channel: with HTTP logging on it carries the request body,
+#      hence this invocation's SQL, so an unanchored scan would let the query
+#      text name the execution. A logged payload appears mid-line and cannot
+#      match.
+#   2. Confirm the candidate carries THIS dispatch's id. Timing cannot
+#      establish ownership -- db-query is a shared job, so a concurrent
+#      execution would satisfy any time window.
+if [[ -z "$EXEC_NAME" ]]; then
+    RECOVERED=$(grep -oE "^(Execution \[|gcloud( beta)? run jobs executions describe )${JOB}-[a-z0-9]{5}" "$EXEC_ERR" 2>/dev/null \
                 | grep -oE "${JOB}-[a-z0-9]{5}" | head -1 || true)
-    #    Ownership is established by the dispatch marker, NOT by creation
-    #    time. A time bound cannot prove ownership: the job is shared, and
-    #    START_TS is deliberately backed off 60s for clock skew, so another
-    #    execution created inside that slack would satisfy it. Only this
-    #    dispatch's execution carries this DISPATCH_ID.
-    RECOVERED_OWNED=""
-    if [[ -n "$RECOVERED" ]]; then
-        if gcloud beta run jobs executions describe "$RECOVERED" \
-               --region="$REGION" --format=json 2>/dev/null \
-           | python3 -c 'import sys, json
+    if [[ -n "$RECOVERED" ]] && $EXEC_CMD describe "$RECOVERED" \
+            --region="$REGION" --format=json 2>/dev/null \
+        | python3 -c 'import sys, json
 d = json.load(sys.stdin)
 want = sys.argv[1]
 for c in d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
@@ -205,153 +199,135 @@ for c in d.get("spec", {}).get("template", {}).get("spec", {}).get("containers",
         if e.get("name") == "DB_QUERY_DISPATCH_ID" and e.get("value") == want:
             sys.exit(0)
 sys.exit(1)' "$DISPATCH_ID"; then
-            RECOVERED_OWNED="yes"
-        fi
-    fi
-
-    if [[ -n "$RECOVERED" && -n "$RECOVERED_OWNED" ]]; then
         EXEC_NAME="$RECOVERED"
-        log "gcloud exited $RC but named execution $EXEC_NAME, confirmed ours by dispatch id — using it"
-    elif grep -qE '^ERROR: \(gcloud\.[a-z.]+\) (UNAUTHENTICATED|PERMISSION_DENIED|INVALID_ARGUMENT|NOT_FOUND|FAILED_PRECONDITION)\b' <<<"$ERROR_LINES" \
-      || grep -qE '^(ERROR: )?.*(unrecognized arguments|argument .*: expected|Invalid choice)' <<<"$ERROR_LINES"; then
-        # 2. The API rejected the request, or gcloud refused to send one.
-        #    These are the only cases where "nothing ran" is provable — and
-        #    only when the status appears in gcloud's own ERROR: line, not
-        #    anywhere in the stream.
-        echo "error: the request was rejected before any execution was created" >&2
-        echo "       (gcloud exit $RC). No query was run." >&2
-        sed 's/^/       | /' "$ERR_FILE" >&2
-        rm -f "$ERR_FILE"
-        exit 1
-    else
-        # 3. Ambiguous. Do not claim either outcome.
-        echo "error: dispatch outcome is UNKNOWN (gcloud exit $RC, no execution id)." >&2
-        echo "       The request may have been accepted and may be running now." >&2
-        if [[ -n "$RECOVERED" ]]; then
-            echo "       stderr mentioned $RECOVERED, but it does not carry this" >&2
-            echo "       dispatch's id, so it is NOT being treated as yours." >&2
-        fi
-        if [[ "$COMMIT" == "true" ]]; then
-            echo "       This was a --commit run: DO NOT RETRY before reconciling," >&2
-            echo "       or the writes may be applied twice." >&2
-        fi
-        echo "       Executions created at or after $START_TS are CANDIDATES — the" >&2
-        echo "       job is shared, so others may appear in the same window and none" >&2
-        echo "       of them is identified as yours by timing alone. List them:" >&2
-        echo "         gcloud beta run jobs executions list --job=$JOB --region=$REGION \\" >&2
-        echo "           --format='table(name,metadata.creationTimestamp,status.conditions[0].status)'" >&2
-        echo "       Yours, if it exists, is the one whose DB_QUERY_DISPATCH_ID is" >&2
-        echo "         $DISPATCH_ID" >&2
-        echo "       Check a candidate with:" >&2
-        echo "         gcloud beta run jobs executions describe <name> --region=$REGION \\" >&2
-        echo "           --format=json | grep -c '$DISPATCH_ID'" >&2
-        sed 's/^/       | /' "$ERR_FILE" >&2
-        rm -f "$ERR_FILE"
-        exit 1
+        log "recovered execution $EXEC_NAME from stderr, confirmed ours by dispatch id"
     fi
 fi
-rm -f "$ERR_FILE"
+
+if [[ -z "$EXEC_NAME" ]]; then
+    # Do not claim the query did not run. The dispatch call SUCCEEDED; only the
+    # name is missing, so an execution may well be running right now. Under
+    # --commit, telling the caller nothing happened invites a retry that
+    # applies the writes twice.
+    echo "error: dispatched successfully, but the execution name is UNKNOWN." >&2
+    echo "       An execution may be running now. Do not assume nothing ran." >&2
+    if [[ -n "$RECOVERED" ]]; then
+        echo "       stderr mentioned $RECOVERED, but it does not carry this" >&2
+        echo "       dispatch's id, so it is NOT being treated as yours." >&2
+    fi
+    if [[ "$COMMIT" == "true" ]]; then
+        echo "       This was a --commit run: DO NOT RETRY before reconciling," >&2
+        echo "       or the writes may be applied twice." >&2
+    fi
+    echo "       Yours, if it exists, is the execution whose DB_QUERY_DISPATCH_ID is" >&2
+    echo "         $DISPATCH_ID" >&2
+    echo "       Find it with:" >&2
+    echo "         $EXEC_CMD list --job=$JOB --region=$REGION \\" >&2
+    echo "           --format='value(name)' | while read -r n; do" >&2
+    echo "             $EXEC_CMD describe \$n --region=$REGION --format=json \\" >&2
+    echo "               | grep -q '$DISPATCH_ID' && echo \$n; done" >&2
+    cat "$EXEC_ERR" >&2
+    rm -f "$EXEC_ERR"
+    exit 1
+fi
+rm -f "$EXEC_ERR"
 log "execution: $EXEC_NAME"
 
-# From here the execution EXISTS. Every exit path below names it, and none of
-# them may claim that nothing ran.
-completed_status() {
-    gcloud beta run jobs executions describe "$EXEC_NAME" \
-        --region="$REGION" --format=json 2>/dev/null \
-    | python3 -c 'import sys, json
-d = json.load(sys.stdin)
-for c in d.get("status", {}).get("conditions", []):
-    if c.get("type") == "Completed":
-        print(c.get("status") or "Unknown")
-        break'
-}
-
-# Budget from the JOB'S TASK TIMEOUT, not from TIMEOUT_S. TIMEOUT_S is a
-# per-statement `statement_timeout`, applied independently to each statement
-# in a multi-statement batch, so `TIMEOUT_S + slack` can be exceeded by a
-# batch that is behaving perfectly — abandoning a healthy execution before
-# its summary exists. The task timeout is the real ceiling: nothing this job
-# runs can outlast it. Add slack for image pull and provisioning.
-# Read it from THIS EXECUTION, not from the job. The execution inherited an
-# immutable copy of the template at creation; the job's own template can be
-# changed by a deploy while we are still polling, and then the budget would
-# move underneath a run that is behaving correctly.
-TASK_TIMEOUT_S=$(gcloud beta run jobs executions describe "$EXEC_NAME" --region="$REGION" \
-    --format="value(spec.template.spec.timeoutSeconds)" 2>/dev/null || true)
-if ! [[ "$TASK_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
-    # Could not read it — take a generous constant rather than a tight guess.
-    # Waiting too long costs a slow failure; waiting too little reports an
-    # unknown outcome for a run that was fine.
-    TASK_TIMEOUT_S=3600
-    log "could not read $EXEC_NAME task timeout; assuming ${TASK_TIMEOUT_S}s"
-fi
-WAIT_BUDGET_S=$(( TASK_TIMEOUT_S + 900 ))
-log "waiting up to ${WAIT_BUDGET_S}s for $EXEC_NAME..."
-# Elapsed is measured as a DELTA from here, not as bare $SECONDS. Bash inherits
-# SECONDS from the environment (`SECONDS=2000 ./db_query_cr.sh ...` starts the
-# script with the clock already at 2000), so comparing it directly to the
-# budget can time out on the first pass — dispatching an execution, possibly a
-# --commit one, and then abandoning it without ever polling. A delta is also
-# immune to any later reassignment, which `SECONDS=0` here would not be.
-WAIT_START=$SECONDS
-CONCLUSION=""
-while [[ "$CONCLUSION" != "True" && "$CONCLUSION" != "False" ]]; do
-    if (( SECONDS - WAIT_START >= WAIT_BUDGET_S )); then
-        echo "error: execution $EXEC_NAME did not reach a terminal state within" >&2
-        echo "       ${WAIT_BUDGET_S}s. It WAS created and may still be running; under" >&2
-        echo "       --commit some statements may already have persisted. Do not retry" >&2
-        echo "       before checking:" >&2
-        echo "         gcloud beta run jobs executions describe $EXEC_NAME --region=$REGION" >&2
-        exit 1
+# Poll for TERMINALITY via completionTime, not the Completed condition.
+#
+# Cloud Run reports Completed=False while an execution is still RUNNING, so
+# treating False as an outcome ends the wait early: the script reported
+# failure for a job that went on to succeed, and read the GCS summary before
+# it had been uploaded. completionTime is only set once the execution has
+# actually finished; succeeded/failed counts then give the real outcome.
+DEADLINE=$(( $(date +%s) + WAIT_MAX_S ))
+while :; do
+    COMPLETION=$($EXEC_CMD describe "$EXEC_NAME"         --region="$REGION"         --format="value(status.completionTime)" 2>/dev/null || true)
+    if [[ -n "$COMPLETION" ]]; then
+        break
     fi
-    sleep 5
-    CONCLUSION=$(completed_status || true)
+    if (( $(date +%s) >= DEADLINE )); then
+        echo "error: execution $EXEC_NAME did not finish within ${WAIT_MAX_S}s." >&2
+        echo "       It may still be running. Inspect with:" >&2
+        echo "       $EXEC_CMD describe $EXEC_NAME --region=$REGION" >&2
+        exit 124
+    fi
+    sleep 3
 done
+
+FAILED_N=$($EXEC_CMD describe "$EXEC_NAME" --region="$REGION"     --format="value(status.failedCount)" 2>/dev/null || true)
+SUCCEEDED_N=$($EXEC_CMD describe "$EXEC_NAME" --region="$REGION"     --format="value(status.succeededCount)" 2>/dev/null || true)
+if [[ "${FAILED_N:-0}" -gt 0 || "${SUCCEEDED_N:-0}" -lt 1 ]]; then
+    CONCLUSION="False"
+else
+    CONCLUSION="True"
+fi
+log "execution finished: succeeded=${SUCCEEDED_N:-0} failed=${FAILED_N:-0}"
 
 PREFIX="gs://${PROJECT_ID}-trading-data/query-results/${EXEC_NAME}"
 log "results at: $PREFIX"
 
-# Emit the summary for a FAILED execution too. gcp/db_query_job.py uploads the
-# artifacts before propagating the runner's exit code, so a failed execution
-# still has one — and under --commit its per-statement records are the only
-# evidence of which statements persisted before the batch halted.
-# The summary is read from the execution THIS invocation created, so it can
-# never be another run's output.
-SUMMARY_ERR=$(mktemp)
-if ! gcloud storage cat "${PREFIX}/summary.md" 2>"$SUMMARY_ERR"; then
-    echo "error: could not read ${PREFIX}/summary.md" >&2
-    if grep -qiE 'matched no objects|does not exist|not found|404' "$SUMMARY_ERR"; then
-        echo "       The object is absent: execution $EXEC_NAME wrote no summary." >&2
+# Always emit the summary to stdout — it has the result tables either way.
+#
+# Bounded, with a fallback. `gcloud storage` is a separate component: it can be
+# absent, and it has been observed hanging here long enough to stall the script
+# AFTER the query had already succeeded. An unbounded read at this point throws
+# away work that is finished and paid for. The Storage JSON API needs only curl
+# and a token, and is equally 443-only, so it is a genuinely different path
+# rather than a retry of the same tool.
+BUCKET="${PROJECT_ID}-trading-data"
+OBJECT="query-results/${EXEC_NAME}/summary.md"
+
+_read_summary_gcloud() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null
     else
-        echo "       The READ failed. That is not evidence the object is absent, and" >&2
-        echo "       says nothing about whether the query ran." >&2
+        gcloud storage cat "${PREFIX}/summary.md" 2>/dev/null
     fi
-    # The execution's outcome is already known from the poll above and must be
-    # reported here. Failing to read the artifact does not un-run the query,
-    # and under --commit the difference decides whether a retry is safe.
+}
+
+_read_summary_api() {
+    local token encoded
+    token=$(gcloud auth print-access-token 2>/dev/null) || return 1
+    # The JSON API's single-object GET needs the path percent-encoded.
+    encoded=${OBJECT//\//%2F}
+    curl -fsS --max-time 60 -H "Authorization: Bearer ${token}" \
+        "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${encoded}?alt=media"
+}
+
+# Require NON-EMPTY output, not merely a zero exit. A reader that succeeds and
+# prints nothing (a zero-byte object, a truncated transfer) would otherwise be
+# indistinguishable from a summary, and the script would exit 0 having shown
+# the caller no result at all.
+SUMMARY_FILE=$(mktemp)
+if _read_summary_gcloud >"$SUMMARY_FILE" 2>/dev/null && [[ -s "$SUMMARY_FILE" ]]; then
+    cat "$SUMMARY_FILE"
+elif _read_summary_api >"$SUMMARY_FILE" 2>/dev/null && [[ -s "$SUMMARY_FILE" ]]; then
+    cat "$SUMMARY_FILE"
+else
+    # A failed READ is not evidence the object is absent, and neither one says
+    # anything about whether the query ran. The outcome is already known from
+    # the poll above, so report it here rather than leaving the caller to infer
+    # a failure from a missing artifact -- under --commit that inference is
+    # what triggers a retry that applies the writes twice.
+    echo "error: could not read ${PREFIX}/summary.md via gcloud storage or the" >&2
+    echo "       Storage JSON API. That is a failure to FETCH the result, not" >&2
+    echo "       evidence the query did not run." >&2
     if [[ "$CONCLUSION" == "True" ]]; then
-        echo "       Execution $EXEC_NAME COMPLETED SUCCESSFULLY." >&2
+        echo "       Execution $EXEC_NAME COMPLETED SUCCESSFULLY" >&2
+        echo "       (succeeded=${SUCCEEDED_N:-0} failed=${FAILED_N:-0})." >&2
         if [[ "$COMMIT" == "true" ]]; then
             echo "       This was a --commit run and it succeeded: THE WRITES ARE" >&2
             echo "       APPLIED. Do NOT retry — that would apply them twice." >&2
         fi
-        echo "       Retry the read instead:" >&2
+        echo "       Retry the READ instead:" >&2
         echo "         gcloud storage cat ${PREFIX}/summary.md" >&2
     else
-        echo "       Execution $EXEC_NAME did not complete successfully; under --commit," >&2
-        echo "       statements before the failure may still have persisted." >&2
+        echo "       Execution $EXEC_NAME did not complete successfully; under" >&2
+        echo "       --commit, statements before the failure may still have persisted." >&2
     fi
-    echo "       Do not treat any earlier output as the answer to this query." >&2
-    sed 's/^/       | /' "$SUMMARY_ERR" >&2
-    rm -f "$SUMMARY_ERR"
-    exit 1
+    echo "       Artifacts are at ${PREFIX}/" >&2
 fi
-rm -f "$SUMMARY_ERR"
+rm -f "$SUMMARY_FILE"
 
-if [[ "$CONCLUSION" != "True" ]]; then
-    echo "error: execution $EXEC_NAME failed. The summary above is that execution's own" >&2
-    echo "       record, not a previous run's — statements it reports as committed HAVE" >&2
-    echo "       persisted. Read it before retrying." >&2
-    exit 1
-fi
-exit 0
+[[ "$CONCLUSION" == "True" ]] && exit 0 || exit 1
