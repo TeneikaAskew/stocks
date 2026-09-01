@@ -72,17 +72,18 @@ dev:
 api:
 	@bash -c 'set -a; [ -f ./.env ] && . ./.env; set +a; cd platform && exec uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload'
 
-## Start only the Vite dev server (port 5173)
+## The frontend lives in its own repo now — point at it rather than fail obscurely.
 web:
-	@cd platform && exec npm run dev
+	@echo "The frontend moved to github.com/TeneikaAskew/solyra."
+	@echo "Run 'npm run dev' there; its Vite proxy finds this API on :8000"
+	@echo "automatically, or falls back to deployed staging when it is not running."
+	@exit 1
 
 ## Kill any running uvicorn / vite dev processes on ports 8000 and 5173.
 ## Uses the classic [x]yz regex trick so pkill doesn't match its own command line.
 stop:
-	@echo "Stopping platform dev servers..."
+	@echo "Stopping the platform API..."
 	-@pkill -f '[u]vicorn api.main:app' 2>/dev/null; true
-	-@pkill -f '[v]ite.*platform' 2>/dev/null; true
-	-@pkill -f '[n]ode.*platform/node_modules/.bin/vite' 2>/dev/null; true
 	@sleep 1 2>/dev/null; echo "Done."
 
 ## One-time: store GitHub PAT + repo slug in GCP Secret Manager for the failure notifier.
