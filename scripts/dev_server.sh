@@ -28,28 +28,22 @@ if ! command -v uvicorn >/dev/null 2>&1; then
   echo "ERROR: uvicorn not found. Run 'make install' first." >&2
   exit 1
 fi
-if [[ ! -d platform/node_modules ]]; then
-  echo "ERROR: platform/node_modules not found. Run 'cd platform && npm install' first." >&2
-  exit 1
-fi
 
-# PIDs of the two children — used by the cleanup trap
+# PID of the API child — used by the cleanup trap
 API_PID=""
-WEB_PID=""
 
 cleanup() {
   echo ""
-  echo "Stopping dev servers..."
+  echo "Stopping the API server..."
   [[ -n "$API_PID" ]] && kill "$API_PID" 2>/dev/null || true
-  [[ -n "$WEB_PID" ]] && kill "$WEB_PID" 2>/dev/null || true
   # Give them a moment to exit gracefully
   wait 2>/dev/null || true
   exit 0
 }
 trap cleanup INT TERM
 
-echo "Starting platform API (port 8000) and Vite dev server (port 5173)..."
-echo "Press Ctrl+C to stop both."
+echo "Starting platform API (port 8000)..."
+echo "Press Ctrl+C to stop it."
 echo ""
 
 # FastAPI backend — prefix every line with [api]
