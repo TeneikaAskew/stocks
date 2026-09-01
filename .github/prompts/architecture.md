@@ -15,8 +15,8 @@ You are an automated documentation agent operating inside the GitHub repo `Tenei
 ## Inputs you have
 
 - The full repo tree (clone it, treat it as ground truth for code)
-- `gcp_inventory.json` — output of `gcloud asset search-all-resources --scope=projects/adept-mountain-474619-d4`. Lists every Cloud Run Job, Service, Scheduler, Secret, Bucket, Pub/Sub topic, BigQuery dataset, IAM service account, etc. that exists right now.
-- `gcp_iam.json` — output of `gcloud projects get-iam-policy adept-mountain-474619-d4 --format=json`. Maps every member to the roles they have.
+- `refresh-inputs/inventory.json` — output of `gcloud asset search-all-resources --scope=projects/adept-mountain-474619-d4`. Lists every Cloud Run Job, Service, Scheduler, Secret, Bucket, Pub/Sub topic, BigQuery dataset, IAM service account, etc. that exists right now.
+- `refresh-inputs/iam.json` — output of `gcloud projects get-iam-policy adept-mountain-474619-d4 --format=json`. Maps every member to the roles they have.
 - The previous `ARCHITECTURE.md` if one exists (use it for style + section ordering, but verify every claim against current state — don't blind-copy)
 
 ## What to produce
@@ -33,18 +33,18 @@ Then begin section 1.
 
 ### 1. System overview (one paragraph, ~80-120 words)
 
-What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal React + FastAPI dashboard at the `trading-platform` Cloud Run Service). Single-user / small-team — no public auth, no per-user data partitioning. Mention the rough job count derived from `gcp_inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
+What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal React + FastAPI dashboard at the `trading-platform` Cloud Run Service). Single-user / small-team — no public auth, no per-user data partitioning. Mention the rough job count derived from `refresh-inputs/inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
 
 ### 2. Component inventory (table form)
 
 Two subsections:
 
 #### 2a. Code modules
-A table with columns: Component | Type | Purpose | Depends on | Used by. List every Python module under `gcp/`, `gcp/fetchers/`, key `lib/` modules (the shared math), and the FastAPI entry. Cite each as a markdown link to the file path. The "Used by" column should reference the Cloud Run Job or Cloud Scheduler trigger that invokes it (cross-reference `gcp_inventory.json` job names).
+A table with columns: Component | Type | Purpose | Depends on | Used by. List every Python module under `gcp/`, `gcp/fetchers/`, key `lib/` modules (the shared math), and the FastAPI entry. Cite each as a markdown link to the file path. The "Used by" column should reference the Cloud Run Job or Cloud Scheduler trigger that invokes it (cross-reference `refresh-inputs/inventory.json` job names).
 
 #### 2b. GCP resources
 A table with columns: Resource | Type | Purpose | Notes. List every:
-- Cloud Run Job (filter `assetType=run.googleapis.com/Job` from `gcp_inventory.json`)
+- Cloud Run Job (filter `assetType=run.googleapis.com/Job` from `refresh-inputs/inventory.json`)
 - Cloud Run Service (`run.googleapis.com/Service`)
 - Cloud Scheduler job (you may need a separate `gcloud scheduler jobs list` if not in inventory)
 - Cloud SQL instance (`sqladmin.googleapis.com/Instance`)
@@ -53,7 +53,7 @@ A table with columns: Resource | Type | Purpose | Notes. List every:
 - Pub/Sub topic
 - Cloud Logging sink
 - Cloud Tasks queue
-- Service account (with the roles each holds, derived from `gcp_iam.json`)
+- Service account (with the roles each holds, derived from `refresh-inputs/iam.json`)
 
 ### 3. Data flow (5 named subsections)
 
@@ -79,7 +79,7 @@ Group into subgraphs: `External APIs`, `Fetchers (Cloud Run Jobs)`, `Cloud SQL T
 
 Two subsections — these are **gaps for the operator to investigate**:
 
-- **Inventory resources with no clear repo reference** — anything in `gcp_inventory.json` that isn't named anywhere in the codebase. Could be orphans (need cleanup) or could be missing from docs.
+- **Inventory resources with no clear repo reference** — anything in `refresh-inputs/inventory.json` that isn't named anywhere in the codebase. Could be orphans (need cleanup) or could be missing from docs.
 - **Resources the code references that are NOT in the inventory** — `gcp/deploy.sh` mentions a job/scheduler/secret that doesn't exist in live GCP. Could be a deploy that's never been run, or a name drift.
 
 ### 6. Open questions
@@ -88,11 +88,12 @@ Bulleted list of "things I noticed I couldn't verify with the data given." Be sp
 
 ## Rules
 
-- **Cite file paths and `gcp_inventory.json` records** wherever possible. Markdown links to files. Asset names quoted from inventory.
+- **Cite file paths and `refresh-inputs/inventory.json` records** wherever possible. Markdown links to files. Asset names quoted from inventory.
 - **Verify against current state.** If the previous ARCHITECTURE.md said job X exists but inventory disagrees, flag the disagreement in §5.
 - **Be terse.** Tables, not paragraphs. The doc should fit in <600 lines including the Mermaid.
 - **No marketing language.** This is operator documentation, not pitch deck.
 - **No secrets in the output.** Names of secrets are fine. Values, never.
+- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
 - **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
 
 When done, write the file and exit. Do not narrate.

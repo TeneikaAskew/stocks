@@ -141,16 +141,57 @@ jobs:
           project_id: ${{ env.GCP_PROJECT }}
 
       # ── Snapshot live GCP state ───────────────────────────────────────────
+      # Snapshots land in refresh-inputs/, NOT at the repo root. The root
+      # names (gcp_inventory.json etc.) are gitignored, and the Gemini CLI
+      # respects .gitignore for EVERY file tool — the 2026-09-01 run (#953)
+      # proved it: read_file returned "ignored by configured ignore patterns",
+      # glob/list couldn't see the files at all, and each doc was generated
+      # blind (ARCHITECTURE.md gave up, COST_ANALYSIS.md wrote a placeholder,
+      # DATA_DEPENDENCIES.md was improvised from source grep alone).
+      # The files are also RENAMED (inventory.json / iam.json / billing.json),
+      # not just relocated: the root .gitignore entries are BASENAME patterns,
+      # which match at any directory depth, so refresh-inputs/gcp_inventory.json
+      # would still be ignored (caught by Codex on #961; verified with
+      # `git check-ignore -v`). The guard below asserts none of the input
+      # paths are ignored, so a future .gitignore edit that re-hides them
+      # fails here with a precise message instead of resurfacing as
+      # mysteriously blind docs.
+      #
+      # refresh-inputs/ is untracked-but-not-ignored: visible to the model,
+      # never staged (the PR step adds only the named docs), and it only
+      # ever exists on the runner.
+      #
+      # Every snapshot step fails loud on empty output (Rule 3.7): an empty
+      # inventory/IAM/billing input means a broken dump, and generating docs
+      # from it produces plausible-looking wrong content — worse than a red run.
       - name: Dump asset inventory
         run: |
+          mkdir -p refresh-inputs
+          for F in refresh-inputs/inventory.json refresh-inputs/iam.json refresh-inputs/billing.json; do
+            if PATTERN=$(git check-ignore -v "$F"); then
+              echo "::error::${F} is gitignored (${PATTERN}) — Gemini's file tools respect .gitignore, so the model would generate docs blind. Rename the file or fix .gitignore."
+              exit 1
+            fi
+          done
           gcloud asset search-all-resources \
             --scope="projects/${GCP_PROJECT}" \
-            --format=json > gcp_inventory.json
-          echo "Inventory rows: $(jq 'length' gcp_inventory.json)"
+            --format=json > refresh-inputs/inventory.json
+          ROWS=$(jq 'length' refresh-inputs/inventory.json)
+          echo "Inventory rows: ${ROWS}"
+          if [ "${ROWS}" -eq 0 ]; then
+            echo "::error::asset inventory returned 0 resources — dump is broken, refusing to generate docs from it"
+            exit 1
+          fi
 
       - name: Dump IAM policy
         run: |
-          gcloud projects get-iam-policy "${GCP_PROJECT}" --format=json > gcp_iam.json
+          gcloud projects get-iam-policy "${GCP_PROJECT}" --format=json > refresh-inputs/iam.json
+          BINDINGS=$(jq '.bindings | length' refresh-inputs/iam.json)
+          echo "IAM bindings: ${BINDINGS}"
+          if [ "${BINDINGS}" -eq 0 ]; then
+            echo "::error::IAM policy dump has 0 bindings — dump is broken, refusing to generate docs from it"
+            exit 1
+          fi
 
       - name: Dump 90-day billing rollup
         run: |
@@ -163,11 +204,26 @@ jobs:
 
           # Discover the billing-export table dynamically — its suffix
           # encodes the billing-account ID and isn't stable across projects.
+          #
+          # There can be MORE THAN ONE (a dead table from a previous billing
+          # account survives the account switch, and it sorts first). The
+          # 2026-09-01 run took standard[0], queried the dead table, and
+          # shipped an EMPTY billing_90d.json without failing — so pick the
+          # table whose data is freshest, print every candidate's window,
+          # and fail loud when the best still has nothing in-window.
           tables = [t.table_id for t in client.list_tables(f"{project}.billing_export")]
           standard = [t for t in tables if t.startswith("gcp_billing_export_v1_")]
           if not standard:
               raise SystemExit(f"no gcp_billing_export_v1_* table in dataset; got {tables}")
-          billing_table = standard[0]
+
+          def freshness(table):
+              q = f"SELECT MAX(usage_start_time) AS latest FROM `{project}.billing_export.{table}`"
+              latest = list(client.query(q).result())[0]["latest"]
+              print(f"candidate {table}: latest usage_start_time = {latest}")
+              return latest or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+          billing_table = max(standard, key=freshness)
+          print(f"selected {billing_table}")
 
           sql = f"""
           SELECT service.description AS service,
@@ -180,15 +236,22 @@ jobs:
           ORDER BY month DESC, cost_usd DESC
           """
           rows = [dict(r) for r in client.query(sql).result()]
+          if not rows:
+              raise SystemExit(
+                  f"billing rollup for {billing_table} returned 0 rows in the 90-day "
+                  "window. Either the export is stalled (check Billing → Billing "
+                  "export, see solyra issue #12) or the wrong table was selected. "
+                  "Refusing to generate COST_ANALYSIS.md from an empty rollup."
+              )
 
           def enc(o):
               if isinstance(o, decimal.Decimal): return float(o)
               if isinstance(o, (datetime.date, datetime.datetime)): return o.isoformat()
               raise TypeError(f"unhandled {type(o)}")
 
-          with open("billing_90d.json", "w") as f:
+          with open("refresh-inputs/billing.json", "w") as f:
               json.dump(rows, f, default=enc)
-          print(f"wrote billing_90d.json with {len(rows)} rows")
+          print(f"wrote refresh-inputs/billing.json with {len(rows)} rows")
           PY
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
@@ -237,6 +300,55 @@ jobs:
         run: |
           gemini --model "${GEMINI_MODEL}" \
             --prompt "$(cat .github/prompts/readme.md)"
+
+      # ── Verify the regenerations actually happened and are complete ──────
+      # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
+      # 35-of-62-table DATA_DEPENDENCIES.md, and silently reverted an
+      # ARCHITECTURE.md the model had refused to write — all with a green
+      # run. These deterministic gates make each of those a red run instead.
+      - name: Verify regenerated docs
+        run: |
+          set -e
+          TODAY=$(date -u +%Y-%m-%d)
+          FAIL=0
+
+          # 1. Every doc must carry TODAY's Generated stamp. All four prompts
+          #    require the stamp, so a stale one means the model never wrote
+          #    the file this run (the ARCHITECTURE.md failure mode: it
+          #    reported "unable to regenerate" and the old detect step
+          #    misread the untouched file as "no meaningful changes").
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md; do
+            if ! grep -qE "Generated(\*\*)? ${TODAY}" "$FILE"; then
+              echo "::error::${FILE} does not carry today's 'Generated ${TODAY}' stamp — the model did not complete a regeneration of it. Its transcript is in the step above."
+              FAIL=1
+            fi
+          done
+
+          # 2. DATA_DEPENDENCIES.md must mention every table schema.sql
+          #    creates — the doc's own contract ("cover every table").
+          MISSING=""
+          for TABLE in $(grep -oE '^CREATE TABLE( IF NOT EXISTS)? [a-zA-Z0-9_]+' gcp/schema.sql | awk '{print $NF}' | sort -u); do
+            grep -q "$TABLE" DATA_DEPENDENCIES.md || MISSING="${MISSING} ${TABLE}"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::DATA_DEPENDENCIES.md is missing schema.sql tables:${MISSING}"
+            FAIL=1
+          fi
+
+          # 3. COST_ANALYSIS.md must contain at least one dollar figure and
+          #    no self-described placeholder — an honest cost doc always has
+          #    numbers, because the billing step above fails loud when the
+          #    rollup is empty.
+          if ! grep -qE '\$[0-9]' COST_ANALYSIS.md; then
+            echo "::error::COST_ANALYSIS.md contains no dollar figure — it was not generated from billing data"
+            FAIL=1
+          fi
+          if grep -qiE 'placeholder' COST_ANALYSIS.md; then
+            echo "::error::COST_ANALYSIS.md describes itself as a placeholder"
+            FAIL=1
+          fi
+
+          exit $FAIL
 
       # ── Refresh INVESTMENT_MODELS_SUMMARY.md resolved-values table ────────
       # Closes the doc-drift loop for ticker_calibration (issue #251). This

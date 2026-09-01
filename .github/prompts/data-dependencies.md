@@ -76,6 +76,7 @@ A `flowchart LR` Mermaid diagram showing table-level data flow:
 - **Be exhaustive on tables, lean on prose.** Cover every table even if it's a one-liner. The point of this doc is operator-grade coverage.
 - **Distinguish live vs one-shot writers.** A migration script that ran once 6 months ago should be tagged `(one-shot historical)` so the user knows it's not part of the live blast radius.
 - **No code, no SQL examples.** Just the dependency graph. If someone wants the actual SQL, they read the source file.
+- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
 - **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
 
 When done, write the file and exit. Do not narrate.

@@ -6,7 +6,7 @@ You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from scr
 
 ## Inputs
 
-- `billing_90d.json` — output of a BigQuery query against `adept-mountain-474619-d4.billing_export.gcp_billing_export_v1_*`. Schema: `[{service, sku, cost_usd, month}]`. Window: trailing 90 days from run time.
+- `refresh-inputs/billing.json` — output of a BigQuery query against `adept-mountain-474619-d4.billing_export.gcp_billing_export_v1_*`. Schema: `[{service, sku, cost_usd, month}]`. Window: trailing 90 days from run time.
 - `ARCHITECTURE.md` — fresh component inventory (regenerated in the same workflow run, before this prompt fires)
 - The previous `COST_ANALYSIS.md` if one exists (style reference only)
 
@@ -55,6 +55,7 @@ Three concrete recommendations, ranked by estimated monthly savings. For each:
 - **Numbers must be honest.** If the data says $9.16, write $9.16 — don't round to $10 for prose.
 - **Total spend at top.** First sentence of the doc should answer "what does this cost me per month."
 - **No projections beyond what billing data supports.** Don't extrapolate trend lines from 2 months of data.
+- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
 - **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
 
 When done, write the file and exit. Do not narrate.
