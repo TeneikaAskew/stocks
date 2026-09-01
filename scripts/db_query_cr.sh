@@ -21,11 +21,21 @@ set -euo pipefail
 
 # Claude Code Remote / Cowork sessions export CLOUDSDK_AUTH_ACCESS_TOKEN as a
 # short placeholder, not a real OAuth token. Bare `gcloud` then fails with
-# ACCESS_TOKEN_TYPE_UNSUPPORTED. A genuine access token is a long `ya29.`
-# string, so anything else is treated as a placeholder and dropped for the
-# duration of this script. On a normal workstation the variable is either
-# unset or real, and this is a no-op.
-if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" && "${CLOUDSDK_AUTH_ACCESS_TOKEN}" != ya29.* ]]; then
+# ACCESS_TOKEN_TYPE_UNSUPPORTED.
+#
+# Discriminate on LENGTH, not on a `ya29.` prefix. Google access tokens are
+# opaque: the prefix is a convention, not a contract, so a prefix test would
+# silently discard a legitimate token in some other format and fall back to
+# whatever ambient account gcloud has — a different identity, or none. Length
+# is format-agnostic and the gap is not close: the placeholder is 14
+# characters, real access tokens run to hundreds. Anything under 40 is not a
+# credential in any format.
+_TOKEN_MIN_LEN=40
+if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" \
+      && ${#CLOUDSDK_AUTH_ACCESS_TOKEN} -lt $_TOKEN_MIN_LEN ]]; then
+    echo "note: CLOUDSDK_AUTH_ACCESS_TOKEN is ${#CLOUDSDK_AUTH_ACCESS_TOKEN} chars," >&2
+    echo "      too short to be a real access token — ignoring it and using" >&2
+    echo "      gcloud's configured credentials instead." >&2
     unset CLOUDSDK_AUTH_ACCESS_TOKEN
 fi
 
@@ -111,8 +121,11 @@ log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#
 # answer to the query you just asked. A wrong answer that looks right is worse
 # than no answer (CLAUDE.md Rule 3.7).
 ERR_FILE=$(mktemp)
-# Bound the reconciliation window for the ambiguous case below.
-START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Bounds the candidate set for the ambiguous case below, and verifies any id
+# recovered from stderr. Backed off 60s so clock skew between here and GCP
+# cannot make a genuinely new execution look old.
+START_TS=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%S 2>/dev/null \
+           || date -u -v-60S +%Y-%m-%dT%H:%M:%S)
 set +e
 EXEC_NAME=$(gcloud run jobs execute "$JOB" \
     --region="$REGION" \
@@ -130,18 +143,47 @@ set -e
 # it invites a retry that applies the writes twice. So: prove it, or say the
 # outcome is unknown. Three tiers, conservative by default.
 if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
-    # 1. gcloud frequently names the execution in its error text even when it
-    #    cannot report it on stdout. If it did, this is not a creation failure
-    #    at all — we have a real id, and the normal path below reads that
-    #    execution's own summary.
-    RECOVERED=$(grep -oE "${JOB}-[a-z0-9]{5}" "$ERR_FILE" 2>/dev/null | head -1 || true)
+    # Both tiers below read gcloud's stderr, and stderr is NOT a trusted
+    # channel: with HTTP logging on it carries the request payload, which
+    # carries this invocation's SQL. An unanchored scan would let the query
+    # text decide the dispatcher's behaviour — SQL containing something shaped
+    # like an execution id would be adopted as one, and SQL containing the word
+    # NOT_FOUND would be read as a rejection. Both recreate the stale-result
+    # and unsafe-retry defects this script exists to remove. So match only
+    # against gcloud's own message forms, anchored at line start, and then
+    # verify the result against the API rather than trusting the text.
+    ERROR_LINES=$(grep -E '^ERROR: \(gcloud\.' "$ERR_FILE" || true)
 
+    # 1. gcloud names the execution in two known message forms. Extract from
+    #    those only, then confirm with the API that the candidate is real and
+    #    was created in this dispatch window — an id echoed from the payload
+    #    would name an older execution and fail the window check.
+    #    Anchored at line start, because that is where gcloud puts them:
+    #      Execution [db-query-gc6ns] is being started asynchronously.
+    #      gcloud run jobs executions describe db-query-gc6ns
+    #    A logged request payload appears mid-line after `body:` or a JSON
+    #    key, so it cannot match. (Verified: SQL containing the text
+    #    `Execution [db-query-xxxxx]` was adopted before this anchor and is
+    #    rejected after it.)
+    RECOVERED=$(grep -oE "^(Execution \[|gcloud( beta)? run jobs executions describe )${JOB}-[a-z0-9]{5}" "$ERR_FILE" 2>/dev/null \
+                | grep -oE "${JOB}-[a-z0-9]{5}" | head -1 || true)
+    RECOVERED_CREATED=""
     if [[ -n "$RECOVERED" ]]; then
+        RECOVERED_CREATED=$(gcloud beta run jobs executions describe "$RECOVERED" \
+            --region="$REGION" --format="value(metadata.creationTimestamp)" 2>/dev/null \
+            | cut -c1-19 || true)
+    fi
+
+    if [[ -n "$RECOVERED" && -n "$RECOVERED_CREATED" \
+          && ! "$RECOVERED_CREATED" < "$START_TS" ]]; then
         EXEC_NAME="$RECOVERED"
-        log "gcloud exited $RC but named execution $EXEC_NAME — using it"
-    elif grep -qE 'UNAUTHENTICATED|PERMISSION_DENIED|ACCESS_TOKEN_TYPE_UNSUPPORTED|INVALID_ARGUMENT|NOT_FOUND|unrecognized arguments|Invalid choice|argument .*: expected' "$ERR_FILE"; then
+        log "gcloud exited $RC but named execution $EXEC_NAME (created $RECOVERED_CREATED) — using it"
+    elif grep -qE '^ERROR: \(gcloud\.[a-z.]+\) (UNAUTHENTICATED|PERMISSION_DENIED|INVALID_ARGUMENT|NOT_FOUND|FAILED_PRECONDITION)\b' <<<"$ERROR_LINES" \
+      || grep -qE '^(ERROR: )?.*(unrecognized arguments|argument .*: expected|Invalid choice)' <<<"$ERROR_LINES"; then
         # 2. The API rejected the request, or gcloud refused to send one.
-        #    These are the only cases where "nothing ran" is provable.
+        #    These are the only cases where "nothing ran" is provable — and
+        #    only when the status appears in gcloud's own ERROR: line, not
+        #    anywhere in the stream.
         echo "error: the request was rejected before any execution was created" >&2
         echo "       (gcloud exit $RC). No query was run." >&2
         sed 's/^/       | /' "$ERR_FILE" >&2
@@ -151,14 +193,23 @@ if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
         # 3. Ambiguous. Do not claim either outcome.
         echo "error: dispatch outcome is UNKNOWN (gcloud exit $RC, no execution id)." >&2
         echo "       The request may have been accepted and may be running now." >&2
+        if [[ -n "$RECOVERED" ]]; then
+            echo "       stderr mentioned $RECOVERED, but it could not be confirmed as" >&2
+            echo "       created by this dispatch, so it is NOT being treated as yours." >&2
+        fi
         if [[ "$COMMIT" == "true" ]]; then
             echo "       This was a --commit run: DO NOT RETRY before reconciling," >&2
             echo "       or the writes may be applied twice." >&2
         fi
-        echo "       Reconcile with:" >&2
+        echo "       Executions created at or after $START_TS are CANDIDATES — the" >&2
+        echo "       job is shared, so others may appear in the same window and none" >&2
+        echo "       of them is identified as yours by timing alone. List them:" >&2
         echo "         gcloud beta run jobs executions list --job=$JOB --region=$REGION \\" >&2
-        echo "           --format='table(name,status.startTime,status.conditions[0].status)'" >&2
-        echo "       Any execution started at or after $START_TS is this invocation's." >&2
+        echo "           --format='table(name,metadata.creationTimestamp,status.conditions[0].status)'" >&2
+        echo "       Identify yours by matching your SQL against each candidate's" >&2
+        echo "       DB_QUERY_SQL override:" >&2
+        echo "         gcloud beta run jobs executions describe <name> --region=$REGION \\" >&2
+        echo "           --format='value(spec.template.spec.template.spec.containers[0].env)'" >&2
         sed 's/^/       | /' "$ERR_FILE" >&2
         rm -f "$ERR_FILE"
         exit 1
@@ -180,10 +231,22 @@ for c in d.get("status", {}).get("conditions", []):
         break'
 }
 
-# Budget = the statement timeout the caller asked for, plus room for image
-# pull and provisioning. Overrunning it is reported as an unknown outcome,
-# never as a failure to run.
-WAIT_BUDGET_S=$(( TIMEOUT_S + 900 ))
+# Budget from the JOB'S TASK TIMEOUT, not from TIMEOUT_S. TIMEOUT_S is a
+# per-statement `statement_timeout`, applied independently to each statement
+# in a multi-statement batch, so `TIMEOUT_S + slack` can be exceeded by a
+# batch that is behaving perfectly — abandoning a healthy execution before
+# its summary exists. The task timeout is the real ceiling: nothing this job
+# runs can outlast it. Add slack for image pull and provisioning.
+TASK_TIMEOUT_S=$(gcloud run jobs describe "$JOB" --region="$REGION" \
+    --format="value(spec.template.spec.template.spec.timeoutSeconds)" 2>/dev/null || true)
+if ! [[ "$TASK_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
+    # Could not read it — take a generous constant rather than a tight guess.
+    # Waiting too long costs a slow failure; waiting too little reports an
+    # unknown outcome for a run that was fine.
+    TASK_TIMEOUT_S=3600
+    log "could not read $JOB task timeout; assuming ${TASK_TIMEOUT_S}s"
+fi
+WAIT_BUDGET_S=$(( TASK_TIMEOUT_S + 900 ))
 log "waiting up to ${WAIT_BUDGET_S}s for $EXEC_NAME..."
 CONCLUSION=""
 while [[ "$CONCLUSION" != "True" && "$CONCLUSION" != "False" ]]; do
