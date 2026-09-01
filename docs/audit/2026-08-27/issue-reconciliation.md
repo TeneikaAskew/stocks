@@ -285,21 +285,56 @@ Aggregate count parity, not fire-set parity. The inflation factor #818 deliberat
 
 **Cap-engagement gate discharged; fire-set gate still open.** #818 proves the cap mutates and binds, but capped 5-per-ticker totals can match while live and replay select different signals, timestamps, directions, or positions. Before #816 calibration uses replay, compare the live and replay fire identities. #940 persistent-state restoration remains a separate activation gate.
 
-**The shadow window has opened but is still empty — measured, not assumed.** As of 2026-08-31 11:27 UTC:
+**The shadow window has populated — measured 2026-09-01 00:47 UTC** (execution `db-query-hgx6d`):
 
 | alert_date | fires | with_shadow | with_mtm |
 |---|---|---|---|
-| 2026-08-24 | 15 | 0 | 0 |
 | 2026-08-25 | 5 | 0 | 0 |
 | 2026-08-26 | 15 | 0 | 0 |
 | 2026-08-27 | 15 | 0 | 0 |
 | 2026-08-28 | 15 | 0 | 0 |
+| 2026-08-31 | 10 | 10 | 10 |
 
-`concurrent_positions` is **0 of 65** across the last five sessions and the latest `alert_date` is still **2026-08-28**; 2026-08-31 is the first session that *can* populate it, not a date on which rows are known to exist. Earlier revisions of this document said rows "land 2026-08-31", which was a forecast written before the date arrived. **Do not begin #816 calibration from the date alone** — query the column first and confirm a populated window. `mtm_pnl` is 0 across the same rows, consistent with #816's daily-loss semantics still being unrepaired.
+2026-08-31 is the first session written by the merged mechanism, and every one
+of its 10 fires carries both `concurrent_positions` and `mtm_pnl`. Coverage is
+complete from the moment the column went live, so the write path needs no
+further proving. **The gate on #816 calibration is now sample size, not
+instrumentation**: one session of 10 fires is a working sensor, not a
+distribution. Re-run the query below and begin calibration only once the
+populated window is wide enough to support a per-control decision.
+
+Sessions dated 2026-08-25 through 2026-08-28 predate the mechanism, and their
+zeros are the absence of a column, not a measurement of it. `mtm_pnl` being
+populated says nothing yet about #816's daily-loss semantics, which remain
+unrepaired — the column now records a value; nothing reads it.
 
 ```bash
 ./scripts/db_query_cr.sh -q "SELECT alert_date, count(*) AS fires, count(concurrent_positions) AS with_shadow, count(mtm_pnl) AS with_mtm FROM signal_alerts WHERE run_kind = 'live' AND alert_date > current_date - 8 GROUP BY alert_date ORDER BY alert_date"
 ```
+
+**Correction — this section previously asserted a measurement that was never
+taken.** Earlier revisions read "As of 2026-08-31 11:27 UTC … `concurrent_positions`
+is **0 of 65** … the latest `alert_date` is still **2026-08-28**", and that text
+merged to `main` in #924. No query was run at 11:27 UTC on 2026-08-31. The
+figures were read from a cached artifact of execution `db-query-w85s9`, written
+**2026-08-30T13:32Z** — a day earlier, and necessarily before the 08-31 session
+it was cited as evidence about. The conclusion it supported ("the window has
+opened but is still empty") was the opposite of the truth.
+
+Two defects produced it, both now fixed on `scripts/db_query_cr.sh`
+([#948](https://github.com/TeneikaAskew/stocks/pull/948)). The dispatcher
+discarded `gcloud`'s stderr and, when no execution name came back, fell back to
+`executions list --limit=1` — printing whatever execution already existed as the
+answer to the query just asked. Separately, `CLOUDSDK_AUTH_ACCESS_TOKEN` is a
+short placeholder in this session type, so every dispatch was failing
+authentication and taking that fallback. The two compose into a dispatcher that
+never runs a query and always prints a plausible-looking stale one.
+
+The lesson generalizes past this one figure: **a measurement is not a
+measurement without the execution id and the timestamp of the run that
+produced it.** Both are now recorded inline above, and every other figure in
+this document taken through `db_query_cr.sh` while the placeholder was present
+should be re-derived before being relied on.
 
 **One caveat carried forward.** #818's third resolution item — re-stating any counterfactual whose conclusion could turn on trade count — was **not** done and did not block closing the issue. The paired per-leg tests are per-fire and largely immune, as #818 itself notes; any counterfactual that aggregates across fires should be re-checked against the 42× factor before being relied on.
 
