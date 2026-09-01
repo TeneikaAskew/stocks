@@ -111,6 +111,8 @@ log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#
 # answer to the query you just asked. A wrong answer that looks right is worse
 # than no answer (CLAUDE.md Rule 3.7).
 ERR_FILE=$(mktemp)
+# Bound the reconciliation window for the ambiguous case below.
+START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
 EXEC_NAME=$(gcloud run jobs execute "$JOB" \
     --region="$REGION" \
@@ -120,12 +122,47 @@ EXEC_NAME=$(gcloud run jobs execute "$JOB" \
 RC=$?
 set -e
 
+# A non-zero exit does not by itself prove the execution was never created.
+# If the API accepted the request and the response was then lost — connection
+# reset, timeout, the CLI interrupted — gcloud exits non-zero with nothing on
+# stdout while the execution runs on regardless. Claiming "nothing ran" there
+# is the same false negative this script exists to remove, and under --commit
+# it invites a retry that applies the writes twice. So: prove it, or say the
+# outcome is unknown. Three tiers, conservative by default.
 if [[ $RC -ne 0 || -z "$EXEC_NAME" ]]; then
-    echo "error: creating the db-query Cloud Run execution failed (gcloud exit $RC)." >&2
-    echo "       No execution was created, so no query was run." >&2
-    sed 's/^/       | /' "$ERR_FILE" >&2
-    rm -f "$ERR_FILE"
-    exit 1
+    # 1. gcloud frequently names the execution in its error text even when it
+    #    cannot report it on stdout. If it did, this is not a creation failure
+    #    at all — we have a real id, and the normal path below reads that
+    #    execution's own summary.
+    RECOVERED=$(grep -oE "${JOB}-[a-z0-9]{5}" "$ERR_FILE" 2>/dev/null | head -1 || true)
+
+    if [[ -n "$RECOVERED" ]]; then
+        EXEC_NAME="$RECOVERED"
+        log "gcloud exited $RC but named execution $EXEC_NAME — using it"
+    elif grep -qE 'UNAUTHENTICATED|PERMISSION_DENIED|ACCESS_TOKEN_TYPE_UNSUPPORTED|INVALID_ARGUMENT|NOT_FOUND|unrecognized arguments|Invalid choice|argument .*: expected' "$ERR_FILE"; then
+        # 2. The API rejected the request, or gcloud refused to send one.
+        #    These are the only cases where "nothing ran" is provable.
+        echo "error: the request was rejected before any execution was created" >&2
+        echo "       (gcloud exit $RC). No query was run." >&2
+        sed 's/^/       | /' "$ERR_FILE" >&2
+        rm -f "$ERR_FILE"
+        exit 1
+    else
+        # 3. Ambiguous. Do not claim either outcome.
+        echo "error: dispatch outcome is UNKNOWN (gcloud exit $RC, no execution id)." >&2
+        echo "       The request may have been accepted and may be running now." >&2
+        if [[ "$COMMIT" == "true" ]]; then
+            echo "       This was a --commit run: DO NOT RETRY before reconciling," >&2
+            echo "       or the writes may be applied twice." >&2
+        fi
+        echo "       Reconcile with:" >&2
+        echo "         gcloud beta run jobs executions list --job=$JOB --region=$REGION \\" >&2
+        echo "           --format='table(name,status.startTime,status.conditions[0].status)'" >&2
+        echo "       Any execution started at or after $START_TS is this invocation's." >&2
+        sed 's/^/       | /' "$ERR_FILE" >&2
+        rm -f "$ERR_FILE"
+        exit 1
+    fi
 fi
 rm -f "$ERR_FILE"
 log "execution: $EXEC_NAME"
