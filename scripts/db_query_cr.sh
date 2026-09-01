@@ -112,19 +112,63 @@ ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT
 # looking at it. This describe is read-only, so a failure here cannot have
 # started anything.
 #
-# PERMISSION_DENIED deliberately does NOT qualify: that means the token is
-# valid and its identity lacks a role, and silently substituting a different
-# identity would hide the very problem the operator needs to see.
+# Two auth failures that must NOT be treated alike:
+#
+#   ACCESS_TOKEN_TYPE_UNSUPPORTED — the value is not a usable token at all.
+#       Nothing is being substituted for a credential, because it never was
+#       one. Safe to ignore and continue.
+#
+#   any other UNAUTHENTICATED — a real credential that has expired or been
+#       revoked. Dropping it would run the query under gcloud's configured
+#       principal instead: a DIFFERENT identity, possibly more privileged than
+#       the one the caller deliberately selected by setting the variable. For
+#       a --commit run that means writes executed as somebody else. An
+#       expired token proves the token is unusable; it proves nothing about
+#       whether switching identities is acceptable, so this stops instead.
+#
+# PERMISSION_DENIED likewise does not qualify: the token is valid and its
+# identity lacks a role, and substituting another identity would hide exactly
+# the problem the operator needs to see.
 if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]]; then
     PROBE_ERR=$(mktemp)
     if ! gcloud run jobs describe "$JOB" --region="$REGION" \
              --format="value(metadata.name)" >/dev/null 2>"$PROBE_ERR"; then
-        if grep -qE '^ERROR: \(gcloud\.[a-z.]+\) UNAUTHENTICATED' "$PROBE_ERR" \
-           || grep -q 'ACCESS_TOKEN_TYPE_UNSUPPORTED' "$PROBE_ERR"; then
-            echo "note: the Cloud Run API rejected CLOUDSDK_AUTH_ACCESS_TOKEN as a" >&2
-            echo "      credential (asked, not inferred from its format) — ignoring it" >&2
-            echo "      and using gcloud's configured credentials instead." >&2
+        # TWO conditions, both required, because neither is sufficient alone.
+        #
+        # The API says the value is unusable AND the value is far too short to
+        # have ever been a credential. Measured: a `ya29.`-shaped 58-character
+        # string returns ACCESS_TOKEN_TYPE_UNSUPPORTED too, so that reason on
+        # its own does NOT separate "harness placeholder" from "real token that
+        # expired" — I could not obtain an expired token to establish that it
+        # reports something different, so this does not rely on it. Length is
+        # not being used to judge validity (the API already did that); it is
+        # being used to establish that nothing the caller chose is being
+        # discarded. Real access tokens run to hundreds of characters.
+        if grep -q 'ACCESS_TOKEN_TYPE_UNSUPPORTED' "$PROBE_ERR" \
+           && (( ${#CLOUDSDK_AUTH_ACCESS_TOKEN} < 40 )); then
+            echo "note: CLOUDSDK_AUTH_ACCESS_TOKEN is ${#CLOUDSDK_AUTH_ACCESS_TOKEN} characters and the API" >&2
+            echo "      rejected it as ACCESS_TOKEN_TYPE_UNSUPPORTED — a harness" >&2
+            echo "      placeholder, not a credential. Ignoring it and using" >&2
+            echo "      gcloud's configured credentials instead." >&2
             unset CLOUDSDK_AUTH_ACCESS_TOKEN
+        elif grep -qE '^ERROR: \(gcloud\.[a-z.]+\) (UNAUTHENTICATED|UNAUTHORIZED)' "$PROBE_ERR"; then
+            if [[ "${DB_QUERY_ALLOW_IDENTITY_FALLBACK:-}" == "1" ]]; then
+                echo "note: CLOUDSDK_AUTH_ACCESS_TOKEN was rejected (UNAUTHENTICATED)." >&2
+                echo "      DB_QUERY_ALLOW_IDENTITY_FALLBACK=1 is set, so continuing" >&2
+                echo "      under gcloud's configured identity instead." >&2
+                unset CLOUDSDK_AUTH_ACCESS_TOKEN
+            else
+                echo "error: CLOUDSDK_AUTH_ACCESS_TOKEN was rejected by the API, and it" >&2
+                echo "       is ${#CLOUDSDK_AUTH_ACCESS_TOKEN} characters — long enough to be a real credential" >&2
+                echo "       that has expired or been revoked. Refusing to silently run as a" >&2
+                echo "       different principal — you set that variable on purpose, and" >&2
+                echo "       gcloud's configured identity may hold different privileges." >&2
+                echo "       Refresh the token, or unset it yourself, or re-run with" >&2
+                echo "       DB_QUERY_ALLOW_IDENTITY_FALLBACK=1 to accept the switch." >&2
+                sed 's/^/       | /' "$PROBE_ERR" >&2
+                rm -f "$PROBE_ERR"
+                exit 1
+            fi
         fi
         # Anything else — network, PERMISSION_DENIED, an outage — leaves the
         # token alone so the real error surfaces below rather than here.
