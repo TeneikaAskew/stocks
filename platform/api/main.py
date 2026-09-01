@@ -39,7 +39,19 @@ app = FastAPI(title="Trading Platform API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        # Solyra frontend (github.com/TeneikaAskew/solyra) — the SPA lives in its
+        # own repo and calls this API cross-origin when built as static assets,
+        # where there is no dev-server proxy to keep requests same-origin.
+        # Listed explicitly rather than matched by a `.*\.lovable\.app` regex:
+        # that would let any Lovable project on the platform call this API with
+        # credentials, and the Firebase web config is public, so the origin list
+        # is the control that keeps it to ours.
+        "https://solyra-stocks.lovable.app",
+        "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovable.app",
+    ],
     allow_origin_regex=r"https://.*\.app\.github\.dev",  # GitHub Codespace tunnel URLs
     allow_credentials=True,
     allow_methods=["*"],
