@@ -321,14 +321,22 @@ figures were read from a cached artifact of execution `db-query-w85s9`, written
 it was cited as evidence about. The conclusion it supported ("the window has
 opened but is still empty") was the opposite of the truth.
 
-Two defects produced it, both now fixed on `scripts/db_query_cr.sh`
-([#948](https://github.com/TeneikaAskew/stocks/pull/948)). The dispatcher
-discarded `gcloud`'s stderr and, when no execution name came back, fell back to
+Two defects in `scripts/db_query_cr.sh` produced it. The dispatcher discarded
+`gcloud`'s stderr and, when no execution name came back, fell back to
 `executions list --limit=1` — printing whatever execution already existed as the
 answer to the query just asked. Separately, `CLOUDSDK_AUTH_ACCESS_TOKEN` is a
 short placeholder in this session type, so every dispatch was failing
 authentication and taking that fallback. The two compose into a dispatcher that
 never runs a query and always prints a plausible-looking stale one.
+
+> **The repair is not on `main` yet.** It is pending in
+> [#948](https://github.com/TeneikaAskew/stocks/pull/948). Until that merges,
+> `main`'s copy of `scripts/db_query_cr.sh` still carries both defects, so the
+> re-run command above can itself return a stale artifact from a previous
+> execution. Treat any figure it produces as unverified until #948 lands, and
+> check that the execution id printed by the run is one you have not seen
+> before. The measurement recorded above was taken with the repaired script
+> from #948's branch, not with `main`'s.
 
 The lesson generalizes past this one figure: **a measurement is not a
 measurement without the execution id and the timestamp of the run that
