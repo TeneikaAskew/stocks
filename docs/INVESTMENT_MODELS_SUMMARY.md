@@ -313,13 +313,12 @@ produce comparable fire-rates. See
 `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` §3.
 
 <!-- BEGIN ticker_calibration_resolved_values -->
-**Current resolved values** (calibration of 2026-05-04 — 60-day lookback,
-~31-33k 1-min bars per ticker):
+**Current resolved values** (latest calibration 2026-07-01 — 60-day lookback, ~31-48k 1-min bars per ticker):
 
 | Ticker | rsi_p10 | rsi_p50 | rsi_p90 | CALL RSI range (p10, p50) | PUT RSI range (p50, p90) | Source tier |
 |--------|--------:|--------:|--------:|:---:|:---:|:-----------:|
 | IWM    | 36.2 | 50.2 | 63.7 | (36.2, 50.2) | (50.2, 63.7) | A |
-| QQQ    | 35.4 | 50.5 | 65.1 | (35.4, 50.5) | (50.5, 65.1) | A |
+| QQQ    | 36.1 | 50.9 | 64.9 | (36.1, 50.9) | (50.9, 64.9) | A |
 | SPY    | 35.5 | 50.5 | 64.3 | (35.5, 50.5) | (50.5, 64.3) | A |
 
 _Auto-refreshed monthly by `.github/workflows/refresh-architecture-docs.yml` via `scripts/refresh_calibration_table.py`. Manual refresh: `python -m scripts.refresh_calibration_table`._

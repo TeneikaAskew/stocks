@@ -1,14 +1,12 @@
-# Stocks
+# Stocks Trading Platform
 
-A private stocks-trading research and signal-delivery platform on GCP. **Discord** is the primary surface (scheduled briefs + slash-command interactions); a secondary internal **React + FastAPI dashboard** lives at the `trading-platform` Cloud Run Service. Single-user / small-team — no public auth, no per-user partitioning. The fetcher fleet runs as Cloud Run Jobs orchestrated by Cloud Scheduler; math is concentrated in `lib/` so Cloud Run, the FastAPI router, and CLI scripts all consume the same code.
+A private stocks/trading platform on GCP for a single user or small team. It delivers scheduled briefs and real-time alerts to Discord, and provides an internal dashboard for analysis. The system uses a fleet of ~76 Cloud Run Jobs for data fetching, processing, and signal generation, all orchestrated by Cloud Scheduler. The primary user surfaces are Discord for interactions and a React/FastAPI dashboard for deep analysis.
 
-![Last refresh](https://img.shields.io/badge/last_doc_refresh-2026--05--03-blue)
-![Monthly cost](https://img.shields.io/badge/monthly_cost-~%2413-green)
-![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-27-blue)
-![Cloud Scheduler crons](https://img.shields.io/badge/scheduled_crons-40%2B-blue)
+![Last refresh](https://img.shields.io/badge/last_doc_refresh-2026--09--02-blue)
+![Monthly cost](https://img.shields.io/badge/monthly_cost-%24208.66-red)
+![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76-blue)
+![Cloud Scheduler crons](https://img.shields.io/badge/scheduled_crons-44-blue)
 ![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/workflows/refresh-architecture-docs.yml/badge.svg)
-
-> Static badges (last refresh / monthly cost / job count) get bumped by the [monthly auto-refresh workflow](.github/workflows/refresh-architecture-docs.yml). Last hand-bump 2026-05-03.
 
 ---
 
@@ -18,146 +16,103 @@ This repo documents itself. Read these in order if you're new — or jump to whi
 
 | Document | Purpose | Read this when |
 |---|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Component inventory + GCP resources + data-flow diagrams | You want the 30,000-ft view of how the pieces fit |
-| [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md) | Per-table write/read graph + multi-writer + orphan analysis + Mermaid graph | You're touching a fetcher / writer and want to know what reads downstream |
-| [COST_ANALYSIS.md](COST_ANALYSIS.md) | 90-day GCP billing rollup mapped to components + recommendations | You want to know what costs money and where the leverage is |
-| [RUNBOOK.md](RUNBOOK.md) | Failure-scenario playbook (8 scenarios) + RTO/RPO + rebuild-from-scratch | Something is on fire and you need a checklist |
-| [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md) | 5-panel signal-quality dashboard spec (not built yet — closes a real gap) | You want to build the missing visibility into signal quality |
-| [SETUP.md](SETUP.md) | One-time setup for the auto-doc-refresh workflow (WIF, IAM, secrets) | You're enabling monthly auto-refresh for the first time |
-| [CLAUDE.md](CLAUDE.md) | Project rules for AI agents working in this repo | You're collaborating with Claude / Codex on this code |
-| [docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md) | Per-table freshness budgets + reliability TODOs | You're triaging stale data |
-| [docs/GCP_IMPLEMENTATION_GUIDE.md](docs/GCP_IMPLEMENTATION_GUIDE.md) | The longer GCP playbook (predates ARCHITECTURE.md) | You want narrative GCP context |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, components, and data flows. | You want the 30,000-ft view of how the pieces fit together. |
+| [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md) | Per-table write/read graph and data lineage. | You're changing a data source and need to know what it impacts. |
+| [COST_ANALYSIS.md](COST_ANALYSIS.md) | GCP billing rollup mapped to components. | You want to know what's driving cost. |
+| [RUNBOOK.md](RUNBOOK.md) | Disaster recovery playbooks for common failure scenarios. | Something is on fire and you need a checklist. |
+| [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md) | Specification for the operator-facing signal quality dashboard. | You want to build out the UI for monitoring signal performance. |
+| [SETUP.md](SETUP.md) | One-time setup for the auto-doc-refresh workflow. | You're enabling the monthly documentation auto-refresh. |
+| [CLAUDE.md](CLAUDE.md) | Project rules and instructions for AI agents. | You are an AI agent or are collaborating with one on this repo. |
+| [docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md) | Per-table freshness budgets and reliability targets. | You're triaging a stale data incident. |
+| [docs/GCP_IMPLEMENTATION_GUIDE.md](docs/GCP_IMPLEMENTATION_GUIDE.md) | Narrative guide to the GCP infrastructure and deployment. | You want more detailed context on the GCP setup. |
 
 ---
 
 ## Architecture at a glance
 
-The system runs as a fleet of ~27 Cloud Run Jobs orchestrated by Cloud Scheduler. Most jobs follow the shape *pull external API → upsert Cloud SQL → optionally write parquet to GCS → exit*. A second class of jobs (`premarket-brief`, `signal-monitor`, `insight-pipeline`, `weekend-review`) reads from Cloud SQL, computes derived analytics from `lib/`, and posts results to Discord.
+The system runs as a fleet of ~76 Cloud Run Jobs orchestrated by Cloud Scheduler. Most jobs follow the shape *pull external API → upsert Cloud SQL*. A second class of jobs reads from Cloud SQL, computes derived analytics, and posts results to Discord.
 
 ```mermaid
-flowchart LR
-    subgraph EXT [External APIs]
-        AV[AlphaVantage]
-        FRED[FRED]
-        SEC[EDGAR]
-        DISCORD_API[Discord API]
+flowchart TD
+    subgraph External APIs
+        AlphaVantage
+        FRED
+        Discord
+        EDGAR
     end
 
-    subgraph FETCH [Cloud Run Jobs - fetchers]
-        FMD[fetch-market-data]
-        FFR[fetch-fred-rates]
-        FEC[earnings-calendar]
-        FNS[fetch-news-sentiment]
-        FSF[fetch-sec-filings]
+    subgraph GCP
+        subgraph "Cloud Run Services"
+            trading_platform["trading-platform (FastAPI + React)"]
+            discord_interactions["discord-interactions"]
+            failure_notifier
+        end
+
+        subgraph "Cloud Run Jobs (Fetchers)"
+            fetch_market_data
+            fetch_earnings
+        end
+
+        subgraph "Cloud Run Jobs (Compute)"
+            premarket_brief
+            signal_monitor
+            insight_pipeline
+        end
+
+        subgraph "Data Stores"
+            db[(Cloud SQL)]
+            gcs[(GCS Bucket)]
+        end
+
+        subgraph "Messaging"
+            pubsub(Pub/Sub)
+            tasks(Cloud Tasks)
+        end
     end
 
-    subgraph DB [(Cloud SQL — trading-db)]
-        T1[(market_data_*)]
-        T2[(earnings_*)]
-        T3[(news_sentiment / sec_filings)]
-        T4[(signals / insights / trades)]
+    subgraph User Surfaces
+        user_dashboard[Dashboard]
+        discord_channel[Discord Channel]
     end
 
-    subgraph CONSUME [Cloud Run Jobs - consumers]
-        PB[premarket-brief]
-        SM[signal-monitor]
-        IP[insight-pipeline]
-    end
+    AlphaVantage --> fetch_market_data
+    FRED --> fetch_market_data
+    EDGAR --> fetch_earnings
 
-    subgraph SURFACE [User surfaces]
-        DC[Discord webhook]
-        DASH[trading-platform dashboard]
-        DI[discord-interactions slash commands]
-    end
+    fetch_market_data --> db
+    fetch_market_data --> gcs
+    fetch_earnings --> db
 
-    AV --> FMD
-    FRED --> FFR
-    SEC --> FSF
-    AV --> FNS
+    db --> premarket_brief
+    db --> signal_monitor
+    db --> insight_pipeline
 
-    FMD ==> T1
-    FFR ==> T1
-    FEC ==> T2
-    FNS ==> T3
-    FSF ==> T3
+    premarket_brief --> discord_channel
+    signal_monitor --> discord_channel
+    insight_pipeline --> trading_platform
 
-    T1 --> PB
-    T1 --> SM
-    T2 --> PB
-    T3 --> IP
-    T1 --> IP
+    trading_platform --> user_dashboard
+    trading_platform --> tasks
+    tasks --> insight_pipeline
 
-    PB ==> T4
-    SM ==> T4
-    IP ==> T4
+    discord_channel --> discord_interactions
+    discord_interactions --> premarket_brief
+    discord_interactions --> signal_monitor
 
-    PB --> DC
-    SM --> DC
-    IP --> DC
-    T4 --> DASH
-    DISCORD_API <--> DI
-    DI --> CONSUME
-
-    classDef ext fill:#F59E0B,stroke:#92400E,color:#fff
-    classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff
-    classDef tbl fill:#10B981,stroke:#065F46,color:#fff
-    class AV,FRED,SEC,DISCORD_API ext
-    class FMD,FFR,FEC,FNS,FSF,PB,SM,IP job
+    failure_notifier --> pubsub
+    fetch_market_data -- "failure" --> pubsub
+    premarket_brief -- "failure" --> pubsub
 ```
 
-Full per-table flow with all 27 jobs is in [DATA_DEPENDENCIES.md §7](DATA_DEPENDENCIES.md#7-mermaid-graph). Per-job purpose + scheduler binding is in [ARCHITECTURE.md §2](ARCHITECTURE.md#2-component-inventory).
-
----
-
-## Tech stack
-
-**Frontend** ([`platform/`](platform/))
-- React 19 + TypeScript 5.9, Vite 7, TailwindCSS 4
-- TanStack Query / Table, Zustand, React Router 7
-- Recharts, D3, lightweight-charts, lucide-react
-- Vitest (unit) + Playwright (e2e, incl. IAP-authed cloud project)
-
-**Backend API** ([`platform/api/`](platform/api/))
-- FastAPI + Uvicorn, httpx
-- pandas + pyarrow for in-memory slicing of GCS parquet
-- `google-cloud-aiplatform` + `google-genai` for AI agents (Vertex / Gemini)
-
-**Core Python** ([`lib/`](lib/), [`gcp/`](gcp/), [`scripts/`](scripts/))
-- pandas, numpy, pyarrow, scikit-learn, scipy
-- `py_vollib` + `py_vollib_vectorized` for options Greeks (incl. SPX BSM IV solver)
-- `yfinance`, `fredapi`, `finvizfinance`, AlphaVantage via `requests`
-- `tenacity` for retries; matplotlib / seaborn / plotly + Streamlit for ad-hoc viz
-- Jupyter / JupyterLab notebooks for analysis
-
-**Data + infra (GCP)**
-- Cloud SQL Postgres (`trading` DB) — schema in [`gcp/schema.sql`](gcp/schema.sql), accessed via [`gcp/database.py`](gcp/database.py) using the Cloud SQL Connector + pg8000
-- GCS for parquet fetcher output
-- Cloud Run + Cloud Run Jobs (Dockerfile-based deploys via [`gcp/deploy.sh`](gcp/deploy.sh))
-- Cloud Scheduler (40+ crons) orchestrating the fetcher fleet
-- Secret Manager for API keys + GitHub PAT
-- Workload Identity Federation for keyless GH Actions → GCP auth
-
-**Automation**
-- GitHub Actions for scheduled fetchers, backtests, freshness watchdogs, and the [`db-query.yml`](.github/workflows/db-query.yml) SQL bridge
-- Reusable [`handle-workflow-failure.yml`](.github/workflows/handle-workflow-failure.yml) auto-opens labeled issues + draft PRs on any failure
-
-**Adjacent surfaces**
-- Discord (primary user surface) — webhooks + slash-command interactions ([`gcp/discord_interactions/`](gcp/discord_interactions/))
-- Google Apps Script ([`google-apps-script/`](google-apps-script/), [`appsscript.json`](appsscript.json)) for legacy sheet automation
-- TradingView Pine Script v6 indicators ([`tradingview-pine-scripts/`](tradingview-pine-scripts/))
-
-**Tooling**
-- Make ([`Makefile`](Makefile)), Docker / docker-compose
-- ESLint 9 + typescript-eslint on the frontend
-- Pinned deps via [`requirements.lock`](requirements.lock) and [`requirements-gcp.lock`](requirements-gcp.lock)
+Full per-table flow is in [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md).
 
 ---
 
 ## Cost at a glance
 
-- **~\$13/month run-rate** at March pricing (~\$3/month at April pricing, possibly with a credit applied)
-- **Cloud SQL is 92% of spend** — single `trading-db` Postgres small instance + storage
-- **Top reduction recommendation:** verify whether April's 72%-vs-March drop is a real credit (Billing Reports → split by Credits) before optimizing further
+- **~$209/month run-rate** based on partial data for August 2026.
+- **Biggest line item:** Cloud Run Services CPU (`$47.89`).
+- **Top recommendation:** Implement Artifact Registry retention policies (estimated saving: `$20-25/mo`).
 
 Full breakdown: [COST_ANALYSIS.md](COST_ANALYSIS.md).
 
@@ -167,55 +122,36 @@ Full breakdown: [COST_ANALYSIS.md](COST_ANALYSIS.md).
 
 ### I want to run this locally
 
-```bash
-make dev    # FastAPI on :8000 + Vite dev server on :5173
-```
-
-Prereqs: Python deps (`make install`), Node deps (`cd platform && npm install`), `.env` at repo root with `GOOGLE_APPLICATION_CREDENTIALS` pointing to `.gcp-key.json`. Full env setup including secrets is in [CLAUDE.md](CLAUDE.md#technology-stack).
-
-Available routes once running:
-- `/` Dashboard, `/live` Live Market, `/charts`, `/options` Options Flow, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`, `/admin`
+1.  Run `make install` to install Python and Node dependencies.
+2.  Ensure you have a `.env` file with `GOOGLE_APPLICATION_CREDENTIALS` pointing to your `.gcp-key.json`. See [CLAUDE.md](CLAUDE.md) for full setup.
+3.  Run `make dev` to start the FastAPI backend and Vite frontend.
+4.  Available routes once running: `/`, `/live`, `/charts`, `/options`, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`, `/admin`.
 
 ### I want to add a new fetcher
 
-1. Add a Python module under [`gcp/fetchers/`](gcp/fetchers/) following the shape of [`fetch_market_data.py`](gcp/fetchers/fetch_market_data.py) — read external API, upsert via `gcp.database.upsert_dataframe`, exit non-zero on missing env vars
-2. Add a `deploy_<name>()` function to [`gcp/deploy.sh`](gcp/deploy.sh) (modeled on the existing fetcher deploys around lines 536-911)
-3. Add the function to `deploy_fetchers()` and add a Cloud Scheduler entry in `deploy_schedulers()`
-4. If the fetcher writes a new table: add the schema to [`gcp/schema.sql`](gcp/schema.sql) and run `./gcp/deploy.sh apply-schema`
-5. Add an inventory row to [ARCHITECTURE.md](ARCHITECTURE.md#code-modules) and a write/read entry to [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md) (or wait for the next monthly refresh to do it for you)
+1.  Add a new Python module in `gcp/fetchers/`.
+2.  Add a `deploy_<name>()` function to `gcp/deploy.sh`.
+3.  Add the new function to `deploy_fetchers()` and a new scheduler entry in `deploy_schedulers()` within `gcp/deploy.sh`.
+4.  If adding a new table, add the schema to `gcp/schema.sql`.
+5.  Update [ARCHITECTURE.md](ARCHITECTURE.md) and [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md).
 
 ### Something is broken
 
-→ [RUNBOOK.md](RUNBOOK.md). 8 failure scenarios with detection signal, immediate response, recovery steps, verification.
-
-The failure-notifier auto-creates labeled GitHub issues for any Cloud Run Job ERROR — see [ARCHITECTURE.md §3 "Failure notification"](ARCHITECTURE.md#failure-notification) for how that flow works.
-
-### I want to query Cloud SQL from a sandboxed session
-
-The Claude Code on the web sandbox can't reach Cloud SQL on TCP 5432/3307. Use [`db-query.yml`](.github/workflows/db-query.yml) to run SQL inside a GitHub-Actions runner instead — reads roll back by default, writes need explicit `commit=true`. Full invocation patterns and safety rules are in [CLAUDE.md → Database access](CLAUDE.md#database-access).
+See [RUNBOOK.md](RUNBOOK.md) for detailed failure scenarios and recovery steps. The system has a failure-notifier flow (Cloud Logging sink → Pub/Sub → Cloud Run Service → GitHub issue) which automatically creates issues for most job failures. See [ARCHITECTURE.md §3 "Failure notification"](ARCHITECTURE.md#3-data-flow-5-named-subsections) for details.
 
 ---
 
 ## Maintenance
 
-Documentation auto-refreshes monthly via [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml):
+Documentation auto-refreshes monthly via [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml). This workflow regenerates `ARCHITECTURE.md`, `DATA_DEPENDENCIES.md`, `COST_ANALYSIS.md`, and this `README.md`. Bot PRs with these changes should be reviewed and merged within a week.
 
-- Runs on the 1st of every month at 06:00 UTC, plus manual dispatch
-- Authenticates to GCP via Workload Identity Federation (no service-account JSON keys checked in)
-- Snapshots inventory + IAM + 90-day billing rollup, then invokes Gemini 2.5 Pro (via Vertex AI) in non-interactive mode using prompts versioned under [`.github/prompts/`](.github/prompts/)
-- Opens a PR titled `Monthly architecture doc refresh: YYYY-MM` if any of `ARCHITECTURE.md` / `DATA_DEPENDENCIES.md` / `COST_ANALYSIS.md` / `README.md` changed meaningfully
-- Bot PRs should be reviewed and merged within a week — stale auto-PRs accumulate noise
-
-One-time setup is documented in [SETUP.md](SETUP.md). Cost: **~\$0.50-1/month in Vertex AI Gemini 2.5 Pro spend** (the workflow uses Vertex via the existing WIF auth — no separate API key).
-
-The `RUNBOOK.md` and `DASHBOARD_SPEC.md` are **not** auto-regenerated — they're operator-edited (incident playbook + forward-looking spec, not state snapshots). Edit them by hand and PR like any other code change.
+The `RUNBOOK.md` and `DASHBOARD_SPEC.md` are operator-edited and not part of the auto-generation process.
 
 ---
 
 ## License and contact
 
-> No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
+No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
 
 ---
-
-*Repo policies — branching, commit conventions, AI-collaboration rules — live in [CLAUDE.md](CLAUDE.md).*
+Generated 2026-09-02 by .github/workflows/refresh-architecture-docs.yml
