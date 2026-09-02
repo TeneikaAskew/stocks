@@ -63,6 +63,32 @@ The harness runs a SessionStart hook each time a new web session begins. The scr
 #!/bin/bash
 set -euo pipefail
 
+# Anchor on the repo root before anything else. Steps 4 and 5 are guarded
+# by `[ -f requirements.txt ]` and `[ -f platform/package.json ]`, which
+# are relative tests: if the hook starts anywhere other than the repo
+# root, both guards are false and the dependency installs are SKIPPED
+# SILENTLY — no error, no output, just a session with no deps.
+#
+# Test the directory rather than cd-ing and hoping. `cd X || cd X` is fatal
+# under `set -e` when X does not exist (measured: exit 1, script dead), and
+# the repo dir may legitimately not be there yet at init time. Warn loudly
+# and continue instead — a missing anchor should degrade steps 4 and 5, not
+# kill the whole session. The echo makes a successful anchor visible in the
+# startup output so the next failure is diagnosable from the log alone.
+# Any step that degrades rather than fails appends a token here. The footer
+# refuses to claim success while it is non-empty — a bootstrap that skipped
+# the dependency installs must not print "All setup steps passed".
+SETUP_DEGRADED=""
+
+REPO="${CLAUDE_PROJECT_DIR:-/home/user/stocks}"
+if [ -d "$REPO" ]; then
+  cd "$REPO"
+  echo "Anchored at $REPO"
+else
+  echo "WARN: repo dir $REPO not present at init time — steps 4 & 5 will skip"
+  SETUP_DEGRADED="${SETUP_DEGRADED}repo-anchor-missing "
+fi
+
 # ---------------------------------------------------------------------
 # 0. Install gcloud SDK and GitHub CLI IF the base image lacks them.
 #
@@ -167,6 +193,10 @@ gh auth status
 if [ -f requirements.txt ]; then
   pip install --quiet -r requirements.txt
   pip check || echo "WARN: pip check reported issues (non-fatal)"
+  echo "Step 4 OK: python deps installed"
+else
+  echo "WARN: no requirements.txt in $(pwd) — python deps NOT installed"
+  SETUP_DEGRADED="${SETUP_DEGRADED}python-deps-skipped "
 fi
 
 # ---------------------------------------------------------------------
@@ -175,10 +205,20 @@ fi
 if [ -f platform/package.json ]; then
   (cd platform && npm ci --silent)
   [ -d platform/node_modules ] || { echo "ERROR: node_modules not created"; exit 1; }
+  echo "Step 5 OK: frontend deps installed"
+else
+  echo "WARN: no platform/package.json in $(pwd) — frontend deps NOT installed"
+  SETUP_DEGRADED="${SETUP_DEGRADED}frontend-deps-skipped "
 fi
 
 echo "==================================="
-echo "All setup steps passed"
+if [ -n "$SETUP_DEGRADED" ]; then
+  echo "SETUP INCOMPLETE — degraded: $SETUP_DEGRADED"
+  echo "  The session will start, but tests and linters will fail until the"
+  echo "  skipped steps are run by hand from the repo root."
+else
+  echo "All setup steps passed"
+fi
 echo "  gcloud account: $ACTIVE_ACCT"
 echo "  gcloud project: $(gcloud config get-value project)"
 echo "  gh user:        $(gh api user -q .login)"
@@ -191,6 +231,12 @@ echo "==================================="
 - **Smoke test after every section.** Step 0 and step 3 caught real failures during development (missing apt key, expired PAT). The cost of the test is milliseconds; the cost of debugging a half-set-up session is much higher.
 - **`apt-get update -qq || true`** — apt updates can fail transiently in the sandbox image; we tolerate the failure but require the install step to succeed.
 - **`chmod 600 "$KEY_PATH"`** — the key is sensitive; restrict perms even though only one user runs in the sandbox.
+- **`cd` to the repo root before any relative path test.** Steps 4 and 5
+  gate on `[ -f requirements.txt ]` / `[ -f platform/package.json ]`. A
+  false guard is indistinguishable from "nothing to install" — the script
+  exits 0 having installed no dependencies. This is a silent fallback in
+  the sense of CLAUDE.md Rule 3.7, in the bootstrap layer: the failure
+  mode is a session that looks healthy and fails on the first `pytest`.
 
 ### Incident: 2026-08-27 — the setup script took down every new session
 
