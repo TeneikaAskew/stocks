@@ -94,7 +94,87 @@ log() {
 
 # Build env-var overrides. Use the ^|^ delimiter so embedded commas in the
 # SQL don't confuse gcloud's default CSV parsing.
-ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT_SECONDS=${TIMEOUT_S}"
+# A nonce only this dispatch's execution can carry. Used below to PROVE that a
+# recovered execution id is ours; nothing in the job reads it.
+DISPATCH_ID="d$(date -u +%s)-$$-${RANDOM}"
+ENV_OVERRIDES="^|^DB_QUERY_SQL=${SQL}|DB_QUERY_COMMIT=${COMMIT}|DB_QUERY_TIMEOUT_SECONDS=${TIMEOUT_S}|DB_QUERY_DISPATCH_ID=${DISPATCH_ID}"
+
+# Claude Code Remote / Cowork sessions export CLOUDSDK_AUTH_ACCESS_TOKEN as a
+# short placeholder rather than a real OAuth token, and every gcloud call then
+# fails UNAUTHENTICATED. Without this the failure surfaces at the GA/beta probe
+# below, which blames a missing beta component -- the wrong cause, and one that
+# sends an operator to install something they already have.
+#
+# Whether the token is usable is decided by ASKING THE API, not by inspecting
+# the token. Two representation tests were tried first and both were wrong: a
+# `ya29.` prefix (a convention, not a contract) and a minimum length (no
+# contract either). An opaque value is precisely what you cannot validate by
+# looking at it. This describe is read-only, so a failure here cannot have
+# started anything.
+#
+# Two auth failures that must NOT be treated alike:
+#
+#   ACCESS_TOKEN_TYPE_UNSUPPORTED — the value is not a usable token at all.
+#       Nothing is being substituted for a credential, because it never was
+#       one. Safe to ignore and continue.
+#
+#   any other UNAUTHENTICATED — a real credential that has expired or been
+#       revoked. Dropping it would run the query under gcloud's configured
+#       principal instead: a DIFFERENT identity, possibly more privileged than
+#       the one the caller deliberately selected by setting the variable. For
+#       a --commit run that means writes executed as somebody else. An
+#       expired token proves the token is unusable; it proves nothing about
+#       whether switching identities is acceptable, so this stops instead.
+#
+# PERMISSION_DENIED likewise does not qualify: the token is valid and its
+# identity lacks a role, and substituting another identity would hide exactly
+# the problem the operator needs to see.
+if [[ -n "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]]; then
+    PROBE_ERR=$(mktemp)
+    if ! gcloud run jobs describe "$JOB" --region="$REGION" \
+             --format="value(metadata.name)" >/dev/null 2>"$PROBE_ERR"; then
+        # TWO conditions, both required, because neither is sufficient alone.
+        #
+        # The API says the value is unusable AND the value is far too short to
+        # have ever been a credential. Measured: a `ya29.`-shaped 58-character
+        # string returns ACCESS_TOKEN_TYPE_UNSUPPORTED too, so that reason on
+        # its own does NOT separate "harness placeholder" from "real token that
+        # expired" — I could not obtain an expired token to establish that it
+        # reports something different, so this does not rely on it. Length is
+        # not being used to judge validity (the API already did that); it is
+        # being used to establish that nothing the caller chose is being
+        # discarded. Real access tokens run to hundreds of characters.
+        if grep -q 'ACCESS_TOKEN_TYPE_UNSUPPORTED' "$PROBE_ERR" \
+           && (( ${#CLOUDSDK_AUTH_ACCESS_TOKEN} < 40 )); then
+            echo "note: CLOUDSDK_AUTH_ACCESS_TOKEN is ${#CLOUDSDK_AUTH_ACCESS_TOKEN} characters and the API" >&2
+            echo "      rejected it as ACCESS_TOKEN_TYPE_UNSUPPORTED — a harness" >&2
+            echo "      placeholder, not a credential. Ignoring it and using" >&2
+            echo "      gcloud's configured credentials instead." >&2
+            unset CLOUDSDK_AUTH_ACCESS_TOKEN
+        elif grep -qE '^ERROR: \(gcloud\.[a-z.]+\) (UNAUTHENTICATED|UNAUTHORIZED)' "$PROBE_ERR"; then
+            if [[ "${DB_QUERY_ALLOW_IDENTITY_FALLBACK:-}" == "1" ]]; then
+                echo "note: CLOUDSDK_AUTH_ACCESS_TOKEN was rejected (UNAUTHENTICATED)." >&2
+                echo "      DB_QUERY_ALLOW_IDENTITY_FALLBACK=1 is set, so continuing" >&2
+                echo "      under gcloud's configured identity instead." >&2
+                unset CLOUDSDK_AUTH_ACCESS_TOKEN
+            else
+                echo "error: CLOUDSDK_AUTH_ACCESS_TOKEN was rejected by the API, and it" >&2
+                echo "       is ${#CLOUDSDK_AUTH_ACCESS_TOKEN} characters — long enough to be a real credential" >&2
+                echo "       that has expired or been revoked. Refusing to silently run as a" >&2
+                echo "       different principal — you set that variable on purpose, and" >&2
+                echo "       gcloud's configured identity may hold different privileges." >&2
+                echo "       Refresh the token, or unset it yourself, or re-run with" >&2
+                echo "       DB_QUERY_ALLOW_IDENTITY_FALLBACK=1 to accept the switch." >&2
+                sed 's/^/       | /' "$PROBE_ERR" >&2
+                rm -f "$PROBE_ERR"
+                exit 1
+            fi
+        fi
+        # Anything else — network, PERMISSION_DENIED, an outage — leaves the
+        # token alone so the real error surfaces below rather than here.
+    fi
+    rm -f "$PROBE_ERR"
+fi
 
 log "dispatching db-query CR Job (commit=$COMMIT, timeout=${TIMEOUT_S}s, sql=${#SQL} chars)..."
 
@@ -135,12 +215,61 @@ if ! EXEC_NAME=$(gcloud run jobs execute "$JOB" \
 fi
 
 # Some gcloud versions print the execution name on stderr rather than stdout.
+#
+# Recovering it must not become "adopt whatever execution exists". Listing the
+# most recent one is what this script used to do, and it printed a PREVIOUS
+# query's summary as the answer to the one just asked -- a wrong answer that
+# looks right, which is the whole reason this file is being changed
+# (CLAUDE.md Rule 3.7). Two guards instead:
+#
+#   1. Match only gcloud's own message forms, ANCHORED AT LINE START. stderr is
+#      not a trusted channel: with HTTP logging on it carries the request body,
+#      hence this invocation's SQL, so an unanchored scan would let the query
+#      text name the execution. A logged payload appears mid-line and cannot
+#      match.
+#   2. Confirm the candidate carries THIS dispatch's id. Timing cannot
+#      establish ownership -- db-query is a shared job, so a concurrent
+#      execution would satisfy any time window.
 if [[ -z "$EXEC_NAME" ]]; then
-    EXEC_NAME=$($EXEC_CMD list --job="$JOB" \
-        --region="$REGION" --limit=1 --format="value(name)" 2>/dev/null || true)
+    RECOVERED=$(grep -oE "^(Execution \[|gcloud( beta)? run jobs executions describe )${JOB}-[a-z0-9]{5}" "$EXEC_ERR" 2>/dev/null \
+                | grep -oE "${JOB}-[a-z0-9]{5}" | head -1 || true)
+    if [[ -n "$RECOVERED" ]] && $EXEC_CMD describe "$RECOVERED" \
+            --region="$REGION" --format=json 2>/dev/null \
+        | python3 -c 'import sys, json
+d = json.load(sys.stdin)
+want = sys.argv[1]
+for c in d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
+    for e in c.get("env", []):
+        if e.get("name") == "DB_QUERY_DISPATCH_ID" and e.get("value") == want:
+            sys.exit(0)
+sys.exit(1)' "$DISPATCH_ID"; then
+        EXEC_NAME="$RECOVERED"
+        log "recovered execution $EXEC_NAME from stderr, confirmed ours by dispatch id"
+    fi
 fi
+
 if [[ -z "$EXEC_NAME" ]]; then
-    echo "error: dispatched, but could not determine the execution name:" >&2
+    # Do not claim the query did not run. The dispatch call SUCCEEDED; only the
+    # name is missing, so an execution may well be running right now. Under
+    # --commit, telling the caller nothing happened invites a retry that
+    # applies the writes twice.
+    echo "error: dispatched successfully, but the execution name is UNKNOWN." >&2
+    echo "       An execution may be running now. Do not assume nothing ran." >&2
+    if [[ -n "$RECOVERED" ]]; then
+        echo "       stderr mentioned $RECOVERED, but it does not carry this" >&2
+        echo "       dispatch's id, so it is NOT being treated as yours." >&2
+    fi
+    if [[ "$COMMIT" == "true" ]]; then
+        echo "       This was a --commit run: DO NOT RETRY before reconciling," >&2
+        echo "       or the writes may be applied twice." >&2
+    fi
+    echo "       Yours, if it exists, is the execution whose DB_QUERY_DISPATCH_ID is" >&2
+    echo "         $DISPATCH_ID" >&2
+    echo "       Find it with:" >&2
+    echo "         $EXEC_CMD list --job=$JOB --region=$REGION \\" >&2
+    echo "           --format='value(name)' | while read -r n; do" >&2
+    echo "             $EXEC_CMD describe \$n --region=$REGION --format=json \\" >&2
+    echo "               | grep -q '$DISPATCH_ID' && echo \$n; done" >&2
     cat "$EXEC_ERR" >&2
     rm -f "$EXEC_ERR"
     exit 1
@@ -210,10 +339,39 @@ _read_summary_api() {
         "https://storage.googleapis.com/storage/v1/b/${BUCKET}/o/${encoded}?alt=media"
 }
 
-if ! _read_summary_gcloud && ! _read_summary_api; then
-    echo "warn: could not read ${PREFIX}/summary.md via gcloud storage or the" >&2
-    echo "      Storage JSON API. The query itself may still have succeeded;" >&2
-    echo "      results are at ${PREFIX}/" >&2
+# Require NON-EMPTY output, not merely a zero exit. A reader that succeeds and
+# prints nothing (a zero-byte object, a truncated transfer) would otherwise be
+# indistinguishable from a summary, and the script would exit 0 having shown
+# the caller no result at all.
+SUMMARY_FILE=$(mktemp)
+if _read_summary_gcloud >"$SUMMARY_FILE" 2>/dev/null && [[ -s "$SUMMARY_FILE" ]]; then
+    cat "$SUMMARY_FILE"
+elif _read_summary_api >"$SUMMARY_FILE" 2>/dev/null && [[ -s "$SUMMARY_FILE" ]]; then
+    cat "$SUMMARY_FILE"
+else
+    # A failed READ is not evidence the object is absent, and neither one says
+    # anything about whether the query ran. The outcome is already known from
+    # the poll above, so report it here rather than leaving the caller to infer
+    # a failure from a missing artifact -- under --commit that inference is
+    # what triggers a retry that applies the writes twice.
+    echo "error: could not read ${PREFIX}/summary.md via gcloud storage or the" >&2
+    echo "       Storage JSON API. That is a failure to FETCH the result, not" >&2
+    echo "       evidence the query did not run." >&2
+    if [[ "$CONCLUSION" == "True" ]]; then
+        echo "       Execution $EXEC_NAME COMPLETED SUCCESSFULLY" >&2
+        echo "       (succeeded=${SUCCEEDED_N:-0} failed=${FAILED_N:-0})." >&2
+        if [[ "$COMMIT" == "true" ]]; then
+            echo "       This was a --commit run and it succeeded: THE WRITES ARE" >&2
+            echo "       APPLIED. Do NOT retry — that would apply them twice." >&2
+        fi
+        echo "       Retry the READ instead:" >&2
+        echo "         gcloud storage cat ${PREFIX}/summary.md" >&2
+    else
+        echo "       Execution $EXEC_NAME did not complete successfully; under" >&2
+        echo "       --commit, statements before the failure may still have persisted." >&2
+    fi
+    echo "       Artifacts are at ${PREFIX}/" >&2
 fi
+rm -f "$SUMMARY_FILE"
 
 [[ "$CONCLUSION" == "True" ]] && exit 0 || exit 1
