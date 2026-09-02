@@ -353,7 +353,7 @@ def calculate_profit_loss(merged_df):
     return merged_df
 
 
-def load_strategy_csv(strategy_name, data_dir='google-apps-script/data'):
+def load_strategy_csv(strategy_name, data_dir='archive/google-apps-script/data'):
     """
     Load strategy CSV file.
 
@@ -440,7 +440,7 @@ Note: This is for EARNINGS strategies (multi-day holds).
 
     parser.add_argument(
         '--data-dir',
-        default='google-apps-script/data',
+        default='archive/google-apps-script/data',
         help='Directory containing strategy CSV files'
     )
 
