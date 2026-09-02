@@ -5,8 +5,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Google Apps Script
-google-apps-script/node_modules/
-google-apps-script/.clasp.json
+archive/google-apps-script/node_modules/
 
 # Environment variables
 .env
