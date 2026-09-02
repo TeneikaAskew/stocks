@@ -147,3 +147,14 @@ gcp_schedulers.json
 billing_90d.json
 .venv
 .superpowers/
+
+# Archived projects keep their committed sample/reference data. The `data/`
+# rule above targets the GCS-backed parquet/CSV datasets, not these fixtures —
+# without this, archiving a project would silently drop them from the repo
+# while leaving them on disk, so the move would read as a deletion.
+!archive/**/data/
+!archive/**/data/**
+# ...but not files the live projects never tracked: archiving should preserve
+# what was in the repo, not start committing things that were excluded.
+archive/**/*.csv
+archive/**/.clasp.json
