@@ -19,6 +19,8 @@ You are an automated documentation agent. Regenerate `DATA_DEPENDENCIES.md` from
 
 A markdown table: Table | One-line purpose. Cover every table in `schema.sql`. Purpose comes from schema comments + your read of the field set.
 
+**Every table name must appear VERBATIM, one row per table.** The workflow mechanically verifies that each name produced by `grep -E "^CREATE TABLE" gcp/schema.sql` appears literally in this document and fails the run on any miss. Never collapse related tables into wildcard or brace shorthand — write `market_data_intraday_spy`, `market_data_intraday_iwm`, `market_data_intraday_qqq`, `market_data_intraday_spx`, `market_data_intraday_other` as five rows, not `market_data_intraday_{spy,iwm,...}` or `market_data_intraday_*`. Operators grep this doc by exact table name; a grouped row is invisible to them. (The 2026-09-02 run failed the gate on exactly seven such omissions.) Related tables may share one Purpose sentence, but each keeps its own row. Before writing the file, diff your inventory against the grep output and add anything missing.
+
 ### 2. Write graph
 
 For every table, a subsection listing every code module that writes to it. A "write" is any of:
