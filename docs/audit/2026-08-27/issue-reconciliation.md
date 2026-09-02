@@ -352,14 +352,15 @@ matters: the figures are the contents of `db-query-w85s9`, written
 2026-08-30T13:32Z, and they were recorded here as a measurement taken
 2026-08-31 11:27 UTC.
 
-> **The repair is not on `main` yet.** It is pending in
-> [#948](https://github.com/TeneikaAskew/stocks/pull/948). Until that merges,
-> `main`'s copy of `scripts/db_query_cr.sh` still carries both defects, so the
-> re-run command above can itself return a stale artifact from a previous
-> execution. Treat any figure it produces as unverified until #948 lands, and
-> check that the execution id printed by the run is one you have not seen
-> before. The measurement recorded above was taken with the repaired script
-> from #948's branch, not with `main`'s.
+> **The repair is on `main`**, merged as `b4f6034` from
+> [#948](https://github.com/TeneikaAskew/stocks/pull/948) on 2026-09-02, so the
+> re-run command above is now trustworthy. The measurement recorded here was
+> taken with that script before it landed, from #948's branch.
+>
+> The check it removed is still worth knowing, because it needs no tooling:
+> the stale-artifact failure always reprinted an execution id you had seen
+> before. If a run ever prints one you recognise, treat the figures as
+> suspect regardless of what the script says.
 
 The lesson generalizes past this one figure: **a measurement is not a
 measurement without the execution id and the timestamp of the run that
