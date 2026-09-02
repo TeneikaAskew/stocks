@@ -287,6 +287,36 @@ class RiskConfig:
 class ExitConfig:
     call_target: float = 0.0030   # +0.30%
     put_target: float = 0.0038    # +0.38%
+    # Backtest-only legacy stop levels. Do not wire these into live trading
+    # merely to manufacture parity (#815). Across 736 observed fires, applying
+    # these levels to fixed entries reduced the recorded-path result by 12.70
+    # percentage points. That is an exit-policy estimate, not a causal estimate
+    # of the stateful production strategy: stops can change later P&L gates,
+    # capital, concurrency, sizing, and which later trades are eligible.
+    #
+    # The live time stop bounds exposure duration, not loss magnitude. It does
+    # not protect against gaps, halts, slippage, or failed execution, and the
+    # observed worst loss is not a structural loss cap. Reconsider live stops
+    # only with execution-aware sequential replay, out-of-sample validation,
+    # and a predeclared portfolio tail-risk objective.
+    #
+    # What #816 has and has not delivered, as of #933:
+    #   * Delivered and enforced — `_emergency_ceiling_block` in
+    #     gcp/signal_monitor.py checks the three `emergency_*` ceilings on
+    #     RiskConfig before every fire.
+    #   * A no-op at the shipped defaults — 5 / 5.0 / 15.0 are set to states
+    #     already reachable under `max_daily_trades`, deliberately, so the
+    #     mechanism is live without censoring current behaviour. Lowering
+    #     them is gated on #940 restoring risk state across restarts; until
+    #     then a tighter ceiling would be re-zeroed by any restart mid-session.
+    #   * Not delivered — a daily-loss boundary. `daily_pnl` is written only
+    #     in the exit path, so the check reads 0.0 for most fires and cannot
+    #     bind intraday as written.
+    #
+    # So the deliberate no-per-trade-stop policy still sits on conditionally
+    # unbounded downside, and that is unchanged by #933: what shipped is an
+    # enforcement point with nothing yet set to enforce, not a restored
+    # boundary.
     call_stop: float = 0.0015     # -0.15%
     put_stop: float = 0.0020      # -0.20%
     call_time_stop: int = 30      # minutes
