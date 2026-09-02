@@ -71,7 +71,7 @@ set -euo pipefail
 # Test the directory rather than cd-ing and hoping. `cd X || cd X` is fatal
 # under `set -e` when X does not exist (measured: exit 1, script dead), and
 # the repo dir may legitimately not be there yet at init time. Warn loudly
-# and continue instead — a missing anchor should degrade steps 4 and 5, not
+# and continue instead — a missing anchor should degrade step 4, not
 # kill the whole session. The echo makes a successful anchor visible in the
 # startup output so the next failure is diagnosable from the log alone.
 # Any step that degrades rather than fails appends a token here. The footer
@@ -238,7 +238,9 @@ echo "==================================="
 - **`cd` to the repo root before any relative path test.** Step 4 gates
   on `[ -f requirements.txt ]`. A false guard is indistinguishable from
   "nothing to install" — the script exits 0 having installed no
-  dependencies.
+  dependencies. This is a silent fallback in the sense of CLAUDE.md
+  Rule 3.7, in the bootstrap layer: the failure mode is a session that
+  looks healthy and fails on the first `pytest`.
 
 - **Delete a guard when the thing it guards leaves the repo.** Step 5
   tested `[ -f platform/package.json ]`. #960 moved the SPA to
@@ -248,9 +250,7 @@ echo "==================================="
   warning: it carries no information, and the reader learns to skip the
   footer that also reports the python-deps failure. Both directions of
   the false-signal bug cost the same thing — a footer nobody can act on.
-  When a repo drops a component, grep the bootstrap for its paths. This is a silent fallback in
-  the sense of CLAUDE.md Rule 3.7, in the bootstrap layer: the failure
-  mode is a session that looks healthy and fails on the first `pytest`.
+  When a repo drops a component, grep the bootstrap for its paths.
 
 ### Incident: 2026-08-27 — the setup script took down every new session
 
