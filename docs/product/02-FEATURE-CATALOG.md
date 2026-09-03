@@ -565,7 +565,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `job_runs` |
 | Models | — |
 | Code | `gcp/freshness_watchdog.py`, `gcp/notifier*.py`, `platform/api/routers/health.py` |
-| Tests | `data-pipeline-status.spec.ts` |
+| Tests | `data-pipeline-status.spec.ts` deleted in #957: widget guard ported in [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29); live `/api/health/freshness` tests tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971) |
 | Open issues | 4 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ops-001-operations-reliability-4-open) |
 | Blocking issues | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |

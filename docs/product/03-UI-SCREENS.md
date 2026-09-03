@@ -78,10 +78,13 @@ In local development the Vite server proxies `/api` to `http://localhost:8000`
 
 ### Cross-cutting specs
 
-Five specs cover behavior spanning screens rather than one route:
-`auth-gate.spec.ts`, `navigation.spec.ts`, `api-smoke.spec.ts`, `data-pipeline-status.spec.ts`,
-`dev.spec.ts`. Note `dev.spec.ts` does **not** exercise the public-staging configuration in which
-`/dev` is unauthenticated — see [09](09-SECURITY-AUTH.md).
+Of the five specs that covered behavior spanning screens rather than one route:
+`auth-gate.spec.ts` and `navigation.spec.ts` live in solyra `tests/` since the #957 split;
+`api-smoke.spec.ts` and `dev.spec.ts` were deleted in #957 with no replacement (live API smoke
+gap tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971); the `/dev` surface is
+[#943](https://github.com/TeneikaAskew/stocks/issues/943)'s, whose tests must be written fresh);
+`data-pipeline-status.spec.ts` was split — its widget guard is ported in
+[solyra#29](https://github.com/TeneikaAskew/solyra/pull/29), its live API tests fall under #971.
 Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither suite runs in CI
 ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868; both suites moved to solyra in the #957 split).
 

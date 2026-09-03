@@ -31,7 +31,7 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 | [FEAT-SETTINGS-001](02-FEATURE-CATALOG.md#feat-settings-001) | `platform/src/routes/SettingsPage.tsx`, `platform/src/stores/settingsStore.ts`, `themeStore.ts` | **none** | Incomplete |
 | [FEAT-DATA-001](02-FEATURE-CATALOG.md#feat-data-001) | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` | `tests/test_data_loader*.py`, integration suite | Production but needs remediation |
 | [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | `gcp/deploy.sh`, `platform/deploy.sh`, `gcp/cloudbuild/` | static checks only | Production but needs remediation |
-| [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | `gcp/freshness_watchdog.py`, `gcp/notifier*.py`, `platform/api/routers/health.py` | `data-pipeline-status.spec.ts` | Incomplete |
+| [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | `gcp/freshness_watchdog.py`, `gcp/notifier*.py`, `platform/api/routers/health.py` | `data-pipeline-status.spec.ts` deleted in #957 — see [#971](https://github.com/TeneikaAskew/stocks/issues/971) and [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29) | Incomplete |
 | [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | `.github/workflows/`, `gcp/cloudbuild/` | 230 python tests, 29 e2e, 27 vitest | Production but needs remediation |
 | [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | `platform/src/App.tsx`, `platform/src/components/shared/` | `navigation.spec.ts` | Production but needs remediation |
 | [FEAT-DEBT-001](02-FEATURE-CATALOG.md#feat-debt-001) | `scripts/`, archived apps | — | Retire candidate |
