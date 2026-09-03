@@ -378,7 +378,25 @@ def load_strategy_csv(strategy_name, data_dir='archive/google-apps-script/data')
     filepath = Path(data_dir) / filename
 
     if not filepath.exists():
-        raise FileNotFoundError(f"Strategy file not found: {filepath}")
+        # The strategy CSVs are gitignored local files, so the archive
+        # relocation (dac85fa4) moved the tracked project but NOT anyone's
+        # local CSVs — an existing checkout still holds them at the old
+        # path. Fail loud with the way out rather than silently falling
+        # back (CLAUDE.md Rule 3.7): which directory is authoritative is
+        # the caller's call, not this loader's.
+        legacy = Path('google-apps-script/data') / filename
+        if legacy.exists():
+            raise FileNotFoundError(
+                f"Strategy file not found: {filepath}. Your gitignored copy "
+                f"still sits at the pre-archive path {legacy} — pass "
+                f"--data-dir {legacy.parent} or move the CSVs into "
+                f"{Path(data_dir)}."
+            )
+        raise FileNotFoundError(
+            f"Strategy file not found: {filepath}. Strategy CSVs are "
+            f"gitignored local exports; place them in {Path(data_dir)} or "
+            f"point --data-dir at the directory that holds them."
+        )
 
     print(f"\n{'='*80}")
     print(f"Loading Strategy: {strategy_name.upper()}")
