@@ -129,7 +129,7 @@ This plan owns capability trust status and the roadmap. Two adjacent artifacts o
 deliberately does not answer, and the three are reconciled in
 [12](12-PR-ISSUE-TRACEABILITY.md#reconciliation-with-the-audit-remediation-workstream):
 
-- [#924](https://github.com/TeneikaAskew/stocks/pull/924) — the canonical 105-issue inventory across 18 delivery streams.
+- [#924](https://github.com/TeneikaAskew/stocks/pull/924) — the canonical 105-issue inventory across the PR-A…PR-R delivery streams (19 rows since the 2026-09-03 PR-O stocks/solyra split).
 - [#941](https://github.com/TeneikaAskew/stocks/pull/941) — which issues actually have a remediation PR. Merged into the #924 stack 2026-08-30. Since then #933 and #934 landed on `main`; **#818 is closed with its Definition of done met in full**, and #816 correctly remains open.
 
 ## Snapshot
@@ -142,7 +142,7 @@ deliberately does not answer, and the three are reconciled in
 | Cloud Run jobs / schedulers | 67 / 58 |
 | Database relations | 64 (62 tables + 2 materialized views) |
 | Models + LLM nodes | 21 registry entries + 14 routed LLM nodes |
-| Open issues mapped | 121 of 121 (= 104 canonical audit + 13 pre-audit + 4 post-audit/ops) |
+| Open issues mapped | 117 of 117 as of 2026-09-03 (= 103 canonical in stocks + 1 tracked as [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28) + 11 pre-audit + 3 post-audit) |
 | PRs mapped | 151 significant, #184–#932 |
-| Tests | 230 python · 29 Playwright · 27 Vitest |
+| Tests | 230 python (29 Playwright + 27 Vitest moved to solyra in #957) |
 | Capabilities at Production (unqualified) | **2 of 25** (Landing, Help) |

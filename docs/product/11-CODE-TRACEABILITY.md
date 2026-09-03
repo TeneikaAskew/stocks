@@ -7,13 +7,21 @@ revision listed 16 of 22, so Settings, Help, Waitlist, Model, Alert and Ops reso
 locus despite two of them being P0. Directory presence is not production evidence; the
 Status column comes from [02](02-FEATURE-CATALOG.md).
 
+> **Frontend split (2026-09-03 note):** the #957 split moved the React frontend to
+> `TeneikaAskew/solyra` — every `platform/src/**` path below now lives at solyra `src/**`, and
+> every frontend spec (`*.spec.ts` without a `tests/` or `platform/api` prefix, plus all
+> `*.test.*` component tests) lives at solyra `tests/` and `src/`. `platform/` in this repo
+> holds only the API. Exceptions: `phase1-charts.spec.ts`, `api-smoke.spec.ts` and
+> `dev.spec.ts` were deleted, not moved — see [#971](https://github.com/TeneikaAskew/stocks/issues/971)
+> and [#958](https://github.com/TeneikaAskew/stocks/issues/958).
+
 | ID | Implementation | Tests | Status |
 |---|---|---|---|
-| [FEAT-AUTH-001](02-FEATURE-CATALOG.md#feat-auth-001) | `platform/api/auth.py`, `platform/api/main.py:51`, `platform/src/components/auth` | `platform/tests/auth-gate.spec.ts`, `admin-auth.spec.ts` | Production but needs remediation |
+| [FEAT-AUTH-001](02-FEATURE-CATALOG.md#feat-auth-001) | `platform/api/auth.py`, `platform/api/main.py:51`, `platform/src/components/auth` | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` | Production but needs remediation |
 | [FEAT-WAITLIST-001](02-FEATURE-CATALOG.md#feat-waitlist-001) | `platform/src/routes/LandingPage.tsx`, `platform/api/routers/waitlist.py` | `landing.spec.ts`, `waitlist.test.ts` | Production |
 | [FEAT-MARKET-001](02-FEATURE-CATALOG.md#feat-market-001) | `platform/src/routes/DashboardPage.tsx`, `platform/api/routers/dashboard.py`, `lib/movement_statement.py` | `dashboard.spec.ts`, `movement-read.spec.ts`, `MovementRead.test.tsx` | Production but needs remediation |
 | [FEAT-LIVE-001](02-FEATURE-CATALOG.md#feat-live-001) | `platform/src/routes/LiveMarketPage.tsx`, `platform/api/routers/live.py`, `lib/indicators.py` | `live-market.spec.ts` | Production but needs remediation |
-| [FEAT-CHART-001](02-FEATURE-CATALOG.md#feat-chart-001) | `platform/src/routes/ChartsPage.tsx`, `platform/api/routers/live.py`, `grid.py` | `charts-cards.spec.ts`, `phase1-charts.spec.ts` | Production but needs remediation |
+| [FEAT-CHART-001](02-FEATURE-CATALOG.md#feat-chart-001) | `platform/src/routes/ChartsPage.tsx`, `platform/api/routers/live.py`, `grid.py` | `charts-cards.spec.ts` (`phase1-charts.spec.ts` deleted — #958) | Production but needs remediation |
 | [FEAT-OPTION-001](02-FEATURE-CATALOG.md#feat-option-001) | `platform/src/routes/OptionsFlowPage.tsx`, `platform/api/routers/options.py`, `grid.py`, `lib/gamma.py`, `lib/options_greeks.py` | `options-flow.spec.ts`, `gamma-levels.spec.ts`, `swingGridUtils.test.ts` | Retest Required |
 | [FEAT-SIGNAL-001](02-FEATURE-CATALOG.md#feat-signal-001) | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` | `signals.spec.ts`, `tests/test_signal*.py` | Production but needs remediation |
 | [FEAT-PLAYBOOK-001](02-FEATURE-CATALOG.md#feat-playbook-001) | `platform/src/routes/PlaybookPage.tsx`, `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` | `playbook.spec.ts`, `tests/test_phase6_playbook.py` | **Broken** |
@@ -32,8 +40,8 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 | [FEAT-DATA-001](02-FEATURE-CATALOG.md#feat-data-001) | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` | `tests/test_data_loader*.py`, integration suite | Production but needs remediation |
 | [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | `gcp/deploy.sh`, `platform/deploy.sh`, `gcp/cloudbuild/` | static checks only | Production but needs remediation |
 | [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | `gcp/freshness_watchdog.py`, `gcp/notifier*.py`, `platform/api/routers/health.py` | `data-pipeline-status.spec.ts` deleted in #957 — see [#971](https://github.com/TeneikaAskew/stocks/issues/971) and [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29) | Incomplete |
-| [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | `.github/workflows/`, `gcp/cloudbuild/` | 230 python tests, 29 e2e, 27 vitest | Production but needs remediation |
-| [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | `platform/src/App.tsx`, `platform/src/components/shared/` | `navigation.spec.ts` | Production but needs remediation |
+| [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | `.github/workflows/`, `gcp/cloudbuild/` | 230 python tests (frontend suites moved to solyra in #957) | Production but needs remediation |
+| [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx), solyra `src/components/` | solyra `tests/navigation.spec.ts` | Production but needs remediation |
 | [FEAT-DEBT-001](02-FEATURE-CATALOG.md#feat-debt-001) | `scripts/`, archived apps | — | Retire candidate |
 
 ## Repository layers

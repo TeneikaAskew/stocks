@@ -59,7 +59,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | identity/config |
 | Models | Firebase / IAP |
 | Code | `platform/api/auth.py`, `platform/api/main.py:51`, `platform/src/components/auth` |
-| Tests | `platform/tests/auth-gate.spec.ts`, `admin-auth.spec.ts` |
+| Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in the #957 split) |
 | Open issues | 8 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-auth-001-auth-security-8-open) |
 | Blocking issues | [#830](https://github.com/TeneikaAskew/stocks/issues/830) [#850](https://github.com/TeneikaAskew/stocks/issues/850) [#911](https://github.com/TeneikaAskew/stocks/issues/911) [#837](https://github.com/TeneikaAskew/stocks/issues/837) [#836](https://github.com/TeneikaAskew/stocks/issues/836) [#839](https://github.com/TeneikaAskew/stocks/issues/839) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
@@ -588,7 +588,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | — |
 | Models | — |
 | Code | `.github/workflows/`, `gcp/cloudbuild/` |
-| Tests | 230 python tests, 29 e2e, 27 vitest |
+| Tests | 230 python tests (29 e2e + 27 vitest moved to solyra in the #957 split) |
 | Open issues | 9 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-cicd-001-ci-testing-9-open) |
 | Blocking issues | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#843](https://github.com/TeneikaAskew/stocks/issues/843) [#847](https://github.com/TeneikaAskew/stocks/issues/847) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |

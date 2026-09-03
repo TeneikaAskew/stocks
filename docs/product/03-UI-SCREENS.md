@@ -40,8 +40,8 @@ in [05](05-INFRASTRUCTURE.md#environments-and-urls).
 
 Operational endpoints outside the SPA router: `https://trading-platform-5sjtb3yl7a-ue.a.run.app/dev` (the unauthenticated-on-staging
 page — see [09](09-SECURITY-AUTH.md)), `https://trading-platform-5sjtb3yl7a-ue.a.run.app/api/health`, `https://trading-platform-5sjtb3yl7a-ue.a.run.app/api/health/freshness`.
-In local development the Vite server proxies `/api` to `http://localhost:8000`
-(`platform/vite.config.ts:21,27`), so the API is reachable at both ports.
+In local development the frontend dev server lives in the solyra repo since the #957 split
+(its Vite proxies `/api` to `http://localhost:8000`); `platform/` here holds only the API.
 
 ## Screen inventory
 
@@ -85,10 +85,14 @@ gap tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971); the `/
 [#943](https://github.com/TeneikaAskew/stocks/issues/943)'s, whose tests must be written fresh);
 `data-pipeline-status.spec.ts` was split — its widget guard is ported in
 [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29), its live API tests fall under #971.
-Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither suite runs in CI
+Plus **27 Vitest component tests**, now under solyra `src/**/*.test.*`. Neither suite runs in CI
 ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868; both suites moved to solyra in the #957 split).
 
 ## Per-screen records
+
+> **Frontend split (2026-09-03 note):** component paths below (`platform/src/**`) moved to
+> solyra `src/**` in the #957 split, and the E2E specs live in solyra `tests/`; `platform/`
+> in this repo holds only the API.
 
 ### SCREEN-LANDING — `/`
 
@@ -98,7 +102,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **Child components:** `BentoGrid`, `ChartShowcase`, `DailyRhythm`, `Hero`, `LandingFAQ`, `LandingNav`, `ModuleDives`, `WaitlistSection`
 - **API calls (from source):** none found in the page component — issued by child components or hooks
 - **States present:** none detected · **absent:** load, err, empty, stale
-- **E2E specs:** `platform/tests/demo-banners.spec.ts`, `platform/tests/landing.spec.ts`
+- **E2E specs:** `solyra tests/demo-banners.spec.ts`, `solyra tests/landing.spec.ts`
 - **PR lineage:** [#684](https://github.com/TeneikaAskew/stocks/pull/684) origin · [#686](https://github.com/TeneikaAskew/stocks/pull/686) real walk-forward proof tile · [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) perf open (was #683; moved 2026-09-03)
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -124,7 +128,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/catalysts/events`, `/api/dashboard/brief/`, `/api/market/data/`, `/api/market/reference/`, `/api/market/sectors`, `/api/playbook/`, `/api/signals/`
 - **Stores:** `useReviewDateStore`, `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/dashboard-chart-fit.spec.ts`, `platform/tests/dashboard.spec.ts`, `platform/tests/most-active-bar.spec.ts`, `platform/tests/movement-read.spec.ts`
+- **E2E specs:** `solyra tests/dashboard-chart-fit.spec.ts`, `solyra tests/dashboard.spec.ts`, `solyra tests/most-active-bar.spec.ts`, `solyra tests/movement-read.spec.ts`
 - **PR lineage:** [#649](https://github.com/TeneikaAskew/stocks/pull/649)/[#650](https://github.com/TeneikaAskew/stocks/pull/650) movement statement · [#729](https://github.com/TeneikaAskew/stocks/pull/729) enable + e2e · [#732](https://github.com/TeneikaAskew/stocks/pull/732) most-active bar · [#733](https://github.com/TeneikaAskew/stocks/pull/733) expected-move card (disabled by [#810](https://github.com/TeneikaAskew/stocks/pull/810))
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -138,7 +142,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/market/data/`
 - **Stores:** `useReviewDateStore`, `useTickerStore`
 - **States present:** err, empty, stale · **absent:** load
-- **E2E specs:** `platform/tests/live-market.spec.ts`, `platform/tests/movement-read.spec.ts`
+- **E2E specs:** `solyra tests/live-market.spec.ts`, `solyra tests/movement-read.spec.ts`
 - **PR lineage:** [#690](https://github.com/TeneikaAskew/stocks/pull/690) market dropdown + truthful session badge · [#700](https://github.com/TeneikaAskew/stocks/pull/700) one-source-of-truth signals
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -152,7 +156,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** none found in the page component — issued by child components or hooks
 - **Stores:** `useReviewDateStore`, `useSettingsStore`, `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/charts-cards.spec.ts`, `platform/tests/phase1-charts.spec.ts`, `platform/tests/ticker-combobox.spec.ts`
+- **E2E specs:** `solyra tests/charts-cards.spec.ts`, `solyra tests/ticker-combobox.spec.ts` (`phase1-charts.spec.ts` deleted as stale — #958)
 - **PR lineage:** [#715](https://github.com/TeneikaAskew/stocks/pull/715) restore charts UI · [#703](https://github.com/TeneikaAskew/stocks/pull/703) ticker type-ahead · [#700](https://github.com/TeneikaAskew/stocks/pull/700)
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -166,7 +170,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** none found in the page component — issued by child components or hooks
 - **Stores:** `useTickerStore`
 - **States present:** none detected · **absent:** load, err, empty, stale
-- **E2E specs:** `platform/tests/gamma-levels.spec.ts`, `platform/tests/options-flow.spec.ts`
+- **E2E specs:** `solyra tests/gamma-levels.spec.ts`, `solyra tests/options-flow.spec.ts`
 - **PR lineage:** [#255](https://github.com/TeneikaAskew/stocks/pull/255) Cloudflare→FastAPI cutover · [#540](https://github.com/TeneikaAskew/stocks/pull/540)/[#541](https://github.com/TeneikaAskew/stocks/pull/541) grid math + endpoints · [#645](https://github.com/TeneikaAskew/stocks/pull/645) wire Swing Mode to real /grid
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -180,7 +184,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/market/reference/`, `/api/playbook/`
 - **Stores:** `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/playbook.spec.ts`
+- **E2E specs:** `solyra tests/playbook.spec.ts`
 - **PR lineage:** [#444](https://github.com/TeneikaAskew/stocks/pull/444) EOD outcome tracking + as-of cutoff · [#620](https://github.com/TeneikaAskew/stocks/pull/620) as-of review mode · [#774](https://github.com/TeneikaAskew/stocks/pull/774) silent resolver outage fix
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -193,7 +197,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/reports/`, `/api/reports/list/`
 - **Stores:** `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/replay-trainer.spec.ts`, `platform/tests/reports.spec.ts`
+- **E2E specs:** `solyra tests/replay-trainer.spec.ts`, `solyra tests/reports.spec.ts`
 - **PR lineage:** [#513](https://github.com/TeneikaAskew/stocks/pull/513) backtest→Cloud Run · [#548](https://github.com/TeneikaAskew/stocks/pull/548) walk-forward stage · [#706](https://github.com/TeneikaAskew/stocks/pull/706) backtest my trades · [#710](https://github.com/TeneikaAskew/stocks/pull/710) bar-replay trainer
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -207,7 +211,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/signals/`
 - **Stores:** `useReviewDateStore`, `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/signals.spec.ts`
+- **E2E specs:** `solyra tests/signals.spec.ts`
 - **PR lineage:** [#184](https://github.com/TeneikaAskew/stocks/pull/184) lib/strategies origin · [#504](https://github.com/TeneikaAskew/stocks/pull/504) dedicated Discord channel · [#803](https://github.com/TeneikaAskew/stocks/pull/803) RVOL respecification
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -221,7 +225,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/journal/export/`, `/api/journal/trades`
 - **Stores:** `useSettingsStore`, `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/journal-import.spec.ts`, `platform/tests/journal-onestop.spec.ts`, `platform/tests/journal.spec.ts`
+- **E2E specs:** `solyra tests/journal-import.spec.ts`, `solyra tests/journal-onestop.spec.ts`, `solyra tests/journal.spec.ts`
 - **PR lineage:** [#626](https://github.com/TeneikaAskew/stocks/pull/626) per-user scoping · [#705](https://github.com/TeneikaAskew/stocks/pull/705) chart trades persist · [#718](https://github.com/TeneikaAskew/stocks/pull/718) one-stop cockpit · [#764](https://github.com/TeneikaAskew/stocks/pull/764) tz guard
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -235,7 +239,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/insights/chat`
 - **Stores:** `useTickerStore`
 - **States present:** load, err, empty, stale
-- **E2E specs:** `platform/tests/insights.spec.ts`
+- **E2E specs:** `solyra tests/insights.spec.ts`
 - **PR lineage:** [#353](https://github.com/TeneikaAskew/stocks/pull/353) divergence card · [#344](https://github.com/TeneikaAskew/stocks/pull/344) reflection memory · [#451](https://github.com/TeneikaAskew/stocks/pull/451) break feedback loop
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -248,7 +252,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** `/api/catalysts/events`, `/api/catalysts/types`
 - **Stores:** `useThemeStore`, `useTickerStore`
 - **States present:** load, err, stale · **absent:** empty
-- **E2E specs:** `platform/tests/catalysts.spec.ts`
+- **E2E specs:** `solyra tests/catalysts.spec.ts`
 - **PR lineage:** [#624](https://github.com/TeneikaAskew/stocks/pull/624) earnings router origin · [#220](https://github.com/TeneikaAskew/stocks/pull/220) catalyst proximity · [#532](https://github.com/TeneikaAskew/stocks/pull/532) $-attribution
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -261,7 +265,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **Child components:** `ModelStateSnapshot`, `PredictForm`, `StructureBrief`
 - **API calls (from source):** `/api/admin/routes`
 - **States present:** load, err · **absent:** empty, stale
-- **E2E specs:** `platform/tests/admin-auth.spec.ts`, `platform/tests/admin.spec.ts`
+- **E2E specs:** `solyra tests/admin-auth.spec.ts`, `solyra tests/admin.spec.ts`
 - **PR lineage:** [#567](https://github.com/TeneikaAskew/stocks/pull/567)/[#568](https://github.com/TeneikaAskew/stocks/pull/568) strat_engine state dashboard · [#635](https://github.com/TeneikaAskew/stocks/pull/635) platform audit
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
@@ -273,7 +277,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **Component:** `platform/src/routes/HelpPage.tsx` (296 lines)
 - **API calls (from source):** none found in the page component — issued by child components or hooks
 - **States present:** empty · **absent:** load, err, stale
-- **E2E specs:** `platform/tests/help.spec.ts`
+- **E2E specs:** `solyra tests/help.spec.ts`
 - **PR lineage:** [#539](https://github.com/TeneikaAskew/stocks/pull/539) gamma glossary + endpoint · [#546](https://github.com/TeneikaAskew/stocks/pull/546) TermHover · [#423](https://github.com/TeneikaAskew/stocks/pull/423) 11 Strat entries
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
