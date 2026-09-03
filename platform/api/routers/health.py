@@ -40,9 +40,36 @@ _cache_value: dict | None = None
 _cache_expires_at: float = 0.0
 
 
+def freshness_report_dict() -> dict:
+    """The cached freshness report, shared by GET /api/health/freshness and
+    the admin data-sources endpoint (routers/admin.py) so both surfaces read
+    the SAME audit run and the Cloud SQL queries happen at most once per TTL.
+    Raises HTTPException on audit failure — callers pass it through."""
+    global _cache_value, _cache_expires_at
+    now = time.monotonic()
+    if _cache_value is not None and now < _cache_expires_at:
+        return _cache_value
+
+    try:
+        # Import lazily so the module loads even if the audit script has issues
+        import audit_data_freshness as audit_mod
+        report = audit_mod.audit_all()
+    except ModuleNotFoundError as exc:
+        log.error("Failed to import audit_data_freshness: %s", exc)
+        raise HTTPException(status_code=500, detail="Freshness audit module not available")
+    except Exception as exc:
+        log.error("Freshness audit failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Freshness audit failed: {exc}")
+
+    response = report.to_dict()
+    _cache_value = response
+    _cache_expires_at = now + _CACHE_TTL
+    return response
+
+
 @router.get("/api/health/freshness")
 async def get_freshness():
-    """Return a freshness report for every tracked Cloud SQL data table.
+    """Return the cached freshness report (see freshness_report_dict).
 
     Response shape:
     ```
@@ -66,23 +93,4 @@ async def get_freshness():
     }
     ```
     """
-    global _cache_value, _cache_expires_at
-    now = time.monotonic()
-    if _cache_value is not None and now < _cache_expires_at:
-        return _cache_value
-
-    try:
-        # Import lazily so the module loads even if the audit script has issues
-        import audit_data_freshness as audit_mod
-        report = audit_mod.audit_all()
-    except ModuleNotFoundError as exc:
-        log.error("Failed to import audit_data_freshness: %s", exc)
-        raise HTTPException(status_code=500, detail="Freshness audit module not available")
-    except Exception as exc:
-        log.error("Freshness audit failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Freshness audit failed: {exc}")
-
-    response = report.to_dict()
-    _cache_value = response
-    _cache_expires_at = now + _CACHE_TTL
-    return response
+    return freshness_report_dict()
