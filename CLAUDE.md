@@ -1058,10 +1058,13 @@ opt-in; any mutating method is refused unless `confirm_write=true`. The
 workflow tries the built-in `GITHUB_TOKEN` first and falls back to
 `PR_WORKFLOW_TOKEN`, reporting which one worked — the built-in token has no
 `administration` permission scope, so repo-settings endpoints are expected
-to need the PAT. The PAT fallback only fires for endpoints at or under
-`repos/{owner}/{repo}` of this repository; anything else logs a REFUSED
-line instead, so the bridge cannot read or mutate other repositories the
-PAT can reach. Endpoints whose path contains dot segments (literal or
+to need the PAT. The PAT fallback only fires for GET requests on
+endpoints at or under `repos/{owner}/{repo}` of this repository;
+anything else logs a REFUSED line instead, so the bridge cannot read
+other repositories the PAT can reach and never uses the PAT to mutate
+anything — mutations run only with the built-in token's permissions as
+declared in the workflow's `permissions:` block, so enabling a write
+surface takes a reviewed PR, not a dispatch flag. Endpoints whose path contains dot segments (literal or
 percent-encoded) are rejected outright, and curl runs with
 `--path-as-is`, so the scope check cannot be bypassed via path
 normalization. Each request is bounded (`--connect-timeout 10

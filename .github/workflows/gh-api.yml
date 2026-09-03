@@ -37,9 +37,13 @@ name: GitHub REST bridge
 #
 # Safety: mirrors db_query_cr.sh's --commit. GET is the default and needs no
 # opt-in; any mutating method is refused unless confirm_write=true. The
-# PR_WORKFLOW_TOKEN fallback is additionally restricted to endpoints under
-# repos/<this repo>/ (see the in-script comment), so the bridge cannot be
-# used to read or mutate other repositories the PAT happens to reach.
+# PR_WORKFLOW_TOKEN fallback is additionally restricted to GET requests
+# on endpoints under repos/<this repo>/ (see the in-script comment): the
+# bridge cannot read other repositories the PAT reaches, and never uses
+# the PAT to mutate anything — mutations only run with the built-in
+# token's explicitly granted permissions (the `permissions:` block
+# below), so enabling a write surface takes a reviewed PR, not a
+# dispatch flag.
 
 on:
   workflow_dispatch:
@@ -180,13 +184,26 @@ jobs:
           # expected to need the PAT — but let the run prove it rather than
           # assume, and report which one actually worked.
           #
-          # The PAT fallback only fires for this repository's own API
-          # surface. GITHUB_TOKEN is repo-scoped by GitHub itself, but the
-          # PAT may reach other repositories — and this workflow prints the
-          # response into this repo's logs and artifact, so an arbitrary
-          # endpoint would let anyone who can dispatch the workflow read
-          # (or, with confirm_write=true, mutate) anything the PAT can
-          # touch. Refusing here keeps the bridge a window onto THIS repo.
+          # The PAT fallback fires only for GET, and only against this
+          # repository's own API surface:
+          #
+          # * GET-only: anyone with write access can dispatch this
+          #   workflow, and confirm_write comes from that same caller, so
+          #   it is a typo guard, not authorization. A PAT-backed mutation
+          #   would let a non-admin collaborator administer the repo
+          #   (weaken branch protection, edit rulesets). Mutations
+          #   therefore only ever use the built-in GITHUB_TOKEN, whose
+          #   capabilities are pinned by this workflow's `permissions:`
+          #   block — enable a specific write surface by granting that one
+          #   permission there via a reviewed PR, never by widening the
+          #   PAT's role here.
+          #
+          # * Repo-scoped: GITHUB_TOKEN is repo-scoped by GitHub itself,
+          #   but the PAT may reach other repositories — and this workflow
+          #   prints the response into this repo's logs and artifact, so an
+          #   arbitrary endpoint would let any dispatcher read anything the
+          #   PAT can touch. Refusing keeps the bridge a window onto THIS
+          #   repo.
           if [ "$EP" = "repos/${GITHUB_REPOSITORY}" ] \
              || [[ "$EP" == "repos/${GITHUB_REPOSITORY}/"* ]]; then
             PAT_IN_SCOPE=1
@@ -197,6 +214,9 @@ jobs:
           AUTH="none succeeded"
           if attempt "GITHUB_TOKEN" "$TOKEN_DEFAULT"; then
             AUTH="GITHUB_TOKEN"
+          elif [ "$METHOD" != "GET" ]; then
+            printf '  %-18s REFUSED (the PAT never authorizes a mutation — grant the built-in token the specific permission in this workflow instead)\n' \
+              "PR_WORKFLOW_TOKEN"
           elif [ "$PAT_IN_SCOPE" = "1" ]; then
             if attempt "PR_WORKFLOW_TOKEN" "$TOKEN_PAT"; then
               AUTH="PR_WORKFLOW_TOKEN"
