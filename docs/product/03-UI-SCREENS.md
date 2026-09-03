@@ -83,7 +83,7 @@ Five specs cover behavior spanning screens rather than one route:
 `dev.spec.ts`. Note `dev.spec.ts` does **not** exercise the public-staging configuration in which
 `/dev` is unauthenticated — see [09](09-SECURITY-AUTH.md).
 Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither suite runs in CI
-([#868](https://github.com/TeneikaAskew/stocks/issues/868)).
+([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868; both suites moved to solyra in the #957 split).
 
 ## Per-screen records
 
@@ -96,7 +96,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 - **API calls (from source):** none found in the page component — issued by child components or hooks
 - **States present:** none detected · **absent:** load, err, empty, stale
 - **E2E specs:** `platform/tests/demo-banners.spec.ts`, `platform/tests/landing.spec.ts`
-- **PR lineage:** [#684](https://github.com/TeneikaAskew/stocks/pull/684) origin · [#686](https://github.com/TeneikaAskew/stocks/pull/686) real walk-forward proof tile · [#683](https://github.com/TeneikaAskew/stocks/issues/683) perf open
+- **PR lineage:** [#684](https://github.com/TeneikaAskew/stocks/pull/684) origin · [#686](https://github.com/TeneikaAskew/stocks/pull/686) real walk-forward proof tile · [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) perf open (was #683; moved 2026-09-03)
 - **Target:** meet REQ-UX-001 — explicit stale/unavailable presentation, keyboard operability,
   WCAG 2.1 AA contrast, and acceptance tests for every state listed absent above.
 
@@ -278,7 +278,7 @@ Plus **27 Vitest component tests** under `platform/src/**/*.test.*`. Neither sui
 ### SCREEN-SETTINGS — `/settings`
 
 - **Purpose:** Device-local appearance and layout preferences.
-- **Status:** Incomplete · **Blocking issue:** [#685](https://github.com/TeneikaAskew/stocks/issues/685) · **Owner:** TBD · **Target phase:** see [13](13-ROADMAP.md) · **Last reviewed:** 2026-08-30
+- **Status:** Incomplete · **Blocking issue:** [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) (was #685; moved 2026-09-03) · **Owner:** TBD · **Target phase:** see [13](13-ROADMAP.md) · **Last reviewed:** 2026-08-30
 - **Component:** `platform/src/routes/SettingsPage.tsx` (131 lines)
 - **API calls (from source):** none found in the page component — device-local state only
 - **Stores:** `useSettingsStore`, `useThemeStore`

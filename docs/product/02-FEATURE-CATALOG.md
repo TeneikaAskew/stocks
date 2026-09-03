@@ -36,7 +36,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 67 jobs, 58 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) [#831](https://github.com/TeneikaAskew/stocks/issues/831) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 4 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 9 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
-| [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [#685](https://github.com/TeneikaAskew/stocks/issues/685) [#683](https://github.com/TeneikaAskew/stocks/issues/683) |
+| [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) |
 | [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 3 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#841](https://github.com/TeneikaAskew/stocks/issues/841) [#921](https://github.com/TeneikaAskew/stocks/issues/921) |
 
 ## Capability records
@@ -610,10 +610,10 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | — |
 | Data | — |
 | Models | — |
-| Code | `platform/src/App.tsx`, `platform/src/components/shared/` |
-| Tests | `navigation.spec.ts` |
-| Open issues | 2 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ui-001-web-ui-2-open) |
-| Blocking issues | [#685](https://github.com/TeneikaAskew/stocks/issues/685) [#683](https://github.com/TeneikaAskew/stocks/issues/683) |
+| Code | [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx), solyra `src/components/` — moved out of stocks in the #957 split |
+| Tests | [solyra `tests/navigation.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/navigation.spec.ts) |
+| Open issues | 2, tracked in solyra since 2026-09-03 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ui-001-web-ui-2-open) |
+| Blocking issues | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 5 |
 
 ### FEAT-DEBT-001

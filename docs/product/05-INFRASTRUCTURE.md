@@ -21,7 +21,7 @@ captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler 
 | Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |
-| Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([#868](https://github.com/TeneikaAskew/stocks/issues/868)) |
+| Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868) |
 | Secret Manager | vendor, DB, auth, Discord credentials | `--set-secrets` bindings | least privilege | — | several secrets still via `--set-env-vars` ([#830](https://github.com/TeneikaAskew/stocks/issues/830), [#850](https://github.com/TeneikaAskew/stocks/issues/850)) |
 
 ## Deploy-time drift detected mechanically
@@ -56,8 +56,8 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 | **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; Vite proxies `/api` → `:8000` (`vite.config.ts:21,27`) |
 
 **No custom domain is committed anywhere in the repository.** The landing components brand the
-product **Solyra** (`platform/src/components/landing/*`, and [#685](https://github.com/TeneikaAskew/stocks/issues/685)
-"Rename internal Heatseeker/Flowseeker tabs before Solyra public launch"), but no `solyra.*`
+product **Solyra** (solyra `src/components/landing/*` since the #957 split, and [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27)
+"Rename internal Heatseeker/Flowseeker tabs before Solyra public launch", formerly #685), but no `solyra.*`
 hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
 is **PRODUCT DECISION REQUIRED** / unknown — see [15](15-OPEN-DECISIONS.md).
 

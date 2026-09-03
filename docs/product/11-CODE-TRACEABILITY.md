@@ -48,4 +48,4 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 | `scripts/analysis/` | analysis scripts — **but also feeds `playbook_cards`** | a production user-facing table is written from here; weakest coverage ([#849](https://github.com/TeneikaAskew/stocks/issues/849)) |
 | `gcp/schema.sql` | 64 relations | runtime SQL must be reconciled ([#860](https://github.com/TeneikaAskew/stocks/issues/860)) |
 | `.github/workflows`, `gcp/deploy.sh` | delivery intent | not necessarily live state ([#859](https://github.com/TeneikaAskew/stocks/issues/859)) |
-| `tests/`, `platform/tests/` | 230 python, 29 e2e, 27 vitest | frontend suites do not run in CI ([#868](https://github.com/TeneikaAskew/stocks/issues/868)) |
+| `tests/` (e2e + vitest suites moved to solyra in #957) | 230 python | frontend suites do not run in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868); live API connectivity smoke gap tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971) |
