@@ -372,9 +372,24 @@ _REPORT = {
          "row_count_recent": 2},
         # Diagnostic pass on the SAME dataset: must fold into
         # market_data_daily's status, never surface as a phantom source.
-        {"table": "market_data_daily [gap]", "ticker": None, "status": "stale",
+        # Shape matches the PRODUCER (audit_data_freshness.py:664): gap rows
+        # carry a real ticker and a row count.
+        {"table": "market_data_daily [gap]", "ticker": "SPY", "status": "stale",
+         "last_row_at": None, "lag_hours": None, "expected_max_hours": None,
+         "row_count_recent": 4},
+        # Column-nullity diagnostic (dotted label, audit line 888): must fold
+        # into strat_features_5m rather than surface as a phantom source.
+        {"table": "strat_features_5m.vix_close", "ticker": None, "status": "stale",
          "last_row_at": None, "lag_hours": None, "expected_max_hours": None,
          "row_count_recent": None},
+        {"table": "strat_features_5m", "ticker": "IWM", "status": "ok",
+         "last_row_at": "2026-09-02", "lag_hours": 5.0, "expected_max_hours": 24,
+         "row_count_recent": 70},
+        # Enrichment-coverage check outside its window (audit line ~1027):
+        # a skipped diagnostic must NOT degrade or annotate a live dataset.
+        {"table": "market_data_daily.atr_14 enrichment coverage", "ticker": None,
+         "status": "skipped", "last_row_at": None, "lag_hours": None,
+         "expected_max_hours": None, "row_count_recent": None},
         {"table": "etf_options_snapshots", "ticker": "QQQ", "status": "warn",
          "last_row_at": "2026-09-01", "lag_hours": 26.0, "expected_max_hours": 30,
          "row_count_recent": None},
@@ -403,15 +418,30 @@ def test_data_sources_aggregation(monkeypatch):
     daily = by_id["market_data_daily"]
     # The stale [gap] diagnostic folds into the dataset's status (Codex
     # PR #972 finding): the main row must NOT read ok while its gap scan
-    # is stale — but the diagnostic contributes no counts/timestamps.
+    # is stale — but the diagnostic contributes no counts/timestamps, and
+    # its message keeps the audit label + ticker so a mid-window hole is
+    # never mistaken for an ordinary lag.
     assert daily["status"] == "stale"
-    assert "market_data_daily [gap]: stale" in daily["message"]
+    assert "market_data_daily [gap] (SPY): stale" in daily["message"]
     assert daily["row_count"] == 3                      # real members only
     assert daily["last_refreshed_at"] == "2026-09-02"   # max across tickers
     assert daily["coverage_end"] == "2026-09-02"
     assert daily["coverage_start"] is None              # not computed → null
     assert daily["refreshable"] is True
     assert "market_data_daily [gap]" not in by_id       # no phantom source
+    # A SKIPPED diagnostic (enrichment check outside its window) neither
+    # degrades the dataset nor litters the message or the source list.
+    assert "enrichment" not in (daily["message"] or "")
+    assert "market_data_daily.atr_14 enrichment coverage" not in by_id
+
+    # Dotted column-nullity diagnostics fold into their dataset too — the
+    # NULL-cascade class the nullity check exists for must not hide behind
+    # an ok dataset row.
+    strat5 = by_id["strat_features_5m"]
+    assert strat5["status"] == "stale"
+    assert "strat_features_5m.vix_close: stale" in strat5["message"]
+    assert strat5["row_count"] == 70                    # nullity row not counted
+    assert "strat_features_5m.vix_close" not in by_id
 
     # Job observability rows are not datasets — they stay their own row.
     duration = by_id["job_runs.backfill-daily-indicators duration"]
@@ -547,3 +577,30 @@ def test_acquire_refresh_lease_maps_returning_row_to_bool(monkeypatch):
     conn.execute.return_value.first.return_value = None
     with patch("gcp.database.get_engine", return_value=engine):
         assert admin_module._acquire_refresh_lease("fetch-fred-rates", 60) is False
+
+
+def test_release_refresh_lease_ages_the_row_past_the_cooldown(monkeypatch):
+    """The release helper's SQL contract: it UPDATEs the job's row to a
+    dispatched_at older than the cooldown (never DELETEs — a delete would
+    race a concurrent successful acquire), so a retry after a failed
+    dispatch wins the next acquire instead of being locked out for 60s.
+    Pins the statement shape end-to-end since the endpoint's cleanup path
+    swallows release errors into a warning log."""
+    from unittest.mock import MagicMock, patch
+
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=engine):
+        admin_module._release_refresh_lease("fetch-fred-rates")
+    sql = str(conn.execute.call_args.args[0])
+    assert "UPDATE admin_refresh_leases" in sql
+    assert "SET dispatched_at = NOW() - make_interval(secs => :cooldown)" in sql
+    assert "WHERE job_name = :job" in sql
+    assert "DELETE" not in sql
+    assert conn.execute.call_args.args[1] == {
+        "job": "fetch-fred-rates",
+        "cooldown": admin_module._REFRESH_COOLDOWN_S + 1,
+    }

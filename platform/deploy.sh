@@ -39,14 +39,26 @@ if [[ "${SETUP_IAM:-0}" == "1" ]]; then
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="serviceAccount:${IAM_SA}" --role=roles/firebaseauth.admin \
     --condition=None >/dev/null
+  IAM_MISSED=()
   for REFRESH_JOB in fetch-market-data fetch-av-options-backfill \
       fetch-fred-rates fetch-economic-events fetch-earnings-calendar \
       strat-engine historical-signals-watchlist; do
     echo ">> granting roles/run.invoker on ${REFRESH_JOB} to ${IAM_SA}"
-    gcloud run jobs add-iam-policy-binding "${REFRESH_JOB}" \
-      --region "${REGION}" --project "${PROJECT_ID}" \
-      --member="serviceAccount:${IAM_SA}" --role=roles/run.invoker >/dev/null
+    # Per-job continue (set -e would otherwise abort the loop half-granted
+    # when a job isn't deployed in this project yet); missed jobs are
+    # reported at the end and the script exits non-zero so partial setup
+    # never reads as success.
+    if ! gcloud run jobs add-iam-policy-binding "${REFRESH_JOB}" \
+        --region "${REGION}" --project "${PROJECT_ID}" \
+        --member="serviceAccount:${IAM_SA}" --role=roles/run.invoker >/dev/null; then
+      echo ">> WARN: grant failed for ${REFRESH_JOB} (job not deployed here yet?)"
+      IAM_MISSED+=("${REFRESH_JOB}")
+    fi
   done
+  if [[ ${#IAM_MISSED[@]} -gt 0 ]]; then
+    echo ">> IAM setup INCOMPLETE — re-run SETUP_IAM=1 after deploying: ${IAM_MISSED[*]}"
+    exit 1
+  fi
   echo ">> IAM setup done"
   exit 0
 fi

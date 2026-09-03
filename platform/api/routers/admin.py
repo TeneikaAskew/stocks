@@ -838,7 +838,7 @@ def _user_row(user, stored: dict[str, str]) -> AdminUserRow:
 
 
 @router.get("/users", response_model=AdminUsersResponse)
-async def admin_list_users(request: Request):
+def admin_list_users(request: Request):
     """Every Firebase account + its stored role(s).
 
     Capacity (Rule 0): firebase-admin pages the directory at 1000/page and
@@ -882,7 +882,7 @@ def _get_fb_user_or_404(fb, uid: str):
 
 
 @router.put("/users/{uid}/roles", response_model=AdminUserRow)
-async def admin_update_user_roles(uid: str, body: UserRolesUpdate, request: Request):
+def admin_update_user_roles(uid: str, body: UserRolesUpdate, request: Request):
     """Replace an account's stored role.
 
     Accepts the frontend's `roles: string[]` shape; the schema stores at most
@@ -954,7 +954,7 @@ async def admin_update_user_roles(uid: str, body: UserRolesUpdate, request: Requ
 
 
 @router.put("/users/{uid}/status", response_model=AdminUserRow)
-async def admin_update_user_status(uid: str, body: UserStatusUpdate, request: Request):
+def admin_update_user_status(uid: str, body: UserStatusUpdate, request: Request):
     """Enable or disable a Firebase account.
 
     Disabling also revokes the account's refresh tokens so its session ends
@@ -1093,15 +1093,18 @@ def _base_table(label: str) -> str:
     """Fold the audit's diagnostic row labels into their base dataset id.
 
     audit_data_freshness emits derived labels for diagnostic passes on a
-    dataset — "<table> [gap]" (gap scan) and "<table> [sanity]" (value
-    sanity). Grouping by the raw string would surface each as a phantom
+    dataset: "<table> [gap]" (gap scan), "<table> [sanity]" (value sanity),
+    "<table>.<column>" (column nullity), and "<table>.<column> enrichment
+    coverage". Grouping by the raw string would surface each as a phantom
     unregistered source while the base dataset reads `ok` — a stale gap
-    scan MUST roll into its dataset's status (Codex review, PR #972).
-    "job_runs.<job> duration" rows are left as-is on purpose: they are job
-    observability, not a dataset, and still surface as their own honest
-    un-refreshable row rather than vanishing.
+    scan or a NULL-cascade nullity check MUST roll into its dataset's
+    status (Codex review PR #972, then the follow-up self-review). The
+    fold takes the label's first space- and dot-delimited token; a token
+    that is not a registered dataset (e.g. "job_runs" from
+    "job_runs.<job> duration") leaves the row as its own honest,
+    un-refreshable observability row rather than vanishing.
     """
-    base = label.split(" [", 1)[0]
+    base = label.split(" ", 1)[0].split(".", 1)[0]
     return base if base in _DATA_SOURCES else label
 
 
@@ -1124,23 +1127,39 @@ def _aggregate_source(source_id: str, entry: dict, rows: list[dict]) -> AdminDat
     the audit has none.
     """
     statuses: list[str] = []
+    skipped_labels: list[str] = []
     messages: list[str] = []
     last_row_ats: list[str] = []
     counts: list[Optional[int]] = []
     for r in rows:
-        wire = _AUDIT_TO_WIRE_STATUS.get(r.get("status") or "unknown", "unknown")
-        statuses.append(wire)
+        raw_label = str(r.get("table") or source_id)
         # A folded diagnostic row ("market_data_daily [gap]") contributes its
         # STATUS and message to the dataset, but not counts or timestamps —
         # a gap scan is not a data member, and folding its Nones in would
         # blank out the dataset's real row_count/last_refreshed_at.
-        is_diagnostic = str(r.get("table") or source_id) != source_id
+        is_diagnostic = raw_label != source_id
+        raw_status = r.get("status") or "unknown"
+        if raw_status == "skipped":
+            # "Skipped" means NOT EVALUATED this window (e.g. the enrichment
+            # check outside its daily slot) — it must never degrade a live
+            # dataset's status or add message noise. It only counts when the
+            # dataset has NO evaluated rows at all (handled below).
+            skipped_labels.append(raw_label)
+            continue
+        wire = _AUDIT_TO_WIRE_STATUS.get(raw_status, "unknown")
+        statuses.append(wire)
         if wire != "ok":
-            # The raw audit label keeps a folded diagnostic identifiable.
-            who = r.get("ticker") or str(r.get("table") or source_id)
+            # A folded diagnostic keeps its raw audit label (plus ticker) so
+            # a mid-window gap is never mistaken for an ordinary lag; plain
+            # freshness rows keep the ticker-or-dataset naming.
+            if is_diagnostic:
+                ticker = r.get("ticker")
+                who = f"{raw_label} ({ticker})" if ticker else raw_label
+            else:
+                who = r.get("ticker") or raw_label
             lag = r.get("lag_hours")
             allowed = r.get("expected_max_hours")
-            detail = f"{who}: {r.get('status')}"
+            detail = f"{who}: {raw_status}"
             if lag is not None and allowed is not None:
                 detail += f" (lag {lag:.1f}h, allowed {allowed}h)"
             messages.append(detail)
@@ -1153,6 +1172,10 @@ def _aggregate_source(source_id: str, entry: dict, rows: list[dict]) -> AdminDat
     if not rows:
         status = "unknown"
         message: Optional[str] = "not covered by the freshness audit"
+    elif not statuses:
+        # Every row was skipped: nothing was evaluated, say so honestly.
+        status = "unknown"
+        message = "; ".join(f"{lbl}: skipped" for lbl in skipped_labels)
     else:
         status = max(statuses, key=lambda s: _STATUS_SEVERITY[s])
         message = "; ".join(messages) or None
@@ -1177,7 +1200,7 @@ def _aggregate_source(source_id: str, entry: dict, rows: list[dict]) -> AdminDat
 
 
 @router.get("/data-sources", response_model=AdminDataSourcesResponse)
-async def admin_list_data_sources(request: Request):
+def admin_list_data_sources(request: Request):
     """Per-dataset freshness/coverage, aggregated from the shared audit.
 
     Capacity (Rule 0): zero direct Cloud SQL queries here — the audit runs
@@ -1303,7 +1326,7 @@ def _run_refresh_job(job_name: str) -> Optional[str]:
 
 
 @router.post("/data-sources/{source_id}/refresh", response_model=DataSourceRefreshResponse)
-async def admin_refresh_data_source(source_id: str, request: Request):
+def admin_refresh_data_source(source_id: str, request: Request):
     """Queue the dataset's Cloud Run fetcher job.
 
     404 unknown dataset · 409 dataset with no on-demand job (the reason is

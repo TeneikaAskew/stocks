@@ -127,7 +127,7 @@ def _select_row(owner: str) -> Optional[dict]:
 
 
 @router.get("/api/me/preferences")
-async def get_preferences(request: Request) -> dict:
+def get_preferences(request: Request) -> dict:
     owner = _prefs_owner(request)
     try:
         row = _select_row(owner)
@@ -144,7 +144,7 @@ async def get_preferences(request: Request) -> dict:
 
 
 @router.put("/api/me/preferences")
-async def put_preferences(body: PreferencesUpdate, request: Request) -> dict:
+def put_preferences(body: PreferencesUpdate, request: Request) -> dict:
     """Upsert the provided subset of fields and return the full stored row.
 
     ONE round trip (Rule 0): INSERT ... ON CONFLICT (user_email) DO UPDATE
