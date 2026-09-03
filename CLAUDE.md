@@ -1058,7 +1058,11 @@ opt-in; any mutating method is refused unless `confirm_write=true`. The
 workflow tries the built-in `GITHUB_TOKEN` first and falls back to
 `PR_WORKFLOW_TOKEN`, reporting which one worked — the built-in token has no
 `administration` permission scope, so repo-settings endpoints are expected
-to need the PAT.
+to need the PAT. The PAT fallback only fires for endpoints at or under
+`repos/{owner}/{repo}` of this repository; anything else logs a REFUSED
+line instead, so the bridge cannot read or mutate other repositories the
+PAT can reach. Each request is bounded (`--connect-timeout 10
+--max-time 60`, job `timeout-minutes: 5`).
 
 A 4xx from GitHub is reported, not failed — a 404 on a lookup is a
 legitimate answer, and failing would fire `handle-failure` and open a junk

@@ -36,7 +36,10 @@ name: GitHub REST bridge
 #   gh workflow run gh-api.yml -f endpoint='repos/{owner}/{repo}/branches/main/protection'
 #
 # Safety: mirrors db_query_cr.sh's --commit. GET is the default and needs no
-# opt-in; any mutating method is refused unless confirm_write=true.
+# opt-in; any mutating method is refused unless confirm_write=true. The
+# PR_WORKFLOW_TOKEN fallback is additionally restricted to endpoints under
+# repos/<this repo>/ (see the in-script comment), so the bridge cannot be
+# used to read or mutate other repositories the PAT happens to reach.
 
 on:
   workflow_dispatch:
@@ -70,6 +73,10 @@ jobs:
   call:
     name: Call GitHub API
     runs-on: ubuntu-latest
+    # One API round-trip; if it hasn't answered in 5 minutes it never will.
+    # Without this a stalled connection occupies the runner until the
+    # platform's 6-hour kill.
+    timeout-minutes: 5
     steps:
       # db_query_cr.sh refuses to persist a write without --commit. Same
       # guarantee here: a typo'd DELETE cannot fire on the default path.
@@ -116,12 +123,16 @@ jobs:
               printf 'header = "Accept: application/vnd.github+json"\n'
               printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
             } > "$cfg"
+            # Bounded so a stalled response surfaces as TRANSFER FAILED in
+            # seconds instead of hanging the step until timeout-minutes.
             if [ "$METHOD" = "GET" ]; then
               code=$(curl -sS -K "$cfg" -X GET \
+                       --connect-timeout 10 --max-time 60 \
                        -o response.json -w '%{http_code}' "$URL"); rc=$?
             else
               printf '%s' "$BODY" > body.json
               code=$(curl -sS -K "$cfg" -X "$METHOD" --data-binary @body.json \
+                       --connect-timeout 10 --max-time 60 \
                        -o response.json -w '%{http_code}' "$URL"); rc=$?
             fi
             rm -f "$cfg"
@@ -147,11 +158,31 @@ jobs:
           # `administration` permission scope, so repo-settings endpoints are
           # expected to need the PAT — but let the run prove it rather than
           # assume, and report which one actually worked.
+          #
+          # The PAT fallback only fires for this repository's own API
+          # surface. GITHUB_TOKEN is repo-scoped by GitHub itself, but the
+          # PAT may reach other repositories — and this workflow prints the
+          # response into this repo's logs and artifact, so an arbitrary
+          # endpoint would let anyone who can dispatch the workflow read
+          # (or, with confirm_write=true, mutate) anything the PAT can
+          # touch. Refusing here keeps the bridge a window onto THIS repo.
+          if [ "$EP" = "repos/${GITHUB_REPOSITORY}" ] \
+             || [[ "$EP" == "repos/${GITHUB_REPOSITORY}/"* ]]; then
+            PAT_IN_SCOPE=1
+          else
+            PAT_IN_SCOPE=0
+          fi
+
           AUTH="none succeeded"
           if attempt "GITHUB_TOKEN" "$TOKEN_DEFAULT"; then
             AUTH="GITHUB_TOKEN"
-          elif attempt "PR_WORKFLOW_TOKEN" "$TOKEN_PAT"; then
-            AUTH="PR_WORKFLOW_TOKEN"
+          elif [ "$PAT_IN_SCOPE" = "1" ]; then
+            if attempt "PR_WORKFLOW_TOKEN" "$TOKEN_PAT"; then
+              AUTH="PR_WORKFLOW_TOKEN"
+            fi
+          else
+            printf '  %-18s REFUSED (endpoint not under repos/%s — PAT fallback is repo-scoped)\n' \
+              "PR_WORKFLOW_TOKEN" "$GITHUB_REPOSITORY"
           fi
 
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
