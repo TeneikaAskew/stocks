@@ -59,11 +59,23 @@ app.add_middleware(
         # Listed explicitly rather than matched by a `.*\.lovable\.app` regex:
         # that would let any Lovable project on the platform call this API with
         # credentials, and the Firebase web config is public, so the origin list
-        # is the control that keeps it to ours.
+        # is the control that keeps it to ours. Lovable serves THIS project
+        # from several hosts — published, editor preview, and the
+        # "open preview in browser" surface — all pinned here by the project
+        # name or its UUID, never by platform-wide wildcard.
         "https://solyra-stocks.lovable.app",
+        "https://preview--solyra-stocks.lovable.app",
         "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovable.app",
+        "https://f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com",
     ],
-    allow_origin_regex=r"https://.*\.app\.github\.dev",  # GitHub Codespace tunnel URLs
+    # GitHub Codespace tunnel URLs, plus prefixed lovableproject.com preview
+    # hosts (e.g. id-preview--<uuid>.lovableproject.com). The regex requires
+    # this project's full UUID, so other Lovable projects still don't match —
+    # the same pin as the explicit list above.
+    allow_origin_regex=(
+        r"https://.*\.app\.github\.dev"
+        r"|https://(?:[a-z0-9-]+--)?f6c1be2f-245d-4a43-8110-dd05ffafa8af\.lovableproject\.com"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

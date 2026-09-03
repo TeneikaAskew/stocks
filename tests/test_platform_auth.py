@@ -302,3 +302,67 @@ def test_is_admin_email_binds_against_a_real_engine(monkeypatch):
     finally:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM user_roles WHERE email = :e"), {"e": granted})
+
+
+# ---------------------------------------------------------------------------
+# CORS origin allow-list (platform/api/main.py)
+#
+# The browser preview surfaces Lovable serves this project from must be
+# allowed, or the very first /api/config/firebase call is blocked and the app
+# boots into "Could not load application configuration". The list is pinned
+# to THIS project (name or UUID) on purpose — a platform-wide
+# `.*\.lovable\.app` regex would let any Lovable project call the API with
+# credentials. These tests exercise the REAL app's middleware via CORS
+# preflight, which CORSMiddleware answers before auth or routing runs.
+# ---------------------------------------------------------------------------
+
+_PREFLIGHT_HEADERS = {"Access-Control-Request-Method": "GET"}
+
+
+def _preflight(origin: str):
+    from api.main import app
+
+    client = TestClient(app)
+    return client.options(
+        "/api/health",
+        headers={"Origin": origin, **_PREFLIGHT_HEADERS},
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:5173",
+        "https://solyra-stocks.lovable.app",
+        "https://preview--solyra-stocks.lovable.app",
+        "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovable.app",
+        "https://f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com",
+        # Prefixed lovableproject.com preview variant — regex branch.
+        "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com",
+        "https://fuzzy-space-tunnel-1234.app.github.dev",
+    ],
+)
+def test_cors_allows_this_projects_origins(origin):
+    r = _preflight(origin)
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        # Another Lovable project — the platform-wide wildcard we refuse.
+        "https://someone-elses-project.lovable.app",
+        "https://preview--other.lovable.app",
+        "https://deadbeef-0000-0000-0000-000000000000.lovableproject.com",
+        # Suffix attack: our UUID as a subdomain of an attacker's domain.
+        "https://f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com.evil.example",
+        # Prefix without the `--` separator convention.
+        "https://evilf6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com",
+    ],
+)
+def test_cors_rejects_other_origins(origin):
+    r = _preflight(origin)
+    # Starlette answers a disallowed preflight with 400 and, decisively, no
+    # allow-origin header — the browser blocks the real request either way.
+    assert r.headers.get("access-control-allow-origin") is None
