@@ -7,6 +7,13 @@ google-cloud-aiplatform>=1.38.0
 google-genai>=1.0.0
 firebase-admin>=6.5.0
 
+# google-cloud-run backs POST /api/admin/data-sources/{id}/refresh
+# (api/routers/admin.py dispatches Cloud Run fetcher jobs). Without this
+# pin the import fails at request time and every refresh 503s — the
+# platform-api image installs ONLY this file plus the Dockerfile's inline
+# list, so a dep that "works in requirements-gcp.txt" is not in this image.
+google-cloud-run>=0.10.0
+
 # python-multipart backs FastAPI's UploadFile/Form parsing — required at
 # runtime by POST /api/journal/import/preview (api/routers/journal.py,
 # multipart broker-CSV upload). Without this pin, FastAPI raises at request
