@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
-from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences
 from api.auth import auth_middleware, current_user_email, is_admin_email
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,9 @@ app.include_router(glossary.router, prefix="")
 app.include_router(magnitude.router, prefix="")
 app.include_router(earnings.router, prefix="")
 app.include_router(waitlist.router, prefix="")
+# GATED even though it lives under /api/me — only the exact /api/me path is
+# open (api/auth._OPEN_API_EXACT); the preferences sub-path requires identity.
+app.include_router(preferences.router, prefix="")
 
 data_loader = DataLoader()
 

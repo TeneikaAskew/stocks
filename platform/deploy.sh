@@ -22,6 +22,47 @@ INSTANCE="${INSTANCE:-${PROJECT_ID}:${REGION}:trading-db}"
 IMAGE_NAME="${IMAGE_NAME:-trading-platform}"
 IMAGE="gcr.io/${PROJECT_ID}/${IMAGE_NAME}"
 
+# ── One-time IAM for the admin endpoints (api/routers/admin.py) ────────────
+#   SETUP_IAM=1 ./platform/deploy.sh     (grants only; exits without deploying)
+# Two grants the runtime SA needs, neither covered by its data-plane roles:
+#   1. roles/firebaseauth.admin — GET/PUT /api/admin/users* manage Firebase
+#      Auth accounts (list_users / update_user / revoke_refresh_tokens) via
+#      the Admin SDK; ADC alone does NOT authorize the Identity Toolkit
+#      user-management APIs, so without this every Users-tab call 503s.
+#   2. roles/run.invoker on each allowlisted fetcher job — POST
+#      /api/admin/data-sources/{id}/refresh dispatches them; the list below
+#      MUST stay in sync with _DATA_SOURCES in api/routers/admin.py.
+# Run as an operator with project IAM admin (NOT the CI SA). Idempotent.
+if [[ "${SETUP_IAM:-0}" == "1" ]]; then
+  IAM_SA="${RUN_SA:-trading-platform-svc@${PROJECT_ID}.iam.gserviceaccount.com}"
+  echo ">> granting roles/firebaseauth.admin to ${IAM_SA}"
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${IAM_SA}" --role=roles/firebaseauth.admin \
+    --condition=None >/dev/null
+  IAM_MISSED=()
+  for REFRESH_JOB in fetch-market-data fetch-av-options-backfill \
+      fetch-fred-rates fetch-economic-events fetch-earnings-calendar \
+      strat-engine historical-signals-watchlist; do
+    echo ">> granting roles/run.invoker on ${REFRESH_JOB} to ${IAM_SA}"
+    # Per-job continue (set -e would otherwise abort the loop half-granted
+    # when a job isn't deployed in this project yet); missed jobs are
+    # reported at the end and the script exits non-zero so partial setup
+    # never reads as success.
+    if ! gcloud run jobs add-iam-policy-binding "${REFRESH_JOB}" \
+        --region "${REGION}" --project "${PROJECT_ID}" \
+        --member="serviceAccount:${IAM_SA}" --role=roles/run.invoker >/dev/null; then
+      echo ">> WARN: grant failed for ${REFRESH_JOB} (job not deployed here yet?)"
+      IAM_MISSED+=("${REFRESH_JOB}")
+    fi
+  done
+  if [[ ${#IAM_MISSED[@]} -gt 0 ]]; then
+    echo ">> IAM setup INCOMPLETE — re-run SETUP_IAM=1 after deploying: ${IAM_MISSED[*]}"
+    exit 1
+  fi
+  echo ">> IAM setup done"
+  exit 0
+fi
+
 # DB credentials — set DB_USER / DB_NAME in env, store DB_PASS in Secret Manager.
 DB_USER="${DB_USER:?set DB_USER (e.g. export DB_USER=postgres)}"
 DB_NAME="${DB_NAME:?set DB_NAME (e.g. export DB_NAME=trading)}"
@@ -96,7 +137,11 @@ fi
 # instant lever and stays off until there is something worth showing.
 # --set-env-vars replaces the whole set on each deploy, so the flag must live
 # here to persist across deploys.
-ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com,AUTH_MODE=${AUTH_MODE_VAL},MOVEMENT_STATEMENT_ENABLED=false"
+# GCP_REGION rides along with GCP_PROJECT_ID so the admin refresh dispatch
+# (api/routers/admin.py _run_refresh_job) targets THIS deployment's project
+# and region — without it a PROJECT_ID/REGION-overridden deploy would
+# silently dispatch jobs in the hardcoded prod defaults (Codex, PR #972).
+ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE},DB_USER=${DB_USER},DB_NAME=${DB_NAME},GCS_BUCKET=${PROJECT_ID}-trading-data,GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com,IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com,AUTH_MODE=${AUTH_MODE_VAL},MOVEMENT_STATEMENT_ENABLED=false"
 
 # Who gets /api/admin/* and the is_admin flag on /api/me. Must be deployed
 # here rather than patched on afterwards: this script uses --set-env-vars,

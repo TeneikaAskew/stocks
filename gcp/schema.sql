@@ -3895,3 +3895,53 @@ CREATE TABLE IF NOT EXISTS user_roles (
     CONSTRAINT user_roles_email_lower CHECK (email = LOWER(email))
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles (role);
+
+-- ─────────────────────────────────────────────────────────
+-- USER PREFERENCES (per-user appearance settings)
+-- ─────────────────────────────────────────────────────────
+-- Server-side copy of the Solyra appearance settings (theme, nav pattern,
+-- density, accent) so a signed-in user keeps their choices across devices.
+-- Read/written only by platform/api/routers/preferences.py, always scoped
+-- by the server-verified identity. Owner key mirrors
+-- journal_entries.user_email / user_roles.email: identity itself stays in
+-- Firebase Auth (or the IAP header) — the verified email IS the user key;
+-- no credentials stored here.
+--
+-- Columns are nullable ON PURPOSE: NULL means "no preference stored", which
+-- the frontend must be able to distinguish from every real value (Rule 3.7
+-- — a missing preference is never coerced into a default). The accepted
+-- enum values (themes/nav patterns/densities/accents) are validated in the
+-- router — the single write path — not by a CHECK here, which would be a
+-- second copy of the list that drifts every time the frontend adds an
+-- accent.
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_email  TEXT         PRIMARY KEY,
+    theme       TEXT,
+    nav_pattern TEXT,
+    density     TEXT,
+    accent      TEXT,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    -- Stored lower-case (the auth layer normalizes identities) so lookups
+    -- compare directly against the verified email — same as user_roles.
+    CONSTRAINT user_preferences_email_lower CHECK (user_email = LOWER(user_email))
+);
+
+-- Reuse the generic set_updated_at() BEFORE UPDATE trigger fn defined above.
+CREATE OR REPLACE TRIGGER set_user_preferences_updated_at
+    BEFORE UPDATE ON user_preferences
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ─────────────────────────────────────────────────────────
+-- ADMIN REFRESH LEASES (cross-instance dispatch cooldown)
+-- ─────────────────────────────────────────────────────────
+-- One row per Cloud Run Job the admin data-sources tab can dispatch
+-- (platform/api/routers/admin.py POST /api/admin/data-sources/{id}/refresh).
+-- The API serves up to 5 instances (platform/deploy.sh --max-instances 5),
+-- so the one-execution-per-cooldown cost guard cannot live in process
+-- memory; the atomic upsert on this row is the lease. Rows are tiny and
+-- bounded by the job allowlist — no retention needed.
+CREATE TABLE IF NOT EXISTS admin_refresh_leases (
+    job_name      TEXT         PRIMARY KEY,
+    dispatched_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
