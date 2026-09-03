@@ -1061,7 +1061,10 @@ workflow tries the built-in `GITHUB_TOKEN` first and falls back to
 to need the PAT. The PAT fallback only fires for endpoints at or under
 `repos/{owner}/{repo}` of this repository; anything else logs a REFUSED
 line instead, so the bridge cannot read or mutate other repositories the
-PAT can reach. Each request is bounded (`--connect-timeout 10
+PAT can reach. Endpoints whose path contains dot segments (literal or
+percent-encoded) are rejected outright, and curl runs with
+`--path-as-is`, so the scope check cannot be bypassed via path
+normalization. Each request is bounded (`--connect-timeout 10
 --max-time 60`, job `timeout-minutes: 5`).
 
 A 4xx from GitHub is reported, not failed — a 404 on a lookup is a

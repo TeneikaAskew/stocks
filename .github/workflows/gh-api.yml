@@ -104,6 +104,21 @@ jobs:
           EP="${ENDPOINT#/}"
           EP="${EP//\{owner\}/${GITHUB_REPOSITORY%%/*}}"
           EP="${EP//\{repo\}/${GITHUB_REPOSITORY##*/}}"
+
+          # Reject dot segments (literal or percent-encoded) anywhere in the
+          # path. curl normalizes /../ before sending, so an endpoint like
+          # repos/<this repo>/../../other/private passes a raw prefix check
+          # yet reaches another repository — the PAT scope gate below is only
+          # sound on a canonical path. No GitHub API path legitimately
+          # contains . or .. segments, so refuse the whole run. curl is also
+          # invoked with --path-as-is below, so nothing is normalized even
+          # if a variant slips past this check.
+          EP_PATH="${EP%%\?*}"
+          if printf '%s' "$EP_PATH" | grep -qiE '(^|/)(\.|%2e){1,2}(/|$)'; then
+            echo "::error::endpoint path contains dot segments — refusing"
+            exit 1
+          fi
+
           URL="https://api.github.com/${EP}"
           echo "Request: ${METHOD} ${URL}"
           echo
@@ -123,15 +138,21 @@ jobs:
               printf 'header = "Accept: application/vnd.github+json"\n'
               printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
             } > "$cfg"
+            # A transfer failure on THIS attempt must not publish the
+            # previous attempt's body as if it were this attempt's answer.
+            rm -f response.json
             # Bounded so a stalled response surfaces as TRANSFER FAILED in
             # seconds instead of hanging the step until timeout-minutes.
+            # --path-as-is: never let curl canonicalize dot segments — the
+            # scope gate validated the path as written.
             if [ "$METHOD" = "GET" ]; then
-              code=$(curl -sS -K "$cfg" -X GET \
+              code=$(curl -sS -K "$cfg" -X GET --path-as-is \
                        --connect-timeout 10 --max-time 60 \
                        -o response.json -w '%{http_code}' "$URL"); rc=$?
             else
               printf '%s' "$BODY" > body.json
-              code=$(curl -sS -K "$cfg" -X "$METHOD" --data-binary @body.json \
+              code=$(curl -sS -K "$cfg" -X "$METHOD" --path-as-is \
+                       --data-binary @body.json \
                        --connect-timeout 10 --max-time 60 \
                        -o response.json -w '%{http_code}' "$URL"); rc=$?
             fi
