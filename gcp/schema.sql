@@ -3931,3 +3931,17 @@ CREATE TABLE IF NOT EXISTS user_preferences (
 CREATE OR REPLACE TRIGGER set_user_preferences_updated_at
     BEFORE UPDATE ON user_preferences
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ─────────────────────────────────────────────────────────
+-- ADMIN REFRESH LEASES (cross-instance dispatch cooldown)
+-- ─────────────────────────────────────────────────────────
+-- One row per Cloud Run Job the admin data-sources tab can dispatch
+-- (platform/api/routers/admin.py POST /api/admin/data-sources/{id}/refresh).
+-- The API serves up to 5 instances (platform/deploy.sh --max-instances 5),
+-- so the one-execution-per-cooldown cost guard cannot live in process
+-- memory; the atomic upsert on this row is the lease. Rows are tiny and
+-- bounded by the job allowlist — no retention needed.
+CREATE TABLE IF NOT EXISTS admin_refresh_leases (
+    job_name      TEXT         PRIMARY KEY,
+    dispatched_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);

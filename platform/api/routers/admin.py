@@ -36,6 +36,7 @@ from lib.agents.model_routing import (  # noqa: E402
     set_route,
 )
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
+from api import auth as auth_state  # noqa: E402 — module ref: AUTH_MODE read at call time
 from api.auth import configured_admin_email, current_user_email, is_admin_email  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -964,8 +965,24 @@ async def admin_update_user_status(uid: str, body: UserStatusUpdate, request: Re
     Two accounts are refused with 409 rather than disabled: your own (the
     UI you are using would lock itself out mid-session), and ADMIN_EMAIL
     (the break-glass account that must survive a bad role table).
+
+    Refused outright in iap mode: there, authentication is the IAP header
+    and neither the middleware nor _require_admin consults Firebase account
+    status, so flipping the Firebase flag would report `disabled: true`
+    while the person keeps full access — a fabricated success (Rule 3.7,
+    Codex review PR #972). Access on an IAP deployment is managed in IAP /
+    Cloud IAM, and the response says so.
     """
     _require_admin(request)
+    if auth_state.AUTH_MODE == "iap":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this deployment authenticates at the IAP edge — Firebase "
+                "account status does not govern access here; manage access "
+                "in IAP / Cloud IAM instead"
+            ),
+        )
     fb = _fb_auth()
     user = _get_fb_user_or_404(fb, uid)
     email = (user.email or "").strip().lower()
@@ -1072,6 +1089,22 @@ _DATA_SOURCES: dict[str, dict] = {
     "historical_signals": {"label": "Historical signals watchlist", "category": "signals", "job": "historical-signals-watchlist"},
 }
 
+def _base_table(label: str) -> str:
+    """Fold the audit's diagnostic row labels into their base dataset id.
+
+    audit_data_freshness emits derived labels for diagnostic passes on a
+    dataset — "<table> [gap]" (gap scan) and "<table> [sanity]" (value
+    sanity). Grouping by the raw string would surface each as a phantom
+    unregistered source while the base dataset reads `ok` — a stale gap
+    scan MUST roll into its dataset's status (Codex review, PR #972).
+    "job_runs.<job> duration" rows are left as-is on purpose: they are job
+    observability, not a dataset, and still surface as their own honest
+    un-refreshable row rather than vanishing.
+    """
+    base = label.split(" [", 1)[0]
+    return base if base in _DATA_SOURCES else label
+
+
 # Frontend contract is ok|stale|error|unknown; the audit emits
 # ok|warn|stale|unknown|skipped. warn maps to stale (it is an
 # attention state, and the lag detail rides in `message`); skipped
@@ -1097,14 +1130,22 @@ def _aggregate_source(source_id: str, entry: dict, rows: list[dict]) -> AdminDat
     for r in rows:
         wire = _AUDIT_TO_WIRE_STATUS.get(r.get("status") or "unknown", "unknown")
         statuses.append(wire)
+        # A folded diagnostic row ("market_data_daily [gap]") contributes its
+        # STATUS and message to the dataset, but not counts or timestamps —
+        # a gap scan is not a data member, and folding its Nones in would
+        # blank out the dataset's real row_count/last_refreshed_at.
+        is_diagnostic = str(r.get("table") or source_id) != source_id
         if wire != "ok":
-            who = r.get("ticker") or source_id
+            # The raw audit label keeps a folded diagnostic identifiable.
+            who = r.get("ticker") or str(r.get("table") or source_id)
             lag = r.get("lag_hours")
             allowed = r.get("expected_max_hours")
             detail = f"{who}: {r.get('status')}"
             if lag is not None and allowed is not None:
                 detail += f" (lag {lag:.1f}h, allowed {allowed}h)"
             messages.append(detail)
+        if is_diagnostic:
+            continue
         if r.get("last_row_at"):
             last_row_ats.append(str(r["last_row_at"]))
         counts.append(r.get("row_count_recent"))
@@ -1149,7 +1190,7 @@ async def admin_list_data_sources(request: Request):
     report = freshness_report_dict()  # raises HTTPException on audit failure
     by_table: dict[str, list[dict]] = {}
     for r in report.get("tables", []):
-        by_table.setdefault(str(r.get("table")), []).append(r)
+        by_table.setdefault(_base_table(str(r.get("table"))), []).append(r)
 
     sources = [
         _aggregate_source(sid, entry, by_table.get(sid, []))
@@ -1166,9 +1207,64 @@ async def admin_list_data_sources(request: Request):
 
 
 # One dispatch per job per cooldown window — a double-clicked button must
-# not launch two executions of the same fetcher.
+# not launch two executions of the same fetcher. The lease lives in Cloud
+# SQL, NOT in process memory: the service runs up to 5 instances
+# (platform/deploy.sh --max-instances 5), so two requests routed to
+# different instances would each see an empty in-process map and dispatch
+# twice (Codex review, PR #972). One indexed upsert per accepted press.
 _REFRESH_COOLDOWN_S = 60
-_last_dispatch: dict[str, float] = {}
+
+
+def _acquire_refresh_lease(job_name: str, cooldown_s: int) -> bool:
+    """Atomically claim the right to dispatch `job_name` — cross-instance.
+
+    ONE statement: insert the lease row, or take it over only when the
+    previous dispatch is older than the cooldown. RETURNING tells us
+    whether we won; a concurrent press on another instance loses the
+    upsert race and gets False. Raises on DB failure — the endpoint turns
+    that into a loud 503 rather than dispatching without the cost guard.
+    """
+    from gcp.database import get_engine  # noqa: PLC0415 — lazy: sqlalchemy is heavy
+    from sqlalchemy import text  # noqa: PLC0415
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                INSERT INTO admin_refresh_leases (job_name, dispatched_at)
+                VALUES (:job, NOW())
+                ON CONFLICT (job_name) DO UPDATE SET dispatched_at = NOW()
+                WHERE admin_refresh_leases.dispatched_at
+                      < NOW() - make_interval(secs => :cooldown)
+                RETURNING job_name
+                """
+            ),
+            {"job": job_name, "cooldown": cooldown_s},
+        ).first()
+    return row is not None
+
+
+def _release_refresh_lease(job_name: str) -> None:
+    """Give the lease back after a FAILED dispatch so the retry isn't
+    locked out for the full cooldown. Ages the row rather than deleting it
+    (a delete would race a concurrent successful acquire). Raises on DB
+    failure; the caller treats release as best-effort cleanup."""
+    from gcp.database import get_engine  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE admin_refresh_leases
+                SET dispatched_at = NOW() - make_interval(secs => :cooldown)
+                WHERE job_name = :job
+                """
+            ),
+            {"job": job_name, "cooldown": _REFRESH_COOLDOWN_S + 1},
+        )
 
 
 def _run_refresh_job(job_name: str) -> Optional[str]:
@@ -1182,7 +1278,15 @@ def _run_refresh_job(job_name: str) -> Optional[str]:
     """
     from google.cloud import run_v2  # noqa: PLC0415
 
-    project = os.environ.get("GCP_PROJECT") or "adept-mountain-474619-d4"
+    # platform/deploy.sh exports GCP_PROJECT_ID (and, since the Codex review
+    # of PR #972, GCP_REGION) — read those so a PROJECT_ID/REGION-overridden
+    # deployment targets ITS OWN jobs, never the hardcoded prod defaults.
+    # GCP_PROJECT stays first for parity with gcp/discord_interactions.
+    project = (
+        os.environ.get("GCP_PROJECT")
+        or os.environ.get("GCP_PROJECT_ID")
+        or "adept-mountain-474619-d4"
+    )
     region = os.environ.get("GCP_REGION") or "us-east1"
     client = run_v2.JobsClient()
     op = client.run_job(request=run_v2.RunJobRequest(
@@ -1224,11 +1328,17 @@ async def admin_refresh_data_source(source_id: str, request: Request):
             ),
         )
 
-    import time as _time  # noqa: PLC0415
-
-    now = _time.monotonic()
-    last = _last_dispatch.get(job)
-    if last is not None and (now - last) < _REFRESH_COOLDOWN_S:
+    try:
+        acquired = _acquire_refresh_lease(job, _REFRESH_COOLDOWN_S)
+    except Exception as exc:
+        # No lease means no cost guard — refuse loudly rather than dispatch
+        # unguarded (Rule 3.7: never a silent degrade of a documented guard).
+        logger.error("refresh lease acquire failed for %s (%s): %s", source_id, job, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="refresh coordination unavailable — see server logs",
+        ) from exc
+    if not acquired:
         raise HTTPException(
             status_code=429,
             detail=f"{job} was dispatched moments ago — wait {_REFRESH_COOLDOWN_S}s between refreshes",
@@ -1238,11 +1348,14 @@ async def admin_refresh_data_source(source_id: str, request: Request):
         execution_id = _run_refresh_job(job)
     except Exception as exc:
         logger.error("refresh dispatch failed for %s (%s): %s", source_id, job, exc)
+        try:
+            _release_refresh_lease(job)
+        except Exception:  # cleanup — original error already propagating
+            logger.warning("refresh lease release failed for %s", job)
         raise HTTPException(
             status_code=503,
             detail=f"could not queue {job} — see server logs",
         ) from exc
-    _last_dispatch[job] = now
     logger.info("admin refresh: %s -> job %s execution %s (by %s)",
                 source_id, job, execution_id, current_user_email(request))
     return DataSourceRefreshResponse(id=source_id, queued=True, job_id=execution_id)

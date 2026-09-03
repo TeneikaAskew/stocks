@@ -65,17 +65,32 @@ def _as_admin(monkeypatch):
     monkeypatch.setattr(api.auth, "AUTH_MODE", "iap")
 
 
+FIREBASE_ADMIN_HEADERS = {"authorization": f"Bearer good:{ADMIN_EMAIL}"}
+
+
+def _as_admin_firebase(monkeypatch):
+    """firebase-mode identity (needed by the status endpoint, which refuses
+    iap mode outright): stub the token verifier per test_platform_auth.py's
+    convention — 'Bearer good:<email>' verifies as <email>."""
+    monkeypatch.setenv("ADMIN_EMAIL", ADMIN_EMAIL)
+    import api.auth
+
+    monkeypatch.setattr(api.auth, "AUTH_MODE", "firebase")
+
+    def fake_verify(request):
+        authz = request.headers.get("authorization") or ""
+        if not authz.lower().startswith("bearer "):
+            return None
+        tok = authz.split(" ", 1)[1]
+        return tok.split(":", 1)[1].strip().lower() if tok.startswith("good:") else None
+
+    monkeypatch.setattr(api.auth, "_verify_bearer_email", fake_verify)
+
+
 def _client() -> TestClient:
     app = FastAPI()
     app.include_router(admin_module.router)
     return TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def _reset_cooldowns():
-    admin_module._last_dispatch.clear()
-    yield
-    admin_module._last_dispatch.clear()
 
 
 # ── Fake Firebase directory ──────────────────────────────────────────────────
@@ -280,12 +295,14 @@ def test_roles_no_email_account_is_422(monkeypatch):
 
 
 # ── PUT /users/{uid}/status ──────────────────────────────────────────────────
+# firebase-mode identity throughout: the endpoint refuses iap mode (below).
 
 def test_status_disable_updates_and_revokes(monkeypatch):
-    _as_admin(monkeypatch)
+    _as_admin_firebase(monkeypatch)
     fb, _ = _wire_users(monkeypatch, [_fb_user("u1", "a@x.com")], {})
     r = _client().put(
-        "/api/admin/users/u1/status", json={"disabled": True}, headers=ADMIN_HEADERS
+        "/api/admin/users/u1/status", json={"disabled": True},
+        headers=FIREBASE_ADMIN_HEADERS,
     )
     assert r.status_code == 200
     assert r.json()["disabled"] is True
@@ -293,10 +310,11 @@ def test_status_disable_updates_and_revokes(monkeypatch):
 
 
 def test_status_enable_does_not_revoke(monkeypatch):
-    _as_admin(monkeypatch)
+    _as_admin_firebase(monkeypatch)
     fb, _ = _wire_users(monkeypatch, [_fb_user("u1", "a@x.com", disabled=True)], {})
     r = _client().put(
-        "/api/admin/users/u1/status", json={"disabled": False}, headers=ADMIN_HEADERS
+        "/api/admin/users/u1/status", json={"disabled": False},
+        headers=FIREBASE_ADMIN_HEADERS,
     )
     assert r.status_code == 200
     assert r.json()["disabled"] is False
@@ -304,10 +322,11 @@ def test_status_enable_does_not_revoke(monkeypatch):
 
 
 def test_status_cannot_disable_self_or_break_glass(monkeypatch):
-    _as_admin(monkeypatch)
+    _as_admin_firebase(monkeypatch)
     fb, _ = _wire_users(monkeypatch, [_fb_user("u-admin", ADMIN_EMAIL)], {})
     r = _client().put(
-        "/api/admin/users/u-admin/status", json={"disabled": True}, headers=ADMIN_HEADERS
+        "/api/admin/users/u-admin/status", json={"disabled": True},
+        headers=FIREBASE_ADMIN_HEADERS,
     )
     assert r.status_code == 409
     assert fb.users["u-admin"].disabled is False
@@ -315,12 +334,28 @@ def test_status_cannot_disable_self_or_break_glass(monkeypatch):
 
 
 def test_status_unknown_uid_is_404(monkeypatch):
-    _as_admin(monkeypatch)
+    _as_admin_firebase(monkeypatch)
     _wire_users(monkeypatch, [], {})
     r = _client().put(
-        "/api/admin/users/ghost/status", json={"disabled": True}, headers=ADMIN_HEADERS
+        "/api/admin/users/ghost/status", json={"disabled": True},
+        headers=FIREBASE_ADMIN_HEADERS,
     )
     assert r.status_code == 404
+
+
+def test_status_refused_in_iap_mode(monkeypatch):
+    """iap mode authenticates at the edge; Firebase account status does not
+    govern access there, so flipping it would be a fabricated success. The
+    endpoint must refuse with an explanation, and never touch Firebase."""
+    _as_admin(monkeypatch)  # iap identity
+    fb, _ = _wire_users(monkeypatch, [_fb_user("u1", "a@x.com")], {})
+    r = _client().put(
+        "/api/admin/users/u1/status", json={"disabled": True}, headers=ADMIN_HEADERS
+    )
+    assert r.status_code == 409
+    assert "IAP" in r.json()["detail"]
+    assert fb.users["u1"].disabled is False
+    assert fb.revoked == []
 
 
 # ── GET /data-sources ────────────────────────────────────────────────────────
@@ -335,9 +370,18 @@ _REPORT = {
         {"table": "market_data_daily", "ticker": "SPY", "status": "ok",
          "last_row_at": "2026-09-01", "lag_hours": 9.0, "expected_max_hours": 30,
          "row_count_recent": 2},
+        # Diagnostic pass on the SAME dataset: must fold into
+        # market_data_daily's status, never surface as a phantom source.
+        {"table": "market_data_daily [gap]", "ticker": None, "status": "stale",
+         "last_row_at": None, "lag_hours": None, "expected_max_hours": None,
+         "row_count_recent": None},
         {"table": "etf_options_snapshots", "ticker": "QQQ", "status": "warn",
          "last_row_at": "2026-09-01", "lag_hours": 26.0, "expected_max_hours": 30,
          "row_count_recent": None},
+        # Job observability row — not a dataset; stays its own honest row.
+        {"table": "job_runs.backfill-daily-indicators duration", "ticker": None,
+         "status": "warn", "last_row_at": None, "lag_hours": None,
+         "expected_max_hours": None, "row_count_recent": None},
         {"table": "mystery_table", "ticker": None, "status": "stale",
          "last_row_at": None, "lag_hours": None, "expected_max_hours": None,
          "row_count_recent": None},
@@ -357,13 +401,22 @@ def test_data_sources_aggregation(monkeypatch):
     by_id = {s["id"]: s for s in r.json()["sources"]}
 
     daily = by_id["market_data_daily"]
-    assert daily["status"] == "ok"
-    assert daily["row_count"] == 3                      # all members counted
+    # The stale [gap] diagnostic folds into the dataset's status (Codex
+    # PR #972 finding): the main row must NOT read ok while its gap scan
+    # is stale — but the diagnostic contributes no counts/timestamps.
+    assert daily["status"] == "stale"
+    assert "market_data_daily [gap]: stale" in daily["message"]
+    assert daily["row_count"] == 3                      # real members only
     assert daily["last_refreshed_at"] == "2026-09-02"   # max across tickers
     assert daily["coverage_end"] == "2026-09-02"
     assert daily["coverage_start"] is None              # not computed → null
-    assert daily["message"] is None
     assert daily["refreshable"] is True
+    assert "market_data_daily [gap]" not in by_id       # no phantom source
+
+    # Job observability rows are not datasets — they stay their own row.
+    duration = by_id["job_runs.backfill-daily-indicators duration"]
+    assert duration["status"] == "stale"                # warn → stale on wire
+    assert duration["refreshable"] is False
 
     options = by_id["etf_options_snapshots"]
     assert options["status"] == "stale"                 # warn → stale on the wire
@@ -403,14 +456,23 @@ def test_refresh_non_refreshable_is_409_with_reason(monkeypatch):
 
 
 def test_refresh_dispatches_job_and_cools_down(monkeypatch):
+    """The cooldown is a CROSS-INSTANCE DB lease (Codex PR #972 finding):
+    the endpoint dispatches only after winning the lease, and a lost lease
+    is a 429 with no dispatch — whatever instance served the press."""
     _as_admin(monkeypatch)
     dispatched: list[str] = []
+    lease_results = iter([True, False])
+    lease_calls: list[tuple[str, int]] = []
 
-    def fake_run(job):
-        dispatched.append(job)
-        return "fetch-market-data-abc12"
+    def fake_lease(job, cooldown_s):
+        lease_calls.append((job, cooldown_s))
+        return next(lease_results)
 
-    monkeypatch.setattr(admin_module, "_run_refresh_job", fake_run)
+    monkeypatch.setattr(admin_module, "_acquire_refresh_lease", fake_lease)
+    monkeypatch.setattr(
+        admin_module, "_run_refresh_job",
+        lambda job: dispatched.append(job) or "fetch-market-data-abc12",
+    )
     c = _client()
     r = c.post("/api/admin/data-sources/market_data_daily/refresh", headers=ADMIN_HEADERS)
     assert r.status_code == 200
@@ -420,28 +482,68 @@ def test_refresh_dispatches_job_and_cools_down(monkeypatch):
         "job_id": "fetch-market-data-abc12",
     }
     assert dispatched == ["fetch-market-data"]
+    assert lease_calls[0] == ("fetch-market-data", admin_module._REFRESH_COOLDOWN_S)
 
-    # Immediate second press: cooled down, no second execution.
+    # Second press loses the lease: cooled down, no second execution.
     r2 = c.post("/api/admin/data-sources/market_data_daily/refresh", headers=ADMIN_HEADERS)
     assert r2.status_code == 429
     assert dispatched == ["fetch-market-data"]
 
 
-def test_refresh_dispatch_failure_is_loud_503_and_free_to_retry(monkeypatch):
+def test_refresh_dispatch_failure_is_loud_503_and_releases_lease(monkeypatch):
     _as_admin(monkeypatch)
-    calls = {"n": 0}
+    released: list[str] = []
+    monkeypatch.setattr(admin_module, "_acquire_refresh_lease", lambda job, cd: True)
+    monkeypatch.setattr(
+        admin_module, "_release_refresh_lease", lambda job: released.append(job)
+    )
 
-    def flaky(job):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("iam denied")
-        return "exec-2"
+    def boom(job):
+        raise RuntimeError("iam denied")
 
-    monkeypatch.setattr(admin_module, "_run_refresh_job", flaky)
-    c = _client()
-    r = c.post("/api/admin/data-sources/daily_rates/refresh", headers=ADMIN_HEADERS)
+    monkeypatch.setattr(admin_module, "_run_refresh_job", boom)
+    r = _client().post("/api/admin/data-sources/daily_rates/refresh", headers=ADMIN_HEADERS)
     assert r.status_code == 503
-    # A failed dispatch must not consume the cooldown — the retry goes through.
-    r2 = c.post("/api/admin/data-sources/daily_rates/refresh", headers=ADMIN_HEADERS)
-    assert r2.status_code == 200
-    assert r2.json()["job_id"] == "exec-2"
+    # The lease is handed back so the retry isn't locked out for the cooldown.
+    assert released == ["fetch-fred-rates"]
+
+
+def test_refresh_lease_store_failure_is_loud_503_without_dispatch(monkeypatch):
+    """No lease means no cost guard — the endpoint must refuse rather than
+    dispatch unguarded."""
+    _as_admin(monkeypatch)
+    dispatched: list[str] = []
+
+    def lease_down(job, cd):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(admin_module, "_acquire_refresh_lease", lease_down)
+    monkeypatch.setattr(
+        admin_module, "_run_refresh_job", lambda job: dispatched.append(job) or "x"
+    )
+    r = _client().post("/api/admin/data-sources/daily_rates/refresh", headers=ADMIN_HEADERS)
+    assert r.status_code == 503
+    assert dispatched == []
+
+
+def test_acquire_refresh_lease_maps_returning_row_to_bool(monkeypatch):
+    """The lease helper's contract with Postgres: a RETURNING row means the
+    upsert won (lease acquired), no row means the cooldown predicate blocked
+    the takeover."""
+    from unittest.mock import MagicMock, patch
+
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+
+    conn.execute.return_value.first.return_value = ("fetch-fred-rates",)
+    with patch("gcp.database.get_engine", return_value=engine):
+        assert admin_module._acquire_refresh_lease("fetch-fred-rates", 60) is True
+    sql = str(conn.execute.call_args.args[0])
+    assert "ON CONFLICT (job_name) DO UPDATE" in sql and "RETURNING" in sql
+    assert conn.execute.call_args.args[1] == {"job": "fetch-fred-rates", "cooldown": 60}
+
+    conn.execute.return_value.first.return_value = None
+    with patch("gcp.database.get_engine", return_value=engine):
+        assert admin_module._acquire_refresh_lease("fetch-fred-rates", 60) is False
