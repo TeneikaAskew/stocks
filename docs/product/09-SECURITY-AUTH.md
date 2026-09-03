@@ -85,8 +85,11 @@ Found by Codex review on PR #931 and reproduced here.
 Net: on a `STAGING_SERVICE=1` deployment, `/dev` is reachable **without sign-in**.
 Neither gate applies — the middleware skips non-`/api/` paths and the handler's own check
 is a no-op without an IAP header. `_DEV_ALLOWED_EMAIL` defaults to a hardcoded address
-(`main.py:160`). Covered by `platform/tests/dev.spec.ts`; that spec does not exercise the
-staging (`PUBLIC=1`, no-IAP) configuration.
+(`main.py:160`). Formerly covered by `platform/tests/dev.spec.ts`, which was deleted in the
+#957 frontend split with no replacement, and which in any case did not exercise the staging
+(`PUBLIC=1`, no-IAP) configuration — [#943](https://github.com/TeneikaAskew/stocks/issues/943)'s
+acceptance tests must be written fresh in this repo (starting point recoverable via
+`git show 9f28a60^:platform/tests/dev.spec.ts`).
 
 **Status:** tracked by [#943](https://github.com/TeneikaAskew/stocks/issues/943). **Next action:** choose whether to authenticate, remove, or explicitly accept the endpoint after security review; do not treat it as covered by #911, whose scope is the `AUTH_MODE` default.
 
@@ -140,4 +143,4 @@ Environment variables in scope: `AUTH_MODE`, `AUTH_OPEN_SIGNUP`, `AUTH_ALLOWED_E
 | Secret hardening | [#318](https://github.com/TeneikaAskew/stocks/pull/318) · [#424](https://github.com/TeneikaAskew/stocks/pull/424) split Discord webhooks · [#385](https://github.com/TeneikaAskew/stocks/pull/385) IaC drift + secret hardening |
 | Open issues | [#911](https://github.com/TeneikaAskew/stocks/issues/911) · [#830](https://github.com/TeneikaAskew/stocks/issues/830) · [#850](https://github.com/TeneikaAskew/stocks/issues/850) · [#836](https://github.com/TeneikaAskew/stocks/issues/836) · [#837](https://github.com/TeneikaAskew/stocks/issues/837) · [#838](https://github.com/TeneikaAskew/stocks/issues/838) · [#839](https://github.com/TeneikaAskew/stocks/issues/839) · [#943](https://github.com/TeneikaAskew/stocks/issues/943) |
 | Code | `platform/api/auth.py`, `platform/api/main.py:51,281-301`, `platform/api/routers/admin.py:59`, `platform/deploy.sh:44-60,99-110` |
-| Tests | `platform/tests/auth-gate.spec.ts`, `admin-auth.spec.ts`, `dev.spec.ts` (staging config not covered) |
+| Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in #957); `dev.spec.ts` deleted in #957 — [#943](https://github.com/TeneikaAskew/stocks/issues/943) tests to be written fresh |

@@ -175,6 +175,34 @@ as unaddressed to everyone but you. When you fix a finding:
 - Then resolve it.
 - If the fix landed in a different PR, say which one.
 
+#### A resolved thread is not a reviewed commit
+
+**Added 2026-09-02 after merging #953 with five "resolved" Codex threads,
+none of which had ever been applied to the code that merged.**
+
+Codex reviews on a fixed set of triggers: a PR opened for review, a draft
+marked ready, or an explicit `@codex review` comment. **A push does not
+trigger a re-review** — not a force-push, not a branch update, not a
+regeneration. #953's only Codex review was of commit `40cc6a149e`, the
+original blind-generated docs. The branch was then fully regenerated
+twice (`f8fece0`, `a5990b2`) and merged, and Codex never saw either.
+Every thread carried `is_outdated: true`, which is the tell, and it was
+read past.
+
+So resolving a thread records that *someone* answered the finding. It
+says nothing about whether a reviewer has looked at what is actually
+about to merge. Before merging, check both:
+
+1. `pull_request_read` with `method: "get_reviews"` — compare each
+   review's `commit_id` against the PR's current head SHA. If no review
+   names the head, the head is unreviewed regardless of how many threads
+   show resolved.
+2. `is_outdated` on every thread. All-outdated means the review predates
+   the current content entirely.
+
+When the head is unreviewed and the change is more than cosmetic, comment
+`@codex review` and wait, rather than reading resolution as coverage.
+
 #### Verify the claim before fixing it, and reproduce before you fix
 
 Reviewers are usually right here — Codex has been right on every finding it
@@ -1030,7 +1058,17 @@ opt-in; any mutating method is refused unless `confirm_write=true`. The
 workflow tries the built-in `GITHUB_TOKEN` first and falls back to
 `PR_WORKFLOW_TOKEN`, reporting which one worked — the built-in token has no
 `administration` permission scope, so repo-settings endpoints are expected
-to need the PAT.
+to need the PAT. The PAT fallback only fires for GET requests on
+endpoints at or under `repos/{owner}/{repo}` of this repository;
+anything else logs a REFUSED line instead, so the bridge cannot read
+other repositories the PAT can reach and never uses the PAT to mutate
+anything — mutations run only with the built-in token's permissions as
+declared in the workflow's `permissions:` block, so enabling a write
+surface takes a reviewed PR, not a dispatch flag. Endpoints whose path contains dot segments (literal or
+percent-encoded) are rejected outright, and curl runs with
+`--path-as-is`, so the scope check cannot be bypassed via path
+normalization. Each request is bounded (`--connect-timeout 10
+--max-time 60`, job `timeout-minutes: 5`).
 
 A 4xx from GitHub is reported, not failed — a 404 on a lookup is a
 legitimate answer, and failing would fire `handle-failure` and open a junk

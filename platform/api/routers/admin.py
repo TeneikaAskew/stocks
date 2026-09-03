@@ -16,6 +16,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -35,8 +36,10 @@ from lib.agents.model_routing import (  # noqa: E402
     set_route,
 )
 from lib.agents.schema import ALL_ROLES, AgentRole  # noqa: E402
-from api.auth import current_user_email, is_admin_email  # noqa: E402
+from api import auth as auth_state  # noqa: E402 — module ref: AUTH_MODE read at call time
+from api.auth import configured_admin_email, current_user_email, is_admin_email  # noqa: E402
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
@@ -704,3 +707,678 @@ async def admin_structure_continuation(
         reason=None,
         **base,
     )
+
+
+# ---------------------------------------------------------------------------
+# User + role administration — the Admin page's "Users & roles" tab.
+#
+# Identity vs. authorization, kept in their existing homes rather than a new
+# parallel store:
+#   - IDENTITY (who exists, enabled/disabled, sign-in metadata) lives in
+#     Firebase Auth. Listing and the disabled flag go through firebase-admin,
+#     the same SDK api/auth.py already uses to verify tokens.
+#   - AUTHORIZATION (what a verified identity may do) lives in the
+#     `user_roles` table (gcp/schema.sql) — email-keyed, one role per
+#     account, CHECK role IN ('admin', 'user'). `is_admin_email` reads it;
+#     these endpoints are its write surface.
+#
+# The wire shape (uid-keyed rows with a `roles: string[]`) matches the
+# frontend's useAdmin.ts hand-maintained contract. The array is capped at
+# one role server-side because that is what the schema stores — a request
+# with two roles is rejected loudly (422) rather than silently persisting
+# only one of them (Rule 3.7: no partial writes reported as success).
+#
+# ADMIN_EMAIL remains the break-glass fallback (see api/auth.py): that
+# account reads as admin regardless of the table, so removing its admin
+# role or disabling it is refused with an explanation instead of a no-op
+# that would lie about what changed.
+# ---------------------------------------------------------------------------
+
+# Mirrors the user_roles_role_valid CHECK constraint. If a role is ever
+# added there, add it here in the same change set.
+_ASSIGNABLE_ROLES = ("admin", "user")
+
+
+class AdminUserRow(BaseModel):
+    uid: str
+    email: Optional[str] = None
+    display_name: Optional[str] = None
+    roles: list[str] = []
+    disabled: bool = False
+    created_at: Optional[str] = None
+    last_sign_in_at: Optional[str] = None
+
+
+class AdminUsersResponse(BaseModel):
+    users: list[AdminUserRow]
+    available_roles: list[str]
+
+
+class UserRolesUpdate(BaseModel):
+    roles: list[str]
+
+
+class UserStatusUpdate(BaseModel):
+    disabled: bool
+
+
+def _fb_auth():
+    """The initialized firebase_admin.auth module.
+
+    Reuses api.auth's one-time initializer (ADC on Cloud Run) so identity
+    administration and token verification can never initialize the SDK two
+    different ways. Indirection exists so tests can swap in a fake.
+    """
+    from api.auth import _ensure_firebase  # noqa: PLC0415
+
+    _ensure_firebase()
+    from firebase_admin import auth as fb_auth  # noqa: PLC0415
+
+    return fb_auth
+
+
+def _roles_query(sql: str, params: Optional[dict] = None):
+    """Read from user_roles — raises on failure (caller turns it into 503)."""
+    from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+
+    return query_to_dataframe_strict(sql, params, timeout_s=10)
+
+
+def _roles_exec(sql: str, params: Optional[dict] = None) -> int:
+    from gcp.database import execute_sql  # noqa: PLC0415
+
+    return execute_sql(sql, params)
+
+
+def _ms_to_iso(ms: Optional[int]) -> Optional[str]:
+    """Firebase user_metadata epoch-milliseconds -> ISO-8601 UTC, or None.
+
+    None stays None (Rule 3.7 — a user who has never signed in must not be
+    given a fabricated timestamp)."""
+    if ms is None:
+        return None
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+
+def _stored_roles() -> dict[str, str]:
+    """email -> role for every user_roles row. One batched SELECT (Rule 0)."""
+    df = _roles_query("SELECT email, role FROM user_roles")
+    return {str(r["email"]): str(r["role"]) for _, r in df.iterrows()}
+
+
+def _effective_roles(email: Optional[str], stored: dict[str, str]) -> list[str]:
+    """The roles an account actually holds, as the authorization layer sees
+    them: the stored table role, plus 'admin' for the ADMIN_EMAIL fallback
+    account (is_admin_email grants it without a table row — hiding that here
+    would render a live admin as role-less)."""
+    roles: list[str] = []
+    if email:
+        stored_role = stored.get(email)
+        if stored_role:
+            roles.append(stored_role)
+        if email == configured_admin_email() and "admin" not in roles:
+            roles.append("admin")
+    return roles
+
+
+def _user_row(user, stored: dict[str, str]) -> AdminUserRow:
+    email = (user.email or "").strip().lower() or None
+    meta = getattr(user, "user_metadata", None)
+    return AdminUserRow(
+        uid=user.uid,
+        email=email,
+        display_name=user.display_name or None,
+        roles=_effective_roles(email, stored),
+        disabled=bool(user.disabled),
+        created_at=_ms_to_iso(getattr(meta, "creation_timestamp", None)),
+        last_sign_in_at=_ms_to_iso(getattr(meta, "last_sign_in_timestamp", None)),
+    )
+
+
+@router.get("/users", response_model=AdminUsersResponse)
+def admin_list_users(request: Request):
+    """Every Firebase account + its stored role(s).
+
+    Capacity (Rule 0): firebase-admin pages the directory at 1000/page and
+    the roles map is ONE batched SELECT — no per-user queries. The account
+    count on this platform is well under one page.
+    """
+    _require_admin(request)
+    fb = _fb_auth()
+    try:
+        fb_users = list(fb.list_users().iterate_all())
+    except Exception as exc:
+        logger.error("firebase user listing failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="user directory temporarily unavailable"
+        ) from exc
+    try:
+        stored = _stored_roles()
+    except Exception as exc:
+        logger.error("user_roles read failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="role store temporarily unavailable"
+        ) from exc
+
+    rows = sorted(
+        (_user_row(u, stored) for u in fb_users),
+        key=lambda r: (r.email or "", r.uid),
+    )
+    return AdminUsersResponse(users=rows, available_roles=list(_ASSIGNABLE_ROLES))
+
+
+def _get_fb_user_or_404(fb, uid: str):
+    try:
+        return fb.get_user(uid)
+    except fb.UserNotFoundError:
+        raise HTTPException(status_code=404, detail="no such user")
+    except Exception as exc:
+        logger.error("firebase user lookup failed for %s: %s", uid, exc)
+        raise HTTPException(
+            status_code=503, detail="user directory temporarily unavailable"
+        ) from exc
+
+
+@router.put("/users/{uid}/roles", response_model=AdminUserRow)
+def admin_update_user_roles(uid: str, body: UserRolesUpdate, request: Request):
+    """Replace an account's stored role.
+
+    Accepts the frontend's `roles: string[]` shape; the schema stores at most
+    ONE role per email (user_roles PK), so: [] deletes the row, ["user"] or
+    ["admin"] upserts it, and two roles at once is a loud 422 — never a
+    silent partial write.
+    """
+    _require_admin(request)
+
+    roles = sorted({r.strip().lower() for r in body.roles if r.strip()})
+    unknown = [r for r in roles if r not in _ASSIGNABLE_ROLES]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown role(s) {unknown}; available: {list(_ASSIGNABLE_ROLES)}",
+        )
+    if len(roles) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail="an account holds one role — send [], [\"user\"], or [\"admin\"]",
+        )
+
+    fb = _fb_auth()
+    user = _get_fb_user_or_404(fb, uid)
+    email = (user.email or "").strip().lower()
+    if not email:
+        raise HTTPException(
+            status_code=422,
+            detail="this account has no email; roles are keyed by email",
+        )
+    if email == configured_admin_email() and "admin" not in roles:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this account is ADMIN_EMAIL — its admin role comes from the "
+                "service configuration (the break-glass fallback), not the "
+                "role table, so it cannot be removed here"
+            ),
+        )
+
+    try:
+        if roles:
+            _roles_exec(
+                """
+                INSERT INTO user_roles (email, role, created_by)
+                VALUES (:email, :role, :created_by)
+                ON CONFLICT (email) DO UPDATE
+                    SET role = EXCLUDED.role, created_by = EXCLUDED.created_by
+                """,
+                {
+                    "email": email,
+                    "role": roles[0],
+                    "created_by": current_user_email(request),
+                },
+            )
+        else:
+            _roles_exec(
+                "DELETE FROM user_roles WHERE email = :email", {"email": email}
+            )
+        stored = _stored_roles()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("user_roles write failed for %s: %s", email, exc)
+        raise HTTPException(
+            status_code=503, detail="role store temporarily unavailable"
+        ) from exc
+    return _user_row(user, stored)
+
+
+@router.put("/users/{uid}/status", response_model=AdminUserRow)
+def admin_update_user_status(uid: str, body: UserStatusUpdate, request: Request):
+    """Enable or disable a Firebase account.
+
+    Disabling also revokes the account's refresh tokens so its session ends
+    at the next token refresh (Firebase ID tokens live up to an hour; the
+    middleware verifies without a per-request revocation check, so that hour
+    is the honest upper bound, not instant lockout).
+
+    Two accounts are refused with 409 rather than disabled: your own (the
+    UI you are using would lock itself out mid-session), and ADMIN_EMAIL
+    (the break-glass account that must survive a bad role table).
+
+    Refused outright in iap mode: there, authentication is the IAP header
+    and neither the middleware nor _require_admin consults Firebase account
+    status, so flipping the Firebase flag would report `disabled: true`
+    while the person keeps full access — a fabricated success (Rule 3.7,
+    Codex review PR #972). Access on an IAP deployment is managed in IAP /
+    Cloud IAM, and the response says so.
+    """
+    _require_admin(request)
+    if auth_state.AUTH_MODE == "iap":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this deployment authenticates at the IAP edge — Firebase "
+                "account status does not govern access here; manage access "
+                "in IAP / Cloud IAM instead"
+            ),
+        )
+    fb = _fb_auth()
+    user = _get_fb_user_or_404(fb, uid)
+    email = (user.email or "").strip().lower()
+
+    if body.disabled:
+        caller = (current_user_email(request) or "").strip().lower()
+        if email and email == caller:
+            raise HTTPException(
+                status_code=409, detail="you cannot disable your own account"
+            )
+        if email == configured_admin_email():
+            raise HTTPException(
+                status_code=409,
+                detail="ADMIN_EMAIL is the break-glass account and cannot be disabled here",
+            )
+
+    try:
+        updated = fb.update_user(uid, disabled=body.disabled)
+        if body.disabled:
+            fb.revoke_refresh_tokens(uid)
+    except Exception as exc:
+        logger.error("firebase status update failed for %s: %s", uid, exc)
+        raise HTTPException(
+            status_code=503, detail="user directory temporarily unavailable"
+        ) from exc
+
+    try:
+        stored = _stored_roles()
+    except Exception as exc:
+        logger.error("user_roles read failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="role store temporarily unavailable"
+        ) from exc
+    return _user_row(updated, stored)
+
+
+# ---------------------------------------------------------------------------
+# Data sources — the Admin page's "Chart & report data" tab.
+#
+# GET aggregates the SAME freshness audit /api/health/freshness serves
+# (scripts/audit_data_freshness.audit_all(), via routers/health.py's shared
+# TTL cache) into one row per dataset, so the admin tab, the Dashboard
+# widget, and the freshness-watchdog can never disagree about what "stale"
+# means (one source of truth; zero extra Cloud SQL load beyond the cached
+# audit).
+#
+# POST /{id}/refresh dispatches the dataset's Cloud Run fetcher job through
+# the same google-cloud-run pattern gcp/discord_interactions/main.py uses.
+# Only jobs in the explicit allowlist below are dispatchable — the job name
+# is NEVER derived from client input beyond this registry lookup.
+# ---------------------------------------------------------------------------
+
+
+class AdminDataSourceRow(BaseModel):
+    id: str
+    label: str
+    category: str
+    status: str  # ok | stale | error | unknown (frontend contract)
+    row_count: Optional[int] = None
+    last_refreshed_at: Optional[str] = None
+    coverage_start: Optional[str] = None
+    coverage_end: Optional[str] = None
+    message: Optional[str] = None
+    refreshable: bool = False
+
+
+class AdminDataSourcesResponse(BaseModel):
+    sources: list[AdminDataSourceRow]
+
+
+class DataSourceRefreshResponse(BaseModel):
+    id: str
+    queued: bool
+    job_id: Optional[str] = None
+
+
+# Dataset registry: id == the audited table name (scripts/audit_data_freshness
+# CHECKS). `job` is the Cloud Run Job an on-demand refresh dispatches; None
+# means the dataset has NO safe on-demand refresh and the reason is stated to
+# the caller rather than silently doing nothing:
+#   - market_data_intraday: only writer is the MONTHLY AlphaVantage bulk
+#     backfill — far too heavy (API quota + wall-clock) for a button.
+#   - premarket_analysis / insight_reports: writers spend real LLM money per
+#     run; enable deliberately, not from a reflexively clicked button.
+#   - signal_alerts: written by the live market-hours monitor loop, which is
+#     scheduler-owned — an ad-hoc second instance would double-fire alerts.
+_DATA_SOURCES: dict[str, dict] = {
+    "market_data_daily": {"label": "Daily OHLCV bars", "category": "charts", "job": "fetch-market-data"},
+    "market_data_intraday": {"label": "Intraday 1-min bars", "category": "charts", "job": None,
+                             "no_refresh_reason": "only writer is the monthly bulk backfill — too heavy for on-demand"},
+    "strat_features_5m": {"label": "Strat features (5m)", "category": "charts", "job": "strat-engine"},
+    "strat_features_15m": {"label": "Strat features (15m)", "category": "charts", "job": "strat-engine"},
+    "strat_features_30m": {"label": "Strat features (30m)", "category": "charts", "job": "strat-engine"},
+    "etf_options_snapshots": {"label": "Options chain snapshots", "category": "options", "job": "fetch-av-options-backfill"},
+    "daily_rates": {"label": "Risk-free rates (FRED)", "category": "macro", "job": "fetch-fred-rates"},
+    "economic_events": {"label": "Economic events calendar", "category": "reports", "job": "fetch-economic-events"},
+    "earnings_calendar": {"label": "Earnings calendar", "category": "reports", "job": "fetch-earnings-calendar"},
+    "premarket_analysis": {"label": "Premarket briefs", "category": "reports", "job": None,
+                           "no_refresh_reason": "each run spends LLM budget — run premarket-brief deliberately"},
+    "insight_reports": {"label": "AI insight reports", "category": "reports", "job": None,
+                        "no_refresh_reason": "each run spends LLM budget — run insight-pipeline deliberately"},
+    "signal_alerts": {"label": "Signal alerts", "category": "signals", "job": None,
+                      "no_refresh_reason": "written by the live scheduler-owned monitor; an ad-hoc run would double-fire alerts"},
+    "historical_signals": {"label": "Historical signals watchlist", "category": "signals", "job": "historical-signals-watchlist"},
+}
+
+def _base_table(label: str) -> str:
+    """Fold the audit's diagnostic row labels into their base dataset id.
+
+    audit_data_freshness emits derived labels for diagnostic passes on a
+    dataset: "<table> [gap]" (gap scan), "<table> [sanity]" (value sanity),
+    "<table>.<column>" (column nullity), and "<table>.<column> enrichment
+    coverage". Grouping by the raw string would surface each as a phantom
+    unregistered source while the base dataset reads `ok` — a stale gap
+    scan or a NULL-cascade nullity check MUST roll into its dataset's
+    status (Codex review PR #972, then the follow-up self-review). The
+    fold takes the label's first space- and dot-delimited token; a token
+    that is not a registered dataset (e.g. "job_runs" from
+    "job_runs.<job> duration") leaves the row as its own honest,
+    un-refreshable observability row rather than vanishing.
+    """
+    base = label.split(" ", 1)[0].split(".", 1)[0]
+    return base if base in _DATA_SOURCES else label
+
+
+# Frontend contract is ok|stale|error|unknown; the audit emits
+# ok|warn|stale|unknown|skipped. warn maps to stale (it is an
+# attention state, and the lag detail rides in `message`); skipped
+# maps to unknown. Severity order picks the aggregate per-dataset
+# status across its per-ticker rows.
+_AUDIT_TO_WIRE_STATUS = {"ok": "ok", "warn": "stale", "stale": "stale",
+                         "unknown": "unknown", "skipped": "unknown"}
+_STATUS_SEVERITY = {"ok": 0, "unknown": 1, "stale": 2, "error": 3}
+
+
+def _aggregate_source(source_id: str, entry: dict, rows: list[dict]) -> AdminDataSourceRow:
+    """Fold the audit's per-(table, ticker) rows into one dataset row.
+
+    Rule 3.7: a dataset with no audit rows is `unknown` with an explicit
+    message, `row_count` is None unless EVERY member reported a count (a
+    partial sum would read as a real total), and timestamps stay None when
+    the audit has none.
+    """
+    statuses: list[str] = []
+    skipped_labels: list[str] = []
+    messages: list[str] = []
+    last_row_ats: list[str] = []
+    counts: list[Optional[int]] = []
+    for r in rows:
+        raw_label = str(r.get("table") or source_id)
+        # A folded diagnostic row ("market_data_daily [gap]") contributes its
+        # STATUS and message to the dataset, but not counts or timestamps —
+        # a gap scan is not a data member, and folding its Nones in would
+        # blank out the dataset's real row_count/last_refreshed_at.
+        is_diagnostic = raw_label != source_id
+        raw_status = r.get("status") or "unknown"
+        if raw_status == "skipped":
+            # "Skipped" means NOT EVALUATED this window (e.g. the enrichment
+            # check outside its daily slot) — it must never degrade a live
+            # dataset's status or add message noise. It only counts when the
+            # dataset has NO evaluated rows at all (handled below).
+            skipped_labels.append(raw_label)
+            continue
+        wire = _AUDIT_TO_WIRE_STATUS.get(raw_status, "unknown")
+        statuses.append(wire)
+        if wire != "ok":
+            # A folded diagnostic keeps its raw audit label (plus ticker) so
+            # a mid-window gap is never mistaken for an ordinary lag; plain
+            # freshness rows keep the ticker-or-dataset naming.
+            if is_diagnostic:
+                ticker = r.get("ticker")
+                who = f"{raw_label} ({ticker})" if ticker else raw_label
+            else:
+                who = r.get("ticker") or raw_label
+            lag = r.get("lag_hours")
+            allowed = r.get("expected_max_hours")
+            detail = f"{who}: {raw_status}"
+            if lag is not None and allowed is not None:
+                detail += f" (lag {lag:.1f}h, allowed {allowed}h)"
+            messages.append(detail)
+        if is_diagnostic:
+            continue
+        if r.get("last_row_at"):
+            last_row_ats.append(str(r["last_row_at"]))
+        counts.append(r.get("row_count_recent"))
+
+    if not rows:
+        status = "unknown"
+        message: Optional[str] = "not covered by the freshness audit"
+    elif not statuses:
+        # Every row was skipped: nothing was evaluated, say so honestly.
+        status = "unknown"
+        message = "; ".join(f"{lbl}: skipped" for lbl in skipped_labels)
+    else:
+        status = max(statuses, key=lambda s: _STATUS_SEVERITY[s])
+        message = "; ".join(messages) or None
+
+    last_at = max(last_row_ats) if last_row_ats else None
+    row_count = (
+        int(sum(counts)) if counts and all(c is not None for c in counts) else None
+    )
+
+    return AdminDataSourceRow(
+        id=source_id,
+        label=entry.get("label", source_id),
+        category=entry.get("category", "other"),
+        status=status,
+        row_count=row_count,
+        last_refreshed_at=last_at,
+        coverage_start=None,  # not computed by the audit — None, never a guess
+        coverage_end=last_at,
+        message=message,
+        refreshable=entry.get("job") is not None,
+    )
+
+
+@router.get("/data-sources", response_model=AdminDataSourcesResponse)
+def admin_list_data_sources(request: Request):
+    """Per-dataset freshness/coverage, aggregated from the shared audit.
+
+    Capacity (Rule 0): zero direct Cloud SQL queries here — the audit runs
+    behind routers/health.py's 5-minute TTL cache, so this endpoint is a
+    pure in-memory regrouping of that report.
+    """
+    _require_admin(request)
+    from .health import freshness_report_dict  # noqa: PLC0415 — shared cache
+
+    report = freshness_report_dict()  # raises HTTPException on audit failure
+    by_table: dict[str, list[dict]] = {}
+    for r in report.get("tables", []):
+        by_table.setdefault(_base_table(str(r.get("table"))), []).append(r)
+
+    sources = [
+        _aggregate_source(sid, entry, by_table.get(sid, []))
+        for sid, entry in _DATA_SOURCES.items()
+    ]
+    # Audited tables the registry doesn't know yet still show up (honest,
+    # un-labeled) instead of silently vanishing from the admin view.
+    for table, rows in by_table.items():
+        if table not in _DATA_SOURCES:
+            sources.append(
+                _aggregate_source(table, {"label": table, "category": "other", "job": None}, rows)
+            )
+    return AdminDataSourcesResponse(sources=sources)
+
+
+# One dispatch per job per cooldown window — a double-clicked button must
+# not launch two executions of the same fetcher. The lease lives in Cloud
+# SQL, NOT in process memory: the service runs up to 5 instances
+# (platform/deploy.sh --max-instances 5), so two requests routed to
+# different instances would each see an empty in-process map and dispatch
+# twice (Codex review, PR #972). One indexed upsert per accepted press.
+_REFRESH_COOLDOWN_S = 60
+
+
+def _acquire_refresh_lease(job_name: str, cooldown_s: int) -> bool:
+    """Atomically claim the right to dispatch `job_name` — cross-instance.
+
+    ONE statement: insert the lease row, or take it over only when the
+    previous dispatch is older than the cooldown. RETURNING tells us
+    whether we won; a concurrent press on another instance loses the
+    upsert race and gets False. Raises on DB failure — the endpoint turns
+    that into a loud 503 rather than dispatching without the cost guard.
+    """
+    from gcp.database import get_engine  # noqa: PLC0415 — lazy: sqlalchemy is heavy
+    from sqlalchemy import text  # noqa: PLC0415
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                INSERT INTO admin_refresh_leases (job_name, dispatched_at)
+                VALUES (:job, NOW())
+                ON CONFLICT (job_name) DO UPDATE SET dispatched_at = NOW()
+                WHERE admin_refresh_leases.dispatched_at
+                      < NOW() - make_interval(secs => :cooldown)
+                RETURNING job_name
+                """
+            ),
+            {"job": job_name, "cooldown": cooldown_s},
+        ).first()
+    return row is not None
+
+
+def _release_refresh_lease(job_name: str) -> None:
+    """Give the lease back after a FAILED dispatch so the retry isn't
+    locked out for the full cooldown. Ages the row rather than deleting it
+    (a delete would race a concurrent successful acquire). Raises on DB
+    failure; the caller treats release as best-effort cleanup."""
+    from gcp.database import get_engine  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE admin_refresh_leases
+                SET dispatched_at = NOW() - make_interval(secs => :cooldown)
+                WHERE job_name = :job
+                """
+            ),
+            {"job": job_name, "cooldown": _REFRESH_COOLDOWN_S + 1},
+        )
+
+
+def _run_refresh_job(job_name: str) -> Optional[str]:
+    """Dispatch one Cloud Run Job execution; return its execution id.
+
+    Same client + request shape as gcp/discord_interactions/main.py's
+    `execute_cloud_run_job` (`run_job(request=RunJobRequest(...))` — the
+    kwarg form raises TypeError on the v2 client). Fire-and-forget: the
+    operation is NOT awaited; the admin tab re-polls freshness instead.
+    Raises on failure — the endpoint turns that into a loud 503.
+    """
+    from google.cloud import run_v2  # noqa: PLC0415
+
+    # platform/deploy.sh exports GCP_PROJECT_ID (and, since the Codex review
+    # of PR #972, GCP_REGION) — read those so a PROJECT_ID/REGION-overridden
+    # deployment targets ITS OWN jobs, never the hardcoded prod defaults.
+    # GCP_PROJECT stays first for parity with gcp/discord_interactions.
+    project = (
+        os.environ.get("GCP_PROJECT")
+        or os.environ.get("GCP_PROJECT_ID")
+        or "adept-mountain-474619-d4"
+    )
+    region = os.environ.get("GCP_REGION") or "us-east1"
+    client = run_v2.JobsClient()
+    op = client.run_job(request=run_v2.RunJobRequest(
+        name=f"projects/{project}/locations/{region}/jobs/{job_name}",
+    ))
+    try:
+        # run_job's long-running operation carries the Execution as metadata;
+        # its name ends in the execution id.
+        return str(op.metadata.name).rsplit("/", 1)[-1]
+    except Exception:
+        # Losing the id is cosmetic (the dispatch already succeeded) — the
+        # frontend renders job_id as nullable.
+        return None
+
+
+@router.post("/data-sources/{source_id}/refresh", response_model=DataSourceRefreshResponse)
+def admin_refresh_data_source(source_id: str, request: Request):
+    """Queue the dataset's Cloud Run fetcher job.
+
+    404 unknown dataset · 409 dataset with no on-demand job (the reason is
+    spelled out) · 429 inside the per-job cooldown · 503 when the dispatch
+    itself fails (missing IAM, missing client lib — logged, never silent).
+
+    Cost (Rule 0): one Cloud Run Job execution per accepted call — the same
+    workload the daily scheduler already runs, and the cooldown bounds the
+    worst case to one execution per job per minute.
+    """
+    _require_admin(request)
+    entry = _DATA_SOURCES.get(source_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"unknown data source {source_id!r}")
+    job = entry.get("job")
+    if not job:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{source_id} has no on-demand refresh: "
+                f"{entry.get('no_refresh_reason', 'not refreshable')}"
+            ),
+        )
+
+    try:
+        acquired = _acquire_refresh_lease(job, _REFRESH_COOLDOWN_S)
+    except Exception as exc:
+        # No lease means no cost guard — refuse loudly rather than dispatch
+        # unguarded (Rule 3.7: never a silent degrade of a documented guard).
+        logger.error("refresh lease acquire failed for %s (%s): %s", source_id, job, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="refresh coordination unavailable — see server logs",
+        ) from exc
+    if not acquired:
+        raise HTTPException(
+            status_code=429,
+            detail=f"{job} was dispatched moments ago — wait {_REFRESH_COOLDOWN_S}s between refreshes",
+        )
+
+    try:
+        execution_id = _run_refresh_job(job)
+    except Exception as exc:
+        logger.error("refresh dispatch failed for %s (%s): %s", source_id, job, exc)
+        try:
+            _release_refresh_lease(job)
+        except Exception:  # cleanup — original error already propagating
+            logger.warning("refresh lease release failed for %s", job)
+        raise HTTPException(
+            status_code=503,
+            detail=f"could not queue {job} — see server logs",
+        ) from exc
+    logger.info("admin refresh: %s -> job %s execution %s (by %s)",
+                source_id, job, execution_id, current_user_email(request))
+    return DataSourceRefreshResponse(id=source_id, queued=True, job_id=execution_id)

@@ -34,11 +34,19 @@ logger = logging.getLogger(__name__)
 AUTH_MODE = os.environ.get("AUTH_MODE", "open").strip().lower()
 
 # Reachable without a token so the SPA shell + login screen can boot and probe.
-# Matching is prefix-based (see _path_requires_auth: `path == p or
-# path.startswith(p)`), so each entry must be chosen narrowly enough that it
-# doesn't unintentionally open a future sibling route (e.g. "/api/me" also
-# opens "/api/me/anything" — pick exact, specific prefixes here).
-_OPEN_API_PREFIXES = ("/api/health", "/api/me", "/api/config/firebase", "/api/waitlist")
+# Two match modes, mirrored by the OPEN_* lists in solyra's
+# src/lib/authedFetch.ts — the two MUST stay in sync, or the frontend either
+# skips attaching the token to a gated path (instant 401s) or leaks it to an
+# open one:
+#   - _OPEN_API_EXACT: the path itself is open but its SUB-PATHS are gated.
+#     /api/me is the pre-auth identity probe the login screen needs, while
+#     /api/me/preferences carries per-user data and must require a verified
+#     identity — the old prefix match opened "/api/me/anything" too.
+#   - _OPEN_API_PREFIXES: prefix-matched (`path == p or path.startswith(p)`),
+#     so each entry must be chosen narrowly enough that it doesn't
+#     unintentionally open a future sibling route.
+_OPEN_API_EXACT = ("/api/me",)
+_OPEN_API_PREFIXES = ("/api/health", "/api/config/firebase", "/api/waitlist")
 
 _firebase_ready = False
 
@@ -131,6 +139,8 @@ def _is_allowed(email: str) -> bool:
 def _path_requires_auth(path: str) -> bool:
     if not path.startswith("/api/"):
         return False  # SPA shell + /assets are always served so the login UI loads
+    if path in _OPEN_API_EXACT:
+        return False
     return not any(path == p or path.startswith(p) for p in _OPEN_API_PREFIXES)
 
 

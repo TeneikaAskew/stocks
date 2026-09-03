@@ -21,7 +21,7 @@ captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler 
 | Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |
-| Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([#868](https://github.com/TeneikaAskew/stocks/issues/868)) |
+| Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868) |
 | Secret Manager | vendor, DB, auth, Discord credentials | `--set-secrets` bindings | least privilege | — | several secrets still via `--set-env-vars` ([#830](https://github.com/TeneikaAskew/stocks/issues/830), [#850](https://github.com/TeneikaAskew/stocks/issues/850)) |
 
 ## Deploy-time drift detected mechanically
@@ -48,16 +48,16 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 
 | Environment | Service | URL | Auth | Evidence |
 |---|---|---|---|---|
-| **Production** | `trading-platform` (us-east1) | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | `platform/playwright.config.ts:8`, `index.html:169`, `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
+| **Production** | `trading-platform` (us-east1) | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
 | **Staging** | `trading-platform-staging` | `UNKNOWN` — Cloud Run assigns it; not committed anywhere | **public ingress + Firebase** (`PUBLIC=1`, `AUTH_MODE=firebase`) | `platform/deploy.sh:52-56` |
 | **Discord interactions** | `discord-interactions` | `UNKNOWN` — docs carry a redacted placeholder | Discord signature verification | `docs/*` show `https://discord-interactions-XXXXXXXXXX-ue.a.run.app/discord/interactions` |
 | **Failure notifier** | notifier service | `UNKNOWN` — redacted placeholder | internal | `https://failure-notifier-XXXXXXXXXX-ue.a.run.app` |
-| **Local dev (frontend)** | Vite | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | `platform/vite.config.ts:17`, `Makefile:75` |
-| **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; Vite proxies `/api` → `:8000` (`vite.config.ts:21,27`) |
+| **Local dev (frontend)** | Vite — in the solyra repo since the #957 split | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | solyra `vite.config.ts`; `platform/` here holds only the API |
+| **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; solyra's Vite proxies `/api` → `:8000` |
 
 **No custom domain is committed anywhere in the repository.** The landing components brand the
-product **Solyra** (`platform/src/components/landing/*`, and [#685](https://github.com/TeneikaAskew/stocks/issues/685)
-"Rename internal Heatseeker/Flowseeker tabs before Solyra public launch"), but no `solyra.*`
+product **Solyra** (solyra `src/components/landing/*` since the #957 split, and [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27)
+"Rename internal Heatseeker/Flowseeker tabs before Solyra public launch", formerly #685), but no `solyra.*`
 hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
 is **PRODUCT DECISION REQUIRED** / unknown — see [15](15-OPEN-DECISIONS.md).
 

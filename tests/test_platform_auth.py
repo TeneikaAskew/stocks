@@ -72,6 +72,10 @@ def _build(monkeypatch, mode: str, *, open_signup: str = "1", allowed: str = "")
     async def _me(request: Request):
         return {"email": a.current_user_email(request)}
 
+    @app.get("/api/me/preferences")
+    async def _me_preferences(request: Request):
+        return {"email": a.current_user_email(request)}
+
     @app.post("/api/waitlist")
     async def _waitlist():
         return {"status": "ok"}
@@ -112,6 +116,24 @@ def test_firebase_requires_valid_token(monkeypatch):
     assert c.get("/api/secret", headers={"authorization": "Bearer bad"}).status_code == 401
     r = c.get("/api/secret", headers={"authorization": "Bearer good:Trader@X.com"})
     assert r.status_code == 200 and r.json()["email"] == "trader@x.com"
+
+
+def test_firebase_open_me_is_exact_match_and_subpaths_are_gated(monkeypatch):
+    """/api/me is in _OPEN_API_EXACT: the path itself stays open (the login
+    screen's pre-auth identity probe), but its SUB-PATHS are gated — the old
+    prefix match opened "/api/me/anything", which would have let
+    /api/me/preferences (per-user data) through unauthenticated. Regression
+    guard for the hazard documented at the _OPEN_API_EXACT definition."""
+    c, _ = _build(monkeypatch, "firebase")
+    # The exact path stays open...
+    assert c.get("/api/me").status_code == 200
+    # ...its sub-path requires a verified token...
+    assert c.get("/api/me/preferences").status_code == 401
+    r = c.get("/api/me/preferences", headers={"authorization": "Bearer good:Me@X.com"})
+    assert r.status_code == 200 and r.json()["email"] == "me@x.com"
+    # ...and a sibling that merely starts with the string "/api/me" is gated
+    # too (the middleware answers before routing, so no route is needed).
+    assert c.get("/api/messages").status_code == 401
 
 
 def test_firebase_allowlist_switch(monkeypatch):
