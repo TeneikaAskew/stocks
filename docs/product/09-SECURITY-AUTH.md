@@ -261,7 +261,7 @@ should function once a revision carrying the current code is serving.
 | Item | State |
 |---|---|
 | **WIF ref clamp** | **NOT APPLIED.** Read live 2026-09-04, the provider's attribute condition is `assertion.repository=='TeneikaAskew/stocks'` with no `assertion.ref` clause. The enforced boundary is therefore repository-only: any branch a write-capable actor can push, dispatched via `workflow_dispatch`, can still obtain the deploy identity — the in-workflow main-ref guard is branch-controlled and does not close this. SETUP.md §4a carries the `update-oidc` roll-forward command; it remains an operator action |
-| `artifactregistry.reader` on the `gcr.io` repo | Not yet granted at the time of writing; `gcloud run deploy` needs `artifactregistry.repositories.downloadArtifacts` to resolve the built image, since gcr.io is Artifact Registry-backed. Add to the required table above once confirmed |
+| `artifactregistry.reader` on the `gcr.io` repo | **Granted** (verified 2026-09-04). With it, deploy run #14 completed end to end: image built, revision `trading-platform-staging-00046-x8m` went live, `/api/health` 200 |
 | Least-privilege shape | The deploy identity retains `run.admin` + `actAs` on a compute SA that holds `roles/editor`. Unchanged from the assessment above |
 
 ## Requirements
