@@ -60,16 +60,54 @@ name: Deploy staging
 #
 # Roles the WIF service account needs BEYOND the doc-refresh set (one-time,
 # granted by an operator with project IAM admin — not the CI SA):
+# Every entry below was proven necessary by a real failed run on 2026-09-04
+# (runs #1-#12 each failed one layer deeper); do not trim without re-testing.
 #   roles/cloudsql.client            schema step's connector from the runner
 #   roles/cloudbuild.builds.editor   gcloud builds submit
-#   roles/storage.objectAdmin        on gs://adept-mountain-474619-d4_cloudbuild
-#                                    (build source upload)
+#   roles/serviceusage.serviceUsageConsumer
+#                                    also required by `gcloud builds submit`;
+#                                    without it the bucket read is refused
+#                                    with a misleading "forbidden from
+#                                    accessing the bucket" message (run #6)
+#   bucket access on gs://adept-mountain-474619-d4_cloudbuild — the submit
+#                                    needs BOTH object write AND a
+#                                    storage.buckets.get metadata read.
+#                                    objectAdmin ALONE is not enough (verified:
+#                                    it has no storage.buckets.get) and fails
+#                                    identically to no grant at all, which is
+#                                    what burned runs #7-#11. Two ways to
+#                                    satisfy it:
+#                                      - least privilege (preferred):
+#                                        roles/storage.objectAdmin +
+#                                        roles/storage.legacyBucketReader
+#                                        (the latter is where buckets.get
+#                                        lives — verified via
+#                                        `gcloud iam roles describe`).
+#                                        Permission-equivalent, but NOT yet
+#                                        exercised end-to-end here.
+#                                      - roles/storage.admin — what the live
+#                                        project currently grants and what
+#                                        run #12 actually proved. Broader than
+#                                        needed: it also allows deleting the
+#                                        bucket and editing its IAM policy, so
+#                                        prefer the pair above on a fresh
+#                                        setup (Codex, PR #987).
 #   roles/run.admin                  deploy the service (staging is
 #                                    --allow-unauthenticated, which asserts
 #                                    IAM on the service) and execute the
 #                                    refresh-earnings-views job
-#   roles/iam.serviceAccountUser     on trading-platform-svc@… — deploying
-#                                    acts as the runtime SA
+#   roles/iam.serviceAccountUser     on BOTH service accounts:
+#                                    - trading-platform-svc@… — the deploy
+#                                      sets the revision's runtime identity
+#                                    - 28960574877-compute@developer… — the
+#                                      DEFAULT CLOUD BUILD runtime SA. Cloud
+#                                      Build runs the image build as this
+#                                      account, so submitting a build means
+#                                      acting as it; missing this fails with
+#                                      "caller does not have permission to
+#                                      act as service account <numeric id>"
+#                                      AFTER the source tarball uploads
+#                                      (run #12)
 #   roles/secretmanager.viewer       platform/deploy.sh's trading-db-pass
 #                                    existence check
 #
