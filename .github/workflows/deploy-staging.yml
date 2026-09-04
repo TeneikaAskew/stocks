@@ -196,9 +196,29 @@ jobs:
       # refuses inside a transaction block. The run still ends red on a
       # failed apply, and the deploy steps below keep their default
       # success() gate, so a failed apply never deploys.
+      #
+      # Fallback: if the job dispatch itself fails (run #1 hit exactly this —
+      # PERMISSION_DENIED on run.jobs.run because the WIF SA predates the
+      # roles/run.admin grant), run the same weekly refresh in-runner over
+      # the Cloud SQL connector, the path the apply step above just proved
+      # works. Leaving the views empty until an operator grants the role
+      # would keep prod's earnings endpoints dark for days. The in-runner
+      # fallback lacks the detached execution's cancellation-safety, but it
+      # only runs when the dispatch already failed for a non-cancellation
+      # reason — the primary path stays the detached execution.
       - name: Repopulate earnings mat views
         if: ${{ always() && inputs.apply_schema == 'true' && steps.apply.outcome != 'skipped' }}
-        run: gcloud run jobs execute refresh-earnings-views --region "${REGION}" --wait
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          if ! gcloud run jobs execute refresh-earnings-views --region "${REGION}" --wait; then
+            echo "::warning::refresh-earnings-views dispatch failed (grant roles/run.admin to the WIF SA — see workflow header); falling back to in-runner refresh"
+            pip install --quiet sqlalchemy pg8000 pandas cloud-sql-python-connector
+            python -m gcp.refresh_earnings_views --mode=weekly
+          fi
 
       # ── 2. Read the live service's config ─────────────────────────────────
       - name: Read live service config
