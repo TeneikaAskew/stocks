@@ -165,11 +165,53 @@ def test_put_empty_body_is_valid_and_returns_stored_row():
         # NB not "yes"/"1": pydantic's lax bool coercion accepts those.
         {"notify_daily_digest": "sometimes"},
         {"account_size": "lots"},
+        # Non-finite floats would store fine in DOUBLE PRECISION and then
+        # break JSON serialization of every later read — 422 up front.
+        {"risk_per_trade_pct": "NaN"},
+        {"account_size": "Infinity"},
     ],
 )
 def test_put_unknown_enum_value_is_422(body):
     with patch("gcp.database.get_engine") as ge:
         r = _client().put("/api/me/profile", json=body)
+    assert r.status_code == 422
+    ge.assert_not_called()
+
+
+def test_put_overflowing_json_number_is_rejected_before_the_db():
+    """A raw JSON body of 1e309 (a syntactically valid JSON number that
+    overflows to float inf) — sent as raw content because Python's own json
+    encoder refuses to produce it. pydantic-core's JSON parser rejects the
+    overflow outright as a 400 body-parse error; the string forms ("NaN",
+    "Infinity") fall through to allow_inf_nan=False as 422s. Either way the
+    write must never reach the DB, where a stored inf would 500 every
+    subsequent read."""
+    import math
+
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+
+    # Mirror main.py's validation-error handler: the default one echoes the
+    # non-finite input and crashes its own JSON rendering (500). Building the
+    # bare test app with the same handler pins the intended 422 contract.
+    app = FastAPI()
+    app.include_router(profile_router.router)
+
+    @app.exception_handler(RequestValidationError)
+    async def _handler(request, exc):
+        def _finite(v):
+            return repr(v) if isinstance(v, float) and not math.isfinite(v) else v
+
+        errors = [{**e, "input": _finite(e.get("input"))} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+    with patch("gcp.database.get_engine") as ge:
+        r = TestClient(app).put(
+            "/api/me/profile",
+            content='{"account_size": 1e309}',
+            headers={"Content-Type": "application/json"},
+        )
     assert r.status_code == 422
     ge.assert_not_called()
 

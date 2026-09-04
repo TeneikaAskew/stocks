@@ -88,8 +88,12 @@ class ProfileUpdate(BaseModel):
     timezone: Optional[str] = Field(default=None, max_length=120)
     default_ticker: Optional[str] = Field(default=None, max_length=16)
     default_timeframe: Optional[Literal["1D", "5D", "1M", "3M", "6M", "1Y"]] = None
-    account_size: Optional[float] = None
-    risk_per_trade_pct: Optional[float] = None
+    # allow_inf_nan=False: pydantic otherwise accepts 1e309 / "NaN" as
+    # inf/NaN, DOUBLE PRECISION stores them, and JSON serialization of the
+    # returned row then fails AFTER the write — a 500 with a poisoned row
+    # that breaks every subsequent GET. Reject with 422 before the DB.
+    account_size: Optional[float] = Field(default=None, allow_inf_nan=False)
+    risk_per_trade_pct: Optional[float] = Field(default=None, allow_inf_nan=False)
     notify_daily_digest: Optional[bool] = None
     notify_catalyst_alerts: Optional[bool] = None
     notify_signal_alerts: Optional[bool] = None

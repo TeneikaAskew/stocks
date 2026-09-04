@@ -14,7 +14,10 @@ import httpx
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 # Add project root to path so we can import lib/
@@ -36,6 +39,22 @@ except Exception:
     pass
 
 app = FastAPI(title="Trading Platform API", version="0.1.0")
+
+
+# FastAPI's default 422 handler echoes the offending input; a non-finite
+# float there (e.g. a raw JSON body of 1e309 rejected by allow_inf_nan=False
+# in routers/profile.py) crashes the JSON rendering of the error itself and
+# turns a clean rejection into a 500. Same shape as the default handler,
+# with non-finite floats stringified in the echo.
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    import math
+
+    def _finite(v):
+        return repr(v) if isinstance(v, float) and not math.isfinite(v) else v
+
+    errors = [{**e, "input": _finite(e.get("input"))} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 # App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
 # mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
