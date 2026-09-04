@@ -110,10 +110,30 @@ gcloud iam workload-identity-pools providers create-oidc "github-provider" \
   --display-name="GitHub OIDC" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
   --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
-  --attribute-condition="assertion.repository=='${GH_REPO}'"
+  --attribute-condition="assertion.repository=='${GH_REPO}' && assertion.ref=='refs/heads/main'"
 ```
 
-The `attribute-condition` clamp is the security boundary — only tokens issued for `TeneikaAskew/stocks` can use this provider. Don't skip it.
+The `attribute-condition` clamp is the security boundary — only tokens issued
+for `TeneikaAskew/stocks` **runs on `main`** can use this provider. Don't skip
+either half: the repository clause alone is not enough once the SA holds
+deploy powers, because `workflow_dispatch` executes the workflow file from
+whatever ref the caller selects — a write-capable actor could push a branch
+whose workflow drops its own in-file ref guard and dispatch that (Codex,
+PR #983). `assertion.ref` is only issued for branch/tag refs, so this
+condition also inherently blocks `pull_request`-triggered tokens. Every
+workflow using this provider must run from `main` (both current ones do:
+`refresh-architecture-docs.yml` on schedule/dispatch, `deploy-staging.yml`
+dispatch-only with a fail-loud main guard as its UX rail).
+
+If the provider already exists (it does in this project), roll the condition
+forward instead of recreating:
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc "github-provider" \
+  --project="${PROJECT}" --location="global" \
+  --workload-identity-pool="github-pool" \
+  --attribute-condition="assertion.repository=='${GH_REPO}' && assertion.ref=='refs/heads/main'"
+```
 
 ### 4b. Bind the SA to the provider
 

@@ -226,3 +226,147 @@ def test_round_trips_real_schema_subset():
     assert "CREATE INDEX" in out[1]
     assert "CREATE OR REPLACE FUNCTION" in out[2]
     assert "RETURN NEW;" in out[2], "trigger body kept whole"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ATOMIC groups — statements between -- ATOMIC-BEGIN / -- ATOMIC-END run
+# in one transaction (PR #983: an apply interrupted between a committed
+# DROP MATERIALIZED VIEW and its CREATE leaves the view absent, a state
+# the refresh job cannot repair)
+# ──────────────────────────────────────────────────────────────────────
+
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+from gcp.apply_schema import (  # noqa: E402
+    ATOMIC_BEGIN,
+    ATOMIC_END,
+    run_unit,
+    split_statement_groups,
+)
+
+
+def test_statements_between_markers_form_one_group():
+    sql = """
+    CREATE TABLE a (id INT);
+    -- ATOMIC-BEGIN mat views
+    DROP MATERIALIZED VIEW IF EXISTS v CASCADE;
+    CREATE MATERIALIZED VIEW v AS SELECT 1 WITH NO DATA;
+    CREATE UNIQUE INDEX idx_v ON v (x);
+    -- ATOMIC-END mat views
+    CREATE TABLE b (id INT);
+    """
+    groups = split_statement_groups(sql)
+    assert [len(g) for g in groups] == [1, 3, 1]
+    assert "DROP MATERIALIZED VIEW" in groups[1][0]
+    assert "CREATE MATERIALIZED VIEW" in groups[1][1]
+    assert "CREATE UNIQUE INDEX" in groups[1][2]
+
+
+def test_split_statements_flattens_groups():
+    sql = """
+    -- ATOMIC-BEGIN
+    DROP MATERIALIZED VIEW IF EXISTS v;
+    CREATE MATERIALIZED VIEW v AS SELECT 1 WITH NO DATA;
+    -- ATOMIC-END
+    """
+    assert len(split_statements(sql)) == 2
+
+
+def test_prose_mentioning_markers_is_not_a_marker():
+    """A comment like '-- ATOMIC-BEGIN/END markers are honored ...' is
+    documentation, not a marker — token-boundary match only."""
+    sql = """
+    -- ATOMIC-BEGIN/END markers are honored by the applier
+    CREATE TABLE a (id INT);
+    """
+    groups = split_statement_groups(sql)
+    assert [len(g) for g in groups] == [1]
+
+
+def test_nested_begin_raises():
+    sql = "-- ATOMIC-BEGIN\n-- ATOMIC-BEGIN\nSELECT 1;\n-- ATOMIC-END\n"
+    with pytest.raises(ValueError, match="nested"):
+        split_statement_groups(sql)
+
+
+def test_end_without_begin_raises():
+    with pytest.raises(ValueError, match="without"):
+        split_statement_groups("-- ATOMIC-END\nSELECT 1;\n")
+
+
+def test_unterminated_group_raises():
+    with pytest.raises(ValueError, match="unterminated"):
+        split_statement_groups("-- ATOMIC-BEGIN\nSELECT 1;\n")
+
+
+def test_empty_group_raises():
+    with pytest.raises(ValueError, match="empty"):
+        split_statement_groups("-- ATOMIC-BEGIN\n-- ATOMIC-END\n")
+
+
+def test_marker_inside_statement_raises():
+    sql = "CREATE TABLE a (\n-- ATOMIC-BEGIN\nid INT);\n"
+    with pytest.raises(ValueError, match="middle of a statement"):
+        split_statement_groups(sql)
+
+
+def test_real_schema_groups_the_earnings_mat_view_section():
+    """Pin the REAL gcp/schema.sql: the earnings mat-view drop→recreate
+    section must parse as one multi-statement ATOMIC group holding both
+    DROPs and both CREATEs (the eeo DROP is CASCADE, so per-view groups
+    would reintroduce the drop→create gap), and the whole file must parse
+    without marker errors."""
+    from pathlib import Path
+
+    schema = (Path(__file__).resolve().parent.parent / "gcp" / "schema.sql").read_text()
+    groups = split_statement_groups(schema)
+    atomic = [g for g in groups if len(g) > 1]
+    assert len(atomic) == 1, "exactly one ATOMIC group expected"
+    joined = "\n".join(atomic[0])
+    for needle in (
+        "DROP MATERIALIZED VIEW IF EXISTS earnings_event_outcomes",
+        "CREATE MATERIALIZED VIEW earnings_event_outcomes",
+        "DROP MATERIALIZED VIEW IF EXISTS earnings_ticker_lean",
+        "CREATE MATERIALIZED VIEW earnings_ticker_lean",
+    ):
+        assert needle in joined, needle
+    # No CONCURRENTLY inside the transaction-bound group.
+    assert "CONCURRENTLY" not in joined
+
+
+def test_run_unit_singleton_uses_execute_sql():
+    with patch("gcp.apply_schema.execute_sql") as ex:
+        run_unit(["CREATE TABLE a (id INT);"])
+    ex.assert_called_once()
+
+
+def test_run_unit_group_is_one_transaction():
+    """A multi-statement unit must execute every statement on ONE
+    engine.begin() connection — that single transaction is the whole
+    point of the markers."""
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+    stmts = ["DROP MATERIALIZED VIEW v;", "CREATE MATERIALIZED VIEW v AS SELECT 1;"]
+    with patch("gcp.database.get_engine", return_value=engine), \
+         patch("gcp.apply_schema.execute_sql") as ex:
+        run_unit(stmts)
+    ex.assert_not_called()
+    assert engine.begin.call_count == 1
+    assert conn.execute.call_count == 2
+
+
+def test_run_unit_group_failure_propagates():
+    """A failing statement inside a group must raise out of run_unit (the
+    engine.begin context manager rolls the transaction back) — never a
+    silent partial commit."""
+    engine = MagicMock()
+    conn = MagicMock()
+    engine.begin.return_value.__enter__.return_value = conn
+    engine.begin.return_value.__exit__.return_value = False
+    conn.execute.side_effect = [None, RuntimeError("boom")]
+    with patch("gcp.database.get_engine", return_value=engine):
+        with pytest.raises(RuntimeError, match="boom"):
+            run_unit(["SELECT 1;", "SELECT 2;", "SELECT 3;"])
+    assert conn.execute.call_count == 2
