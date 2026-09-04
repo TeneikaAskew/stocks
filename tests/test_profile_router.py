@@ -201,19 +201,32 @@ def test_put_overflowing_json_number_is_rejected_before_the_db():
     @app.exception_handler(RequestValidationError)
     async def _handler(request, exc):
         def _finite(v):
-            return repr(v) if isinstance(v, float) and not math.isfinite(v) else v
+            if isinstance(v, float) and not math.isfinite(v):
+                return repr(v)
+            if isinstance(v, dict):
+                return {k: _finite(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_finite(x) for x in v]
+            return v
 
-        errors = [{**e, "input": _finite(e.get("input"))} for e in exc.errors()]
+        errors = [_finite(e) for e in exc.errors()]
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
-    with patch("gcp.database.get_engine") as ge:
-        r = TestClient(app).put(
-            "/api/me/profile",
-            content='{"account_size": 1e309}',
-            headers={"Content-Type": "application/json"},
-        )
-    assert r.status_code == 422
-    ge.assert_not_called()
+    # Scalar overflow, and inf nested inside wrong-type containers — the
+    # error then echoes the whole container, so sanitizing must recurse.
+    for raw in (
+        '{"account_size": 1e309}',
+        '{"account_size": [1e309]}',
+        '{"account_size": {"x": 1e309}}',
+    ):
+        with patch("gcp.database.get_engine") as ge:
+            r = TestClient(app).put(
+                "/api/me/profile",
+                content=raw,
+                headers={"Content-Type": "application/json"},
+            )
+        assert r.status_code == 422, raw
+        ge.assert_not_called()
 
 
 def test_put_unknown_field_is_422_not_silently_dropped():

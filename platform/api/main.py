@@ -51,9 +51,18 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
     import math
 
     def _finite(v):
-        return repr(v) if isinstance(v, float) and not math.isfinite(v) else v
+        if isinstance(v, float) and not math.isfinite(v):
+            return repr(v)
+        if isinstance(v, dict):
+            return {k: _finite(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_finite(x) for x in v]
+        return v
 
-    errors = [{**e, "input": _finite(e.get("input"))} for e in exc.errors()]
+    # Sanitize the WHOLE error entry, not just a top-level input float: a
+    # wrong-type container holding inf (e.g. {"account_size": [1e309]}) is
+    # echoed as that container, and ctx values can carry inputs too.
+    errors = [_finite(e) for e in exc.errors()]
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 # App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
