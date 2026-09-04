@@ -108,6 +108,14 @@ name: Deploy staging
 #                                      act as service account <numeric id>"
 #                                      AFTER the source tarball uploads
 #                                      (run #12)
+#   roles/artifactregistry.reader    on the gcr.io repo (location us) —
+#                                    `gcloud run deploy` resolves the freshly
+#                                    built image via
+#                                    artifactregistry.repositories.downloadArtifacts.
+#                                    gcr.io is Artifact Registry-backed, so
+#                                    Cloud Build WRITE access does not imply
+#                                    deploy-time READ; this fails only after a
+#                                    successful image build (run #13)
 #   roles/secretmanager.viewer       platform/deploy.sh's trading-db-pass
 #                                    existence check
 #

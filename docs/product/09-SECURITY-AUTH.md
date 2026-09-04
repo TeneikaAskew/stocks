@@ -201,6 +201,7 @@ the workflow's requirement, it says so and carries the date it was checked.
 | object write + `storage.buckets.get` | the Cloud Build bucket | `objectAdmin` ALONE silently fails (verified with `gcloud iam roles describe`: it has no `storage.buckets.get`). Least privilege is `objectAdmin` + `legacyBucketReader`; the live project instead grants the broader `storage.admin` (checked 2026-09-04), which is the variant actually exercised end-to-end |
 | `run.admin` | project | deploy the service (staging is `--allow-unauthenticated`, which asserts IAM) and execute the refresh job |
 | `iam.serviceAccountUser` | **two** SAs | `trading-platform-svc@…` (the deploy sets the revision's runtime identity) AND `28960574877-compute@developer…`, the default Cloud Build SA — Cloud Build executes the image build as that account, so submitting a build means acting as it |
+| `artifactregistry.reader` | the `gcr.io` repo (location `us`) | `gcloud run deploy` resolves the freshly built image and needs `artifactregistry.repositories.downloadArtifacts`; `gcr.io` is Artifact Registry-backed, so Cloud Build write access does not imply deploy-time read. Fails AFTER a successful image build (run #13) |
 | `secretmanager.viewer` | project | `platform/deploy.sh`'s `trading-db-pass` existence check |
 | `cloudsql.client` | project | the optional schema step's connector from the runner |
 
@@ -223,13 +224,38 @@ build alone. The trust model:
 | No new secret material for deploys | Firebase web config + access policy are read off the LIVE service and re-supplied; `DB_PASS` stays in Secret Manager (`describe` exposes only the ref). DB creds for the CI schema path are the pre-existing GitHub Actions secrets | `deploy-staging.yml` "Read live service config" step |
 | Schema changes from CI | `apply_schema=true` is opt-in; destructive mat-view DDL runs as one transaction (`ATOMIC` markers) with an always-on repopulation step, so an interrupted apply cannot leave shared views absent | `gcp/apply_schema.py`, `gcp/schema.sql` earnings section |
 
-Residual: the runtime SA (`trading-platform-svc`) still needs one-time
-operator grants for the admin surface — `roles/firebaseauth.admin` (the
-Users tab manages Firebase accounts via the Admin SDK; ADC alone does not
-authorize the Identity Toolkit user-management APIs) and `roles/run.invoker`
-on each allowlisted fetcher job (the Refresh buttons). `SETUP_IAM=1
-./platform/deploy.sh` performs both (`platform/deploy.sh:25-64`); until it
-runs, those admin features 503 by design rather than degrade.
+### As-built IAM state — verified live 2026-09-04
+
+The rows above are what the workflow REQUIRES. This is what the project
+actually GRANTS, read from live IAM on 2026-09-04. Re-verify before relying
+on it; a grant can be revoked without any repo change.
+
+**Deploy identity `arch-refresh-bot@…`** — project-level:
+`cloudbuild.builds.editor`, `serviceusage.serviceUsageConsumer`,
+`cloudsql.client`, `run.admin`, `secretmanager.viewer`, plus its original
+read-only doc-refresh set (`cloudasset.viewer`, `iam.securityReviewer`,
+`bigquery.dataViewer`, `bigquery.jobUser`, `aiplatform.user`). Resource-level:
+`storage.admin` **and** `storage.objectAdmin` on the Cloud Build bucket (the
+objectAdmin binding predates the fix and is now redundant — safe to remove),
+and `iam.serviceAccountUser` on both `trading-platform-svc@…` and
+`28960574877-compute@developer…`.
+
+**Runtime SA `trading-platform-svc@…`** — the `SETUP_IAM=1` grants have been
+applied: `roles/firebaseauth.admin` at project level (the Admin → Users tab
+manages Firebase accounts via the Admin SDK; ADC alone does not authorize the
+Identity Toolkit user-management APIs) and `roles/run.invoker` on the
+allowlisted fetcher jobs (spot-checked `fetch-market-data` and `strat-engine`;
+the Admin → Data refresh buttons). It also holds `cloudsql.client` and
+`aiplatform.user`. Those admin features were 503-by-design before this and
+should function once a revision carrying the current code is serving.
+
+### Still open — do not read the above as "fully hardened"
+
+| Item | State |
+|---|---|
+| **WIF ref clamp** | **NOT APPLIED.** Read live 2026-09-04, the provider's attribute condition is `assertion.repository=='TeneikaAskew/stocks'` with no `assertion.ref` clause. The enforced boundary is therefore repository-only: any branch a write-capable actor can push, dispatched via `workflow_dispatch`, can still obtain the deploy identity — the in-workflow main-ref guard is branch-controlled and does not close this. SETUP.md §4a carries the `update-oidc` roll-forward command; it remains an operator action |
+| `artifactregistry.reader` on the `gcr.io` repo | Not yet granted at the time of writing; `gcloud run deploy` needs `artifactregistry.repositories.downloadArtifacts` to resolve the built image, since gcr.io is Artifact Registry-backed. Add to the required table above once confirmed |
+| Least-privilege shape | The deploy identity retains `run.admin` + `actAs` on a compute SA that holds `roles/editor`. Unchanged from the assessment above |
 
 ## Requirements
 
