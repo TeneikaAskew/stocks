@@ -1,0 +1,214 @@
+name: Deploy staging
+
+# One-click redeploy of trading-platform-staging (the PUBLIC, Firebase-gated
+# staging service solyra talks to) from the current main, with the DB schema
+# rolled forward first.
+#
+# Why this exists: staging drifted. The service was serving a revision old
+# enough that endpoints long since merged to main (GET /api/admin/users,
+# GET /api/admin/data-sources, /api/me/profile) 404'd in the app, and there
+# was no way to redeploy without an operator holding local gcloud auth. This
+# workflow reuses the Workload Identity Federation auth that
+# refresh-architecture-docs.yml already proves out, so a redeploy is a
+# workflow_dispatch away.
+#
+# Manual-only by design: a deploy costs a Cloud Build run and swaps the
+# revision the frontend is talking to, so a human decides when. If push-to-
+# main auto-deploys are ever wanted, add a `push` trigger filtered on
+# platform/** and gcp/schema.sql — but that is a policy change, not a bugfix.
+#
+# Ordering: schema BEFORE deploy. gcp/schema.sql is fully idempotent
+# (IF NOT EXISTS everywhere), and applying it first means the new revision
+# never serves against a missing table (e.g. user_profile, which
+# /api/me/profile 503s without).
+#
+# Config sources — deliberately NO new GitHub secrets:
+#   * DB_USER / DB_PASS / DB_NAME / CLOUD_SQL_CONNECTION_NAME — the same
+#     GitHub secrets refresh-architecture-docs.yml already uses. The schema
+#     step connects from the runner via the Cloud SQL Python Connector, the
+#     exact path scripts.refresh_calibration_table already takes in CI.
+#   * Firebase web config + access policy (FIREBASE_API_KEY / AUTH_DOMAIN /
+#     APP_ID / PROJECT_ID, AUTH_OPEN_SIGNUP, AUTH_ALLOWED_EMAILS,
+#     ADMIN_EMAIL) — read off the LIVE service before deploying, because
+#     platform/deploy.sh composes --set-env-vars from scratch (it REPLACES
+#     the whole env set): anything not re-supplied would be silently dropped
+#     from the service. The running service stays the single source of
+#     truth, and nothing new is stored in GitHub. DB_PASS never transits
+#     this path — it is mounted via --set-secrets and `describe` exposes
+#     only the secret reference.
+#
+# Required GitHub secrets (all pre-existing, see SETUP.md):
+#   GCP_WIF_PROVIDER, GCP_WIF_SA_EMAIL, DB_USER, DB_PASS, DB_NAME,
+#   CLOUD_SQL_CONNECTION_NAME, PR_WORKFLOW_TOKEN (failure handler)
+#
+# Roles the WIF service account needs BEYOND the doc-refresh set (one-time,
+# granted by an operator with project IAM admin — not the CI SA):
+#   roles/cloudsql.client            schema step's connector from the runner
+#   roles/cloudbuild.builds.editor   gcloud builds submit
+#   roles/storage.objectAdmin        on gs://adept-mountain-474619-d4_cloudbuild
+#                                    (build source upload)
+#   roles/run.admin                  deploy the service; staging is
+#                                    --allow-unauthenticated, which asserts
+#                                    IAM on the service
+#   roles/iam.serviceAccountUser     on trading-platform-svc@… — deploying
+#                                    acts as the runtime SA
+#   roles/secretmanager.viewer       platform/deploy.sh's trading-db-pass
+#                                    existence check
+#
+# NOT covered here (still an operator task, needs project IAM admin):
+#   SETUP_IAM=1 ./platform/deploy.sh — grants roles/firebaseauth.admin to
+#   the runtime SA (Admin → Users tab) and run.invoker on the fetcher jobs
+#   (Admin → Data refresh). See the header of platform/deploy.sh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_schema:
+        description: 'Skip the schema roll-forward (deploy only).'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+# Never let two deploys interleave; never cancel one mid-flight.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: adept-mountain-474619-d4
+  REGION: us-east1
+  SERVICE: trading-platform-staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write   # WIF token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+
+      # ── 1. Schema roll-forward ────────────────────────────────────────────
+      # Same connector path as the refresh_calibration_table step in
+      # refresh-architecture-docs.yml, but NOT best-effort: deploying on top
+      # of a failed schema apply would serve new code against missing
+      # tables, so a schema failure fails the whole run (Rule 3.7 — no
+      # fabricated success). python -m gcp.apply_schema exits non-zero when
+      # any statement fails and logs each statement it ran.
+      - name: Set up Python
+        if: inputs.skip_schema != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Roll schema forward (gcp/schema.sql)
+        if: inputs.skip_schema != 'true'
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          pip install --quiet sqlalchemy pg8000 pandas cloud-sql-python-connector
+          python -m gcp.apply_schema
+
+      # ── 2. Read the live service's config ─────────────────────────────────
+      - name: Read live service config
+        run: |
+          set -euo pipefail
+          CFG=$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format json)
+          get() {
+            echo "${CFG}" | jq -r --arg n "$1" \
+              '.spec.template.spec.containers[0].env[]? | select(.name == $n) | .value // empty'
+          }
+          MISSING=""
+          for N in FIREBASE_API_KEY FIREBASE_AUTH_DOMAIN FIREBASE_APP_ID; do
+            [ -n "$(get "$N")" ] || MISSING="${MISSING} ${N}"
+          done
+          if [ -n "${MISSING}" ]; then
+            echo "::error::live ${SERVICE} is missing${MISSING} — a firebase-mode service cannot be redeployed without its web config. Deploy once manually with the FIREBASE_* env set (see platform/deploy.sh)."
+            exit 1
+          fi
+          # Heredoc form so values containing commas (AUTH_ALLOWED_EMAILS)
+          # survive the trip through GITHUB_ENV. Absent optional keys stay
+          # unset and platform/deploy.sh applies its own defaults.
+          for N in FIREBASE_PROJECT_ID FIREBASE_API_KEY FIREBASE_AUTH_DOMAIN FIREBASE_APP_ID \
+                   AUTH_OPEN_SIGNUP AUTH_ALLOWED_EMAILS ADMIN_EMAIL DB_USER DB_NAME; do
+            V=$(get "$N")
+            if [ -n "${V}" ]; then
+              printf '%s<<GCFG_EOF\n%s\nGCFG_EOF\n' "$N" "$V" >> "$GITHUB_ENV"
+            fi
+          done
+          echo "live config read: firebase web config + access policy captured"
+
+      # ── 3. Build + deploy ─────────────────────────────────────────────────
+      # platform/deploy.sh does both: Cloud Build (platform/cloudbuild.yaml,
+      # repo-root context) then gcloud run deploy of the staging service.
+      # DB_USER/DB_NAME normally come from the live service (step above);
+      # the GitHub secrets are the safety net in case the live service ever
+      # stops carrying them in plain env.
+      - name: Build and deploy trading-platform-staging
+        env:
+          DB_USER: ${{ env.DB_USER || secrets.DB_USER }}
+          DB_NAME: ${{ env.DB_NAME || secrets.DB_NAME }}
+        run: STAGING_SERVICE=1 ./platform/deploy.sh
+
+      # ── 4. Smoke check ────────────────────────────────────────────────────
+      # gcloud run deploy already fails the run if the revision never goes
+      # ready; this adds an end-to-end probe through the public URL. Only
+      # /api/health is open (api/auth._OPEN_API_PREFIXES) — gated routes
+      # 401 without a Firebase token whether or not they exist, so health is
+      # the strongest unauthenticated signal available.
+      - name: Smoke-check the deployed revision
+        run: |
+          set -euo pipefail
+          URL=$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format 'value(status.url)')
+          REV=$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format 'value(status.latestReadyRevisionName)')
+          CODE=$(curl -sS -o /tmp/health.json -w '%{http_code}' "${URL}/api/health")
+          cat /tmp/health.json; echo
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::${URL}/api/health returned ${CODE} on revision ${REV}"
+            exit 1
+          fi
+          echo "::notice::deployed ${REV} — ${URL}/api/health is 200"
+
+  # Standard failure handler (CLAUDE.md "Automated Workflow Failure
+  # Handling"). create_pr=false: a failed deploy is an IAM/infra condition
+  # to act on, not a code change a draft PR could hold.
+  handle-failure:
+    needs: deploy
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Deploy staging"
+      failure_title: "❌ Staging deploy failed"
+      issue_labels: "workflow-failure,deploy-staging,automated"
+      workflow_file: "deploy-staging.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
