@@ -5,8 +5,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Google Apps Script
-google-apps-script/node_modules/
-google-apps-script/.clasp.json
+archive/google-apps-script/node_modules/
 
 # Environment variables
 .env
@@ -147,3 +146,25 @@ gcp_schedulers.json
 billing_90d.json
 .venv
 .superpowers/
+
+# Archived projects keep their committed sample/reference data. The `data/`
+# rule above targets the GCS-backed parquet/CSV datasets, not these fixtures —
+# without this, archiving a project would silently drop them from the repo
+# while leaving them on disk, so the move would read as a deletion.
+!archive/**/data/
+!archive/**/data/**
+# ...but not files the live projects never tracked: archiving should preserve
+# what was in the repo, not start committing things that were excluded.
+archive/**/*.csv
+archive/**/.clasp.json
+# ...and never secrets: git takes the LAST matching rule, so the broad
+# negation above would otherwise override the repo-wide sensitive-file
+# excludes for anything under archive/**/data/ — a credentials file dropped
+# beside the fixtures would become stageable by a routine `git add .`.
+# Re-apply the patterns from the top of this file for the archived subtree.
+archive/**/.env
+archive/**/.env.*
+archive/**/credentials/
+archive/**/*.key
+archive/**/*-credentials.json
+archive/**/.gcp-key.json

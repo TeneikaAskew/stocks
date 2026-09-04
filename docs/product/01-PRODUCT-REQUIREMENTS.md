@@ -38,7 +38,7 @@ Rule 3.6 exists to prevent. Both REQ-REL-001 and REQ-REPLAY-001 must hold.
 
 - **REQ-UX-001:** Every served screen SHALL expose loading, empty, stale, permission and
   dependency-error states, and SHALL NOT convert unknown data into a neutral trading conclusion.
-  *Current gaps enumerated per screen in [03](03-UI-SCREENS.md).*
+  *Current gaps enumerated per screen in [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md).*
 - **REQ-MARKET-001:** Market context SHALL identify symbol, venue/session, as-of time, source
   and freshness.
 - **REQ-SIGNAL-001:** A signal SHALL persist strategy version, inputs, configuration, levels,

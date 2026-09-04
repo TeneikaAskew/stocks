@@ -305,7 +305,7 @@ Automated pipeline for analyzing earnings options trading data with comprehensiv
 ### Triggers
 
 **Automatic:**
-- **Push to main**: When changes occur in `earnings_options_analytics/` or `google-apps-script/data/`
+- **Push to main**: When changes occur in `archive/earnings_options_analytics/` or `archive/google-apps-script/data/`
 - **Pull Requests**: When PRs modify analytics code (runs tests only)
 - **Daily Schedule**: Every day at 2:00 AM UTC (full analysis)
 
@@ -385,7 +385,7 @@ All artifacts have 30-day retention:
 
 ### Data Requirements
 
-- CSV files must exist in `google-apps-script/data/`
+- CSV files must exist in `archive/google-apps-script/data/`
 - Supported strategies: Long Calls, Bull Spreads, Covered Calls, Long Puts, Bear Spreads, Short Calls, Strangles, Straddles, Short Puts
 - Columns must include: Strike_Hit, OHLC_Volume, technical indicators
 
@@ -481,10 +481,10 @@ retention-days: 30  # Change to 7, 14, 60, or 90
 
 ### Documentation
 
-- Main Script: `earnings_options_analytics/earnings_options_analytics.py`
-- Project Summary: `earnings_options_analytics/PROJECT_SUMMARY.md`
-- Implementation Status: `earnings_options_analytics/IMPLEMENTATION_STATUS.md`
-- User Guide: `earnings_options_analytics/README.md`
+- Main Script: `archive/earnings_options_analytics/earnings_options_analytics.py`
+- Project Summary: `archive/earnings_options_analytics/PROJECT_SUMMARY.md`
+- Implementation Status: `archive/earnings_options_analytics/IMPLEMENTATION_STATUS.md`
+- User Guide: `archive/earnings_options_analytics/README.md`
 
 ---
 

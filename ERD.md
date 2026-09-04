@@ -1,6 +1,6 @@
 # ENTITY-RELATIONSHIP DIAGRAM (ERD)
 
-> **Companion to** [`ARCHITECTURE.md`](ARCHITECTURE.md) (system overview), [`FRONTEND.md`](FRONTEND.md) (React app), and [`docs/GCP_ARCHITECTURE.md`](docs/GCP_ARCHITECTURE.md) §5 (schema catalog).
+> **Companion to** [`ARCHITECTURE.md`](ARCHITECTURE.md) (system overview), [`FRONTEND.md`](https://github.com/TeneikaAskew/solyra/blob/main/FRONTEND.md) (React app — now in the solyra repo), and [`docs/GCP_ARCHITECTURE.md`](docs/GCP_ARCHITECTURE.md) §5 (schema catalog).
 > **Source of truth:** [`gcp/schema.sql`](gcp/schema.sql) (2,575 lines, 44 `CREATE TABLE` statements).
 > **Companion diagram:** [`ERD.drawio`](ERD.drawio).
 > **Last refreshed:** 2026-05-22 (covers the May 8–22 wave: backtest pipeline migration, `exit_config_overrides`, `earnings_calibration`, `premarket_analysis_history`, `insight_reports_history`).

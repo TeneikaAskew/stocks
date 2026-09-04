@@ -48,7 +48,7 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 
 | Layer | Owns | Rule |
 |---|---|---|
-| `platform/src/routes` | screen composition (15 routes) | one file per route, lazy-loaded; see [03](03-UI-SCREENS.md) |
+| `platform/src/routes` | screen composition (15 routes) | one file per route, lazy-loaded; see [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md) |
 | `platform/src/components`, `stores`, `hooks` | interaction and client state | `settingsStore`/`themeStore` persist to `localStorage`, **not** the API |
 | `platform/api/routers` | the HTTP contract (92 platform endpoints) | auth is middleware, not per-router; see [09](09-SECURITY-AUTH.md) |
 | `lib/` | **all** reusable financial math | the React app never duplicates it (`docs/HARDCODED_VALUES_REMEDIATION.md`); 33 of 92 platform endpoints hold inline SQL, the rest go through `lib/` |
