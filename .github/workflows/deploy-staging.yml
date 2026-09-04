@@ -69,12 +69,29 @@ name: Deploy staging
 #                                    without it the bucket read is refused
 #                                    with a misleading "forbidden from
 #                                    accessing the bucket" message (run #6)
-#   roles/storage.admin              on gs://adept-mountain-474619-d4_cloudbuild
-#                                    (build source upload). NOT objectAdmin:
-#                                    the submit does a storage.buckets.get,
-#                                    which objectAdmin does not carry, so an
-#                                    objectAdmin-only grant fails identically
-#                                    to no grant at all (runs #7-#11)
+#   bucket access on gs://adept-mountain-474619-d4_cloudbuild — the submit
+#                                    needs BOTH object write AND a
+#                                    storage.buckets.get metadata read.
+#                                    objectAdmin ALONE is not enough (verified:
+#                                    it has no storage.buckets.get) and fails
+#                                    identically to no grant at all, which is
+#                                    what burned runs #7-#11. Two ways to
+#                                    satisfy it:
+#                                      - least privilege (preferred):
+#                                        roles/storage.objectAdmin +
+#                                        roles/storage.legacyBucketReader
+#                                        (the latter is where buckets.get
+#                                        lives — verified via
+#                                        `gcloud iam roles describe`).
+#                                        Permission-equivalent, but NOT yet
+#                                        exercised end-to-end here.
+#                                      - roles/storage.admin — what the live
+#                                        project currently grants and what
+#                                        run #12 actually proved. Broader than
+#                                        needed: it also allows deleting the
+#                                        bucket and editing its IAM policy, so
+#                                        prefer the pair above on a fresh
+#                                        setup (Codex, PR #987).
 #   roles/run.admin                  deploy the service (staging is
 #                                    --allow-unauthenticated, which asserts
 #                                    IAM on the service) and execute the

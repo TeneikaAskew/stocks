@@ -195,9 +195,13 @@ distinguish from grants verified live in the project, which this doc does
 not assert — though every role below was proven necessary by an observed
 failed run on 2026-09-04): `run.admin`, `cloudbuild.builds.editor`,
 `serviceusage.serviceUsageConsumer` (also required by `gcloud builds
-submit`), `secretmanager.viewer`, **`storage.admin`** on the Cloud Build
-bucket (NOT `objectAdmin` — the submit performs a `storage.buckets.get` that
-`objectAdmin` lacks), `cloudsql.client` (the optional schema step connects
+submit`), `secretmanager.viewer`, **bucket access on the Cloud Build bucket**
+— the submit needs object write *and* a `storage.buckets.get`, so
+`objectAdmin` alone silently fails; least privilege is `objectAdmin` +
+`legacyBucketReader` (verified with `gcloud iam roles describe`:
+`legacyBucketReader` carries `storage.buckets.get`, `objectAdmin` does not),
+while the live project currently grants the broader `storage.admin`, which is
+what was actually exercised — `cloudsql.client` (the optional schema step connects
 from the runner via the Cloud SQL connector), and `iam.serviceAccountUser` on
 **two** service accounts: the runtime SA `trading-platform-svc@…` (the deploy
 sets the revision's identity) and the DEFAULT CLOUD BUILD SA
@@ -205,10 +209,15 @@ sets the revision's identity) and the DEFAULT CLOUD BUILD SA
 image build as this account, so submitting a build means acting as it).
 
 That inventory is a least-privilege hazard worth naming: `run.admin` plus
-`actAs` on the compute SA is a broad grant for a staging deployer, and the
-compute default SA itself holds `roles/editor` by GCP default. A tighter
-shape would be a dedicated build service account (`gcloud builds submit
---service-account`) scoped to this build alone. The trust model:
+`actAs` on the compute SA is a broad grant for a staging deployer, and in
+**this project** `28960574877-compute@developer` is bound to `roles/editor`
+— verified 2026-09-04 against the live project IAM policy, not assumed from
+the GCP default (that automatic grant is conditional on the
+`iam.automaticIamGrantsForDefaultServiceAccounts` org policy, so it must be
+checked per project rather than asserted). Chained, that means the staging
+deploy identity can act as an Editor on the project. A tighter shape would be
+a dedicated build service account (`gcloud builds submit --service-account`)
+scoped to this build alone. The trust model:
 
 | Control | Mechanism | Evidence |
 |---|---|---|
