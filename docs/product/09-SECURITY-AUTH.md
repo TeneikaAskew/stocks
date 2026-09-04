@@ -233,8 +233,11 @@ on it; a grant can be revoked without any repo change.
 **Deploy identity `arch-refresh-bot@…`** — project-level:
 `cloudbuild.builds.editor`, `serviceusage.serviceUsageConsumer`,
 `cloudsql.client`, `run.admin`, `secretmanager.viewer`, plus its original
-read-only doc-refresh set (`cloudasset.viewer`, `iam.securityReviewer`,
-`bigquery.dataViewer`, `bigquery.jobUser`, `aiplatform.user`). Resource-level:
+doc-refresh set (`cloudasset.viewer`, `iam.securityReviewer`,
+`bigquery.dataViewer`, `bigquery.jobUser`, `aiplatform.user`) — that set is
+NOT purely read-only, despite the workflow header's framing: `bigquery.jobUser`
+runs billable query jobs and `aiplatform.user` invokes Vertex AI Gemini, so it
+already carried the ability to incur spend before any deploy role was added. Resource-level:
 `storage.admin` **and** `storage.objectAdmin` on the Cloud Build bucket (the
 objectAdmin binding predates the fix and is now redundant — safe to remove),
 and `iam.serviceAccountUser` on both `trading-platform-svc@…` and
@@ -244,8 +247,12 @@ and `iam.serviceAccountUser` on both `trading-platform-svc@…` and
 applied: `roles/firebaseauth.admin` at project level (the Admin → Users tab
 manages Firebase accounts via the Admin SDK; ADC alone does not authorize the
 Identity Toolkit user-management APIs) and `roles/run.invoker` on the
-allowlisted fetcher jobs (spot-checked `fetch-market-data` and `strat-engine`;
-the Admin → Data refresh buttons). It also holds `cloudsql.client` and
+allowlisted fetcher jobs — **all seven** enumerated in `platform/deploy.sh`
+were checked individually (`fetch-market-data`, `fetch-av-options-backfill`,
+`fetch-fred-rates`, `fetch-economic-events`, `fetch-earnings-calendar`,
+`strat-engine`, `historical-signals-watchlist`), not sampled: that script
+tolerates a partially applied state (it warns per job and exits `IAM setup
+INCOMPLETE`), so a sample would not license the claim (Codex, PR #989). It also holds `cloudsql.client` and
 `aiplatform.user`. Those admin features were 503-by-design before this and
 should function once a revision carrying the current code is serving.
 
