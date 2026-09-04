@@ -36,7 +36,14 @@ name: GitHub REST bridge
 #   gh workflow run gh-api.yml -f endpoint='repos/{owner}/{repo}/branches/main/protection'
 #
 # Safety: mirrors db_query_cr.sh's --commit. GET is the default and needs no
-# opt-in; any mutating method is refused unless confirm_write=true.
+# opt-in; any mutating method is refused unless confirm_write=true. The
+# PR_WORKFLOW_TOKEN fallback is additionally restricted to GET requests
+# on endpoints under repos/<this repo>/ (see the in-script comment): the
+# bridge cannot read other repositories the PAT reaches, and never uses
+# the PAT to mutate anything — mutations only run with the built-in
+# token's explicitly granted permissions (the `permissions:` block
+# below), so enabling a write surface takes a reviewed PR, not a
+# dispatch flag.
 
 on:
   workflow_dispatch:
@@ -70,6 +77,10 @@ jobs:
   call:
     name: Call GitHub API
     runs-on: ubuntu-latest
+    # One API round-trip; if it hasn't answered in 5 minutes it never will.
+    # Without this a stalled connection occupies the runner until the
+    # platform's 6-hour kill.
+    timeout-minutes: 5
     steps:
       # db_query_cr.sh refuses to persist a write without --commit. Same
       # guarantee here: a typo'd DELETE cannot fire on the default path.
@@ -97,6 +108,21 @@ jobs:
           EP="${ENDPOINT#/}"
           EP="${EP//\{owner\}/${GITHUB_REPOSITORY%%/*}}"
           EP="${EP//\{repo\}/${GITHUB_REPOSITORY##*/}}"
+
+          # Reject dot segments (literal or percent-encoded) anywhere in the
+          # path. curl normalizes /../ before sending, so an endpoint like
+          # repos/<this repo>/../../other/private passes a raw prefix check
+          # yet reaches another repository — the PAT scope gate below is only
+          # sound on a canonical path. No GitHub API path legitimately
+          # contains . or .. segments, so refuse the whole run. curl is also
+          # invoked with --path-as-is below, so nothing is normalized even
+          # if a variant slips past this check.
+          EP_PATH="${EP%%\?*}"
+          if printf '%s' "$EP_PATH" | grep -qiE '(^|/)(\.|%2e){1,2}(/|$)'; then
+            echo "::error::endpoint path contains dot segments — refusing"
+            exit 1
+          fi
+
           URL="https://api.github.com/${EP}"
           echo "Request: ${METHOD} ${URL}"
           echo
@@ -116,12 +142,22 @@ jobs:
               printf 'header = "Accept: application/vnd.github+json"\n'
               printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
             } > "$cfg"
+            # A transfer failure on THIS attempt must not publish the
+            # previous attempt's body as if it were this attempt's answer.
+            rm -f response.json
+            # Bounded so a stalled response surfaces as TRANSFER FAILED in
+            # seconds instead of hanging the step until timeout-minutes.
+            # --path-as-is: never let curl canonicalize dot segments — the
+            # scope gate validated the path as written.
             if [ "$METHOD" = "GET" ]; then
-              code=$(curl -sS -K "$cfg" -X GET \
+              code=$(curl -sS -K "$cfg" -X GET --path-as-is \
+                       --connect-timeout 10 --max-time 60 \
                        -o response.json -w '%{http_code}' "$URL"); rc=$?
             else
               printf '%s' "$BODY" > body.json
-              code=$(curl -sS -K "$cfg" -X "$METHOD" --data-binary @body.json \
+              code=$(curl -sS -K "$cfg" -X "$METHOD" --path-as-is \
+                       --data-binary @body.json \
+                       --connect-timeout 10 --max-time 60 \
                        -o response.json -w '%{http_code}' "$URL"); rc=$?
             fi
             rm -f "$cfg"
@@ -147,11 +183,47 @@ jobs:
           # `administration` permission scope, so repo-settings endpoints are
           # expected to need the PAT — but let the run prove it rather than
           # assume, and report which one actually worked.
+          #
+          # The PAT fallback fires only for GET, and only against this
+          # repository's own API surface:
+          #
+          # * GET-only: anyone with write access can dispatch this
+          #   workflow, and confirm_write comes from that same caller, so
+          #   it is a typo guard, not authorization. A PAT-backed mutation
+          #   would let a non-admin collaborator administer the repo
+          #   (weaken branch protection, edit rulesets). Mutations
+          #   therefore only ever use the built-in GITHUB_TOKEN, whose
+          #   capabilities are pinned by this workflow's `permissions:`
+          #   block — enable a specific write surface by granting that one
+          #   permission there via a reviewed PR, never by widening the
+          #   PAT's role here.
+          #
+          # * Repo-scoped: GITHUB_TOKEN is repo-scoped by GitHub itself,
+          #   but the PAT may reach other repositories — and this workflow
+          #   prints the response into this repo's logs and artifact, so an
+          #   arbitrary endpoint would let any dispatcher read anything the
+          #   PAT can touch. Refusing keeps the bridge a window onto THIS
+          #   repo.
+          if [ "$EP" = "repos/${GITHUB_REPOSITORY}" ] \
+             || [[ "$EP" == "repos/${GITHUB_REPOSITORY}/"* ]]; then
+            PAT_IN_SCOPE=1
+          else
+            PAT_IN_SCOPE=0
+          fi
+
           AUTH="none succeeded"
           if attempt "GITHUB_TOKEN" "$TOKEN_DEFAULT"; then
             AUTH="GITHUB_TOKEN"
-          elif attempt "PR_WORKFLOW_TOKEN" "$TOKEN_PAT"; then
-            AUTH="PR_WORKFLOW_TOKEN"
+          elif [ "$METHOD" != "GET" ]; then
+            printf '  %-18s REFUSED (the PAT never authorizes a mutation — grant the built-in token the specific permission in this workflow instead)\n' \
+              "PR_WORKFLOW_TOKEN"
+          elif [ "$PAT_IN_SCOPE" = "1" ]; then
+            if attempt "PR_WORKFLOW_TOKEN" "$TOKEN_PAT"; then
+              AUTH="PR_WORKFLOW_TOKEN"
+            fi
+          else
+            printf '  %-18s REFUSED (endpoint not under repos/%s — PAT fallback is repo-scoped)\n' \
+              "PR_WORKFLOW_TOKEN" "$GITHUB_REPOSITORY"
           fi
 
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"

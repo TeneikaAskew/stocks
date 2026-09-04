@@ -27,21 +27,25 @@ adjacent questions, and the three must not diverge:
 | Artifact | Owns | Authority for |
 |---|---|---|
 | This file (`12`) | capability → historical PR lineage → open issues | which PRs *built* a capability, and which issues block it |
-| [#924](https://github.com/TeneikaAskew/stocks/pull/924) → `docs/audit/2026-08-27/issue-reconciliation.md` | the **canonical 105-issue inventory**, partitioned across 18 delivery streams (PR-A … PR-R) plus PR-0 | stream membership and delivery gates |
+| [#924](https://github.com/TeneikaAskew/stocks/pull/924) → `docs/audit/2026-08-27/issue-reconciliation.md` | the **canonical 105-issue inventory**, partitioned across delivery streams PR-A … PR-R plus PR-0 (19 rows since the 2026-09-03 PR-O stocks/solyra split) | stream membership and delivery gates |
 | [#941](https://github.com/TeneikaAskew/stocks/pull/941) | per-PR coverage with an explicit *does-NOT-fix* column | **which issues actually have a remediation PR** |
 
-### Why this file says 121 and #924 tracks the audit inventory
+### Why this file's total and #924's audit inventory differ
 
-Both are correct; they count different sets. Reconciled 2026-08-31, after [#818](https://github.com/TeneikaAskew/stocks/issues/818) closed:
+Both are correct; they count different sets. Re-reconciled 2026-09-03 after the frontend-split moves (the 2026-08-31 reconciliation counted 121 open; since then #930/#944 closed as resolved job failures, #683/#685/#868 moved to solyra and closed here, #958 opened and closed, and #971 opened):
 
 | | Count |
 |---|---|
-| All open issues in the repository | **121** |
-| − pre-audit issues (numbered below #812) | −13 |
-| − [#930](https://github.com/TeneikaAskew/stocks/issues/930) and [#944](https://github.com/TeneikaAskew/stocks/issues/944), auto-created `gcp-job-failure` records | −2 |
+| All open issues in the repository | **117** |
+| − pre-audit issues (numbered below #812) still open here | −11 |
 | − [#940](https://github.com/TeneikaAskew/stocks/issues/940), created 2026-08-30, explicitly recorded by #924 as outside the original inventory | −1 |
 | − [#943](https://github.com/TeneikaAskew/stocks/issues/943), created 2026-08-31 after the public staging exposure was confirmed | −1 |
+| − [#971](https://github.com/TeneikaAskew/stocks/issues/971), created 2026-09-03 for the post-split live-connectivity coverage gap | −1 |
+| **= canonical audit inventory open in stocks** | **103** |
+| + canonical [#868](https://github.com/TeneikaAskew/stocks/issues/868)'s slot, tracked as [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28) | +1 |
 | **= currently open canonical audit inventory** | **104** |
+
+**Update 2026-09-03 (frontend split follow-through):** after the #957 split, [#683](https://github.com/TeneikaAskew/stocks/issues/683)/[#685](https://github.com/TeneikaAskew/stocks/issues/685) moved to [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26)/[solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) and canonical [#868](https://github.com/TeneikaAskew/stocks/issues/868) moved to [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28); all three stocks records are closed as not planned with the work still open in solyra. Post-audit #958 closed completed and follow-up [#971](https://github.com/TeneikaAskew/stocks/issues/971) opened for the live-connectivity coverage remainder. The canonical inventory stays 104, with #868's slot now tracked cross-repo.
 
 The 13 pre-audit issues excluded from the canonical set are
 [#249](https://github.com/TeneikaAskew/stocks/issues/249),
@@ -49,8 +53,8 @@ The 13 pre-audit issues excluded from the canonical set are
 [#380](https://github.com/TeneikaAskew/stocks/issues/380),
 [#442](https://github.com/TeneikaAskew/stocks/issues/442),
 [#607](https://github.com/TeneikaAskew/stocks/issues/607),
-[#683](https://github.com/TeneikaAskew/stocks/issues/683),
-[#685](https://github.com/TeneikaAskew/stocks/issues/685),
+[#683](https://github.com/TeneikaAskew/stocks/issues/683) (moved to [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) 2026-09-03),
+[#685](https://github.com/TeneikaAskew/stocks/issues/685) (moved to [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) 2026-09-03),
 [#701](https://github.com/TeneikaAskew/stocks/issues/701),
 [#716](https://github.com/TeneikaAskew/stocks/issues/716),
 [#717](https://github.com/TeneikaAskew/stocks/issues/717),
@@ -166,6 +170,8 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
+As of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+
 | Severity | Count |
 |---|---|
 | CRITICAL | 21 |
@@ -173,15 +179,14 @@ unmeasured claims in this repository.
 | HIGH | 16 |
 | P1 | 30 |
 | MEDIUM | 9 |
-| P2 | 10 |
+| P2 | 9 |
 | LOW | 5 |
 | P3 | 2 |
-| DEBT | 5 |
-| ENH | 5 |
+| DEBT | 6 |
+| ENH | 3 |
 | DECISION | 1 |
-| ops | 2 |
 | UNTRIAGED | 1 |
-| **Total** | **121** |
+| **Total** | **117** |
 
 ## Full open-issue map by capability
 
@@ -319,7 +324,8 @@ Every open issue appears exactly once. **No range notation** — the previous re
 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) | HIGH | [audit] G2 — No end-to-end test of the fire path <-> EOD resolver |
 | [#843](https://github.com/TeneikaAskew/stocks/issues/843) | HIGH | [audit] G1 — gcp/trade_logger.py::log_trade has zero coverage, on the fire path |
 | [#847](https://github.com/TeneikaAskew/stocks/issues/847) | MEDIUM | [audit] G5 — dashboard.py / analytics.py routers: PARTIAL coverage only, implicated in a real incident |
-| [#868](https://github.com/TeneikaAskew/stocks/issues/868) | P2 | [P2][Testing] Run frontend Vitest and platform Playwright suites in CI |
+| [#971](https://github.com/TeneikaAskew/stocks/issues/971) | DEBT | test: restore a live API connectivity smoke test lost in the frontend split |
+| [#868](https://github.com/TeneikaAskew/stocks/issues/868) | P2 | [P2][Testing] Run frontend Vitest and platform Playwright suites in CI — moved to [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28) 2026-09-03; row retained for the canonical mapping, no longer open in stocks |
 | [#849](https://github.com/TeneikaAskew/stocks/issues/849) | LOW | [audit] G7 — scripts/analysis/*: 17 of 22 files with no test reference |
 | [#840](https://github.com/TeneikaAskew/stocks/issues/840) | LOW | [audit] SEC-L3 — CI log dump committed into the workflows directory |
 
@@ -406,8 +412,8 @@ Every open issue appears exactly once. **No range notation** — the previous re
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#685](https://github.com/TeneikaAskew/stocks/issues/685) | ENH | Rename internal Heatseeker/Flowseeker tabs before Solyra public launch |
-| [#683](https://github.com/TeneikaAskew/stocks/issues/683) | ENH | landing perf: lazy app shell / defer Firebase init |
+| [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) | ENH | Rename internal Heatseeker/Flowseeker tabs before Solyra public launch (was #685; moved 2026-09-03) |
+| [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) | ENH | landing perf: lazy app shell / defer Firebase init (was #683; moved 2026-09-03) |
 
 **PR lineage:** [#546](https://github.com/TeneikaAskew/stocks/pull/546) *origin* · [#611](https://github.com/TeneikaAskew/stocks/pull/611) *structural* · [#643](https://github.com/TeneikaAskew/stocks/pull/643) *evolution* · [#684](https://github.com/TeneikaAskew/stocks/pull/684) *origin* · [#687](https://github.com/TeneikaAskew/stocks/pull/687) *evolution* · [#690](https://github.com/TeneikaAskew/stocks/pull/690) *evolution* · [#692](https://github.com/TeneikaAskew/stocks/pull/692) *evolution* · [#700](https://github.com/TeneikaAskew/stocks/pull/700) *remediation* · [#703](https://github.com/TeneikaAskew/stocks/pull/703) *evolution* · [#715](https://github.com/TeneikaAskew/stocks/pull/715) *evolution*
 

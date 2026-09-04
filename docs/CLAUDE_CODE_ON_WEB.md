@@ -63,16 +63,15 @@ The harness runs a SessionStart hook each time a new web session begins. The scr
 #!/bin/bash
 set -euo pipefail
 
-# Anchor on the repo root before anything else. Steps 4 and 5 are guarded
-# by `[ -f requirements.txt ]` and `[ -f platform/package.json ]`, which
-# are relative tests: if the hook starts anywhere other than the repo
-# root, both guards are false and the dependency installs are SKIPPED
-# SILENTLY — no error, no output, just a session with no deps.
+# Anchor on the repo root before anything else. Step 4 is guarded by
+# `[ -f requirements.txt ]`, a relative test: if the hook starts anywhere
+# other than the repo root the guard is false and the dependency install
+# is SKIPPED SILENTLY — no error, no output, just a session with no deps.
 #
 # Test the directory rather than cd-ing and hoping. `cd X || cd X` is fatal
 # under `set -e` when X does not exist (measured: exit 1, script dead), and
 # the repo dir may legitimately not be there yet at init time. Warn loudly
-# and continue instead — a missing anchor should degrade steps 4 and 5, not
+# and continue instead — a missing anchor should degrade step 4, not
 # kill the whole session. The echo makes a successful anchor visible in the
 # startup output so the next failure is diagnosable from the log alone.
 # Any step that degrades rather than fails appends a token here. The footer
@@ -85,7 +84,7 @@ if [ -d "$REPO" ]; then
   cd "$REPO"
   echo "Anchored at $REPO"
 else
-  echo "WARN: repo dir $REPO not present at init time — steps 4 & 5 will skip"
+  echo "WARN: repo dir $REPO not present at init time — step 4 will skip"
   SETUP_DEGRADED="${SETUP_DEGRADED}repo-anchor-missing "
 fi
 
@@ -200,16 +199,21 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# 5. Frontend deps
+# 5. Frontend deps — REMOVED 2026-09-02.
+#
+#    #960 moved the SPA to TeneikaAskew/solyra; platform/package.json no
+#    longer exists in this repo, so the old `[ -f platform/package.json ]`
+#    guard could never be true again. Left in place it appended
+#    frontend-deps-skipped to SETUP_DEGRADED on every run, so a perfectly
+#    healthy session printed "SETUP INCOMPLETE" forever. That is the same
+#    false-signal bug this script exists to prevent, only inverted: a
+#    warning that is always on carries no information, and the reader
+#    learns to skip the whole footer — including the python-deps failure
+#    it is there to surface.
+#
+#    If you need the frontend, clone solyra and install there. Do not
+#    re-add a guard here for a directory this repo does not have.
 # ---------------------------------------------------------------------
-if [ -f platform/package.json ]; then
-  (cd platform && npm ci --silent)
-  [ -d platform/node_modules ] || { echo "ERROR: node_modules not created"; exit 1; }
-  echo "Step 5 OK: frontend deps installed"
-else
-  echo "WARN: no platform/package.json in $(pwd) — frontend deps NOT installed"
-  SETUP_DEGRADED="${SETUP_DEGRADED}frontend-deps-skipped "
-fi
 
 echo "==================================="
 if [ -n "$SETUP_DEGRADED" ]; then
@@ -231,12 +235,22 @@ echo "==================================="
 - **Smoke test after every section.** Step 0 and step 3 caught real failures during development (missing apt key, expired PAT). The cost of the test is milliseconds; the cost of debugging a half-set-up session is much higher.
 - **`apt-get update -qq || true`** — apt updates can fail transiently in the sandbox image; we tolerate the failure but require the install step to succeed.
 - **`chmod 600 "$KEY_PATH"`** — the key is sensitive; restrict perms even though only one user runs in the sandbox.
-- **`cd` to the repo root before any relative path test.** Steps 4 and 5
-  gate on `[ -f requirements.txt ]` / `[ -f platform/package.json ]`. A
-  false guard is indistinguishable from "nothing to install" — the script
-  exits 0 having installed no dependencies. This is a silent fallback in
-  the sense of CLAUDE.md Rule 3.7, in the bootstrap layer: the failure
-  mode is a session that looks healthy and fails on the first `pytest`.
+- **`cd` to the repo root before any relative path test.** Step 4 gates
+  on `[ -f requirements.txt ]`. A false guard is indistinguishable from
+  "nothing to install" — the script exits 0 having installed no
+  dependencies. This is a silent fallback in the sense of CLAUDE.md
+  Rule 3.7, in the bootstrap layer: the failure mode is a session that
+  looks healthy and fails on the first `pytest`.
+
+- **Delete a guard when the thing it guards leaves the repo.** Step 5
+  tested `[ -f platform/package.json ]`. #960 moved the SPA to
+  `solyra`, and from then on that test could never pass, so every
+  healthy session printed `SETUP INCOMPLETE — degraded:
+  frontend-deps-skipped`. A warning that is always on is worse than no
+  warning: it carries no information, and the reader learns to skip the
+  footer that also reports the python-deps failure. Both directions of
+  the false-signal bug cost the same thing — a footer nobody can act on.
+  When a repo drops a component, grep the bootstrap for its paths.
 
 ### Incident: 2026-08-27 — the setup script took down every new session
 

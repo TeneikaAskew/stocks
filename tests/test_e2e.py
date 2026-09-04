@@ -2,8 +2,11 @@
 End-to-end Playwright tests for static web applications.
 
 Tests the static web frontends by spinning up a local HTTP server for each:
-  - success-report-site  (port 8102)
-  - website              (port 8104)
+  - archive/success-report-site  (port 8102)
+  - archive/website              (port 8104)
+
+Both moved under archive/ in dac85fa4. The pages are unchanged, so these
+smoke tests still apply — only the paths moved.
 
 The legacy options-heatseeker static app was retired in #255 (cutover
 to FastAPI under platform/) — its directory no longer exists.
@@ -27,8 +30,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 APPS = {
-    "success_report": REPO_ROOT / "success-report-site",
-    "website": REPO_ROOT / "website",
+    "success_report": REPO_ROOT / "archive" / "success-report-site",
+    "website": REPO_ROOT / "archive" / "website",
 }
 PORTS = {
     "success_report": 8102,
@@ -75,7 +78,7 @@ def url(name: str, path: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 class TestSuccessReportSite:
-    """Smoke tests for success-report-site/index.html."""
+    """Smoke tests for archive/success-report-site/index.html."""
 
     def test_page_loads(self, page, servers):
         page.goto(url("success_report"))
@@ -128,7 +131,7 @@ class TestSuccessReportSite:
 # ---------------------------------------------------------------------------
 
 class TestTradingDashboard:
-    """Smoke tests for website/trading-dashboard.html."""
+    """Smoke tests for archive/website/trading-dashboard.html."""
 
     def test_page_loads(self, page, servers):
         page.goto(url("website", "trading-dashboard.html"))

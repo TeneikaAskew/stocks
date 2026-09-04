@@ -268,7 +268,7 @@ not just a cleanup question.
 | [#925](https://github.com/TeneikaAskew/stocks/issues/925) | Legacy database query failures become empty data (P0) |
 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) | Second silent empty-data swallow in the data loader (P0) |
 | [#837](https://github.com/TeneikaAskew/stocks/issues/837) | Pervasive `SELECT *` — data minimization |
-| [#868](https://github.com/TeneikaAskew/stocks/issues/868) | Frontend Vitest and Playwright suites do not run in CI |
+| [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28) | Frontend Vitest and Playwright suites do not run in CI (formerly #868; moved in the #957 split) |
 | [#921](https://github.com/TeneikaAskew/stocks/issues/921) | Dead API endpoints not yet identified or removed |
 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) | Oversized compute/persistence/rendering control points |
 

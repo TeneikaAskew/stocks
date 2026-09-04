@@ -157,3 +157,14 @@ billing_90d.json
 # what was in the repo, not start committing things that were excluded.
 archive/**/*.csv
 archive/**/.clasp.json
+# ...and never secrets: git takes the LAST matching rule, so the broad
+# negation above would otherwise override the repo-wide sensitive-file
+# excludes for anything under archive/**/data/ — a credentials file dropped
+# beside the fixtures would become stageable by a routine `git add .`.
+# Re-apply the patterns from the top of this file for the archived subtree.
+archive/**/.env
+archive/**/.env.*
+archive/**/credentials/
+archive/**/*.key
+archive/**/*-credentials.json
+archive/**/.gcp-key.json
