@@ -56,14 +56,28 @@ app.add_middleware(
         # Solyra frontend (github.com/TeneikaAskew/solyra) — the SPA lives in its
         # own repo and calls this API cross-origin when built as static assets,
         # where there is no dev-server proxy to keep requests same-origin.
-        # Listed explicitly rather than matched by a `.*\.lovable\.app` regex:
-        # that would let any Lovable project on the platform call this API with
-        # credentials, and the Firebase web config is public, so the origin list
-        # is the control that keeps it to ours.
+        # Solyra's published host, kept explicit as documentation; the regex
+        # below also matches it.
         "https://solyra-stocks.lovable.app",
-        "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovable.app",
     ],
-    allow_origin_regex=r"https://.*\.app\.github\.dev",  # GitHub Codespace tunnel URLs
+    # GitHub Codespace tunnel URLs, plus every Lovable-served host: published
+    # (<name>.lovable.app), editor preview (id-preview--<uuid>.lovable.app),
+    # and "open preview in browser" (<uuid>.lovableproject.com). Domain-wide
+    # on purpose: the project UUID ROTATES between preview builds, so pinning
+    # origins to a name/UUID (tried first) breaks the next preview. The
+    # trade-off, accepted 2026-09-04: any Lovable project's frontend can now
+    # make credentialed browser calls here. The data boundary is unchanged —
+    # gated endpoints still require a verified Firebase ID token that another
+    # project's users don't have — so the exposure is limited to what the
+    # open paths already serve any non-browser client (health, the public
+    # Firebase web config, waitlist signup). Starlette fullmatches this
+    # pattern (pinned by test), so a `foo.lovable.app.evil.com` suffix attack
+    # cannot match.
+    allow_origin_regex=(
+        r"https://.*\.app\.github\.dev"
+        r"|https://([a-z0-9-]+\.)+lovable\.app"
+        r"|https://([a-z0-9-]+\.)+lovableproject\.com"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

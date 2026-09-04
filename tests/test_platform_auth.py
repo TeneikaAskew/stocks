@@ -302,3 +302,75 @@ def test_is_admin_email_binds_against_a_real_engine(monkeypatch):
     finally:
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM user_roles WHERE email = :e"), {"e": granted})
+
+
+# ---------------------------------------------------------------------------
+# CORS origin allow-list (platform/api/main.py)
+#
+# The browser preview surfaces Lovable serves this project from must be
+# allowed, or the very first /api/config/firebase call is blocked and the app
+# boots into "Could not load application configuration". Lovable rotates the
+# project UUID between preview builds, so the policy is DOMAIN-wide
+# (*.lovable.app / *.lovableproject.com) rather than pinned to a name or
+# UUID — see the trade-off note in api/main.py. These tests exercise the
+# REAL app's middleware via CORS preflight, which CORSMiddleware answers
+# before auth or routing runs.
+# ---------------------------------------------------------------------------
+
+_PREFLIGHT_HEADERS = {"Access-Control-Request-Method": "GET"}
+
+
+def _preflight(origin: str):
+    from api.main import app
+
+    client = TestClient(app)
+    return client.options(
+        "/api/health",
+        headers={"Origin": origin, **_PREFLIGHT_HEADERS},
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:5173",
+        "https://solyra-stocks.lovable.app",
+        "https://preview--solyra-stocks.lovable.app",
+        "https://id-preview--f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovable.app",
+        "https://f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com",
+        # A DIFFERENT UUID — Lovable rotates the project UUID between preview
+        # builds, which is exactly why the policy is domain-wide.
+        "https://0a1b2c3d-0000-4444-8888-9e8d7c6b5a40.lovableproject.com",
+        "https://id-preview--0a1b2c3d-0000-4444-8888-9e8d7c6b5a40.lovable.app",
+        "https://fuzzy-space-tunnel-1234.app.github.dev",
+    ],
+)
+def test_cors_allows_this_projects_origins(origin):
+    r = _preflight(origin)
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        # Suffix attack: a Lovable-looking label as a subdomain of an
+        # attacker's domain. Starlette fullmatches allow_origin_regex, so the
+        # origin must END at lovable.app / lovableproject.com to pass.
+        "https://foo.lovable.app.evil.example",
+        "https://f6c1be2f-245d-4a43-8110-dd05ffafa8af.lovableproject.com.evil.example",
+        # Lookalike registrable domains — dash or extra chars, not a dot.
+        "https://evil-lovable.app",
+        "https://xlovable.app",
+        "https://foo.lovableproject.com.co",
+        # Bare apex (Lovable serves projects from subdomains only).
+        "https://lovable.app",
+        # Wrong scheme.
+        "http://preview--solyra-stocks.lovable.app",
+    ],
+)
+def test_cors_rejects_other_origins(origin):
+    r = _preflight(origin)
+    # Starlette answers a disallowed preflight with 400 and, decisively, no
+    # allow-origin header — the browser blocks the real request either way.
+    assert r.headers.get("access-control-allow-origin") is None
