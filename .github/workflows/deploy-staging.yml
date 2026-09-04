@@ -34,9 +34,10 @@ name: Deploy staging
 # gcp/schema.sql) — and staging shares trading-db with prod, so a routine
 # redeploy must not empty views prod is reading (Codex, PR #983). When the
 # apply does run it runs BEFORE the deploy (so the new revision never serves
-# against a missing table) and is followed immediately by
-# `gcp.refresh_earnings_views --mode=weekly`, shrinking the views' empty
-# window from "until the weekly job" to the length of one refresh.
+# against a missing table) and is followed by executing the standing
+# refresh-earnings-views Cloud Run job (baked args --mode=weekly), shrinking
+# the views' empty window from "until the weekly job" to the length of one
+# refresh — cancellation-safely, see the recovery step's comment.
 #
 # Config sources — deliberately NO new GitHub secrets:
 #   * DB_USER / DB_PASS / DB_NAME / CLOUD_SQL_CONNECTION_NAME — the same
@@ -63,9 +64,10 @@ name: Deploy staging
 #   roles/cloudbuild.builds.editor   gcloud builds submit
 #   roles/storage.objectAdmin        on gs://adept-mountain-474619-d4_cloudbuild
 #                                    (build source upload)
-#   roles/run.admin                  deploy the service; staging is
+#   roles/run.admin                  deploy the service (staging is
 #                                    --allow-unauthenticated, which asserts
-#                                    IAM on the service
+#                                    IAM on the service) and execute the
+#                                    refresh-earnings-views job
 #   roles/iam.serviceAccountUser     on trading-platform-svc@… — deploying
 #                                    acts as the runtime SA
 #   roles/secretmanager.viewer       platform/deploy.sh's trading-db-pass
@@ -142,9 +144,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Step-level timeout (well under the job's 60): a HUNG apply then fails
+      # as a step failure instead of tripping the job-level timeout, keeping
+      # the recovery step below on the normal (non-cancelled) path.
       - name: Roll schema forward (gcp/schema.sql)
         id: apply
         if: inputs.apply_schema == 'true'
+        timeout-minutes: 30
         env:
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -158,31 +164,38 @@ jobs:
       # earnings_ticker_lean WITH NO DATA (deliberate in gcp/schema.sql so a
       # re-apply picks up view DDL changes). Staging shares trading-db with
       # prod, whose earnings router reads these views and whose scheduled
-      # refresh is only weekly — repopulate them NOW, with the same script
-      # the refresh-earnings-views job runs, so the empty window is the
-      # length of one refresh instead of days.
+      # refresh is only weekly — repopulate them NOW by executing the
+      # standing refresh-earnings-views Cloud Run job (its baked args are
+      # --mode=weekly: REFRESH of exactly these two views; see
+      # gcp/deploy.sh deploy_refresh_earnings_views), so the empty window is
+      # the length of one refresh instead of days.
       #
-      # This step runs on apply FAILURE as well as success (hence the
-      # explicit outcome check instead of the implicit success() gate):
-      # gcp.apply_schema commits each statement in its own transaction
-      # (gcp/database.execute_sql wraps every call in engine.begin) and keeps
-      # going after per-statement errors, so a partial apply can have already
-      # committed the view drops before an unrelated statement failed — and
-      # skipping the refresh then would leave prod's views empty until the
-      # weekly job (Codex, PR #983). The apply cannot be made one big
-      # transaction instead: schema.sql contains CREATE INDEX CONCURRENTLY
-      # statements, which Postgres refuses inside a transaction block. The
-      # run still ends red on a failed apply (this step doesn't clear the
-      # apply step's failure), and the deploy steps below keep their default
+      # Recovery must not assume the apply SUCCEEDED, nor that this job dies
+      # cleanly: gcp.apply_schema commits each statement in its own
+      # transaction (gcp/database.execute_sql wraps every call in
+      # engine.begin) and keeps going after per-statement errors, so a
+      # partial apply — a failed statement, an operator cancellation, the
+      # apply step's timeout — can have already committed the view drops
+      # (Codex, PR #983). Hence:
+      #   * always() (not the implicit success(), not !cancelled()): the
+      #     step runs after apply failure AND after a cancellation that
+      #     interrupted the apply (GitHub runs always()-gated steps in a
+      #     cancelled job's grace period);
+      #   * a detached Cloud Run job execution rather than an in-runner
+      #     refresh: `gcloud run jobs execute` creates the execution
+      #     server-side in seconds, and it runs to completion on Cloud Run
+      #     even if this runner is torn down while waiting — the recovery
+      #     does not depend on this job surviving. --wait is reporting only.
+      #   * outcome != 'skipped' scopes it to runs where the apply actually
+      #     started (a cancellation before the apply has dropped nothing).
+      # The apply cannot be made one big transaction instead: schema.sql
+      # contains CREATE INDEX CONCURRENTLY statements, which Postgres
+      # refuses inside a transaction block. The run still ends red on a
+      # failed apply, and the deploy steps below keep their default
       # success() gate, so a failed apply never deploys.
       - name: Repopulate earnings mat views
-        if: ${{ !cancelled() && inputs.apply_schema == 'true' && (steps.apply.outcome == 'success' || steps.apply.outcome == 'failure') }}
-        env:
-          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASS: ${{ secrets.DB_PASS }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-        run: python -m gcp.refresh_earnings_views --mode=weekly
+        if: ${{ always() && inputs.apply_schema == 'true' && steps.apply.outcome != 'skipped' }}
+        run: gcloud run jobs execute refresh-earnings-views --region "${REGION}" --wait
 
       # ── 2. Read the live service's config ─────────────────────────────────
       - name: Read live service config
