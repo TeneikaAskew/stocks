@@ -19,7 +19,13 @@ name: Deploy staging
 # Dispatch is refused on any ref but main: workflow_dispatch lets an operator
 # pick a branch, and running an unreviewed branch's deploy.sh/apply_schema
 # under this workflow's WIF identity would put unmerged schema and code on
-# the shared DB and the public staging service (Codex, PR #983).
+# the shared DB and the public staging service (Codex, PR #983). The in-file
+# guard below is the fail-loud UX rail, NOT the boundary — a write-capable
+# actor could dispatch a branch whose copy of this file drops the guard. The
+# enforced boundary is the WIF provider's attribute condition, which must
+# include assertion.ref=='refs/heads/main' (SETUP.md §4a documents the
+# condition and the update-oidc roll-forward command; it is part of the same
+# one-time operator step as the role grants below).
 #
 # Schema apply is OPT-IN (apply_schema=true), not part of every deploy:
 # gcp/schema.sql is a full-file re-apply, and BY DESIGN it drops and
