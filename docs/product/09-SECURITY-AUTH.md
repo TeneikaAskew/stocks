@@ -247,18 +247,29 @@ Cloud Build just pushed. Its absence fails a deploy only after the ~4-minute
 image build (run #13); with it, run #14 completed end to end and revision
 `trading-platform-staging-00046-x8m` went live with `/api/health` 200.
 
-**Runtime SA `trading-platform-svc@…`** — the `SETUP_IAM=1` grants have been
-applied: `roles/firebaseauth.admin` at project level (the Admin → Users tab
+**Runtime SA `trading-platform-svc@…`** — project-level, exactly three roles as
+read live: `cloudsql.client`, `aiplatform.user`, and `firebaseauth.admin`. The
+last one is new: the `SETUP_IAM=1` grants have landed (the Admin → Users tab
 manages Firebase accounts via the Admin SDK; ADC alone does not authorize the
-Identity Toolkit user-management APIs) and `roles/run.invoker` on the
+Identity Toolkit user-management APIs), together with `roles/run.invoker` on the
 allowlisted fetcher jobs — **all seven** enumerated in `platform/deploy.sh`
 were checked individually (`fetch-market-data`, `fetch-av-options-backfill`,
 `fetch-fred-rates`, `fetch-economic-events`, `fetch-earnings-calendar`,
 `strat-engine`, `historical-signals-watchlist`), not sampled: that script
 tolerates a partially applied state (it warns per job and exits `IAM setup
-INCOMPLETE`), so a sample would not license the claim (Codex, PR #989). It also holds `cloudsql.client` and
-`aiplatform.user`. Those admin features were 503-by-design before this and
-should function once a revision carrying the current code is serving.
+INCOMPLETE`), so a sample would not license the claim (Codex, PR #989). Those
+admin features were 503-by-design before this and should function once a
+revision carrying the current code is serving.
+
+Its **secret access is secret-scoped, not project-level**:
+`roles/secretmanager.secretAccessor` bound on `trading-db-pass` and
+`av-api-key` individually, which is what lets the `--set-secrets` mounts in
+`platform/deploy.sh` resolve at container start. It holds no project-wide
+Secret Manager role, so its reach is those two secrets rather than every secret
+in the project — worth stating positively, since a reader auditing blast radius
+from the project-level list alone would see no secret capability at all and
+conclude the wrong thing in both directions. The `trading-db-pass` binding also
+names the default compute SA `28960574877-compute@developer…` (Codex, PR #989).
 
 ### Still open — do not read the above as "fully hardened"
 
