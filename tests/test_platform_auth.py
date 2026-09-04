@@ -365,4 +365,5 @@ def test_cors_rejects_other_origins(origin):
     r = _preflight(origin)
     # Starlette answers a disallowed preflight with 400 and, decisively, no
     # allow-origin header — the browser blocks the real request either way.
+    assert r.status_code == 400
     assert r.headers.get("access-control-allow-origin") is None
