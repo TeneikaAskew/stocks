@@ -54,3 +54,5 @@ tests/
 *.key
 *-credentials.json
 service-account*.json
+# WIF credential config google-github-actions/auth writes in CI
+gha-creds-*.json

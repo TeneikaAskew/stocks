@@ -70,6 +70,10 @@ tests/
 *.key
 *-credentials.json
 service-account*.json
+# google-github-actions/auth writes its WIF credential config here in CI
+# (see "Generated Credentials Files" in that action's README); without this
+# pattern `gcloud builds submit .` ships it in the source archive.
+gha-creds-*.json
 
 # Git history — NOT auto-excluded once a .gcloudignore file exists; 5.6 GiB otherwise.
 # This alone was making `gcloud builds submit` upload 6.4 GiB per deploy.

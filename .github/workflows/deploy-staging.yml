@@ -16,11 +16,21 @@ name: Deploy staging
 # revision the frontend is talking to, so a human decides when. If push-to-
 # main auto-deploys are ever wanted, add a `push` trigger filtered on
 # platform/** and gcp/schema.sql — but that is a policy change, not a bugfix.
+# Dispatch is refused on any ref but main: workflow_dispatch lets an operator
+# pick a branch, and running an unreviewed branch's deploy.sh/apply_schema
+# under this workflow's WIF identity would put unmerged schema and code on
+# the shared DB and the public staging service (Codex, PR #983).
 #
-# Ordering: schema BEFORE deploy. gcp/schema.sql is fully idempotent
-# (IF NOT EXISTS everywhere), and applying it first means the new revision
-# never serves against a missing table (e.g. user_profile, which
-# /api/me/profile 503s without).
+# Schema apply is OPT-IN (apply_schema=true), not part of every deploy:
+# gcp/schema.sql is a full-file re-apply, and BY DESIGN it drops and
+# recreates the earnings_event_outcomes / earnings_ticker_lean materialized
+# views WITH NO DATA (see the "IDEMPOTENCY / RE-RUNNABILITY" comment in
+# gcp/schema.sql) — and staging shares trading-db with prod, so a routine
+# redeploy must not empty views prod is reading (Codex, PR #983). When the
+# apply does run it runs BEFORE the deploy (so the new revision never serves
+# against a missing table) and is followed immediately by
+# `gcp.refresh_earnings_views --mode=weekly`, shrinking the views' empty
+# window from "until the weekly job" to the length of one refresh.
 #
 # Config sources — deliberately NO new GitHub secrets:
 #   * DB_USER / DB_PASS / DB_NAME / CLOUD_SQL_CONNECTION_NAME — the same
@@ -63,8 +73,8 @@ name: Deploy staging
 on:
   workflow_dispatch:
     inputs:
-      skip_schema:
-        description: 'Skip the schema roll-forward (deploy only).'
+      apply_schema:
+        description: 'Also apply gcp/schema.sql first (drops + recreates the earnings mat views; they are refreshed right after, see workflow header).'
         required: false
         default: 'false'
         type: choice
@@ -83,11 +93,22 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write   # WIF token
     steps:
+      # workflow_dispatch runs on whatever ref the operator selected, and
+      # checkout follows that ref. Everything below (apply_schema against the
+      # shared DB, deploy.sh onto the public service) must only ever run the
+      # reviewed main revision — fail loud rather than silently skip so a
+      # wrong-ref dispatch is visible in the run list.
+      - name: Refuse non-main refs
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::deploy-staging must be dispatched from main (got ${GITHUB_REF}); the schema and deploy scripts must be the reviewed main revision."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -102,7 +123,7 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT }}
 
-      # ── 1. Schema roll-forward ────────────────────────────────────────────
+      # ── 1. Schema roll-forward (opt-in, see workflow header) ──────────────
       # Same connector path as the refresh_calibration_table step in
       # refresh-architecture-docs.yml, but NOT best-effort: deploying on top
       # of a failed schema apply would serve new code against missing
@@ -110,13 +131,13 @@ jobs:
       # fabricated success). python -m gcp.apply_schema exits non-zero when
       # any statement fails and logs each statement it ran.
       - name: Set up Python
-        if: inputs.skip_schema != 'true'
+        if: inputs.apply_schema == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Roll schema forward (gcp/schema.sql)
-        if: inputs.skip_schema != 'true'
+        if: inputs.apply_schema == 'true'
         env:
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -125,6 +146,22 @@ jobs:
         run: |
           pip install --quiet sqlalchemy pg8000 pandas cloud-sql-python-connector
           python -m gcp.apply_schema
+
+      # The apply above just recreated earnings_event_outcomes and
+      # earnings_ticker_lean WITH NO DATA (deliberate in gcp/schema.sql so a
+      # re-apply picks up view DDL changes). Staging shares trading-db with
+      # prod, whose earnings router reads these views and whose scheduled
+      # refresh is only weekly — repopulate them NOW, with the same script
+      # the refresh-earnings-views job runs, so the empty window is the
+      # length of one refresh instead of days.
+      - name: Repopulate earnings mat views
+        if: inputs.apply_schema == 'true'
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: python -m gcp.refresh_earnings_views --mode=weekly
 
       # ── 2. Read the live service's config ─────────────────────────────────
       - name: Read live service config
