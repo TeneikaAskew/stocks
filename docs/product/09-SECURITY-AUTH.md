@@ -117,7 +117,7 @@ acceptance tests must be written fresh in this repo (starting point recoverable 
 | Property | Evidence |
 |---|---|
 | Gated despite living under `/api/me` | `/api/me` is in `_OPEN_API_EXACT`, not the prefix list (`auth.py:48`) — sub-paths require a verified token in firebase mode |
-| Row key is the server-verified identity, never client input | `profile.py:105-117 _profile_owner` — `auth.current_user_email(request)`; mirrors `preferences._prefs_owner` |
+| Row key is the server-resolved identity, never request-body input | `profile.py:105-117 _profile_owner` — `auth.current_user_email(request)`; mirrors `preferences._prefs_owner`. **Verification strength is mode-dependent**: in `firebase` mode the key comes from a cryptographically verified ID token; in `iap` mode it is read from the `X-Goog-Authenticated-User-Email` header with no application-layer verification (`auth.py:100-104`), so IAP tenancy depends entirely on the perimeter — under the perimeter-bypass scenario documented above, a direct caller could supply the owner value |
 | Fail-closed if the middleware gate ever regresses | same function: absent identity in firebase mode raises 401 rather than serving the shared `"local"` row to an anonymous caller |
 | Unknown fields rejected, not dropped | `ProfileUpdate` uses `extra="forbid"` → 422 (no fabricated "saved") |
 | Non-finite floats rejected before the DB | `Field(allow_inf_nan=False)` on `account_size` / `risk_per_trade_pct` — a stored `inf` would 500 every later read |
@@ -152,21 +152,31 @@ exposure. Fix belongs in solyra: mirror the exact/prefix split.
 Environment variables in scope: `AUTH_MODE`, `AUTH_OPEN_SIGNUP`, `AUTH_ALLOWED_EMAILS`,
 `ADMIN_EMAIL`, `DEV_ALLOWED_EMAIL`, `IAP_OAUTH_CLIENT_ID`, `FIREBASE_API_KEY`.
 All verified present in code. (`ADMIN_TOKEN` removed with the token gate.)
-The `FIREBASE_API_KEY`/`AUTH_DOMAIN`/`APP_ID` trio are public web-SDK
-identifiers — access is enforced server-side by token verification, not by
-hiding them (`platform/deploy.sh:154-157`).
+`FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, and `FIREBASE_APP_ID` are public
+web-SDK identifiers — access is enforced server-side by token verification,
+not by hiding them; a firebase-mode deploy fails fast when any of the three
+is unset (`platform/deploy.sh:161-168`).
 
 ## CI deploy identity — added 2026-09-04 — VERIFIED — CODE
 
-Deploys moved from an operator's personal gcloud login to a GitHub Actions
-workflow (`.github/workflows/deploy-staging.yml`,
-[#983](https://github.com/TeneikaAskew/stocks/pull/983) /
-[#985](https://github.com/TeneikaAskew/stocks/pull/985)) running as the WIF
-service account `arch-refresh-bot@…`. That SA is no longer read-only: it now
-holds `run.admin`, `cloudbuild.builds.editor`, `secretmanager.viewer`,
-`storage.objectAdmin` on the Cloud Build bucket, and
-`iam.serviceAccountUser` on the runtime SA `trading-platform-svc@…`. The
-trust model:
+**Scope: STAGING deploys only.** `.github/workflows/deploy-staging.yml`
+([#983](https://github.com/TeneikaAskew/stocks/pull/983) /
+[#985](https://github.com/TeneikaAskew/stocks/pull/985)) hardcodes
+`trading-platform-staging` and runs `STAGING_SERVICE=1 ./platform/deploy.sh`;
+**production (`trading-platform`) deploys remain operator-run** via
+`platform/deploy.sh` under the invoking operator's personal gcloud identity —
+the WIF trust boundary below does not apply to production.
+
+Staging deploys moved from an operator's personal gcloud login to the
+workflow running as the WIF service account `arch-refresh-bot@…`. That SA is
+no longer read-only. Roles the workflow REQUIRES (documented in its header;
+distinguish from grants verified live in the project, which this doc does
+not assert): `run.admin`, `cloudbuild.builds.editor`,
+`serviceusage.serviceUsageConsumer` (gcloud builds submit),
+`secretmanager.viewer`, `storage.objectAdmin` on the Cloud Build bucket,
+`cloudsql.client` (the optional schema step connects from the runner via the
+Cloud SQL connector), and `iam.serviceAccountUser` on the runtime SA
+`trading-platform-svc@…`. The trust model:
 
 | Control | Mechanism | Evidence |
 |---|---|---|
