@@ -120,10 +120,15 @@ name: Deploy staging
 #   roles/secretmanager.viewer       platform/deploy.sh's trading-db-pass
 #                                    existence check
 #
-# NOT covered here (still an operator task, needs project IAM admin):
+# NOT covered here — permanently operator-owned, because it needs project IAM
+# admin, which the CI service account deliberately does not have:
 #   SETUP_IAM=1 ./platform/deploy.sh — grants roles/firebaseauth.admin to
 #   the runtime SA (Admin → Users tab) and run.invoker on the fetcher jobs
 #   (Admin → Data refresh). See the header of platform/deploy.sh.
+#   STATUS: already applied in this project, verified 2026-09-04 (all seven
+#   allowlisted jobs checked individually). Re-run only if those grants are
+#   revoked or a job is added to the allowlist — this workflow will still
+#   never do it for you. As-built inventory: docs/product/09-SECURITY-AUTH.md.
 
 on:
   workflow_dispatch:
