@@ -142,7 +142,7 @@ exposure. Fix belongs in solyra: mirror the exact/prefix split.
 | Item | Status | Issue |
 |---|---|---|
 | `DISCORD_BOT_TOKEN`, `DISCORD_PUBLIC_KEY` via `--set-env-vars` on a public service | CRITICAL | [#830](https://github.com/TeneikaAskew/stocks/issues/830) |
-| `EW_USER`/`EW_PASS` via `--set-env-vars` (`ADMIN_TOKEN` half resolved — the token no longer exists) | HIGH | [#850](https://github.com/TeneikaAskew/stocks/issues/850) |
+| `ADMIN_TOKEN`, `EW_USER`/`EW_PASS` via `--set-env-vars` — still OPEN. The API's token GATE is gone, but `gcp/deploy.sh` still reads the `admin-token` secret and injects it in plaintext into the insight-pipeline job env (`gcp/deploy.sh:75-92`); the exposure persists (and its consumer may now be vestigial, since the API no longer accepts the token) | HIGH | [#850](https://github.com/TeneikaAskew/stocks/issues/850) |
 | Secret pasted into ad-hoc SQL is logged at INFO | MEDIUM | [#836](https://github.com/TeneikaAskew/stocks/issues/836) |
 | Pervasive `SELECT *` (data minimization) | MEDIUM | [#837](https://github.com/TeneikaAskew/stocks/issues/837) |
 | Token in `run:` argv in a retired workflow | LOW | [#839](https://github.com/TeneikaAskew/stocks/issues/839) |
@@ -151,7 +151,9 @@ exposure. Fix belongs in solyra: mirror the exact/prefix split.
 
 Environment variables in scope: `AUTH_MODE`, `AUTH_OPEN_SIGNUP`, `AUTH_ALLOWED_EMAILS`,
 `ADMIN_EMAIL`, `DEV_ALLOWED_EMAIL`, `IAP_OAUTH_CLIENT_ID`, `FIREBASE_API_KEY`.
-All verified present in code. (`ADMIN_TOKEN` removed with the token gate.)
+All verified present in code. (`ADMIN_TOKEN` is no longer read by the API —
+the token gate is gone — but is still injected into the insight-pipeline job
+by `gcp/deploy.sh`; see the #850 row above.)
 `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, and `FIREBASE_APP_ID` are public
 web-SDK identifiers — access is enforced server-side by token verification,
 not by hiding them; a firebase-mode deploy fails fast when any of the three
@@ -159,13 +161,32 @@ is unset (`platform/deploy.sh:161-168`).
 
 ## CI deploy identity — added 2026-09-04 — VERIFIED — CODE
 
-**Scope: STAGING deploys only.** `.github/workflows/deploy-staging.yml`
-([#983](https://github.com/TeneikaAskew/stocks/pull/983) /
-[#985](https://github.com/TeneikaAskew/stocks/pull/985)) hardcodes
-`trading-platform-staging` and runs `STAGING_SERVICE=1 ./platform/deploy.sh`;
-**production (`trading-platform`) deploys remain operator-run** via
-`platform/deploy.sh` under the invoking operator's personal gcloud identity —
-the WIF trust boundary below does not apply to production.
+There are TWO CI deploy identities with different boundaries; conflating
+them mis-scopes a review:
+
+1. **GitHub Actions → `trading-platform-staging` only.**
+   `.github/workflows/deploy-staging.yml`
+   ([#983](https://github.com/TeneikaAskew/stocks/pull/983) /
+   [#985](https://github.com/TeneikaAskew/stocks/pull/985)) hardcodes the
+   staging service and runs `STAGING_SERVICE=1 ./platform/deploy.sh` as the
+   WIF SA. The WIF trust boundary below applies to THIS path only.
+2. **Cloud Build triggers → production, as `trading-runner@`.**
+   `gcp/cloudbuild/README.md` records live triggers whose authoritative
+   config is in Cloud Build itself: `deploy-platform-staging` (push to main
+   touching `platform/`, `lib/`, …) runs `./platform/deploy.sh`, and
+   `promote-platform-prod` (manual) shifts `trading-platform` traffic to the
+   `staging` tag. Its boundary is Cloud Build trigger config + the
+   `trading-runner@` IAM, NOT WIF. **Open discrepancy:** the in-repo config
+   (`deploy-platform-staging-cloudbuild.yaml`) invokes `platform/deploy.sh`
+   with NO `STAGING=1`/`STAGING_SERVICE=1`, which in that script means a
+   full-traffic PRODUCTION deploy — contradicting the file's own header
+   ("staging-tagged revision, 0% traffic") and making the promote trigger
+   moot. Verify the live trigger (`gcloud builds triggers describe
+   deploy-platform-staging`) and reconcile; until then, treat "what deploys
+   production, when, with what traffic" as unverified.
+
+Operator-run `platform/deploy.sh` under a personal gcloud identity remains a
+third, manual path for both services.
 
 Staging deploys moved from an operator's personal gcloud login to the
 workflow running as the WIF service account `arch-refresh-bot@…`. That SA is
