@@ -14,7 +14,10 @@ import httpx
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 # Add project root to path so we can import lib/
@@ -22,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
-from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import AUTH_MODE, auth_middleware, current_user_email, is_admin_email
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,31 @@ except Exception:
     pass
 
 app = FastAPI(title="Trading Platform API", version="0.1.0")
+
+
+# FastAPI's default 422 handler echoes the offending input; a non-finite
+# float there (e.g. a raw JSON body of 1e309 rejected by allow_inf_nan=False
+# in routers/profile.py) crashes the JSON rendering of the error itself and
+# turns a clean rejection into a 500. Same shape as the default handler,
+# with non-finite floats stringified in the echo.
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    import math
+
+    def _finite(v):
+        if isinstance(v, float) and not math.isfinite(v):
+            return repr(v)
+        if isinstance(v, dict):
+            return {k: _finite(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_finite(x) for x in v]
+        return v
+
+    # Sanitize the WHOLE error entry, not just a top-level input float: a
+    # wrong-type container holding inf (e.g. {"account_size": [1e309]}) is
+    # echoed as that container, and ctx values can carry inputs too.
+    errors = [_finite(e) for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 # App-level auth, gated by AUTH_MODE (firebase | iap | open). No-op in iap/open
 # mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
@@ -130,6 +158,8 @@ app.include_router(waitlist.router, prefix="")
 # GATED even though it lives under /api/me — only the exact /api/me path is
 # open (api/auth._OPEN_API_EXACT); the preferences sub-path requires identity.
 app.include_router(preferences.router, prefix="")
+# Same gating rationale as preferences: /api/me/profile requires identity.
+app.include_router(profile.router, prefix="")
 
 data_loader = DataLoader()
 
