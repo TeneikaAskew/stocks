@@ -3933,6 +3933,42 @@ CREATE OR REPLACE TRIGGER set_user_preferences_updated_at
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ─────────────────────────────────────────────────────────
+-- USER PROFILE (per-user account settings beyond appearance)
+-- ─────────────────────────────────────────────────────────
+-- Server-side copy of the Solyra Settings profile form: identity display,
+-- trading defaults, notification toggles, and display formats. Read/written
+-- only by platform/api/routers/profile.py, always scoped by the
+-- server-verified identity — same owner-key convention as user_preferences.
+--
+-- Columns are nullable ON PURPOSE: NULL means "not set", which the frontend
+-- must be able to distinguish from every real value (Rule 3.7 — a missing
+-- account size is never coerced into $0). Enum values (timeframes, number/
+-- date formats) are validated in the router — the single write path — not
+-- by CHECKs here, for the same anti-drift reason as user_preferences.
+CREATE TABLE IF NOT EXISTS user_profile (
+    user_email             TEXT              PRIMARY KEY,
+    display_name           TEXT,
+    timezone               TEXT,
+    default_ticker         TEXT,
+    default_timeframe      TEXT,
+    account_size           DOUBLE PRECISION,
+    risk_per_trade_pct     DOUBLE PRECISION,
+    notify_daily_digest    BOOLEAN,
+    notify_catalyst_alerts BOOLEAN,
+    notify_signal_alerts   BOOLEAN,
+    number_format          TEXT,
+    date_format            TEXT,
+    show_extended_hours    BOOLEAN,
+    created_at             TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+    updated_at             TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+    CONSTRAINT user_profile_email_lower CHECK (user_email = LOWER(user_email))
+);
+
+CREATE OR REPLACE TRIGGER set_user_profile_updated_at
+    BEFORE UPDATE ON user_profile
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ─────────────────────────────────────────────────────────
 -- ADMIN REFRESH LEASES (cross-instance dispatch cooldown)
 -- ─────────────────────────────────────────────────────────
 -- One row per Cloud Run Job the admin data-sources tab can dispatch
