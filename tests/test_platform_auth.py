@@ -374,3 +374,26 @@ def test_cors_rejects_other_origins(origin):
     # Starlette answers a disallowed preflight with 400 and, decisively, no
     # allow-origin header — the browser blocks the real request either way.
     assert r.headers.get("access-control-allow-origin") is None
+
+
+def test_cors_regex_excludes_lovable_in_iap_mode():
+    """Prod runs AUTH_MODE=iap, where auth_middleware enforces nothing (IAP at
+    the edge is the gate) — so a cross-site Lovable allowance there would ride
+    the IAP session cookie instead of a Firebase token. The Lovable branches
+    must exist only in non-iap modes; previews only ever target staging."""
+    import re
+
+    from api.main import _cors_origin_regex
+
+    iap = re.compile(_cors_origin_regex("iap"))
+    fb = re.compile(_cors_origin_regex("firebase"))
+
+    lovable = "https://preview--solyra-stocks.lovable.app"
+    project = "https://0a1b2c3d-0000-4444-8888-9e8d7c6b5a40.lovableproject.com"
+    codespace = "https://fuzzy-space-tunnel-1234.app.github.dev"
+
+    assert fb.fullmatch(lovable) and fb.fullmatch(project)
+    assert iap.fullmatch(lovable) is None
+    assert iap.fullmatch(project) is None
+    # The Codespaces branch survives in every mode.
+    assert iap.fullmatch(codespace) and fb.fullmatch(codespace)

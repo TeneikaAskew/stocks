@@ -23,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences
-from api.auth import auth_middleware, current_user_email, is_admin_email
+from api.auth import AUTH_MODE, auth_middleware, current_user_email, is_admin_email
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,41 @@ app = FastAPI(title="Trading Platform API", version="0.1.0")
 # mode so production (IAP) is byte-for-byte unchanged. See api/auth.py.
 app.middleware("http")(auth_middleware)
 
+def _cors_origin_regex(auth_mode: str) -> str:
+    """Origin regex for CORSMiddleware, shaped by how identity is enforced.
+
+    Always: GitHub Codespace tunnel URLs.
+
+    Non-iap modes only (firebase = staging, open = local dev) add every
+    Lovable-served host: published (<name>.lovable.app), editor preview
+    (id-preview--<uuid>.lovable.app), and "open preview in browser"
+    (<uuid>.lovableproject.com). Domain-wide on purpose: the project UUID
+    ROTATES between preview builds, so pinning origins to a name/UUID (tried
+    first) breaks the next preview. The trade-off, accepted 2026-09-04: any
+    Lovable project's frontend can make credentialed browser calls, but in
+    these modes gated endpoints still require a verified Firebase ID token
+    that another project's users don't have, so the exposure is limited to
+    what the open paths already serve any non-browser client (health, the
+    public Firebase web config, waitlist signup).
+
+    iap mode (prod) EXCLUDES the Lovable branches: there the app-level
+    middleware enforces nothing (IAP at the edge is the gate), so a
+    cross-site allowance would ride the IAP session cookie instead of a
+    Firebase token. Lovable previews only ever target staging (solyra's
+    apiTargets pins static hosts to STAGING_API), so prod loses nothing.
+
+    Starlette fullmatches this pattern (pinned by test), so a
+    `foo.lovable.app.evil.com` suffix attack cannot match.
+    """
+    pattern = r"https://.*\.app\.github\.dev"
+    if auth_mode != "iap":
+        pattern += (
+            r"|https://([a-z0-9-]+\.)+lovable\.app"
+            r"|https://([a-z0-9-]+\.)+lovableproject\.com"
+        )
+    return pattern
+
+
 # Registered AFTER the auth middleware ON PURPOSE. Starlette builds the stack so
 # the last-added middleware is the OUTERMOST one, and CORS has to be outermost:
 # when auth short-circuits with a 401 it returns its own response, and anything
@@ -57,27 +92,10 @@ app.add_middleware(
         # own repo and calls this API cross-origin when built as static assets,
         # where there is no dev-server proxy to keep requests same-origin.
         # Solyra's published host, kept explicit as documentation; the regex
-        # below also matches it.
+        # below also matches it in non-iap modes.
         "https://solyra-stocks.lovable.app",
     ],
-    # GitHub Codespace tunnel URLs, plus every Lovable-served host: published
-    # (<name>.lovable.app), editor preview (id-preview--<uuid>.lovable.app),
-    # and "open preview in browser" (<uuid>.lovableproject.com). Domain-wide
-    # on purpose: the project UUID ROTATES between preview builds, so pinning
-    # origins to a name/UUID (tried first) breaks the next preview. The
-    # trade-off, accepted 2026-09-04: any Lovable project's frontend can now
-    # make credentialed browser calls here. The data boundary is unchanged —
-    # gated endpoints still require a verified Firebase ID token that another
-    # project's users don't have — so the exposure is limited to what the
-    # open paths already serve any non-browser client (health, the public
-    # Firebase web config, waitlist signup). Starlette fullmatches this
-    # pattern (pinned by test), so a `foo.lovable.app.evil.com` suffix attack
-    # cannot match.
-    allow_origin_regex=(
-        r"https://.*\.app\.github\.dev"
-        r"|https://([a-z0-9-]+\.)+lovable\.app"
-        r"|https://([a-z0-9-]+\.)+lovableproject\.com"
-    ),
+    allow_origin_regex=_cors_origin_regex(AUTH_MODE),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
