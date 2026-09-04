@@ -3452,6 +3452,18 @@ END $$;
 -- gcp/apply_schema.py splits this file on semicolons while tracking $$ blocks;
 -- each CREATE MATERIALIZED VIEW … ; and CREATE [UNIQUE] INDEX … ; is a single
 -- statement with no embedded $$, so the splitter handles them cleanly.
+--
+-- The whole drop→recreate section below runs as ONE transaction (the
+-- ATOMIC begin/end markers are honored by gcp/apply_schema.py): each
+-- statement otherwise commits separately, so an apply interrupted between a
+-- committed DROP and its CREATE would leave a view ABSENT — a state the
+-- refresh job cannot repair (_is_view_populated raises on a missing
+-- relation). One group, not two: the eeo DROP is CASCADE, which also drops
+-- earnings_ticker_lean (it selects FROM eeo), so splitting the section into
+-- per-view groups would reintroduce the same gap between them. All plain
+-- transactional DDL — no CONCURRENTLY in this span.
+
+-- ATOMIC-BEGIN earnings mat views: drop + recreate + indexes as one txn
 
 -- ── 1. earnings_event_outcomes ─────────────────────────────────────────
 -- One row per (ticker, reported_date). The canonical per-event view.
@@ -3700,6 +3712,7 @@ CREATE INDEX idx_etl_lean
     ON earnings_ticker_lean (lean_score DESC);
 CREATE INDEX idx_etl_long_wins
     ON earnings_ticker_lean (long_winner_count DESC);
+-- ATOMIC-END earnings mat views
 
 
 -- ── 3. earnings_upcoming_with_history ──────────────────────────────────

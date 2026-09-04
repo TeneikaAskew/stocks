@@ -171,12 +171,15 @@ jobs:
       # the length of one refresh instead of days.
       #
       # Recovery must not assume the apply SUCCEEDED, nor that this job dies
-      # cleanly: gcp.apply_schema commits each statement in its own
-      # transaction (gcp/database.execute_sql wraps every call in
-      # engine.begin) and keeps going after per-statement errors, so a
-      # partial apply — a failed statement, an operator cancellation, the
-      # apply step's timeout — can have already committed the view drops
-      # (Codex, PR #983). Hence:
+      # cleanly: outside ATOMIC groups gcp.apply_schema commits each
+      # statement in its own transaction and keeps going after per-statement
+      # errors, so a partial apply — a failed statement, an operator
+      # cancellation, the apply step's timeout — is a real state (Codex,
+      # PR #983). The mat-view drop→recreate span itself is one ATOMIC group
+      # (single transaction, see the markers in gcp/schema.sql), so after
+      # ANY interruption the views are either the old populated ones (group
+      # rolled back) or the new EMPTY ones (group committed) — never absent.
+      # This step repopulates the empty-committed case. Hence:
       #   * always() (not the implicit success(), not !cancelled()): the
       #     step runs after apply failure AND after a cancellation that
       #     interrupted the apply (GitHub runs always()-gated steps in a
