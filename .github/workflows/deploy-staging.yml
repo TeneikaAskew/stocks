@@ -143,6 +143,7 @@ jobs:
           python-version: '3.11'
 
       - name: Roll schema forward (gcp/schema.sql)
+        id: apply
         if: inputs.apply_schema == 'true'
         env:
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
@@ -160,8 +161,22 @@ jobs:
       # refresh is only weekly — repopulate them NOW, with the same script
       # the refresh-earnings-views job runs, so the empty window is the
       # length of one refresh instead of days.
+      #
+      # This step runs on apply FAILURE as well as success (hence the
+      # explicit outcome check instead of the implicit success() gate):
+      # gcp.apply_schema commits each statement in its own transaction
+      # (gcp/database.execute_sql wraps every call in engine.begin) and keeps
+      # going after per-statement errors, so a partial apply can have already
+      # committed the view drops before an unrelated statement failed — and
+      # skipping the refresh then would leave prod's views empty until the
+      # weekly job (Codex, PR #983). The apply cannot be made one big
+      # transaction instead: schema.sql contains CREATE INDEX CONCURRENTLY
+      # statements, which Postgres refuses inside a transaction block. The
+      # run still ends red on a failed apply (this step doesn't clear the
+      # apply step's failure), and the deploy steps below keep their default
+      # success() gate, so a failed apply never deploys.
       - name: Repopulate earnings mat views
-        if: inputs.apply_schema == 'true'
+        if: ${{ !cancelled() && inputs.apply_schema == 'true' && (steps.apply.outcome == 'success' || steps.apply.outcome == 'failure') }}
         env:
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           DB_USER: ${{ secrets.DB_USER }}
