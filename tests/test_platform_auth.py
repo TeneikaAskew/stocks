@@ -390,11 +390,15 @@ def test_cors_regex_excludes_lovable_in_iap_mode():
     iap = re.compile(_cors_origin_regex("iap"))
     fb = re.compile(_cors_origin_regex("firebase"))
 
+    # The published origin must ride the SAME gate — an unconditional
+    # allow_origins entry for it re-opened iap-mode prod (Codex, PR #981).
+    published = "https://solyra-stocks.lovable.app"
     lovable = "https://preview--solyra-stocks.lovable.app"
     project = "https://0a1b2c3d-0000-4444-8888-9e8d7c6b5a40.lovableproject.com"
     codespace = "https://fuzzy-space-tunnel-1234.app.github.dev"
 
-    assert fb.fullmatch(lovable) and fb.fullmatch(project)
+    assert fb.fullmatch(published) and fb.fullmatch(lovable) and fb.fullmatch(project)
+    assert iap.fullmatch(published) is None
     assert iap.fullmatch(lovable) is None
     assert iap.fullmatch(project) is None
     # The Codespaces branch survives in every mode.

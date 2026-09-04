@@ -91,9 +91,11 @@ app.add_middleware(
         # Solyra frontend (github.com/TeneikaAskew/solyra) — the SPA lives in its
         # own repo and calls this API cross-origin when built as static assets,
         # where there is no dev-server proxy to keep requests same-origin.
-        # Solyra's published host, kept explicit as documentation; the regex
-        # below also matches it in non-iap modes.
-        "https://solyra-stocks.lovable.app",
+        # No Lovable origins here: ALL Lovable policy, the published
+        # https://solyra-stocks.lovable.app included, lives in
+        # _cors_origin_regex so the auth-mode gate applies in exactly one
+        # place. An unconditional entry here re-opened the published origin
+        # on iap-mode prod (caught by Codex on the follow-up PR).
     ],
     allow_origin_regex=_cors_origin_regex(AUTH_MODE),
     allow_credentials=True,
