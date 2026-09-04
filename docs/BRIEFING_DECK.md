@@ -1450,7 +1450,7 @@ Per CLAUDE.md and memory:
 | `docs/GCP_IMPLEMENTATION_STATUS.md` | Phase-by-phase migration tracker |
 | `docs/INVESTMENT_MODELS_SUMMARY.md` | 5-model system, 195 features breakdown |
 | `docs/MODEL_SUMMARY.md` | Concise model overview |
-| `docs/DESIGN_SYSTEM.md` | "The Obsidian Analyst" theme, color tokens, typography |
+| [`docs/DESIGN_SYSTEM.md`](https://github.com/TeneikaAskew/solyra/blob/main/docs/DESIGN_SYSTEM.md) | "The Obsidian Analyst" theme, color tokens, typography — now in the solyra repo |
 | `docs/API.md` | FastAPI router/endpoint catalog (PR #92) |
 | `docs/DATA_PIPELINE.md` | Per-table freshness plan, canonical writers, watchdog (PR #87) |
 | `docs/FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub failure-notifier deployment + smoke test (PR #82) |
