@@ -30,7 +30,7 @@ flowchart TB
  MW --> M{"AUTH_MODE == 'firebase'?"}
  M -->|no: open OR iap| PASS[call_next — NO app-layer check]
  M -->|yes| P{"_path_requires_auth(path)?"}
- P -->|"non-/api/ path, or one of the 4 open prefixes"| PASS
+ P -->|"non-/api/ path, exact /api/me, or one of the 3 open prefixes (health, config/firebase, waitlist) — /api/me/* SUB-paths are gated"| PASS
  P -->|gated| V["_verify_bearer_email"]
  V -->|throws| E401[401 invalid or expired sign-in]
  V -->|none| E401b[401 sign in to continue]
@@ -201,7 +201,7 @@ Cloud SQL connector), and `iam.serviceAccountUser` on the runtime SA
 
 | Control | Mechanism | Evidence |
 |---|---|---|
-| Who can obtain the deploy identity | WIF provider **attribute condition** — the enforced boundary. Must clamp both `assertion.repository` and `assertion.ref=='refs/heads/main'`, because `workflow_dispatch` executes the workflow file from the caller-selected ref: a write-capable actor could otherwise dispatch a branch whose copy removes any in-file check | `SETUP.md` §4a (condition + `update-oidc` roll-forward command) |
+| Who can obtain the deploy identity | WIF provider **attribute condition** — the intended boundary. Must clamp both `assertion.repository` and `assertion.ref=='refs/heads/main'`, because `workflow_dispatch` executes the workflow file from the caller-selected ref: a write-capable actor could otherwise dispatch a branch whose copy removes any in-file check. **Live provider state UNVERIFIED**: the repo proves only the documented condition; the ref clamp reaches GCP solely via the operator-run `update-oidc` roll-forward, which no workflow applies. Until an operator confirms it (`gcloud iam workload-identity-pools providers describe github-provider …`), treat the boundary as a rollout prerequisite, not an active control | `SETUP.md` §4a (condition + `update-oidc` roll-forward command) |
 | Wrong-ref dispatch UX | In-file guard fails the run loudly on any ref but `main` — an accident rail, explicitly NOT the boundary | `deploy-staging.yml` "Refuse non-main refs" step |
 | Credential file never leaves the runner | `gha-creds-*.json` (written by google-github-actions/auth) is excluded from Cloud Build source uploads | `.gcloudignore` / `.dockerignore` Security blocks |
 | No new secret material for deploys | Firebase web config + access policy are read off the LIVE service and re-supplied; `DB_PASS` stays in Secret Manager (`describe` exposes only the ref). DB creds for the CI schema path are the pre-existing GitHub Actions secrets | `deploy-staging.yml` "Read live service config" step |
