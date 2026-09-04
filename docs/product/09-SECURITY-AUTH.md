@@ -240,8 +240,12 @@ runs billable query jobs and `aiplatform.user` invokes Vertex AI Gemini, so it
 already carried the ability to incur spend before any deploy role was added. Resource-level:
 `storage.admin` **and** `storage.objectAdmin` on the Cloud Build bucket (the
 objectAdmin binding predates the fix and is now redundant — safe to remove),
-and `iam.serviceAccountUser` on both `trading-platform-svc@…` and
-`28960574877-compute@developer…`.
+`iam.serviceAccountUser` on both `trading-platform-svc@…` and
+`28960574877-compute@developer…`, and `artifactregistry.reader` on the `gcr.io`
+repo (location `us`), which is what lets `gcloud run deploy` pull the image
+Cloud Build just pushed. Its absence fails a deploy only after the ~4-minute
+image build (run #13); with it, run #14 completed end to end and revision
+`trading-platform-staging-00046-x8m` went live with `/api/health` 200.
 
 **Runtime SA `trading-platform-svc@…`** — the `SETUP_IAM=1` grants have been
 applied: `roles/firebaseauth.admin` at project level (the Admin → Users tab
@@ -261,7 +265,6 @@ should function once a revision carrying the current code is serving.
 | Item | State |
 |---|---|
 | **WIF ref clamp** | **NOT APPLIED.** Read live 2026-09-04, the provider's attribute condition is `assertion.repository=='TeneikaAskew/stocks'` with no `assertion.ref` clause. The enforced boundary is therefore repository-only: any branch a write-capable actor can push, dispatched via `workflow_dispatch`, can still obtain the deploy identity — the in-workflow main-ref guard is branch-controlled and does not close this. SETUP.md §4a carries the `update-oidc` roll-forward command; it remains an operator action |
-| `artifactregistry.reader` on the `gcr.io` repo | **Granted** (verified 2026-09-04). With it, deploy run #14 completed end to end: image built, revision `trading-platform-staging-00046-x8m` went live, `/api/health` 200 |
 | Least-privilege shape | The deploy identity retains `run.admin` + `actAs` on a compute SA that holds `roles/editor`. Unchanged from the assessment above |
 
 ## Requirements
