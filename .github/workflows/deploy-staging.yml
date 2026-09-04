@@ -61,7 +61,8 @@ name: Deploy staging
 # Roles the WIF service account needs BEYOND the doc-refresh set (one-time,
 # granted by an operator with project IAM admin — not the CI SA):
 # Every entry below was proven necessary by a real failed run on 2026-09-04
-# (runs #1-#12 each failed one layer deeper); do not trim without re-testing.
+# (runs #1-#13 each failed one layer deeper; #14 was the first to deploy end
+# to end); do not trim without re-testing.
 #   roles/cloudsql.client            schema step's connector from the runner
 #   roles/cloudbuild.builds.editor   gcloud builds submit
 #   roles/serviceusage.serviceUsageConsumer
@@ -108,13 +109,26 @@ name: Deploy staging
 #                                      act as service account <numeric id>"
 #                                      AFTER the source tarball uploads
 #                                      (run #12)
+#   roles/artifactregistry.reader    on the gcr.io repo (location us) —
+#                                    `gcloud run deploy` resolves the freshly
+#                                    built image via
+#                                    artifactregistry.repositories.downloadArtifacts.
+#                                    gcr.io is Artifact Registry-backed, so
+#                                    Cloud Build WRITE access does not imply
+#                                    deploy-time READ; this fails only after a
+#                                    successful image build (run #13)
 #   roles/secretmanager.viewer       platform/deploy.sh's trading-db-pass
 #                                    existence check
 #
-# NOT covered here (still an operator task, needs project IAM admin):
+# NOT covered here — permanently operator-owned, because it needs project IAM
+# admin, which the CI service account deliberately does not have:
 #   SETUP_IAM=1 ./platform/deploy.sh — grants roles/firebaseauth.admin to
 #   the runtime SA (Admin → Users tab) and run.invoker on the fetcher jobs
 #   (Admin → Data refresh). See the header of platform/deploy.sh.
+#   STATUS: already applied in this project, verified 2026-09-04 (all seven
+#   allowlisted jobs checked individually). Re-run only if those grants are
+#   revoked or a job is added to the allowlist — this workflow will still
+#   never do it for you. As-built inventory: docs/product/09-SECURITY-AUTH.md.
 
 on:
   workflow_dispatch:
