@@ -337,9 +337,9 @@ Three long-lived HTTP services, all with `min-instances=0` so they cost nothing 
 | Memory / CPU | 1 GiB / 1 vCPU |
 | Scaling | 0–5 instances |
 | Auth | **IAP (Identity-Aware Proxy) auto-managed** scoped to `bictech.org` Google identities. Admin email (`teneika@bictech.org`) bypasses the optional in-app token gate |
-| Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic), and the SPA at `/` |
+| Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic). **No SPA**: the frontend left in #957 and the image carries no `dist/`, so `/` and every client route answer 404 |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
-| URL | Custom domain `stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, IAP-gated); the generated `solyra-api-prod-…run.app` URL remains as a fallback |
+| URL | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app`, IAP-gated. **`stocks.insightscollective.org` no longer points here** — it was remapped on 2026-09-05 to `solyra-api-staging`, which is public at the edge and Firebase-gated with open self-signup. Diagnosing prod through that hostname reaches staging instead, under a different auth policy and against the same production data ([09](../docs/product/09-SECURITY-AUTH.md)) |
 | Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/solyra-api`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
 
 This is the only thing a human directly hits in a browser.

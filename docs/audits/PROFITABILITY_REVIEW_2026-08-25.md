@@ -1010,7 +1010,7 @@ with a complete causal chain. The second retracts a conclusion from
 
 ### 17.1 A collapsed model reached production and served users for two days
 
-`MOVEMENT_STATEMENT_ENABLED=true` has been live on `solyra-api-prod`
+`MOVEMENT_STATEMENT_ENABLED=true` has been live on `trading-platform`
 since 2026-07-12. It renders the Expected-Move card, whose `size_class`
 is the argmax of the magnitude engine's 4-class softmax.
 

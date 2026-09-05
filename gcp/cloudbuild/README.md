@@ -24,6 +24,33 @@ without any extra grants (the SA already has `roles/run.developer`
 which covers `run.jobs.run`, and the build output is small enough
 that the missing `logging.logWriter` only produces a warning).
 
+### What `trading-runner@` actually holds (read live 2026-09-05)
+
+This list was previously incomplete, which is a real hazard for a project
+rebuild and produced a false alarm on review (Codex, PR #990): reading only the
+two grants below, the staging trigger's inline `docker push` looks like it must
+fail for want of Artifact Registry write access. It does not — the SA holds
+`artifactregistry.writer` at project level, which covers `uploadArtifacts` on
+the Artifact-Registry-backed `gcr.io` repo. Verified:
+
+```
+$ gcloud projects get-iam-policy adept-mountain-474619-d4 \
+    --flatten="bindings[].members" \
+    --filter="bindings.members:trading-runner@..."
+roles/aiplatform.user            roles/logging.logWriter
+roles/artifactregistry.writer    roles/run.developer
+roles/cloudbuild.builds.editor   roles/run.invoker
+roles/cloudsql.client            roles/secretmanager.secretAccessor
+roles/cloudsql.editor            roles/serviceusage.serviceUsageConsumer
+                                 roles/storage.objectAdmin
+```
+
+The two that the staging trigger depends on and that a rebuild must not omit
+are `artifactregistry.writer` (the `docker push` step, which now runs inline as
+this SA rather than delegating to a nested Cloud Build) and `run.developer`
+(the `gcloud run deploy` step). Re-verify before relying on this; a grant can
+be revoked without any repo change.
+
 The `deploy-solyra-api-staging` and `deploy-solyra-api-prod` triggers
 need these grants before they'll run successfully:
 

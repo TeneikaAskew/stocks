@@ -3,10 +3,20 @@
 #
 #   gcloud builds triggers run deploy-solyra-api-prod --branch=main
 #
-# Promotes to prod the exact image digest currently serving staging, rather than
+# Promotes to prod the exact image digest that STAGING IS SERVING, rather than
 # rebuilding from main. A rebuild would pick up whatever merged since staging
 # last deployed, so prod would ship bits that were never the ones validated.
-# Reading the digest off the live staging service closes that gap.
+#
+# The serving revision is resolved from the service's TRAFFIC TARGETS, not from
+# status.latestReadyRevisionName. Those differ whenever staging has been rolled
+# back, is split across revisions, or was deployed with --no-traffic (a mode
+# platform/deploy.sh still supports). In each of those cases the latest ready
+# revision is NOT the one an operator validated, and promoting it would ship an
+# unvalidated image under the banner of "promote what staging validated"
+# (Codex, PR #990).
+#
+# Fails loud rather than guessing: no revision serving traffic, or traffic split
+# across several, both abort instead of picking one.
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: promote
@@ -15,15 +25,36 @@ steps:
       - -c
       - |
         set -euo pipefail
+
+        cat > /tmp/pick_serving_revision.py <<'PYEOF'
+        import json, sys
+        s = json.load(sys.stdin)["status"]
+        serving = [t for t in s.get("traffic", []) if t.get("percent", 0) > 0]
+        if not serving:
+            sys.exit("FATAL: no solyra-api-staging revision is receiving traffic; "
+                     "there is nothing validated to promote")
+        if len(serving) > 1:
+            detail = ", ".join("%s=%s%%" % (t.get("revisionName", "?"), t.get("percent"))
+                               for t in serving)
+            sys.exit("FATAL: staging traffic is split across revisions (%s); which one "
+                     "was validated is ambiguous, settle staging before promoting" % detail)
+        name = serving[0].get("revisionName") or s.get("latestReadyRevisionName")
+        if not name:
+            sys.exit("FATAL: could not resolve the serving revision name from the traffic target")
+        print(name)
+        PYEOF
+
         REV=$$(gcloud run services describe solyra-api-staging \
-          --region=us-east1 --format='value(status.latestReadyRevisionName)')
+          --region=us-east1 --format=json | python3 /tmp/pick_serving_revision.py)
+
         DIGEST=$$(gcloud run revisions describe "$$REV" \
           --region=us-east1 --format='value(status.imageDigest)')
         if [ -z "$$DIGEST" ]; then
-          echo "FATAL: could not resolve a digest from staging revision '$$REV'" >&2
+          echo "FATAL: could not resolve an image digest from staging revision '$$REV'" >&2
           exit 1
         fi
-        echo "Promoting staging revision $$REV to prod"
+
+        echo "Promoting the revision STAGING IS SERVING: $$REV"
         echo "  image: $$DIGEST"
         gcloud run deploy solyra-api-prod \
           --image="$$DIGEST" \

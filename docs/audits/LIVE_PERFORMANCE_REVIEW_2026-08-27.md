@@ -48,7 +48,7 @@ flag was "default-OFF and set nowhere in `gcp/deploy.sh`, so there is no
 live exposure today." **That was wrong.** The flag is default-OFF in
 code, but it is set `true` at `platform/deploy.sh:87` — the *frontend*
 service's separate deploy script, which the original grep never covered.
-Verified live: `gcloud run services describe solyra-api-prod` returns
+Verified live: `gcloud run services describe trading-platform` returns
 `MOVEMENT_STATEMENT_ENABLED=true`. The Expected-Move card is rendering
 this chain to users now.
 

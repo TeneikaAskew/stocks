@@ -152,7 +152,7 @@ consumed, but directly by `lib/movement_statement.py`, not this router)
 ## TIER 6 — Feature flags
 
 - **`MOVEMENT_STATEMENT_ENABLED` — NOT dead. It is LIVE.** Set `true` at
-  `platform/deploy.sh:87` and confirmed on the `solyra-api-prod` Cloud
+  `platform/deploy.sh:87` and confirmed on the `trading-platform` Cloud
   Run service. `/api/movement-statement` is called by
   `useMovementStatement.ts` and rendered by
   `platform/src/components/dashboard/MovementRead.tsx`; its source
@@ -165,7 +165,7 @@ consumed, but directly by `lib/movement_statement.py`, not this router)
   > exposure today." **That was wrong** — I grepped `gcp/deploy.sh` and
   > `platform/api/` but not `platform/deploy.sh`, which is the frontend
   > service's separate deploy script. Verified live:
-  > `gcloud run services describe solyra-api-prod` returns
+  > `gcloud run services describe trading-platform` returns
   > `{'name': 'MOVEMENT_STATEMENT_ENABLED', 'value': 'true'}`.
   >
   > **Consequence:** report 02's `pred_bucket` finding is **live and

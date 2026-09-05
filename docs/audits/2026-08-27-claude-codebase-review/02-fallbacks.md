@@ -13,7 +13,7 @@ from the old inventory.
 > nowhere in `gcp/deploy.sh`". **That was wrong.** The flag is set
 > `true` at **`platform/deploy.sh:87`** — the frontend service's
 > separate deploy script, which I had not grepped — and is confirmed
-> live on the `solyra-api-prod` Cloud Run service. The
+> live on the `trading-platform` Cloud Run service. The
 > `pred_bucket → size_class → stop distances` chain **is user-facing
 > today**. See report 09 TIER 6 for the full correction and severity
 > assessment. The `$100` spot reachability finding below is unaffected
