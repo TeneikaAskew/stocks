@@ -67,7 +67,8 @@ flowchart LR
 
     SCH[Cloud Scheduler<br/>60 cron triggers]:::gcp
     JOBS[Cloud Run Jobs<br/>34 fetchers + analyzers]:::gcp
-    SVC1[Cloud Run Service:<br/>solyra-api-prod<br/>FastAPI + React + IAP]:::gcp
+    SVC1[Cloud Run Service:<br/>solyra-api-prod<br/>FastAPI API + IAP]:::gcp
+    SVC1S[Cloud Run Service:<br/>solyra-api-staging<br/>FastAPI API + Firebase]:::gcp
     SVC2[Cloud Run Service:<br/>discord-interactions<br/>slash commands]:::gcp
     SVC3[Cloud Run Service:<br/>failure-notifier]:::gcp
     GCS[GCS<br/>raw parquets,<br/>archives]:::gcp
@@ -343,12 +344,30 @@ Three long-lived HTTP services, all with `min-instances=0` so they cost nothing 
 
 This is the only thing a human directly hits in a browser.
 
-**Deploy pipeline (added 2026-05-16).** `solyra-api-prod` deploys in two stages via GitHub Actions:
+**Deploy pipeline — rebuilt 2026-09-05.** Two Cloud Build triggers, one per service:
 
-- [`deploy-solyra-api-staging.yml`](../.github/workflows/deploy-solyra-api-staging.yml) — on push to `main` touching `platform/`, `lib/`, `requirements.txt`, or `gcp/database.py`, runs `STAGING=1 ./platform/deploy.sh` to build the image and deploy a Cloud Run revision tagged `staging` at **0% traffic** (`--no-traffic --tag staging`). Reachable at `https://staging---solyra-api-prod-…run.app`; production traffic is untouched.
-- [`deploy-solyra-api-prod.yml`](../.github/workflows/deploy-solyra-api-prod.yml) — manual `workflow_dispatch` that routes 100% of production traffic to the current `staging`-tagged revision (`gcloud run services update-traffic --to-tags=staging=100`). Shares the staging workflow's concurrency group so a deploy and a promote cannot interleave.
+| Trigger | Fires | Deploys |
+|---|---|---|
+| `deploy-solyra-api-staging` | push to `main` touching `platform/`, `lib/`, `requirements.txt`, `gcp/database.py` | `solyra-api-staging` |
+| `deploy-solyra-api-prod` | **manual only** | `solyra-api-prod` |
 
-In `STAGING=1` mode `platform/deploy.sh` omits the `--no-allow-unauthenticated` flag: re-asserting the service IAM policy needs `run.services.setIamPolicy`, which the CI deploy service account does not hold, and a staging revision inherits the service's existing IAP-gated auth posture anyway.
+Merging to `main` cannot reach production. The prod trigger promotes the image
+digest currently serving staging (`status.imageDigest` off the live service)
+rather than rebuilding from `main`, so prod ships the bits staging validated
+rather than whatever merged in between. Deploys set the image only; env vars,
+secrets, Cloud SQL and memory live on the service, because `--set-env-vars`
+replaces the entire set on each deploy.
+
+This replaced a tag-based blue/green on one service: a `staging`-tagged
+revision at 0% traffic, promoted by shifting traffic to the tag. That stopped
+working on 2026-08-25 when `--no-traffic` was dropped from the trigger — a tag
+carries no traffic guarantee of its own, so the "staging" revision was serving
+100% of production and the promote step was a no-op. Verified live 2026-09-04:
+`trading-platform-00167-qiz`, `tag: staging`, `percent: 100`. The environment a
+deploy lands in is now the service name, not a traffic percentage.
+
+`platform/deploy.sh` still carries the `STAGING=1` revision-tag mode for one-off
+operator use; it is marked legacy in the script and is not what CI runs.
 
 ### 7.2 `discord-interactions` — the slash command service
 

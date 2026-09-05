@@ -4,7 +4,7 @@
 
 ## 1. System overview (one paragraph, ~80-120 words)
 
-This system is a private stocks/trading platform deployed to the GCP project `adept-mountain-474619-d4`. It is designed for a single user or a small team, with no public authentication or per-user data partitioning. The primary delivery surfaces are Discord webhooks for scheduled briefs and a slash-command Cloud Run service, with a secondary internal React + FastAPI dashboard available via the `solyra-api-prod` Cloud Run Service. The system is comprised of approximately 76 Cloud Run Jobs that handle various data fetching, processing, and analysis tasks.
+This system is a private stocks/trading platform deployed to the GCP project `adept-mountain-474619-d4`. It is designed for a single user or a small team, with no public authentication or per-user data partitioning. The primary delivery surfaces are Discord webhooks for scheduled briefs and a slash-command Cloud Run service, with a secondary internal dashboard. The API is served by two Cloud Run services, `solyra-api-prod` (IAP) and `solyra-api-staging` (public edge, Firebase-gated); the React frontend moved to github.com/TeneikaAskew/solyra in #957 and is no longer built into this image. The system is comprised of approximately 76 Cloud Run Jobs that handle various data fetching, processing, and analysis tasks.
 
 ## 2. Component inventory (table form)
 
@@ -28,7 +28,8 @@ This system is a private stocks/trading platform deployed to the GCP project `ad
 
 | Resource | Type | Purpose | Notes |
 |---|---|---|---|
-| `solyra-api-prod` | Cloud Run Service | FastAPI and React frontend | The main user-facing dashboard. |
+| `solyra-api-prod` | Cloud Run Service | FastAPI API only (no SPA since #957) | Production API, behind IAP. Deployed ONLY by the manual `deploy-solyra-api-prod` trigger. |
+| `solyra-api-staging` | Cloud Run Service | FastAPI API only | Staging API, public edge + Firebase auth. Auto-deployed on merge to main. |
 | `discord-interactions` | Cloud Run Service | Handles Discord slash commands | Invokes Cloud Run Jobs based on commands. |
 | `failure-notifier` | Cloud Run Service | Notifies on job failures | Creates GitHub issues for failed jobs. |
 | `76 Cloud Run Jobs` | Cloud Run Job | Data fetching and processing | Scheduled and on-demand jobs. |

@@ -170,20 +170,34 @@ them mis-scopes a review:
    [#985](https://github.com/TeneikaAskew/stocks/pull/985)) hardcodes the
    staging service and runs `STAGING_SERVICE=1 ./platform/deploy.sh` as the
    WIF SA. The WIF trust boundary below applies to THIS path only.
-2. **Cloud Build triggers → production, as `trading-runner@`.**
-   `gcp/cloudbuild/README.md` records live triggers whose authoritative
-   config is in Cloud Build itself: `deploy-solyra-api-staging` (push to main
-   touching `platform/`, `lib/`, …) runs `./platform/deploy.sh`, and
-   `deploy-solyra-api-prod` (manual) shifts `solyra-api-prod` traffic to the
-   `staging` tag. Its boundary is Cloud Build trigger config + the
-   `trading-runner@` IAM, NOT WIF. **Open discrepancy:** the in-repo config
-   (`deploy-solyra-api-staging-cloudbuild.yaml`) invokes `platform/deploy.sh`
-   with NO `STAGING=1`/`STAGING_SERVICE=1`, which in that script means a
-   full-traffic PRODUCTION deploy — contradicting the file's own header
-   ("staging-tagged revision, 0% traffic") and making the promote trigger
-   moot. Verify the live trigger (`gcloud builds triggers describe
-   deploy-solyra-api-staging`) and reconcile; until then, treat "what deploys
-   production, when, with what traffic" as unverified.
+2. **Cloud Build triggers, as `trading-runner@`.** Boundary is the trigger
+   config plus `trading-runner@` IAM, NOT WIF. Rebuilt 2026-09-05; live config
+   read back with `gcloud builds triggers list`:
+
+   | Trigger | Fires | Deploys |
+   |---|---|---|
+   | `deploy-solyra-api-staging` | push to main touching `platform/`, `lib/`, `requirements.txt`, `gcp/database.py` | `solyra-api-staging` |
+   | `deploy-solyra-api-prod` | **manual only** | `solyra-api-prod` |
+
+   **Merging to main can no longer reach production.** That gate was believed
+   to exist before and did not. The previous design was a tag-based blue/green
+   on one service: deploy a `staging`-tagged revision at 0% traffic, then a
+   manual promote shifts traffic. `--no-traffic` was dropped from the trigger
+   on 2026-08-25 to mirror `platform/deploy.sh`'s prod invocation, and a
+   `staging` tag carries no traffic guarantee of its own, so the tagged
+   revision was serving 100% of production and the promote trigger was a
+   no-op. Read live on 2026-09-04: revision `trading-platform-00167-qiz`,
+   `tag: staging`, `percent: 100`. The discrepancy this section previously
+   flagged as unverified is therefore resolved, and the answer was the
+   unfavourable one.
+
+   Two services now replace the tag: the environment a deploy lands in is the
+   service name, not a traffic percentage. The prod trigger promotes the image
+   digest currently serving staging (read from `status.imageDigest`) rather
+   than rebuilding from main, so prod ships the bits staging validated instead
+   of whatever merged since. Deploys set the image only; env, secrets, Cloud
+   SQL and memory live on the service, because `--set-env-vars` replaces the
+   whole set on every deploy.
 
 Operator-run `platform/deploy.sh` under a personal gcloud identity remains a
 third, manual path for both services.
@@ -218,7 +232,7 @@ build alone. The trust model:
 
 | Control | Mechanism | Evidence |
 |---|---|---|
-| Who can obtain the deploy identity | WIF provider **attribute condition** — the intended boundary. Must clamp both `assertion.repository` and `assertion.ref=='refs/heads/main'`, because `workflow_dispatch` executes the workflow file from the caller-selected ref: a write-capable actor could otherwise dispatch a branch whose copy removes any in-file check. **Live provider state VERIFIED 2026-09-04 — the clamp is NOT applied**: the condition in GCP is `assertion.repository=='TeneikaAskew/stocks'` with no `assertion.ref` clause, so the boundary actually in force today is repository-wide, not main-only. The ref clamp reaches GCP solely via the operator-run `update-oidc` roll-forward, which no workflow applies. Until it is run, this control is a rollout prerequisite rather than an active one, and the in-file guard below (being branch-controlled) does not substitute for it. See the "Still open" table | `SETUP.md` §4a (condition + `update-oidc` roll-forward command) |
+| Who can obtain the deploy identity | WIF provider **attribute condition** — the intended boundary. Must clamp both `assertion.repository` and `assertion.ref=='refs/heads/main'`, because `workflow_dispatch` executes the workflow file from the caller-selected ref: a write-capable actor could otherwise dispatch a branch whose copy removes any in-file check. **Live provider state VERIFIED 2026-09-05 — the clamp IS applied**: the operator ran the `update-oidc` roll-forward and the condition in GCP now reads `assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'`, re-read directly from the provider. The boundary in force is main-only, so this is an active control rather than the rollout prerequisite it was on 2026-09-04. The in-file guard remains a UX rail, not the enforcement: it lives in the branch being dispatched | `SETUP.md` §4a (condition + `update-oidc` roll-forward command) |
 | Wrong-ref dispatch UX | In-file guard fails the run loudly on any ref but `main` — an accident rail, explicitly NOT the boundary | `deploy-staging.yml` "Refuse non-main refs" step |
 | Credential file never leaves the runner | `gha-creds-*.json` (written by google-github-actions/auth) is excluded from Cloud Build source uploads | `.gcloudignore` / `.dockerignore` Security blocks |
 | No new secret material for deploys | Firebase web config + access policy are read off the LIVE service and re-supplied; `DB_PASS` stays in Secret Manager (`describe` exposes only the ref). DB creds for the CI schema path are the pre-existing GitHub Actions secrets | `deploy-staging.yml` "Read live service config" step |
@@ -245,7 +259,7 @@ objectAdmin binding predates the fix and is now redundant — safe to remove),
 repo (location `us`), which is what lets `gcloud run deploy` pull the image
 Cloud Build just pushed. Its absence fails a deploy only after the ~4-minute
 image build (run #13); with it, run #14 completed end to end and revision
-`solyra-api-staging-00046-x8m` went live with `/api/health` 200.
+`trading-platform-staging-00046-x8m` went live with `/api/health` 200 (that revision predates the rename; the service is now `solyra-api-staging`).
 
 **Runtime SA `trading-platform-svc@…`** — project-level, exactly three roles as
 read live: `cloudsql.client`, `aiplatform.user`, and `firebaseauth.admin`. The
@@ -271,11 +285,51 @@ from the project-level list alone would see no secret capability at all and
 conclude the wrong thing in both directions. The `trading-db-pass` binding also
 names the default compute SA `28960574877-compute@developer…` (Codex, PR #989).
 
+### Environment split and public surface — 2026-09-05 — VERIFIED — LIVE
+
+Two Cloud Run services, read live 2026-09-05:
+
+| Service | Edge | App auth | Reached by |
+|---|---|---|---|
+| `solyra-api-prod` | `iap-enabled: true` | `AUTH_MODE=iap` | Google SSO through IAP |
+| `solyra-api-staging` | `allUsers` → `roles/run.invoker` | `AUTH_MODE=firebase` | anyone; app verifies a Firebase ID token per request |
+
+`allUsers` on staging is deliberate and matches what the service it replaced
+carried: IAP on Cloud Run is service-level and cannot be dropped per-revision,
+so staging is public at the edge and re-protected in the app. Only
+`/api/health`, `/api/me`, `/api/config/firebase` answer without a token.
+
+**`stocks.insightscollective.org` was remapped to `solyra-api-staging` on
+2026-09-05**, at the operator's instruction, having previously pointed at the
+IAP-gated prod service. That is a real change in who can reach that hostname,
+and it interacts badly with two pre-existing conditions:
+
+- staging runs `AUTH_OPEN_SIGNUP=1`, so any Firebase self-registration is
+  allowed rather than an allow-list, and
+- staging is wired to the **production** database and bucket
+  (`CLOUD_SQL_CONNECTION_NAME=…:trading-db`, `DB_NAME=trading`,
+  `GCS_BUCKET=…-trading-data`) — identical to prod's.
+
+So the memorable hostname now fronts a service where anyone who completes a
+Firebase signup reaches production data. Be precise about attribution: the
+open-signup-over-prod-data condition predates the remap and was equally true
+on the `…run.app` URL. What the remap changed is discoverability, from an
+obscure generated hostname to a guessable domain. Closing it is one command
+plus an allow-list, and it is listed below rather than silently applied
+because flipping it logs out anyone currently relying on self-signup:
+
+```bash
+gcloud run services update solyra-api-staging --region=us-east1 \
+  --update-env-vars AUTH_OPEN_SIGNUP=0
+# then set AUTH_ALLOWED_EMAILS (already wired as a secret ref on the service)
+```
+
 ### Still open — do not read the above as "fully hardened"
 
 | Item | State |
 |---|---|
-| **WIF ref clamp** | **NOT APPLIED.** Read live 2026-09-04, the provider's attribute condition is `assertion.repository=='TeneikaAskew/stocks'` with no `assertion.ref` clause. The enforced boundary is therefore repository-only: any branch a write-capable actor can push, dispatched via `workflow_dispatch`, can still obtain the deploy identity — the in-workflow main-ref guard is branch-controlled and does not close this. SETUP.md §4a carries the `update-oidc` roll-forward command; it remains an operator action |
+| Open self-signup on production data | `solyra-api-staging` has `AUTH_OPEN_SIGNUP=1` and points at the prod Cloud SQL instance and bucket, now behind `stocks.insightscollective.org`. Anyone who registers reaches real data. See the remediation above. **Highest-severity item in this table** |
+| No environment isolation | "Staging" and "prod" differ in auth mode and one feature flag; the data layer is shared. The rename made the environments legible, it did not separate them. A dedicated staging database is the actual fix and is planned, not done |
 | Least-privilege shape | The deploy identity retains `run.admin` + `actAs` on a compute SA that holds `roles/editor`. Unchanged from the assessment above |
 
 ## Requirements

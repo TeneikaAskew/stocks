@@ -16,7 +16,7 @@ captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler 
 
 | Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |
 |---|---|---|---|---|---|
-| React web + FastAPI service | SPA + API on one Cloud Run service | `platform/Dockerfile`, `platform/cloudbuild.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` default; `firebase` in staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
+| FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
 | Cloud Run jobs (67) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (58) / manual | see per-job table |
 | Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
@@ -49,13 +49,21 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 | Environment | Service | URL | Auth | Evidence |
 |---|---|---|---|---|
 | **Production** | `solyra-api-prod` (us-east1) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
-| **Staging** | `solyra-api-staging` | `UNKNOWN` — Cloud Run assigns it; not committed anywhere | **public ingress + Firebase** (`PUBLIC=1`, `AUTH_MODE=firebase`) | `platform/deploy.sh:52-56` |
+| **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `stocks.insightscollective.org` since 2026-09-05 | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
 | **Discord interactions** | `discord-interactions` | `UNKNOWN` — docs carry a redacted placeholder | Discord signature verification | `docs/*` show `https://discord-interactions-XXXXXXXXXX-ue.a.run.app/discord/interactions` |
 | **Failure notifier** | notifier service | `UNKNOWN` — redacted placeholder | internal | `https://failure-notifier-XXXXXXXXXX-ue.a.run.app` |
 | **Local dev (frontend)** | Vite — in the solyra repo since the #957 split | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | solyra `vite.config.ts`; `platform/` here holds only the API |
 | **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; solyra's Vite proxies `/api` → `:8000` |
 
-**No custom domain is committed anywhere in the repository.** The landing components brand the
+**A custom domain now exists.** `stocks.insightscollective.org` maps to
+`solyra-api-staging` (moved off the prod service 2026-09-05; the CNAME to
+`ghs.googlehosted.com` is service-independent so the move needed no DNS change).
+It is committed nowhere in source — Cloud Run holds the mapping — so treat
+`gcloud beta run domain-mappings list --region=us-east1` as the source of truth.
+Read [09](09-SECURITY-AUTH.md) before assuming what that hostname exposes: it
+fronts open Firebase self-signup over the production database.
+
+Historically: The landing components brand the
 product **Solyra** (solyra `src/components/landing/*` since the #957 split, and [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27)
 "Rename internal Heatseeker/Flowseeker tabs before Solyra public launch", formerly #685), but no `solyra.*`
 hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
