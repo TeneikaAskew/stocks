@@ -895,7 +895,7 @@ python -m playwright install chromium
 | `test_agent_vertex_adapter.py` | Vertex adapter |
 | `test_phase2_fetchers.py` | GCP fetcher integration |
 | `test_production_readiness.py` | Production environment checks (100-pt scorecard) |
-| `test_e2e.py` | Playwright E2E (28 scenarios) |
+| `archive/tests/test_e2e.py` | ARCHIVED — Playwright smoke tests for the retired static pages; no API coverage, not run by CI |
 | `test_scripts.py` | CLI regression for scripts |
 | `test_integration.py` | Cross-module integration |
 | `test_gamma.py` | `lib/gamma.py` — sign convention, GEX/VEX, King/Gate/Spot/Flip classification (PR #81) |

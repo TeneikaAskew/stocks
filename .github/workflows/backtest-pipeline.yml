@@ -48,12 +48,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browsers
-        # tests/test_e2e.py spins up Chromium via Playwright. The pip
-        # `playwright` package only installs the Python bindings; the
-        # browser binaries have to be downloaded separately.
-        run: python -m playwright install --with-deps chromium
-
       - name: Run tests
         # tests/integration/ needs a real Postgres — it runs in the
         # dedicated `integration-tests` job below, not here.

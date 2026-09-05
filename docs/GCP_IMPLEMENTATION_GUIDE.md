@@ -214,7 +214,6 @@ stocks/
 │   ├── test_indicators.py
 │   ├── test_signals.py
 │   ├── test_strat.py
-│   ├── test_e2e.py                # Playwright E2E (28 tests)
 │   └── test_scripts.py            # CLI regression (18 tests)
 │
 ├── website/                       # Trading dashboard web app (port 8104)

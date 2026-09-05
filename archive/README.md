@@ -17,6 +17,7 @@ imports from it — with the two documented exceptions below.
 | `standalone-scripts/` | root-level scripts that nothing imported |
 | `static-pages/` | the old root `index.html` landing page linking to the apps |
 | `notes/` | one-off notes and test artifacts |
+| `tests/` | Playwright smoke tests for `success-report-site/` and `website/`, moved out of the live `tests/` tree on 2026-09-05. Not run by CI and not part of `make test`; `make test-e2e` still runs them on demand |
 
 ## Still referenced from live code
 
@@ -26,8 +27,9 @@ moving or deleting them:
 - `archive/google-apps-script/data/` — the default `--data-dir` for
   `scripts/match_earnings_strategy.py`.
 - `archive/success-report-site/` and `archive/website/` — served by the
-  Playwright smoke tests in `tests/test_e2e.py` (`make test-e2e`; excluded
-  from `make test` and not run in CI).
+  Playwright smoke tests in `archive/tests/test_e2e.py` (`make test-e2e`).
+  Those tests live here too now, so this pairing is self-contained: it is not
+  in `make test` and CI never runs it.
 
 ## Before removing anything from here
 
