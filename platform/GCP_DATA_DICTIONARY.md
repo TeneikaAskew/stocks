@@ -21,19 +21,19 @@
 
 | Service | Region | What it is | Service account | Secrets mounted (`--set-secrets`) |
 |---|---|---|---|---|
-| **`trading-platform`** | us-east1 | The React SPA **and** the FastAPI backend, one container (`platform/Dockerfile`: Vite build → `platform/dist`, served by `uvicorn api.main:app` on :8080). This is the only service the browser talks to. | `28960574877-compute@developer.gserviceaccount.com` (**default compute SA**, *not* `trading-runner@`) | **`DB_PASS` ← `trading-db-pass:latest` ONLY** |
+| **`solyra-api-prod`** | us-east1 | The React SPA **and** the FastAPI backend, one container (`platform/Dockerfile`: Vite build → `platform/dist`, served by `uvicorn api.main:app` on :8080). This is the only service the browser talks to. | `28960574877-compute@developer.gserviceaccount.com` (**default compute SA**, *not* `trading-runner@`) | **`DB_PASS` ← `trading-db-pass:latest` ONLY** |
 | `discord-interactions` | us-east1 | Discord slash-command webhook receiver (`gcp/discord_interactions`). Not part of the React UI. | `trading-runner@…` | DB + AV + Discord + `DISCORD_APP_ID/PUBLIC_KEY/BOT_TOKEN` |
 | `failure-notifier` | us-east1 | Pub/Sub-driven GCP-job-failure → GitHub issue/PR sink (`gcp/failure_notifier`). Not part of the UI. | `trading-runner@…` | DB + `GITHUB_PAT`/`GITHUB_REPO` + `discord-webhook-gcp` |
 
-> **Deploy source mismatch (intentional).** The `trading-platform` service is deployed by
+> **Deploy source mismatch (intentional).** The `solyra-api-prod` service is deployed by
 > **`platform/deploy.sh`**, NOT by `gcp/deploy.sh` (which deploys the Jobs + the other two
 > services). The two share env-var *names* (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`, `DB_NAME`,
 > `GCS_BUCKET`, `GCP_PROJECT_ID`) but the platform service's secret surface is much smaller —
 > see §0.1.
 
-### 0.1 ⚠️ Load-bearing finding — what the `trading-platform` service can and can't do
+### 0.1 ⚠️ Load-bearing finding — what the `solyra-api-prod` service can and can't do
 
-Live `gcloud run services describe trading-platform` shows its env is exactly:
+Live `gcloud run services describe solyra-api-prod` shows its env is exactly:
 `CLOUD_SQL_CONNECTION_NAME`, `DB_USER=trading_user`, `DB_NAME=trading`, `GCS_BUCKET`,
 `GCP_PROJECT_ID`, `PLAYWRIGHT_TESTER_SA`, `IAP_OAUTH_CLIENT_ID`, and **`DB_PASS` (secret)**.
 
@@ -113,11 +113,11 @@ secrets server-side.
 
 | Secret | What it's for | Consumed by (Cloud Run svc/job) | Browser-reachable? | Backs a page's data flow? |
 |---|---|---|---|---|
-| **`trading-db-pass`** | Cloud SQL password for `trading_user` — **the one secret the `trading-platform` UI service mounts** (`DB_PASS`) | `trading-platform` (UI) | **No** | **Yes — every Cloud-SQL-backed page** (Dashboard, Charts, Options, Signals, Insights, Catalysts, Journal, Admin) |
+| **`trading-db-pass`** | Cloud SQL password for `trading_user` — **the one secret the `solyra-api-prod` UI service mounts** (`DB_PASS`) | `solyra-api-prod` (UI) | **No** | **Yes — every Cloud-SQL-backed page** (Dashboard, Charts, Options, Signals, Insights, Catalysts, Journal, Admin) |
 | `db-trading-pass` | Same DB password, different secret name; mounted as `DB_PASS` into all the **Jobs** + the other two services (`gcp/deploy.sh` `DB_SECRET_FLAG`) | all Jobs, `discord-interactions`, `failure-notifier` | No | Yes — indirectly (the Jobs that populate the tables) |
 | `db-trading-user` / `cloud-sql-connection-name` | Non-secret DB username + instance conn-name, kept in SM for central rotation; injected as plain env on Jobs | all Jobs | No | Yes (DB connectivity) |
-| **`av-api-key`** | **AlphaVantage** API key (realtime-options tier). Mapped to BOTH `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` | Jobs (fetch-market-data, fetch-av-options-*, fetch-alphavantage-intraday, insight-pipeline, …), `discord-interactions`. **⚠️ NOT mounted on `trading-platform`** | No | **Yes** — Live Market (quote/history), Options Flow (live proxy), Charts/Dashboard (reference, ticker search). *Request-path AV fails on the UI svc; Cloud-SQL-backed reads still work.* |
-| **`admin-token`** | `ADMIN_TOKEN` for `/api/admin/*` model-routing UI. Mounted into `insight-pipeline` Job; **NOT on `trading-platform`** | `insight-pipeline` Job | No (browser sends it as `X-Admin-Token` from sessionStorage; the value lives server-side) | Admin page (⚠️ unmounted on UI svc → IAP-email auth is the only working path in prod) |
+| **`av-api-key`** | **AlphaVantage** API key (realtime-options tier). Mapped to BOTH `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` | Jobs (fetch-market-data, fetch-av-options-*, fetch-alphavantage-intraday, insight-pipeline, …), `discord-interactions`. **⚠️ NOT mounted on `solyra-api-prod`** | No | **Yes** — Live Market (quote/history), Options Flow (live proxy), Charts/Dashboard (reference, ticker search). *Request-path AV fails on the UI svc; Cloud-SQL-backed reads still work.* |
+| **`admin-token`** | `ADMIN_TOKEN` for `/api/admin/*` model-routing UI. Mounted into `insight-pipeline` Job; **NOT on `solyra-api-prod`** | `insight-pipeline` Job | No (browser sends it as `X-Admin-Token` from sessionStorage; the value lives server-side) | Admin page (⚠️ unmounted on UI svc → IAP-email auth is the only working path in prod) |
 | `benzinga-api-key` | **Benzinga** catalyst calendar | catalyst fetchers / `BENZINGA_API_KEY` (optional) | No | Catalysts (optional/primary) |
 | `fred-api-key` | **FRED** economic data | `fetch-fred-rates`, `fetch-economic-events` (optional) | No | Catalysts (economic events), Greeks risk-free rate |
 | `ew-user` / `ew-pass` | Earnings Whispers login (paid) | earnings fetchers | No | Indirect (earnings calendar enrichment) |
@@ -146,11 +146,11 @@ into the bundle, and is sent only as a request header.
 ## 3. "Search a stock → end-to-end" trace
 
 Naming each GCP hop for the three flows the user called out. (⚠️ flags where the
-currently-deployed `trading-platform` service is missing `AV_API_KEY` — see §0.1.)
+currently-deployed `solyra-api-prod` service is missing `AV_API_KEY` — see §0.1.)
 
 ### 3a. Search a stock (ticker autocomplete)
 ```
-Browser  ──GET /api/insights/ticker/search?keywords=…&limit=8──▶  trading-platform (Cloud Run svc, FastAPI)
+Browser  ──GET /api/insights/ticker/search?keywords=…&limit=8──▶  solyra-api-prod (Cloud Run svc, FastAPI)
   hook: useTickerSearch (platform/src/hooks/useTickerSearch.ts)
   router: routers/insights.py::search_tickers → lib.ticker_info.search_tickers
   ──HTTPS──▶  AlphaVantage  SYMBOL_SEARCH        (needs AV_API_KEY)
@@ -178,7 +178,7 @@ Cloud-SQL paths: **`fetch-market-data`** (daily, `fetch-market-data-daily` 23:00
 
 ### 3c. Pull AI insights (refresh → Vertex Gemini → read)
 ```
-Browser ──POST /api/insights/report/{t}/refresh[?as_of=…]──▶  trading-platform (FastAPI)
+Browser ──POST /api/insights/report/{t}/refresh[?as_of=…]──▶  solyra-api-prod (FastAPI)
   hook: useRefreshInsight
   router: routers/insights.py::refresh_insight_report
      1. INSERT insight_runs (status='queued')                       ── Cloud SQL
@@ -223,7 +223,7 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 
 | GCP service | Used for |
 |---|---|
-| **Cloud Run — services** | `trading-platform` (React SPA + FastAPI, the only thing the browser hits); `discord-interactions` (slash-command webhook); `failure-notifier` (job-failure → GitHub). |
+| **Cloud Run — services** | `solyra-api-prod` (React SPA + FastAPI, the only thing the browser hits); `discord-interactions` (slash-command webhook); `failure-notifier` (job-failure → GitHub). |
 | **Cloud Run — jobs** (~50 live) | All data ingestion + analytics writers. Page-relevant: `insight-pipeline` (AI Insights), `fetch-market-data` + `fetch-alphavantage-intraday` + `backfill-daily-indicators` (price data → Dashboard/Charts/Live), `fetch-av-options-backfill` + `fetch-av-options-realtime` (Options Flow), `historical-signals-watchlist` (Signals), `premarket-brief` (Dashboard brief + Playbook md), `fetch-news-sentiment*`/`fetch-earnings-calendar`/`fetch-earnings-history`/`fetch-sec-filings`/`fetch-insider-transactions`/`fetch-economic-events`/`fetch-fred-rates` (Catalysts), `backtest` (Insights backtest panel), `auto-refresh-top-n` (pre-warms insight cache), `db-query` (ops SQL), `strat-engine` (research artifacts → Admin). |
 | **Cloud SQL (Postgres `trading-db`)** | System of record for nearly every page. ~50 tables; page-critical: `market_data_daily`/`market_data_intraday`, `etf_options_snapshots`, `historical_signals`, `insight_reports`/`insight_runs`/`insight_reports_history`/`model_routing`, `premarket_analysis`, `news_sentiment`/`earnings_calendar`/`earnings_history`/`sec_filings`/`insider_transactions`/`economic_events`, `journal_entries`, `trades`, `watchlists`, `ticker_info`, `signal_alerts`. |
 | **Vertex AI (Gemini)** | The LLM for AI Insights. Model `gemini-3.1-flash-lite` for all 7 agent roles (live `model_routing`), via `google-genai` in Vertex mode on the **`global`** endpoint. Adapter registry also supports Anthropic + OpenAI (`lib/agents/pricing.py` price table), but **only the Vertex adapter is registered** by the insights router/job, and the live routing table targets Vertex exclusively. |
@@ -231,9 +231,9 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 | **GCS (`…-trading-data`)** | Playbook + phase-report **markdown** (`raw/reports/`) for Playbook & Reports pages; backtest CSVs (`raw/data/backtest_results/`) for the Insights backtest panel; signals/market **parquet fallbacks** (`raw/data/…`); strat-engine **model artifacts** (`research/strat_engine/`) for Admin; `db-query` results + weekly `pg_dump` (`sql-dumps/`). Bucket prefix for app reads = `raw/` (`platform/api/gcs_reader.py`). |
 | **Secret Manager** | All 21 secrets in §2, mounted into containers at start via `--set-secrets`. |
 | **Cloud Scheduler** | ~55 cron triggers driving the Jobs above. Page-relevant cadences: `insight-pipeline-daily` 08:45 ET; `fetch-market-data-daily` 23:00 ET; `av-options-daily` 21:00 ET + `av-options-realtime` */5 9-15 ET; `backfill-indicators-daily` 02:30 ET; `premarket-refresh-daily`/`premarket-brief-daily`; `sec-filings-0700/1000/1300/1700`; `news-sentiment-*` hourly; `auto-refresh-top-n` 08:10 ET; `freshness-watchdog-hourly`. |
-| **Artifact Registry** | Hosts `us-east1-docker.pkg.dev/.../trading/trading-system` (Jobs image) + `gcr.io/.../trading-platform` (UI image). |
+| **Artifact Registry** | Hosts `us-east1-docker.pkg.dev/.../trading/trading-system` (Jobs image) + `gcr.io/.../solyra-api-prod` (UI image). |
 | **Cloud Build** | Builds both images (`gcloud builds submit` via `platform/cloudbuild.yaml` and `gcp/deploy.sh build`). |
-| **IAM / IAP** | `trading-platform` is IAM-gated; an `IAP_OAUTH_CLIENT_ID` is wired and the admin/`/me`/`/dev` routes read the `X-Goog-Authenticated-User-Email` IAP header. SAs: UI svc = default compute SA (Vertex ADC); Jobs = `trading-runner@`; sandbox dispatch = `claude-web@`. |
+| **IAM / IAP** | `solyra-api-prod` is IAM-gated; an `IAP_OAUTH_CLIENT_ID` is wired and the admin/`/me`/`/dev` routes read the `X-Goog-Authenticated-User-Email` IAP header. SAs: UI svc = default compute SA (Vertex ADC); Jobs = `trading-runner@`; sandbox dispatch = `claude-web@`. |
 
 ---
 
@@ -258,4 +258,4 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 3. **Options Flow → Heatseeker → Swing Mode grid** — mock 2-D grid (real-data overlay only when `/levels` resolves for the focus symbol).
 4. **Admin → structure-brief / strat-engine predict** — dev-only, deploy-gated; no scheduler writes the structure-brief snapshot, so cells render `available=false`.
 5. **Reports / Playbook** — depend on phase/playbook **markdown in GCS**; populated by research/brief jobs, not a dedicated scheduled fetcher — if those md files are absent the pages 404.
-6. **Everything AlphaVantage-on-request** (Live Market quote/history, ticker autocomplete, Options live proxy) — backed by a live external API, but **non-functional on the currently-deployed `trading-platform` service because `av-api-key` is not mounted there.**
+6. **Everything AlphaVantage-on-request** (Live Market quote/history, ticker autocomplete, Options live proxy) — backed by a live external API, but **non-functional on the currently-deployed `solyra-api-prod` service because `av-api-key` is not mounted there.**

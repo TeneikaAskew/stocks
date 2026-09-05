@@ -3601,7 +3601,7 @@ deploy_schedulers() {
     # Platform keep-warm — DROPPED (was: a plain unauthenticated GET to
     # ${PLATFORM_URL}/api/earnings/health/ping every 5 min on business hours).
     #
-    # The trading-platform service is deployed by platform/deploy.sh behind
+    # The solyra-api-prod service is deployed by platform/deploy.sh behind
     # Identity-Aware Proxy (IAP) — NOT by this file, and NOT with plain Cloud
     # Run IAM. A bare unauthenticated GET gets 401/403 at IAP and never reaches
     # the FastAPI worker, so it warmed nothing while still firing on a cron.

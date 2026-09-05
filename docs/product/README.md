@@ -30,8 +30,8 @@ The maintained index from product intent through implementation, evidence, risk 
 
 | Environment | URL | Auth |
 |---|---|---|
-| Production | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
-| Staging | `UNKNOWN` (service `trading-platform-staging`) | **public + Firebase** |
+| Production | `https://solyra-api-prod-28960574877.us-east1.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
+| Staging | `UNKNOWN` (service `solyra-api-staging`) | **public + Firebase** |
 | Local dev | `http://localhost:5173` (API `http://localhost:8000`) | none (`AUTH_MODE` defaults to `open`) |
 
 No custom domain is committed in the repo despite the **Solyra** branding on the landing page.

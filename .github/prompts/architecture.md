@@ -33,7 +33,7 @@ Then begin section 1.
 
 ### 1. System overview (one paragraph, ~80-120 words)
 
-What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal React + FastAPI dashboard at the `trading-platform` Cloud Run Service). Single-user / small-team — no public auth, no per-user data partitioning. Mention the rough job count derived from `refresh-inputs/inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
+What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal React + FastAPI dashboard at the `solyra-api-prod` Cloud Run Service). Single-user / small-team — no public auth, no per-user data partitioning. Mention the rough job count derived from `refresh-inputs/inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
 
 ### 2. Component inventory (table form)
 

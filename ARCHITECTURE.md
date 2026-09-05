@@ -4,7 +4,7 @@
 
 ## 1. System overview (one paragraph, ~80-120 words)
 
-This system is a private stocks/trading platform deployed to the GCP project `adept-mountain-474619-d4`. It is designed for a single user or a small team, with no public authentication or per-user data partitioning. The primary delivery surfaces are Discord webhooks for scheduled briefs and a slash-command Cloud Run service, with a secondary internal React + FastAPI dashboard available via the `trading-platform` Cloud Run Service. The system is comprised of approximately 76 Cloud Run Jobs that handle various data fetching, processing, and analysis tasks.
+This system is a private stocks/trading platform deployed to the GCP project `adept-mountain-474619-d4`. It is designed for a single user or a small team, with no public authentication or per-user data partitioning. The primary delivery surfaces are Discord webhooks for scheduled briefs and a slash-command Cloud Run service, with a secondary internal React + FastAPI dashboard available via the `solyra-api-prod` Cloud Run Service. The system is comprised of approximately 76 Cloud Run Jobs that handle various data fetching, processing, and analysis tasks.
 
 ## 2. Component inventory (table form)
 
@@ -18,7 +18,7 @@ This system is a private stocks/trading platform deployed to the GCP project `ad
 | [`gcp/signal_monitor.py`](gcp/signal_monitor.py) | code | Real-time intraday signal monitor | `lib/signals`, AV intraday, Discord | Scheduler `signal-monitor-daily` |
 | [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) | code | AI insights generator | `lib/insights`, Cloud SQL, Vertex / Anthropic API | Scheduler `insight-pipeline-daily`, FastAPI `/insights/.../refresh` |
 | [`gcp/backtest_job.py`](gcp/backtest_job.py) | code | Runs `lib/backtest.StratBacktest` | `lib/backtest`, Cloud SQL, Discord | Job `backtest` (Discord-triggered) |
-| [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry | `lib/`, Cloud SQL | Cloud Run service `trading-platform` |
+| [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry | `lib/`, Cloud SQL | Cloud Run service `solyra-api-prod` |
 | [`lib/signals.py`](lib/signals.py) | code | Condition-scoring | `lib/indicators`, `lib/strat` | `signal_monitor`, FastAPI, fetchers |
 | [`lib/strategies/`](lib/strategies/) | code | Strategy package | `lib/indicators`, `alert_config.json` | `signal_monitor`, FastAPI, backtest |
 | [`lib/indicators.py`](lib/indicators.py) | code | Indicator math | | `signals`, `strat`, fetchers, FastAPI |
@@ -28,7 +28,7 @@ This system is a private stocks/trading platform deployed to the GCP project `ad
 
 | Resource | Type | Purpose | Notes |
 |---|---|---|---|
-| `trading-platform` | Cloud Run Service | FastAPI and React frontend | The main user-facing dashboard. |
+| `solyra-api-prod` | Cloud Run Service | FastAPI and React frontend | The main user-facing dashboard. |
 | `discord-interactions` | Cloud Run Service | Handles Discord slash commands | Invokes Cloud Run Jobs based on commands. |
 | `failure-notifier` | Cloud Run Service | Notifies on job failures | Creates GitHub issues for failed jobs. |
 | `76 Cloud Run Jobs` | Cloud Run Job | Data fetching and processing | Scheduled and on-demand jobs. |
@@ -76,7 +76,7 @@ flowchart TD
 
     subgraph GCP
         subgraph "Cloud Run Services"
-            trading_platform["trading-platform (FastAPI + React)"]
+            trading_platform["solyra-api-prod (FastAPI + React)"]
             discord_interactions["discord-interactions"]
             failure_notifier
         end

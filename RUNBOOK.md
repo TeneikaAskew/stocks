@@ -14,7 +14,7 @@ These are derived from the actual backup config — `gcloud sql instances descri
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
 | **Cloud Run Jobs (27 jobs) + Schedulers (40+)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
-| **Cloud Run Services (3: trading-platform, discord-interactions, failure-notifier)** | 30 min | n/a | Same `deploy.sh` redeploys. |
+| **Cloud Run Services (3: solyra-api-prod, discord-interactions, failure-notifier)** | 30 min | n/a | Same `deploy.sh` redeploys. |
 | **Secret Manager (19 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
 

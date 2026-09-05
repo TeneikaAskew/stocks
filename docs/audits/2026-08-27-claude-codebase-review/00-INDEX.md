@@ -138,7 +138,7 @@ stop-distance chain had no live exposure because
 `gcp/deploy.sh`". I grepped `gcp/deploy.sh` and `platform/api/` but not
 **`platform/deploy.sh`**, the frontend service's separate deploy script,
 where it is set `true` at :87. Verified live:
-`gcloud run services describe trading-platform` returns
+`gcloud run services describe solyra-api-prod` returns
 `MOVEMENT_STATEMENT_ENABLED=true`. **The chain is user-facing today** —
 see report 09 TIER 6. Lesson: "not set anywhere" claims need a
 repo-wide grep, not a grep of the file I expected it in.

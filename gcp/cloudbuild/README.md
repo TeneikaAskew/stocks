@@ -9,8 +9,8 @@ itself (`gcloud builds triggers describe <NAME>`).
 | File | Trigger | GHA workflow replaced |
 |------|---------|----------------------|
 | `apply-schema-cloudbuild.yaml`           | `apply-schema-on-change` (push to main on `gcp/schema.sql`) | `.github/workflows/apply-schema-migrations-on-change.yml` |
-| `deploy-platform-staging-cloudbuild.yaml` | `deploy-platform-staging` (push to main on `platform/`, `lib/`, etc.) | `.github/workflows/deploy-platform-staging.yml` |
-| `promote-platform-prod-cloudbuild.yaml`  | `promote-platform-prod` (manual) | `.github/workflows/promote-platform-prod.yml` |
+| `deploy-solyra-api-staging-cloudbuild.yaml` | `deploy-solyra-api-staging` (push to main on `platform/`, `lib/`, etc.) | `.github/workflows/deploy-platform-staging.yml` |
+| `deploy-solyra-api-prod-cloudbuild.yaml`  | `deploy-solyra-api-prod` (manual) | `.github/workflows/promote-platform-prod.yml` |
 
 ## Required IAM grants on `trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com`
 
@@ -24,7 +24,7 @@ without any extra grants (the SA already has `roles/run.developer`
 which covers `run.jobs.run`, and the build output is small enough
 that the missing `logging.logWriter` only produces a warning).
 
-The `deploy-platform-staging` and `promote-platform-prod` triggers
+The `deploy-solyra-api-staging` and `deploy-solyra-api-prod` triggers
 need these grants before they'll run successfully:
 
 ```bash
@@ -36,9 +36,11 @@ gcloud projects add-iam-policy-binding adept-mountain-474619-d4 \
   --role='roles/logging.logWriter' \
   --condition=None
 
-# 2) Start sub-builds (platform/deploy.sh internally calls `gcloud builds submit`
-#    to build the trading-platform Docker image). Without this, deploy-platform-
-#    staging fails at the sub-build step.
+# 2) Start sub-builds. Kept for the historical deploy path that shelled out to
+#    platform/deploy.sh (which calls `gcloud builds submit`). The staging
+#    trigger now builds inline with gcr.io/cloud-builders/docker, so this is
+#    no longer load-bearing for it, but platform/deploy.sh still needs it when
+#    an operator runs it directly.
 gcloud projects add-iam-policy-binding adept-mountain-474619-d4 \
   --member="serviceAccount:${SA}" \
   --role='roles/cloudbuild.builds.editor' \
@@ -53,12 +55,19 @@ account with broader permissions.
 After granting both, test:
 
 ```bash
-gcloud builds triggers run deploy-platform-staging --branch=main
+gcloud builds triggers run deploy-solyra-api-staging --branch=main
 # Then watch:
 gcloud builds list --limit=1 --format='value(id,status)'
 ```
 
-The third trigger (`promote-platform-prod`) is manual-only; invoke
-with `gcloud builds triggers run promote-platform-prod` whenever
-you want to route 100% traffic to the current `staging`-tagged
-revision. The same IAM grants above cover it.
+The third trigger (`deploy-solyra-api-prod`) is manual-only and is the ONLY
+path that changes prod:
+
+```bash
+gcloud builds triggers run deploy-solyra-api-prod --branch=main
+```
+
+It no longer shifts traffic between tags on one service. It reads the image
+digest currently serving `solyra-api-staging` and deploys that exact digest to
+`solyra-api-prod`, so prod ships the bits staging validated rather than a fresh
+build of whatever has since merged to main. The same IAM grants above cover it.

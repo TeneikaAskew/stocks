@@ -1,6 +1,6 @@
 name: Deploy staging
 
-# One-click redeploy of trading-platform-staging (the PUBLIC, Firebase-gated
+# One-click redeploy of solyra-api-staging (the PUBLIC, Firebase-gated
 # staging service solyra talks to) from the current main, with the DB schema
 # rolled forward first.
 #
@@ -148,7 +148,7 @@ concurrency:
 env:
   GCP_PROJECT: adept-mountain-474619-d4
   REGION: us-east1
-  SERVICE: trading-platform-staging
+  SERVICE: solyra-api-staging
 
 jobs:
   deploy:
@@ -307,7 +307,7 @@ jobs:
       # DB_USER/DB_NAME normally come from the live service (step above);
       # the GitHub secrets are the safety net in case the live service ever
       # stops carrying them in plain env.
-      - name: Build and deploy trading-platform-staging
+      - name: Build and deploy solyra-api-staging
         env:
           DB_USER: ${{ env.DB_USER || secrets.DB_USER }}
           DB_NAME: ${{ env.DB_NAME || secrets.DB_NAME }}

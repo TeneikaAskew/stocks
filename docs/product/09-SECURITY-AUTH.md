@@ -164,7 +164,7 @@ is unset (`platform/deploy.sh:161-168`).
 There are TWO CI deploy identities with different boundaries; conflating
 them mis-scopes a review:
 
-1. **GitHub Actions → `trading-platform-staging` only.**
+1. **GitHub Actions → `solyra-api-staging` only.**
    `.github/workflows/deploy-staging.yml`
    ([#983](https://github.com/TeneikaAskew/stocks/pull/983) /
    [#985](https://github.com/TeneikaAskew/stocks/pull/985)) hardcodes the
@@ -172,17 +172,17 @@ them mis-scopes a review:
    WIF SA. The WIF trust boundary below applies to THIS path only.
 2. **Cloud Build triggers → production, as `trading-runner@`.**
    `gcp/cloudbuild/README.md` records live triggers whose authoritative
-   config is in Cloud Build itself: `deploy-platform-staging` (push to main
+   config is in Cloud Build itself: `deploy-solyra-api-staging` (push to main
    touching `platform/`, `lib/`, …) runs `./platform/deploy.sh`, and
-   `promote-platform-prod` (manual) shifts `trading-platform` traffic to the
+   `deploy-solyra-api-prod` (manual) shifts `solyra-api-prod` traffic to the
    `staging` tag. Its boundary is Cloud Build trigger config + the
    `trading-runner@` IAM, NOT WIF. **Open discrepancy:** the in-repo config
-   (`deploy-platform-staging-cloudbuild.yaml`) invokes `platform/deploy.sh`
+   (`deploy-solyra-api-staging-cloudbuild.yaml`) invokes `platform/deploy.sh`
    with NO `STAGING=1`/`STAGING_SERVICE=1`, which in that script means a
    full-traffic PRODUCTION deploy — contradicting the file's own header
    ("staging-tagged revision, 0% traffic") and making the promote trigger
    moot. Verify the live trigger (`gcloud builds triggers describe
-   deploy-platform-staging`) and reconcile; until then, treat "what deploys
+   deploy-solyra-api-staging`) and reconcile; until then, treat "what deploys
    production, when, with what traffic" as unverified.
 
 Operator-run `platform/deploy.sh` under a personal gcloud identity remains a
@@ -245,7 +245,7 @@ objectAdmin binding predates the fix and is now redundant — safe to remove),
 repo (location `us`), which is what lets `gcloud run deploy` pull the image
 Cloud Build just pushed. Its absence fails a deploy only after the ~4-minute
 image build (run #13); with it, run #14 completed end to end and revision
-`trading-platform-staging-00046-x8m` went live with `/api/health` 200.
+`solyra-api-staging-00046-x8m` went live with `/api/health` 200.
 
 **Runtime SA `trading-platform-svc@…`** — project-level, exactly three roles as
 read live: `cloudsql.client`, `aiplatform.user`, and `firebaseauth.admin`. The

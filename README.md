@@ -43,7 +43,7 @@ flowchart TD
 
     subgraph GCP
         subgraph "Cloud Run Services"
-            trading_platform["trading-platform (FastAPI + React)"]
+            trading_platform["solyra-api-prod (FastAPI + React)"]
             discord_interactions["discord-interactions"]
             failure_notifier
         end

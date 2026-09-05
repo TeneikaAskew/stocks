@@ -94,8 +94,8 @@ Twelve fixes. Each is independently testable; they may batch into 2–3 PRs
   a toast + page-level notice: "Tracking AAPL — daily data lands after tonight's
   fetch." Pages keep their existing honest empty/unavailable states meanwhile.
   No synchronous backfill in the request path.
-- **Infra pre-req**: verify `av-api-key` is mounted on the `trading-platform`
-  and `trading-platform-staging` Cloud Run services (`platform/deploy.sh:84`
+- **Infra pre-req**: verify `av-api-key` is mounted on the `solyra-api-prod`
+  and `solyra-api-staging` Cloud Run services (`platform/deploy.sh:84`
   lists it; `platform/GCP_DATA_DICTIONARY.md:42,119` says the deployed service
   lacks it — resolve the drift, mount if missing). SYMBOL_SEARCH fails loudly
   (503 with reason) if the key is absent — no fabricated suggestions.

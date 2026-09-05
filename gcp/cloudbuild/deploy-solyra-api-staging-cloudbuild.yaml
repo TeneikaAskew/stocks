@@ -1,0 +1,46 @@
+# Trigger: deploy-solyra-api-staging
+# Fires:   push to main touching platform/, lib/, requirements.txt, gcp/database.py
+#
+# Builds the API image and deploys it to the STAGING service, solyra-api-staging.
+# Merging to main NEVER touches prod. Prod moves only when a human runs the
+# deploy-solyra-api-prod trigger (see the sibling file).
+#
+# This replaced a tag-based blue/green on the single trading-platform service,
+# where a deploy created a `staging`-tagged revision and a manual promote shifted
+# traffic to it. That design silently became an auto-promote to prod when
+# --no-traffic was dropped on 2026-08-25, so a `staging` tag ended up carrying
+# 100% of production traffic. Two separate services replace it: the environment
+# a deploy lands in is now the service name, not a traffic percentage.
+#
+# Deploys the IMAGE ONLY. Env vars, secrets, Cloud SQL, memory and the service
+# account live on the Cloud Run service and are deliberately NOT set here:
+# --set-env-vars replaces the entire set on every deploy, which is why flags like
+# MOVEMENT_STATEMENT_ENABLED previously had to "ride along" in the deploy script
+# or be silently dropped.
+#
+# Required IAM on the trigger SA (trading-runner@): see README.md in this dir.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    args: [build, --file, platform/Dockerfile, --tag, '${_IMAGE}', .]
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    waitFor: [build]
+    args: [push, '${_IMAGE}']
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: deploy
+    waitFor: [push]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run deploy solyra-api-staging \
+          --image=${_IMAGE} \
+          --region=us-east1 \
+          --platform=managed
+substitutions:
+  _IMAGE: gcr.io/adept-mountain-474619-d4/solyra-api
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

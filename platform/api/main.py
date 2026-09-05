@@ -459,7 +459,7 @@ only working path right now; curl/CI flows return 401.</p>
 # IAP redirects to Google OAuth, then routes you to the app.</pre>
 
 <h2>If you need a local terminal session</h2>
-<pre>gcloud run services proxy trading-platform --region us-east1
+<pre>gcloud run services proxy solyra-api-prod --region us-east1
 # then http://localhost:8080 — the proxy authenticates as your gcloud user.</pre>
 
 <h2>Run Playwright locally</h2>

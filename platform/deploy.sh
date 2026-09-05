@@ -3,11 +3,11 @@
 # Run from repo root:  ./platform/deploy.sh
 #
 # Modes:
-#   ./platform/deploy.sh                  prod deploy (trading-platform, behind IAP)
+#   ./platform/deploy.sh                  prod deploy (solyra-api-prod, behind IAP)
 #   STAGING=1 ./platform/deploy.sh        prod service, new revision tagged `staging`,
 #                                         no traffic — shares prod's IAP (see note below)
 #   STAGING_SERVICE=1 ./platform/deploy.sh  SEPARATE public staging service
-#                                         (trading-platform-staging) NO IAP, gated by
+#                                         (solyra-api-staging) NO IAP, gated by
 #                                         in-app Firebase login (AUTH_MODE=firebase).
 #                                         Prod untouched. Needs FIREBASE_API_KEY,
 #                                         FIREBASE_AUTH_DOMAIN, FIREBASE_APP_ID (+ optional
@@ -16,10 +16,10 @@ set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-adept-mountain-474619-d4}"
 REGION="${REGION:-us-east1}"
-SERVICE="${SERVICE:-trading-platform}"
+SERVICE="${SERVICE:-solyra-api-prod}"
 INSTANCE="${INSTANCE:-${PROJECT_ID}:${REGION}:trading-db}"
 # The image is the same app for every service — build once, reuse for staging.
-IMAGE_NAME="${IMAGE_NAME:-trading-platform}"
+IMAGE_NAME="${IMAGE_NAME:-solyra-api}"
 IMAGE="gcr.io/${PROJECT_ID}/${IMAGE_NAME}"
 
 # ── One-time IAM for the admin endpoints (api/routers/admin.py) ────────────
@@ -69,14 +69,14 @@ DB_NAME="${DB_NAME:?set DB_NAME (e.g. export DB_NAME=trading)}"
 DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 
 # ── Separate public staging service ────────────────────────────────────────
-# trading-platform-staging runs WITHOUT IAP (--allow-unauthenticated) because
+# solyra-api-staging runs WITHOUT IAP (--allow-unauthenticated) because
 # IAP on Cloud Run is service-level and can't be dropped per-revision. Instead,
 # AUTH_MODE=firebase re-protects the API: api/auth.py verifies a Firebase ID
 # token on every gated /api/* request, so the service is NOT wide-open even
 # though anyone can load the login page. Access defaults to OPEN self-signup —
 # any user who signs in (Google or email/password) is allowed; flip to an
 # allow-list with AUTH_OPEN_SIGNUP=0 + AUTH_ALLOWED_EMAILS. Prod
-# (trading-platform) is untouched and stays behind IAP.
+# (solyra-api-prod) is untouched and stays behind IAP.
 #
 # One-time prerequisites (operator with run.admin — NOT the CI SA):
 #   1. Create a Firebase web app (console -> Project settings -> Web app) and
@@ -91,7 +91,7 @@ DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 AUTH_MODE_VAL="${AUTH_MODE:-iap}"
 
 if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
-  SERVICE="trading-platform-staging"
+  SERVICE="solyra-api-staging"
   PUBLIC=1                   # public ingress so the login page can load
   AUTH_MODE_VAL="firebase"   # in-app Firebase login gates the API (verify ID token)
   echo ">> STAGING_SERVICE mode: deploying PUBLIC ${SERVICE} (no IAP; Firebase login gates the API)"
@@ -111,9 +111,18 @@ if [[ "${STAGING:-0}" != "1" ]]; then
 fi
 
 # Staging (revision-tag): STAGING=1 ./deploy.sh deploys a new revision tagged
-# `staging` that receives NO production traffic. The prod URL keeps serving the
-# current 100%-traffic revision. Promote later with:
+# `staging` on the PROD service that receives NO production traffic. The prod
+# URL keeps serving the current 100%-traffic revision. Promote later with:
 #   gcloud run services update-traffic "${SERVICE}" --region "${REGION}" --to-tags=staging=100
+#
+# LEGACY as of 2026-09-05, kept for one-off operator use only. The routine
+# staging path is now the separate solyra-api-staging SERVICE (STAGING_SERVICE=1
+# above, and the deploy-solyra-api-staging Cloud Build trigger on merge to main),
+# not a tag on prod. This mode is what made the old setup so easy to misread:
+# a `staging` tag says nothing about traffic, and when --no-traffic was dropped
+# from the Cloud Build trigger on 2026-08-25 the "staging" tag silently ended up
+# carrying 100% of production. If you use this mode, the tag is doing nothing to
+# protect prod on its own — the --no-traffic below is.
 STAGING_FLAGS=()
 if [[ "${STAGING:-0}" == "1" ]]; then
   STAGING_FLAGS=(--no-traffic --tag staging)

@@ -1,0 +1,34 @@
+# Trigger: deploy-solyra-api-prod
+# Fires:   MANUAL ONLY — nothing auto-invokes this.
+#
+#   gcloud builds triggers run deploy-solyra-api-prod --branch=main
+#
+# Promotes to prod the exact image digest currently serving staging, rather than
+# rebuilding from main. A rebuild would pick up whatever merged since staging
+# last deployed, so prod would ship bits that were never the ones validated.
+# Reading the digest off the live staging service closes that gap.
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: promote
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        REV=$$(gcloud run services describe solyra-api-staging \
+          --region=us-east1 --format='value(status.latestReadyRevisionName)')
+        DIGEST=$$(gcloud run revisions describe "$$REV" \
+          --region=us-east1 --format='value(status.imageDigest)')
+        if [ -z "$$DIGEST" ]; then
+          echo "FATAL: could not resolve a digest from staging revision '$$REV'" >&2
+          exit 1
+        fi
+        echo "Promoting staging revision $$REV to prod"
+        echo "  image: $$DIGEST"
+        gcloud run deploy solyra-api-prod \
+          --image="$$DIGEST" \
+          --region=us-east1 \
+          --platform=managed
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1200s

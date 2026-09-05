@@ -48,7 +48,7 @@ A full-stack equity trading research and execution platform centered on four pri
 | Google Apps Script files | 33 |
 | Test files | ~35 Python (`make test` ~703 tests after PR #94's +251), 34+ E2E specs (includes `admin-auth.spec.ts` — 13 IAP auth tests), 18 script regression |
 | Plans logged Apr 10–26 | 17 (13 ✅ shipped, 3 🟡 partial, 1 📋 investigation) |
-| Production URL | `trading-platform-5sjtb3yl7a-ue.a.run.app` (Cloud Run + IAP SSO, bictech.org) |
+| Production URL | `solyra-api-prod-28960574877.us-east1.run.app` (Cloud Run + IAP SSO, bictech.org) |
 
 **Key architectural achievements (Apr 2026):**
 - **Canonical gamma/Greeks math server-side** (`lib/gamma.py` ~568 lines + `lib/options_greeks.py` ~470-line BSM IV solver). Client-side `greeksCalculator.ts` and `nodeAnalyzer.ts` deleted. New endpoints `POST /api/options/greeks` and `GET /api/options/{ticker}/{date}/levels` drive heatmap + King/Gate/Spot/Flip taxonomy.
@@ -275,7 +275,7 @@ Vite proxies `/api/*` to `:8000`. CORS allows `*.app.github.dev` for Codespace. 
 
 ### 4.5 Production deployment (Cloud Run + IAP)
 
-Production service: **`trading-platform`** in region `us-east1`. URL: `trading-platform-5sjtb3yl7a-ue.a.run.app`.
+Production service: **`solyra-api-prod`** in region `us-east1`. URL: `solyra-api-prod-28960574877.us-east1.run.app`.
 
 **Container build:** multi-stage Dockerfile at `platform/Dockerfile` — Node 20 stage builds the Vite frontend; Python 3.11 stage runs Uvicorn and serves both `/api/*` and the SPA at `/` via FastAPI StaticFiles.
 
@@ -1367,8 +1367,8 @@ bash gcp/deploy.sh notifier
 bash gcp/deploy.sh platform
 
 # Verify post-deploy
-curl https://trading-platform-...run.app/api/health
-gcloud run services describe trading-platform --region us-east1
+curl https://solyra-api-prod-...run.app/api/health
+gcloud run services describe solyra-api-prod --region us-east1
 ```
 
 ### 17.7 Ports inventory
