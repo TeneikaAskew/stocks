@@ -30,7 +30,7 @@ The maintained index from product intent through implementation, evidence, risk 
 
 | Environment | URL | Auth |
 |---|---|---|
-| Production | `https://solyra-api-prod-28960574877.us-east1.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
+| Production | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
 | Staging | `UNKNOWN` (service `solyra-api-staging`) | **public + Firebase** |
 | Local dev | `http://localhost:5173` (API `http://localhost:8000`) | none (`AUTH_MODE` defaults to `open`) |
 
