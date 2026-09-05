@@ -143,7 +143,7 @@ flowchart TD
 ### Inventory resources with no clear repo reference
 
 - A number of `run.googleapis.com/Execution` resources are present in the inventory. These are historical records of job executions and can be ignored.
-- The previous `ARCHITECTURE.md` mentioned 42 jobs, but the inventory shows 76. This discrepancy should be investigated. It's likely due to new jobs being added.
+- RESOLVED 2026-09-05: an older revision of this file said 42 jobs and the inventory said 76. Counted live — `gcloud run jobs list --region=us-east1 | wc -l` returns **76**, so the inventory was right and the 42 was stale. No investigation outstanding.
 
 ### Resources the code references that are NOT in the inventory
 

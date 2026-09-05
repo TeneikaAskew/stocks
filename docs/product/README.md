@@ -31,10 +31,10 @@ The maintained index from product intent through implementation, evidence, risk 
 | Environment | URL | Auth |
 |---|---|---|
 | Production | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
-| Staging | `UNKNOWN` (service `solyra-api-staging`) | **public + Firebase** |
+| Staging | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app`, also `stocks.insightscollective.org` | **public edge + Firebase**, `AUTH_OPEN_SIGNUP=1` — see [09](09-SECURITY-AUTH.md) |
 | Local dev | `http://localhost:5173` (API `http://localhost:8000`) | none (`AUTH_MODE` defaults to `open`) |
 
-No custom domain is committed in the repo despite the **Solyra** branding on the landing page.
+A custom domain exists: `stocks.insightscollective.org` maps to `solyra-api-staging` (moved off the prod service 2026-09-05). The mapping lives in Cloud Run, not in source, so `gcloud beta run domain-mappings list --region=us-east1` is the source of truth. Read [09](09-SECURITY-AUTH.md) before assuming what it exposes.
 Per-screen URLs: [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#live-urls). Full inventory and the command to resolve the
 unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
 

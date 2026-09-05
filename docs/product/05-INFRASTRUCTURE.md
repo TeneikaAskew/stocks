@@ -50,8 +50,8 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 |---|---|---|---|---|
 | **Production** | `solyra-api-prod` (us-east1) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
 | **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `stocks.insightscollective.org` since 2026-09-05 | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
-| **Discord interactions** | `discord-interactions` | `UNKNOWN` — docs carry a redacted placeholder | Discord signature verification | `docs/*` show `https://discord-interactions-XXXXXXXXXX-ue.a.run.app/discord/interactions` |
-| **Failure notifier** | notifier service | `UNKNOWN` — redacted placeholder | internal | `https://failure-notifier-XXXXXXXXXX-ue.a.run.app` |
+| **Discord interactions** | `discord-interactions` | `https://discord-interactions-5sjtb3yl7a-ue.a.run.app` | `--allow-unauthenticated` (Discord cannot IAM-auth); Ed25519 signature verification at the app layer | live read 2026-09-05 |
+| **Failure notifier** | `failure-notifier` | `https://failure-notifier-5sjtb3yl7a-ue.a.run.app` | internal | live read 2026-09-05 |
 | **Local dev (frontend)** | Vite — in the solyra repo since the #957 split | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | solyra `vite.config.ts`; `platform/` here holds only the API |
 | **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; solyra's Vite proxies `/api` → `:8000` |
 
@@ -69,9 +69,24 @@ product **Solyra** (solyra `src/components/landing/*` since the #957 split, and 
 hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
 is **PRODUCT DECISION REQUIRED** / unknown — see [15](15-OPEN-DECISIONS.md).
 
-### Resolving the UNKNOWN URLs
+### On the `XXXXXXXXXX` redactions
 
-Cloud Run assigns service URLs, so they are not in source. To fill them in:
+Those placeholders hid the project's Cloud Run host suffix, `5sjtb3yl7a-ue`.
+The redaction bought nothing: the same suffix is committed in plaintext in
+solyra's `src/lib/apiTargets.ts` and `playwright.config.ts`, and in the
+production row of the table above. It is one value shared by every service in
+the project, so masking it in two rows while publishing it in four others is
+inconsistent rather than protective. The URLs are filled in above.
+
+If the intent was to keep Cloud Run hostnames out of the repo, that is a
+decision to apply everywhere at once — including `apiTargets.ts`, which needs
+the origin at runtime and would have to read it from config instead. Neither
+service relies on an unguessable URL for security: `discord-interactions`
+verifies Ed25519 signatures, the API services are IAP- or Firebase-gated.
+
+### Resolving service URLs
+
+Cloud Run assigns service URLs, so they are not in source. To re-read them:
 
 ```bash
 gcloud run services list --region=us-east1 \
