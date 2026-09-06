@@ -978,20 +978,45 @@ _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes
 # ONLY the Cloud SQL result is cached. Caching the GCS fallback would pin a
 # possibly-incomplete date set until the next boundary after a transient
 # database blip, with nothing retrying Cloud SQL in between.
-_INGEST_HOUR_UTC = 23          # fetch-market-data daily run
+_ET_TZ = ZoneInfo("America/New_York")
+
+# The scheduler runs in EASTERN, not UTC. Read live from GCP rather than from
+# docs/PIPELINE.md, which said "23:00 UTC" and is wrong:
+#
+#   $ gcloud scheduler jobs describe fetch-market-data-daily --location=us-east1
+#     0 23 * * 1-5   America/New_York   ENABLED
+#
+# So ingestion starts at 23:00 ET = 03:00 UTC (EDT) or 04:00 UTC (EST) the NEXT
+# calendar day. A fixed UTC hour here would expire the cache hours before the
+# job runs, repopulate the pre-ingestion list, and then hold THAT until the
+# following day — hiding the new date for most of a day. This is rule 3.9
+# applied to the schedule itself, not just to the data.
+#
+# Weekdays only (`1-5`): a Friday-night boundary advances to Monday rather
+# than expiring twice over a weekend for data that cannot have changed.
+_INGEST_HOUR_ET = 23
 _INGEST_GRACE = timedelta(minutes=30)   # let the job finish writing
 _MARKET_DATES_CACHE: dict[str, tuple[datetime, dict]] = {}
 _MARKET_DATES_CACHE_MAX = 64
 
 
 def _next_ingest_boundary(now: Optional[datetime] = None) -> datetime:
-    """First moment after the next daily ingestion is expected to be done."""
+    """First UTC moment after the next daily ingestion is expected to be done.
+
+    Computed in America/New_York and returned in UTC, so DST is handled by the
+    zone rather than by an offset that is wrong for half the year.
+    """
     now = now or datetime.now(timezone.utc)
-    boundary = now.replace(hour=_INGEST_HOUR_UTC, minute=0, second=0,
-                           microsecond=0) + _INGEST_GRACE
-    if boundary <= now:
-        boundary += timedelta(days=1)
-    return boundary
+    now_et = now.astimezone(_ET_TZ)
+
+    boundary_et = now_et.replace(hour=_INGEST_HOUR_ET, minute=0, second=0,
+                                 microsecond=0) + _INGEST_GRACE
+    if boundary_et <= now_et:
+        boundary_et += timedelta(days=1)
+    # Monday=0 ... Sunday=6; the cron fires Mon-Fri only.
+    while boundary_et.weekday() > 4:
+        boundary_et += timedelta(days=1)
+    return boundary_et.astimezone(timezone.utc)
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1137,7 +1162,6 @@ async def market_sectors():
 # auth._OPEN_API_PREFIXES, so both are gated identically by AUTH_MODE=firebase
 # and unaffected identically in iap/open mode) — no new auth code needed.
 
-_ET_TZ = ZoneInfo("America/New_York")
 # RTH-window constants formerly lived here but are now superseded by
 # api.routers.live._is_market_open (weekend/holiday-aware) -- see
 # _most_active_label below.

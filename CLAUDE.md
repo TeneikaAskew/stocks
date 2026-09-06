@@ -635,6 +635,16 @@ the next trading day, which produced **351 phantom dates** — 3,278 UTC vs
 - Use the **named zone, never a fixed offset**. EDT is UTC-4, EST is UTC-5; a
   hardcoded offset is wrong for half the year.
 - Convert once, at the query or display boundary.
+- **This applies to SCHEDULES too, not just to data.** Cloud Scheduler jobs
+  here run with `--time-zone "America/New_York"`, so `0 23 * * 1-5` fires at
+  23:00 ET — 03:00 UTC under EDT, 04:00 under EST, on the next calendar day.
+  Anchoring cache expiry to a fixed UTC hour expired it BEFORE the job ran,
+  repopulated the pre-ingestion answer, then held that for a further day.
+- **Read the schedule from GCP, not from the docs.** `docs/PIPELINE.md` said
+  "23:00 UTC daily" in two places and was wrong in both; the live job is
+  `0 23 * * 1-5 America/New_York`. Corrected, but the lesson is that a doc is
+  not evidence:
+  `gcloud scheduler jobs describe <job> --location=us-east1`
 - **Queries that list dates and queries that fetch by date must frame time
   identically.** Neither is wrong alone; they are wrong relative to each
   other, and the symptom is a picker offering a date whose loader finds
