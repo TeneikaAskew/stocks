@@ -605,7 +605,13 @@ class TestMarketDataAPI:
         r = client.get("/api/market/dates/IWM")
         assert r.status_code == 503, (
             "a database failure was served as a 200 from the GCS fallback")
-        assert "connection refused" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "database is unavailable" in detail
+        # The driver message must NOT reach the client: a SQLAlchemy error
+        # renders the SQL, its bound parameters and connection metadata, and
+        # this endpoint is reachable unauthenticated.
+        assert "connection refused" not in detail, (
+            "internal exception text leaked into the response body")
 
     def test_market_data_full_day(self, client, monkeypatch):
         """Fetch a full day of 1-min bars."""

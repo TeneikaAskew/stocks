@@ -549,12 +549,16 @@ async def get_available_dates(ticker: str):
             # whichever query hit it first.
             logger.error("Cloud SQL freshness probe failed for %s: %s",
                          ticker_upper, e)
+            # The exception stays in the log above. It is NOT interpolated
+            # into the response: a driver/SQLAlchemy error renders the SQL,
+            # its bound parameters, and connection metadata, and this endpoint
+            # is reachable unauthenticated. The client needs to know the
+            # database is unavailable, not what the query looked like.
             raise HTTPException(
                 status_code=503,
                 detail=(f"Could not read trading dates for {ticker_upper}: the "
-                        f"database query failed ({e}). Not falling back to the "
-                        f"GCS staging parquets, which may be stale or "
-                        f"incomplete."),
+                        f"database is unavailable. Not falling back to the GCS "
+                        f"staging parquets, which may be stale or incomplete."),
             )
         if not probe.empty:
             latest_ts = probe["max_ts"].iloc[0]
@@ -636,12 +640,16 @@ async def get_available_dates(ticker: str):
             # is deliberately UNCONFIGURED (local dev), which is a different
             # situation from configured-and-broken.
             logger.error("Cloud SQL dates query failed for %s: %s", ticker_upper, e)
+            # The exception stays in the log above. It is NOT interpolated
+            # into the response: a driver/SQLAlchemy error renders the SQL,
+            # its bound parameters, and connection metadata, and this endpoint
+            # is reachable unauthenticated. The client needs to know the
+            # database is unavailable, not what the query looked like.
             raise HTTPException(
                 status_code=503,
                 detail=(f"Could not read trading dates for {ticker_upper}: the "
-                        f"database query failed ({e}). Not falling back to the "
-                        f"GCS staging parquets, which may be stale or "
-                        f"incomplete."),
+                        f"database is unavailable. Not falling back to the GCS "
+                        f"staging parquets, which may be stale or incomplete."),
             )
 
     # ── GCS path — only when Cloud SQL is UNCONFIGURED (local dev) ───────────
