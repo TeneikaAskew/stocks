@@ -17,7 +17,7 @@ import pandas as pd
 
 from lib.strat_levels import LegStateTracker
 
-_ET = ZoneInfo('US/Eastern')
+_ET = ZoneInfo('America/New_York')
 
 
 # ── pure tracker semantics (resolver parity) ────────────────────────

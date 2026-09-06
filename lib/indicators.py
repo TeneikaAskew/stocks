@@ -254,7 +254,7 @@ def calculate_rvol_vs_baseline(
     This function compares each bar to the MEDIAN volume historically
     traded at that same minute of the session, which is what "relative
     volume" means. `baseline` maps minute-of-day (``hour*60 + minute``,
-    US/Eastern) to that median, built by
+    America/New_York) to that median, built by
     ``minute_of_day_volume_baseline`` from prior sessions.
 
     Minutes absent from `baseline` yield NaN, never a fabricated 1.0

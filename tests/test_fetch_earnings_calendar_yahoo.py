@@ -34,7 +34,7 @@ import pytest
 ])
 def test_yahoo_time_from_hour(hour, expected):
     from scripts.fetch_earnings_calendar import _yahoo_time_from_ts
-    ts = pd.Timestamp(2026, 4, 28, hour, 0, tz="US/Eastern")
+    ts = pd.Timestamp(2026, 4, 28, hour, 0, tz="America/New_York")
     assert _yahoo_time_from_ts(ts) == expected
 
 
@@ -53,7 +53,7 @@ def test_yahoo_time_handles_non_timestamp():
 def _fake_earnings_df(rows):
     """Build a yfinance-shaped DataFrame: tz-aware index + standard columns."""
     idx = pd.DatetimeIndex(
-        [pd.Timestamp(*r[:5], tz="US/Eastern") for r in rows],
+        [pd.Timestamp(*r[:5], tz="America/New_York") for r in rows],
         name="Earnings Date",
     )
     return pd.DataFrame(

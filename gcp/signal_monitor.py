@@ -382,7 +382,7 @@ class SignalMonitor:
         replay parity is free.
 
         Bar `Time` tz convention differs by mode, mirroring `_now`:
-        live AV bars carry naive US/Eastern stamps (fetch_latest_bar),
+        live AV bars carry naive America/New_York stamps (fetch_latest_bar),
         replay bars from market_data_intraday carry naive UTC
         (replay_clock_ts is set per-bar before update_window). tz-aware
         stamps are converted outright.

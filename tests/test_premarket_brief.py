@@ -723,7 +723,7 @@ class TestResolveDataFreshness:
 
 
 class TestDataAsOfAnchor:
-    """W11 — `data_as_of` should be anchored to 16:00 ET (US/Eastern
+    """W11 — `data_as_of` should be anchored to 16:00 ET (America/New_York
     market close) on the bar's date, regardless of how the daily
     DatetimeIndex hands it in.
 

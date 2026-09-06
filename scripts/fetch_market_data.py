@@ -186,9 +186,9 @@ def fetch_minute_data_for_date(ticker, date):
 
         if not df.empty:
             # AV returns naive ET timestamps; localize for compatibility
-            eastern = pytz.timezone('US/Eastern')
+            eastern = pytz.timezone('America/New_York')
             if df.index.tz is None:
-                df.index = df.index.tz_localize('US/Eastern')
+                df.index = df.index.tz_localize('America/New_York')
         
         return df
         

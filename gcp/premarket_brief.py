@@ -1061,7 +1061,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         last_bar_date_obj = (
             last_bar_ts.date() if hasattr(last_bar_ts, 'date') else None
         )
-        # Anchor `data_as_of` to 16:00 ET (US/Eastern market close) on
+        # Anchor `data_as_of` to 16:00 ET (America/New_York market close) on
         # the bar's date, regardless of whether `latest.name` came in as
         # a tz-naive UTC midnight, a tz-aware UTC timestamp, or a plain
         # date object. The W6 v1 writer used `latest.name` directly,
