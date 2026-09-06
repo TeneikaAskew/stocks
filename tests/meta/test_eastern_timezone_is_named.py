@@ -26,6 +26,7 @@ Hermetic: reads the repo's own source, no network and no database.
 """
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 from datetime import datetime, timedelta
@@ -77,31 +78,6 @@ _TZ_CONTEXT = (
     r"tz_convert\s*\(|tz_localize\s*\(|AT TIME ZONE\s*|--time-zone\s*|"
     r"Timestamp\.now\s*\(|astimezone\s*\("
 )
-# Quotes are OPTIONAL. `gcp/deploy.sh` is scanned and `--time-zone US/Eastern`
-# is the ordinary shell spelling, so requiring quotes exempted the exact form
-# most likely to appear in the file the scheduler check exists for. The
-# trailing lookahead is what keeps the unquoted branch honest: without it,
-# `EST` would match inside `ESTIMATE`.
-LEGACY_ZONES = re.compile(
-    r"(?:" + _TZ_CONTEXT + r")\s*"
-    r"""['"]?(?:US/Eastern|EST5EDT|America/Montreal|Canada/Eastern|EST|EDT)"""
-    r"""['"]?(?![A-Za-z0-9_/-])"""
-)
-
-# A fixed offset standing in for Eastern, in either of the two spellings.
-#
-# The `timedelta` form was the only one matched at first, which left the
-# spelling a pandas user actually reaches for -- `tz="-05:00"`,
-# `tz_localize("-04:00")` -- passing a guard whose whole claim is that a fixed
-# offset cannot express Eastern. Same freeze, same half-the-year wrongness,
-# invisible to the check.
-FIXED_OFFSET = re.compile(
-    r"timezone\s*\(\s*timedelta\s*\(\s*hours\s*=\s*-\s*[45]\s*\)"
-    r"|timedelta\s*\(\s*hours\s*=\s*-\s*[45]\s*\)\s*\)"
-    r"|(?:" + _TZ_CONTEXT + r")\s*['\"]\s*-\s*0?[45]:?00\s*['\"]"
-)
-
-
 # Directories whose executable sources carry no extension. Pine scripts are
 # real source -- `tradingview-pine-scripts/orb-30` and `iwm-scalping` derive
 # their trading sessions from a named zone today -- and an extension-only
@@ -131,58 +107,180 @@ def _source_files() -> list[pathlib.Path]:
     return sorted(set(out))
 
 
-def _hits(pattern: re.Pattern, allow: re.Pattern | None = None) -> list[str]:
-    r"""Search whole files, not line by line.
+# Names that mean Eastern but are not the canonical IANA name.
+#
+# Split by ambiguity, because that is what decides how hard we can look.
+# `US/Eastern` and friends have no meaning other than a timezone, so they are
+# banned outright wherever they appear. `EST`/`EDT` are also ordinary tokens --
+# `gcp/fetchers/fetch_rss_news.py` lists `EST` as a headline stop-word -- so
+# they are only flagged in a timezone context. A guard that flags a stop-word
+# is one people learn to ignore.
+UNAMBIGUOUS_LEGACY = ("US/Eastern", "EST5EDT", "America/Montreal",
+                      "Canada/Eastern")
+AMBIGUOUS_LEGACY = ("EST", "EDT")
+ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 
-    Matching per line meant a formatter could defeat the guard by wrapping:
+_TZ_CONTEXT = (
+    r"tz\s*=|tzinfo\s*=|time_?zone\s*=|time-zone[= ]|ZoneInfo\s*\(|"
+    r"pytz\.timezone\s*\(|tz_convert\s*\(|tz_localize\s*\(|"
+    r"AT TIME ZONE\s*|Timestamp\.now\s*\(|astimezone\s*\("
+)
 
-        ZoneInfo(
-            "US/Eastern"
-        )
+# Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
+# unambiguous names are matched with no context requirement at all -- which is
+# what catches Pine's POSITIONAL form, `time(timeframe.period, session,
+# "US/Eastern")`, where the zone is the third argument and no amount of
+# context-prefix matching would reach it.
+NONPY_UNAMBIGUOUS = re.compile(
+    r"""['"]?(?:""" + "|".join(UNAMBIGUOUS_LEGACY) + r""")['"]?"""
+    r"""(?![A-Za-z0-9_/-])"""
+)
+NONPY_AMBIGUOUS = re.compile(
+    r"(?:" + _TZ_CONTEXT + r")\s*"
+    r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
+    r"""(?![A-Za-z0-9_/-])"""
+)
+NONPY_FIXED_OFFSET = re.compile(
+    r"(?:" + _TZ_CONTEXT + r")\s*['\"]\s*-\s*0?[45]:?00\s*['\"]"
+)
 
-    Neither line contains both halves, so nothing matched -- and that is the
-    routine output of a line-length formatter, not an exotic case. The
-    patterns already join their two halves with `\s*`, and `\s` spans
-    newlines, so searching the full text is all that was needed.
+# ── Python: parsed, not pattern-matched ────────────────────────────────────
+#
+# Four rounds of review each defeated a regex with a different valid spelling:
+# a line-wrapped call, an unquoted shell value, a string offset,
+# `ZoneInfo(key="US/Eastern")`, `timedelta(hours=-5, minutes=0)`. Every fix
+# was a narrower pattern and every one of them was beaten by the next
+# spelling, because a regex reasons about characters and the question is about
+# calls. Python is parsed now. The remaining regex work is confined to files
+# that have no parser here, and that boundary is stated rather than implied.
 
-    `allow` keeps its per-line meaning (it exempts a line that spells a
-    forbidden name deliberately), applied to the line the match STARTS on.
+_TZ_CALLS = {"ZoneInfo", "timezone", "localize", "tz_localize", "tz_convert",
+             "astimezone", "now", "Timestamp"}
+_TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone", "key"}
+_FIXED_OFFSET_STRINGS = re.compile(r"^-0?[45]:?00$")
+
+
+def _call_name(node: ast.Call) -> str:
+    fn = node.func
+    if isinstance(fn, ast.Name):
+        return fn.id
+    if isinstance(fn, ast.Attribute):
+        return fn.attr
+    return ""
+
+
+def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
+    """`timedelta(hours=-4|-5, ...)`, with any number of other arguments.
+
+    The `, minutes=0` case is why this is a walk and not a pattern: the old
+    regex required the closing paren immediately after the hour value.
     """
-    found = []
+    if not isinstance(node, ast.Call) or _call_name(node) != "timedelta":
+        return False
+    for kw in node.keywords:
+        if kw.arg != "hours":
+            continue
+        v = kw.value
+        if (isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.USub)
+                and isinstance(v.operand, ast.Constant)
+                and v.operand.value in (4, 5)):
+            return True
+    return False
+
+
+def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
+    """(legacy-name hits, fixed-offset hits) for one Python file."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return [], []
+
+    legacy, offsets = [], []
+    rel = path.relative_to(REPO)
+
+    def note(bucket, node, what):
+        bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
+
+    for node in ast.walk(tree):
+        # A legacy zone name as the value of a timezone-ish keyword, anywhere.
+        if isinstance(node, ast.keyword) and node.arg in _TZ_KEYWORDS:
+            v = node.value
+            if isinstance(v, ast.Constant) and v.value in ALL_LEGACY:
+                note(legacy, v, f"{node.arg}={v.value!r}")
+            elif (isinstance(v, ast.Constant) and isinstance(v.value, str)
+                    and _FIXED_OFFSET_STRINGS.match(v.value)):
+                note(offsets, v, f"{node.arg}={v.value!r}")
+            elif _is_eastern_fixed_timedelta(v):
+                note(offsets, v, f"{node.arg}=timedelta(hours=-4|-5, ...)")
+
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if name not in _TZ_CALLS:
+            continue
+        # Positional and keyword arguments alike.
+        for arg in list(node.args) + [k.value for k in node.keywords]:
+            if isinstance(arg, ast.Constant) and arg.value in ALL_LEGACY:
+                note(legacy, arg, f"{name}(... {arg.value!r} ...)")
+            elif (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    and _FIXED_OFFSET_STRINGS.match(arg.value)):
+                note(offsets, arg, f"{name}(... {arg.value!r} ...)")
+            elif _is_eastern_fixed_timedelta(arg):
+                note(offsets, arg, f"{name}(timedelta(hours=-4|-5, ...))")
+    return legacy, offsets
+
+
+def _scan() -> tuple[list[str], list[str]]:
+    """Repository-wide (legacy-name hits, fixed-offset hits).
+
+    Python is parsed; everything else is matched against whole file text --
+    not line by line, because a formatter wrapping a call put the two halves
+    on separate lines and neither matched.
+    """
+    legacy, offsets = [], []
     for p in _source_files():
         try:
             text = p.read_text(errors="replace")
         except OSError:
             continue
+        rel = str(p.relative_to(REPO)).replace("\\", "/")
+        if rel == SELF:
+            continue
+        if p.suffix == ".py":
+            l, o = _python_hits(p, text)
+            legacy += l
+            offsets += o
+            continue
         lines = text.splitlines()
-        for m in pattern.finditer(text):
+
+        def report(bucket, m):
             lineno = text.count("\n", 0, m.start()) + 1
             line = lines[lineno - 1] if lineno <= len(lines) else ""
-            if allow is not None and allow.search(line):
-                continue
-            snippet = " ".join(m.group(0).split())[:110]
-            found.append(f"{p.relative_to(REPO)}:{lineno}: {snippet}")
-    return found
+            bucket.append(f"{rel}:{lineno}: {' '.join(m.group(0).split())[:110]}"
+                          f"   in: {line.strip()[:80]}")
+
+        for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
+                                (NONPY_AMBIGUOUS, legacy),
+                                (NONPY_FIXED_OFFSET, offsets)):
+            for m in pattern.finditer(text):
+                report(bucket, m)
+    return legacy, offsets
 
 
 def test_no_legacy_eastern_zone_names():
     """`US/Eastern` and friends are backward links; write the canonical name."""
-    # This test file necessarily spells the forbidden names to forbid them.
-    allow = re.compile(r"LEGACY_ZONES|test_eastern_timezone_is_named|^\s*[*#]")
-    hits = [h for h in _hits(LEGACY_ZONES, allow)
-            if SELF not in h]
-    assert not hits, (
+    legacy, _ = _scan()
+    assert not legacy, (
         "Eastern time must be named 'America/New_York', not a backward link:\n  "
-        + "\n  ".join(hits))
+        + "\n  ".join(legacy))
 
 
 def test_no_fixed_offset_standing_in_for_eastern():
     """-04:00/-05:00 is right for half the year and wrong for the other half."""
-    hits = [h for h in _hits(FIXED_OFFSET)
-            if SELF not in h]
-    assert not hits, (
+    _, offsets = _scan()
+    assert not offsets, (
         "A fixed UTC offset cannot express Eastern time across DST:\n  "
-        + "\n  ".join(hits))
+        + "\n  ".join(offsets))
 
 
 def test_every_scheduler_declaration_uses_the_named_zone():
@@ -217,7 +315,12 @@ def test_every_scheduler_declaration_uses_the_named_zone():
     body = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 
     # Every timezone literal in the file must be Eastern, wherever it sits.
-    zones = set(re.findall(r"--time-zone\s+[\"']?([A-Za-z_/+\-0-9]+)[\"']?", body))
+    # BOTH gcloud spellings. Requiring whitespace missed `--time-zone=UTC`,
+    # while the per-declaration check below accepts a command merely for
+    # containing `--time-zone` -- so an equals-form non-Eastern declaration
+    # satisfied the second check and was invisible to the first.
+    zones = set(re.findall(
+        r"--time-zone[=\s]+[\"']?([A-Za-z_/+\-0-9]+)[\"']?", body))
     assert zones, "no --time-zone flags found -- has deploy.sh moved?"
     assert zones == {EASTERN}, f"non-Eastern scheduler timezones in deploy.sh: {sorted(zones - {EASTERN})}"
 
