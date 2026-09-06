@@ -105,7 +105,7 @@ acceptance tests must be written fresh in this repo (starting point recoverable 
 |---|---|---|
 | Admin — VERIFIED — CODE | Role-based, no shared secret. `admin.py:51 _require_admin` calls `auth.is_admin_email` (`auth.py:188-228`): `ADMIN_EMAIL` env fallback checked FIRST without touching the DB (so an outage or empty table cannot lock out the operator), then a `user_roles` lookup (`role='admin'`). A failed lookup DENIES and logs at ERROR — never grants on error, never a silent deny. The former `X-Admin-Token` gate is fully removed (grep: zero references in `platform/api`). Identity is per-user, revocable, attributable. In `open` mode `current_user_email` is None, so admin routes are closed rather than falling back to a secret. `is_admin_email` is shared with `/api/me`, so the `is_admin` flag the frontend renders cannot drift from the check gating the routes | `ADMIN_EMAIL` defaults to a hardcoded personal address (`auth.py:180`) — an unset env var silently grants that address admin on any deployment |
 | Admin role management | `PUT /api/admin/users/{uid}/roles` (`admin.py:884`) writes `user_roles`; itself admin-gated | Bootstrap is the env fallback by design |
-| Allowlist | `auth.py:128-136 _is_allowed` | **`AUTH_OPEN_SIGNUP` defaults to `"1"`**, so any verified Firebase identity is allowed. `AUTH_ALLOWED_EMAILS` is only consulted when signup is explicitly closed. The product is effectively open-registration by default |
+| Allowlist | `auth.py:128-136 _is_allowed` | Not a gap — **open registration is the intended model.** `AUTH_OPEN_SIGNUP` defaults to `"1"`, so any verified Firebase identity is admitted; `AUTH_ALLOWED_EMAILS` exists for a deployment that wants to close it and is consulted only then. Firebase still verifies the identity, and the rows below (admin gate, per-user scoping) are what bound what a registered user can do |
 | Ownership / tenancy | per-user scoping for journal ([#626](https://github.com/TeneikaAskew/stocks/pull/626)) and watchlists ([#635](https://github.com/TeneikaAskew/stocks/pull/635)); preferences and profile scope every row by the SERVER-verified identity with a fail-closed guard (see below) | No repo-wide immutable-owner invariant; multi-user policy **not verified** |
 | Deployment perimeter | IAP, Cloud Run IAM/ingress, service identities | `PUBLIC=1` paths bypass the IAM gate by design |
 
@@ -303,36 +303,34 @@ carried: IAP on Cloud Run is service-level and cannot be dropped per-revision,
 so staging is public at the edge and re-protected in the app. Only
 `/api/health`, `/api/me`, `/api/config/firebase` answer without a token.
 
-**`stocks.insightscollective.org` was remapped to `solyra-api-staging` on
-2026-09-05**, at the operator's instruction, having previously pointed at the
-IAP-gated prod service. That is a real change in who can reach that hostname,
-and it interacts badly with two pre-existing conditions:
+**`stocks.insightscollective.org` maps to `solyra-api-staging`** (remapped
+2026-09-05 from the IAP-gated prod service). That is the product's public
+entry point by design: a memorable hostname, Firebase sign-in, and **open
+registration** — `AUTH_OPEN_SIGNUP=1` is the intended onboarding model, not a
+condition awaiting remediation.
 
-- staging runs `AUTH_OPEN_SIGNUP=1`, so any Firebase self-registration is
-  allowed rather than an allow-list, and
-- staging is wired to the **production** database and bucket
+Stating the boundary plainly, because "public signup" and "unprotected" are
+different things and the difference is where the real controls live:
+
+- anyone can create an account with a verified Firebase identity;
+- a registered user reaches the same database and bucket as prod
   (`CLOUD_SQL_CONNECTION_NAME=…:trading-db`, `DB_NAME=trading`,
-  `GCS_BUCKET=…-trading-data`) — identical to prod's.
+  `GCS_BUCKET=…-trading-data`);
+- what they can **do** there is bounded by authorization rather than by
+  registration: admin routes require `is_admin_email` and deny on a failed
+  lookup, and journal / watchlist / preferences / profile rows are scoped to
+  the server-verified identity with fail-closed guards (sections above).
 
-So the memorable hostname now fronts a service where anyone who completes a
-Firebase signup reaches production data. Be precise about attribution: the
-open-signup-over-prod-data condition predates the remap and was equally true
-on the `…run.app` URL. What the remap changed is discoverability, from an
-obscure generated hostname to a guessable domain. Closing it is one command
-plus an allow-list, and it is listed below rather than silently applied
-because flipping it logs out anyone currently relying on self-signup:
+So the load-bearing controls are per-user row scoping and the admin gate. Those
+are the ones to keep verified; the signup gate is deliberately open.
 
-```bash
-gcloud run services update solyra-api-staging --region=us-east1 \
-  --update-env-vars AUTH_OPEN_SIGNUP=0
-# then set AUTH_ALLOWED_EMAILS (already wired as a secret ref on the service)
-```
+`AUTH_ALLOWED_EMAILS` stays wired as a secret ref for a deployment that wants
+to close registration. It is unset here on purpose.
 
 ### Still open — do not read the above as "fully hardened"
 
 | Item | State |
 |---|---|
-| Open self-signup on production data | `solyra-api-staging` has `AUTH_OPEN_SIGNUP=1` and points at the prod Cloud SQL instance and bucket, now behind `stocks.insightscollective.org`. Anyone who registers reaches real data. See the remediation above. **Highest-severity item in this table** |
 | No environment isolation | "Staging" and "prod" differ in auth mode and one feature flag; the data layer is shared. The rename made the environments legible, it did not separate them. A dedicated staging database is the actual fix and is planned, not done |
 | Least-privilege shape | The deploy identity retains `run.admin` + `actAs` on a compute SA that holds `roles/editor`. Unchanged from the assessment above |
 
