@@ -836,24 +836,38 @@ deploy_premarket_playbook_resolver() {
 # the dashboard's historical "view as of" mode (loads only bars before the
 # date — no look-ahead).
 #
-# Capacity (CLAUDE.md §0):
-#   Volume:    ~1.25M RTH 1-min bars/ticker × 3 tickers ≈ 3.75M rows. Tickers
-#              are processed one at a time (frames released between iterations),
-#              so peak working set is ONE ticker's enriched frame: 1.25M rows ×
-#              ~50 indicator columns × 8 B × pandas copy-overhead ≈ 3–5 GB.
-#              (Empirical: 4Gi OOM-killed (signal 9) after the first ticker.)
-#   Velocity:  1 Cloud SQL load per ticker (3 reads) + 1 upsert per ticker.
-#              No per-row SQL — cards are vectorised over the in-memory frame.
-#   Wall:      ~5 min/run (full-history load + 12-card scoring × 3 tickers).
-#   timeout:   3600s = 1hr (≥ 4× wall-clock; backfill runs one date per exec).
-#   memory:    8Gi (≥ 4 CPU required) — headroom over the empirical ~4 GB peak.
+# Capacity (CLAUDE.md §0), re-measured 2026-09-06 (#861):
+#   Volume:    2.0M (IWM) / 2.3M (QQQ) / 2.4M (SPY) raw 1-min bars per
+#              ticker in market_data_intraday (2015 → today, extended hours
+#              included; the RTH filter runs after load). Each ticker's
+#              enriched frame is ~50 indicator columns × 8 B × rows plus
+#              pandas copy overhead ≈ 4-6 GB peak.
+#   Velocity:  1 Cloud SQL load per ticker + 1 upsert per ticker. No per-row
+#              SQL — cards are vectorised over the in-memory frame.
+#   Wall:      ~5 min per ticker (measured: IWM alone finished in 5m00s on
+#              2026-09-06). Tasks run in parallel, so ~5 min per execution.
+#   tasks:     3, one ticker per task (scripts/analysis/phase6_playbook.py
+#              select_tickers_for_task). A single process walking all three
+#              tickers was OOM-killed (signal 9) at 8Gi on the SECOND ticker
+#              on 2026-09-06: the first ticker's frame is not returned to
+#              the OS, so the working set grew with the ticker count. Per
+#              task, peak = one ticker, independent of how many tickers run.
+#   memory:    16Gi (4 CPU) — ≥ 2× the ~6 GB single-ticker peak (Rule 0:
+#              estimate the working set, double it). 8Gi is proven for IWM
+#              alone but not for SPY, which carries 21% more bars.
+#   timeout:   3600s (≥ 4× the 5-min wall).
 #   retries:   0 (idempotent upsert on PK (ticker, card_num, analysis_date);
-#              transient retries don't help and would double-run the load).
+#              a transient retry would just re-run the 5-min load).
+#   cost:      3 tasks × ~5 min × (4 vCPU + 16Gi) ≈ $0.12/run × 21 runs/mo
+#              ≈ $2.60/month.
+# Both branches carry the sizing flags so `deploy.sh phase6-playbook`
+# converges a hand-tweaked live job back to this spec (#854).
 deploy_phase6_playbook() {
     echo "Deploying phase6-playbook job..."
     gcloud run jobs create phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 8Gi --cpu 4 --max-retries 0 \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.analysis.phase6_playbook" \
@@ -863,6 +877,9 @@ deploy_phase6_playbook() {
         --quiet 2>/dev/null || \
     gcloud run jobs update phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
+        --task-timeout 3600 \
         --command "python,-m,scripts.analysis.phase6_playbook" \
         --args="--write-db" \
         ${DB_SECRET_FLAG} \

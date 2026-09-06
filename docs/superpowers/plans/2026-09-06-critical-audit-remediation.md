@@ -32,9 +32,18 @@ SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM play
 - `phase6-playbook` Cloud Run Job exists; its six executions are all on
   2026-06-14 (the as-of backfills). **No Cloud Scheduler entry** in GCP and none
   in `gcp/deploy.sh`. The job was never in the `all)` deploy target either.
-- Root cause is therefore **never scheduled**, not a broken writer. The `#848`
-  silent-failure hypothesis in the issue is ruled out: there are no failed
+- Root cause #1 is therefore **never scheduled**. The `#848` silent-failure
+  hypothesis in the issue is ruled out for the June stop: there are no failed
   executions because there were no executions.
+- Root cause #2 surfaced when the job was re-run on 2026-09-06 on the current
+  image: **OOM-killed (signal 9) at 8Gi on the second ticker** after IWM
+  completed in 5m00s. `market_data_intraday` now holds 2.0M / 2.3M / 2.4M
+  raw 1-min bars for IWM / QQQ / SPY (2015 → today, extended hours included;
+  the June capacity note assumed ~1.25M RTH bars). The first ticker's frame is
+  not returned to the OS, so a single process walking three tickers grows its
+  working set with the ticker count. Had the scheduler existed, the job would
+  have started failing at some point over the summer instead of silently not
+  running — a different failure with the same user-facing result.
 - Consumers are live: `solyra` `DashboardPage.tsx` (top setup tile, also in
   review mode with `?date=`) and `PlaybookPage.tsx`. Both read
   `/api/playbook/{ticker}`, which resolved `max(analysis_date)` with no floor and
@@ -58,7 +67,11 @@ SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM play
    - The undated GCS-markdown bridge is removed: it is written by the same job
      and could only re-serve the same stale cards with the age hidden.
 2. `gcp/deploy.sh`: `_schedule "phase6-playbook-daily" "30 4 * * 1-5"
-   "phase6-playbook"` and `deploy_phase6_playbook` in `all)`.
+   "phase6-playbook"` and `deploy_phase6_playbook` in `all)`. The job now
+   runs as `--tasks 3` (one ticker per task, `select_tickers_for_task` in
+   `scripts/analysis/phase6_playbook.py`, keyed off `CLOUD_RUN_TASK_INDEX`)
+   at 16Gi / 4 CPU, with the sizing flags on both the create and update
+   branches (the #854 pattern). Capacity math is in the deploy.sh comment.
 3. `scripts/audit_data_freshness.py`: `playbook_cards` CHECKS entry
    (per ticker, `writer_job: phase6-playbook`, `min_rows_per_day: 12`,
    `settle_hour_et: 5`).
@@ -79,9 +92,12 @@ SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM play
 
 **production (this session, after the code is pushed)**
 
-7. Re-resolve the job image to the current `:latest` digest, execute the job,
-   verify `max(analysis_date) = current_date` for all three tickers, create the
-   `phase6-playbook-daily` scheduler. Recorded on the issue.
+7. Re-resolve the job image to the current `:latest` digest, raise the live
+   job to 16Gi, execute it, verify `max(analysis_date) = current_date` for all
+   three tickers, create the `phase6-playbook-daily` scheduler. Recorded on
+   the issue. Until the stocks branch is built and deployed, the live job is
+   the single-task 16Gi shape (the `--tasks 3` split needs the new image);
+   `./gcp/deploy.sh phase6-playbook` converges it after merge.
 
 ### Definition of done (from the issue) — status
 

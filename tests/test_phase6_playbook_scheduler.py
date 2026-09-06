@@ -76,3 +76,41 @@ def test_playbook_cards_in_freshness_watchdog():
     # partial set, which must read as stale, not ok.
     assert c.get("min_rows_per_day") == 12
     assert c["expected_lag_hours"] <= 36
+
+
+def test_phase6_playbook_runs_one_ticker_per_task_at_16gi():
+    """2026-09-06: a single 8Gi process walking IWM→QQQ→SPY was OOM-killed on
+    the second ticker. The job must run as one task per ticker with the
+    re-measured memory, and BOTH the create and update branches must carry
+    the sizing flags so a redeploy converges a hand-tweaked live job."""
+    m = re.search(r"deploy_phase6_playbook\(\)\s*\{(.*?)\n\}", DEPLOY_SH, re.DOTALL)
+    assert m
+    body = m.group(1)
+    create, update = body.split("gcloud run jobs update", 1)
+    for name, branch in (("create", create), ("update", update)):
+        assert re.search(r"--tasks 3\b", branch), f"{name} branch must set --tasks 3"
+        assert re.search(r"--memory 16Gi\b", branch), f"{name} branch must set --memory 16Gi"
+        assert re.search(r"--cpu 4\b", branch), f"{name} branch must set --cpu 4"
+        assert re.search(r"--task-timeout 3600\b", branch), f"{name} branch must set --task-timeout"
+        assert re.search(r"--max-retries 0\b", branch), f"{name} branch must set --max-retries 0"
+
+
+def test_select_tickers_for_task_one_per_task():
+    from scripts.analysis.phase6_playbook import select_tickers_for_task
+
+    tickers = ["IWM", "SPY", "QQQ"]
+    # Cloud Run: --tasks 3 → exactly one ticker each, no overlap, no gap.
+    assigned = [select_tickers_for_task(tickers, i, 3) for i in range(3)]
+    assert assigned == [["IWM"], ["SPY"], ["QQQ"]]
+    # Over-provisioned tasks get nothing (exit 0), never a repeat.
+    assert select_tickers_for_task(tickers, 3, 4) == []
+    # Fewer tasks than tickers still covers every ticker exactly once.
+    two = [select_tickers_for_task(tickers, i, 2) for i in range(2)]
+    assert sorted(sum(two, [])) == sorted(tickers)
+    # Outside Cloud Run the full list is processed in-process as before.
+    assert select_tickers_for_task(tickers, None, None) == tickers
+    assert select_tickers_for_task(tickers, 0, 1) == tickers
+    # A task index outside the declared count is a config error, not a silent no-op.
+    import pytest
+    with pytest.raises(ValueError):
+        select_tickers_for_task(tickers, 5, 3)
