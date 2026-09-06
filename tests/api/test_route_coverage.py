@@ -298,9 +298,10 @@ REQUESTS: list[Req] = [
 
     # ── admin ───────────────────────────────────────────────────────────────
     Req("GET", "/api/admin/routes", 503, note="was a bare 500"),
-    Req("PUT", "/api/admin/routes/analyst", 400,
-        json={"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
-        note="the handler's own adapter check runs before any DB access"),
+    Req("PUT", "/api/admin/routes/analyst", 503,
+        json={"provider": "vertex", "model": "gemini-2.5-flash"},
+        note="a REAL provider/model, so it reaches set_route's DB write; "
+             "an invalid one 400s at adapter validation and covers nothing"),
     Req("GET", "/api/admin/models", 200),
     Req("GET", "/api/admin/structure-brief", 200),
     Req("GET", "/api/admin/strat-engine/state", 200),
@@ -501,6 +502,29 @@ def client(tmp_path_factory):
 
         mp.setattr(ticker_info, "_fetch_finviz_peers", lambda _t: None)
         mp.setattr(ticker_info, "_fetch_industry_peers", lambda _t: None)
+        # AlphaVantage is the other vendor these routes reach. `/live/quote`,
+        # `/live/history` and `/options/live/...` go out over httpx when a key
+        # is configured, and ticker search/info/quote go through
+        # `fetch_with_retry`. The key is read into a module-level constant at
+        # import time, so clearing the environment is not enough on an already
+        # imported module -- blank the constants where they are looked up.
+        for mod_name, attr in (("api.routers.live", "AV_API_KEY"),
+                               ("api.routers.grid", "_AV_API_KEY"),
+                               ("api.routers.options", "_AV_API_KEY")):
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, attr):
+                mp.setattr(mod, attr, "")
+        mp.setattr(ticker_info, "_get_av_key",
+                   lambda: (_ for _ in ()).throw(KeyError("no AV key in tests")))
+
+        # Pin the auth mode. It is read from the environment at import time,
+        # and under `AUTH_MODE=firebase` the middleware 401s every gated route
+        # before its handler runs -- the sweep would fail at `GET
+        # /api/live/status` and the pinned statuses would describe a different
+        # deployment than the one under test.
+        import api.auth as api_auth_mode
+
+        mp.setattr(api_auth_mode, "AUTH_MODE", "open")
 
         import api.routers.admin as admin
 
@@ -649,17 +673,63 @@ def test_operation_answers(client, req: Req):
         f"needs updating — both deserve a look.\nbody: {r.text[:400]}")
 
 
+def _handler_ran(response) -> bool:
+    """Did the endpoint function execute, judged from the response?
+
+    FastAPI raises `RequestValidationError` BEFORE calling the endpoint and
+    answers 422 with a distinctive body: `detail` is a list of
+    `{"type", "loc", "msg"}` objects. Every other status -- including a 422 a
+    handler raises itself, whose `detail` is a plain string -- means the
+    endpoint ran.
+
+    Derived rather than declared. `body_ran` on the table is an annotation I
+    wrote, defaulting to True, so counting it measured my own bookkeeping: if
+    an entry currently answering a handler-raised 422 started failing
+    FastAPI's validation instead, the status would not change and the count
+    would not change, and the sweep would stay green while quietly executing
+    one less handler.
+    """
+    if response.status_code != 422:
+        return True
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return True
+    return not (isinstance(detail, list) and detail
+                and isinstance(detail[0], dict) and "loc" in detail[0])
+
+
+def test_the_declared_handler_reach_matches_what_actually_happened(client):
+    """Every `body_ran` annotation is checked against the real response."""
+    wrong = []
+    for req in REQUESTS:
+        r = client.request(req.method, req.url, json=req.json)
+        actual = _handler_ran(r)
+        if actual != req.body_ran:
+            wrong.append(
+                f"{req.label}: table says body_ran={req.body_ran}, the "
+                f"response says {actual} ({r.status_code}: {r.text[:90]})")
+    assert not wrong, (
+        "the table's handler-reach annotations disagree with the responses:"
+        "\n  " + "\n  ".join(wrong))
+
+
 def test_most_requests_reach_the_handler(client):
     """The file states how much of itself is real, and holds itself to it.
 
-    `body_ran=False` marks a request stopped by FastAPI's own body validation,
-    which says nothing about the handler behind it. Those are the honest
-    exceptions and they are meant to stay few: a table that drifted to mostly
-    422s would still report "every operation requested" while executing almost
-    no application code, which is the shape of over-claim this whole file
-    exists to avoid.
+    A request stopped by FastAPI's own body validation says nothing about the
+    handler behind it. Those are the honest exceptions and they are meant to
+    stay few: a table that drifted to mostly 422s would still report "every
+    operation requested" while executing almost no application code, which is
+    the shape of over-claim this whole file exists to avoid.
+
+    Measured from the responses, not read off the table -- see `_handler_ran`.
     """
-    shallow = [r.label for r in REQUESTS if not r.body_ran]
+    shallow = []
+    for req in REQUESTS:
+        r = client.request(req.method, req.url, json=req.json)
+        if not _handler_ran(r):
+            shallow.append(f"{req.label} -> {r.status_code}")
     assert len(shallow) <= 5, (
         f"{len(shallow)} of {len(REQUESTS)} requests stop at request "
         f"validation:\n  " + "\n  ".join(shallow))

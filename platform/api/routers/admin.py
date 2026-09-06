@@ -157,6 +157,16 @@ async def admin_update_route(
         set_route(role, body.provider, body.model, updated_by="admin-ui")  # type: ignore[arg-type]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        # `set_route` opens its own Cloud SQL connection. Only `ValueError`
+        # was caught, so a connection failure reached FastAPI as a bare 500
+        # with a plain-text body -- the same shape as `admin_list_routes`
+        # above, and invisible to the route sweep because its request was
+        # covered through the adapter-validation branch that 400s first.
+        logger.error("model route write failed for %s: %s", role, exc)
+        raise HTTPException(
+            status_code=503, detail="model route store temporarily unavailable"
+        ) from exc
     # Return the updated row
     for r in list_routes():
         if r.role == role:
