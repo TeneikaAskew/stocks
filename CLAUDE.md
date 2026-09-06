@@ -724,9 +724,17 @@ constraint or `INSERT ... RETURNING`, not a lock).
 Converting is only safe if **nothing awaits it**. "Does this handler await?"
 does not answer "does anything await this handler?" That gap shipped a
 `TypeError` 500 on every `/levels` request that a 4,253-test suite passed
-over. `tests/test_api_handler_dispatch.py` asserts both directions, via AST —
-a regex anchored to `^async def` cannot see a handler nested inside an `if`,
-and one was.
+over.
+
+A guard for both directions is written and lands with the threading migration
+on **#991**, as `tests/api/test_api_handler_dispatch.py`. It does not exist in
+this tree, and saying otherwise here would promise a safety net that never
+runs — the same shape of claim as the "0 uncovered" number that turned out to
+count docstrings. Until it merges, this is a rule you enforce by reading the
+diff.
+
+When it does land it works via AST, because a regex anchored to `^async def`
+cannot see a handler nested inside an `if`, and one was.
 
 ---
 
