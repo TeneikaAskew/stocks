@@ -338,7 +338,7 @@ Three long-lived HTTP services, all with `min-instances=0` so they cost nothing 
 | Auth | **IAP (Identity-Aware Proxy) auto-managed** scoped to `bictech.org` Google identities. Admin email (`teneika@bictech.org`) bypasses the optional in-app token gate |
 | Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic), and the SPA at `/` |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
-| URL | Custom domain `stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, IAP-gated); the generated `trading-platform-…run.app` URL remains as a fallback |
+| URL | Custom domain `api.stocks.insightscollective.org` → `solyra-api-staging` (Cloud Run domain mapping, Google-managed TLS) since 2026-09-06. `stocks.insightscollective.org` is no longer mapped to Cloud Run: it is the Firebase auth-email sending domain and reserved for the SPA. The generated `…run.app` URLs remain as fallbacks |
 | Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/trading-platform`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
 
 This is the only thing a human directly hits in a browser.

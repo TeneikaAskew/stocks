@@ -122,8 +122,10 @@ class Branding:
     app_name: str = "Solyra"
     # Where the emailed buttons land. Must render the SPA (the /auth/action
     # route lives in the solyra repo) and be an Identity Platform authorized
-    # domain. stocks.insightscollective.org maps to the API today, so the
-    # published SPA host is the default until the SPA moves.
+    # domain. The API lives at api.stocks.insightscollective.org;
+    # stocks.insightscollective.org is reserved for the Firebase sending
+    # domain and, later, the SPA. Until the SPA moves there, the published
+    # Lovable host is the default.
     app_url: str = "https://solyra-stocks.lovable.app"
     action_path: str = "/auth/action"
     sender_name: str = "Solyra"

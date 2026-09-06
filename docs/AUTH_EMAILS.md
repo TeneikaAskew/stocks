@@ -131,42 +131,52 @@ the full template object every time.
 ## Custom sending domain (one-time, console + Squarespace DNS)
 
 Out of the box the From address is `noreply@adept-mountain-474619-d4.firebaseapp.com`.
+Target: `noreply@stocks.insightscollective.org`.
 
-**Use the apex `insightscollective.org`, not `stocks.insightscollective.org`.**
-Checked 2026-09-06: `stocks.insightscollective.org` is a CNAME to
-`ghs.googlehosted.com` (the Cloud Run domain mapping for the API). DNS does
-not allow any other record at a name that carries a CNAME, so the two TXT
-records Firebase needs cannot be added there without deleting the CNAME and
-breaking the API mapping. The apex has no MX and no SPF today (only
-`google-site-verification` TXTs), so Firebase's records go in cleanly and
-the From address becomes `noreply@insightscollective.org`.
+**Why the API had to move first.** Until 2026-09-06 `stocks.insightscollective.org`
+was a CNAME to `ghs.googlehosted.com` (the Cloud Run domain mapping for
+`solyra-api-staging`). DNS forbids any other record at a name that carries
+a CNAME, so Firebase's two TXT records could never be served there. The
+API mapping was therefore re-created as `api.stocks.insightscollective.org`
+(same service, same CNAME target) and the `stocks` CNAME is deleted, which
+frees `stocks.insightscollective.org` for mail now and for the SPA later
+(Lovable maps subdomains with A records, which coexist with TXT).
 
 The zone is hosted by Squarespace Domains (nameservers
 `ns-cloud-e1..e4.googledomains.com`; Cloud DNS is not enabled in the
-project), so the records are added in Squarespace → Domains →
+project), so DNS edits happen in Squarespace → Domains →
 insightscollective.org → DNS settings. Nothing in GCP can write them.
 
-1. Firebase console → Authentication → Templates → pencil icon → "Customize
-   domain" → enter `insightscollective.org`.
-2. Copy the four records the dialog shows (values differ per domain, so copy
-   from the dialog, not from here). Shape:
+Records at Squarespace (host is relative to `insightscollective.org`):
 
-   | Host | Type | Value |
-   |---|---|---|
-   | `@` | TXT | `v=spf1 include:_spf.firebasemail.com ~all` |
-   | `@` | TXT | `firebase=adept-mountain-474619-d4` |
-   | `firebase1._domainkey` | CNAME | `mail-insightscollective-org.dkim1._domainkey.firebasemail.com.` |
-   | `firebase2._domainkey` | CNAME | `mail-insightscollective-org.dkim2._domainkey.firebasemail.com.` |
+| Host | Type | Value | Purpose |
+|---|---|---|---|
+| `api.stocks` | CNAME | `ghs.googlehosted.com.` | API (Cloud Run mapping → `solyra-api-staging`) |
+| `stocks` | TXT | `v=spf1 include:_spf.firebasemail.com ~all` | Firebase SPF |
+| `stocks` | TXT | `firebase=adept-mountain-474619-d4` | Firebase ownership |
+| `firebase1._domainkey.stocks` | CNAME | `mail-stocks-insightscollective-org.dkim1._domainkey.firebasemail.com.` | DKIM 1 |
+| `firebase2._domainkey.stocks` | CNAME | `mail-stocks-insightscollective-org.dkim2._domainkey.firebasemail.com.` | DKIM 2 |
+| `_dmarc.stocks` | TXT | `v=DMARC1; p=none; rua=mailto:<a mailbox you read>` | optional, reporting only |
+| ~~`stocks`~~ | ~~CNAME~~ | ~~`ghs.googlehosted.com.`~~ | **delete** (blocks the TXT records) |
 
-   Optional but recommended for inbox placement: a DMARC record,
-   `_dmarc` TXT `v=DMARC1; p=none; rua=mailto:<a mailbox you read>`.
-   `p=none` only reports; it cannot block anything.
-3. Click Verify. Propagation can take up to 48 hours. Until
-   `python -m gcp.auth_email_templates --show` reports
-   `customDomainState: SUCCEEDED`, Firebase keeps sending from the
+Copy the Firebase values from the console dialog (Templates → pencil →
+Customize domain), not from here, in case they change.
+
+Order of operations:
+
+1. Add the `api.stocks` CNAME. Wait until
+   `curl -s 'https://dns.google/resolve?name=api.stocks.insightscollective.org&type=CNAME'`
+   shows it, then until `https://api.stocks.insightscollective.org/api/health`
+   answers 200 (Google issues the certificate after the record is visible;
+   usually minutes, can be longer).
+2. Delete the `stocks` CNAME. The old hostname stops answering at that
+   point; nothing in the repos calls it (Solyra calls the `run.app` URL).
+3. Firebase console → Templates → Customize domain → Verify. Propagation
+   can take up to 48 hours; until `python -m gcp.auth_email_templates --show`
+   reports `customDomainState: SUCCEEDED`, Firebase keeps sending from the
    `firebaseapp.com` address, so nothing breaks in the meantime.
-4. Check propagation from anywhere over HTTPS:
-   `curl -s 'https://dns.google/resolve?name=insightscollective.org&type=TXT'`.
+4. Delete the old Cloud Run mapping so it does not linger:
+   `gcloud beta run domain-mappings delete --domain=stocks.insightscollective.org --region=us-east1`.
 
 This is deliberately not scripted: the admin/v2 REST API marks every
 `DnsInfo` field output-only and has no domain-verification method (verified
