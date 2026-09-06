@@ -114,6 +114,7 @@ _pin_tag() {
     if [[ "${repo_image}" == gcr.io/* ]]; then
         repo_image="us-docker.pkg.dev/${repo_image#gcr.io/}"
         repo_image="${repo_image/${PROJECT_ID}\//${PROJECT_ID}/gcr.io/}"
+        ref="${repo_image}@${ref#*@}"
     fi
     local existing
     existing=$(gcloud artifacts docker tags list "${repo_image}" \
