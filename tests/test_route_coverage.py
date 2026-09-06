@@ -242,7 +242,8 @@ REQUESTS: list[Req] = [
 
     # ── insights ────────────────────────────────────────────────────────────
     Req("GET", "/api/insights/ticker/search?keywords=russell", 200),
-    Req("GET", f"/api/insights/ticker/{T}/info", 200),
+    Req("GET", f"/api/insights/ticker/{T}/info", 404,
+        note="deterministic miss: the on-disk cache is redirected to tmp"),
     Req("GET", f"/api/insights/ticker/{T}/quote", 404),
     Req("GET", f"/api/insights/ticker/{T}/peers", 200),
     Req("POST", "/api/insights/watchlist/add", 503, json={"ticker": T}),
@@ -470,6 +471,17 @@ def client(tmp_path_factory):
         scratch = tmp_path_factory.mktemp("route-coverage")
         mp.setattr(journal, "LOCAL_JOURNAL_DIR", scratch / "journal")
         mp.setattr(journal, "SIGNALS_DIR", scratch / "signals")
+
+        # Same reason, one layer down. `GET /api/insights/ticker/{ticker}/info`
+        # reads lib/ticker_info's on-disk cache and WRITES to it, so the first
+        # request creates `data/ticker_info.json` and every later run answers
+        # 200 from what an earlier run left there. That is how this file passed
+        # locally and failed in CI on a fresh checkout: 200 against a cache my
+        # own probe had written, 404 on a machine that had never run it. The
+        # environment was answering, not the code.
+        import lib.ticker_info as ticker_info
+
+        mp.setattr(ticker_info, "_LOCAL_CACHE_PATH", scratch / "ticker_info.json")
 
         _clear_process_caches()
 
