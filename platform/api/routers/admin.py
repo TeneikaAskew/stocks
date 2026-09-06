@@ -735,8 +735,10 @@ async def admin_structure_continuation(
 # ---------------------------------------------------------------------------
 
 # Mirrors the user_roles_role_valid CHECK constraint. If a role is ever
-# added there, add it here in the same change set.
-_ASSIGNABLE_ROLES = ("admin", "user")
+# added there, add it here in the same change set. 'dev' turns on the
+# solyra frontend's mock-data mode via /api/me's is_dev flag; it grants
+# no additional API access.
+_ASSIGNABLE_ROLES = ("admin", "user", "dev")
 
 
 class AdminUserRow(BaseModel):

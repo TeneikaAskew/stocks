@@ -156,6 +156,21 @@ billing_90d.json
 # ...but not files the live projects never tracked: archiving should preserve
 # what was in the repo, not start committing things that were excluded.
 archive/**/*.csv
+# EXCEPTION, and the reason the general rule above does not fit here: these
+# four Earnings Whispers exports are the ONLY copy. They are the sole input to
+# scripts/match_earnings_strategy.py, the Apps Script scraper that produced
+# them is archived and will not produce more, and they existed on exactly one
+# disk. The rule above assumes an excluded file can be regenerated; this one
+# cannot. ~700 KB total, market data only, private repo.
+# Tracking them does NOT put them in a build: archive/ is excluded by both
+# .gcloudignore and .dockerignore, which is a separate mechanism from git.
+# Enumerated, NOT a wildcard: `*.csv` here would make any future file in this
+# directory trackable, so a routine `git add .` could commit unrelated or
+# sensitive CSV data straight past the archive/**/*.csv policy above.
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Bull Spreads.csv
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Covered Calls.csv
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Long Calls.csv
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Long Calls(1).csv
 archive/**/.clasp.json
 # ...and never secrets: git takes the LAST matching rule, so the broad
 # negation above would otherwise override the repo-wide sensitive-file

@@ -185,6 +185,44 @@ def configured_admin_email() -> str:
     return os.environ.get("ADMIN_EMAIL", _DEFAULT_ADMIN_EMAIL).strip().lower()
 
 
+def stored_role_for(email: Optional[str]) -> Optional[str]:
+    """The `user_roles` table role for `email`, or None.
+
+    One row per email (PK), so this is a single primary-key lookup. Used by
+    /api/me to derive is_admin AND is_dev from one round-trip instead of two
+    per app load. Unlike `is_admin_email` there is no env fallback here —
+    'dev' (and any future role) exists only in the table.
+
+    Same failure posture as `is_admin_email`: a failed lookup logs at ERROR
+    and reports no role. It never grants on error, and never reports the
+    failure as a plain "no role" without a log line — authorization flags
+    fail closed, visibly.
+    """
+    if not email:
+        return None
+    normalized = email.strip().lower()
+
+    try:
+        from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+
+        df = query_to_dataframe_strict(
+            "SELECT role FROM user_roles WHERE email = :email LIMIT 1",
+            {"email": normalized},
+            timeout_s=5,
+        )
+        if df.empty:
+            return None
+        return str(df.iloc[0]["role"])
+    except Exception:
+        logger.exception(
+            "user_roles lookup failed for %s — reporting no stored role. "
+            "Role-derived flags (is_admin beyond ADMIN_EMAIL, is_dev) are "
+            "denied until this is resolved.",
+            normalized,
+        )
+        return None
+
+
 def is_admin_email(email: Optional[str]) -> bool:
     """True when `email` holds the admin role.
 
