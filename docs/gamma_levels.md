@@ -211,4 +211,4 @@ config — same pattern as `/api/config/indicators`.
 - [`platform/src/routes/ChartsPage.tsx`](../platform/src/routes/ChartsPage.tsx) — chart overlay toggle
 - [`scripts/show_gamma_levels.py`](../scripts/show_gamma_levels.py) — CLI
 - [`tradingview-pine-scripts/gamma-levels-overlay-v2`](../tradingview-pine-scripts/gamma-levels-overlay-v2) — Pine companion
-- [`tests/test_gamma.py`](../tests/test_gamma.py) — sign convention regressions
+- [`tests/lib/test_gamma.py`](../tests/lib/test_gamma.py) — sign convention regressions

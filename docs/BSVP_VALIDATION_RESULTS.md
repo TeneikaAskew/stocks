@@ -143,4 +143,4 @@ The RVOL gate is what turns the composite on: without it, call ≥ 8 is +0.14 bp
 - Trade sim marks stop-and-target-in-same-bar as a loss (conservative).
 - No transaction costs, spreads, or options translation — reported edges are *upper bounds* on tradability.
 - Cells with n < 100 are reported in the CSVs but not relied on in verdicts; every verdict above rests on ≥ 2,000 events (most on 20k+).
-- Pine parity: math pinned by unit tests (`tests/test_indicators.py::TestPowerBalance/TestCalculateBsvp`); exact numeric parity vs a live TV chart requires an RTH-only chart (ETH charts shift VPO levels — see §4 item 10).
+- Pine parity: math pinned by unit tests (`tests/lib/test_indicators.py::TestPowerBalance/TestCalculateBsvp`); exact numeric parity vs a live TV chart requires an RTH-only chart (ETH charts shift VPO levels — see §4 item 10).

@@ -23,7 +23,7 @@ streamlit>=1.28.0
 
 # Finviz peers + news scraper. lib/ticker_info.py imports
 # `finvizfinance` lazily inside get_peers / get_finviz_news, but
-# tests/test_ticker_info.py uses @patch("finvizfinance.quote.finvizfinance")
+# tests/api/test_ticker_info.py uses @patch("finvizfinance.quote.finvizfinance")
 # which requires the module to be importable at patch time. Kept in the
 # base requirements alongside google-genai for the same reason — pytest
 # collects every tests/ file regardless of deploy environment.
@@ -79,7 +79,7 @@ python-dotenv>=1.0.0
 cloud-sql-python-connector[pg8000]>=1.7.0
 google-cloud-storage>=2.14.0
 # google-genai is imported at module load by lib/agents/vertex_adapter.py
-# (`from google.genai import types`), so tests/test_agent_vertex_adapter.py
+# (`from google.genai import types`), so tests/agents/test_agent_vertex_adapter.py
 # fails collection / execution without it. Kept in the base requirements
 # for the same reason as the LLM adapter pydantic block below: pytest
 # collects every tests/ file regardless of deploy environment.
@@ -98,8 +98,8 @@ pydantic>=2.12.0
 
 # Discord-interactions service (gcp/discord_interactions.py) and the
 # insights/admin API router (platform/api/routers/insights.py) both
-# import fastapi at module level, so tests/test_discord_interactions.py
-# and tests/test_routers_insights_admin.py fail collection without it.
+# import fastapi at module level, so tests/gcp/test_discord_interactions.py
+# and tests/lib/test_routers_insights_admin.py fail collection without it.
 # pynacl is the Ed25519 verifier for Discord webhook signatures.
 fastapi>=0.115.0
 pynacl>=1.5.0
@@ -124,5 +124,5 @@ cachetools>=5.3.0
 # statement splitter). It was only in requirements-gcp.txt, so the
 # module had zero CI import coverage — an import break there would
 # first surface as a production db-query failure. Found by
-# tests/test_import_coverage.py on 2026-08-24.
+# tests/meta/test_import_coverage.py on 2026-08-24.
 sqlparse>=0.4.4

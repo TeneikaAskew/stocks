@@ -144,7 +144,7 @@ Detailed per-entry treatment for the **six incident-linked findings (C-01 throug
 - **Can the fallback be replaced?**: **YES, INTERNAL**. Delete the `except`; the `log.exception` message becomes unnecessary once C-01 re-raises with the stack trace.
 - **Proposed replacement**: delete lines 80–86; the `try` becomes a plain function body.
 - **Fix effort**: **S** — single file, one block.
-- **Test**: extend `tests/test_data_loader.py` to assert the original exception propagates.
+- **Test**: extend `tests/lib/test_data_loader.py` to assert the original exception propagates.
 - **Order-of-operations**: must land **after C-01** or you double up on log noise.
 - **Related GitHub issues**: #301, #316.
 - **Originating / related PRs**: introduced by commit `^53ea6cc` (Teneika Askew, 2026-05-09) — same fix-attempt as C-01. Tried-to-fix-but-left-silent: #339. The comment in lines 66–75 is itself the postmortem, embedded in the very code it failed to fix.
@@ -195,7 +195,7 @@ Detailed per-entry treatment for the **six incident-linked findings (C-01 throug
   ```
   Add a separate staleness check (§8.4) that warns at >1 trading day old and errors at >5.
 - **Fix effort**: **M** — needs the staleness check infrastructure (§8.4) before the swallow can be removed in production. Until then, intermediate fix is to add a `WARN` log on every fallback fire and a `daily_rates_staleness_seconds` Cloud Logging metric.
-- **Test**: extend `tests/test_options_greeks.py` to mock an empty `daily_rates` and assert the `RuntimeError` (not a silent `(0.04, 0.014)` return).
+- **Test**: extend `tests/lib/test_options_greeks.py` to mock an empty `daily_rates` and assert the `RuntimeError` (not a silent `(0.04, 0.014)` return).
 - **Order-of-operations**: must land **after** §8.4 (staleness watchdog) so we have a guardrail against the obvious failure mode.
 - **Related GitHub issues**: #376 (`GCP_SA_KEY secret missing + apply-schema-migrations uses baked-in schema.sql`) — the schema-not-migrated half of this is the same class of bug.
 - **Originating / related PRs**: introduced when Greeks DB-rates lookup was added (pre-#350). PR #350 (signal-monitor replay harness) referenced these constants. PR #384 (`--as-of flag for calibrate`) touches calibration writes which downstream-consume Greeks. **No PR has yet attempted to remove these defaults.**
@@ -241,7 +241,7 @@ Detailed per-entry treatment for the **six incident-linked findings (C-01 throug
   ov = _latest_overrides(ticker, strat)  # let exceptions propagate
   ```
 - **Fix effort**: **M** — coupled with C-01 (the `_latest_overrides` call ultimately hits `query_to_dataframe`). Lands as a unit with the data-access policy fix.
-- **Test**: `tests/test_signals.py::test_evaluate_signal_raises_on_malformed_disabled_conditions`.
+- **Test**: `tests/lib/test_signals.py::test_evaluate_signal_raises_on_malformed_disabled_conditions`.
 - **Order-of-operations**: after C-01 — we need DB layer to surface errors before this layer can sensibly re-raise.
 - **Related GitHub issues**: **#376** (`apply-schema-migrations` silent gap), **#356** (Track D validation rollup that caught the 95/98 above_vwap fires).
 - **Originating / related PRs**:
@@ -287,7 +287,7 @@ Detailed per-entry treatment for the **six incident-linked findings (C-01 throug
 - **Can the fallback be replaced?**: **YES, INTERNAL**. PR #339 already added the surface-failure logging — the remaining work is to make `level_maps[ticker] = None` mean "explicit unavailability" tracked in a counter, not "indistinguishable from refresh-not-yet-attempted."
 - **Proposed replacement**: replace `None` sentinel with a typed `LevelMapStatus(status=UNAVAILABLE, last_attempt_at=..., last_error=...)`. `check_level_breaks` then logs and increments `level_map_unavailable_total` when consulting an UNAVAILABLE map, instead of silently returning `[]`.
 - **Fix effort**: **M** — needs a small typed-status object (could live in `gcp/signal_monitor.py` itself).
-- **Test**: `tests/test_signal_monitor.py::test_refresh_failure_increments_counter`.
+- **Test**: `tests/gcp/test_signal_monitor.py::test_refresh_failure_increments_counter`.
 - **Order-of-operations**: after C-01 (since the root cause of refresh failure is usually a DB query error from `query_to_dataframe`).
 - **Related GitHub issues**: #301, #316, #356.
 - **Originating / related PRs**:

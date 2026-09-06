@@ -61,7 +61,7 @@ sum of per-strike values (algebraically guaranteed consistent).
 - [x] CLI `scripts/show_gamma_levels.py` refactored to import `lib.gamma`
 - [x] `tradingview-pine-scripts/gamma-levels-overlay-v2` Pine companion
 - [x] Documentation: `docs/gamma_levels.md`
-- [x] Tests: 25 in `tests/test_gamma.py`, 12 in `tests/test_options_router.py`
+- [x] Tests: 25 in `tests/lib/test_gamma.py`, 12 in `tests/api/test_options_router.py`
 
 ### 1B. Node detection — ✅ DONE
 
