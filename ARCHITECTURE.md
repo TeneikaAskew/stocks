@@ -77,7 +77,8 @@ flowchart TD
 
     subgraph GCP
         subgraph "Cloud Run Services"
-            trading_platform["solyra-api-prod (FastAPI + React)"]
+            solyra_api_prod["solyra-api-prod (FastAPI, IAP)"]
+            solyra_api_staging["solyra-api-staging (FastAPI, Firebase)"]
             discord_interactions["discord-interactions"]
             failure_notifier
         end
@@ -123,10 +124,10 @@ flowchart TD
 
     premarket_brief --> discord_channel
     signal_monitor --> discord_channel
-    insight_pipeline --> trading_platform
+    insight_pipeline --> solyra_api_staging
 
-    trading_platform --> user_dashboard
-    trading_platform --> tasks
+    solyra_api_staging --> user_dashboard
+    solyra_api_staging --> tasks
     tasks --> insight_pipeline
 
     discord_channel --> discord_interactions

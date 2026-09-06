@@ -10,11 +10,11 @@ This doc traces every step from "an earnings event is announced" to "a trader se
 
 | Need | Where it happens |
 |---|---|
-| Get tomorrow's earnings into the calendar | `fetch-earnings-calendar` daily Mon–Fri 07:15 ET |
+| Get tomorrow's earnings into the calendar | `fetch-earnings-calendar` daily Mon–Fri 19:00 ET (`daily-earnings-refresh-calendar`) |
 | Get OHLC for those tickers | `fetch-market-data` daily Mon–Fri 23:00 ET |
-| Get historical EPS for those tickers | `fetch-earnings-history` weekly Sun 06:00 ET |
-| Compute the reaction profile (gap, sustain, ATR) | `compute-earnings-reactions` daily Mon–Fri 23:00 ET |
-| Show the trader the morning brief | `premarket-brief-daily` Mon–Fri 08:30 ET (Sunday week-ahead at 09:00 ET) |
+| Get historical EPS for those tickers | `fetch-earnings-history` Mon–Fri 19:15 ET + Sun 19:15 ET |
+| Compute the reaction profile (gap, sustain, ATR) | `compute-earnings-reactions` daily Mon–Fri 19:30 ET |
+| Show the trader the morning brief | `premarket-brief-daily` Mon–Fri 08:30 ET (Sunday week-ahead at 21:00 ET) |
 
 If any single step's filter or cap drops a ticker, that ticker silently disappears from the brief — no error, no warning. The fixes documented below tightened those filters so the universe size is bounded by an option-tradability filter, not by an arbitrary numeric cap.
 
@@ -27,24 +27,28 @@ All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`.
 | ET cron | UTC | Job | What it writes |
 |---|---|---|---|
 | Mon–Fri 07:00 | 11:00 | `economic-events`, `sec-filings-0700` | `economic_events`, `sec_filings` |
-| **Mon–Fri 07:15** | **11:15** | **`earnings-calendar-daily`** | `earnings_calendar` (AV + EW + Yahoo + UW; ±7d window from today) |
 | Mon–Fri 08:10 | 12:10 | `auto-refresh-top-n` | Discord top-N watchlist refresh |
 | Mon–Fri 08:20 | 12:20 | `premarket-refresh-daily` | `market_data_daily.gap_pct`, `pre_high`, `pre_low`, `pre_vwap` |
 | **Mon–Fri 08:30** | **12:30** | **`premarket-brief-daily`** | Discord multi-embed (THE report traders see) |
 | Mon–Fri 08:45 | 12:45 | `insight-pipeline-daily` | LLM ticker analysis → `premarket_analysis` |
 | Mon–Fri 09:25 | 13:25 | `signal-monitor-daily` | `signal_events` |
 | Mon–Fri 09:45 / 10:00 | 13:45 / 14:00 | `orb-15m-alert` / `orb-30m-alert` | `orb_snapshots` |
-| Mon–Fri 12–17 hourly | 16–21 | `news-sentiment-*`, `news-topics-*` | News / sentiment streams |
+| Mon–Fri 08–17 hourly (`:00` / `:05`) | 12–21 | `news-sentiment-*`, `news-topics-*` | News / sentiment streams |
 | Mon–Fri 16:15 | 20:15 | `top-movers-daily` | `top_movers_daily` |
+| **Mon–Fri 19:00** | **23:00** | **`daily-earnings-refresh-calendar`** | `earnings_calendar` (AV + EW + Yahoo + UW; ±7d window from today) |
+| Mon–Fri 19:15 | 23:15 | `daily-earnings-refresh-history` | `earnings_history` |
+| Mon–Fri 19:30 | 23:30 | `daily-earnings-refresh-reactions` | `earnings_reactions` |
 | **Mon–Fri 23:00** | **03:00 next-day** | **`fetch-market-data-daily`** | `market_data_daily` (OHLCV + 30+ indicators for SPY/IWM/QQQ/SPX + watchlist + earnings union) |
-| **Mon–Fri 23:00** | **03:00 next-day** | **`compute-earnings-reactions-daily`** | `earnings_reactions` (gap, sustain, ATR-around-earnings, etc.) |
 | Mon–Fri 23:00 | 03:00 next-day | `evaluate-ew-strikes-daily` | `earnings_calendar.ew_strike_verdict` |
 | Mon–Fri 01:00 | 05:00 | `signal-quality-report-nightly` | Quality alarms |
-| **Sun 06:00** | **10:00** | **`earnings-history-weekly`** | `earnings_history` (10y of quarterly EPS for tickers reporting in next N days) |
-| Sun 09:00 | 13:00 | `premarket-brief-sunday` | Discord week-ahead embed |
+| Sun 19:00 | 23:00 | `weekly-earnings-refresh-calendar` | `earnings_calendar` |
+| **Sun 19:15** | **23:15** | **`weekly-earnings-refresh-history`** | `earnings_history` (10y of quarterly EPS for tickers reporting in next N days) |
+| Sun 19:30 | 23:30 | `weekly-earnings-refresh-reactions` | `earnings_reactions` |
+| Sun 21:00 | 01:00 next-day | `premarket-brief-sunday` | Discord week-ahead embed |
 | Sat 09:00 | 13:00 | `weekend-review-weekly` | Weekend report |
 
-The five **bold** jobs above are the load-bearing chain that produces the daily brief. Everything else is supporting context (news, signals, ORB, etc.).
+The four **bold** jobs above are the load-bearing chain that produces the daily brief
+(calendar → history → market data → brief). Everything else is supporting context (news, signals, ORB, etc.).
 
 ---
 
@@ -55,12 +59,12 @@ Concrete walkthrough: a ticker's earnings announcement on Wednesday → trader s
 ```
 Day -21..   Multiple sources land the announcement in earnings_calendar.
             Sources fire on independent schedules (UW pulls more
-            frequently than Yahoo, etc.). When the daily 07:15 ET
+            frequently than Yahoo, etc.). When the daily 19:00 ET
             fetch-earnings-calendar runs, it merges all of them onto
             the (ticker, earnings_date, strategy, data_source) unique
             key. Typical lead time: 7–30 days before the event.
 
-Sun 06:00   earnings-history-weekly fires. For every ticker in
+Sun 19:15   weekly-earnings-refresh-history fires. For every ticker in
 ET          earnings_calendar reporting within next 14 days AND
             with has_options=true (EW or UW confirmed), it pulls AV
             EARNINGS endpoint → 10y of quarterly EPS history into
@@ -69,19 +73,8 @@ ET          earnings_calendar reporting within next 14 days AND
             resolved → truncated to 500 alphabetical → MCK was
             silently dropped. Fixed.
 
-Tue 23:00   fetch-market-data-daily fires. For every ticker in:
-ET            • the static set (SPY/IWM/QQQ/SPX, ~16 names with
-                watchlist), AND
-              • earnings_calendar reporting in next 7 days AND
-                has_options=true.
-            The job pulls 1d of intraday + the latest daily bar +
-            full 250-bar indicator series → market_data_daily. With
-            the new options-required filter the universe is ~500
-            names instead of the prior top-25 hard cap that dropped
-            MCK and ~470 other optionable names every night.
-
-Tue 23:00   compute-earnings-reactions-daily fires (in parallel with
-ET          fetch-market-data). Iterates over every ticker in
+Tue 19:30   daily-earnings-refresh-reactions fires (compute-earnings-
+ET          reactions). Iterates over every ticker in
             earnings_history with reported_date NOT NULL. Joins
             market_data_daily for the D-10 .. D+10 window around
             each report and computes:
@@ -94,6 +87,28 @@ ET          fetch-market-data). Iterates over every ticker in
             ATR values stay NULL when the corresponding bar has no
             atr_14 populated (legacy rows). The reaction stats are
             independent of ATR and survive that case.
+
+Tue 23:00   fetch-market-data-daily fires. For every ticker in:
+ET            • the static set (SPY/IWM/QQQ/SPX, ~16 names with
+                watchlist), AND
+              • earnings_calendar reporting in next 7 days AND
+                has_options=true.
+            The job pulls 1d of intraday + the latest daily bar +
+            full 250-bar indicator series → market_data_daily. With
+            the new options-required filter the universe is ~500
+            names instead of the prior top-25 hard cap that dropped
+            MCK and ~470 other optionable names every night.
+
+            NOTE: reactions runs at 19:30 and market data at 23:00,
+            so the reaction rows written each evening join the
+            PREVIOUS night's market_data_daily — today's bar is not
+            loaded yet. Measured 2026-09-06: latest reported_date is
+            2026-09-04 in earnings_history, 2026-09-02 in
+            earnings_reactions, and 2026-08-28 for rows with
+            d_plus_1_close populated. Part of that lag is structural
+            (a Friday report's D+1 bar does not exist until Monday);
+            whether the rest is, is unverified and is the open
+            question this note exists to record.
 
 Wed 08:20   premarket-refresh-daily fires. For every ticker in the
 ET          earnings union + watchlist, pulls 4–9:30 AM ET intraday
@@ -118,7 +133,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
 
 ```
                     ┌───────────────────────────┐
-                    │ fetch-earnings-calendar   │  Mon–Fri 07:15 ET
+                    │ fetch-earnings-calendar   │  Mon–Fri 19:00 ET
                     │ (AV + EW + Yahoo + UW)    │
                     └───────────┬───────────────┘
                                 │

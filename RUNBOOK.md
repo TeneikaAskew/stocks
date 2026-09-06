@@ -502,7 +502,27 @@ Things that could fail silently today because nothing watches them. Ranked by si
 7. **⚠️ `fetch-earnings-options` Cloud Run Job confirmed missing** (per [DATA_DEPENDENCIES.md §5](DATA_DEPENDENCIES.md) and the recently-merged drift PR). Nothing watches whether `earnings_options_snapshots` is fresh because the writer doesn't exist.
    - **Fix:** decide — rebuild the fetcher or drop the table.
 
-8. **⚠️ The `premarket_analysis_history` and `insight_reports_history` tables are write-only.** They exist for "compliance / replay" but no consumer reads them. If they accumulate forever (no retention policy), the small Postgres instance will eventually run out of disk.
+8. **⚠️ Nothing watched whether this runbook was still true.** `docs/PIPELINE.md`
+   documented the market-data ingest as "23:00 UTC" while the scheduler has run
+   `0 23 * * 1-5` in `America/New_York` for months, and a timezone fix designed
+   off that sentence was wrong end-to-end. `docs/GCP_ARCHITECTURE.md` claimed 34
+   Cloud Run Jobs against 76 live. Doc rot is a silent failure like any other.
+   - **Fix (done 2026-09-06):** `scripts/verify_docs_against_live.py` compares
+     every schedule, wall-clock, count and service-name claim in the operational
+     docs against `gcloud`, and exits non-zero on a mismatch:
+
+     ```bash
+     python scripts/verify_docs_against_live.py            # reads live via gcloud
+     python scripts/verify_docs_against_live.py --write-snapshot live.json
+     python scripts/verify_docs_against_live.py --snapshot live.json   # offline
+     ```
+
+     Run it after any infrastructure change. A line the heuristics cannot judge
+     (a historical record naming a deleted service, a count deliberately about
+     the repo rather than the fleet) is exempted in place with
+     `<!-- verify-docs-ok: reason -->`, so the reason sits next to the claim.
+
+9. **⚠️ The `premarket_analysis_history` and `insight_reports_history` tables are write-only.** They exist for "compliance / replay" but no consumer reads them. If they accumulate forever (no retention policy), the small Postgres instance will eventually run out of disk.
    - **Fix:** add a quarterly cleanup job that deletes rows older than 90 days, OR move them to a partitioned table with auto-drop, OR if no replay use case ever materializes, drop the tables.
 
 ---

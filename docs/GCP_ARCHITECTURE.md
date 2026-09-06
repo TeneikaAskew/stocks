@@ -207,7 +207,7 @@ The full table list — **39 tables (34 logical + 5 partition children of `marke
 
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
-| `earnings_calendar` | Forward-looking earnings dates from 3 sources: AlphaVantage (date-of-truth), Unusual Whales (market-mover ranking), Earnings Whispers (strategy + strike picks). One row per `(ticker, earnings_date, strategy, data_source)`. | **`fetch-earnings-calendar`** (weekdays 7:15 AM), **`evaluate-ew-strikes`** (after-hours, fills `ew_*_on_day`) | *premarket-brief*, *insight-pipeline*, *catalysts router*, *ranker* |
+| `earnings_calendar` | Forward-looking earnings dates from 3 sources: AlphaVantage (date-of-truth), Unusual Whales (market-mover ranking), Earnings Whispers (strategy + strike picks). One row per `(ticker, earnings_date, strategy, data_source)`. | **`fetch-earnings-calendar`** (weekdays + Sun 7:00 PM), **`evaluate-ew-strikes`** (23:00, fills `ew_*_on_day`) | *premarket-brief*, *insight-pipeline*, *catalysts router*, *ranker* |
 | `earnings_history` | Historical quarterly EPS — `reportedDate`, `reportedEPS`, `estimatedEPS`, `surprise`, `surprisePercentage`, going back 10+ years from AV `EARNINGS` endpoint. | **`fetch-earnings-history`** (Sun 6 AM weekly) | *future ranker post-earnings reaction signal* |
 | `economic_events` | Macro events with date + time + importance (CPI, NFP, FOMC, etc.). ForexFactory (preferred — has times) + FRED (fallback). | **`fetch-economic-events`** (weekdays 7 AM) | *premarket-brief Economic Calendar embed*, *catalysts page* |
 | `sec_filings` | Form 8-K / 10-Q / 10-K filings from SEC EDGAR with item codes (1.01 M&A, 5.02 exec change, etc.). | **`fetch-sec-filings`** (4 slots/day post-PR-#157) | *insight-pipeline catalyst dots*, *ranker `_candidates_from_8k`*, *Catalysts page* |
@@ -269,7 +269,21 @@ There are **no formal foreign keys** between domain tables — only the `insight
 
 ## 6. Cloud Run Jobs catalog
 
-34 Cloud Run Jobs (live count verified 2026-05-16; most defined in [`gcp/deploy.sh`](../gcp/deploy.sh), a few deployed manually). Every one runs on the same `trading-system` image, differing only in `--command` and `--args`. All defaulting to retry policy `--max-retries 1` unless noted.
+**76 Cloud Run Jobs** live (`gcloud run jobs list --region=us-east1`, read
+2026-09-06 — the count here said 34 from a 2026-05-16 reading and had not been
+re-read since). 67 of them are declared in
+[`gcp/deploy.sh`](../gcp/deploy.sh); eight exist only because someone ran
+`gcloud run jobs create` by hand and are therefore not reproducible from the
+repo: `backtest-playability`, `compare-tier-fires`, `p2-outcomes-grid`,
+`p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`,
+`p7a-iwm-30m-pipeline`, `strat-dir-features`. Two are the reverse —
+`compute-spx-greeks-backfill` and `options-exec-backtest` are declared in
+`deploy.sh` but do not exist live.
+
+The catalog below is a curated subset, not an inventory; run the `gcloud`
+command for the full list. Every job runs on the same `trading-system` image,
+differing only in `--command` and `--args`, and defaults to `--max-retries 1`
+unless noted.
 
 ### 6.1 Data ingestion (the fetchers)
 
@@ -362,9 +376,12 @@ This replaced a tag-based blue/green on one service: a `staging`-tagged
 revision at 0% traffic, promoted by shifting traffic to the tag. That stopped
 working on 2026-08-25 when `--no-traffic` was dropped from the trigger — a tag
 carries no traffic guarantee of its own, so the "staging" revision was serving
-100% of production and the promote step was a no-op. Verified live 2026-09-04:
-`trading-platform-00167-qiz`, `tag: staging`, `percent: 100`. The environment a
-deploy lands in is now the service name, not a traffic percentage.
+100% of production and the promote step was a no-op. Verified live 2026-09-04,
+while the service still existed: <!-- verify-docs-ok: historical record of a service deleted 2026-09-06; the deletion is stated two sentences later -->
+`trading-platform-00167-qiz`, `tag: staging`,
+`percent: 100`. The environment a deploy lands in is now the service name, not
+a traffic percentage. `trading-platform` and `trading-platform-staging` were
+deleted on 2026-09-06 after the frontend cut over.
 
 `platform/deploy.sh` still carries the `STAGING=1` revision-tag mode for one-off
 operator use; it is marked legacy in the script and is not what CI runs.
@@ -463,7 +480,7 @@ gantt
 | Sun 19:00 | `fetch-earnings-calendar` | Week-ahead earnings calendar refresh |
 | Sun 19:15 | `fetch-earnings-history` | Backfill historical EPS for new tickers |
 | Sun 19:30 | `compute-earnings-reactions` | Recompute playability scores on the week's new history |
-| Sun 09:00 | `premarket-brief` | Week-ahead earnings + economic calendar digest |
+| Sun 21:00 | `premarket-brief` | Week-ahead earnings + economic calendar digest |
 | Tue–Sat 01:00 | `historical-signals-watchlist` | Nightly signal-history extension for every watchlist ticker |
 | Tue–Sat 01:00 | `signal-quality-report-nightly` | Phase 0.5 nightly quality rollup into `signal_metrics` ([`gcp/deploy.sh:1365`](../gcp/deploy.sh#L1365)) |
 | Tue–Sat 02:00 | `signal-quality-alarm-daily` | Reads `signal_metrics`, exits non-zero on > 3 pp clean-rate drop ([`gcp/deploy.sh:1375`](../gcp/deploy.sh#L1375)) |

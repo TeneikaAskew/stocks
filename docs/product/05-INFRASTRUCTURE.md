@@ -4,7 +4,24 @@
 
 **VERIFIED — CODE.** Parsed from `gcp/deploy.sh` at `d335f2f` by resolving each
 `deploy_*()` function body, so flags built into a `common_flags=( ... )` bash array are
-captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler entries**.
+captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-declared count, not the live one; the live count is stated immediately below -->
+**67 Cloud Run jobs** and **58 Cloud Scheduler entries** are *declared in the repo*.
+
+**VERIFIED — LIVE, 2026-09-06.** `gcloud run jobs list --region=us-east1` returns
+**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **84 scheduler
+entries**. The two numbers answer different questions and both belong here: the code
+count is what a fresh `deploy.sh` run would produce, the live count is what is actually
+billing and firing. The gap is undeclared infrastructure —
+
+| Direction | Count | Names |
+|---|---|---|
+| Live but not in `deploy.sh` | 8 | `backtest-playability`, `compare-tier-fires`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `strat-dir-features` |
+| In `deploy.sh` but not live | 2 | `compute-spx-greeks-backfill`, `options-exec-backtest` |
+
+Every live scheduler entry runs in `America/New_York` — zero entries in any other
+timezone (verified 2026-09-06), so every cron field in this document is a NY
+wall-clock time and shifts with DST. `scripts/verify_docs_against_live.py` re-runs
+these comparisons.
 
 > **Parser discipline.** An earlier revision reported 68 jobs. The 68th, `leaves`, was a word
 > captured from the prose comment `gcloud run jobs update leaves omitted flags untouched`
@@ -17,7 +34,7 @@ captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler 
 | Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |
 |---|---|---|---|---|---|
 | FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
-| Cloud Run jobs (67) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (58) / manual | see per-job table |
+| Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (58 declared / 84 live) / manual | 8 jobs exist only by hand — see the table above |
 | Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |

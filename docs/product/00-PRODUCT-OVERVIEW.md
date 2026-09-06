@@ -42,8 +42,8 @@ flowchart LR
  WEB -->|Firebase bearer, IAP header, or unauthenticated| API[FastAPI — 92 platform endpoints]
  API --> LIB[lib/ — the shared math spine]
  API --> DB[(Cloud SQL — 64 relations)]
- SRC[AlphaVantage / FRED / SEC / Yahoo] --> JOBS[67 Cloud Run jobs]
- SCH[58 Cloud Scheduler entries] --> JOBS
+ SRC[AlphaVantage / FRED / SEC / Yahoo] --> JOBS[76 Cloud Run jobs]
+ SCH[84 Cloud Scheduler entries] --> JOBS
  JOBS --> DB
  LIB --> RULES[STRAT / indicators / strategies]
  LIB --> ML[research + predictive models]

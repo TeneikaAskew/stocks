@@ -186,10 +186,14 @@ them mis-scopes a review:
    on 2026-08-25 to mirror `platform/deploy.sh`'s prod invocation, and a
    `staging` tag carries no traffic guarantee of its own, so the tagged
    revision was serving 100% of production and the promote trigger was a
-   no-op. Read live on 2026-09-04: revision `trading-platform-00167-qiz`,
-   `tag: staging`, `percent: 100`. The discrepancy this section previously
-   flagged as unverified is therefore resolved, and the answer was the
-   unfavourable one.
+   no-op. Read live on 2026-09-04, while it still existed: revision <!-- verify-docs-ok: historical record of a service deleted 2026-09-06; the deletion is stated below -->
+   `trading-platform-00167-qiz`, `tag: staging`, `percent: 100`. The
+   discrepancy this section previously flagged as unverified is therefore
+   resolved, and the answer was the unfavourable one. Both `trading-platform`
+   and `trading-platform-staging` were deleted on 2026-09-06 once the Lovable
+   frontend had republished against `solyra-api-staging`; `gcloud run services
+   list` now returns only `solyra-api-prod`, `solyra-api-staging`,
+   `discord-interactions` and `failure-notifier` (verified 2026-09-06).
 
    Two services now replace the tag: the environment a deploy lands in is the
    service name, not a traffic percentage. The prod trigger promotes the image

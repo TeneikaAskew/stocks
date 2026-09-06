@@ -43,7 +43,8 @@ flowchart TD
 
     subgraph GCP
         subgraph "Cloud Run Services"
-            trading_platform["solyra-api-prod (FastAPI + React)"]
+            solyra_api_prod["solyra-api-prod (FastAPI, IAP)"]
+            solyra_api_staging["solyra-api-staging (FastAPI, Firebase)"]
             discord_interactions["discord-interactions"]
             failure_notifier
         end
@@ -89,10 +90,10 @@ flowchart TD
 
     premarket_brief --> discord_channel
     signal_monitor --> discord_channel
-    insight_pipeline --> trading_platform
+    insight_pipeline --> solyra_api_staging
 
-    trading_platform --> user_dashboard
-    trading_platform --> tasks
+    solyra_api_staging --> user_dashboard
+    solyra_api_staging --> tasks
     tasks --> insight_pipeline
 
     discord_channel --> discord_interactions
@@ -124,8 +125,10 @@ Full breakdown: [COST_ANALYSIS.md](COST_ANALYSIS.md).
 
 1.  Run `make install` to install Python and Node dependencies.
 2.  Ensure you have a `.env` file with `GOOGLE_APPLICATION_CREDENTIALS` pointing to your `.gcp-key.json`. See [CLAUDE.md](CLAUDE.md) for full setup.
-3.  Run `make dev` to start the FastAPI backend and Vite frontend.
-4.  Available routes once running: `/`, `/live`, `/charts`, `/options`, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`, `/admin`.
+3.  Run `make dev` to start the FastAPI backend on `:8000`. The frontend moved to
+    [github.com/TeneikaAskew/solyra](https://github.com/TeneikaAskew/solyra) in #957 —
+    run `npm run dev` there; its proxy probes `:8000` and uses this API when it is up.
+4.  Available routes once the frontend is running: `/`, `/live`, `/charts`, `/options`, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`, `/admin`.
 
 ### I want to add a new fetcher
 

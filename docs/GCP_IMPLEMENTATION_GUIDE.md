@@ -830,33 +830,32 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `fetch-economic-events` | `gcp.fetchers.fetch_economic_events` | 512 Mi | 1 | 300s | 1 |
 | `fetch-earnings-calendar` | `scripts/fetch_earnings_calendar.py` | 512 Mi | 1 | 300s | 1 |
 
-### Cloud Scheduler Triggers (24 total)
+### Cloud Scheduler Triggers
 
-| Trigger Name | Cron (ET) | Target Job |
-|-------------|-----------|------------|
-| `premarket-brief-daily` | `30 8 * * 1-5` | premarket-brief |
-| `weekend-review-saturday` | `0 9 * * 6` | weekend-review |
-| `fetch-market-data-daily` | `0 17 * * 1-5` | fetch-market-data |
-| `etf-options-open` | `30 9 * * 1-5` | fetch-etf-options |
-| `etf-options-open-2` | `35 9 * * 1-5` | fetch-etf-options |
-| `etf-options-open-3` | `40 9 * * 1-5` | fetch-etf-options |
-| `etf-options-mid-morning` | `0 10 * * 1-5` | fetch-etf-options |
-| `etf-options-late-morning` | `30 11 * * 1-5` | fetch-etf-options |
-| `etf-options-afternoon-1` | `0 13 * * 1-5` | fetch-etf-options |
-| `etf-options-afternoon-2` | `30 14 * * 1-5` | fetch-etf-options |
-| `etf-options-power-hour` | `30 15 * * 1-5` | fetch-etf-options |
-| `etf-options-close` | `5 16 * * 1-5` | fetch-etf-options |
-| `earnings-options-preopen` | `0 9 * * 1-5` | fetch-earnings-options |
-| `earnings-options-open` | `35 9 * * 1-5` | fetch-earnings-options |
-| `earnings-options-mid` | `0 10 * * 1-5` | fetch-earnings-options |
-| `earnings-options-noon` | `0 12 * * 1-5` | fetch-earnings-options |
-| `earnings-options-close-1` | `50 15 * * 1-5` | fetch-earnings-options |
-| `earnings-options-close-2` | `30 16 * * 1-5` | fetch-earnings-options |
-| `alphavantage-intraday-monthly` | `0 21 1 * *` | fetch-alphavantage-intraday |
-| `economic-events-daily` | `0 7 * * 1-5` | fetch-economic-events |
-| `earnings-calendar-daily` | `15 7 * * 1-5` | fetch-earnings-calendar |
-| `analyze-market-data-daily` | `0 18 * * 1-5` | (future) |
-| `run-pipeline-daily` | `30 18 * * 1-5` | (future) |
+**Read live, do not read this section as an inventory.** The table that used to
+live here listed 24 triggers from the 2026-02 build-out. Read live 2026-09-06
+there are **84**, and 18 of the 24 rows pointed at jobs that no longer exist
+(`fetch-etf-options` was deleted 2026-04-26; `fetch-earnings-options` was never
+deployed; `analyze-market-data-daily` and `run-pipeline-daily` were marked
+"(future)" and never built). Two rows were also wrong about the schedule of a
+job that does exist: `fetch-market-data-daily` was listed as `0 17 * * 1-5`
+while it has run at `0 23 * * 1-5` for months, and `earnings-calendar-daily`
+does not exist under that name at all (it is `daily-earnings-refresh-calendar`
+at `0 19 * * 1-5`).
+
+That table was the direct cause of a wrong timezone fix on 2026-09-06, so it is
+replaced with the command that answers the question correctly:
+
+```bash
+gcloud scheduler jobs list --location=us-east1 \
+  --format="table(name.basename(),schedule,timeZone,state,httpTarget.uri)"
+```
+
+Every entry runs in `America/New_York` (verified live 2026-09-06 — zero entries
+in any other zone), so a cron field here is a NY wall-clock time and shifts with
+DST. The declared set lives in `deploy_schedulers()` in
+[`gcp/deploy.sh`](../gcp/deploy.sh); `scripts/verify_docs_against_live.py`
+compares what the docs claim against what `gcloud` returns.
 
 ### Data Flow: Pre-Market Brief
 
@@ -1513,7 +1512,7 @@ GROUP BY 1 ORDER BY 1 DESC LIMIT 8;
 
 The `fetch-earnings-options` job resolves active tickers in priority order:
 
-1. **Cloud SQL `earnings_calendar` table** (primary) — tickers with `earnings_date` in the next 7 days. Populated by the `fetch-earnings-calendar` job at 7:15 AM ET.
+1. **Cloud SQL `earnings_calendar` table** (primary) — tickers with `earnings_date` in the next 7 days. Populated by the `fetch-earnings-calendar` job at 7:00 PM ET (`daily-earnings-refresh-calendar`, `0 19 * * 1-5`; read live 2026-09-06).
 2. **GCS strategy CSVs** (fallback) — `sheets/*.csv` in the GCS bucket.
 3. **Local CSVs** (fallback) — `google-apps-script/data/*.csv`.
 

@@ -238,12 +238,22 @@
 - **Note:** `signal-monitor` converted from Cloud Run Service → Job (no HTTP server needed for polling loop)
 
 ### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
+
+> **Historical record — superseded.** This is what was provisioned in Feb–Apr
+> 2026. Read live 2026-09-06 there are **84** scheduler entries. Three of the
+> lines below are no longer true of the live system: `fetch-market-data-daily`
+> now runs `0 23 * * 1-5` (not `0 17`), the 9 `etf-options-*` triggers were
+> removed with their job on 2026-04-26, and the 6 `earnings-opts-*` triggers
+> fire `fetch-earnings-options`, which was never deployed. For the live set run
+> `gcloud scheduler jobs list --location=us-east1`; for the declared set read
+> `deploy_schedulers()` in `gcp/deploy.sh`.
+
 - [x] `premarket-brief-daily` — `30 8 * * 1-5` ET
 - [x] `signal-monitor-daily` — `25 9 * * 1-5` ET (new — was missing)
 - [x] `weekend-review-weekly` — `0 9 * * 6` ET
-- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET
-- [x] `etf-options-0930` through `etf-options-1605` — 9 triggers
-- [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers
+- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET *(now `0 23 * * 1-5`)*
+- [x] `etf-options-0930` through `etf-options-1605` — 9 triggers *(removed 2026-04-26)*
+- [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers *(job never deployed)*
 - [x] `av-intraday-monthly` — `0 21 1 * *` ET
 - [x] `economic-events-daily` — `0 7 * * 1-5` ET (**new** 2026-04-12)
 - [ ] Test manual trigger on each job
@@ -370,7 +380,10 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 ## Cost Estimates (Monthly)
 
-> Based on current data: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler triggers, 7 Cloud Run Jobs
+> Based on data as of 2026-02: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler
+> triggers, and 7 jobs. **The fleet has grown well past this basis** — read live
+> 2026-09-06 there are 84 scheduler entries and 76 Cloud Run Jobs, so treat the figures
+> below as a floor, not an estimate. `COST_ANALYSIS.md` carries the current view.
 
 | Service | Resource | Est. Cost/mo |
 |---------|----------|-------------|
