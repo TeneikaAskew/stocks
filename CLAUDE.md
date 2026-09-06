@@ -721,6 +721,72 @@ and one was.
 
 ---
 
+### 3.11. A Claim Without Evidence Is A Guess. Say Which One It Is.
+
+§3.5, §3.6 and "Verify the claim before fixing it" all govern **fixes, deploys
+and backtests** — verifying work after doing it. None of them govern a **claim
+or recommendation made in conversation**, which is where this keeps failing.
+Every "I recommend X", "that's fine", "this is unused" offered without a
+measurement fell outside all of them. This rule closes that gap.
+
+**Before asserting that something is true, faster, safe, unused, or broken:
+produce the evidence in the same breath, or say plainly that you have not
+checked.** "I have not measured this" is a complete and acceptable answer. A
+confident guess is not.
+
+Evidence means `EXPLAIN (ANALYZE, BUFFERS)`, a live `gcloud` read, a log query,
+or a test run — **with the output shown**. Not a doc, not a code comment, not a
+plausible mechanism.
+
+#### A doc is a claim, not evidence
+
+`docs/PIPELINE.md` said `fetch-market-data` runs "23:00 UTC daily". The live job
+is `0 23 * * 1-5 America/New_York`. That doc was cited as justification for a
+cache boundary, produced a wrong fix, and the doc had to be corrected too.
+Read the system:
+
+```bash
+gcloud scheduler jobs describe <job> --location=us-east1
+gcloud run services describe <svc> --region=us-east1
+```
+
+#### Do not propose a fix for a mechanism you have not confirmed
+
+A loose index scan was proposed for `/api/market/dates` by pattern-matching a
+similar query, and **measured at 1,686 ms against the original 1,716 ms**. No
+gain — the caller genuinely needs all 3,278 rows. The measurement is what said
+"cache this instead". Shipping the pattern-match would have been churn dressed
+as a fix.
+
+#### An aggregate cannot characterise a population
+
+The costliest failure of this rule. `MIN`/`MAX` on `market_data_intraday` gave
+raw UTC 11:29–00:00 → 06:29–20:00 ET, read as "a real session, therefore all
+rows are true UTC instants". The **distribution** showed otherwise:
+
+```
+utc_hour  bars   first_date   last_date
+   4      5636   2016-12-13   2026-09-04     <- 00:00-03:00 ET under true-UTC.
+   5      4887   2026-04-06   2026-09-04        No bar can exist there.
+   6      5015   2026-04-06   2026-09-04
+   7      6072   2026-04-06   2026-09-04
+```
+
+Two populations, and the aggregate hid the second by construction — that is
+what aggregates do. The conclusion drove a change that would have shifted
+premarket bars 4–5 hours and had to be reverted. **Ask for the distribution
+whenever you are characterising data, not the extremes.**
+
+#### A comment that contradicts your measurement may be right
+
+The same episode: `fetch_market_data.py` said AlphaVantage timestamps are
+"naive ET … ET-as-UTC convention". That was dismissed as a stale false premise
+on the strength of the aggregate above. It was accurate, and describing the
+half of the data the measurement missed. When code and measurement disagree,
+that is a signal to widen the measurement, not to overrule the code.
+
+---
+
 ### 4. Testing Strategy Pattern
 Follow this rigorous testing approach:
 
