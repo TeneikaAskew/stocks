@@ -181,6 +181,35 @@ pin_image_tags() {
     echo "Pinned ${#wanted[@]} in-use tags."
 }
 
+# Delete the pre-#990 API image packages once no live service runs them.
+# Refuses while any service's latest ready revision still references
+# trading-platform, so running it early cannot break prod scale-out.
+retire_legacy_images() {
+    local legacy_repo="us-docker.pkg.dev/${PROJECT_ID}/gcr.io"
+    local svc digest blocked=0
+    while read -r svc; do
+        [ -n "${svc}" ] || continue
+        digest=$(gcloud run revisions list --service "${svc}" --region "${REGION}" --limit 1 \
+            --format="value(status.imageDigest)" 2>/dev/null || true)
+        if [[ "${digest}" == */trading-platform@* || "${digest}" == */trading-platform-staging@* ]]; then
+            echo "  ${svc} still runs ${digest#*/}" >&2
+            blocked=1
+        fi
+    done < <(gcloud run services list --region "${REGION}" --format="value(metadata.name)")
+    if [ "${blocked}" -eq 1 ]; then
+        echo "ERROR: a live service still runs a legacy image. Promote prod" \
+             "(deploy-solyra-api-prod trigger) first, then re-run." >&2
+        return 1
+    fi
+    local pkg
+    for pkg in trading-platform trading-platform-staging; do
+        echo "Deleting ${legacy_repo}/${pkg} (all versions)..."
+        gcloud artifacts docker images delete "${legacy_repo}/${pkg}" \
+            --delete-tags --quiet 2>/dev/null \
+            && echo "  deleted ${pkg}" || echo "  ${pkg}: nothing to delete"
+    done
+}
+
 setup_registry_cleanup() {
     echo "Applying Artifact Registry cleanup policy..."
     local policy
@@ -4012,6 +4041,7 @@ case "${1:-help}" in
     build)       build_image ;;
     pin-images)  pin_image_tags ;;
     registry-cleanup) pin_image_tags && setup_registry_cleanup ;;
+    retire-legacy-images) retire_legacy_images ;;
     build-research) build_research_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
@@ -4152,6 +4182,9 @@ case "${1:-help}" in
         echo "             pin-images, then apply the Artifact Registry cleanup"
         echo "             policy (keep tagged + 10 newest, delete untagged >14d)"
         echo "             to the trading and gcr.io repos."
+        echo "  retire-legacy-images"
+        echo "             Delete the pre-#990 gcr.io/trading-platform(-staging)"
+        echo "             image packages. Refuses while a live service runs one."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
