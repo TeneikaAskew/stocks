@@ -30,6 +30,18 @@ decision that belongs to the caller, because the honest answer differs:
 
 `wait()` exists for that last shape and is deliberately bounded: it caps how
 long a worker may be held rather than removing the bound entirely.
+
+**Winning a claim is not the same as being first.** Every caller checks its
+cache before claiming, so a request descheduled between those two steps can
+take the claim moments after the previous claimant populated the cache. A
+claimant that starts work without re-reading runs the expensive operation a
+second time inside one TTL, which is exactly the bound the coalescing exists
+to hold. Re-check after `claim()` returns True, not only before it.
+
+Lives in `lib/` rather than `platform/api/` because `lib.ticker_info` needs it
+too, and a library importing from the API layer would invert the dependency.
+The examples above are FastAPI's because that is where the pressure showed up
+first; nothing here depends on FastAPI.
 """
 from __future__ import annotations
 

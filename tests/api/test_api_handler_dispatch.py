@@ -180,25 +180,64 @@ def test_no_async_route_performs_blocking_io():
     behind a slow query. A mixed handler is the harder case precisely because
     it looks correct.
 
+    The second version scanned only calls syntactically inside the route
+    function, and that was still too shallow: `dashboard_brief` awaits
+    `_apply_live_overlay`, which called `_query_fn` directly. Awaiting a
+    helper does not move it off the event loop — the helper IS the event
+    loop — so a query one frame down blocks exactly as hard as one in the
+    handler body, and the guard reported the file clean. Awaited helpers
+    defined in the same module are followed now, and the offender names the
+    whole chain so the frame that has to change is obvious.
+
     A blocking call is acceptable inside `await run_in_threadpool(...)`,
     which is the whole point of that wrapper.
     """
     offenders = []
     for path, tree in _module_trees():
+        async_defs = {n.name: n for n in ast.walk(tree)
+                      if isinstance(n, ast.AsyncFunctionDef)}
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef) or not _is_route(node):
                 continue
-            safe_lines = _threadpooled(node)
-            for name, lineno in _called_names(node):
-                if name in BLOCKING_CALLS and lineno not in safe_lines:
-                    offenders.append(
-                        f"{path.name}:{lineno} {node.name}() calls {name}() "
-                        f"synchronously on the event loop")
+            offenders.extend(
+                _blocking_in_chain(path, node, async_defs, chain=(node.name,)))
     assert not offenders, (
-        "blocking calls inside async def route handlers. Declare the handler "
-        "`def` so FastAPI threadpools the whole thing, or wrap the call in "
-        "`await run_in_threadpool(...)`:\n  " + "\n  ".join(sorted(set(offenders)))
+        "blocking calls reachable on the event loop from an async def route. "
+        "Declare the handler `def` so FastAPI threadpools the whole thing, or "
+        "wrap the call in `await run_in_threadpool(...)`:\n  "
+        + "\n  ".join(sorted(set(offenders)))
     )
+
+
+def _blocking_in_chain(path, node, async_defs, chain, seen=None):
+    """Blocking calls in `node`, and in the async helpers it awaits.
+
+    Recursion is bounded by `seen`, so mutual recursion between two helpers
+    cannot hang the guard. Only helpers defined in the SAME module are
+    followed: resolving across modules would need real import resolution, and
+    a guard that silently half-resolves is worse than one whose limit is
+    stated. That limit is why `BLOCKING_CALLS` stays a hand-maintained list of
+    names rather than a heuristic — a wrapper in another module still gets
+    caught by its name.
+    """
+    seen = seen or set()
+    if node.name in seen:
+        return []
+    seen = seen | {node.name}
+
+    where = " -> ".join(chain)
+    out = []
+    safe_lines = _threadpooled(node)
+    for name, lineno in _called_names(node):
+        if name in BLOCKING_CALLS and lineno not in safe_lines:
+            out.append(f"{path.name}:{lineno} {where} calls {name}() "
+                       f"synchronously on the event loop")
+    for name in _awaited_names(node):
+        helper = async_defs.get(name)
+        if helper is not None:
+            out.extend(_blocking_in_chain(
+                path, helper, async_defs, chain + (name,), seen))
+    return out
 
 
 def test_gamma_levels_and_its_chain_loader_agree():

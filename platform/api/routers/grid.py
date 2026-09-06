@@ -65,7 +65,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from cachetools import TTLCache
-from api.single_flight import SingleFlight
+from lib.single_flight import SingleFlight
 from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
@@ -385,7 +385,7 @@ _ONDEMAND_RATE_LOCK = threading.Lock()
 # for the SAME off-list ticker from both reaching the vendor. Both would spend
 # an AV call and both would persist a full-chain snapshot.
 #
-# Decline rather than wait: see `api/single_flight.py` for why blocking here
+# Decline rather than wait: see `lib/single_flight.py` for why blocking here
 # would trade one starvation for another. The decliner has an honest answer —
 # the typed `unavailable` envelope the UI already renders and re-polls.
 _ONDEMAND_FLIGHT = SingleFlight()

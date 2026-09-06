@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from lib.single_flight import SingleFlight
+
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -199,6 +201,28 @@ def _merge_into_local_cache(ticker: str, updates: dict, *, replace: bool) -> Non
         _save_local_cache(cache)
 
 
+# Coalesces concurrent vendor lookups per ticker. Threadpool dispatch is what
+# made this reachable: while every API handler ran on the event loop, two
+# requests for the same cold ticker could not overlap, so the vendor was called
+# once no matter how many arrived. Now they can, and both pass the Cloud SQL
+# and local-cache checks before either persists — spending two AlphaVantage
+# calls, or two FinViz scrapes, on one answer.
+#
+# `_merge_into_local_cache` does not help here: it makes the WRITE atomic,
+# which is a different problem. The circuit breaker does not either; it counts
+# failures, and these are successes.
+#
+# Bounded wait rather than decline, because a decliner has nothing honest to
+# return: the caller wants the metadata, and the alternative to waiting is
+# fetching it again. The bound is what keeps a slow vendor from holding the
+# waiter indefinitely — past it, the waiter does the work itself, which is the
+# same policy `/api/market/dates` uses and for the same reason.
+_INFO_FLIGHT = SingleFlight()
+_PEERS_FLIGHT = SingleFlight()
+_VENDOR_WAIT_S = 20.0   # above the 15s AV/FinViz timeouts, so a waiter
+                        # normally wakes to a populated cache
+
+
 # ---------------------------------------------------------------------------
 # Alpha Vantage fetch
 # ---------------------------------------------------------------------------
@@ -269,15 +293,26 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
     if entry and _is_fresh(entry, max_age_days):
         return entry
 
-    # 3. Fetch from AV
-    info = fetch_ticker_overview(ticker)
-    if info:
-        info["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
-        # Persist to both stores
-        if use_cloud:
-            _upsert_to_cloud_sql(ticker, info)
-        _merge_into_local_cache(ticker, info, replace=True)
-        return info
+    # 3. Fetch from AV, once per ticker across concurrent callers.
+    with _INFO_FLIGHT.claim(ticker) as mine:
+        if not mine:
+            _INFO_FLIGHT.wait(ticker, _VENDOR_WAIT_S)
+        # Re-read whichever branch we came from. A waiter re-reads because the
+        # claimant has usually just stored the answer; a CLAIMANT re-reads
+        # because the cache checks above happened before the claim, so it may
+        # have taken the claim moments after a previous claimant finished.
+        fresh = _load_local_cache().get(ticker)
+        if fresh and _is_fresh(fresh, max_age_days):
+            return fresh
+
+        info = fetch_ticker_overview(ticker)
+        if info:
+            info["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
+            # Persist to both stores
+            if use_cloud:
+                _upsert_to_cloud_sql(ticker, info)
+            _merge_into_local_cache(ticker, info, replace=True)
+            return info
 
     # Return stale data rather than nothing
     return entry
@@ -426,18 +461,27 @@ def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
     if cached_peers is not None and _is_fresh(entry, max_age_days):
         return cached_peers
 
-    peers = _fetch_finviz_peers(ticker)
+    with _PEERS_FLIGHT.claim(ticker) as mine:
+        if not mine:
+            _PEERS_FLIGHT.wait(ticker, _VENDOR_WAIT_S)
+        # Re-read on both branches, for the same reasons as get_ticker_info.
+        fresh = _load_local_cache().get(ticker, {})
+        fresh_peers = fresh.get("_peers")
+        if fresh_peers is not None and _is_fresh(fresh, max_age_days):
+            return fresh_peers
 
-    # Persist to cache
-    if peers is not None:
-        _merge_into_local_cache(ticker, {
-            "_peers": peers,
-            "_fetched_utc": datetime.now(timezone.utc).isoformat(),
-        }, replace=False)
+        peers = _fetch_finviz_peers(ticker)
 
-        # Also persist to Cloud SQL relationships column
-        if _cloud_sql_available():
-            _upsert_peers_to_cloud_sql(ticker, peers)
+        # Persist to cache
+        if peers is not None:
+            _merge_into_local_cache(ticker, {
+                "_peers": peers,
+                "_fetched_utc": datetime.now(timezone.utc).isoformat(),
+            }, replace=False)
+
+            # Also persist to Cloud SQL relationships column
+            if _cloud_sql_available():
+                _upsert_peers_to_cloud_sql(ticker, peers)
 
     return peers or []
 

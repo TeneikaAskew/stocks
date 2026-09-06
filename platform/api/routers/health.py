@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from api.single_flight import SingleFlight
+from lib.single_flight import SingleFlight
 
 # Add project root so we can import the script module
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -42,7 +42,7 @@ _cache_expires_at: float = 0.0
 
 
 # Coalesces concurrent audits without parking a worker on a lock. See
-# `api/single_flight.py` for why blocking here would recreate the starvation
+# `lib/single_flight.py` for why blocking here would recreate the starvation
 # this branch removes.
 _AUDIT_FLIGHT = SingleFlight()
 _AUDIT_KEY = "freshness"
@@ -82,7 +82,16 @@ def freshness_report_dict() -> dict:
 
     with _AUDIT_FLIGHT.claim(_AUDIT_KEY) as mine:
         if mine:
-            return _run_audit_and_cache(time.monotonic())
+            # Re-check under the claim. The cache read above happened before
+            # the claim was taken, so a contender descheduled between the two
+            # can win the claim moments after the previous claimant finished
+            # and populated the cache -- and would then run a second full
+            # audit inside one TTL, which is the bound this function's
+            # docstring promises. Claiming is not the same as being first.
+            now = time.monotonic()
+            if _cache_value is not None and now < _cache_expires_at:
+                return _cache_value
+            return _run_audit_and_cache(now)
 
         # Another request is auditing. Never wait for it.
         if _cache_value is not None:

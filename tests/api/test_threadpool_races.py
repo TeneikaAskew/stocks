@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -282,7 +283,7 @@ def test_ticker_info_cache_is_never_observed_partially_written(tmp_path, monkeyp
 # ── grid on-demand single-flight ────────────────────────────────────────────
 
 def test_single_flight_claims_exactly_one_caller(monkeypatch):
-    from api.single_flight import SingleFlight
+    from lib.single_flight import SingleFlight
 
     sf = SingleFlight()
     claims: list[bool] = []
@@ -311,7 +312,7 @@ def test_a_decliner_does_not_block(monkeypatch):
     unrelated routes — the instance-wide starvation this branch removes.
     """
     import time
-    from api.single_flight import SingleFlight
+    from lib.single_flight import SingleFlight
 
     sf = SingleFlight()
     claimed, release = threading.Event(), threading.Event()
@@ -344,7 +345,7 @@ def test_bounded_wait_returns_when_the_claimant_finishes():
     the worker over indefinitely.
     """
     import time
-    from api.single_flight import SingleFlight
+    from lib.single_flight import SingleFlight
 
     sf = SingleFlight()
     claimed = threading.Event()
@@ -386,7 +387,7 @@ def test_bounded_wait_returns_when_the_claimant_finishes():
 
 def test_claims_are_released_even_when_the_work_raises():
     """A raising body must not strand a key as permanently in flight."""
-    from api.single_flight import SingleFlight
+    from lib.single_flight import SingleFlight
 
     sf = SingleFlight()
     with pytest.raises(RuntimeError):
@@ -402,7 +403,7 @@ def test_claims_are_released_even_when_the_work_raises():
 def test_the_registry_does_not_grow():
     """A dict of per-key locks that is never pruned grows without bound; the
     claim registry holds only keys with work actually in flight."""
-    from api.single_flight import SingleFlight
+    from lib.single_flight import SingleFlight
 
     sf = SingleFlight()
     for i in range(500):
@@ -509,3 +510,183 @@ def test_concurrent_journal_saves_never_expose_a_torn_file(tmp_path, monkeypatch
         t.join(timeout=5)
 
     assert not failures, f"reader saw a torn journal: {failures[:2]}"
+
+
+# ── winning a claim is not the same as being first ──────────────────────────
+
+def test_a_claimant_rechecks_the_cache_before_redoing_the_work():
+    """The gap between "cache is cold" and "I hold the claim".
+
+    Every coalescing call site reads its cache, finds it empty, and only then
+    claims. A thread descheduled between those two steps can take the claim
+    moments after the previous claimant finished and populated the cache — and
+    the first version of this code started work immediately on `mine=True`, so
+    the expensive operation ran twice inside one TTL. That is precisely the
+    bound the coalescing exists to hold, defeated by the coalescing itself.
+
+    This drives the sequence deterministically rather than racing for it.
+    """
+    from lib.single_flight import SingleFlight
+
+    flight = SingleFlight()
+    cache: dict[str, str] = {}
+    work_runs = []
+
+    def call(key: str) -> str:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        with flight.claim(key) as mine:
+            if not mine:
+                flight.wait(key, 1.0)
+            # The re-check under discussion.
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+            work_runs.append(key)
+            cache[key] = "answer"
+            return cache[key]
+
+    # First caller populates the cache. A second caller that had ALREADY
+    # passed the pre-claim check (simulated by calling again with the claim
+    # now free) must not redo the work.
+    assert call("IWM") == "answer"
+    with flight.claim("IWM") as mine:
+        assert mine, "the claim should be free once the first caller finished"
+    assert call("IWM") == "answer"
+    assert work_runs == ["IWM"], (
+        f"the work ran {len(work_runs)} times for one key: {work_runs}")
+
+
+def test_firebase_initializes_once_under_concurrent_callers():
+    """Two cold `/api/me` requests must not both call `initialize_app()`.
+
+    The loser gets `ValueError: The default Firebase app already exists`,
+    which `current_user_email` swallows — so that request answers
+    `email: null, is_admin: false`. A signed-in admin rendered as an anonymous
+    visitor, on the endpoint the frontend uses to decide what to show them.
+    That is a fabricated identity, not a slow response, which is why this one
+    is worth a lock rather than tolerating the duplicate work.
+    """
+    import api.auth as api_auth
+
+    calls: list[int] = []
+    barrier = threading.Barrier(8)
+
+    class _FakeFirebase:
+        _apps: dict = {}
+
+        @staticmethod
+        def initialize_app(options=None):
+            if _FakeFirebase._apps:
+                raise ValueError("The default Firebase app already exists.")
+            calls.append(1)
+            time.sleep(0.02)             # widen the window
+            _FakeFirebase._apps["[DEFAULT]"] = object()
+
+    original_ready = api_auth._firebase_ready
+    sys.modules["firebase_admin"] = _FakeFirebase   # type: ignore[assignment]
+    api_auth._firebase_ready = False
+    errors: list[BaseException] = []
+
+    def go() -> None:
+        barrier.wait()
+        try:
+            api_auth._ensure_firebase()
+        except BaseException as exc:      # noqa: BLE001
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=go) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+    finally:
+        api_auth._firebase_ready = original_ready
+        sys.modules.pop("firebase_admin", None)
+
+    assert not errors, f"a concurrent initializer raised: {errors[:2]}"
+    assert calls == [1], (
+        f"initialize_app ran {len(calls)} times; the losers would have raised "
+        "ValueError and been reported as anonymous")
+
+
+def test_one_vendor_call_serves_concurrent_lookups_for_a_ticker():
+    """Threadpool dispatch made duplicate AlphaVantage calls reachable.
+
+    While every handler ran on the event loop, two requests for the same cold
+    ticker could not overlap. Now they can, and both pass the Cloud SQL and
+    local-cache checks before either persists. `_merge_into_local_cache` does
+    not help: it makes the WRITE atomic, which is a different problem.
+    """
+    import lib.ticker_info as ticker_info
+
+    fetches: list[str] = []
+    store: dict[str, dict] = {}
+
+    def fake_fetch(ticker: str):
+        fetches.append(ticker)
+        time.sleep(0.05)
+        return {"Symbol": ticker, "Name": "Test"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ticker_info, "fetch_ticker_overview", fake_fetch)
+        mp.setattr(ticker_info, "_cloud_sql_available", lambda: False)
+        mp.setattr(ticker_info, "_load_local_cache", lambda: dict(store))
+        mp.setattr(ticker_info, "_merge_into_local_cache",
+                   lambda t, u, *, replace: store.__setitem__(t, u))
+
+        barrier = threading.Barrier(6)
+        results: list = []
+
+        def go() -> None:
+            barrier.wait()
+            results.append(ticker_info.get_ticker_info("IWM"))
+
+        threads = [threading.Thread(target=go) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+    assert len(results) == 6 and all(r for r in results), results
+    assert fetches == ["IWM"], (
+        f"the vendor was called {len(fetches)} times for one cold ticker: "
+        f"{fetches}")
+
+
+def test_the_import_index_enforces_the_endpoints_own_dedupe_key():
+    """The database authority must match `_dedupe_key()`, not approximate it.
+
+    `_dedupe_key` truncates the timestamp to the minute and rounds the price
+    to 4dp — deliberately, because an imported row carries no seconds while
+    the stored row does. A first version of the index compared the RAW
+    columns, so two concurrent commits of one fill passed it and inserted
+    twice, creating exactly the duplicate a sequential commit would have
+    skipped.
+
+    This asserts the correspondence in both directions: the key calls the two
+    rows identical, and the index DDL names the same two normalizations.
+    """
+    from api.routers import journal
+
+    a = journal._dedupe_key("iwm", "call", "2026-09-04T10:00:00", 200.000012)
+    b = journal._dedupe_key("IWM", "CALL", "2026-09-04 10:00", 200.0000)
+    assert a == b, ("the dedupe key should call these the same trade; if this "
+                    "changed, the index below has to change with it")
+
+    ddl = (REPO / "gcp" / "schema.sql").read_text()
+    # Slice from the CREATE, not from the first mention of the name: the
+    # DROP that precedes it (so an existing deployment converges off the
+    # raw-column version) also carries the name, and slicing from there
+    # matched only "DROP INDEX IF EXISTS ...;".
+    idx = ddl[ddl.index("CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "uq_journal_entries_import_dedupe"):]
+    idx = idx[:idx.index(";")]
+    assert "date_trunc('minute', entry_ts AT TIME ZONE 'UTC')" in idx, (
+        "the index must truncate entry_ts to the minute, as _dedupe_key does. "
+        "`AT TIME ZONE` is required: date_trunc is STABLE on timestamptz and "
+        "IMMUTABLE on timestamp, so Postgres refuses to index the former.")
+    assert "round(entry_price::numeric, 4)" in idx, (
+        "the index must round entry_price to 4dp, as _dedupe_key does")

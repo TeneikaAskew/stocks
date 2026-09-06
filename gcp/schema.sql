@@ -1223,11 +1223,41 @@ CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
 -- decision, not a bug. This closes import-vs-import; import-vs-manual is
 -- still the application's pre-check, which is honest about being advisory.
 --
--- Safe to add: `SELECT count(*) FROM (... GROUP BY user_email, ticker,
--- direction, entry_ts, entry_price HAVING count(*) > 1)` returned 0 on prod
--- 2026-09-06, so no existing row violates it.
+-- The expressions match `_dedupe_key()` in the journal router, and that
+-- matters more than it looks. A first version indexed the RAW columns, so the
+-- database enforced a stricter notion of "same trade" than the endpoint's
+-- own: `_dedupe_key` truncates the timestamp to the minute and rounds the
+-- price to 4dp precisely because an imported row carries no seconds while the
+-- stored row does, and float rendering differs by a few ulps. Two concurrent
+-- commits of one fill therefore passed the raw index and inserted twice --
+-- creating exactly the duplicate a sequential commit would have skipped, and
+-- leaving the index looking like it worked.
+--
+-- `AT TIME ZONE 'UTC'` is load-bearing, not decoration: `date_trunc` is
+-- STABLE on `timestamptz` and IMMUTABLE on `timestamp`, so without the cast
+-- Postgres refuses to build the index at all. Read from the server rather
+-- than assumed:
+--
+--   proname     args                                 provolatile
+--   date_trunc  text, timestamp without time zone    i   (immutable)
+--   date_trunc  text, timestamp with time zone       s   (stable)
+--   round       numeric, integer                     i   (immutable)
+--
+-- Safe to add: the same GROUP BY over the NORMALIZED expressions returned 0
+-- colliding groups on prod 2026-09-06, so no existing row violates it.
+--
+-- DROP first so a deployment carrying the raw-column version converges on the
+-- normalized one; `IF NOT EXISTS` alone would silently keep the old
+-- definition under the same name.
+DROP INDEX IF EXISTS uq_journal_entries_import_dedupe;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_import_dedupe
-    ON journal_entries (user_email, ticker, direction, entry_ts, entry_price)
+    ON journal_entries (
+        user_email,
+        ticker,
+        direction,
+        date_trunc('minute', entry_ts AT TIME ZONE 'UTC'),
+        round(entry_price::numeric, 4)
+    )
     WHERE source LIKE 'import:%';
 
 

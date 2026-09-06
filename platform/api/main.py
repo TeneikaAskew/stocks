@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 from cachetools import TTLCache
-from api.single_flight import SingleFlight
+from lib.single_flight import SingleFlight
 from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -520,9 +520,16 @@ def get_available_dates(ticker: str):
     with _MARKET_DATES_FLIGHT.claim(ticker_upper) as mine:
         if not mine:
             _MARKET_DATES_FLIGHT.wait(ticker_upper, _MARKET_DATES_WAIT_S)
-            cached = _MARKET_DATES_CACHE.get(ticker_upper)
-            if cached is not None:
-                return cached
+        # Re-read whichever branch we came from. A decliner re-reads because
+        # the claimant it waited for has usually just stored the answer; a
+        # CLAIMANT re-reads because winning the claim does not mean being
+        # first -- the cache check above happened before the claim, so a
+        # request descheduled between the two can take the claim moments
+        # after the previous claimant populated the cache, and would
+        # otherwise repeat a 1,716 ms scan whose result is already in hand.
+        cached = _MARKET_DATES_CACHE.get(ticker_upper)
+        if cached is not None:
+            return cached
         return _load_available_dates(ticker_upper, ticker_lower)
 
 
