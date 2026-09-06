@@ -403,3 +403,46 @@ def test_cors_regex_excludes_lovable_in_iap_mode():
     assert iap.fullmatch(project) is None
     # The Codespaces branch survives in every mode.
     assert iap.fullmatch(codespace) and fb.fullmatch(codespace)
+
+
+# ---------------------------------------------------------------------------
+# /api/me role flags (platform/api/main.py get_current_user)
+#
+# is_admin and is_dev both derive from ONE stored_role_for lookup (single
+# primary-key SELECT per app load), with ADMIN_EMAIL kept as the env
+# fallback for is_admin only. is_dev drives the solyra frontend's mock-data
+# mode; it must never come from anything the client can spoof.
+# ---------------------------------------------------------------------------
+
+
+def _me(monkeypatch, email, stored_role, admin_env="admin@env.example"):
+    import api.main as m
+
+    monkeypatch.setattr(m, "current_user_email", lambda request: email)
+    monkeypatch.setattr(m, "stored_role_for", lambda e: stored_role)
+    monkeypatch.setattr(m, "configured_admin_email", lambda: admin_env)
+    return TestClient(m.app).get("/api/me").json()
+
+
+def test_me_dev_role_sets_is_dev_not_is_admin(monkeypatch):
+    body = _me(monkeypatch, "dev@x.com", "dev")
+    assert body == {"email": "dev@x.com", "is_admin": False, "is_dev": True}
+
+
+def test_me_admin_role_sets_is_admin_not_is_dev(monkeypatch):
+    body = _me(monkeypatch, "boss@x.com", "admin")
+    assert body == {"email": "boss@x.com", "is_admin": True, "is_dev": False}
+
+
+def test_me_env_fallback_admin_without_table_row(monkeypatch):
+    body = _me(monkeypatch, "Admin@Env.example", None)
+    assert body["is_admin"] is True  # normalized match against ADMIN_EMAIL
+    assert body["is_dev"] is False
+
+
+def test_me_plain_user_and_anonymous(monkeypatch):
+    assert _me(monkeypatch, "u@x.com", "user") == {
+        "email": "u@x.com", "is_admin": False, "is_dev": False,
+    }
+    anon = _me(monkeypatch, None, None)
+    assert anon == {"email": None, "is_admin": False, "is_dev": False}
