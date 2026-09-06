@@ -8,17 +8,7 @@
 # from the Cloud Build context and broke `vite build`.
 /data/
 
-# Web apps — deployed separately (GitHub Pages / Firebase)
-chart-viewer/
-options-heatseeker/
-success-report-site/
-website/
-
-# Google Apps Script — separate clasp deployment, not part of Cloud Run
-google-apps-script/
-
-# Earnings analytics — isolated system with own requirements
-earnings_options_analytics/
+# Retired projects live under archive/, which is already excluded below.
 
 # Analysis reports — generated outputs, not needed in container
 reports/
