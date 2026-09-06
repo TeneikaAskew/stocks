@@ -623,6 +623,25 @@ whether the win still holds.
 
 ### 3.9. Market Time Is Eastern, Named, Converted Once
 
+> **UNRESOLVED as of 2026-09-06 — `market_data_intraday` holds TWO
+> conventions.** Older rows are true UTC instants; rows from
+> `gcp/fetchers/fetch_market_data.py:445` are ET wall-clock stored naively
+> ("ET-as-UTC convention", by design), and BOTH carry
+> `data_source='alphavantage'`, so no per-row rule separates them:
+>
+> ```
+> 2025-06-02  raw UTC 08:00-23:59  = 04:00-20:00 ET   true UTC
+> 2026-03-02  raw UTC 09:00-23:58  = 04:00-19:00 ET   true UTC
+> 2026-09-04  raw UTC 00:00-23:59  = a full 24 hours, no session either way
+> ```
+>
+> Until the writer is normalised and the ET-framed rows migrated, converting
+> unconditionally CORRUPTS data (4-5 hours early; under EST it moves 04:00 ET
+> bars to the previous date, where the date filter discards them). An attempt
+> to apply this rule to that table was reverted for exactly this reason. The
+> rule below is correct and still binding for every OTHER timestamp; this one
+> table needs the data fixed first.
+
 `ts` is `TIMESTAMPTZ` and the Cloud SQL session runs in **UTC**, so `DATE(ts)`
 yields UTC calendar dates. Market data is Eastern. Measured on IWM: bars span
 06:29–20:00 ET, and **26,391 of 2,003,579 rows (1.3%)** have a UTC date

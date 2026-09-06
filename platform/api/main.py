@@ -563,19 +563,26 @@ async def get_available_dates(ticker: str):
             # stale 200. Same reasoning as _coverage_query above.
             df = _dates_query(
                 """
-                -- `ts` is TIMESTAMPTZ and the Cloud SQL session runs in UTC,
-                -- so a bare DATE(ts) yields UTC calendar dates. Market data is
-                -- Eastern: bars span 06:29-20:00 ET, and measured 2026-09-06 on
-                -- IWM, 26,391 of 2,003,579 rows (1.3%) have a UTC date that
-                -- differs from their ET date -- every bar at or after 20:00 ET
-                -- was attributed to the NEXT trading day.
+                -- REVERTED 2026-09-06. This was an ET conversion, on the
+                -- belief that every row is a true UTC instant. That is FALSE:
+                -- the table holds BOTH conventions and no per-row rule tells
+                -- them apart.
                 --
-                -- Named zone, never a fixed offset: EDT is UTC-4 and EST is
-                -- UTC-5, so a hardcoded offset is wrong for half the year.
-                -- This MUST stay in lockstep with the identical conversion in
-                -- get_market_data below, or the picker offers a date whose
-                -- data query then returns nothing.
-                SELECT DISTINCT (ts AT TIME ZONE 'America/New_York')::date AS trade_date
+                --   2025-06-02  raw UTC 08:00-23:59 = 04:00-20:00 ET  true UTC
+                --   2026-03-02  raw UTC 09:00-23:58 = 04:00-19:00 ET  true UTC
+                --   2026-09-04  raw UTC 00:00-23:59 = a full 24 hours, which
+                --                                     is no session either way
+                --
+                -- gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
+                -- naively BY DESIGN ("ET-as-UTC convention") under the SAME
+                -- data_source='alphavantage' label the true-UTC rows carry.
+                -- Converting unconditionally shifts those rows 4-5 hours early.
+                --
+                -- DATE(ts) is also wrong (351 phantom dates), but it is the
+                -- wrong we already had; a new wrong that corrupts premarket
+                -- bars is worse. Own PR: normalise the writer, migrate the
+                -- ET-framed rows, THEN convert here.
+                SELECT DISTINCT DATE(ts) AS trade_date
                 FROM market_data_intraday
                 WHERE ticker = :ticker AND interval = '1min'
                 ORDER BY trade_date DESC
@@ -1345,16 +1352,12 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
                 df = query_to_dataframe(
                     """
-                    -- Same ET conversion as the dates list in
-                    -- get_available_dates. These two must agree: the list is
-                    -- what populates the picker, this is what the picker's
-                    -- selection loads. A bare DATE(ts) here would drop every
-                    -- bar at or after 20:00 ET from its own trading day and
-                    -- attach it to the next one.
+                    -- Framing must match get_available_dates; both are DATE(ts)
+                    -- pending the data normalisation described there.
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                      AND (ts AT TIME ZONE 'America/New_York')::date = :dt
+                      AND DATE(ts) = :dt
                     ORDER BY ts
                     """,
                     {"ticker": ticker_upper, "dt": date_str},
@@ -1372,17 +1375,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                      -- Eastern month bounds, not UTC. `start`/`end` are
-                      -- naive 'YYYY-MM-01' strings; comparing a TIMESTAMPTZ
-                      -- against them makes Postgres read them in the session
-                      -- zone (UTC), which is 4-5 hours off the Eastern month
-                      -- the `months` list in /api/market/dates advertises. On
-                      -- a boundary that drops a late bar from its own month
-                      -- and pulls the previous month's late bars into the
-                      -- next one. AT TIME ZONE on a naive value produces the
-                      -- UTC instant for that Eastern wall-clock time.
-                      AND ts >= (:start)::timestamp AT TIME ZONE 'America/New_York'
-                      AND ts <  (:end)::timestamp   AT TIME ZONE 'America/New_York'
+                      -- Naive bounds, matching the DATE(ts) framing above.
+                      AND ts >= :start AND ts < :end
                     ORDER BY ts
                     """,
                     {"ticker": ticker_upper, "start": start, "end": end},
@@ -1392,37 +1386,33 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
 
             if not df.empty:
                 df.index = pd.to_datetime(df["ts"])
-                # Normalize to Eastern wall-clock, source-independently.
+                # Normalize timezone based on data source.
                 #
-                # The branch that used to live here was built on a false
-                # premise: "alphavantage: ET stored as UTC -> just strip tz
-                # label". Measured on prod 2026-09-06, IWM, all 2,003,579 rows
-                # data_source='alphavantage':
+                # REVERTED 2026-09-06 to this branch. It was replaced with an
+                # unconditional ET conversion on evidence from IWM aggregates,
+                # which hid that the table holds TWO conventions:
+                # gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
+                # naively BY DESIGN and labels it 'alphavantage' -- the same
+                # label the true-UTC rows carry. Converting every row shifts the
+                # ET-framed ones 4-5 hours early, and under EST moves 04:00 ET
+                # bars to the previous date where the caller's filter drops them.
                 #
-                #   raw UTC   11:29 - 00:00
-                #   as ET     06:29 - 20:00
-                #
-                # 06:29-20:00 ET is a real pre-market-to-after-hours session;
-                # 11:29-00:00 is not a session at all. The rows are true UTC
-                # instants. Stripping the label without converting left a
-                # naive UTC index, and the caller's
-                # `df.index.date == target` then dropped every bar at or
-                # after 20:00 ET from its own trading day.
+                # This branch is ALSO wrong: data_source cannot distinguish the
+                # two. But it is what production runs today, and a new wrong
+                # that corrupts premarket bars is worse than the existing one.
+                # Own PR: normalise the writer, migrate the ET-framed rows.
+                is_yfinance = (
+                    "data_source" in df.columns
+                    and not df["data_source"].isna().all()
+                    and df["data_source"].iloc[0] == "yfinance"
+                )
                 df = df.drop(columns=["ts", "data_source"], errors="ignore")
                 if df.index.tz is not None:
-                    # ALWAYS convert to Eastern before dropping the zone.
-                    # `ts` is a true UTC instant for every source (verified on
-                    # prod: converting IWM to ET yields 06:29-20:00, i.e. real
-                    # pre-market-to-after-hours, not a shifted window), so
-                    # tz_localize(None) alone leaves a naive UTC index. The
-                    # caller then filters `df.index.date == target`, and a
-                    # 20:00 ET bar -- naive 00:00 the NEXT day in UTC -- is
-                    # silently dropped from its own trading session. That
-                    # undoes the ET fix in the SQL one layer up. The yfinance
-                    # branch already converted; the other branch did not, and
-                    # the two disagreeing was the bug.
-                    df.index = (df.index.tz_convert("America/New_York")
-                                        .tz_localize(None))
+                    if is_yfinance:
+                        df.index = (df.index.tz_convert("America/New_York")
+                                            .tz_localize(None))
+                    else:
+                        df.index = df.index.tz_localize(None)
                 return df
         except Exception as e:
             logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
