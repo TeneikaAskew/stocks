@@ -564,8 +564,17 @@ class TestMarketDataAPI:
         })
         # Patch _dates_query, not query_to_dataframe: the endpoint uses the
         # RAISING helper so its 503 branch is reachable, and _dates_query is
-        # where that indirection lives.
-        monkeypatch.setattr(main_module, "_dates_query", lambda *a, **k: dates_df.copy())
+        # where that indirection lives. It serves two queries -- a cheap
+        # MAX(ts) freshness probe and the expensive list -- so the fake has to
+        # answer both.
+        def fake_dates_query(sql, params=None):
+            if "MAX(ts)" in sql:
+                return pd.DataFrame({"max_ts": [pd.Timestamp("2026-02-20 20:00")]})
+            return dates_df.copy()
+
+        monkeypatch.setattr(main_module, "_dates_query", fake_dates_query)
+        monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE",
+                            type(main_module._MARKET_DATES_CACHE)())
 
         r = client.get("/api/market/dates/IWM")
         assert r.status_code == 200
@@ -590,7 +599,8 @@ class TestMarketDataAPI:
             raise RuntimeError("connection refused")
 
         monkeypatch.setattr(main_module, "_dates_query", boom)
-        monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE", {})
+        monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE",
+                            type(main_module._MARKET_DATES_CACHE)())
 
         r = client.get("/api/market/dates/IWM")
         assert r.status_code == 503, (

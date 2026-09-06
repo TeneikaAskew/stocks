@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from collections import OrderedDict
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -472,6 +473,29 @@ only working path right now; curl/CI flows return 401.</p>
     return HTMLResponse(html)
 
 
+# Freshness is decided by the DATA, not by a model of the ingest schedule.
+#
+# Three attempts at modelling that schedule were each wrong in a different
+# way: a fixed 12h TTL spanned the ingestion entirely; a 23:00 UTC boundary
+# expired hours before the job (the scheduler runs in Eastern); an Eastern
+# boundary still missed a second writer. There are at least three writers to
+# this table, read live rather than from any doc:
+#
+#   av-intraday-nightly      0 21 * * 1-6   America/New_York   (Mon-SAT)
+#   fetch-market-data-daily  0 23 * * 1-5   America/New_York
+#   av-intraday-monthly      0 21 1 * *     America/New_York   (any weekday)
+#
+# Any model of that drifts the moment a schedule changes, and nothing fails
+# when it does — the endpoint keeps returning plausible dates, just stale
+# ones. So instead: probe MAX(ts), which is a single index descent
+# (Index Only Scan Backward, measured 10.8 ms on prod against the 1,716 ms
+# full scan), and rebuild the list only when the newest bar has advanced.
+# Correct for any number of writers on any schedule, including ad-hoc
+# backfills that no schedule describes.
+_MARKET_DATES_CACHE: "OrderedDict[str, tuple[object, dict]]" = OrderedDict()
+_MARKET_DATES_CACHE_MAX = 64
+
+
 def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
     """Run the trading-dates query, RAISING on failure.
 
@@ -490,10 +514,42 @@ async def get_available_dates(ticker: str):
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
 
+    # Cheap freshness probe: one index descent (~11 ms) instead of the
+    # 1,716 ms scan below. A cached list stays valid exactly as long as no
+    # newer bar exists, whichever writer produced it.
+    latest_ts = None
+    if _CLOUD_SQL:
+        try:
+            probe = _dates_query(
+                """
+                SELECT MAX(ts) AS max_ts
+                FROM   market_data_intraday
+                WHERE  ticker = :ticker AND interval = '1min'
+                """,
+                {"ticker": ticker_upper},
+            )
+        except Exception as e:
+            # The probe runs before the main query's handler, so without this
+            # a database failure here escapes as an unhandled 500 rather than
+            # the 503 this endpoint promises. Same failure, same answer,
+            # whichever query hit it first.
+            logger.error("Cloud SQL freshness probe failed for %s: %s",
+                         ticker_upper, e)
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Could not read trading dates for {ticker_upper}: the "
+                        f"database query failed ({e}). Not falling back to the "
+                        f"GCS staging parquets, which may be stale or "
+                        f"incomplete."),
+            )
+        if not probe.empty:
+            latest_ts = probe["max_ts"].iloc[0]
+
     entry = _MARKET_DATES_CACHE.get(ticker_upper)
     if entry is not None:
-        expires_at, payload = entry
-        if datetime.now(timezone.utc) < expires_at:
+        cached_ts, payload = entry
+        if latest_ts is not None and cached_ts == latest_ts:
+            _MARKET_DATES_CACHE.move_to_end(ticker_upper)   # LRU touch
             return payload
         del _MARKET_DATES_CACHE[ticker_upper]
 
@@ -536,9 +592,13 @@ async def get_available_dates(ticker: str):
                     "dates": dates,
                     "months": months,
                 }
-                if len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
-                    _MARKET_DATES_CACHE.clear()
-                _MARKET_DATES_CACHE[ticker_upper] = (_next_ingest_boundary(), payload)
+                # Evict the least-recently-used single entry, never clear.
+                # Clearing meant a working set of 65 tickers flushed all 64
+                # still-valid entries on every miss, so nearly every request
+                # paid the full scan -- the cache defeating itself.
+                while len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
+                    _MARKET_DATES_CACHE.popitem(last=False)
+                _MARKET_DATES_CACHE[ticker_upper] = (latest_ts, payload)
                 return payload
         except Exception as e:
             # Cloud SQL is the system of record; GCS holds the ingestion
@@ -997,43 +1057,7 @@ _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes
 # database blip, with nothing retrying Cloud SQL in between.
 _ET_TZ = ZoneInfo("America/New_York")
 
-# The scheduler runs in EASTERN, not UTC. Read live from GCP rather than from
-# docs/PIPELINE.md, which said "23:00 UTC" and is wrong:
-#
-#   $ gcloud scheduler jobs describe fetch-market-data-daily --location=us-east1
-#     0 23 * * 1-5   America/New_York   ENABLED
-#
-# So ingestion starts at 23:00 ET = 03:00 UTC (EDT) or 04:00 UTC (EST) the NEXT
-# calendar day. A fixed UTC hour here would expire the cache hours before the
-# job runs, repopulate the pre-ingestion list, and then hold THAT until the
-# following day — hiding the new date for most of a day. This is rule 3.9
-# applied to the schedule itself, not just to the data.
-#
-# Weekdays only (`1-5`): a Friday-night boundary advances to Monday rather
-# than expiring twice over a weekend for data that cannot have changed.
-_INGEST_HOUR_ET = 23
-_INGEST_GRACE = timedelta(minutes=30)   # let the job finish writing
-_MARKET_DATES_CACHE: dict[str, tuple[datetime, dict]] = {}
-_MARKET_DATES_CACHE_MAX = 64
 
-
-def _next_ingest_boundary(now: Optional[datetime] = None) -> datetime:
-    """First UTC moment after the next daily ingestion is expected to be done.
-
-    Computed in America/New_York and returned in UTC, so DST is handled by the
-    zone rather than by an offset that is wrong for half the year.
-    """
-    now = now or datetime.now(timezone.utc)
-    now_et = now.astimezone(_ET_TZ)
-
-    boundary_et = now_et.replace(hour=_INGEST_HOUR_ET, minute=0, second=0,
-                                 microsecond=0) + _INGEST_GRACE
-    if boundary_et <= now_et:
-        boundary_et += timedelta(days=1)
-    # Monday=0 ... Sunday=6; the cron fires Mon-Fri only.
-    while boundary_et.weekday() > 4:
-        boundary_et += timedelta(days=1)
-    return boundary_et.astimezone(timezone.utc)
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
