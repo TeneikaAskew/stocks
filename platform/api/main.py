@@ -478,9 +478,12 @@ async def get_available_dates(ticker: str):
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
 
-    cached = _MARKET_DATES_CACHE.get(ticker_upper)
-    if cached is not None:
-        return cached
+    entry = _MARKET_DATES_CACHE.get(ticker_upper)
+    if entry is not None:
+        expires_at, payload = entry
+        if datetime.now(timezone.utc) < expires_at:
+            return payload
+        del _MARKET_DATES_CACHE[ticker_upper]
 
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
@@ -504,7 +507,9 @@ async def get_available_dates(ticker: str):
                     "dates": dates,
                     "months": months,
                 }
-                _MARKET_DATES_CACHE[ticker_upper] = payload
+                if len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
+                    _MARKET_DATES_CACHE.clear()
+                _MARKET_DATES_CACHE[ticker_upper] = (_next_ingest_boundary(), payload)
                 return payload
         except Exception as e:
             logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
@@ -932,12 +937,32 @@ _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes
 # (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms
 # — DATE(ts) is a function on the column, so the (ticker, interval, ts DESC)
 # index cannot be used, and there is no LIMIT). Uncached, every ChartsPage and
-# JournalPage mount paid that. 12h matches the options dates cache.
+# JournalPage mount paid that.
 #
-# ONLY the Cloud SQL result is cached. Caching the GCS fallback here would pin
-# a possibly-incomplete date set for 12h after a transient database blip, and
-# nothing would retry Cloud SQL until the TTL expired.
-_MARKET_DATES_CACHE: TTLCache = TTLCache(maxsize=64, ttl=43200)
+# Expiry is anchored to the daily ingestion, NOT to a fixed TTL from request
+# time. `fetch-market-data` writes market_data_intraday at 23:00 UTC
+# (docs/PIPELINE.md), so a plain 12h TTL populated at 22:00 UTC would hide the
+# newly ingested trading date from the date picker until 10:00 the next
+# morning. Caching until just after the next run instead means one scan per
+# ticker per day AND the new date appears within the grace window.
+#
+# ONLY the Cloud SQL result is cached. Caching the GCS fallback would pin a
+# possibly-incomplete date set until the next boundary after a transient
+# database blip, with nothing retrying Cloud SQL in between.
+_INGEST_HOUR_UTC = 23          # fetch-market-data daily run
+_INGEST_GRACE = timedelta(minutes=30)   # let the job finish writing
+_MARKET_DATES_CACHE: dict[str, tuple[datetime, dict]] = {}
+_MARKET_DATES_CACHE_MAX = 64
+
+
+def _next_ingest_boundary(now: Optional[datetime] = None) -> datetime:
+    """First moment after the next daily ingestion is expected to be done."""
+    now = now or datetime.now(timezone.utc)
+    boundary = now.replace(hour=_INGEST_HOUR_UTC, minute=0, second=0,
+                           microsecond=0) + _INGEST_GRACE
+    if boundary <= now:
+        boundary += timedelta(days=1)
+    return boundary
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
