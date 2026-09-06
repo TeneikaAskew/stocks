@@ -1632,8 +1632,19 @@ def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
     end_date = ref_ts.normalize().strftime('%Y-%m-%d')
     try:
         days = nyse.valid_days(start_date=start_date, end_date=end_date)
-    except Exception:
-        return 0
+    except Exception as exc:
+        # Rule 3.7, and the direction matters. This returned 0, and the only
+        # caller does `if biz_days > max_age_business_days: raise
+        # StaleSourceDataError`. 0 is never greater than the threshold, so a
+        # calendar failure DISABLED the staleness guard and let a level map
+        # built off stale market_data_daily be written -- the exact incident
+        # persist_level_map exists to prevent. A swallow that silences a guard
+        # is worse than the failure it swallows.
+        raise RuntimeError(
+            f"NYSE calendar lookup failed for {start_date}..{end_date}: "
+            f"{type(exc).__name__}: {exc}. Refusing to report 0 trading days, "
+            f"which would read as 'not stale' to the caller."
+        ) from exc
     return len(days)
 
 

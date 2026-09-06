@@ -53,11 +53,34 @@ log = logging.getLogger(__name__)
 # excluded — AV provides Greeks for those.
 COMPUTE_GREEKS_TICKERS = {"SPX", "SPXW", "NDX", "RUT", "XSP"}
 
-# Default fallbacks if Cloud SQL daily_rates lookup fails. These approximate
-# the late-2024 / early-2025 rate regime and were used as constants before
-# the FRED daily_rates pipeline existed.
+# Rates used ONLY when a caller explicitly asks for them via
+# `get_rate_and_yield(..., allow_defaults=True)` — offline work, or a fixture
+# that needs a deterministic r/q. They approximate the late-2024 / early-2025
+# regime, so they are years stale and getting staler.
+#
+# They used to be returned SILENTLY whenever the `daily_rates` lookup failed,
+# at `log.debug` level. Greeks computed from a 2024 risk-free rate are wrong
+# in theta and rho and slightly wrong in delta and gamma, and nothing
+# downstream could tell them from measured ones — CLAUDE.md Rule 3.7, and
+# finding C-03 of docs/audits/FALLBACK_AUDIT_2026-05-13.md, unfixed since May.
 _DEFAULT_RISK_FREE = 0.045
 _DEFAULT_DIV_YIELD = 0.013
+
+# How stale the backstop row may be before the lookup fails instead.
+# `daily_rates` is written every weekday at 06:30 ET by `fred-rates-daily`,
+# and FRED itself publishes with a 1-2 day lag, so a healthy table can
+# legitimately be a few days behind over a long weekend. Seven days clears
+# that and still catches a fetcher that has stopped.
+_RATE_MAX_STALENESS_DAYS = 7
+
+
+class RateLookupError(RuntimeError):
+    """`daily_rates` could not supply a rate for the requested date.
+
+    Raised rather than substituting a constant: a wrong `r` produces Greeks
+    that look measured. Callers that genuinely want a constant must ask for
+    one with `allow_defaults=True` and own that choice.
+    """
 
 # Sidecar column names — single source of truth.
 COMPUTED_COLS = (
@@ -102,50 +125,92 @@ def bs_gamma(S, K, t, r, q, sigma):
 # ── rate / yield lookup ──────────────────────────────────────────────────────
 
 @lru_cache(maxsize=10000)
-def get_rate_and_yield(target_date: date) -> Tuple[float, float]:
+def get_rate_and_yield(target_date: date,
+                       allow_defaults: bool = False) -> Tuple[float, float]:
     """Return ``(risk_free_rate, dividend_yield)`` for ``target_date``.
 
-    Reads from Cloud SQL ``daily_rates`` table when present. Falls back to
-    the constants above if the table doesn't exist (e.g. before the
-    daily_rates migration), if the row doesn't exist (fresh deploy, FRED
-    fetch hasn't run yet), or if Cloud SQL is unavailable. Cached per-date
-    in-process — backfill scripts processing thousands of dates pay the
-    lookup cost only once per distinct date.
+    Reads Cloud SQL ``daily_rates``: the exact date first, then the most
+    recent row at or before it (which bridges weekends, holidays, and FRED's
+    own 1-2 day publishing lag).
+
+    **Raises** :class:`RateLookupError` rather than returning a constant when
+    the rate cannot be established — the query failed, no row exists at or
+    before the date, the backstop row is more than
+    ``_RATE_MAX_STALENESS_DAYS`` old, or the column is NULL. A wrong ``r``
+    does not announce itself: it shifts theta and rho on every contract in
+    the chain, and the output is a plausible number either way.
+
+    ``allow_defaults=True`` restores the old behaviour for callers that
+    genuinely want a constant — offline analysis, a fixture needing a fixed
+    ``r``. It is a parameter rather than a default so the choice appears at
+    the call site.
+
+    Cached per (date, allow_defaults) in-process: backfill scripts covering
+    thousands of dates pay the lookup once per distinct date.
     """
+    def _fallback_or_raise(reason: str) -> Tuple[float, float]:
+        if allow_defaults:
+            log.warning(
+                "daily_rates lookup for %s: %s — using the %.3f/%.3f "
+                "constants because allow_defaults=True. Greeks computed from "
+                "these are NOT measured.",
+                target_date, reason, _DEFAULT_RISK_FREE, _DEFAULT_DIV_YIELD)
+            return _DEFAULT_RISK_FREE, _DEFAULT_DIV_YIELD
+        raise RateLookupError(
+            f"no risk-free rate available for {target_date}: {reason}. "
+            f"Refusing to substitute a constant; pass allow_defaults=True "
+            f"only if a fabricated rate is acceptable for this caller.")
+
     try:
-        from gcp.database import query_to_dataframe
-    except ImportError:
-        return _DEFAULT_RISK_FREE, _DEFAULT_DIV_YIELD
+        from gcp.database import query_to_dataframe_strict
+    except ImportError as exc:
+        return _fallback_or_raise(f"gcp.database unavailable ({exc})")
 
     target_param = target_date if isinstance(target_date, (date, datetime)) else str(target_date)
 
+    # The STRICT helper: the swallowing `query_to_dataframe` returns an empty
+    # DataFrame on a connection error, which is indistinguishable from "no
+    # row" and would send a real outage down the missing-data path.
     try:
-        df = query_to_dataframe(
-            "SELECT dgs3mo, sp500_div_yld FROM daily_rates WHERE date = :d LIMIT 1",
+        df = query_to_dataframe_strict(
+            "SELECT date, dgs3mo, sp500_div_yld FROM daily_rates "
+            "WHERE date = :d LIMIT 1",
             {"d": target_param},
         )
         if df.empty:
-            # Try the most recent date <= target as a backstop — bridges holidays
-            # and pre-FRED-fetch warmup. Same query pattern, single row.
-            df = query_to_dataframe(
-                "SELECT dgs3mo, sp500_div_yld FROM daily_rates "
+            df = query_to_dataframe_strict(
+                "SELECT date, dgs3mo, sp500_div_yld FROM daily_rates "
                 "WHERE date <= :d ORDER BY date DESC LIMIT 1",
                 {"d": target_param},
             )
     except Exception as exc:
-        # Most likely "relation daily_rates does not exist" — schema hasn't
-        # been migrated yet. Fall back silently to defaults so callers still work.
-        log.debug("daily_rates query failed (%s) — using defaults", exc)
-        return _DEFAULT_RISK_FREE, _DEFAULT_DIV_YIELD
+        return _fallback_or_raise(f"daily_rates query failed ({type(exc).__name__}: {exc})")
 
     if df.empty:
-        log.debug("daily_rates lookup miss for %s — using defaults", target_date)
-        return _DEFAULT_RISK_FREE, _DEFAULT_DIV_YIELD
+        return _fallback_or_raise("no row at or before that date")
 
     row = df.iloc[0]
-    r = float(row["dgs3mo"]) if row["dgs3mo"] is not None else _DEFAULT_RISK_FREE
-    q = float(row["sp500_div_yld"]) if row["sp500_div_yld"] is not None else _DEFAULT_DIV_YIELD
-    return r, q
+
+    row_date = row["date"]
+    if isinstance(row_date, datetime):
+        row_date = row_date.date()
+    elif isinstance(row_date, str):
+        row_date = pd.to_datetime(row_date).date()
+    ref = target_date.date() if isinstance(target_date, datetime) else target_date
+    if isinstance(row_date, date) and isinstance(ref, date):
+        age = (ref - row_date).days
+        if age > _RATE_MAX_STALENESS_DAYS:
+            return _fallback_or_raise(
+                f"newest row at or before that date is {row_date}, {age} days "
+                f"stale (limit {_RATE_MAX_STALENESS_DAYS}) — the fred-rates-daily "
+                f"job has probably stopped")
+
+    if row["dgs3mo"] is None or pd.isna(row["dgs3mo"]):
+        return _fallback_or_raise(f"dgs3mo is NULL on {row_date}")
+    if row["sp500_div_yld"] is None or pd.isna(row["sp500_div_yld"]):
+        return _fallback_or_raise(f"sp500_div_yld is NULL on {row_date}")
+
+    return float(row["dgs3mo"]), float(row["sp500_div_yld"])
 
 
 # ── close-price lookup ──────────────────────────────────────────────────────
@@ -498,7 +563,17 @@ def enrich_av_chain_with_greeks(
     elif isinstance(snapshot_date, datetime):
         snapshot_date = snapshot_date.date()
 
-    risk_free, div_yld = get_rate_and_yield(snapshot_date)
+    try:
+        risk_free, div_yld = get_rate_and_yield(snapshot_date)
+    except RateLookupError as exc:
+        # Rule 3.7: an explicit unavailable state, not Greeks at a made-up
+        # rate. The chain is returned with the vendor's own Greeks and
+        # WITHOUT the `*_computed` sidecar columns, so a caller can tell the
+        # difference -- which it could not when this substituted a 2024
+        # constant. ERROR, not debug: this is a pipeline outage.
+        log.error("%s %s: skipping computed Greeks -- %s",
+                  ticker_u, snapshot_date, exc)
+        return df
 
     # Three-tier spot cascade.
     spot: Optional[float] = None

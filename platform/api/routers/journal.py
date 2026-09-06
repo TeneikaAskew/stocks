@@ -446,13 +446,37 @@ def _local_path(ticker: str) -> Path:
 
 
 def _load_local(ticker: str) -> list[dict]:
+    """Read one ticker's local journal file.
+
+    A file that does not exist is genuinely empty -> ``[]``. A file that
+    exists but cannot be read or parsed is a FAILURE, and returning ``[]``
+    for it was worse than losing the read: `_save_local` writes the list
+    straight back, so the next trade the user logged would overwrite a
+    recoverable file with a one-entry list and destroy every trade in it.
+    Rule 3.7's distinction exactly -- missing input vs failed input.
+    """
     p = _local_path(ticker)
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text())
-    except Exception:
-        return []
+        entries = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("journal: %s is unreadable (%s) -- refusing to report an "
+                  "empty journal, which would be overwritten on the next save",
+                  p, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(f"The local journal file for {ticker.upper()} could not be "
+                    f"read. It has NOT been overwritten. Fix or move {p.name} "
+                    f"and retry."),
+        ) from exc
+    if not isinstance(entries, list):
+        raise HTTPException(
+            status_code=500,
+            detail=(f"The local journal file for {ticker.upper()} does not "
+                    f"contain a list. It has NOT been overwritten."),
+        )
+    return entries
 
 
 def _save_local(ticker: str, entries: list[dict]) -> None:
