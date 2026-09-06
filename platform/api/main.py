@@ -215,7 +215,7 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
 
 
 @app.get("/api/health")
-async def health_check():
+def health_check():
     return {
         "status": "ok",
         "project_root": str(PROJECT_ROOT),
@@ -226,7 +226,7 @@ async def health_check():
 
 
 @app.get("/api/me")
-async def get_current_user(request: Request):
+def get_current_user(request: Request):
     """Return the authenticated identity + admin flag.
 
     `email` is the server-VERIFIED identity: the Firebase token's email in
@@ -364,7 +364,7 @@ def _strat_engine_state() -> list[dict]:
 
 
 @app.get("/dev", include_in_schema=False)
-async def dev_info(request: Request):
+def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
 
     email = _iap_user_email(request)
@@ -473,10 +473,14 @@ only working path right now; curl/CI flows return 401.</p>
 
 
 @app.get("/api/market/dates/{ticker}")
-async def get_available_dates(ticker: str):
+def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
+
+    cached = _MARKET_DATES_CACHE.get(ticker_upper)
+    if cached is not None:
+        return cached
 
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
@@ -494,12 +498,14 @@ async def get_available_dates(ticker: str):
                 dates = [d.strftime("%Y%m%d") for d in df["trade_date"]]
                 # Derive months from the dates for month-level navigation
                 months = sorted(set(d[:6] for d in dates), reverse=True)
-                return {
+                payload = {
                     "ticker": ticker_upper,
                     "source": "cloud_sql",
                     "dates": dates,
                     "months": months,
                 }
+                _MARKET_DATES_CACHE[ticker_upper] = payload
+                return payload
         except Exception as e:
             logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
 
@@ -529,18 +535,30 @@ async def get_available_dates(ticker: str):
             if len(month_part) == 6 and month_part.isdigit():
                 months.append(month_part)
     except Exception as e:
-        logger.warning("GCS dates list failed for %s: %s", ticker_upper, e)
+        # Rule 3.7: returning [] here is indistinguishable from "this ticker has
+        # no data", and the caller renders an empty date picker as if that were
+        # the truth. Cloud SQL already failed to reach this branch, so both
+        # sources are down — say so.
+        logger.error("GCS dates list failed for %s: %s", ticker_upper, e)
+        raise HTTPException(
+            status_code=503,
+            detail=(f"Could not list trading dates for {ticker_upper}: Cloud SQL "
+                    f"unavailable and the GCS fallback failed ({e})."),
+        )
 
-    return {
+    payload = {
         "ticker": ticker_upper,
         "source": "gcs",
         "dates": sorted(set(dates), reverse=True),
         "months": sorted(set(months), reverse=True),
     }
+    if payload["dates"]:
+        _MARKET_DATES_CACHE[ticker_upper] = payload
+    return payload
 
 
 @app.get("/api/market/data/{ticker}/{date}")
-async def get_market_data(
+def get_market_data(
     ticker: str,
     date: str,
     timeframe: int = Query(default=1, description="Timeframe in minutes: 1, 5, 15, 30, 60"),
@@ -696,7 +714,7 @@ def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
 
 
 @app.get("/api/market/reference/{ticker}/{date}")
-async def get_reference_levels(ticker: str, date: str):
+def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
     Strategy:
@@ -866,7 +884,7 @@ def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
 
 
 @app.get("/api/market/coverage")
-async def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
+def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
     """Data coverage per symbol — drives the type-ahead's full/daily/new badges.
 
     Issues exactly two batched queries regardless of symbol count (CLAUDE.md
@@ -920,6 +938,13 @@ SECTOR_NAMES = {
 }
 
 _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
+
+# Trading dates for a ticker change once a day, and the query behind
+# /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
+# (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms).
+# Uncached, every ChartsPage and JournalPage mount paid that. 12h, matching the
+# options dates cache in routers/options.py.
+_MARKET_DATES_CACHE: TTLCache = TTLCache(maxsize=64, ttl=43200)
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1005,7 +1030,7 @@ def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
 
 
 @app.get("/api/market/sectors")
-async def market_sectors():
+def market_sectors():
     """Sector rotation snapshot computed from SPDR sector ETF daily closes.
 
     One batched query (CLAUDE.md Rule 0: batch by grouping key, never
@@ -1113,7 +1138,7 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
 
 
 @app.get("/api/market/most-active")
-async def market_most_active():
+def market_most_active():
     """Most-active tickers snapshot, with per-ticker snapshot sparklines.
 
     One SQL (CLAUDE.md Rule 0: batch, never per-ticker) pulls every row for
