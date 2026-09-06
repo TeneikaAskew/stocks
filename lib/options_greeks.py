@@ -124,6 +124,26 @@ def bs_gamma(S, K, t, r, q, sigma):
 
 # ── rate / yield lookup ──────────────────────────────────────────────────────
 
+def _as_date(value) -> Optional[date]:
+    """Coerce a date/datetime/ISO-string to `date`, or None if it is neither.
+
+    Both sides of the staleness comparison go through this. They used to be
+    normalised differently -- the row thoroughly, the target only for
+    `datetime` -- and the asymmetry is what let a string target skip the
+    check entirely.
+    """
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return pd.to_datetime(value).date()
+        except Exception:
+            return None
+    return None
+
+
 @lru_cache(maxsize=10000)
 def get_rate_and_yield(target_date: date,
                        allow_defaults: bool = False) -> Tuple[float, float]:
@@ -191,19 +211,30 @@ def get_rate_and_yield(target_date: date,
 
     row = df.iloc[0]
 
-    row_date = row["date"]
-    if isinstance(row_date, datetime):
-        row_date = row_date.date()
-    elif isinstance(row_date, str):
-        row_date = pd.to_datetime(row_date).date()
-    ref = target_date.date() if isinstance(target_date, datetime) else target_date
-    if isinstance(row_date, date) and isinstance(ref, date):
-        age = (ref - row_date).days
-        if age > _RATE_MAX_STALENESS_DAYS:
-            return _fallback_or_raise(
-                f"newest row at or before that date is {row_date}, {age} days "
-                f"stale (limit {_RATE_MAX_STALENESS_DAYS}) — the fred-rates-daily "
-                f"job has probably stopped")
+    row_date = _as_date(row["date"])
+    # `target_date` is annotated `date` and is a STRING on the main production
+    # path: `gamma.py` declares `snapshot_date: str` and forwards it here from
+    # `build_summary` and `build_grid_summary`, which the grid, options,
+    # research and agent callers all reach. The first version of this check
+    # unwrapped only `datetime`, so `ref` stayed a string, `isinstance(ref,
+    # date)` was False, and the whole staleness block was SKIPPED -- a
+    # 2016 rate accepted for a 2026 snapshot, defeating the bound in the same
+    # commit that added it.
+    ref = _as_date(target_date)
+    if row_date is None or ref is None:
+        # Neither is a date we can compare. That is an INTERNAL failure (a
+        # caller passed something unexpected), not a missing input, so it
+        # fails loud rather than silently skipping the bound -- which is
+        # exactly how the string case went unnoticed.
+        return _fallback_or_raise(
+            f"cannot age-check the rate row: target={target_date!r} "
+            f"row_date={row['date']!r}")
+    age = (ref - row_date).days
+    if age > _RATE_MAX_STALENESS_DAYS:
+        return _fallback_or_raise(
+            f"newest row at or before that date is {row_date}, {age} days "
+            f"stale (limit {_RATE_MAX_STALENESS_DAYS}) — the fred-rates-daily "
+            f"job has probably stopped")
 
     if row["dgs3mo"] is None or pd.isna(row["dgs3mo"]):
         return _fallback_or_raise(f"dgs3mo is NULL on {row_date}")

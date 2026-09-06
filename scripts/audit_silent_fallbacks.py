@@ -94,7 +94,23 @@ def _neutral(value: ast.expr | None) -> str | None:
 
 
 def _handler_returns(node: ast.ExceptHandler) -> list[str]:
-    """Neutral values this handler returns. Empty if it re-raises."""
+    """Neutral values this handler substitutes. Empty if it re-raises.
+
+    A `return` is only one way to swallow. Walking `Return` alone missed the
+    two shapes that produce the worst live examples:
+
+      except Exception:          # lib/signals.py -- malformed disabled-
+          dc = []                # condition JSON becomes "nothing disabled",
+                                 # which is HOW the C-04 incident happened
+      except Exception:          # platform/api/main.py -- a failed date
+          staleness_days = 0     # parse becomes "perfectly fresh"
+
+      except Exception:          # and the plainest one of all
+          pass
+
+    An inventory that cannot see those cannot be diffed against the
+    hand-written audit it replaces, which is the claim this script makes.
+    """
     out: list[str] = []
     for n in ast.walk(node):
         if isinstance(n, ast.Raise):
@@ -103,7 +119,33 @@ def _handler_returns(node: ast.ExceptHandler) -> list[str]:
             name = _neutral(n.value)
             if name:
                 out.append(name)
+        elif isinstance(n, ast.Assign):
+            name = _neutral(n.value)
+            if name:
+                out.append(f"{_target_names(n.targets)} = {name}")
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            name = _neutral(n.value)
+            if name:
+                out.append(f"{_target_names([n.target])} = {name}")
+
+    # A handler whose entire body is `pass` substitutes nothing and says
+    # nothing -- the purest silent swallow, and previously invisible because
+    # there is no value to classify.
+    if not out and all(isinstance(st, ast.Pass) for st in node.body):
+        out.append("pass (swallowed, no action)")
     return sorted(set(out))
+
+
+def _target_names(targets: list[ast.expr]) -> str:
+    names = []
+    for t in targets:
+        if isinstance(t, ast.Name):
+            names.append(t.id)
+        elif isinstance(t, ast.Attribute):
+            names.append(t.attr)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            names.append(_target_names(list(t.elts)))
+    return ", ".join(names) or "<target>"
 
 
 def scan(root: pathlib.Path) -> list[dict]:

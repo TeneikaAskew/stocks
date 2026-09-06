@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "platform"))
 
 pytest.importorskip("fastapi")
@@ -135,3 +136,64 @@ def test_journal_file_holding_a_non_list_is_an_error(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         journal._load_local("IWM")
     assert ei.value.status_code == 500
+
+
+def test_a_string_snapshot_date_still_enforces_the_staleness_bound(monkeypatch):
+    """`gamma.py` declares `snapshot_date: str` and forwards it here.
+
+    The first version of the 7-day bound unwrapped only `datetime`, so a
+    STRING target left `ref` a string, `isinstance(ref, date)` was False, and
+    the whole staleness block was skipped — a 2016 rate accepted for a 2026
+    snapshot, in the same commit that added the bound. That is the production
+    shape, not an edge case: `build_summary` and `build_grid_summary` both
+    take and forward string snapshot dates from the grid, options, research
+    and agent callers.
+    """
+    import gcp.database as db
+    from lib.options_greeks import RateLookupError, get_rate_and_yield
+
+    monkeypatch.setattr(
+        db, "query_to_dataframe_strict",
+        lambda sql, params=None, *a, **kw: pd.DataFrame(
+            [{"date": "2016-01-01", "dgs3mo": 0.5, "sp500_div_yld": 2.0}]))
+
+    for target in ("2026-09-06", date(2026, 9, 6), datetime(2026, 9, 6)):
+        get_rate_and_yield.cache_clear()
+        with pytest.raises(RateLookupError) as ei:
+            get_rate_and_yield(target)
+        assert "days stale" in str(ei.value), (
+            f"{target!r} did not reach the staleness bound: {ei.value}")
+
+
+def test_the_fallback_scanner_sees_assignment_and_pass_handlers():
+    """A `return`-only walk missed a third of the inventory.
+
+    `except Exception: dc = []` in `lib/signals.py` is how the C-04 incident
+    happened, and `except Exception: pass` is the plainest swallow there is.
+    Neither produces a `Return` node, so an inventory built from `Return`
+    alone cannot be diffed against the hand-written audit it claims to
+    replace.
+    """
+    import ast
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "audit_silent_fallbacks", REPO / "scripts" / "audit_silent_fallbacks.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    src = (
+        "def f():\n"
+        "    try:\n        g()\n    except Exception:\n        dc = []\n"
+        "def h():\n"
+        "    try:\n        g()\n    except Exception:\n        pass\n"
+        "def k():\n"
+        "    try:\n        g()\n    except Exception:\n        raise\n"
+    )
+    handlers = [n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.ExceptHandler)]
+    assign, swallow, reraise = (mod._handler_returns(h) for h in handlers)
+
+    assert assign == ["dc = []"], assign
+    assert swallow == ["pass (swallowed, no action)"], swallow
+    assert reraise == [], "a handler that re-raises is not a silent fallback"
