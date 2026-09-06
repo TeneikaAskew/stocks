@@ -3327,6 +3327,24 @@ deploy_schedulers() {
 
     _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
 
+    # Phase 6 playbook cards — 04:30 ET Mon-Fri. Rebuilds the 12 structured
+    # setup cards per ticker into playbook_cards (the typed source
+    # /api/playbook reads) keyed to today's analysis_date, from the full
+    # 1-min history through the previous session (av-intraday-nightly lands
+    # D-1's bars at 21:00 ET, so 04:30 sees everything through yesterday).
+    # Runs before premarket-brief-daily (08:30 ET), which is when the
+    # dashboard's "top setup" is first read for the day.
+    #
+    # Issue #861: the job existed (deploy_phase6_playbook) but had NO
+    # scheduler entry, so playbook_cards froze at analysis_date 2026-06-13
+    # after the last manual backfill on 2026-06-14 and the dashboard served
+    # an 85-day-old card set as today's setups until the 2026-08-27 audit
+    # caught it. Three things now catch a repeat: this cron, the
+    # playbook_cards entry in scripts/audit_data_freshness.py CHECKS, and
+    # the MAX_PLAYBOOK_AGE_DAYS 503 guard in platform/api/routers/playbook.py.
+    # tests/test_phase6_playbook_scheduler.py pins the first two.
+    _schedule "phase6-playbook-daily" "30 4 * * 1-5" "phase6-playbook"
+
     # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the
     # strat-engine-daily base writer (23:35 ET Mon-Fri). strat_data_builder
     # documents ~15 min/ticker × 3 = ~30-45 min sequential, so a tight gap
@@ -3900,6 +3918,7 @@ case "${1:-help}" in
         deploy_monitor
         deploy_signal_monitor_eod_resolver
         deploy_premarket_playbook_resolver
+        deploy_phase6_playbook
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue

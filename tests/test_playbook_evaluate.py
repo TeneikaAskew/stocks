@@ -465,36 +465,69 @@ def test_evaluate_validates_snapshot_shape(client):
 
 # ---------------------------------------------------------------------------
 # Structured playbook_cards source (_cards_from_db) — the typed path that
-# replaces regex-scraping the markdown. Verifies the fraction->percent and
-# bps->percent conversions and that NaN/NULL never become a fabricated 0.
+# replaced regex-scraping the markdown. Verifies the fraction->percent and
+# bps->percent conversions, that NaN/NULL never become a fabricated 0, and
+# — issue #861 — that the card set's analysis_date is returned and enforced.
 # ---------------------------------------------------------------------------
 
-def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
-    pb = evaluator
+def _card_rows(analysis_date="2026-06-13"):
     import numpy as np
     import pandas as pd
-    import gcp.database as dbmod
-
-    rows = pd.DataFrame([
-        {"card_num": 1, "name": "IWM CARD 1: Bullish", "description": "two-up",
+    ad = pd.Timestamp(analysis_date).date()
+    gen = pd.Timestamp(f"{analysis_date} 21:20:00+00:00")
+    return pd.DataFrame([
+        {"analysis_date": ad, "generated_at": gen,
+         "card_num": 1, "name": "IWM CARD 1: Bullish", "description": "two-up",
          "direction": "CALL", "conditions": ["RSI 40-65", "Above VWAP"],
          "win_rate": 0.48, "avg_return_bps": -10.0, "sample_n": 90,
          "target_pct": "+0.30%", "stop_pct": "-0.15%",
          "horizons": [{"minutes": 5, "win_rate": 0.46, "avg_return_bps": -0.38, "sample_n": 90},
                       {"minutes": 60, "win_rate": 0.36, "avg_return_bps": -0.18, "sample_n": 90}],
          "best_horizon_min": 60, "best_horizon_win_rate": 0.36, "best_horizon_avg_bps": -0.18},
-        {"card_num": 2, "name": "IWM CARD 2: Bearish", "description": None,
+        {"analysis_date": ad, "generated_at": gen,
+         "card_num": 2, "name": "IWM CARD 2: Bearish", "description": None,
          "direction": "PUT", "conditions": '["Below VWAP"]',   # JSON string form
          "win_rate": np.nan, "avg_return_bps": np.nan, "sample_n": 0,
          "target_pct": None, "stop_pct": None,
          "horizons": '[]', "best_horizon_min": None,           # JSON string + NULLs
          "best_horizon_win_rate": np.nan, "best_horizon_avg_bps": np.nan},
     ])
-    monkeypatch.setattr(dbmod, "is_cloud_sql_configured", lambda: True)
-    monkeypatch.setattr(dbmod, "query_to_dataframe", lambda sql, params=None: rows)
 
-    cards = pb._cards_from_db("IWM")
-    assert cards is not None and len(cards) == 2
+
+def _patch_db(monkeypatch, rows, configured=True):
+    """Point the router at a canned playbook_cards result (strict query)."""
+    import gcp.database as dbmod
+    monkeypatch.setattr(dbmod, "is_cloud_sql_configured", lambda: configured)
+    calls = []
+
+    def fake_strict(sql, params=None, timeout_s=None):
+        calls.append((sql, params))
+        return rows.copy() if rows is not None else rows
+    monkeypatch.setattr(dbmod, "query_to_dataframe_strict", fake_strict)
+    return calls
+
+
+def _freeze_today(monkeypatch, pb, iso):
+    """Pin the router's notion of 'today' (UTC) for the live-mode guard."""
+    from datetime import datetime, timezone
+
+    class _FrozenDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat(f"{iso}T12:00:00+00:00")
+    monkeypatch.setattr(pb, "datetime", _FrozenDT)
+
+
+def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
+    pb = evaluator
+    _patch_db(monkeypatch, _card_rows())
+
+    found = pb._cards_from_db("IWM")
+    assert found is not None
+    assert found["analysis_date"].isoformat() == "2026-06-13"
+    assert found["generated_at"].startswith("2026-06-13T21:20:00")
+    cards = found["cards"]
+    assert len(cards) == 2
 
     c1 = cards[0]
     assert c1["win_rate"] == 48.0            # fraction -> percent
@@ -523,8 +556,151 @@ def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
     assert c2["target_pct"] is None and c2["stop_pct"] is None
 
 
-def test_cards_from_db_bridges_when_cloud_sql_off(monkeypatch, evaluator):
+def test_cards_from_db_selects_one_date_and_bounds_as_of(monkeypatch, evaluator):
+    """Exactly one analysis_date per response; as-of pins `<= :d` (no look-ahead)."""
+    import pandas as pd
     pb = evaluator
+    calls = _patch_db(monkeypatch, _card_rows())
+    pb._cards_from_db("IWM")
+    assert "max(analysis_date)" in calls[0][0] and "<= :d" not in calls[0][0]
+    pb._cards_from_db("IWM", as_of="2026-06-15")
+    assert "analysis_date <= :d" in calls[1][0]
+    assert calls[1][1] == {"t": "IWM", "d": "2026-06-15"}
+    assert pb._cards_from_db("IWM") is not None
+    _patch_db(monkeypatch, pd.DataFrame())
+    assert pb._cards_from_db("IWM") is None       # no rows -> None, not []
+
+
+def test_cards_from_db_db_failure_propagates(monkeypatch, evaluator):
+    """A DB error is INTERNAL — it must raise, never read as 'no rows' (3.7)."""
     import gcp.database as dbmod
-    monkeypatch.setattr(dbmod, "is_cloud_sql_configured", lambda: False)
-    assert pb._cards_from_db("IWM") is None      # signals caller to use markdown
+    pb = evaluator
+
+    def boom(sql, params=None, timeout_s=None):
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(dbmod, "query_to_dataframe_strict", boom)
+    with pytest.raises(RuntimeError, match="connection refused"):
+        pb._cards_from_db("IWM")
+
+
+# ── GET /api/playbook/{ticker} freshness contract (#861) ──────────────────
+
+@pytest.fixture
+def playbook_client(client, evaluator):
+    evaluator._PLAYBOOK_CACHE.clear()
+    yield client
+    evaluator._PLAYBOOK_CACHE.clear()
+
+
+def test_playbook_fresh_set_is_served_with_its_date(monkeypatch, evaluator, playbook_client):
+    pb = evaluator
+    _patch_db(monkeypatch, _card_rows("2026-09-05"))
+    _freeze_today(monkeypatch, pb, "2026-09-06")
+
+    r = playbook_client.get("/api/playbook/IWM")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ticker"] == "IWM" and body["source"] == "cloud_sql"
+    assert len(body["cards"]) == 2
+    assert body["analysis_date"] == "2026-09-05"
+    assert body["generated_at"].startswith("2026-09-05T21:20:00")
+    assert body["age_days"] == 1
+    assert body["max_age_days"] == pb.MAX_PLAYBOOK_AGE_DAYS
+    assert "as_of" not in body
+
+
+def test_playbook_stale_set_is_refused_not_rendered(monkeypatch, evaluator, playbook_client):
+    """The #861 case: a June card set must not come back as today's setups."""
+    pb = evaluator
+    _patch_db(monkeypatch, _card_rows("2026-06-13"))
+    _freeze_today(monkeypatch, pb, "2026-09-06")
+
+    r = playbook_client.get("/api/playbook/IWM")
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "2026-06-13" in detail and "85 days" in detail
+    assert pb.PLAYBOOK_WRITER_JOB in detail
+    assert "cards" not in r.json()
+
+
+def test_playbook_age_boundary(monkeypatch, evaluator, playbook_client):
+    """Exactly MAX_PLAYBOOK_AGE_DAYS old is still served; one more day is not."""
+    pb = evaluator
+    _patch_db(monkeypatch, _card_rows("2026-08-30"))
+    _freeze_today(monkeypatch, pb, "2026-09-06")   # 7 days
+    assert pb.MAX_PLAYBOOK_AGE_DAYS == 7
+    r = playbook_client.get("/api/playbook/IWM")
+    assert r.status_code == 200 and r.json()["age_days"] == 7
+
+    pb._PLAYBOOK_CACHE.clear()
+    _freeze_today(monkeypatch, pb, "2026-09-07")   # 8 days
+    assert playbook_client.get("/api/playbook/IWM").status_code == 503
+
+
+def test_playbook_cached_set_is_rechecked_on_every_hit(monkeypatch, evaluator, playbook_client):
+    """A set cached while fresh must be refused once it crosses the limit."""
+    pb = evaluator
+    _patch_db(monkeypatch, _card_rows("2026-09-01"))
+    _freeze_today(monkeypatch, pb, "2026-09-02")
+    assert playbook_client.get("/api/playbook/IWM").status_code == 200
+    assert ("IWM", "latest") in pb._PLAYBOOK_CACHE
+
+    _freeze_today(monkeypatch, pb, "2026-09-20")   # same cache entry, now 19d old
+    r = playbook_client.get("/api/playbook/IWM")
+    assert r.status_code == 503
+    assert "19 days" in r.json()["detail"]
+
+
+def test_playbook_as_of_is_judged_against_the_requested_date(monkeypatch, evaluator, playbook_client):
+    """Review mode: the set must be fresh relative to the reviewed date. The
+    6/13 set is fine for 6/15 (2 days) and a lie for 9/01 (80 days) — the
+    old code returned the 6/13 cards stamped as_of=2026-09-01."""
+    pb = evaluator
+    _patch_db(monkeypatch, _card_rows("2026-06-13"))
+    _freeze_today(monkeypatch, pb, "2026-09-06")
+
+    r = playbook_client.get("/api/playbook/IWM?date=2026-06-15")
+    assert r.status_code == 200, r.text
+    assert r.json()["as_of"] == "2026-06-15"
+    assert r.json()["analysis_date"] == "2026-06-13"
+    assert r.json()["age_days"] == 2
+
+    r = playbook_client.get("/api/playbook/IWM?date=2026-09-01")
+    assert r.status_code == 503
+    assert "as of 2026-09-01" in r.json()["detail"]
+    assert "80 days" in r.json()["detail"]
+
+
+def test_playbook_as_of_bad_date_is_422(monkeypatch, evaluator, playbook_client):
+    _patch_db(monkeypatch, _card_rows())
+    r = playbook_client.get("/api/playbook/IWM?date=yesterday")
+    assert r.status_code == 422
+
+
+def test_playbook_no_rows_is_404_never_markdown(monkeypatch, evaluator, playbook_client):
+    """The undated GCS-markdown bridge is gone: no rows means 404 naming the
+    writer job, not a regex-parse of a file whose age nobody can see."""
+    import pandas as pd
+    pb = evaluator
+    _patch_db(monkeypatch, pd.DataFrame())
+    r = playbook_client.get("/api/playbook/IWM")
+    assert r.status_code == 404
+    assert pb.PLAYBOOK_WRITER_JOB in r.json()["detail"]
+    assert not hasattr(pb, "_parse_playbook_markdown")
+
+    r = playbook_client.get("/api/playbook/IWM?date=2026-06-01")
+    assert r.status_code == 404 and "as of 2026-06-01" in r.json()["detail"]
+
+
+def test_playbook_cloud_sql_not_configured_is_503(monkeypatch, evaluator, playbook_client):
+    _patch_db(monkeypatch, _card_rows(), configured=False)
+    r = playbook_client.get("/api/playbook/IWM")
+    assert r.status_code == 503
+    assert "Cloud SQL" in r.json()["detail"]
+
+
+def test_playbook_age_days_helper(evaluator):
+    from datetime import date
+    pb = evaluator
+    assert pb.playbook_age_days(date(2026, 6, 13), date(2026, 9, 6)) == 85
+    assert pb.playbook_age_days(date(2026, 9, 6), date(2026, 9, 6)) == 0
