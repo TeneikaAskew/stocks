@@ -1427,6 +1427,21 @@ def import_commit(body: ImportCommitRequest, request: Request):
 
         with _LOCAL_JOURNAL_LOCK:
             entries = _load_local(ticker_upper)
+            # RE-CHECK inside the lock. `existing_keys` was computed once,
+            # before the loop, from a snapshot taken before any writer ran, so
+            # two concurrent commits of the same preview both see the trade as
+            # absent. Serialising the writes alone does not help: each still
+            # inserts, because neither consults the file the other just wrote.
+            #
+            # Cloud SQL gets this from `uq_journal_entries_import_dedupe`;
+            # local mode has no constraint to lean on, so the check has to be
+            # inside the same critical section as the write.
+            if any(_dedupe_key(e.get("ticker", ticker_upper), e.get("direction", ""),
+                               e.get("entry_ts", ""), e.get("entry_price", 0)) == key
+                   for e in entries):
+                skipped_duplicates += 1
+                existing_keys.add(key)
+                continue
             entry = _build_local_entry(
                 ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
                 t.entry_price, exit_price,

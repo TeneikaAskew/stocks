@@ -54,7 +54,6 @@ Per-IP rate limit (B2):
 """
 from __future__ import annotations
 
-import contextlib
 import threading
 import logging
 import os
@@ -66,6 +65,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from cachetools import TTLCache
+from api.single_flight import SingleFlight
 from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
@@ -383,45 +383,12 @@ _ONDEMAND_RATE_LOCK = threading.Lock()
 # The rate limiter bounds DISTINCT tickers per IP and deliberately does not
 # count a repeat of the same one, so it cannot stop two concurrent requests
 # for the SAME off-list ticker from both reaching the vendor. Both would spend
-# an AV call and both would persist a full-chain snapshot, against a
-# documented expectation that only the first hit goes out.
+# an AV call and both would persist a full-chain snapshot.
 #
-# **Nobody waits.** A first version of this used one `threading.Lock` per
-# ticker and had the loser block on it. That parks a FastAPI worker thread for
-# the full fetch-retry-persist duration, so a burst on one ticker can occupy
-# the whole threadpool and starve unrelated routes -- `/api/health` and
-# `/api/me` included, which is precisely the symptom this PR exists to remove.
-# Trading one starvation for another is not a fix.
-#
-# So: claim or decline. The claimant fetches; everyone else re-reads Cloud SQL
-# once and, if the claimant has not persisted yet, gets the typed `unavailable`
-# envelope the UI already renders and retries on its next poll. One AV call,
-# zero parked workers.
-#
-# That first version also kept a dict of locks that was never pruned. The claim
-# set below is self-emptying: every entry is removed in a `finally`, so it holds
-# only tickers with a fetch actually in flight, which the threadpool bounds.
-_INFLIGHT_CLAIMS_LOCK = threading.Lock()
-_INFLIGHT_CLAIMS: set[str] = set()
-
-
-@contextlib.contextmanager
-def _claim_on_demand_fetch(ticker: str):
-    """Yield True if this caller owns the fetch for `ticker`, False otherwise.
-
-    Never blocks. The claim is released on the way out however the body exits,
-    so a raising fetch cannot strand a ticker as permanently in-flight.
-    """
-    with _INFLIGHT_CLAIMS_LOCK:
-        mine = ticker not in _INFLIGHT_CLAIMS
-        if mine:
-            _INFLIGHT_CLAIMS.add(ticker)
-    try:
-        yield mine
-    finally:
-        if mine:
-            with _INFLIGHT_CLAIMS_LOCK:
-                _INFLIGHT_CLAIMS.discard(ticker)
+# Decline rather than wait: see `api/single_flight.py` for why blocking here
+# would trade one starvation for another. The decliner has an honest answer —
+# the typed `unavailable` envelope the UI already renders and re-polls.
+_ONDEMAND_FLIGHT = SingleFlight()
 
 
 def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
@@ -638,7 +605,7 @@ def get_grid_live(
             # concurrent request for the same ticker re-reads Cloud SQL (the
             # claimant may already have persisted) and otherwise falls through
             # to the `unavailable` envelope rather than parking a worker.
-            with _claim_on_demand_fetch(ticker_upper) as is_claimant:
+            with _ONDEMAND_FLIGHT.claim(ticker_upper) as is_claimant:
                 (contracts, ts_iso, snapshot_date,
                  data_source, _days) = _load_chain_for_live(ticker_upper)
                 if data_source == "unavailable" and is_claimant:

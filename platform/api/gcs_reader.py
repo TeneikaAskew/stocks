@@ -26,6 +26,7 @@ Usage:
 import io
 import logging
 import re
+import threading
 from typing import Optional
 
 import pandas as pd
@@ -41,11 +42,27 @@ BASE_PREFIX = "raw/"  # All app data lives under gs://BUCKET/raw/*
 _client = None
 
 
+_CLIENT_LOCK = threading.Lock()
+
+
 def _get_client():
+    """Return the process-wide storage client, building it at most once.
+
+    Double-checked locking, the same shape as `gcp.database.get_engine()` and
+    `model_routing._get_connector()` — the third instance of one bug. The
+    unlocked `if _client is None` was safe only because every handler ran on
+    the event loop and could not interleave. Under threadpool dispatch several
+    cold requests can each construct a `storage.Client` with its own HTTP
+    session, and all but one are overwritten without being closed, so their
+    sessions leak for the life of the instance.
+    """
     global _client
-    if _client is None:
-        from google.cloud import storage as gcs
-        _client = gcs.Client()
+    if _client is not None:          # fast path, no lock
+        return _client
+    with _CLIENT_LOCK:
+        if _client is None:          # re-check under the lock
+            from google.cloud import storage as gcs
+            _client = gcs.Client()
     return _client
 
 

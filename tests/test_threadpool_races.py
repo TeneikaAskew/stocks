@@ -281,26 +281,150 @@ def test_ticker_info_cache_is_never_observed_partially_written(tmp_path, monkeyp
 
 # ── grid on-demand single-flight ────────────────────────────────────────────
 
-def test_concurrent_on_demand_grid_requests_hit_the_vendor_once(monkeypatch):
+def test_single_flight_claims_exactly_one_caller(monkeypatch):
+    from api.single_flight import SingleFlight
+
+    sf = SingleFlight()
+    claims: list[bool] = []
+    barrier = threading.Barrier(4, timeout=5)
+    hold = threading.Event()
+
+    def attempt(_n):
+        barrier.wait()
+        with sf.claim("K") as mine:
+            claims.append(mine)
+            if mine:
+                hold.wait(timeout=1)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(attempt, range(4)))
+        hold.set()
+
+    assert claims.count(True) == 1, f"{claims.count(True)} callers claimed the work"
+
+
+def test_a_decliner_does_not_block(monkeypatch):
+    """The whole reason this is not a lock.
+
+    A waiter blocked on a `threading.Lock` holds a FastAPI worker for the full
+    duration of the work, so a burst on one key fills the pool and starves
+    unrelated routes — the instance-wide starvation this branch removes.
+    """
+    import time
+    from api.single_flight import SingleFlight
+
+    sf = SingleFlight()
+    claimed, release = threading.Event(), threading.Event()
+
+    def holder():
+        with sf.claim("SLOW") as mine:
+            assert mine
+            claimed.set()
+            release.wait(timeout=5)
+
+    t = threading.Thread(target=holder, daemon=True)
+    t.start()
+    assert claimed.wait(timeout=5)
+
+    started = time.monotonic()
+    with sf.claim("SLOW") as mine:
+        assert mine is False
+    elapsed = time.monotonic() - started
+
+    release.set()
+    t.join(timeout=5)
+    assert elapsed < 0.5, f"the decline path blocked for {elapsed:.2f}s"
+
+
+def test_bounded_wait_returns_when_the_claimant_finishes():
+    """`wait()` is for the caller whose only fallback is doing the work itself.
+
+    It must return promptly when the claimant finishes — that is what turns a
+    duplicate 1.7 s scan into a cache hit — and must time out rather than hand
+    the worker over indefinitely.
+    """
+    import time
+    from api.single_flight import SingleFlight
+
+    sf = SingleFlight()
+    claimed = threading.Event()
+
+    def holder():
+        with sf.claim("K") as mine:
+            assert mine
+            claimed.set()
+            time.sleep(0.1)
+
+    t = threading.Thread(target=holder, daemon=True)
+    t.start()
+    assert claimed.wait(timeout=5)
+
+    started = time.monotonic()
+    assert sf.wait("K", timeout=5.0) is True
+    assert time.monotonic() - started < 2.0
+    t.join(timeout=5)
+
+    # And the timeout path: a claim still held when the budget expires.
+    held = threading.Event()
+    stop = threading.Event()
+
+    def slow():
+        with sf.claim("SLOW") as mine:
+            assert mine
+            held.set()
+            stop.wait(timeout=5)
+
+    t2 = threading.Thread(target=slow, daemon=True)
+    t2.start()
+    assert held.wait(timeout=5)
+    started = time.monotonic()
+    assert sf.wait("SLOW", timeout=0.2) is False
+    assert time.monotonic() - started < 1.0
+    stop.set()
+    t2.join(timeout=5)
+
+
+def test_claims_are_released_even_when_the_work_raises():
+    """A raising body must not strand a key as permanently in flight."""
+    from api.single_flight import SingleFlight
+
+    sf = SingleFlight()
+    with pytest.raises(RuntimeError):
+        with sf.claim("BOOM") as mine:
+            assert mine
+            raise RuntimeError("vendor exploded")
+
+    assert sf.in_flight() == 0
+    with sf.claim("BOOM") as mine:
+        assert mine, "the key stayed claimed after a failure"
+
+
+def test_the_registry_does_not_grow():
+    """A dict of per-key locks that is never pruned grows without bound; the
+    claim registry holds only keys with work actually in flight."""
+    from api.single_flight import SingleFlight
+
+    sf = SingleFlight()
+    for i in range(500):
+        with sf.claim(f"T{i}"):
+            pass
+    assert sf.in_flight() == 0
+
+
+def test_concurrent_on_demand_grid_requests_hit_the_vendor_once():
     """The rate limiter bounds DISTINCT tickers and deliberately lets a repeat
     of the same one through, so it cannot stop two concurrent requests for the
-    SAME off-list ticker from both calling AlphaVantage.
-
-    The claim/decline single-flight lets exactly one caller fetch.
-    """
+    SAME off-list ticker from both calling AlphaVantage."""
     from api.routers import grid
 
     av_calls: list[str] = []
-    holding = threading.Event()
     barrier = threading.Barrier(2, timeout=5)
 
     def one_request(_n):
         barrier.wait()
-        with grid._claim_on_demand_fetch("ZZZZ") as mine:
+        with grid._ONDEMAND_FLIGHT.claim("ZZZZ") as mine:
             if mine:
                 av_calls.append("ZZZZ")
-                holding.set()
-                # stay claimed long enough that the other thread must decline
                 threading.Event().wait(0.15)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -310,70 +434,46 @@ def test_concurrent_on_demand_grid_requests_hit_the_vendor_once(monkeypatch):
         f"AlphaVantage was called {len(av_calls)} times for one ticker")
 
 
-def test_a_declined_claimant_does_not_block(monkeypatch):
-    """The waiter must NOT park a worker thread.
+def test_freshness_decliner_serves_a_stale_report_rather_than_waiting(monkeypatch):
+    """A lock here would park workers on the health surface itself.
 
-    A per-ticker `threading.Lock` with the loser blocking on it would occupy a
-    FastAPI worker for the whole fetch, so a burst on one ticker could starve
-    `/api/health` — trading one starvation for another. The decline path
-    returns immediately.
+    The decliner gets the previous report, labelled stale, immediately.
     """
     import time
-    from api.routers import grid
+    from api.routers import health
 
-    claimed = threading.Event()
-    released = threading.Event()
+    monkeypatch.setattr(health, "_cache_value", {"ok": True, "sources": []})
+    monkeypatch.setattr(health, "_cache_expires_at", time.monotonic() - 1)  # expired
 
-    def holder():
-        with grid._claim_on_demand_fetch("SLOW") as mine:
-            assert mine
-            claimed.set()
-            released.wait(timeout=5)
+    with health._AUDIT_FLIGHT.claim(health._AUDIT_KEY) as mine:
+        assert mine
+        started = time.monotonic()
+        out = health.freshness_report_dict()
+        elapsed = time.monotonic() - started
 
-    t = threading.Thread(target=holder, daemon=True)
-    t.start()
-    assert claimed.wait(timeout=5)
-
-    started = time.monotonic()
-    with grid._claim_on_demand_fetch("SLOW") as mine:
-        assert mine is False, "a second caller wrongly claimed the fetch"
-    elapsed = time.monotonic() - started
-
-    released.set()
-    t.join(timeout=5)
-    assert elapsed < 0.5, f"the decline path blocked for {elapsed:.2f}s"
+    assert out["stale"] is True
+    assert "stale_age_seconds" in out
+    assert elapsed < 0.5, f"the decliner blocked for {elapsed:.2f}s"
 
 
-def test_claims_are_released_even_when_the_fetch_raises():
-    """A raising fetch must not strand a ticker as permanently in-flight.
+def test_freshness_decliner_503s_when_nothing_is_cached(monkeypatch):
+    """503 says "ask again", which beats fabricating a report or holding the
+    connection until an audit that may take tens of seconds completes."""
+    import time
+    from fastapi import HTTPException
+    from api.routers import health
 
-    The registry is a self-emptying set rather than a dict of locks that is
-    never pruned, so a client rotating through fresh ticker strings cannot
-    grow it without bound.
-    """
-    from api.routers import grid
+    monkeypatch.setattr(health, "_cache_value", None)
+    monkeypatch.setattr(health, "_cache_expires_at", time.monotonic() - 1)
 
-    with pytest.raises(RuntimeError):
-        with grid._claim_on_demand_fetch("BOOM") as mine:
-            assert mine
-            raise RuntimeError("vendor exploded")
-
-    assert "BOOM" not in grid._INFLIGHT_CLAIMS
-    with grid._claim_on_demand_fetch("BOOM") as mine:
-        assert mine, "the ticker stayed claimed after a failure"
+    with health._AUDIT_FLIGHT.claim(health._AUDIT_KEY) as mine:
+        assert mine
+        with pytest.raises(HTTPException) as ei:
+            health.freshness_report_dict()
+    assert ei.value.status_code == 503
 
 
-def test_claim_registry_is_empty_once_the_work_finishes():
-    from api.routers import grid
-
-    for i in range(200):
-        with grid._claim_on_demand_fetch(f"T{i}"):
-            pass
-    assert not grid._INFLIGHT_CLAIMS, (
-        f"registry retained {len(grid._INFLIGHT_CLAIMS)} entries")
-
-
-# ── journal local file ──────────────────────────────────────────────────────
+# ── journal local file ─# ── journal local file ──────────────────────────────────────────────────────
 
 def test_concurrent_journal_saves_never_expose_a_torn_file(tmp_path, monkeypatch):
     """`_load_local` raises on an unparseable file, so a torn read would 500.

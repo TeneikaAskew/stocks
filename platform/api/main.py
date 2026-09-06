@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 from cachetools import TTLCache
+from api.single_flight import SingleFlight
 from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -483,6 +484,31 @@ def get_available_dates(ticker: str):
     if cached is not None:
         return cached
 
+    # Coalesce cold misses. The query below is a Parallel Seq Scan of the whole
+    # per-ticker partition — 2,003,580 rows in 1,716 ms, measured — and with
+    # this handler threadpooled a burst of Charts/Journal mounts on one ticker
+    # runs one copy per request, filling the 5+2 connection pool with identical
+    # work and queueing everything else behind it.
+    #
+    # `wait`, not `claim`-and-decline, because the honest fallback here is
+    # different from the grid's. There, a decliner has a typed `unavailable`
+    # envelope to return; here it has nothing but the answer the claimant is
+    # about to produce. So a decliner waits a BOUNDED moment and then re-reads
+    # the cache — the claimant normally finishes first, turning a duplicate
+    # scan into a hit — and if the wait times out it does the work itself
+    # rather than failing. That caps how long a worker can be held; it does not
+    # hand a worker over indefinitely, which is what a plain lock would do.
+    with _MARKET_DATES_FLIGHT.claim(ticker_upper) as mine:
+        if not mine:
+            _MARKET_DATES_FLIGHT.wait(ticker_upper, _MARKET_DATES_WAIT_S)
+            cached = _MARKET_DATES_CACHE.get(ticker_upper)
+            if cached is not None:
+                return cached
+        return _load_available_dates(ticker_upper, ticker_lower)
+
+
+def _load_available_dates(ticker_upper: str, ticker_lower: str) -> dict:
+    """Query Cloud SQL for a ticker's trading dates, else fall back to GCS."""
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
         try:
@@ -969,6 +995,12 @@ _SECTORS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=1, ttl=600)) 
 # On merge, take #992's version of the endpoint plus this branch's
 # `list_matching_blobs_strict`, which #992 does not carry.
 _MARKET_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=3600))
+
+# Coalesces cold misses per ticker. Bounded at slightly over the measured
+# 1,716 ms query so a decliner normally wakes to a populated cache, and gives
+# up rather than holding a worker if the claimant is slower than that.
+_MARKET_DATES_FLIGHT = SingleFlight()
+_MARKET_DATES_WAIT_S = 2.5
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
