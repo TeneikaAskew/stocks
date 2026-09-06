@@ -8,17 +8,21 @@
 # from the Cloud Build context and broke `vite build`.
 /data/
 
-# Web apps — deployed separately (GitHub Pages / Firebase)
+# Legacy project roots — kept as GUARDS, not because tracked files live here.
+# dac85fa4 moved these under archive/, but it moved only TRACKED files: an
+# upgraded checkout still holds gitignored leftovers at the old paths
+# (google-apps-script/data and earnings_options_analytics/data hold CSVs via
+# .gitignore `data/`; success-report-site and website can hold *.log).
+# scripts/match_earnings_strategy.py:387 documents and handles exactly that
+# case. Without these lines those local files enter the build context, and the
+# root Dockerfile's `COPY . .` bakes them into the image.
 chart-viewer/
 options-heatseeker/
 success-report-site/
 website/
-
-# Google Apps Script — separate clasp deployment, not part of Cloud Run
 google-apps-script/
-
-# Earnings analytics — isolated system with own requirements
 earnings_options_analytics/
+
 
 # Analysis reports — generated outputs, not needed in container
 reports/
