@@ -188,7 +188,7 @@ def run_combination(
     EMA (e.g. 50) is more committal but misses regime shifts. Which
     period performs best is an empirical question worth a separate
     sweep; the parameterisation contract is covered by
-    ``tests/test_filter_ema_period.py``.
+    ``tests/scripts/test_filter_ema_period.py``.
     """
     if filter_ema_period <= 0:
         raise ValueError(

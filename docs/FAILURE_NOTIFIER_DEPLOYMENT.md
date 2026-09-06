@@ -168,7 +168,7 @@ gcloud run services describe failure-notifier --region us-east1 \
 ### Test 1: Unit tests (local, no GCP needed)
 
 ```bash
-python -m pytest tests/test_failure_notifier.py -v
+python -m pytest tests/gcp/test_failure_notifier.py -v
 ```
 
 **Expected:** 11/11 passing. Covers:

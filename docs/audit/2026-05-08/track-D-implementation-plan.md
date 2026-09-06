@@ -88,8 +88,8 @@ because `_persist_signal_alert` and `TradeLogger.log_trade` do
 - [x] Same fix in `gcp/trade_logger.py:42-53` for the `trades` table
       (added during PR 1 once the same bug was confirmed there) —
       commit `69090c6`
-- [x] Updated existing `tests/test_signal_monitor_persist.py:156` and
-      `tests/test_signal_monitor_agreement.py:287` regression tests to
+- [x] Updated existing `tests/gcp/test_signal_monitor_persist.py:156` and
+      `tests/gcp/test_signal_monitor_agreement.py:287` regression tests to
       assert native list/dict (not str). All 91 signal_monitor tests
       green
 - [x] One-shot SQL backfill via `db-query.yml` with `commit=true`
@@ -118,7 +118,7 @@ but never incremented anywhere. IWM blew through the 5-fire/day cap by
 - [x] Counter reset confirmed implicit per-process (verified by reading
       `__init__` lines 86–87) — `daily_trades`/`daily_pnl` get fresh
       `{ticker: 0}` dicts on every SignalMonitor instantiation
-- [x] Added `tests/test_signal_monitor_caps.py` — 5 tests:
+- [x] Added `tests/gcp/test_signal_monitor_caps.py` — 5 tests:
       `fire_alert` increments by 1, `_check_exits` bumps positive on
       CALL target, bumps negative on PUT loss, `evaluate_ticker`
       short-circuits at `max_daily_trades`, `evaluate_ticker`
@@ -130,9 +130,9 @@ but never incremented anywhere. IWM blew through the 5-fire/day cap by
 
 **Investigation**: PR #279 shipped the TZ fix on 5/7. Track G says
 "verify the existing test still passes" — code agent already confirmed
-`tests/test_signal_monitor_timezone.py` lines 64 and 80 cover the case.
+`tests/gcp/test_signal_monitor_timezone.py` lines 64 and 80 cover the case.
 
-- [ ] Run `make test tests/test_signal_monitor_timezone.py` locally;
+- [ ] Run `make test tests/gcp/test_signal_monitor_timezone.py` locally;
       confirm both `test_is_market_hours_at_noon_et_is_true` and
       `test_is_market_hours_at_16_00_et_is_true` pass
 - [ ] Pull the May 8+ `signal-monitor` Cloud Run executions; confirm
@@ -208,7 +208,7 @@ implementation exists.
 - [x] Updated `gcp/schema.sql:1813-1819` — replaced the "TODO" wording
       on the `eod_close` exit reason with implementation reference to
       `gcp/signal_monitor_eod_resolver.py`
-- [x] Added `tests/test_signal_monitor_eod_resolver.py` — 11 tests
+- [x] Added `tests/gcp/test_signal_monitor_eod_resolver.py` — 11 tests
       covering `_exit_return_pct` parity, target/time_stop/RSI/eod_close
       branches, missing-partition skipping, per-day cache, and the
       late-alert edge case (alert at 15:59 with last bar 15:58). All
@@ -243,7 +243,7 @@ recommends instrumentation, not policy changes, as the first move.
       this PR simple; counts will land in Cloud Logging only. If the
       cross-track sync at #304 wants persisted counts, that's a
       follow-up
-- [x] Added `tests/test_signal_monitor_momentum_instrumentation.py` —
+- [x] Added `tests/gcp/test_signal_monitor_momentum_instrumentation.py` —
       5 tests:
       - counters init to 0 per ticker
       - both bump on momentum-fires-CALL
@@ -316,7 +316,7 @@ together once the P0/P1 PRs land.
       alongside the existing clean-rate regression check
 - [x] **G.P2.8** ALREADY COVERED — the existing
       `test_get_catalyst_context_imminent_fomc_picks_intraday_session`
-      at `tests/test_catalyst_proximity.py:246` seeds an event 15 min
+      at `tests/lib/test_catalyst_proximity.py:246` seeds an event 15 min
       ahead and asserts `bucket='imminent'` (non-quiet); the boundary
       case (30 min) is covered in
       `test_classify_proximity_bucket_table` at line 91 (0/15/30 → all
@@ -354,7 +354,7 @@ Per CLAUDE.md "extend, don't duplicate":
   position rather than reimplementing exit math
 - `lib/data_loader.DataLoader.load_intraday(ticker)` — used to replay
   exit logic in the EOD resolver
-- `tests/test_signal_monitor_timezone.py` — existing TZ tests; G.P0.7
+- `tests/gcp/test_signal_monitor_timezone.py` — existing TZ tests; G.P0.7
   is just verifying they still pass
 - `gcp/deploy.sh:_secret()` and `DB_SECRET_FLAG` pattern — the
   precedent for `--set-secrets`; G.P0.9 follows it exactly
@@ -365,9 +365,9 @@ Per CLAUDE.md "extend, don't duplicate":
 |---|---|---|---|
 | G.P0.6 | `gcp/signal_monitor.py` | 673, 679 | Drop `json.dumps(...)`; bind dict/list natively |
 | G.P0.6 | `tests/test_signal_monitor_persistence.py` | (new) | Regression test asserting `jsonb_typeof='array'` |
-| G.P0.7 | `tests/test_signal_monitor_timezone.py` | 64, 80 | No change — verification only |
+| G.P0.7 | `tests/gcp/test_signal_monitor_timezone.py` | 64, 80 | No change — verification only |
 | G.P0.8 | `gcp/signal_monitor.py` | 519–639, 864–899 | Increment `daily_trades` / `daily_pnl` |
-| G.P0.8 | `tests/test_signal_monitor_caps.py` | (new) | Cap-firing regression |
+| G.P0.8 | `tests/gcp/test_signal_monitor_caps.py` | (new) | Cap-firing regression |
 | G.P0.9 | `gcp/deploy.sh` | 291, 294–313, 505–506 | Move 4 keys to `--set-secrets` |
 | G.P0.10 | `gcp/signal_monitor_eod_resolver.py` | (new) | EOD reconciliation job |
 | G.P0.10 | `gcp/deploy.sh` | (append) | Job + Scheduler entry |
@@ -376,7 +376,7 @@ Per CLAUDE.md "extend, don't duplicate":
 | G.P1.1 | `gcp/signal_monitor.py` | 295 | Log-and-reraise (post Track A) |
 | G.P2.5 | `gcp/signal_monitor.py` | 631 | Gate Discord on strength label |
 | G.P2.6 | `gcp/signal_quality_alarm.py` | (existing or new) | Spearman ρ alarm |
-| G.P2.8 | `tests/test_catalyst_proximity.py` | (new or extend) | Smoke test |
+| G.P2.8 | `tests/lib/test_catalyst_proximity.py` | (new or extend) | Smoke test |
 | G.P2.9 | `gcp/schema.sql` | 744–760 | Update rationale comment |
 | G.P3.4 | `lib/strategies/agreement.py` + `gcp/schema.sql` | — | Add per-leg conditions to `strategy_agreement` |
 | G.P3.5 | `gcp/schema.sql` | 1826 | `ALTER COLUMN is_open SET DEFAULT FALSE` |

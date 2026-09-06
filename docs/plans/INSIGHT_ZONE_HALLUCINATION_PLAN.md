@@ -117,7 +117,7 @@ strat.ftfc_direction = "bullish"  (was "bearish")
 
 ## 4. Regression coverage
 
-5 new tests in `tests/test_strat.py::TestComputeStratStatusAsOf`:
+5 new tests in `tests/lib/test_strat.py::TestComputeStratStatusAsOf`:
 
 - `test_tz_aware_datetime_as_of_filters` — the exact case that triggered the leak (ARM 4/20 datetime+UTC).
 - `test_naive_date_as_of_filters` — backwards-compat check for callers passing a `date`.

@@ -144,7 +144,7 @@ app.include_router(live.router, prefix="")
 # `GET /api/options/{ticker}/{date_str}` that would otherwise shadow
 # `/api/options/SPY/grid` and `/api/options/SPY/nodes` (matching
 # `date_str="grid"` / `"nodes"` and 400ing in date validation).
-# Regression test: tests/test_grid_router.py::TestRoutingOrder.
+# Regression test: tests/api/test_grid_router.py::TestRoutingOrder.
 app.include_router(grid.router, prefix="")
 app.include_router(options.router, prefix="")
 app.include_router(playbook.router, prefix="")

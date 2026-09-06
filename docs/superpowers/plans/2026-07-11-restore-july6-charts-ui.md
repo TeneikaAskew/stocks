@@ -39,7 +39,7 @@ What is deliberately **not** pulled back: the client-side indicator/voter math i
 
 **Files:**
 - Create: `lib/chart_voter.py`
-- Test: `tests/test_chart_voter.py`
+- Test: `tests/lib/test_chart_voter.py`
 
 **Interfaces:**
 - Consumes: nothing (pure function; stdlib only).
@@ -72,7 +72,7 @@ const putFires  = putMet  >= 3 && putMet  > callMet;
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# tests/test_chart_voter.py
+# tests/lib/test_chart_voter.py
 """Pins lib/chart_voter.py to the July-6 client voter it was ported from
 (platform/src/lib/indicators.ts::computeStrategySignals @ 969187eb)."""
 import math
@@ -153,7 +153,7 @@ def test_short_series_counts_available_moves_only():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/test_chart_voter.py -q`
+Run: `python -m pytest tests/lib/test_chart_voter.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'lib.chart_voter'`
 
 - [ ] **Step 3: Implement `lib/chart_voter.py`**
@@ -264,13 +264,13 @@ def evaluate_chart_voter(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_chart_voter.py -q`
+Run: `python -m pytest tests/lib/test_chart_voter.py -q`
 Expected: 6 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/chart_voter.py tests/test_chart_voter.py
+git add lib/chart_voter.py tests/lib/test_chart_voter.py
 git commit -m "feat(lib): restore July-6 chart teaching voter server-side"
 ```
 
@@ -280,7 +280,7 @@ git commit -m "feat(lib): restore July-6 chart teaching voter server-side"
 
 **Files:**
 - Modify: `platform/api/routers/live.py` (function `compute_live_indicators`, ~line 446)
-- Test: `tests/test_live_chart_voter.py` (new; model the FastAPI TestClient wiring on `tests/test_live_signal_series.py`)
+- Test: `tests/api/test_live_chart_voter.py` (new; model the FastAPI TestClient wiring on `tests/api/test_live_signal_series.py`)
 
 **Interfaces:**
 - Consumes: `lib.chart_voter.evaluate_chart_voter` (Task 1 signature).
@@ -289,10 +289,10 @@ git commit -m "feat(lib): restore July-6 chart teaching voter server-side"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_live_chart_voter.py
+# tests/api/test_live_chart_voter.py
 """/api/live/indicators exposes the July-6 chart voter (additively)."""
 # Copy the sys.path/platform-import/TestClient scaffold verbatim from
-# tests/test_live_signal_series.py (it handles the platform/ dir import).
+# tests/api/test_live_signal_series.py (it handles the platform/ dir import).
 
 def _bars(closes):
     return [
@@ -326,7 +326,7 @@ def test_empty_bars_returns_empty_voter(client):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_live_chart_voter.py -q`
+Run: `python -m pytest tests/api/test_live_chart_voter.py -q`
 Expected: FAIL — `KeyError: 'chart_voter'`
 
 - [ ] **Step 3: Implement**
@@ -351,13 +351,13 @@ return {"indicators": indicators_payload, "signals": signals_payload, "chart_vot
 
 - [ ] **Step 4: Run the new test + the endpoint's existing suites**
 
-Run: `python -m pytest tests/test_live_chart_voter.py tests/test_live_signal_series.py -q`
+Run: `python -m pytest tests/api/test_live_chart_voter.py tests/api/test_live_signal_series.py -q`
 Expected: all pass (legacy response asserted unchanged by existing tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add platform/api/routers/live.py tests/test_live_chart_voter.py
+git add platform/api/routers/live.py tests/api/test_live_chart_voter.py
 git commit -m "feat(api): expose chart teaching voter on /api/live/indicators"
 ```
 
@@ -519,7 +519,7 @@ This is gated on two things the controller must confirm before dispatching: (a) 
 
 **Files:** none new (verification + ops).
 
-- [ ] **Step 1: Full local gates** — `python -m pytest tests/test_chart_voter.py tests/test_live_chart_voter.py tests/test_live_signal_series.py -q`; `cd platform && npx tsc --noEmit && npx vitest run`; Playwright: `charts-cards`, `journal`, `replay-trainer`, `ticker-combobox` suites green.
+- [ ] **Step 1: Full local gates** — `python -m pytest tests/lib/test_chart_voter.py tests/api/test_live_chart_voter.py tests/api/test_live_signal_series.py -q`; `cd platform && npx tsc --noEmit && npx vitest run`; Playwright: `charts-cards`, `journal`, `replay-trainer`, `ticker-combobox` suites green.
 - [ ] **Step 2: Eyes-on screenshot parity** — run the Playwright screenshot harness against the local build and visually compare with the user's reference screenshot (chart height, card labels/details, fires badge). Send the screenshots to the user.
 - [ ] **Step 3: PR** with capacity note (trivial: one pure function per request, no new queries) and the standard CI watch (`gh pr checks <N> --watch`).
 - [ ] **Step 4: Deploy** — staging first, verify `/charts` live; then prod (deploys land at 0% traffic — attribute the revision via `gcloud builds list` timestamps, promote by NAME). Requires `gcloud auth login`.

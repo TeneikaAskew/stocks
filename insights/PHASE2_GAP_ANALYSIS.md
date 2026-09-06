@@ -223,7 +223,7 @@ Everything else is consistent: card containers use `var(--color-border)` + `var(
 
 ### Bug fix verification (Phase A):
 - `python -c "from lib.agents.model_routing import connect; c = connect(); c.close(); print('OK')"` — singleton Connector works
-- `pytest tests/test_agent_orchestrator.py -v` — orchestrator tests pass with mocked failures in bull/bear/trader/PM
+- `pytest tests/agents/test_agent_orchestrator.py -v` — orchestrator tests pass with mocked failures in bull/bear/trader/PM
 - Load test: 10 concurrent `POST /api/insights/report/SPY/refresh` — no connection exhaustion
 - Admin UI: Anthropic models should not appear in dropdown until adapter is registered
 
@@ -242,7 +242,7 @@ Everything else is consistent: card containers use `var(--color-border)` + `var(
 
 ### Full regression:
 - `pytest tests/test_agent_*.py -v` — all agent tests pass
-- `pytest tests/test_routers_insights_admin.py -v` — router tests pass
+- `pytest tests/lib/test_routers_insights_admin.py -v` — router tests pass
 - `cd platform && npx playwright test tests/insights.spec.ts tests/admin.spec.ts` — E2E passes
 - Existing tabs (Dashboard, Live, Charts, Options, Playbook, Signals, Journal) unaffected — spot-check navigation
 
