@@ -10,6 +10,8 @@
 #   ./gcp/deploy.sh setup      # provision Cloud SQL, GCS bucket, service account
 #   ./gcp/deploy.sh migrate    # migrate local Parquet data → GCS + Cloud SQL
 #   ./gcp/deploy.sh build      # build & push Docker image only
+#   ./gcp/deploy.sh pin-images # tag every image digest a Cloud Run job/service pins
+#   ./gcp/deploy.sh registry-cleanup # apply the Artifact Registry cleanup policy
 #   ./gcp/deploy.sh premarket  # deploy pre-market brief job
 #   ./gcp/deploy.sh monitor    # deploy signal monitor service
 #   ./gcp/deploy.sh weekend    # deploy weekend review job
@@ -62,8 +64,155 @@ build_image() {
     cp -r lib/                 "$tmpdir/lib/"
     cp -r gcp/                 "$tmpdir/gcp/"
     cp -r scripts/             "$tmpdir/scripts/"
+    # Re-pin before the tag moves: every build re-points :latest, which
+    # untags the digest the currently deployed jobs still run on. The
+    # cleanup policy only deletes UNTAGGED versions, so pinning first keeps
+    # those digests alive until the jobs are redeployed (see pin_image_tags).
+    pin_image_tags
     gcloud builds submit --tag "${IMAGE}" "$tmpdir"
     rm -rf "$tmpdir"
+}
+
+# ── Artifact Registry hygiene ─────────────────────────────────────────────────
+# Why this exists: every `gcloud builds submit --tag IMAGE` moves :latest and
+# leaves the previous digest untagged. Nothing ever deleted them, so by
+# 2026-09 the `trading` repo held 448 versions / 282 GiB (~$30/month, the
+# third-largest line on the bill) for an image that has 7 tags.
+#
+# Deleting untagged versions blindly is NOT safe: a Cloud Run Job resolves its
+# image tag to a digest when it is created/updated and every later execution
+# runs that exact digest (verified 2026-09-06: signal-monitor updated 08-30
+# still executed the 08-30 digest after :latest moved on 09-01). On 2026-09-06
+# the 76 jobs pinned 30 distinct digests, 23 of them untagged, the oldest
+# from April. Deleting one of those would fail the job's next execution
+# with "image not found".
+#
+# So the policy is two-part:
+#   1. pin_image_tags — tag every digest a job or service is pinned to as
+#      `inuse-job-<name>` / `inuse-svc-<name>`. Tags move to the new digest
+#      when the job is redeployed and pinned again, so an old digest is
+#      released only once nothing runs it. Stale inuse-* tags (job deleted)
+#      are removed.
+#   2. setup_registry_cleanup — a cleanup policy that KEEPS every tagged
+#      version and the 10 most recent versions, and DELETES untagged
+#      versions older than 14 days. The 10-version / 14-day slack covers the
+#      one gap pin_image_tags cannot see: a job updated after its last
+#      execution pins whatever the tag resolved to at update time, which
+#      Cloud Run does not expose; it is the then-current :latest, still
+#      tagged until the next build and inside the recent-10 window after.
+#
+# The digest a job pins is read from its latest execution (executions record
+# the resolved digest in spec.template.spec.containers[0].image); the job's
+# own image reference is also resolved and pinned so a job with no execution
+# yet is covered.
+_pin_tag() {
+    # _pin_tag <image@sha256:...> <tag-name>
+    local ref=$1 tag=$2
+    local repo_image=${ref%%@*}
+    # Cloud Run reports legacy images by their gcr.io host; the artifacts
+    # CLI only accepts the pkg.dev form of the gcr.io-redirect repo.
+    if [[ "${repo_image}" == gcr.io/* ]]; then
+        repo_image="us-docker.pkg.dev/${repo_image#gcr.io/}"
+        repo_image="${repo_image/${PROJECT_ID}\//${PROJECT_ID}/gcr.io/}"
+    fi
+    local existing
+    existing=$(gcloud artifacts docker tags list "${repo_image}" \
+        --format="value(tag,version)" 2>/dev/null \
+        | awk -F'\t' -v t="${tag}" '{n=split($1,p,"/"); if (p[n]==t) print $2}' \
+        | sed 's/.*@//' || true)
+    if [ "${existing}" = "${ref#*@}" ]; then
+        return 0
+    fi
+    local short=${ref#*@sha256:}
+    gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>&1 \
+        && echo "  pinned ${tag} -> ${short:0:12}" \
+        || echo "  WARN: could not tag ${ref} as ${tag}" >&2
+}
+
+pin_image_tags() {
+    echo "Pinning in-use image digests as inuse-* tags..."
+    local wanted=()   # "<tag>" for every tag that should exist after this run
+    local name exec_name digest ref
+
+    # Jobs: digest from the latest execution, plus the job's own image ref.
+    while IFS=$'\t' read -r name exec_name ref; do
+        [ -n "${name}" ] || continue
+        if [ -n "${exec_name}" ]; then
+            digest=$(gcloud run jobs executions describe "${exec_name}" --region "${REGION}" \
+                --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || true)
+            if [[ "${digest}" == *@sha256:* ]]; then
+                _pin_tag "${digest}" "inuse-job-${name}"
+            fi
+        fi
+        if [[ "${ref}" == *@sha256:* ]]; then
+            _pin_tag "${ref}" "inuse-job-${name}"
+        fi
+        wanted+=("inuse-job-${name}")
+    done < <(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,status.latestCreatedExecution.name,spec.template.spec.template.spec.containers[0].image)")
+
+    # Services: the latest ready revision records the resolved digest.
+    while IFS=$'\t' read -r name; do
+        [ -n "${name}" ] || continue
+        digest=$(gcloud run revisions list --service "${name}" --region "${REGION}" --limit 1 \
+            --format="value(status.imageDigest)" 2>/dev/null || true)
+        if [[ "${digest}" == *@sha256:* ]]; then
+            _pin_tag "${digest}" "inuse-svc-${name}"
+        fi
+        wanted+=("inuse-svc-${name}")
+    done < <(gcloud run services list --region "${REGION}" --format="value(metadata.name)")
+
+    # Drop inuse-* tags whose job/service no longer exists so their digests
+    # become eligible for cleanup.
+    local repo_image tag
+    for repo_image in "${IMAGE}" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/solyra-api"; do
+        while read -r tag; do
+            [ -n "${tag}" ] || continue
+            if ! printf '%s\n' "${wanted[@]}" | grep -qx "${tag}"; then
+                gcloud artifacts docker tags delete "${repo_image}:${tag}" --quiet >/dev/null 2>&1 \
+                    && echo "  released stale ${tag}" || true
+            fi
+        done < <(gcloud artifacts docker tags list "${repo_image}" \
+            --filter="tag~^inuse-" --format="value(tag)" 2>/dev/null | sed 's#.*/##')
+    done
+    echo "Pinned ${#wanted[@]} in-use tags."
+}
+
+setup_registry_cleanup() {
+    echo "Applying Artifact Registry cleanup policy..."
+    local policy
+    policy=$(mktemp)
+    cat > "${policy}" <<'EOF'
+[
+  {
+    "name": "keep-tagged",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "TAGGED"}
+  },
+  {
+    "name": "keep-10-most-recent",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 10}
+  },
+  {
+    "name": "delete-untagged-older-than-14d",
+    "action": {"type": "Delete"},
+    "condition": {"tagState": "UNTAGGED", "olderThan": "1209600s"}
+  }
+]
+EOF
+    # `trading` (us-east1) holds the jobs image; `gcr.io` (multi-region us)
+    # is the legacy gcr.io-redirect repo that still holds solyra-api and
+    # trading-platform (built by .github/workflows/deploy-staging.yml).
+    gcloud artifacts repositories set-cleanup-policies trading \
+        --location "${REGION}" --policy "${policy}" --no-dry-run --quiet
+    gcloud artifacts repositories set-cleanup-policies gcr.io \
+        --location us --policy "${policy}" --no-dry-run --quiet
+    rm -f "${policy}"
+    echo "Cleanup policy applied to trading (${REGION}) and gcr.io (us)."
+    echo "  Deletions run asynchronously (Artifact Registry sweeps roughly daily)."
 }
 
 # ── AI Insights pipeline (Cloud Run Job) ─────────────────────────────────────
@@ -3690,17 +3839,22 @@ deploy_schedulers() {
     # History: this used to be 17 schedules every 30 min — see PR
     # cleanup that retired the redundant slots. The deletion loop below
     # is idempotent; once the obsolete jobs are gone, it's a no-op.
-    _schedule "sec-filings-0700"  "0 7 * * 1-5"    "fetch-sec-filings"
-    _schedule "sec-filings-1000"  "0 10 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1300"  "0 13 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
+    #
+    # 2026-09-06: the four slots collapsed into ONE scheduler entry. Cloud
+    # Scheduler bills $0.10/job/month past the first three, and all four
+    # entries were byte-identical apart from the hour (same :run URI, no
+    # body), so a cron hour list expresses them exactly. Same change for
+    # the hourly news-sentiment / news-topics entries below (20 -> 2).
+    _schedule "sec-filings-intraday"  "0 7,10,13,17 * * 1-5"  "fetch-sec-filings"
 
-    # One-shot cleanup of the 13 retired sec-filings schedules. Idempotent:
-    # `gcloud scheduler jobs delete` returns non-zero when the job is
-    # already gone, which we swallow with `|| true`. Safe to leave in
-    # forever; consider removing this loop once a deploy or two has
-    # confirmed all targets are gone in your environment.
+    # One-shot cleanup of retired sec-filings schedules (13 from the old
+    # every-30-min cadence, 4 from the per-hour entries consolidated
+    # above). Idempotent: `gcloud scheduler jobs delete` returns non-zero
+    # when the job is already gone, which we swallow with `|| true`. Safe
+    # to leave in forever; consider removing this loop once a deploy or
+    # two has confirmed all targets are gone in your environment.
     for OBSOLETE in \
+        sec-filings-0700 sec-filings-1000 sec-filings-1300 sec-filings-1700 \
         sec-filings-0930 sec-filings-1030 sec-filings-1100 \
         sec-filings-1130 sec-filings-1200 sec-filings-1230 \
         sec-filings-1330 sec-filings-1400 sec-filings-1430 \
@@ -3749,14 +3903,26 @@ deploy_schedulers() {
     # RPM plan: 10 runs/day × 5 watchlist tickers = 50 calls/day.
     # Ticker mode reads alert_config.json["watchlist"] when no
     # --tickers arg is passed (see fetch_news_sentiment.main()).
-    for h in 08 09 10 11 12 13 14 15 16 17; do
-        _schedule "news-sentiment-${h}00"  "0 ${h} * * 1-5"  "fetch-news-sentiment"
-    done
+    #
+    # 2026-09-06: one scheduler entry with an hour range replaces the ten
+    # per-hour entries (news-sentiment-0800 .. -1700); the cadence is
+    # unchanged. The per-hour entries carried no body, so nothing
+    # downstream could tell them apart.
+    _schedule "news-sentiment-hourly"  "0 8-17 * * 1-5"  "fetch-news-sentiment"
 
     # Topic mode: catalyst stream across all tickers AV tracks. Same
     # hourly cadence, offset 5 min so AV calls stagger.
+    _schedule "news-topics-hourly"  "5 8-17 * * 1-5"  "fetch-news-sentiment-topics"
+
+    # Retire the per-hour entries the two schedulers above replaced.
+    # Idempotent (same pattern as the sec-filings loop).
     for h in 08 09 10 11 12 13 14 15 16 17; do
-        _schedule "news-topics-${h}05"  "5 ${h} * * 1-5"  "fetch-news-sentiment-topics"
+        for OBSOLETE in "news-sentiment-${h}00" "news-topics-${h}05"; do
+            gcloud scheduler jobs delete "${OBSOLETE}" \
+                --location "${REGION}" --quiet 2>/dev/null \
+                && echo "  retired ${OBSOLETE}" \
+                || true
+        done
     done
 
     # Upcoming-reporter mode: 06:00 ET weekdays, before premarket-brief
@@ -3843,6 +4009,8 @@ case "${1:-help}" in
     setup)       setup ;;
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
+    pin-images)  pin_image_tags ;;
+    registry-cleanup) pin_image_tags && setup_registry_cleanup ;;
     build-research) build_research_image ;;
     premarket)   build_image && deploy_premarket ;;
     earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
@@ -3976,6 +4144,13 @@ case "${1:-help}" in
         echo "             Deploy earnings-sweep job — calibration of the"
         echo "             playability lookback knobs, auto-applied to"
         echo "             earnings_calibration. On-demand."
+        echo "  pin-images Tag every image digest a Cloud Run job/service is pinned"
+        echo "             to as inuse-job-<name> / inuse-svc-<name> (runs before"
+        echo "             every build; keeps in-use digests out of cleanup)."
+        echo "  registry-cleanup"
+        echo "             pin-images, then apply the Artifact Registry cleanup"
+        echo "             policy (keep tagged + 10 newest, delete untagged >14d)"
+        echo "             to the trading and gcr.io repos."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
