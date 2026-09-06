@@ -164,7 +164,13 @@ archive/**/*.csv
 # cannot. ~700 KB total, market data only, private repo.
 # Tracking them does NOT put them in a build: archive/ is excluded by both
 # .gcloudignore and .dockerignore, which is a separate mechanism from git.
-!archive/google-apps-script/data/reference/*.csv
+# Enumerated, NOT a wildcard: `*.csv` here would make any future file in this
+# directory trackable, so a routine `git add .` could commit unrelated or
+# sensitive CSV data straight past the archive/**/*.csv policy above.
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Bull Spreads.csv
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Covered Calls.csv
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Long Calls.csv
+!archive/google-apps-script/data/reference/Stocks from Earnings Whisper - Long Calls(1).csv
 archive/**/.clasp.json
 # ...and never secrets: git takes the LAST matching rule, so the broad
 # negation above would otherwise override the repo-wide sensitive-file
