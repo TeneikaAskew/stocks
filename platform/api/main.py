@@ -490,7 +490,19 @@ async def get_available_dates(ticker: str):
         try:
             df = query_to_dataframe(
                 """
-                SELECT DISTINCT DATE(ts) AS trade_date
+                -- `ts` is TIMESTAMPTZ and the Cloud SQL session runs in UTC,
+                -- so a bare DATE(ts) yields UTC calendar dates. Market data is
+                -- Eastern: bars span 06:29-20:00 ET, and measured 2026-09-06 on
+                -- IWM, 26,391 of 2,003,579 rows (1.3%) have a UTC date that
+                -- differs from their ET date -- every bar at or after 20:00 ET
+                -- was attributed to the NEXT trading day.
+                --
+                -- Named zone, never a fixed offset: EDT is UTC-4 and EST is
+                -- UTC-5, so a hardcoded offset is wrong for half the year.
+                -- This MUST stay in lockstep with the identical conversion in
+                -- get_market_data below, or the picker offers a date whose
+                -- data query then returns nothing.
+                SELECT DISTINCT (ts AT TIME ZONE 'America/New_York')::date AS trade_date
                 FROM market_data_intraday
                 WHERE ticker = :ticker AND interval = '1min'
                 ORDER BY trade_date DESC
@@ -512,9 +524,26 @@ async def get_available_dates(ticker: str):
                 _MARKET_DATES_CACHE[ticker_upper] = (_next_ingest_boundary(), payload)
                 return payload
         except Exception as e:
-            logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
+            # Cloud SQL is the system of record; GCS holds the ingestion
+            # staging parquets, which are a DIFFERENT and possibly staler
+            # dataset. Quietly serving those on a database error is a silent
+            # fallback (Rule 3.7): the response does set source="gcs", but no
+            # frontend code reads that field, so a database outage degraded
+            # the answer with nothing visible to the user or the operator.
+            #
+            # Fail loud instead. The GCS path below still runs when Cloud SQL
+            # is deliberately UNCONFIGURED (local dev), which is a different
+            # situation from configured-and-broken.
+            logger.error("Cloud SQL dates query failed for %s: %s", ticker_upper, e)
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Could not read trading dates for {ticker_upper}: the "
+                        f"database query failed ({e}). Not falling back to the "
+                        f"GCS staging parquets, which may be stale or "
+                        f"incomplete."),
+            )
 
-    # ── GCS fallback ─────────────────────────────────────────────────────────
+    # ── GCS path — only when Cloud SQL is UNCONFIGURED (local dev) ───────────
     from api import gcs_reader
     dates: list[str] = []
     months: list[str] = []
@@ -1251,10 +1280,16 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
                 df = query_to_dataframe(
                     """
+                    -- Same ET conversion as the dates list in
+                    -- get_available_dates. These two must agree: the list is
+                    -- what populates the picker, this is what the picker's
+                    -- selection loads. A bare DATE(ts) here would drop every
+                    -- bar at or after 20:00 ET from its own trading day and
+                    -- attach it to the next one.
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                      AND DATE(ts) = :dt
+                      AND (ts AT TIME ZONE 'America/New_York')::date = :dt
                     ORDER BY ts
                     """,
                     {"ticker": ticker_upper, "dt": date_str},

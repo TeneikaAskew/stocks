@@ -525,6 +525,165 @@ You are not obligated to fix it in your current PR (the audit catalogues
   adjacent to one. This makes the remediation backlog trivially
   greppable.
 
+#### 3.7.1 Fallbacks BETWEEN data sources
+
+A fallback to a *different* data source is a silent fallback unless the caller
+both CAN and DOES distinguish it.
+
+`/api/market/dates` fell back from Cloud SQL to the GCS staging parquets. It
+set `source: "gcs"`, so it was technically distinguishable — but no frontend
+code read that field, so a database outage silently served a different,
+possibly staler dataset as if it were current.
+
+- Cloud SQL is the system of record. GCS holds ingestion staging. A Cloud SQL
+  **failure** is a 503; a Cloud SQL **not configured** (local dev) may still
+  read GCS. Those are different situations and must be coded differently.
+- If a cross-source fallback is genuinely wanted, the UI must SHOW which
+  source answered. An unread `source` field is not disclosure.
+- Never cache a fallback result under the primary's key. A long TTL on a
+  transient-failure fallback pins the degraded answer and nothing retries.
+- **A swallowing helper defeats a strict caller.**
+  `gcs_reader.list_matching_blobs` catches every storage exception and returns
+  `[]`, which made a 503 written one level up **unreachable**. Check the
+  helper before writing the error path.
+
+---
+
+### 3.8. Cost Must Scale With The Answer, Not The Table
+
+A request must not read more than it returns. Every violation found on
+2026-09-06 had this shape: work proportional to how much data EXISTS rather
+than how much the caller ASKED FOR.
+
+#### The three shapes
+
+**A — `SELECT DISTINCT` over a large table.** DISTINCT reads every matching
+row before deduping, so an index does not save you.
+
+```
+SELECT DISTINCT snapshot_date FROM etf_options_snapshots WHERE ticker=:t ...
+-- 10,373,012 rows read -> 43 returned -> 9,870 ms
+```
+
+Use a **loose index scan** (recursive CTE): ask the index for the next
+distinct value after the one in hand. One descent per row RETURNED. Same 43
+rows: **5.5 ms**.
+
+**B — a function on the indexed column.** `DATE(ts)`, `LOWER(x)`, a cast in
+WHERE or DISTINCT makes the index unusable.
+
+```
+SELECT DISTINCT DATE(ts) FROM market_data_intraday WHERE ticker=:t ...
+-- Parallel Seq Scan, 2,003,580 rows -> 3,278 returned -> 1,716 ms
+-- an index on (ticker, interval, ts DESC) exists and CANNOT be used
+```
+
+**C — enumerating a domain so the caller can pick one item.** An endpoint
+returning 3,278 dates so a picker can offer them, or 1,000 so the caller can
+read `[0]`, has put the filter on the wrong side of the wire. Return the
+BOUNDS, validate the CHOICE.
+
+#### Bounding must be provable, not decorative
+
+A `LIMIT` in an outer query does NOT bound an inner scan — `ORDER BY`
+materialises its whole input first:
+
+```
+recursion unbounded, LIMIT 2 outside :  2,682 rows walked -> 3,013 ms
+depth counter inside (n < :limit)     :      2 rows walked ->  0.27 ms
+```
+
+The first LOOKS bounded. The word LIMIT is right there. Only EXPLAIN shows it
+is not. **Run `EXPLAIN (ANALYZE, BUFFERS)` and read `rows=` on the scan node,
+not just Execution Time.** Rows-read vs rows-returned is the number that says
+whether cost scales with the answer.
+
+#### Ask for what you render
+
+A caller that reads `data.dates[0]` must not request 1,000 dates. Two hooks
+named `useLatestOptionsDate` did exactly that, at 9.9 s each.
+
+- Every list endpoint takes an explicit bound (`?limit=`), and its cost must
+  scale with that bound.
+- Consumers needing different amounts need **different cache keys**. Three
+  consumers sharing `['options-dates', ticker]` meant a `limit=1` response
+  could be served to a date picker.
+
+#### Measure before AND after
+
+Every number above is `EXPLAIN (ANALYZE, BUFFERS)` against production via
+`scripts/db_query_cr.sh`. This is not ceremony: a loose index scan was tried
+on shape B and **measured at 1,686 ms against the original 1,716 ms** — no
+gain, because the caller genuinely needs all 3,278 rows. Shipping it would
+have been churn dressed as a fix. The measurement is what said "cache this
+instead". Put the evidence in the commit message so the next person can tell
+whether the win still holds.
+
+---
+
+### 3.9. Market Time Is Eastern, Named, Converted Once
+
+`ts` is `TIMESTAMPTZ` and the Cloud SQL session runs in **UTC**, so `DATE(ts)`
+yields UTC calendar dates. Market data is Eastern. Measured on IWM: bars span
+06:29–20:00 ET, and **26,391 of 2,003,579 rows (1.3%)** have a UTC date
+differing from their ET date. Every bar at or after 20:00 ET was attributed to
+the next trading day, which produced **351 phantom dates** — 3,278 UTC vs
+2,927 ET — every one of them offered in the Charts picker.
+
+- Any date derived from a market timestamp uses
+  `ts AT TIME ZONE 'America/New_York'`.
+- Use the **named zone, never a fixed offset**. EDT is UTC-4, EST is UTC-5; a
+  hardcoded offset is wrong for half the year.
+- Convert once, at the query or display boundary.
+- **Queries that list dates and queries that fetch by date must frame time
+  identically.** Neither is wrong alone; they are wrong relative to each
+  other, and the symptom is a picker offering a date whose loader finds
+  nothing.
+
+---
+
+### 3.10. `async def` Is A Claim About Blocking
+
+FastAPI runs `async def` ON the event loop and dispatches plain `def` to its
+threadpool. The DB layer here is synchronous, so `async def` + a blocking call
+is the worst of both worlds: it serialises every concurrent request.
+
+**69 of 79 route handlers had no `await`.** Production logs, on endpoints that
+do nothing:
+
+| Endpoint | median | max |
+|---|---|---|
+| `/api/health` | 0.00 s | 7.97 s |
+| `/api/me` | 0.00 s | 17.20 s |
+
+A 17-second `/api/me` is not `/api/me` being slow. It is `/api/me` waiting.
+
+- A handler performing blocking I/O is declared `def`.
+- `async def` is for handlers that actually `await`; blocking calls inside one
+  must be offloaded (`run_in_threadpool`).
+- **"Has an `await`" is not "does not block."** A handler with one await and
+  four synchronous DB calls still stalls the loop for those four.
+
+#### Converting a handler is a concurrency change
+
+Removing `async` makes previously-unreachable races reachable, because the
+event loop was serialising them. Audit the path first for: lazy singletons
+(`get_engine` was an unlocked check-then-create), read-modify-write on module
+caches, non-atomic file writes (`write_text` truncates in place), `cachetools`
+caches (not thread-safe), and check-then-insert against the DB (needs a
+constraint or `INSERT ... RETURNING`, not a lock).
+
+#### Check the inverse, and guard it
+
+Converting is only safe if **nothing awaits it**. "Does this handler await?"
+does not answer "does anything await this handler?" That gap shipped a
+`TypeError` 500 on every `/levels` request that a 4,253-test suite passed
+over. `tests/test_api_handler_dispatch.py` asserts both directions, via AST —
+a regex anchored to `^async def` cannot see a handler nested inside an `if`,
+and one was.
+
+---
+
 ### 4. Testing Strategy Pattern
 Follow this rigorous testing approach:
 
