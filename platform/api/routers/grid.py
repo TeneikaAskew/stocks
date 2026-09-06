@@ -54,6 +54,7 @@ Per-IP rate limit (B2):
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 import logging
 import os
@@ -385,17 +386,42 @@ _ONDEMAND_RATE_LOCK = threading.Lock()
 # an AV call and both would persist a full-chain snapshot, against a
 # documented expectation that only the first hit goes out.
 #
-# One lock per ticker, so a fetch for NVDA does not queue behind one for AMD.
-# The registry itself is guarded by `_INFLIGHT_REGISTRY_LOCK`; entries are
-# never removed, because the set of tickers that reach this path is bounded by
-# the rate limiter and a `threading.Lock` is cheap.
-_INFLIGHT_REGISTRY_LOCK = threading.Lock()
-_INFLIGHT_LOCKS: dict[str, threading.Lock] = {}
+# **Nobody waits.** A first version of this used one `threading.Lock` per
+# ticker and had the loser block on it. That parks a FastAPI worker thread for
+# the full fetch-retry-persist duration, so a burst on one ticker can occupy
+# the whole threadpool and starve unrelated routes -- `/api/health` and
+# `/api/me` included, which is precisely the symptom this PR exists to remove.
+# Trading one starvation for another is not a fix.
+#
+# So: claim or decline. The claimant fetches; everyone else re-reads Cloud SQL
+# once and, if the claimant has not persisted yet, gets the typed `unavailable`
+# envelope the UI already renders and retries on its next poll. One AV call,
+# zero parked workers.
+#
+# That first version also kept a dict of locks that was never pruned. The claim
+# set below is self-emptying: every entry is removed in a `finally`, so it holds
+# only tickers with a fetch actually in flight, which the threadpool bounds.
+_INFLIGHT_CLAIMS_LOCK = threading.Lock()
+_INFLIGHT_CLAIMS: set[str] = set()
 
 
-def _inflight_lock(ticker: str) -> threading.Lock:
-    with _INFLIGHT_REGISTRY_LOCK:
-        return _INFLIGHT_LOCKS.setdefault(ticker, threading.Lock())
+@contextlib.contextmanager
+def _claim_on_demand_fetch(ticker: str):
+    """Yield True if this caller owns the fetch for `ticker`, False otherwise.
+
+    Never blocks. The claim is released on the way out however the body exits,
+    so a raising fetch cannot strand a ticker as permanently in-flight.
+    """
+    with _INFLIGHT_CLAIMS_LOCK:
+        mine = ticker not in _INFLIGHT_CLAIMS
+        if mine:
+            _INFLIGHT_CLAIMS.add(ticker)
+    try:
+        yield mine
+    finally:
+        if mine:
+            with _INFLIGHT_CLAIMS_LOCK:
+                _INFLIGHT_CLAIMS.discard(ticker)
 
 
 def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
@@ -608,18 +634,23 @@ def get_grid_live(
             and ticker_upper not in _SCHEDULED_REALTIME_TICKERS):
         try:
             client_ip = request.client.host if request.client else "unknown"
-            # Single-flight. The second concurrent request for this ticker
-            # blocks here; when it gets the lock it re-reads Cloud SQL, where
-            # the first request has by then persisted its snapshot, and skips
-            # the vendor entirely. Only one AV call goes out per ticker.
-            with _inflight_lock(ticker_upper):
+            # Single-flight without waiting. The claimant fetches; a
+            # concurrent request for the same ticker re-reads Cloud SQL (the
+            # claimant may already have persisted) and otherwise falls through
+            # to the `unavailable` envelope rather than parking a worker.
+            with _claim_on_demand_fetch(ticker_upper) as is_claimant:
                 (contracts, ts_iso, snapshot_date,
                  data_source, _days) = _load_chain_for_live(ticker_upper)
-                if data_source == "unavailable":
+                if data_source == "unavailable" and is_claimant:
                     contracts, ts_iso, snapshot_date = _fetch_on_demand(
                         ticker_upper, client_ip,
                     )
                     data_source = "realtime" if contracts else "unavailable"
+                elif data_source == "unavailable":
+                    logger.info(
+                        "on-demand fetch for %s already in flight; returning "
+                        "unavailable rather than queueing a worker behind it",
+                        ticker_upper)
         except HTTPException:
             raise   # propagate 429 / 503 — typed signals the UI can render
         except Exception as exc:

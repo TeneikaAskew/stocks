@@ -49,7 +49,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
-from api.threadsafe_cache import ThreadSafeCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -175,8 +175,9 @@ def get_backtest_results(ticker: str, run: str | None = None):
     _validate_run(run)
     cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if cache_key in _RESULTS_CACHE:
-        return _RESULTS_CACHE[cache_key]
+    cached = _RESULTS_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
     if not blobs:
@@ -225,8 +226,9 @@ def get_equity_curve(ticker: str, run: str | None = None):
     _validate_run(run)
     cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if cache_key in _EQUITY_CACHE:
-        return _EQUITY_CACHE[cache_key]
+    cached = _EQUITY_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
     if not blobs:
@@ -301,8 +303,9 @@ def list_all_backtests(ticker: str):
     """List all backtest runs for a ticker, sorted by timestamp descending."""
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _ALL_RUNS_CACHE:
-        return _ALL_RUNS_CACHE[ticker_upper]
+    cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
     backtest_blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper))
     if not backtest_blobs:

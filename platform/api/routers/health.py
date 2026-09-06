@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -40,16 +41,47 @@ _cache_value: dict | None = None
 _cache_expires_at: float = 0.0
 
 
+# Serialises the audit itself, not just the cache read/write: see the
+# docstring below for why this one waits where the grid fetch declines.
+_AUDIT_LOCK = threading.Lock()
+
+
 def freshness_report_dict() -> dict:
     """The cached freshness report, shared by GET /api/health/freshness and
     the admin data-sources endpoint (routers/admin.py) so both surfaces read
     the SAME audit run and the Cloud SQL queries happen at most once per TTL.
-    Raises HTTPException on audit failure — callers pass it through."""
+    Raises HTTPException on audit failure — callers pass it through.
+
+    Single-flighted. `audit_all()` issues many Cloud SQL queries, and with
+    this route threadpooled every overlapping request past a cold or expired
+    cache used to start its own audit: a dashboard burst launched one full
+    audit per worker, defeating the once-per-TTL bound this docstring claims
+    and contending for the shared 5+2 connection pool. The event loop had been
+    the only thing serialising them.
+
+    The lock is held across the audit, deliberately and unlike the on-demand
+    grid fetch. There the waiter has something honest to return (a typed
+    `unavailable` envelope) and parking a worker would be pure loss; here the
+    waiter wants exactly the value the holder is about to store, so waiting
+    IS the useful behaviour — it re-checks the cache on entry and returns the
+    fresh result without a second audit."""
     global _cache_value, _cache_expires_at
     now = time.monotonic()
     if _cache_value is not None and now < _cache_expires_at:
         return _cache_value
 
+    with _AUDIT_LOCK:
+        # Re-check: another request may have completed the audit while this
+        # one waited, which is the whole point of waiting.
+        now = time.monotonic()
+        if _cache_value is not None and now < _cache_expires_at:
+            return _cache_value
+        return _run_audit_and_cache(now)
+
+
+def _run_audit_and_cache(now: float) -> dict:
+    """Run the freshness audit and store it. Caller must hold `_AUDIT_LOCK`."""
+    global _cache_value, _cache_expires_at
     try:
         # Import lazily so the module loads even if the audit script has issues
         import audit_data_freshness as audit_mod

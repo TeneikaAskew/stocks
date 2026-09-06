@@ -78,6 +78,56 @@ def test_cache_holds_the_maxsize_bound_under_contention():
     assert len(cache) == 16
 
 
+def test_contains_then_getitem_is_the_pattern_this_cache_cannot_make_safe():
+    """`in` then `[]` are two locked operations, not one.
+
+    On a cache at capacity another thread can insert a different key and evict
+    the tested entry in between, so the second line raises `KeyError` out of a
+    handler that had just confirmed the key was present. The wrapper cannot
+    fix that; the CALL SITES have to use `get`.
+
+    This test does not assert the crash (it is a race, so it is not
+    deterministic). It asserts the property that makes the crash possible, so
+    the reason `MISS` exists stays legible.
+    """
+    from cachetools import TTLCache
+    from api.threadsafe_cache import MISS, ThreadSafeCache
+
+    cache = ThreadSafeCache(TTLCache(maxsize=1, ttl=300))
+    cache["a"] = 1
+    assert "a" in cache
+    cache["b"] = 2                    # evicts "a" between the two operations
+    assert "a" not in cache
+    assert cache.get("a", MISS) is MISS, "get must report the miss, not raise"
+
+
+def test_missing_key_is_reported_as_miss_even_when_the_value_is_none():
+    """`MISS` is a distinct sentinel so a cached `None` is still a hit."""
+    from cachetools import TTLCache
+    from api.threadsafe_cache import MISS, ThreadSafeCache
+
+    cache = ThreadSafeCache(TTLCache(maxsize=4, ttl=300))
+    cache["present"] = None
+    assert cache.get("present", MISS) is None
+    assert cache.get("absent", MISS) is MISS
+
+
+def test_no_api_call_site_uses_the_unsafe_lookup_pattern():
+    """A guard, because this is a pattern that reads as obviously correct."""
+    import re
+
+    offenders = []
+    for path in (REPO / "platform" / "api").rglob("*.py"):
+        if path.name == "threadsafe_cache.py":
+            continue
+        for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if re.search(r"if \S+ in _[A-Z0-9_]*CACHE", line):
+                offenders.append(f"{path.name}:{i} {line.strip()}")
+    assert not offenders, (
+        "`in` then `[]` on a shared cache is two locked operations; use "
+        "`cache.get(key, MISS)`:\n  " + "\n  ".join(offenders))
+
+
 # ── circuit breaker ─────────────────────────────────────────────────────────
 
 def test_circuit_breaker_counts_every_concurrent_failure():
@@ -144,10 +194,15 @@ def test_connector_singleton_is_built_exactly_once(monkeypatch):
 # ── ticker_info local cache file ────────────────────────────────────────────
 
 def test_ticker_info_cache_does_not_lose_concurrent_entries(tmp_path, monkeypatch):
-    """Two tickers, two load/modify/save cycles, one shared file.
+    """Two tickers, two read-modify-writes, one shared file.
 
-    Without the lock the later write discards the earlier one's new entry, so
-    a cache that should hold both holds one.
+    The first version of this test wrapped the sequence in
+    `_LOCAL_CACHE_LOCK` itself, so it passed against production code that did
+    NOT hold the lock across load/modify/save — it proved only that a lock
+    works when you hold it. Codex caught that on #991.
+
+    It now calls `_merge_into_local_cache`, which is what production calls,
+    with no lock of its own.
     """
     import lib.ticker_info as ti
 
@@ -156,10 +211,7 @@ def test_ticker_info_cache_does_not_lose_concurrent_entries(tmp_path, monkeypatc
 
     def add(name: str) -> None:
         for _ in range(40):
-            with ti._LOCAL_CACHE_LOCK:
-                cache = ti._load_local_cache()
-                cache[name] = {"symbol": name}
-                ti._save_local_cache(cache)
+            ti._merge_into_local_cache(name, {"symbol": name}, replace=True)
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(add, [f"T{i}" for i in range(6)]))
@@ -167,6 +219,27 @@ def test_ticker_info_cache_does_not_lose_concurrent_entries(tmp_path, monkeypatc
     final = json.loads(cache_file.read_text())
     assert sorted(final) == [f"T{i}" for i in range(6)], (
         f"entries lost to a concurrent write: {sorted(final)}")
+
+
+def test_ticker_info_merge_preserves_a_concurrently_stored_overview(tmp_path,
+                                                                    monkeypatch):
+    """`get_peers` must not drop an overview another thread just wrote.
+
+    It re-reads under the lock and merges keys, rather than writing back the
+    snapshot it read before its own network fetch.
+    """
+    import lib.ticker_info as ti
+
+    cache_file = tmp_path / "ticker_info.json"
+    monkeypatch.setattr(ti, "_LOCAL_CACHE_PATH", cache_file)
+
+    ti._merge_into_local_cache("IWM", {"Name": "iShares Russell 2000"},
+                               replace=True)
+    ti._merge_into_local_cache("IWM", {"_peers": ["SPY", "QQQ"]}, replace=False)
+
+    entry = json.loads(cache_file.read_text())["IWM"]
+    assert entry["Name"] == "iShares Russell 2000", "the overview was discarded"
+    assert entry["_peers"] == ["SPY", "QQQ"]
 
 
 def test_ticker_info_cache_is_never_observed_partially_written(tmp_path, monkeypatch):
@@ -211,39 +284,24 @@ def test_ticker_info_cache_is_never_observed_partially_written(tmp_path, monkeyp
 def test_concurrent_on_demand_grid_requests_hit_the_vendor_once(monkeypatch):
     """The rate limiter bounds DISTINCT tickers and deliberately lets a repeat
     of the same one through, so it cannot stop two concurrent requests for the
-    SAME off-list ticker from both calling AlphaVantage and both persisting a
-    full-chain snapshot.
+    SAME off-list ticker from both calling AlphaVantage.
 
-    The per-ticker single-flight makes the second waiter re-read Cloud SQL,
-    where the first has by then persisted, and skip the vendor.
+    The claim/decline single-flight lets exactly one caller fetch.
     """
     from api.routers import grid
 
     av_calls: list[str] = []
-    persisted = threading.Event()
+    holding = threading.Event()
     barrier = threading.Barrier(2, timeout=5)
 
-    def fake_load(ticker):
-        """Cloud SQL: empty until the first fetch has persisted."""
-        if persisted.is_set():
-            return (["contract"], "2026-09-04T20:00:00Z", None, "realtime", 1)
-        return ([], None, None, "unavailable", 0)
-
-    def fake_fetch(ticker, client_ip):
-        av_calls.append(ticker)
-        persisted.set()
-        return (["contract"], "2026-09-04T20:00:00Z", None)
-
-    monkeypatch.setattr(grid, "_load_chain_for_live", fake_load)
-    monkeypatch.setattr(grid, "_fetch_on_demand", fake_fetch)
-
     def one_request(_n):
-        barrier.wait()                      # start both at the same moment
-        lock = grid._inflight_lock("ZZZZ")
-        with lock:
-            contracts, _ts, _d, source, _days = grid._load_chain_for_live("ZZZZ")
-            if source == "unavailable":
-                grid._fetch_on_demand("ZZZZ", "1.2.3.4")
+        barrier.wait()
+        with grid._claim_on_demand_fetch("ZZZZ") as mine:
+            if mine:
+                av_calls.append("ZZZZ")
+                holding.set()
+                # stay claimed long enough that the other thread must decline
+                threading.Event().wait(0.15)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(one_request, range(2)))
@@ -252,12 +310,67 @@ def test_concurrent_on_demand_grid_requests_hit_the_vendor_once(monkeypatch):
         f"AlphaVantage was called {len(av_calls)} times for one ticker")
 
 
-def test_inflight_locks_are_per_ticker_not_global():
-    """A fetch for NVDA must not queue behind one for AMD."""
+def test_a_declined_claimant_does_not_block(monkeypatch):
+    """The waiter must NOT park a worker thread.
+
+    A per-ticker `threading.Lock` with the loser blocking on it would occupy a
+    FastAPI worker for the whole fetch, so a burst on one ticker could starve
+    `/api/health` — trading one starvation for another. The decline path
+    returns immediately.
+    """
+    import time
     from api.routers import grid
 
-    assert grid._inflight_lock("NVDA") is grid._inflight_lock("NVDA")
-    assert grid._inflight_lock("NVDA") is not grid._inflight_lock("AMD")
+    claimed = threading.Event()
+    released = threading.Event()
+
+    def holder():
+        with grid._claim_on_demand_fetch("SLOW") as mine:
+            assert mine
+            claimed.set()
+            released.wait(timeout=5)
+
+    t = threading.Thread(target=holder, daemon=True)
+    t.start()
+    assert claimed.wait(timeout=5)
+
+    started = time.monotonic()
+    with grid._claim_on_demand_fetch("SLOW") as mine:
+        assert mine is False, "a second caller wrongly claimed the fetch"
+    elapsed = time.monotonic() - started
+
+    released.set()
+    t.join(timeout=5)
+    assert elapsed < 0.5, f"the decline path blocked for {elapsed:.2f}s"
+
+
+def test_claims_are_released_even_when_the_fetch_raises():
+    """A raising fetch must not strand a ticker as permanently in-flight.
+
+    The registry is a self-emptying set rather than a dict of locks that is
+    never pruned, so a client rotating through fresh ticker strings cannot
+    grow it without bound.
+    """
+    from api.routers import grid
+
+    with pytest.raises(RuntimeError):
+        with grid._claim_on_demand_fetch("BOOM") as mine:
+            assert mine
+            raise RuntimeError("vendor exploded")
+
+    assert "BOOM" not in grid._INFLIGHT_CLAIMS
+    with grid._claim_on_demand_fetch("BOOM") as mine:
+        assert mine, "the ticker stayed claimed after a failure"
+
+
+def test_claim_registry_is_empty_once_the_work_finishes():
+    from api.routers import grid
+
+    for i in range(200):
+        with grid._claim_on_demand_fetch(f"T{i}"):
+            pass
+    assert not grid._INFLIGHT_CLAIMS, (
+        f"registry retained {len(grid._INFLIGHT_CLAIMS)} entries")
 
 
 # ── journal local file ──────────────────────────────────────────────────────

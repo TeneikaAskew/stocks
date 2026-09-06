@@ -170,6 +170,35 @@ def _save_local_cache(cache: dict) -> None:
                 tmp.unlink(missing_ok=True)
 
 
+def _merge_into_local_cache(ticker: str, updates: dict, *, replace: bool) -> None:
+    """Atomically fold `updates` into one ticker's entry.
+
+    The callers previously did load -> fetch from the network -> modify -> save,
+    and the lock lived INSIDE `_load_local_cache` / `_save_local_cache`, so it
+    was released for the whole middle. Two concurrent misses for different
+    tickers therefore both read the same file and the later save still
+    discarded the earlier entry: the lock was in the wrong place, and the test
+    that "proved" otherwise passed only because the test itself wrapped the
+    sequence.
+
+    Holding the lock across the AlphaVantage fetch is not the fix either -- it
+    would serialise every vendor call in the process. So the fetch stays
+    outside, and the cache is RE-READ under the lock here, immediately before
+    the write. Whatever another thread stored in the meantime is preserved.
+
+    `replace=True` overwrites the ticker's entry (a fresh overview);
+    `replace=False` merges keys into whatever is there (peers, which must not
+    drop an overview stored concurrently).
+    """
+    with _LOCAL_CACHE_LOCK:
+        cache = _load_local_cache()          # RLock: re-entrant by design
+        if replace:
+            cache[ticker] = updates
+        else:
+            cache.setdefault(ticker, {}).update(updates)
+        _save_local_cache(cache)
+
+
 # ---------------------------------------------------------------------------
 # Alpha Vantage fetch
 # ---------------------------------------------------------------------------
@@ -247,8 +276,7 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
         # Persist to both stores
         if use_cloud:
             _upsert_to_cloud_sql(ticker, info)
-        local_cache[ticker] = info
-        _save_local_cache(local_cache)
+        _merge_into_local_cache(ticker, info, replace=True)
         return info
 
     # Return stale data rather than nothing
@@ -402,11 +430,10 @@ def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
 
     # Persist to cache
     if peers is not None:
-        if ticker not in local_cache:
-            local_cache[ticker] = {}
-        local_cache[ticker]["_peers"] = peers
-        local_cache[ticker]["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
-        _save_local_cache(local_cache)
+        _merge_into_local_cache(ticker, {
+            "_peers": peers,
+            "_fetched_utc": datetime.now(timezone.utc).isoformat(),
+        }, replace=False)
 
         # Also persist to Cloud SQL relationships column
         if _cloud_sql_available():

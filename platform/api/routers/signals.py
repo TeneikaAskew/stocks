@@ -23,7 +23,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
-from api.threadsafe_cache import ThreadSafeCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -54,8 +54,9 @@ def _pattern(ticker_lower: str) -> str:
 
 def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
     """Legacy path: load from GCS parquet. Used only when Cloud SQL is off."""
-    if ticker_upper in _DF_CACHE:
-        return _DF_CACHE[ticker_upper]
+    cached = _DF_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
     ticker_lower = ticker_upper.lower()
     blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _pattern(ticker_lower))

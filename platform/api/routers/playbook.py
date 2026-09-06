@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 from cachetools import TTLCache
-from api.threadsafe_cache import ThreadSafeCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from google.api_core import exceptions as gapi_exc
@@ -345,8 +345,9 @@ def get_playbook(ticker: str, date: str | None = None):
     ticker_upper = ticker.upper()
 
     cache_key = (ticker_upper, date or "latest")
-    if cache_key in _PLAYBOOK_CACHE:
-        return _PLAYBOOK_CACHE[cache_key]
+    cached = _PLAYBOOK_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     db_cards = _cards_from_db(ticker_upper, as_of=date)
     if db_cards:
@@ -386,8 +387,9 @@ def list_reports(ticker: str):
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _LIST_CACHE:
-        return _LIST_CACHE[ticker_upper]
+    cached = _LIST_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
     # 1) ticker-specific reports: phase*_{ticker_lower}.md
     ticker_specific = gcs_reader.list_matching_blobs(
@@ -444,8 +446,9 @@ def get_report(ticker: str, phase: str):
     phase_lower = phase.lower()
 
     cache_key = (ticker_upper, phase_lower)
-    if cache_key in _REPORT_TEXT_CACHE:
-        return _REPORT_TEXT_CACHE[cache_key]
+    cached = _REPORT_TEXT_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     # Try ticker-specific file first
     candidates = gcs_reader.list_matching_blobs(

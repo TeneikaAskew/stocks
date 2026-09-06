@@ -30,7 +30,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
-from api.threadsafe_cache import ThreadSafeCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 
 log = logging.getLogger(__name__)
 
@@ -65,8 +65,9 @@ def list_matching_blobs(prefix: str, pattern: str) -> list[str]:
         phase6_playbook_iwm.md
     """
     cache_key = (prefix, pattern)
-    if cache_key in _LIST_CACHE:
-        return _LIST_CACHE[cache_key]
+    cached = _LIST_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     full_prefix = BASE_PREFIX + prefix
     try:
@@ -100,8 +101,9 @@ def list_matching_blobs_strict(prefix: str, pattern: str) -> list[str]:
     from "the listing was empty".
     """
     cache_key = (prefix, pattern)
-    if cache_key in _LIST_CACHE:
-        return _LIST_CACHE[cache_key]
+    cached = _LIST_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     full_prefix = BASE_PREFIX + prefix
     blobs = _get_client().list_blobs(BUCKET, prefix=full_prefix)

@@ -35,13 +35,49 @@ computation, not corruption, and where it matters (the on-demand grid fetch
 spending AlphaVantage quota) the caller needs its own single-flight guard.
 Stated here because a wrapper named "thread-safe" invites the stronger
 assumption.
+
+**Look up with `get`, never `in` then `[]`.** ::
+
+    value = _CACHE.get(key, MISS)          # one locked operation
+    if value is not MISS:
+        return value
+
+Those are two separate locked operations::
+
+    if key in _CACHE:          # lock taken and released
+        return _CACHE[key]     # lock taken again — the entry may be gone
+
+and on a cache at capacity another thread can insert a different key and
+evict the tested entry in between, so the second line raises `KeyError` out
+of a handler that had just confirmed the key was present. Every call site in
+`platform/api/` uses the `get` form; `MISS` exists so a cached `None` is
+still a hit.
 """
 from __future__ import annotations
 
 import threading
 from typing import Any, Iterator, MutableMapping
 
-__all__ = ["ThreadSafeCache"]
+__all__ = ["ThreadSafeCache", "MISS"]
+
+
+class _Miss:
+    """Sentinel for `cache.get(key, MISS)`.
+
+    A distinct object rather than `None`, so a cache legitimately holding
+    `None` is still reported as a hit.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<cache MISS>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+MISS = _Miss()
 
 
 class ThreadSafeCache(MutableMapping):

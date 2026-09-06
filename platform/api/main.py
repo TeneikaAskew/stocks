@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 from cachetools import TTLCache
-from api.threadsafe_cache import ThreadSafeCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -951,9 +951,24 @@ _SECTORS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=1, ttl=600)) 
 # Trading dates for a ticker change once a day, and the query behind
 # /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
 # (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms).
-# Uncached, every ChartsPage and JournalPage mount paid that. 12h, matching the
-# options dates cache in routers/options.py.
-_MARKET_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=43200))
+# Uncached, every ChartsPage and JournalPage mount paid that.
+#
+# **One hour, not twelve.** A 12h entry filled in the evening spans the nightly
+# ingestion (`av-intraday-nightly` 21:00 ET, `fetch-market-data-daily` 23:00
+# ET), so the new session stayed missing from the Charts and Journal date
+# pickers until the following morning — a wrong answer that looks completely
+# normal. One hour cannot span a writer, and bounds the worst case at an hour
+# rather than a night.
+#
+# This is the proportionate fix for THIS branch, not the final one. **#992
+# replaces the TTL model entirely** with a `MAX(ts)` freshness probe (one index
+# descent, 10.8 ms) that invalidates on the next request after any writer,
+# scheduled or ad-hoc, backed by a 1h TTL for the historical-backfill case the
+# probe cannot see. That endpoint is rewritten there; duplicating its ~90 lines
+# here would be a second implementation of one endpoint across two open PRs.
+# On merge, take #992's version of the endpoint plus this branch's
+# `list_matching_blobs_strict`, which #992 does not carry.
+_MARKET_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=3600))
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1048,8 +1063,9 @@ def market_sectors():
     days per ticker in the common case. Cached 10 minutes since sector
     closes only update once per trading day.
     """
-    if "sectors" in _SECTORS_CACHE:
-        return _SECTORS_CACHE["sectors"]
+    cached = _SECTORS_CACHE.get("sectors", MISS)
+    if cached is not MISS:
+        return cached
 
     # no _CLOUD_SQL gate needed: get_engine() raises RuntimeError, caught below -> 503
     try:
