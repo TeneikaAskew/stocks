@@ -659,14 +659,23 @@ the next trading day, which produced **351 phantom dates** — 3,278 UTC vs
   23:00 ET — 03:00 UTC under EDT, 04:00 under EST, on the next calendar day.
   Anchoring cache expiry to a fixed UTC hour expired it BEFORE the job ran,
   repopulated the pre-ingestion answer, then held that for a further day.
-- **Better still, do not model the schedule at all.** Freshness that depends
-  on *when* data is written drifts the moment a schedule changes, and nothing
-  fails when it does. Three attempts to model one ingest were each wrong
-  differently (fixed TTL / UTC hour / missed a second writer), and
-  `market_data_intraday` turned out to have three writers on three different
-  crons. Probing the DATA is both simpler and exactly correct: `MAX(ts)` is a
-  single index descent — measured **10.8 ms** against the 1,716 ms scan it
-  guards — and it covers ad-hoc backfills no schedule describes.
+- **Better still, do not model the schedule — but a probe alone is not enough
+  either.** Freshness that depends on *when* data is written drifts the moment
+  a schedule changes, and nothing fails when it does. Three attempts to model
+  one ingest were each wrong differently (fixed TTL / UTC hour / missed a
+  second writer), and `market_data_intraday` turned out to have three writers
+  on three different crons.
+  Probing the data is better: `MAX(ts)` is a single index descent, measured
+  **10.8 ms** against the 1,716 ms scan it guards.
+  **But `MAX(ts)` only moves FORWARD.** A backfill that fills a gap *older*
+  than the newest row leaves it unchanged, and backfills are a live path here
+  (`av-intraday-nightly` refetches the previous month). A probe with no TTL
+  would hold that stale list indefinitely for a ticker receiving no new rows.
+  The correct contract is **probe PLUS a bounded TTL**: the probe makes the
+  common case instant, the TTL bounds everything the probe is blind to. A
+  monotonic marker answers "has it grown", never "has it changed"; if you need
+  the latter, you need a write-version column or an indexed `inserted_at`
+  (unindexed here — measured 977 ms, not viable on the request path).
 - **Read the schedule from GCP, not from the docs.** `docs/PIPELINE.md` said
   "23:00 UTC daily" in two places and was wrong in both; the live job is
   `0 23 * * 1-5 America/New_York`. Corrected, but the lesson is that a doc is

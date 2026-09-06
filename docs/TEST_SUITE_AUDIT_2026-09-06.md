@@ -91,9 +91,13 @@ A mocked DB returns canned rows, so it cannot surface:
 functions; 59 use `TestClient`. Direct calls bypass FastAPI's dispatch, which
 is exactly the layer where `async def` vs `def` matters.
 
-**Nothing exercises concurrency.** Every test is single-threaded, so races
-that only exist under threadpool dispatch — the engine singleton, the rate
-limiter, the journal read-modify-write — are invisible by construction.
+**No API route receives concurrent traffic.** The suite is not entirely
+single-threaded — `tests/test_strategy_isolation.py` drives 100 evaluations
+through a `ThreadPoolExecutor` and `tests/test_insight_pipeline_job.py` starts
+and joins a thread — but that concurrency exercises *library* code. No test
+issues overlapping `TestClient` requests against a route, so races that only
+appear under threadpool dispatch (the engine singleton, the rate limiter, the
+journal read-modify-write) are invisible by construction.
 
 **Nothing asserts on cost.** There is no test anywhere that fails when a query
 gets slower. The 9,870 ms query was correct; it returned exactly the right 43

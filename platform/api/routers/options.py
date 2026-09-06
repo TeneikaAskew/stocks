@@ -333,17 +333,8 @@ async def get_options_dates(
         return {"ticker": ticker_upper, "dates": cached,
                 "source": "cloud_sql", "cached": True}
 
-    if limit == 1:
-        # Single index descent — no dedupe needed for one row.
-        sql = """
-            SELECT snapshot_date
-            FROM   etf_options_snapshots
-            WHERE  ticker = :ticker
-              AND  data_source = 'alphavantage'
-            ORDER  BY snapshot_date DESC
-            LIMIT  1
-        """
-    else:
+    sql = None
+    if limit != 1:
         # The depth counter `n` is load-bearing, not decoration. Bounding the
         # recursion only in the OUTER query does not work: ORDER BY has to
         # materialise the whole CTE before LIMIT can discard any of it, so the
@@ -381,10 +372,15 @@ async def get_options_dates(
     # handler cannot tell apart from "ticker genuinely has no data" and would
     # report as a 404 telling the operator to run the fetcher — a false
     # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
-    params = {"ticker": ticker_upper}
-    if limit != 1:
-        params["limit"] = limit
-    df = query_to_dataframe_strict(sql, params)
+    if limit == 1:
+        # The freshness probe above IS this query, and it has already run.
+        # Re-issuing it would make the advertised single-descent path pay two
+        # descents plus a second pool checkout and pre-ping on every miss --
+        # exactly the requests the cache exists to make cheap.
+        df = probe
+    else:
+        df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
+                                             "limit": limit})
 
     dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
              for d in df["snapshot_date"].tolist()] if not df.empty else []
