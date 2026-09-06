@@ -128,26 +128,50 @@ the full template object every time.
 * Every body must keep `%LINK%`, and the templates that reference an account
   must keep `%EMAIL%` / `%NEW_EMAIL%` / `%SECOND_FACTOR%`. Also enforced.
 
-## Custom sending domain (one-time, console)
+## Custom sending domain (one-time, console + Squarespace DNS)
 
 Out of the box the From address is `noreply@adept-mountain-474619-d4.firebaseapp.com`.
-To send from `noreply@stocks.insightscollective.org`:
 
-1. GCP console → Identity Platform → Templates → pencil icon next to
-   **From** → "Customize domain" → enter `stocks.insightscollective.org`.
-2. The console shows the DNS records to add at the registrar for
-   `insightscollective.org`: a TXT record proving ownership, an SPF TXT
-   record (`v=spf1 include:_spf.firebasemail.com ~all`), and two
-   `firebase1._domainkey` / `firebase2._domainkey` CNAME records for DKIM.
-   Copy the values from the console, not from here.
-3. Click Verify. Propagation can take up to 48 hours; until
-   `--show` reports `customDomainState: SUCCEEDED` Firebase keeps sending
-   from the `firebaseapp.com` address, so nothing breaks in the meantime.
+**Use the apex `insightscollective.org`, not `stocks.insightscollective.org`.**
+Checked 2026-09-06: `stocks.insightscollective.org` is a CNAME to
+`ghs.googlehosted.com` (the Cloud Run domain mapping for the API). DNS does
+not allow any other record at a name that carries a CNAME, so the two TXT
+records Firebase needs cannot be added there without deleting the CNAME and
+breaking the API mapping. The apex has no MX and no SPF today (only
+`google-site-verification` TXTs), so Firebase's records go in cleanly and
+the From address becomes `noreply@insightscollective.org`.
+
+The zone is hosted by Squarespace Domains (nameservers
+`ns-cloud-e1..e4.googledomains.com`; Cloud DNS is not enabled in the
+project), so the records are added in Squarespace → Domains →
+insightscollective.org → DNS settings. Nothing in GCP can write them.
+
+1. Firebase console → Authentication → Templates → pencil icon → "Customize
+   domain" → enter `insightscollective.org`.
+2. Copy the four records the dialog shows (values differ per domain, so copy
+   from the dialog, not from here). Shape:
+
+   | Host | Type | Value |
+   |---|---|---|
+   | `@` | TXT | `v=spf1 include:_spf.firebasemail.com ~all` |
+   | `@` | TXT | `firebase=adept-mountain-474619-d4` |
+   | `firebase1._domainkey` | CNAME | `mail-insightscollective-org.dkim1._domainkey.firebasemail.com.` |
+   | `firebase2._domainkey` | CNAME | `mail-insightscollective-org.dkim2._domainkey.firebasemail.com.` |
+
+   Optional but recommended for inbox placement: a DMARC record,
+   `_dmarc` TXT `v=DMARC1; p=none; rua=mailto:<a mailbox you read>`.
+   `p=none` only reports; it cannot block anything.
+3. Click Verify. Propagation can take up to 48 hours. Until
+   `python -m gcp.auth_email_templates --show` reports
+   `customDomainState: SUCCEEDED`, Firebase keeps sending from the
+   `firebaseapp.com` address, so nothing breaks in the meantime.
+4. Check propagation from anywhere over HTTPS:
+   `curl -s 'https://dns.google/resolve?name=insightscollective.org&type=TXT'`.
 
 This is deliberately not scripted: the admin/v2 REST API marks every
 `DnsInfo` field output-only and has no domain-verification method (verified
-against the v2 discovery document on 2026-09-06), and the DNS side is manual
-anyway. There is no IAM-only path.
+against the v2 discovery document on 2026-09-06), and the DNS side lives
+outside GCP anyway.
 
 ## Verifying end to end
 
