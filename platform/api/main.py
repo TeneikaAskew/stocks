@@ -26,7 +26,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
-from api.auth import AUTH_MODE, auth_middleware, current_user_email, is_admin_email
+from api.auth import (
+    AUTH_MODE,
+    auth_middleware,
+    configured_admin_email,
+    current_user_email,
+    stored_role_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -227,14 +233,27 @@ async def health_check():
 
 @app.get("/api/me")
 async def get_current_user(request: Request):
-    """Return the authenticated identity + admin flag.
+    """Return the authenticated identity + role flags.
 
     `email` is the server-VERIFIED identity: the Firebase token's email in
-    firebase mode, the IAP header in iap mode, or None in local/open. `is_admin`
-    is computed server-side (vs ADMIN_EMAIL) so the frontend can't spoof it.
+    firebase mode, the IAP header in iap mode, or None in local/open. Both
+    flags are computed server-side so the frontend can't spoof them:
+
+    - `is_admin`: ADMIN_EMAIL env fallback OR a stored 'admin' role — the
+      same grant `is_admin_email` makes, derived here from one role lookup
+      instead of a second query.
+    - `is_dev`: a stored 'dev' role. The solyra frontend auto-loads its
+      mock-data mode for dev accounts (fixture data, no live API calls),
+      so this flag decides a UI mode, never data access — a dev is
+      otherwise an ordinary user to the authorization layer.
     """
     email = current_user_email(request)
-    return {"email": email, "is_admin": is_admin_email(email)}
+    normalized = email.strip().lower() if email else None
+    role = stored_role_for(normalized)
+    is_admin = bool(normalized) and (
+        normalized == configured_admin_email() or role == "admin"
+    )
+    return {"email": email, "is_admin": is_admin, "is_dev": role == "dev"}
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────

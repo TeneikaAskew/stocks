@@ -3902,12 +3902,32 @@ CREATE TABLE IF NOT EXISTS user_roles (
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     created_by  TEXT,                      -- who granted it, for audit
     note        TEXT,
-    CONSTRAINT user_roles_role_valid CHECK (role IN ('admin', 'user')),
+    CONSTRAINT user_roles_role_valid CHECK (role IN ('admin', 'user', 'dev')),
     -- Stored lower-case so lookups can compare directly against the
     -- normalized identity without a functional index or a LOWER() scan.
     CONSTRAINT user_roles_email_lower CHECK (email = LOWER(email))
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles (role);
+
+-- 2026-09-06: add the 'dev' role. An account holding it gets is_dev: true
+-- from /api/me, which the solyra frontend uses to auto-load its mock-data
+-- mode (dev sees fixture data, no live API calls). Mirrored by
+-- _ASSIGNABLE_ROLES in platform/api/routers/admin.py — change both together.
+-- Idempotent DROP + ADD (same pattern as insight_runs_trigger_check) so
+-- re-running schema.sql converges instances created with the two-role CHECK.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'user_roles_role_valid'
+    ) THEN
+        ALTER TABLE user_roles
+            DROP CONSTRAINT user_roles_role_valid;
+    END IF;
+    ALTER TABLE user_roles
+        ADD CONSTRAINT user_roles_role_valid
+        CHECK (role IN ('admin', 'user', 'dev'));
+END $$;
 
 -- ─────────────────────────────────────────────────────────
 -- USER PREFERENCES (per-user appearance settings)
