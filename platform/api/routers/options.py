@@ -81,8 +81,9 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
 # ticker → list[date_str]; 12h TTL. Dates list only changes once per day when
 # the scheduled AV fetcher runs, so long TTL avoids re-running the distinct
-# scan on cold caches (which is expensive on db-g1-small without the composite
-# (ticker, data_source, snapshot_date) index in place).
+# scan on cold caches. The composite (ticker, data_source, snapshot_date)
+# index DOES exist as idx_etf_options_ticker_source_date — an older comment
+# here claimed otherwise.
 _DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
@@ -311,9 +312,15 @@ def get_options_dates(
             LIMIT  1
         """
     else:
+        # The depth counter `n` is load-bearing, not decoration. Bounding the
+        # recursion only in the OUTER query does not work: ORDER BY has to
+        # materialise the whole CTE before LIMIT can discard any of it, so the
+        # walk runs to the end of history regardless. Measured on prod for
+        # IWM ?limit=2 — unbounded recursion: 2,682 rows walked, 3,013 ms;
+        # bounded by `n < :limit`: 2 rows walked, 0.27 ms.
         sql = """
             WITH RECURSIVE d AS (
-                (SELECT snapshot_date
+                (SELECT snapshot_date, 1 AS n
                    FROM etf_options_snapshots
                   WHERE ticker = :ticker AND data_source = 'alphavantage'
                   ORDER BY snapshot_date DESC
@@ -325,15 +332,16 @@ def get_options_dates(
                            AND s.data_source = 'alphavantage'
                            AND s.snapshot_date < d.snapshot_date
                          ORDER BY s.snapshot_date DESC
-                         LIMIT 1)
+                         LIMIT 1),
+                       d.n + 1
                   FROM d
                  WHERE d.snapshot_date IS NOT NULL
+                   AND d.n < :limit
             )
             SELECT snapshot_date
               FROM d
              WHERE snapshot_date IS NOT NULL
              ORDER BY snapshot_date DESC
-             LIMIT :limit
         """
 
     # STRICT: a connection failure or missing relation must surface as a 5xx.
@@ -637,7 +645,7 @@ def compute_options_greeks(req: _GreeksRequest) -> dict:
 
 
 @router.get("/api/options/{ticker}/{date_str}/levels")
-async def get_gamma_levels(
+def get_gamma_levels(
     ticker: str,
     date_str: str,
     window_pct: float = 8.0,
@@ -660,7 +668,7 @@ async def get_gamma_levels(
     _require_cloud_sql()
 
     # Reuse the existing chain endpoint logic to load + normalize the chain.
-    chain_response = await get_options(ticker, date_str)
+    chain_response = get_options(ticker, date_str)
     options = chain_response.get("options", [])
 
     summary = gamma.build_summary(

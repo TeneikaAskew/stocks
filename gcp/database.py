@@ -15,6 +15,7 @@ Usage:
 
 import os
 import logging
+import threading
 from typing import Optional, List
 
 import pandas as pd
@@ -23,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 # ── lazy imports so the module loads even without the cloud packages installed ──
 _engine = None
+# Guards the get_engine() singleton. Before the API handlers moved off the
+# event loop they were serialised by it, so the unlocked check-then-create
+# below could never interleave. Under threadpool dispatch two cold-start
+# requests can both see `_engine is None` and each build a Cloud SQL Connector
+# plus its own 5+2 pool, quietly multiplying the connection ceiling exactly
+# when the instance is least able to absorb it.
+_engine_lock = threading.Lock()
 
 
 def _connection_name() -> Optional[str]:
@@ -86,6 +94,18 @@ def get_engine():
     global _engine
     if _engine is not None:
         return _engine
+
+    with _engine_lock:
+        # Re-check under the lock: a contender may have built it while we
+        # waited, and returning early here is what keeps the pool a singleton.
+        if _engine is not None:
+            return _engine
+        return _build_engine()
+
+
+def _build_engine():
+    """Construct the engine. Callers MUST hold `_engine_lock`."""
+    global _engine
 
     direct_url = _direct_db_url()
     if direct_url:

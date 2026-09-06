@@ -54,6 +54,7 @@ Per-IP rate limit (B2):
 """
 from __future__ import annotations
 
+import threading
 import logging
 import os
 from datetime import date as date_type, datetime, timezone
@@ -369,6 +370,13 @@ _ONDEMAND_MAX_TICKERS_PER_WINDOW = 10
 _ONDEMAND_RATE_CACHE: TTLCache = TTLCache(maxsize=4096, ttl=_ONDEMAND_RATE_LIMIT_TTL)
 
 
+# Guards the read-modify-write below. Handlers used to be serialised by the
+# event loop; under threadpool dispatch two requests from the same IP can both
+# find no entry, install separate sets and clobber each other, so tickers go
+# uncounted and a burst slips past the ceiling into shared AlphaVantage quota.
+_ONDEMAND_RATE_LOCK = threading.Lock()
+
+
 def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
     """Per-IP per-60s ceiling. Raises 429 when the IP has already
     requested >=10 distinct tickers in the last 60s.
@@ -379,23 +387,26 @@ def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
     window: once an IP goes idle for 60s, its set evicts and the
     counter resets.
     """
-    seen = _ONDEMAND_RATE_CACHE.get(client_ip)
-    if seen is None:
-        seen = set()
-        _ONDEMAND_RATE_CACHE[client_ip] = seen
-    if ticker in seen:
-        return  # already counted; further reads are free
-    if len(seen) >= _ONDEMAND_MAX_TICKERS_PER_WINDOW:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"On-demand ticker rate limit: {_ONDEMAND_MAX_TICKERS_PER_WINDOW} "
-                f"unique tickers per 60s per IP. Try again in 60s, or stick to "
-                f"the scheduled-realtime list ({sorted(_SCHEDULED_REALTIME_TICKERS)})."
-            ),
-            headers={"Retry-After": "60"},
-        )
-    seen.add(ticker)
+    # get / create / check / add must be one atomic step, or the check races
+    # the add and the ceiling stops being a ceiling.
+    with _ONDEMAND_RATE_LOCK:
+        seen = _ONDEMAND_RATE_CACHE.get(client_ip)
+        if seen is None:
+            seen = set()
+            _ONDEMAND_RATE_CACHE[client_ip] = seen
+        if ticker in seen:
+            return  # already counted; further reads are free
+        if len(seen) >= _ONDEMAND_MAX_TICKERS_PER_WINDOW:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"On-demand ticker rate limit: {_ONDEMAND_MAX_TICKERS_PER_WINDOW} "
+                    f"unique tickers per 60s per IP. Try again in 60s, or stick to "
+                    f"the scheduled-realtime list ({sorted(_SCHEDULED_REALTIME_TICKERS)})."
+                ),
+                headers={"Retry-After": "60"},
+            )
+        seen.add(ticker)
 
 
 def _fetch_on_demand(

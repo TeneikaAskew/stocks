@@ -1338,7 +1338,7 @@ if _dist.is_dir():
     _index_html = _dist / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    def serve_spa(full_path: str):
         """SPA fallback — serve index.html for any non-API, non-asset route."""
         candidate = _dist / full_path
         if full_path and candidate.is_file() and ".." not in full_path:

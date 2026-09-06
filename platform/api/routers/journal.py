@@ -12,6 +12,8 @@ Endpoints:
   POST   /api/journal/import/preview     — parse+FIFO-pair an uploaded broker CSV (no writes)
   POST   /api/journal/import/commit      — insert caller-selected paired trades from a preview
 """
+import tempfile
+import threading
 import csv
 import json
 import logging
@@ -445,18 +447,52 @@ def _local_path(ticker: str) -> Path:
     return LOCAL_JOURNAL_DIR / f"{ticker.lower()}_journal.json"
 
 
+# Serialises the local-journal read-modify-write. These handlers used to be
+# serialised by the event loop; under threadpool dispatch two POSTs could both
+# _load_local the same list, append their own trade and _save_local, so the
+# last writer silently dropped the other's entry. Re-entrant because a couple
+# of call sites load and save inside one guarded block.
+_LOCAL_JOURNAL_LOCK = threading.RLock()
+
+
 def _load_local(ticker: str) -> list[dict]:
+    """Read a ticker's local journal.
+
+    A missing file legitimately means "no trades yet" and returns []. A file
+    that EXISTS but will not parse does not: swallowing that (CLAUDE.md Rule
+    3.7) returns an empty journal the caller cannot distinguish from a real
+    one, and every mutation path here writes its result straight back — so a
+    single transient read error silently destroys the file's contents.
+    """
     p = _local_path(ticker)
     if not p.exists():
         return []
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return []
+    return json.loads(p.read_text())
 
 
 def _save_local(ticker: str, entries: list[dict]) -> None:
-    _local_path(ticker).write_text(json.dumps(entries, indent=2, default=str))
+    """Write the journal atomically.
+
+    write_text truncates in place, so a concurrent reader can observe a
+    half-written file. Rendering to a temp file in the same directory and
+    os.replace()-ing it means a reader sees either the old file or the new
+    one, never a torn one.
+    """
+    path = _local_path(ticker)
+    payload = json.dumps(entries, indent=2, default=str)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _insert_cloud_sql_trade(
@@ -861,16 +897,19 @@ def create_trade(trade: JournalTradeCreate, request: Request):
             if owner != "local":
                 raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
-    # Local fallback
-    entries = _load_local(ticker_upper)
-    entry = _build_local_entry(
-        ticker_upper, direction, entry_ts, exit_ts, trade.entry_price,
-        trade.exit_price if has_exit else None, ret_pct_rounded, trade.notes or "",
-        trade.stop_loss, take_profits, status, trade.source, trade.session_id,
-    )
-    new_id = entry["id"]
-    entries.insert(0, entry)
-    _save_local(ticker_upper, entries)
+    # Local fallback. Load, mutate and save under one lock: two concurrent
+    # POSTs would otherwise read the same list and the second save would drop
+    # the first trade.
+    with _LOCAL_JOURNAL_LOCK:
+        entries = _load_local(ticker_upper)
+        entry = _build_local_entry(
+            ticker_upper, direction, entry_ts, exit_ts, trade.entry_price,
+            trade.exit_price if has_exit else None, ret_pct_rounded, trade.notes or "",
+            trade.stop_loss, take_profits, status, trade.source, trade.session_id,
+        )
+        new_id = entry["id"]
+        entries.insert(0, entry)
+        _save_local(ticker_upper, entries)
     return {"source": "local", "id": new_id, "return_pct": ret_pct_rounded, "status": status}
 
 
@@ -957,22 +996,26 @@ def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
             if owner != "local":
                 raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
-    # Local fallback: PATCH updates the JSON row directly.
-    ticker, entries, entry = _find_local_entry(trade_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="trade not found")
-    if entry.get("status") != "active":
-        raise HTTPException(status_code=409, detail="trade already closed")
+    # Local fallback: PATCH updates the JSON row directly. _find_local_entry
+    # reads the file and _save_local writes it back, so the whole find →
+    # check-status → mutate → save sequence is one transaction. Without the
+    # lock two concurrent closes could both pass the "still active" check.
+    with _LOCAL_JOURNAL_LOCK:
+        ticker, entries, entry = _find_local_entry(trade_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="trade not found")
+        if entry.get("status") != "active":
+            raise HTTPException(status_code=409, detail="trade already closed")
 
-    ret_pct = _return_pct(entry["direction"], float(entry["entry_price"]), body.exit_price)
-    new_status = _derive_status(True, ret_pct)
-    ret_pct_out = ret_pct
+        ret_pct = _return_pct(entry["direction"], float(entry["entry_price"]), body.exit_price)
+        new_status = _derive_status(True, ret_pct)
+        ret_pct_out = ret_pct
 
-    entry["exit_ts"] = exit_ts
-    entry["exit_price"] = body.exit_price
-    entry["return_pct"] = ret_pct_out
-    entry["status"] = new_status
-    _save_local(ticker, entries)
+        entry["exit_ts"] = exit_ts
+        entry["exit_price"] = body.exit_price
+        entry["return_pct"] = ret_pct_out
+        entry["status"] = new_status
+        _save_local(ticker, entries)
     return {"source": "local", "id": trade_id, "return_pct": ret_pct_out, "status": new_status}
 
 
@@ -994,20 +1037,28 @@ def delete_trade(trade_id: str, request: Request, ticker: str = ""):
 
     # Local fallback
     if ticker:
-        entries = _load_local(ticker.upper())
-        updated = [e for e in entries if e.get("id") != trade_id]
-        _save_local(ticker.upper(), updated)
+        with _LOCAL_JOURNAL_LOCK:
+            entries = _load_local(ticker.upper())
+            updated = [e for e in entries if e.get("id") != trade_id]
+            _save_local(ticker.upper(), updated)
     else:
-        LOCAL_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
-        for p in LOCAL_JOURNAL_DIR.glob("*_journal.json"):
-            try:
-                entries = json.loads(p.read_text())
+        # Same lock as every other local mutation, and go through
+        # _save_local so the write is atomic rather than a truncating
+        # write_text a concurrent reader can catch mid-flight.
+        with _LOCAL_JOURNAL_LOCK:
+            LOCAL_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+            for p in LOCAL_JOURNAL_DIR.glob("*_journal.json"):
+                try:
+                    entries = json.loads(p.read_text())
+                except Exception as e:
+                    # An unreadable journal is not an empty one; skipping it
+                    # keeps the file intact instead of rewriting it away.
+                    logger.warning("skipping unreadable local journal %s: %s", p.name, e)
+                    continue
                 updated = [e for e in entries if e.get("id") != trade_id]
                 if len(updated) != len(entries):
-                    p.write_text(json.dumps(updated, indent=2, default=str))
+                    _save_local(p.name.removesuffix("_journal.json"), updated)
                     break
-            except Exception:
-                continue
     return {"source": "local", "deleted": trade_id}
 
 
@@ -1298,15 +1349,16 @@ def import_commit(body: ImportCommitRequest, request: Request):
                     raise HTTPException(status_code=503, detail="journal temporarily unavailable")
                 # owner == "local": fall through to the local-file write below.
 
-        entries = _load_local(ticker_upper)
-        entry = _build_local_entry(
-            ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
-            t.entry_price, exit_price,
-            ret_pct, notes="", stop_loss=None, take_profits=[],
-            status=status, source=source, session_id=None,
-        )
-        entries.insert(0, entry)
-        _save_local(ticker_upper, entries)
+        with _LOCAL_JOURNAL_LOCK:
+            entries = _load_local(ticker_upper)
+            entry = _build_local_entry(
+                ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
+                t.entry_price, exit_price,
+                ret_pct, notes="", stop_loss=None, take_profits=[],
+                status=status, source=source, session_id=None,
+            )
+            entries.insert(0, entry)
+            _save_local(ticker_upper, entries)
         imported += 1
         existing_keys.add(key)
 
