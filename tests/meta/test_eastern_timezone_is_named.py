@@ -33,8 +33,16 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
+REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 EASTERN = "America/New_York"
+
+# This file necessarily spells the forbidden names in order to forbid them, so
+# it excludes itself. DERIVED, not written out: the exclusion used to be the
+# literal "tests/test_eastern_timezone_is_named.py", and when #1001 moved the
+# suite into per-area folders the string stopped matching and the guard
+# reported its own docstring as a violation. A self-reference that a file move
+# can invalidate is not a self-reference.
+SELF = str(pathlib.Path(__file__).resolve().relative_to(REPO)).replace("\\", "/")
 
 # `archive/` is retired code kept as a record; `.git` and caches are not source.
 SKIP_DIRS = {".git", "node_modules", "__pycache__", "archive", ".venv", "venv"}
@@ -98,7 +106,7 @@ def test_no_legacy_eastern_zone_names():
     # This test file necessarily spells the forbidden names to forbid them.
     allow = re.compile(r"LEGACY_ZONES|test_eastern_timezone_is_named|^\s*[*#]")
     hits = [h for h in _hits(LEGACY_ZONES, allow)
-            if "tests/test_eastern_timezone_is_named.py" not in h]
+            if SELF not in h]
     assert not hits, (
         "Eastern time must be named 'America/New_York', not a backward link:\n  "
         + "\n  ".join(hits))
@@ -107,7 +115,7 @@ def test_no_legacy_eastern_zone_names():
 def test_no_fixed_offset_standing_in_for_eastern():
     """-04:00/-05:00 is right for half the year and wrong for the other half."""
     hits = [h for h in _hits(FIXED_OFFSET)
-            if "tests/test_eastern_timezone_is_named.py" not in h]
+            if SELF not in h]
     assert not hits, (
         "A fixed UTC offset cannot express Eastern time across DST:\n  "
         + "\n  ".join(hits))
