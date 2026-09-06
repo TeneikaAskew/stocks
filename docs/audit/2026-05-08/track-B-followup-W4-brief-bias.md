@@ -104,13 +104,13 @@ intentional so analytics can distinguish "writer didn't run" from
 not-a-bug. Existing tests already lock the resolved-bias persist
 path:
 
-- `tests/test_signal_monitor_brief_bias.py::test_persist_row_includes_brief_columns_when_bias_resolved`
+- `tests/gcp/test_signal_monitor_brief_bias.py::test_persist_row_includes_brief_columns_when_bias_resolved`
   asserts `brief_bias='PUT'`, `brief_alignment='opposed'`, and
   `brief_setup_count=3` flow through `_persist_signal_alert` when
   `_latest_brief_bias` is set.
-- `tests/test_signal_monitor_brief_bias.py::test_resolve_brief_bias_caches_per_ticker`
+- `tests/gcp/test_signal_monitor_brief_bias.py::test_resolve_brief_bias_caches_per_ticker`
   asserts the cache + lookup contract.
-- `tests/test_signal_monitor_brief_bias.py::test_resolve_brief_bias_handles_lookup_exception`
+- `tests/gcp/test_signal_monitor_brief_bias.py::test_resolve_brief_bias_handles_lookup_exception`
   asserts the `UNAVAILABLE` fallback shape.
 
 If `brief_bias` is observed as NULL on a date AFTER 2026-05-07 with a

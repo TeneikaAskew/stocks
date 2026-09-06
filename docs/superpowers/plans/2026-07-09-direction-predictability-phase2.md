@@ -26,13 +26,13 @@
 **Files:**
 - Create: `gcp/research/direction_program/phase2_features.py`
 - Create: `gcp/research/direction_program/phase2_prune_sets.py`
-- Test: `tests/test_phase2_prune.py`
+- Test: `tests/gcp/test_phase2_prune.py`
 
 **Interfaces:**
 - Produces: `prune_feature_cols(feature_cols: list[str], drop_set: set[str]) -> list[str]` — returns feature_cols with drop_set removed, order preserved.
 - Produces: `NEAR_DEAD: dict[str, set[str]]` in `phase2_prune_sets.py`, keyed `"direction"` / `"size"`, each the set of near-dead columns from the audit.
 
-- [ ] **Step 1: Write the failing test** — `tests/test_phase2_prune.py`:
+- [ ] **Step 1: Write the failing test** — `tests/gcp/test_phase2_prune.py`:
 
 ```python
 from gcp.research.direction_program.phase2_features import prune_feature_cols
@@ -57,7 +57,7 @@ def test_near_dead_has_both_axes_and_is_nonempty():
     assert "gamma_regime_unknown" in NEAR_DEAD["direction"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/test_phase2_prune.py -q` → FAIL (`ModuleNotFoundError`).
+- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/gcp/test_phase2_prune.py -q` → FAIL (`ModuleNotFoundError`).
 
 - [ ] **Step 3: Generate the drop-sets from the audit artifact.** Download the importance JSON and emit the near-dead sets:
 
@@ -106,12 +106,12 @@ def prune_feature_cols(feature_cols: list[str], drop_set: set) -> list[str]:
     return [c for c in feature_cols if c not in drop_set]
 ```
 
-- [ ] **Step 5: Run tests** — `python -m pytest tests/test_phase2_prune.py -q` → PASS (3 passed).
+- [ ] **Step 5: Run tests** — `python -m pytest tests/gcp/test_phase2_prune.py -q` → PASS (3 passed).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add gcp/research/direction_program/phase2_features.py gcp/research/direction_program/phase2_prune_sets.py tests/test_phase2_prune.py
+git add gcp/research/direction_program/phase2_features.py gcp/research/direction_program/phase2_prune_sets.py tests/gcp/test_phase2_prune.py
 git commit -m "feat(direction): phase2 prune family (near-dead drop-sets + prune_feature_cols)"
 ```
 
@@ -121,13 +121,13 @@ git commit -m "feat(direction): phase2 prune family (near-dead drop-sets + prune
 
 **Files:**
 - Modify: `gcp/research/direction_program/phase2_features.py`
-- Test: `tests/test_phase2_calendar.py`
+- Test: `tests/gcp/test_phase2_calendar.py`
 
 **Interfaces:**
 - Consumes: a DataFrame with a `bar_date` column (datetime.date or parseable).
 - Produces: `calendar_features(df: pd.DataFrame) -> pd.DataFrame` — a NaN-free (calendar is always known) frame indexed like `df` with columns: `cal_dow` (0–4), `cal_week_of_month` (1–5), `cal_is_month_end`, `cal_is_quarter_end`, `cal_is_fomc_week`. All `float32`.
 
-- [ ] **Step 1: Write the failing test** — `tests/test_phase2_calendar.py`:
+- [ ] **Step 1: Write the failing test** — `tests/gcp/test_phase2_calendar.py`:
 
 ```python
 import pandas as pd
@@ -155,7 +155,7 @@ def test_calendar_has_no_nans():
     assert not calendar_features(df).isna().any().any()
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/test_phase2_calendar.py -q` → FAIL (`AttributeError: calendar_features`).
+- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/gcp/test_phase2_calendar.py -q` → FAIL (`AttributeError: calendar_features`).
 
 - [ ] **Step 3: Add `calendar_features`** to `phase2_features.py`:
 
@@ -200,12 +200,12 @@ def calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 ```
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_phase2_calendar.py -q` → PASS (2 passed).
+- [ ] **Step 4: Run tests** — `python -m pytest tests/gcp/test_phase2_calendar.py -q` → PASS (2 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gcp/research/direction_program/phase2_features.py tests/test_phase2_calendar.py
+git add gcp/research/direction_program/phase2_features.py tests/gcp/test_phase2_calendar.py
 git commit -m "feat(direction): phase2 calendar family"
 ```
 
@@ -215,14 +215,14 @@ git commit -m "feat(direction): phase2 calendar family"
 
 **Files:**
 - Modify: `gcp/research/direction_program/phase2_features.py`
-- Test: `tests/test_phase2_cross_asset.py`
+- Test: `tests/gcp/test_phase2_cross_asset.py`
 
 **Interfaces:**
 - Consumes: `df` with columns `ts` (UTC timestamp) and `close`; a `peers` dict `{ticker: peer_df}` where each `peer_df` has `ts` and `close`.
 - Produces: `cross_asset_features(df: pd.DataFrame, peers: dict) -> pd.DataFrame` — NaN-preserving frame indexed like `df` with, per peer ticker `PK`: `xa_{PK}_ret_1` (peer's return over its most-recent bar strictly before this bar's ts). Missing peer bar → NaN. All `float32`.
 - Note: the engine supplies `peers` by loading the other two ETFs' bars for the same `tf`; VIX is joined by the engine from the existing `vix_close` column already in the strat surface (no new work here — VIX regime is already present, so `cross_asset` adds only the peer lead-lag).
 
-- [ ] **Step 1: Write the failing test** — `tests/test_phase2_cross_asset.py`:
+- [ ] **Step 1: Write the failing test** — `tests/gcp/test_phase2_cross_asset.py`:
 
 ```python
 import numpy as np
@@ -256,7 +256,7 @@ def test_cross_asset_missing_peer_is_nan():
     assert np.isnan(out.iloc[0]["xa_SPY_ret_1"])  # no strictly-prior peer bar
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/test_phase2_cross_asset.py -q` → FAIL (`AttributeError`).
+- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/gcp/test_phase2_cross_asset.py -q` → FAIL (`AttributeError`).
 
 - [ ] **Step 3: Add `cross_asset_features`** to `phase2_features.py`:
 
@@ -278,12 +278,12 @@ def cross_asset_features(df: pd.DataFrame, peers: dict) -> pd.DataFrame:
     return out
 ```
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_phase2_cross_asset.py -q` → PASS (2 passed).
+- [ ] **Step 4: Run tests** — `python -m pytest tests/gcp/test_phase2_cross_asset.py -q` → PASS (2 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gcp/research/direction_program/phase2_features.py tests/test_phase2_cross_asset.py
+git add gcp/research/direction_program/phase2_features.py tests/gcp/test_phase2_cross_asset.py
 git commit -m "feat(direction): phase2 cross-asset intraday lead-lag family"
 ```
 
@@ -293,7 +293,7 @@ git commit -m "feat(direction): phase2 cross-asset intraday lead-lag family"
 
 **Files:**
 - Modify: `gcp/research/direction_program/phase2_features.py`
-- Test: `tests/test_phase2_options.py`
+- Test: `tests/gcp/test_phase2_options.py`
 
 **Interfaces:**
 - Consumes: `lib.features.experimental.options_derived.add_options_features(df, ticker, engine) -> pd.DataFrame` (already exists — reads materialized `options_daily_features`, computes `pcr_volume_d1, pcr_oi_d1, iv_skew_25d_d1, iv_term_slope_d1, atm_iv_d1`, shifts d-1, attaches NaN for missing dates).
@@ -302,7 +302,7 @@ git commit -m "feat(direction): phase2 cross-asset intraday lead-lag family"
   - `"options_iv"` → `["atm_iv_d1", "iv_term_slope_d1"]`
   NaN-preserving; a requested column absent from the joiner output is returned as an all-NaN column (explicit-missing, never 0).
 
-- [ ] **Step 1: Write the failing test** — `tests/test_phase2_options.py` (monkeypatches the joiner so the test is hermetic — no DB):
+- [ ] **Step 1: Write the failing test** — `tests/gcp/test_phase2_options.py` (monkeypatches the joiner so the test is hermetic — no DB):
 
 ```python
 import numpy as np
@@ -337,7 +337,7 @@ def test_options_families_select_expected_columns(monkeypatch):
         "atm_iv_d1", "iv_term_slope_d1"}
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/test_phase2_options.py -q` → FAIL (`AttributeError: options_features`).
+- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/gcp/test_phase2_options.py -q` → FAIL (`AttributeError: options_features`).
 
 - [ ] **Step 3: Add the joiner import + `options_features`** to `phase2_features.py`:
 
@@ -362,12 +362,12 @@ def options_features(df: pd.DataFrame, ticker: str, engine,
     return out
 ```
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_phase2_options.py -q` → PASS (1 passed).
+- [ ] **Step 4: Run tests** — `python -m pytest tests/gcp/test_phase2_options.py -q` → PASS (1 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add gcp/research/direction_program/phase2_features.py tests/test_phase2_options.py
+git add gcp/research/direction_program/phase2_features.py tests/gcp/test_phase2_options.py
 git commit -m "feat(direction): phase2 options_iv + positioning families (reuse add_options_features)"
 ```
 
@@ -379,7 +379,7 @@ git commit -m "feat(direction): phase2 options_iv + positioning families (reuse 
 - Modify: `gcp/research/direction_program/phase2_features.py`
 - Modify: `gcp/research/strat_engine/strat_dir_walk_forward.py` (add `--features`, apply families)
 - Modify: `gcp/research/magnitude_engine/mag_walk_forward.py` (add `--features`, apply families)
-- Test: `tests/test_phase2_orchestrator.py`
+- Test: `tests/gcp/test_phase2_orchestrator.py`
 
 **Interfaces:**
 - Produces: `build_family_columns(df, families, axis, ticker, tf, engine, peers=None) -> tuple[pd.DataFrame, list[str]]` — for the additive families in `families` (`options_iv`, `positioning`, `cross_asset`, `calendar`), returns `(new_cols_df aligned to df.index, new_col_names)`, NaN-preserving. `prune` is NOT handled here (it filters the base cols in the engine).
@@ -397,7 +397,7 @@ git commit -m "feat(direction): phase2 options_iv + positioning families (reuse 
   ```
   where `AXIS` is `"direction"` / `"size"` respectively, and the slice-ledger row's `feature_set` is set to `"phase2:" + ",".join(sorted(fams))`.
 
-- [ ] **Step 1: Write the failing test** — `tests/test_phase2_orchestrator.py` (hermetic; monkeypatches the DB-touching families):
+- [ ] **Step 1: Write the failing test** — `tests/gcp/test_phase2_orchestrator.py` (hermetic; monkeypatches the DB-touching families):
 
 ```python
 import numpy as np
@@ -433,7 +433,7 @@ def test_build_family_columns_combines_and_preserves_nan(monkeypatch):
     assert np.isnan(new_df.iloc[0]["atm_iv_d1"])  # NaN preserved
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/test_phase2_orchestrator.py -q` → FAIL (`AttributeError: build_family_columns`).
+- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/gcp/test_phase2_orchestrator.py -q` → FAIL (`AttributeError: build_family_columns`).
 
 - [ ] **Step 3: Add `build_family_columns`** to `phase2_features.py`:
 
@@ -453,18 +453,18 @@ def build_family_columns(df, families, axis, ticker, tf, engine, peers=None):
     return new_df, list(new_df.columns)
 ```
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_phase2_orchestrator.py -q` → PASS (2 passed).
+- [ ] **Step 4: Run tests** — `python -m pytest tests/gcp/test_phase2_orchestrator.py -q` → PASS (2 passed).
 
 - [ ] **Step 5: Wire `--features` into `strat_dir_walk_forward.py`.** In `main()` add the arg; in `walk_forward_direction`, after `X_df, feature_cols = featurize(df)` (line ~155), apply the glue block from Interfaces with `AXIS = "direction"` and `peers` loaded via `load_labeled_dataset` for the other two tickers (same `tf`), passing only `ts`/`close`. Set the ledger `feature_set` tag. Import: `from gcp.research.direction_program.phase2_features import build_family_columns, prune_feature_cols; from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD`.
 
 - [ ] **Step 6: Wire `--features` into `mag_walk_forward.py`** identically, `AXIS = "size"`, after its `X_df, feature_cols = featurize(df)` (line ~485).
 
-- [ ] **Step 7: Verify both engines import and `--features ""` reproduces baseline** — `python -c "import gcp.research.strat_engine.strat_dir_walk_forward, gcp.research.magnitude_engine.mag_walk_forward"` → no error. `python -m pytest tests/test_phase2_orchestrator.py -q` → PASS.
+- [ ] **Step 7: Verify both engines import and `--features ""` reproduces baseline** — `python -c "import gcp.research.strat_engine.strat_dir_walk_forward, gcp.research.magnitude_engine.mag_walk_forward"` → no error. `python -m pytest tests/gcp/test_phase2_orchestrator.py -q` → PASS.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add gcp/research/direction_program/phase2_features.py gcp/research/strat_engine/strat_dir_walk_forward.py gcp/research/magnitude_engine/mag_walk_forward.py tests/test_phase2_orchestrator.py
+git add gcp/research/direction_program/phase2_features.py gcp/research/strat_engine/strat_dir_walk_forward.py gcp/research/magnitude_engine/mag_walk_forward.py tests/gcp/test_phase2_orchestrator.py
 git commit -m "feat(direction): --features flag wires phase2 families into direction+size engines"
 ```
 
@@ -475,14 +475,14 @@ git commit -m "feat(direction): --features flag wires phase2 families into direc
 **Files:**
 - Create: `gcp/research/direction_program/phase2_ablation.py` (CLI: run one config by index)
 - Modify: `gcp/deploy.sh` (add `direction-phase2` task-parallel job + dispatch case)
-- Test: `tests/test_phase2_ablation.py`
+- Test: `tests/gcp/test_phase2_ablation.py`
 
 **Interfaces:**
 - Produces: `ABLATION_CONFIGS: list[dict]` — the ladder: per axis, `{"axis","features"}` for baseline, each family in isolation, and the cumulative stack. Resolved by `CLOUD_RUN_TASK_INDEX`.
 - Produces: `run_config(engine, cfg) -> dict` — dispatches to `walk_forward_direction(engine, tk, tf, features=...)` or `walk_forward(engine, "phase0", tk, tf, features=...)` for all 3 tickers, records ledger rows, returns the `slice_predictable` verdict.
 - Reuses: `options_derived.build_materialized(engine, ticker, since, until)` for the one-time backfill (run manually before the ablation; documented below, not in the job).
 
-- [ ] **Step 1: Write the failing test** — `tests/test_phase2_ablation.py`:
+- [ ] **Step 1: Write the failing test** — `tests/gcp/test_phase2_ablation.py`:
 
 ```python
 from gcp.research.direction_program.phase2_ablation import ABLATION_CONFIGS
@@ -498,7 +498,7 @@ def test_ladder_has_baseline_and_isolation_and_stack_per_axis():
         assert any("," in f for f in feats)
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/test_phase2_ablation.py -q` → FAIL (`ModuleNotFoundError`).
+- [ ] **Step 2: Run test to verify it fails** — `python -m pytest tests/gcp/test_phase2_ablation.py -q` → FAIL (`ModuleNotFoundError`).
 
 - [ ] **Step 3: Write `phase2_ablation.py`:**
 
@@ -565,7 +565,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_phase2_ablation.py -q` → PASS (1 passed).
+- [ ] **Step 4: Run tests** — `python -m pytest tests/gcp/test_phase2_ablation.py -q` → PASS (1 passed).
 
 - [ ] **Step 5: Add the task-parallel job to `gcp/deploy.sh`** (after `deploy_direction_importance`), fanning out one task per config:
 
@@ -607,12 +607,12 @@ Add the dispatch case next to `direction-importance)`:
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
 ```
 
-- [ ] **Step 6: Verify** — `bash -n gcp/deploy.sh` → OK; `python -c "import gcp.research.direction_program.phase2_ablation"` → no error; `python -m pytest tests/test_phase2_ablation.py -q` → PASS.
+- [ ] **Step 6: Verify** — `bash -n gcp/deploy.sh` → OK; `python -c "import gcp.research.direction_program.phase2_ablation"` → no error; `python -m pytest tests/gcp/test_phase2_ablation.py -q` → PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add gcp/research/direction_program/phase2_ablation.py gcp/deploy.sh tests/test_phase2_ablation.py
+git add gcp/research/direction_program/phase2_ablation.py gcp/deploy.sh tests/gcp/test_phase2_ablation.py
 git commit -m "feat(direction): task-parallel phase2 ablation job + config ladder"
 ```
 

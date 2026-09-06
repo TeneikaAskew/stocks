@@ -24,7 +24,7 @@
 
 **Files:**
 - Modify: `platform/api/main.py` (add next to the other `/api/market/*` handlers)
-- Test: `tests/test_market_coverage.py` (create)
+- Test: `tests/api/test_market_coverage.py` (create)
 
 **Interfaces:**
 - Produces: `GET /api/market/coverage?symbols=SPY,AAPL,ZZZZ` → `{"coverage": {"SPY": {"intraday": true, "daily": true}, "AAPL": {"intraday": false, "daily": true}, "ZZZZ": {"intraday": false, "daily": false}}}`. Pure helper `_coverage_from_frames(symbols: list[str], daily_tickers: set[str], intraday_tickers: set[str]) -> dict`.
@@ -33,13 +33,13 @@
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_market_coverage.py
+# tests/api/test_market_coverage.py
 """Coverage endpoint: which tickers have daily/intraday data (spec §5.1).
 Pure-helper tests only — SQL is exercised by the I/O-shape assertion that
 the endpoint issues exactly TWO batched queries (never per-symbol)."""
 import pytest
 
-# Import the app module the way tests/test_backtest_router_units.py does.
+# Import the app module the way tests/api/test_backtest_router_units.py does.
 from tests.test_backtest_router_units import _import_platform_api  # reuse if exposed;
 # otherwise copy that file's import block verbatim.
 main = _import_platform_api("main")
@@ -78,9 +78,9 @@ def test_coverage_endpoint_batches_queries(monkeypatch):
     assert len(calls) == 2  # one daily, one intraday — regardless of symbol count
 ```
 
-Adapt import/monkeypatch mechanics to the file's real structure (read `tests/test_backtest_router_units.py` and `platform/api/main.py` first); keep the three assertions' substance.
+Adapt import/monkeypatch mechanics to the file's real structure (read `tests/api/test_backtest_router_units.py` and `platform/api/main.py` first); keep the three assertions' substance.
 
-- [ ] **Step 2: Run to verify failure** — `python -m pytest tests/test_market_coverage.py -v` → FAIL (helper missing).
+- [ ] **Step 2: Run to verify failure** — `python -m pytest tests/api/test_market_coverage.py -v` → FAIL (helper missing).
 
 - [ ] **Step 3: Implement**
 
@@ -127,7 +127,7 @@ async def market_coverage(symbols: str):
 
 Check how main.py's existing endpoints bind SQL params (`:name` + dict via SQLAlchemy text vs psycopg style) and match it; `ANY(:syms)` array binding must follow the repo's working pattern (grep for `= ANY(` in platform/api and gcp/ for a precedent; if none, use `WHERE ticker IN :syms` with `tuple(syms)` per the repo's established idiom). If the intraday table is partitioned per ticker (market_data_intraday_spy etc.), query the parent table `market_data_intraday` — it is declared in gcp/schema.sql:100 and the partitions attach to it.
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_market_coverage.py -v` → PASS.
+- [ ] **Step 4: Run tests** — `python -m pytest tests/api/test_market_coverage.py -v` → PASS.
 - [ ] **Step 5: Commit** — `feat(api): market coverage endpoint for ticker type-ahead badges`
 
 ---
@@ -273,7 +273,7 @@ export const useTickerStore = create<TickerState>()(
 
 **Files:**
 - Modify: `gcp/fetchers/fetch_market_data.py:33` and the `AV_SYMBOL_MAP` at `:37-42`
-- Test: `tests/test_fetch_market_data_universe.py` (create)
+- Test: `tests/gcp/test_fetch_market_data_universe.py` (create)
 
 **Interfaces:**
 - Produces: module constant `SECTOR_ETFS = ['XLK','XLF','XLE','XLV','XLI','XLY','XLP','XLU','XLB','XLRE','XLC']`; `TICKERS = ['IWM','SPY','QQQ','SPX'] + SECTOR_ETFS`; each sector ETF present in `AV_SYMBOL_MAP` mapping to itself.
@@ -281,7 +281,7 @@ export const useTickerStore = create<TickerState>()(
 - [ ] **Step 1: Failing test**
 
 ```python
-# tests/test_fetch_market_data_universe.py
+# tests/gcp/test_fetch_market_data_universe.py
 """The 11 SPDR sector ETFs ride the existing daily fetch (spec §5.2)."""
 from gcp.fetchers import fetch_market_data as f
 
@@ -308,7 +308,7 @@ def test_sector_etfs_have_av_symbols():
 
 **Files:**
 - Modify: `platform/api/main.py` (beside coverage endpoint)
-- Test: `tests/test_market_sectors.py` (create)
+- Test: `tests/api/test_market_sectors.py` (create)
 
 **Interfaces:**
 - Produces: `{"as_of": "YYYY-MM-DD" | null, "sectors": [{"symbol": "XLK", "name": "Technology", "close": 245.1, "chg_1d_pct": 0.42, "chg_5d_pct": -1.3, "status": "ok"} | {"symbol": "XLRE", "name": "Real Estate", "status": "unavailable", "reason": "no rows"}], "status": "ok" | "unavailable"}` — `*_pct` in TRUE PERCENT. Pure helper `_sector_rotation_from_df(df) -> tuple[str | None, list[dict]]` where df has columns ticker/date/close (last 6 trading days per ticker).
@@ -317,7 +317,7 @@ def test_sector_etfs_have_av_symbols():
 - [ ] **Step 1: Failing test**
 
 ```python
-# tests/test_market_sectors.py
+# tests/api/test_market_sectors.py
 import pandas as pd
 import pytest
 # import main per the established pattern
@@ -373,7 +373,7 @@ def test_sector_rotation_all_missing():
 
 **Files:**
 - Modify: `platform/api/routers/catalysts.py:196-259` (news block), `platform/src/routes/DashboardPage.tsx` news card (~lines 345-348 newsFeed memo + card at 657-679)
-- Test: `tests/test_catalysts_news_filter.py` (create)
+- Test: `tests/api/test_catalysts_news_filter.py` (create)
 
 **Interfaces:**
 - Produces: news rows in the catalysts response gain `"catalyst_type": "NEWS_*"` as today PLUS reliable presence when recent news exists: the news SQL becomes backward-looking and case-insensitive, DECOUPLED from the forward event window. New module constants `NEWS_LOOKBACK_HOURS = 48` and `NEWS_TOPICS = ['mergers_and_acquisitions','earnings','ipo','economy_monetary','technology','financial_markets','life_sciences']`.
@@ -381,7 +381,7 @@ def test_sector_rotation_all_missing():
 - [ ] **Step 1: Failing test**
 
 ```python
-# tests/test_catalysts_news_filter.py
+# tests/api/test_catalysts_news_filter.py
 """News is inherently backward-looking; the catalyst window is forward.
 DB-verified 2026-07-08 (exec db-query-vjfwb): the old shared-window filter
 returned 0 rows while 1,681 articles existed in the trailing 48h; topics
@@ -424,7 +424,7 @@ with `params = {"lookback_hours": NEWS_LOOKBACK_HOURS, "topics": NEWS_TOPICS}` (
 
 ## Final verification
 
-- [ ] `python -m pytest tests/test_market_coverage.py tests/test_market_sectors.py tests/test_catalysts_news_filter.py tests/test_fetch_market_data_universe.py -v` → all pass
+- [ ] `python -m pytest tests/api/test_market_coverage.py tests/api/test_market_sectors.py tests/api/test_catalysts_news_filter.py tests/gcp/test_fetch_market_data_universe.py -v` → all pass
 - [ ] `cd platform && npx tsc --noEmit && npx vitest run && npm run build` → clean
 - [ ] Playwright: ticker-combobox + dashboard sector/news specs green (mocked)
 - [ ] PR carries the Rule-0 capacity notes and the SPDR backfill runbook step gated on deploy

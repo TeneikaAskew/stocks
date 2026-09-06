@@ -41,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Module import (not `from api.auth import current_user_email`) so tests can
 # monkeypatch api.auth.AUTH_MODE and this router sees it — same convention as
-# tests/test_platform_auth.py's setattr-over-reload rationale.
+# tests/api/test_platform_auth.py's setattr-over-reload rationale.
 from api import auth
 
 logger = logging.getLogger(__name__)

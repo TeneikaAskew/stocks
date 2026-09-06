@@ -18,11 +18,11 @@ lock:
 
 ## Run the hermetic unit/API test suite (excludes E2E and DB-integration)
 test:
-	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/test_e2e.py --ignore=tests/integration
+	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/e2e --ignore=tests/integration
 
 ## Run Playwright E2E tests for all web apps (requires: make install-playwright)
 test-e2e:
-	$(PYTHON) -m pytest tests/test_e2e.py -v
+	$(PYTHON) -m pytest tests/e2e/test_e2e.py -v
 
 ## Run real-SQL integration tests — needs a Postgres with gcp/schema.sql
 ## applied and DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME exported.
@@ -31,7 +31,7 @@ test-integration:
 
 ## Run script CLI regression tests only
 test-scripts:
-	$(PYTHON) -m pytest tests/test_scripts.py -v
+	$(PYTHON) -m pytest tests/scripts/test_scripts.py -v
 
 ## Install Playwright browsers and system deps (run once after pip install)
 install-playwright:

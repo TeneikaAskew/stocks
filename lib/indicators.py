@@ -1384,7 +1384,7 @@ def add_all_indicators(
 # (incl. the ~39 ORB columns + the promoted-regime block). The functions below
 # run ONLY the blocks each capability needs, with byte-identical per-block
 # arithmetic — verified 0.0 max-abs-diff vs add_all_indicators on the shared
-# columns in tests/test_indicators.py. Research / nightly paths keep calling
+# columns in tests/lib/test_indicators.py. Research / nightly paths keep calling
 # add_all_indicators unchanged.
 #
 # FEATURE_GROUPS is the authoritative output-column list per capability. It is

@@ -29,15 +29,15 @@
 
 **Files:**
 - Modify: `platform/api/routers/journal.py` (new GET; reuse `_rows_to_trades` + the trades-GET SQL shape at lines ~228-244)
-- Test: `tests/test_journal_examples.py` (model scaffold on `tests/test_journal_phase2.py`)
+- Test: `tests/api/test_journal_examples.py` (model scaffold on `tests/api/test_journal_phase2.py`)
 
 **Interfaces:**
 - Produces: `GET /api/journal/examples/{ticker}` → same JSON shape as `GET /api/journal/trades/{ticker}` (`{ticker, source, count, trades:[...]}`), rows scoped `user_email = ADMIN_EMAIL AND ticker = :t AND source IS DISTINCT FROM 'replay'`, ordered like the trades GET. ADMIN_EMAIL from the same config the admin gate uses (`api/config.py` / `api/auth.py` — read them; never from the client). DB unavailable → the same explicit-unavailable envelope the trades GET uses (read its except path; do NOT invent a new one, and do NOT return fabricated empty-success).
 
 - [ ] Write failing tests: (a) returns admin rows for ticker, same field set as trades GET (assert key-set equality against a trades-GET response in the same test app); (b) excludes `source='replay'` rows; (c) another user's rows never appear; (d) requires auth exactly like the trades GET (compare status codes with/without the test auth header); (e) unknown ticker → empty trades, count 0.
-- [ ] Run: `python -m pytest tests/test_journal_examples.py -q` → FAIL (404 route missing).
+- [ ] Run: `python -m pytest tests/api/test_journal_examples.py -q` → FAIL (404 route missing).
 - [ ] Implement (reuse `_rows_to_trades`; one SQL query; no per-row queries).
-- [ ] Run new tests + `tests/test_journal_phase2.py` → all green.
+- [ ] Run new tests + `tests/api/test_journal_phase2.py` → all green.
 - [ ] Commit: `feat(api): journal examples endpoint — admin seed trades read-only`
 
 ---
@@ -46,8 +46,8 @@
 
 **Files:**
 - Create: `lib/broker_import.py`
-- Create: `tests/test_broker_import.py` + fixtures `tests/fixtures/broker_csv/robinhood_sample.csv`, `webull_sample.csv`
-- Test command: `python -m pytest tests/test_broker_import.py -q`
+- Create: `tests/lib/test_broker_import.py` + fixtures `tests/fixtures/broker_csv/robinhood_sample.csv`, `webull_sample.csv`
+- Test command: `python -m pytest tests/lib/test_broker_import.py -q`
 
 **Interfaces (Produces — Task 3 and 6 depend on these exact names):**
 ```python
@@ -95,7 +95,7 @@ def pair_orders(orders: list[NormalizedOrder]) -> ImportPreview   # FIFO per (ti
 
 **Files:**
 - Modify: `platform/api/routers/journal.py`
-- Test: `tests/test_journal_import_endpoints.py`
+- Test: `tests/api/test_journal_import_endpoints.py`
 
 **Interfaces (Produces):**
 - `POST /api/journal/import/preview` — multipart file + optional `broker`/`mapping` JSON field → `{broker, trades:[PairedTrade-shaped dicts + duplicate: bool], skipped:[{raw_index, reason}]}`. Duplicate = existing journal row for THIS user matching (ticker, entry_ts, entry_price, direction).
@@ -104,7 +104,7 @@ def pair_orders(orders: list[NormalizedOrder]) -> ImportPreview   # FIFO per (ti
 
 - [ ] Failing tests: preview parses fixture upload end-to-end (real router, TestClient multipart); duplicate flagged when a matching row pre-exists; commit inserts + second identical commit → `imported=0, skipped_duplicates=N`; active trades commit with null exit (and the GET returns them as active); auth required.
 - [ ] Implement (reuse Task 2 lib; one INSERT per selected trade is acceptable at import scale ≤ a few hundred rows — bound with an explicit 5,000-row cap → 413).
-- [ ] Run new tests + `tests/test_journal_phase2.py` + `tests/test_journal_examples.py` → green.
+- [ ] Run new tests + `tests/api/test_journal_phase2.py` + `tests/api/test_journal_examples.py` → green.
 - [ ] Commit: `feat(api): broker import preview/commit endpoints — idempotent, options-only`
 
 ---
@@ -175,7 +175,7 @@ Steps in modal: (1) broker chips (Robinhood, Webull auto; Schwab/Fidelity/IBKR/O
 
 ### Task 8: Whole-feature verification + rollout
 
-- [ ] Full gates: `python -m pytest tests/test_journal_examples.py tests/test_broker_import.py tests/test_journal_import_endpoints.py tests/test_journal_phase2.py -q`; `cd platform && npx tsc --noEmit && npx vitest run`; Playwright: journal-onestop, journal-import, journal, charts-cards, replay-trainer, ticker-combobox.
+- [ ] Full gates: `python -m pytest tests/api/test_journal_examples.py tests/lib/test_broker_import.py tests/api/test_journal_import_endpoints.py tests/api/test_journal_phase2.py -q`; `cd platform && npx tsc --noEmit && npx vitest run`; Playwright: journal-onestop, journal-import, journal, charts-cards, replay-trainer, ticker-combobox.
 - [ ] Eyes-on screenshots of the assembled Journal (Examples view populated, rail cards, import preview) — compare against the approved mockup, send to user.
 - [ ] PR with capacity note (examples GET = one indexed SELECT/page-load; import = user-initiated, ≤5,000-row cap; no schedulers) → CI → merge on green (standard squash).
 - [ ] Deploy staging → user acceptance on the live page → prod deploy (0% traffic) → promote BY REVISION NAME after user OK.

@@ -201,9 +201,9 @@ INSERT INTO model_routing (role, provider, model) VALUES
 
 | Action | Path |
 |---|---|
-| CREATE | [tests/test_agent_summarizers.py](tests/test_agent_summarizers.py) — fixture SQL → expected JSON shape |
-| CREATE | [tests/test_agent_schema.py](tests/test_agent_schema.py) — Pydantic validation edge cases |
-| CREATE | [tests/test_agent_orchestrator.py](tests/test_agent_orchestrator.py) — mocked LLM client; asserts pipeline topology + structured output contract |
+| CREATE | [tests/agents/test_agent_summarizers.py](tests/agents/test_agent_summarizers.py) — fixture SQL → expected JSON shape |
+| CREATE | [tests/agents/test_agent_schema.py](tests/agents/test_agent_schema.py) — Pydantic validation edge cases |
+| CREATE | [tests/agents/test_agent_orchestrator.py](tests/agents/test_agent_orchestrator.py) — mocked LLM client; asserts pipeline topology + structured output contract |
 | CREATE | [tests/test_insights_router.py](tests/test_insights_router.py) — FastAPI TestClient: GET cached, POST refresh, chat still works |
 | CREATE | [tests/e2e/insights.spec.ts](tests/e2e/insights.spec.ts) — Playwright: landing view renders structured report, sub-tabs navigate, re-analyze button triggers refresh |
 
