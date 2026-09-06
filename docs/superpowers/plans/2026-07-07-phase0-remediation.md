@@ -23,7 +23,7 @@
 
 **Files:**
 - Modify: `platform/api/routers/backtest.py`
-- Test: `tests/test_backtest_router_units.py` (create)
+- Test: `tests/api/test_backtest_router_units.py` (create)
 
 **Interfaces:**
 - Produces: `_summarize_returns(df) -> dict` where `avg_return_pct`, `avg_win_pct`, `avg_loss_pct`, `total_return_pct` are ×100 percent values; `win_rate` stays a 0–1 fraction. Per-trade records gain `return_pct` in percent units via `_trades_to_percent_records(df)`. Endpoints `GET /api/backtest/results/{ticker}?run=`, `GET /api/backtest/equity/{ticker}?run=` accept an optional `run` timestamp (`YYYYMMDD_HHMMSS`); omitted → newest. `/api/backtest/all/{ticker}` run entries' `avg_return_pct` also percent units.
@@ -31,7 +31,7 @@
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_backtest_router_units.py
+# tests/api/test_backtest_router_units.py
 """Backtest router unit-convention tests (spec §4 items 0.2, 0.6).
 
 The BacktestEngine writes return_pct as a raw fraction (0.003 = 0.3%).
@@ -73,11 +73,11 @@ def test_run_pattern_accepts_specific_timestamp():
     assert pat == r"^backtest_SPY_20260222_231417\.csv$"
 ```
 
-If no `platform_api_import_helper` exists in `tests/`, inline the import the way existing platform tests do it (check `tests/test_platform_auth.py` for the established sys.path pattern and copy it — do NOT invent a new mechanism).
+If no `platform_api_import_helper` exists in `tests/`, inline the import the way existing platform tests do it (check `tests/api/test_platform_auth.py` for the established sys.path pattern and copy it — do NOT invent a new mechanism).
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_backtest_router_units.py -v`
+Run: `python -m pytest tests/api/test_backtest_router_units.py -v`
 Expected: FAIL (`_trades_to_percent_records` not defined; `avg_return_pct == 0.001`).
 
 - [ ] **Step 3: Implement**
@@ -137,13 +137,13 @@ def _trades_to_percent_records(df: pd.DataFrame) -> list[dict]:
 
 - [ ] **Step 4: Run tests**
 
-Run: `python -m pytest tests/test_backtest_router_units.py -v`
+Run: `python -m pytest tests/api/test_backtest_router_units.py -v`
 Expected: PASS (3/3).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add platform/api/routers/backtest.py tests/test_backtest_router_units.py
+git add platform/api/routers/backtest.py tests/api/test_backtest_router_units.py
 git commit -m "fix(api): backtest *_pct fields emit true percent units; run query param selects a specific run"
 ```
 
@@ -824,7 +824,7 @@ git commit -m "fix(live): review-mode change re-based to prior session close; nu
 
 **Files:**
 - Modify: `platform/api/routers/live.py` (new endpoint), `platform/src/routes/ChartsPage.tsx:183-196,226-240,785` (and every `computeIndicators`/`calculateVWAP`/`computeStrategySignals*` call site), `platform/src/lib/indicators.ts` (delete replaced functions), `platform/src/lib/strategySignals.test.ts` + `strategySignalsForSeries.test.ts` (delete alongside their subjects)
-- Test: `tests/test_live_signal_series.py` (create), Playwright `platform/tests/phase1-charts.spec.ts` (extend)
+- Test: `tests/api/test_live_signal_series.py` (create), Playwright `platform/tests/phase1-charts.spec.ts` (extend)
 
 **Interfaces:**
 - Produces: `POST /api/live/signal-series` `{bars: [{time, open, high, low, close, volume}]}` → `{fires: [{time: string, direction: "CALL"|"PUT", score: number}], conditions: <same shape as /api/live/indicators signals block for the LAST bar>}`.
@@ -833,7 +833,7 @@ git commit -m "fix(live): review-mode change re-based to prior session close; nu
 - [ ] **Step 1: Write the failing pytest**
 
 ```python
-# tests/test_live_signal_series.py
+# tests/api/test_live_signal_series.py
 """POST /api/live/signal-series — server-side per-bar signal fires (spec 0.12).
 
 Replaces the client-side TS voter so the 5-condition logic exists in
@@ -842,7 +842,7 @@ contract is enforced without depending on signal-firing specifics.
 """
 from fastapi.testclient import TestClient
 
-# import the app the way tests/test_platform_auth.py does
+# import the app the way tests/api/test_platform_auth.py does
 from platform_api_import_helper import get_app  # or the established pattern
 
 client = TestClient(get_app())
@@ -878,7 +878,7 @@ def test_signal_series_rejects_short_series():
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `python -m pytest tests/test_live_signal_series.py -v`
+Run: `python -m pytest tests/api/test_live_signal_series.py -v`
 Expected: FAIL — 404 (endpoint missing).
 
 - [ ] **Step 3: Implement backend**
@@ -912,13 +912,13 @@ In `ChartsPage.tsx`:
 
 - [ ] **Step 5: Run all tests**
 
-Run: `python -m pytest tests/test_live_signal_series.py -v && cd platform && npx tsc --noEmit && npx vitest run && npx playwright test tests/phase1-charts.spec.ts`
+Run: `python -m pytest tests/api/test_live_signal_series.py -v && cd platform && npx tsc --noEmit && npx vitest run && npx playwright test tests/phase1-charts.spec.ts`
 Expected: PASS (Playwright confirms Live Strategy Conditions still render on /charts).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add platform/api/routers/live.py tests/test_live_signal_series.py platform/src
+git add platform/api/routers/live.py tests/api/test_live_signal_series.py platform/src
 git commit -m "fix(charts): signal voter and indicators served by lib/ via API; client TS math removed"
 ```
 

@@ -1054,7 +1054,7 @@ Seventeen named plans live in `~/.claude/plans/`. All have been validated agains
 
 **Problem:** 9 Cloud Run Jobs ran on Cloud Scheduler but failures only surfaced in Cloud Logging.
 **Approach:** Cloud Logging sink → Pub/Sub topic → Cloud Run Service notifier → Discord embed + GitHub issue (with duplicate detection). Notifier is a FastAPI app deployed alongside main image with alternate `--command` entrypoint.
-**Files shipped:** `gcp/failure_notifier.py`, `gcp/deploy.sh` (notifier setup functions), `tests/test_failure_notifier.py`, secrets `github-pat` + `github-repo`.
+**Files shipped:** `gcp/failure_notifier.py`, `gcp/deploy.sh` (notifier setup functions), `tests/gcp/test_failure_notifier.py`, secrets `github-pat` + `github-repo`.
 
 #### 10. `lovely-riding-quiche` — SPX Options Greeks 🟡 (infra ✅, exec pending)
 

@@ -532,7 +532,7 @@ accrue), not another re-representation of the OHLCV+EOD-options we already hold.
   `etf_options_snapshots` `market_session='REALTIME'` feed (real intraday greeks).
 - **Correlation pipelines:** `lib/combo_mining.py`; jobs `regime-combo-weekly`,
   `indicator-correlation`; tables `regime_combo_results`, `indicator_correlation`.
-- **Hermetic tests:** `tests/test_strat_dir_probes.py` (19), `test_flow_direction.py`
+- **Hermetic tests:** `tests/gcp/test_strat_dir_probes.py` (19), `test_flow_direction.py`
   (22), `test_intraday_flow.py` (8), `test_fracdiff.py` (11), `test_information_bars.py`.
 
 *This compendium cross-links but does not supersede the per-topic deep docs listed

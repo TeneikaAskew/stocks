@@ -186,7 +186,7 @@ def fetch_intraday_snapshot(api_key: str) -> pd.DataFrame:
 
     # One snapshot_ts for the whole batch — explicitly tz-aware. See the
     # documented naive-datetime.now() UTC incident this repo already hit
-    # (gcp/fetchers/fetch_market_data.py tz fix / tests/test_fetch_market_data_tz.py).
+    # (gcp/fetchers/fetch_market_data.py tz fix / tests/gcp/test_fetch_market_data_tz.py).
     snapshot_ts = datetime.now(timezone.utc)
     snapshot_date = snapshot_ts.astimezone(_ET).date()
 

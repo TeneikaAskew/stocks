@@ -104,7 +104,7 @@ This plan also resolves five naming inconsistencies:
 | `docs/STRAT_METHODOLOGY.md` | Pattern definitions + source-of-truth inventory |
 | `docs/STRAT_IMPLEMENTATION_PLAN.md` | This file |
 | `lib/strat_levels.py` | Levels engine |
-| `tests/test_strat_levels.py` | Levels engine tests |
+| `tests/lib/test_strat_levels.py` | Levels engine tests |
 
 ### Modified
 | File | Change |
@@ -132,7 +132,7 @@ This plan also resolves five naming inconsistencies:
 | `scripts/analysis/phase5_additional_dimensions.py` | same (5 sites) |
 | `scripts/analysis/phase6_playbook.py` | same |
 | `scripts/backfill_signals.py` | Default value |
-| `tests/test_strat.py` | Full rewrite |
+| `tests/lib/test_strat.py` | Full rewrite |
 | `tests/conftest.py` | Fixture column name |
 
 ---
@@ -169,7 +169,7 @@ All Strat logic changes atomic so behavior is consistent:
 8. Per-combo bonus dict (float, negative bonuses)
 9. `DEFAULT_WEIGHTS` → 7 keys with 4h/12h
 10. `RESAMPLE_RULES` update in `lib/data_loader.py`
-11. Full `tests/test_strat.py` rewrite
+11. Full `tests/lib/test_strat.py` rewrite
 
 ### Commit 3 — Cascade rename
 Mechanical ~15-file rename: old column/combo strings → new. Grep verification.
@@ -180,7 +180,7 @@ Mechanical ~15-file rename: old column/combo strings → new. Grep verification.
 ### Commit 5 — Levels engine (`lib/strat_levels.py`)
 - `StratLevel`, `LevelMap` dataclasses
 - `classify_level_strat`, `compute_previous_levels` (reads existing cols), `compute_current_levels`, `compute_gap_levels`, `detect_level_clusters`, `detect_pmg_temporal`, `compute_room_to_run`, `compute_risk_reward`, `identify_triggers`, `build_level_map`, `format_levels_for_brief`, `persist_level_map`
-- `strat_levels` table + `tests/test_strat_levels.py`
+- `strat_levels` table + `tests/lib/test_strat_levels.py`
 
 ### Commit 6 — Brief upgrade
 4th Discord embed with playbook block. Catalyst-aware ORB selection.
@@ -197,10 +197,10 @@ ORB snapshot mode, level-break detection, deploy.sh triggers, signal scoring.
 | Commit | Gate |
 |---|---|
 | 1 | Markdown renders, inventory refs valid |
-| 2 | `pytest tests/test_strat.py -v` green |
+| 2 | `pytest tests/lib/test_strat.py -v` green |
 | 3 | `grep` returns zero hits for old strings in source files |
 | 4 | Quarter columns populated in market_data_daily |
-| 5 | `pytest tests/test_strat_levels.py -v` green; drift-guard passes |
+| 5 | `pytest tests/lib/test_strat_levels.py -v` green; drift-guard passes |
 | 6 | Dry-run brief prints expected playbook format |
 | 7 | Scheduler triggers exist; monitor logs level-break embeds |
 
