@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import uuid
+from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -643,6 +644,32 @@ def _build_local_entry(
     }
 
 
+def _round_half_up_4dp(value: float) -> float:
+    """Round to 4dp the way PostgreSQL does, not the way Python does.
+
+    `round()` uses banker's rounding (ties-to-even) and
+    `round(numeric, 4)` in Postgres rounds ties away from zero. They agree
+    everywhere except an exact halfway fifth decimal, and there they differ:
+
+        round(1.03125, 4)            -> 1.0312   (Python)
+        round(1.03125::numeric, 4)   -> 1.0313   (PostgreSQL, read live)
+
+    That matters because `uq_journal_entries_import_dedupe` indexes the
+    Postgres expression while this function decides what the endpoint calls a
+    duplicate. Disagreeing at the tie means concurrent imports of a price like
+    1.03125 pass the index and insert twice, while a sequential import skips
+    the second -- the same defect the normalized index was added to close,
+    one decimal place further down.
+
+    `Decimal(repr(x))` reproduces the float exactly as Postgres's
+    `double precision -> numeric` cast does (both take the shortest
+    representation that round-trips), so the two sides quantize the same
+    input. The result returns to `float` so the key's type is unchanged.
+    """
+    return float(Decimal(repr(value)).quantize(Decimal("0.0001"),
+                                               rounding=ROUND_HALF_UP))
+
+
 def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:
     """Duplicate-detection key per the brief: (ticker, entry_ts, entry_price,
     direction). `entry_ts` is normalized to 'YYYY-MM-DD HH:MM' (drop
@@ -654,7 +681,7 @@ def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:
     """
     ts_norm = str(entry_ts).replace("T", " ")[:16]
     try:
-        price_norm = round(float(entry_price), 4)
+        price_norm = _round_half_up_4dp(float(entry_price))
     except (TypeError, ValueError):
         price_norm = None
     return (str(ticker).strip().upper(), str(direction).strip().upper(), ts_norm, price_norm)
@@ -1094,12 +1121,24 @@ def delete_trade(trade_id: str, request: Request, ticker: str = ""):
             for p in LOCAL_JOURNAL_DIR.glob("*_journal.json"):
                 try:
                     entries = json.loads(p.read_text())
+                    if not isinstance(entries, list):
+                        raise ValueError(
+                            f"expected a list, got {type(entries).__name__}")
+                    updated = [e for e in entries
+                               if not isinstance(e, dict)
+                               or e.get("id") != trade_id]
                 except Exception as e:
                     # An unreadable journal is not an empty one; skipping it
                     # keeps the file intact instead of rewriting it away.
+                    #
+                    # The shape check and the row walk are INSIDE the boundary
+                    # deliberately. A file holding valid JSON of the wrong
+                    # shape parses fine and then raises on `.get`, and with
+                    # that raise outside the try it aborted the whole scan --
+                    # so one malformed file could block deleting a trade that
+                    # lives in a later healthy one.
                     logger.warning("skipping unreadable local journal %s: %s", p.name, e)
                     continue
-                updated = [e for e in entries if e.get("id") != trade_id]
                 if len(updated) != len(entries):
                     _save_local(p.name.removesuffix("_journal.json"), updated)
                     break

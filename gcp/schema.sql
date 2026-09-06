@@ -1249,6 +1249,14 @@ CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
 -- DROP first so a deployment carrying the raw-column version converges on the
 -- normalized one; `IF NOT EXISTS` alone would silently keep the old
 -- definition under the same name.
+--
+-- ATOMIC because `apply_schema.run_unit()` commits statements separately, so
+-- an ungrouped pair leaves the table with NO import constraint between the
+-- two: concurrent imports could insert duplicates in that window and then
+-- make the CREATE fail, and a cancellation after the DROP would leave
+-- production unconstrained indefinitely. Grouped, the old index stays visible
+-- unless the replacement commits.
+-- ATOMIC-BEGIN journal import dedupe: drop + recreate as one txn
 DROP INDEX IF EXISTS uq_journal_entries_import_dedupe;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_import_dedupe
     ON journal_entries (
@@ -1259,6 +1267,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_import_dedupe
         round(entry_price::numeric, 4)
     )
     WHERE source LIKE 'import:%';
+-- ATOMIC-END journal import dedupe
 
 
 -- ─────────────────────────────────────────────────────────

@@ -122,7 +122,7 @@ def test_no_api_call_site_uses_the_unsafe_lookup_pattern():
         if path.name == "threadsafe_cache.py":
             continue
         for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-            if re.search(r"if \S+ in _[A-Z0-9_]*CACHE", line):
+            if re.search(r"if \S+ in _[A-Z0-9_]*CACHE\b", line):
                 offenders.append(f"{path.name}:{i} {line.strip()}")
     assert not offenders, (
         "`in` then `[]` on a shared cache is two locked operations; use "
@@ -612,48 +612,108 @@ def test_firebase_initializes_once_under_concurrent_callers():
         "ValueError and been reported as anonymous")
 
 
-def test_one_vendor_call_serves_concurrent_lookups_for_a_ticker():
-    """Threadpool dispatch made duplicate AlphaVantage calls reachable.
-
-    While every handler ran on the event loop, two requests for the same cold
-    ticker could not overlap. Now they can, and both pass the Cloud SQL and
-    local-cache checks before either persists. `_merge_into_local_cache` does
-    not help: it makes the WRITE atomic, which is a different problem.
-    """
+def _ticker_info_harness(mp, store, fetches, sleep_s=0.05):
+    """Point lib.ticker_info at an in-memory cache and a counting fetcher."""
     import lib.ticker_info as ticker_info
-
-    fetches: list[str] = []
-    store: dict[str, dict] = {}
 
     def fake_fetch(ticker: str):
         fetches.append(ticker)
-        time.sleep(0.05)
+        time.sleep(sleep_s)
         return {"Symbol": ticker, "Name": "Test"}
 
+    mp.setattr(ticker_info, "fetch_ticker_overview", fake_fetch)
+    mp.setattr(ticker_info, "_cloud_sql_available", lambda: False)
+    mp.setattr(ticker_info, "_load_local_cache", lambda: dict(store))
+    mp.setattr(ticker_info, "_merge_into_local_cache",
+               lambda t, u, *, replace: store.__setitem__(t, dict(u)))
+    return ticker_info
+
+
+def _concurrently(fn, n=6, timeout=10):
+    results = []
+    barrier = threading.Barrier(n)
+
+    def go() -> None:
+        barrier.wait()
+        results.append(fn())
+
+    threads = [threading.Thread(target=go) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=timeout)
+    return results
+
+
+def test_a_stale_entry_is_refreshed_once_and_served_to_everyone_else():
+    """What the ticker coalescing is actually for.
+
+    A stale-but-present entry is the common case at a 30-day freshness
+    window: one caller refreshes from the vendor and the rest are served the
+    stale value immediately. Nobody waits -- these run in threadpooled request
+    handlers, so a waiter holds a FastAPI worker, and a burst on one ticker
+    could fill the pool and starve `/api/health` and `/api/me`. That is the
+    trade this whole migration removes, and a first version of this
+    coalescing reintroduced it with a 20 s bounded wait.
+    """
+    fetches: list[str] = []
+    stale = {"Symbol": "IWM", "_fetched_utc": "2020-01-01T00:00:00+00:00"}
+    store = {"IWM": dict(stale)}
+
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(ticker_info, "fetch_ticker_overview", fake_fetch)
-        mp.setattr(ticker_info, "_cloud_sql_available", lambda: False)
-        mp.setattr(ticker_info, "_load_local_cache", lambda: dict(store))
-        mp.setattr(ticker_info, "_merge_into_local_cache",
-                   lambda t, u, *, replace: store.__setitem__(t, u))
-
-        barrier = threading.Barrier(6)
-        results: list = []
-
-        def go() -> None:
-            barrier.wait()
-            results.append(ticker_info.get_ticker_info("IWM"))
-
-        threads = [threading.Thread(target=go) for _ in range(6)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
+        ticker_info = _ticker_info_harness(mp, store, fetches, sleep_s=0.2)
+        started = time.monotonic()
+        results = _concurrently(lambda: ticker_info.get_ticker_info("IWM"))
+        elapsed = time.monotonic() - started
 
     assert len(results) == 6 and all(r for r in results), results
     assert fetches == ["IWM"], (
-        f"the vendor was called {len(fetches)} times for one cold ticker: "
-        f"{fetches}")
+        f"the vendor was called {len(fetches)} times refreshing one stale "
+        f"entry: {fetches}")
+    assert elapsed < 1.0, (
+        f"the decliners took {elapsed:.2f}s; they should be served from cache "
+        "immediately rather than waiting on the claimant")
+
+
+def test_a_cold_ticker_refetches_rather_than_fabricating_a_miss():
+    """The deliberate cost of never waiting, pinned so it stays deliberate.
+
+    With nothing cached there is nothing honest to serve: returning `None`
+    would surface as `404 No info for IWM` for a perfectly valid ticker while
+    a fetch is in flight -- a fabricated answer (Rule 3.7). A duplicate vendor
+    call is the cheaper wrong thing, so decliners fall through and fetch.
+
+    This asserts the trade rather than the ideal, because a test that
+    demanded one call here would be demanding the wait back.
+    """
+    fetches: list[str] = []
+    store: dict[str, dict] = {}
+
+    with pytest.MonkeyPatch.context() as mp:
+        ticker_info = _ticker_info_harness(mp, store, fetches)
+        results = _concurrently(lambda: ticker_info.get_ticker_info("IWM"))
+
+    assert len(results) == 6 and all(r for r in results), results
+    assert len(fetches) >= 1, "nobody fetched a cold ticker"
+
+
+def test_an_overview_refresh_does_not_discard_independently_cached_peers():
+    """`replace=True` wipes the ticker's entry, and `_peers` lives there too.
+
+    `get_peers` stores `_peers` under its own flight and never reads the
+    Cloud SQL relationships column back, so an overview refresh that dropped
+    them would silently cost a second FinViz scrape on the next request.
+    """
+    fetches: list[str] = []
+    store = {"IWM": {"_peers": ["VTWO", "IJR"],
+                     "_fetched_utc": "2020-01-01T00:00:00+00:00"}}
+
+    with pytest.MonkeyPatch.context() as mp:
+        ticker_info = _ticker_info_harness(mp, store, fetches)
+        ticker_info.get_ticker_info("IWM")
+
+    assert store["IWM"].get("_peers") == ["VTWO", "IJR"], (
+        f"the overview refresh discarded the cached peers: {store['IWM']}")
 
 
 def test_the_import_index_enforces_the_endpoints_own_dedupe_key():
