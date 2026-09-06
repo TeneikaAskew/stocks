@@ -244,7 +244,7 @@ Three hypotheses tested: system change, regime change, mix shift.
   `classify_date_outcome()` separates the benign same-day pre-ingestion
   race from real gaps; any failed date or exception exits non-zero so
   the execution shows red. Six new unit tests pin the semantics
-  (`tests/test_premarket_playbook_resolver.py`).
+  (`tests/gcp/test_premarket_playbook_resolver.py`).
 - **Production mitigation applied now:** Cloud Scheduler
   `premarket-playbook-resolver-daily` moved 16:30 ET → **21:15 ET**
   (after `av-intraday-nightly` lands the day's bars ~21:00 ET), matching

@@ -2,7 +2,7 @@
 
 Why this file exists
 --------------------
-The hermetic tests in `tests/test_platform_api.py` mock the data layer:
+The hermetic tests in `tests/api/test_platform_api.py` mock the data layer:
 they hand the endpoint a DataFrame, so they cannot see a bug *in the SQL
 string itself*. If a query says `SELECT alert_time` but the column is
 `alert_ts`, or references a column a schema migration renamed, the mock

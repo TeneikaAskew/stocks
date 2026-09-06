@@ -26,12 +26,12 @@
 **Files:**
 - Modify: `lib/movement_statement.py` (`_build_expected_move`)
 - Modify: `platform/src/types/index.ts` (`MovementExpectedMove`)
-- Test: `tests/test_movement_statement.py`
+- Test: `tests/lib/test_movement_statement.py`
 
 **Interfaces:**
 - Produces: `expected_move.atr_20: float | None` and `expected_move.current_price: float | None` (added to the existing OK envelope; both `None` when the ATR/price row is missing — never fabricated).
 
-- [ ] **Step 1: Write the failing test** — append to `tests/test_movement_statement.py`:
+- [ ] **Step 1: Write the failing test** — append to `tests/lib/test_movement_statement.py`:
 
 ```python
 def test_expected_move_includes_atr_and_price():
@@ -77,7 +77,7 @@ def test_expected_move_atr_none_when_features_missing():
     assert em["current_price"] is None
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `python -m pytest tests/test_movement_statement.py -k expected_move_includes_atr -q` → FAIL (KeyError 'atr_20').
+- [ ] **Step 2: Run to verify it fails** — `python -m pytest tests/lib/test_movement_statement.py -k expected_move_includes_atr -q` → FAIL (KeyError 'atr_20').
 
 - [ ] **Step 3: Implement** — in `_build_expected_move`, after building `row` and before the `return _ok(...)`, fetch ATR/price and pass them through:
 
@@ -122,7 +122,7 @@ def test_expected_move_atr_none_when_features_missing():
 ```
 Ensure `import pandas as pd` is present at module top (it is).
 
-- [ ] **Step 4: Run tests** — `python -m pytest tests/test_movement_statement.py -k expected_move -q` → PASS.
+- [ ] **Step 4: Run tests** — `python -m pytest tests/lib/test_movement_statement.py -k expected_move -q` → PASS.
 
 - [ ] **Step 5: TS type** — in `platform/src/types/index.ts`, add to `MovementExpectedMove` (after `current_price` is not there — it's a new field on this interface):
 
@@ -149,7 +149,7 @@ export interface MovementExpectedMove {
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/movement_statement.py platform/src/types/index.ts tests/test_movement_statement.py
+git add lib/movement_statement.py platform/src/types/index.ts tests/lib/test_movement_statement.py
 git commit -m "feat(movement-statement): add atr_20 + current_price to expected_move (Tier-3 sizing input)"
 ```
 
