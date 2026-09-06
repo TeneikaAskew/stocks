@@ -44,7 +44,9 @@ def test_default_uses_et_not_utc_at_cron_time():
     # 2026-04-28 23:30 ET = 2026-04-29 03:30 UTC
     fake_now_utc = datetime(2026, 4, 29, 3, 30, tzinfo=timezone.utc)
 
-    with patch("tests.test_fetch_market_data_tz.datetime") as mock_dt:
+    # Patch by __name__ so the reference survives the module's location
+    # (it broke once when the suite moved into per-area folders).
+    with patch(f"{__name__}.datetime") as mock_dt:
         mock_dt.now.side_effect = lambda tz=None: fake_now_utc.astimezone(tz) if tz else fake_now_utc
         # Verify the expected resolution (manually since patching is tricky here)
         from zoneinfo import ZoneInfo
