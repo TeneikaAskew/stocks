@@ -4,10 +4,22 @@
 # Large market data (anchored — a bare `data/` also matched platform/src/data/)
 /data/
 
-# Retired projects — all six of these moved under archive/ (dac85fa4) or were
-# removed at the FastAPI cutover. Excluding archive/ covers them and everything
-# else that lands there; the per-project lines matched nothing after the move,
-# which is why this file silently stopped excluding ~294 MB.
+# Legacy project roots — kept as GUARDS, not because tracked files live here.
+# dac85fa4 moved these under archive/, but it moved only TRACKED files: an
+# upgraded checkout still holds gitignored leftovers at the old paths
+# (google-apps-script/data and earnings_options_analytics/data hold CSVs via
+# .gitignore `data/`; success-report-site and website can hold *.log).
+# scripts/match_earnings_strategy.py:387 documents and handles exactly that
+# case. Without these lines those local files enter the build context, and the
+# root Dockerfile's `COPY . .` bakes them into the image.
+chart-viewer/
+options-heatseeker/
+success-report-site/
+website/
+google-apps-script/
+earnings_options_analytics/
+
+# Everything the move landed under, plus anything future.
 archive/
 
 # Analysis reports
