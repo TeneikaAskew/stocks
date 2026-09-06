@@ -23,6 +23,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -44,7 +45,7 @@ _CLOUD_SQL = bool(
 
 # ── Legacy parquet fallback (kept for local-dev without Cloud SQL) ─────────
 GCS_PREFIX = "data/signals/"
-_DF_CACHE: TTLCache = TTLCache(maxsize=8, ttl=3600)
+_DF_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=8, ttl=3600))
 
 
 def _pattern(ticker_lower: str) -> str:

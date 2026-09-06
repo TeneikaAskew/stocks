@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -937,14 +938,14 @@ SECTOR_NAMES = {
     "XLC": "Communication",
 }
 
-_SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
+_SECTORS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=1, ttl=600))  # 10m — sector closes update once/day
 
 # Trading dates for a ticker change once a day, and the query behind
 # /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
 # (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms).
 # Uncached, every ChartsPage and JournalPage mount paid that. 12h, matching the
 # options dates cache in routers/options.py.
-_MARKET_DATES_CACHE: TTLCache = TTLCache(maxsize=64, ttl=43200)
+_MARKET_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=43200))
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:

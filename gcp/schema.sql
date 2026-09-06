@@ -1208,6 +1208,28 @@ ALTER TABLE journal_entries ALTER COLUMN exit_price DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
     ON journal_entries (user_email, source, entry_ts DESC);
 
+-- Broker-import idempotency, enforced by the database rather than by a
+-- read-then-write in the application.
+--
+-- `POST /api/journal/import/commit` reads the existing dedupe keys, then
+-- inserts the ones it did not find. Those are two statements, so two
+-- concurrent commits of the same CSV both read "absent" and both insert:
+-- duplicate financial records, from an endpoint whose contract says
+-- committing the same preview twice imports zero rows the second time.
+--
+-- Partial on `source LIKE 'import:%'` deliberately. A unique key over ALL
+-- rows would also reject a MANUAL entry that happens to match an existing
+-- one, and a user re-entering the same trade twice by hand is their
+-- decision, not a bug. This closes import-vs-import; import-vs-manual is
+-- still the application's pre-check, which is honest about being advisory.
+--
+-- Safe to add: `SELECT count(*) FROM (... GROUP BY user_email, ticker,
+-- direction, entry_ts, entry_price HAVING count(*) > 1)` returned 0 on prod
+-- 2026-09-06, so no existing row violates it.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_import_dedupe
+    ON journal_entries (user_email, ticker, direction, entry_ts, entry_price)
+    WHERE source LIKE 'import:%';
+
 
 -- ─────────────────────────────────────────────────────────
 -- ANALYSIS OUTPUTS

@@ -65,6 +65,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 # Project root → so `from lib import gamma` resolves (matches other routers)
@@ -90,10 +91,10 @@ router = APIRouter()
 #            caching longer than the underlying data refreshes).
 # Historical grid: 12 h TTL — EOD rows are immutable once written.
 
-_LIVE_GRID_CACHE: TTLCache = TTLCache(maxsize=64, ttl=60)
-_HIST_GRID_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
-_NODES_CACHE: TTLCache = TTLCache(maxsize=128, ttl=60)
-_HIST_NODES_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
+_LIVE_GRID_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=60))
+_HIST_GRID_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
+_NODES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=60))
+_HIST_NODES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -367,7 +368,7 @@ _AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_
 # 60s TTL on each entry (the whole set evicts after 60s of idleness).
 _ONDEMAND_RATE_LIMIT_TTL = 60
 _ONDEMAND_MAX_TICKERS_PER_WINDOW = 10
-_ONDEMAND_RATE_CACHE: TTLCache = TTLCache(maxsize=4096, ttl=_ONDEMAND_RATE_LIMIT_TTL)
+_ONDEMAND_RATE_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=4096, ttl=_ONDEMAND_RATE_LIMIT_TTL))
 
 
 # Guards the read-modify-write below. Handlers used to be serialised by the
@@ -908,7 +909,7 @@ def get_nodes_historical(
 # ─── /grid/timeseries endpoint (Phase B2 — realtime only) ──────────────────
 
 
-_TIMESERIES_CACHE: TTLCache = TTLCache(maxsize=128, ttl=60)
+_TIMESERIES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=60))
 
 
 @router.get("/api/options/{ticker}/grid/timeseries")

@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import threading
 import logging
 import os
 from datetime import datetime, timezone
@@ -123,18 +124,50 @@ def _safe_bigint(val) -> Optional[int]:
 # Local JSON fallback
 # ---------------------------------------------------------------------------
 
+# Serialises the load / modify / save sequence on the shared cache file.
+# `get_ticker_info` and `get_peers` each read the whole file, change their own
+# key, and write the whole file back. Under threadpool dispatch two requests
+# for DIFFERENT tickers do that concurrently and the later write discards the
+# earlier one's new entry.
+#
+# Per-process, so it does not coordinate across Cloud Run instances — which is
+# why `_save_local_cache` also publishes atomically below. The lock stops the
+# lost update; the atomic rename stops the torn read.
+_LOCAL_CACHE_LOCK = threading.RLock()
+
+
 def _load_local_cache() -> dict:
-    if _LOCAL_CACHE_PATH.exists():
-        try:
-            return json.loads(_LOCAL_CACHE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            logger.warning("ticker_info local cache corrupt, starting fresh")
-    return {}
+    with _LOCAL_CACHE_LOCK:
+        if _LOCAL_CACHE_PATH.exists():
+            try:
+                return json.loads(_LOCAL_CACHE_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("ticker_info local cache corrupt, starting fresh")
+        return {}
 
 
 def _save_local_cache(cache: dict) -> None:
-    _LOCAL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _LOCAL_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+    """Publish the cache atomically.
+
+    `write_text` truncates in place, so a concurrent reader could catch the
+    file empty or half-written, hit the `except` above, and "start fresh" —
+    then save its own single entry over everything. Rendering to a temp file
+    in the same directory and `os.replace`-ing it means a reader sees either
+    the whole old file or the whole new one, never a partial one.
+    """
+    with _LOCAL_CACHE_LOCK:
+        _LOCAL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _LOCAL_CACHE_PATH.with_suffix(
+            _LOCAL_CACHE_PATH.suffix + f".{os.getpid()}.tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(cache, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, _LOCAL_CACHE_PATH)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

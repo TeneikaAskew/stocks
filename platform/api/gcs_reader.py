@@ -30,6 +30,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _get_client():
 # ── Blob listing ────────────────────────────────────────────────────────────
 # Cache blob listings for 10 minutes so router-level result caches don't
 # hammer the GCS LIST API. New backtest runs etc. become visible within 10m.
-_LIST_CACHE: TTLCache = TTLCache(maxsize=64, ttl=600)
+_LIST_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=600))
 
 
 def list_matching_blobs(prefix: str, pattern: str) -> list[str]:

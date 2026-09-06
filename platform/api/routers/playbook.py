@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from google.api_core import exceptions as gapi_exc
@@ -43,9 +44,9 @@ GCS_PREFIX = "reports/"
 KNOWN_TICKERS = ("spy", "qqq", "iwm", "spx")
 
 # Caches — markdown changes rarely so 24h is generous
-_PLAYBOOK_CACHE: TTLCache = TTLCache(maxsize=16, ttl=86400)      # parsed playbook JSON
-_LIST_CACHE: TTLCache = TTLCache(maxsize=16, ttl=86400)          # list-reports response
-_REPORT_TEXT_CACHE: TTLCache = TTLCache(maxsize=64, ttl=86400)   # raw markdown text
+_PLAYBOOK_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=86400))      # parsed playbook JSON
+_LIST_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=86400))          # list-reports response
+_REPORT_TEXT_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=86400))   # raw markdown text
 
 # Phases that may exist for any given ticker
 VALID_PHASES = {

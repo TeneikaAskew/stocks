@@ -368,15 +368,28 @@ class TestJournalCRUD:
     capturing the SQL+params, and local fallback with `tmp_path`.
     """
 
-    def _patch_cloud_sql(self, monkeypatch, query_returns=None):
+    def _patch_cloud_sql(self, monkeypatch, query_returns=None,
+                         returning_id="abc-123"):
         """Force the journal router into Cloud SQL mode and capture every
-        execute_sql + query_to_dataframe call."""
+        execute_sql / query_to_dataframe / execute_returning_scalar call.
+
+        `execute_returning_scalar` is the insert seam since the trade INSERT
+        moved to `RETURNING id` (the follow-up
+        `SELECT ... ORDER BY created_at DESC` could return a concurrent
+        writer's row). Its calls land in `captured["execute"]` alongside the
+        plain statements, so assertions on the INSERT's SQL and params are
+        unchanged.
+        """
         from api.routers import journal as journal_module
 
         captured = {"execute": [], "query": []}
 
         def fake_execute(sql, params=None):
             captured["execute"].append((sql, dict(params or {})))
+
+        def fake_returning(sql, params=None, allow_no_row=False):
+            captured["execute"].append((sql, dict(params or {})))
+            return returning_id
 
         def fake_query(sql, params=None):
             captured["query"].append((sql, dict(params or {})))
@@ -386,6 +399,8 @@ class TestJournalCRUD:
 
         monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
         monkeypatch.setattr(journal_module, "execute_sql", fake_execute)
+        monkeypatch.setattr(journal_module, "execute_returning_scalar",
+                            fake_returning)
         monkeypatch.setattr(journal_module, "query_to_dataframe", fake_query)
         return captured
 

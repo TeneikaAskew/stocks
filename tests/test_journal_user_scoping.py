@@ -64,9 +64,20 @@ def scoped(monkeypatch):
     def fake_x(sql, params=None):
         calls["x"].append((sql, params or {}))
 
+    def fake_returning(sql, params=None, allow_no_row=False):
+        """The trade INSERT path — `RETURNING id`, one statement.
+
+        Recorded in the same bucket as `execute_sql` so the scoping
+        assertions below read the INSERT's params wherever it ran.
+        """
+        calls["x"].append((sql, params or {}))
+        return "generated-id"
+
     monkeypatch.setattr(journal, "_HAS_CLOUD_SQL", True, raising=False)
     monkeypatch.setattr(journal, "query_to_dataframe", fake_q, raising=False)
     monkeypatch.setattr(journal, "execute_sql", fake_x, raising=False)
+    monkeypatch.setattr(journal, "execute_returning_scalar", fake_returning,
+                        raising=False)
     return journal, calls
 
 
@@ -99,9 +110,27 @@ def test_post_stamps_owner(scoped, monkeypatch):
     insert_sql, insert_params = calls["x"][-1]
     assert "user_email" in insert_sql
     assert insert_params["user_email"] == "alice@x.com"
-    # the read-back is also scoped so it can't surface another user's row
-    _, select_params = calls["q"][-1]
-    assert select_params["user_email"] == "alice@x.com"
+
+
+def test_post_has_no_readback_to_leak_another_users_row(scoped, monkeypatch):
+    """The id comes from `RETURNING`, so there is no follow-up SELECT.
+
+    This used to assert that the read-back was *scoped* to the owner. The
+    read-back is gone: it was a
+    `SELECT ... ORDER BY created_at DESC LIMIT 1` matching on
+    (ticker, entry_ts, user_email), which a concurrent create by the SAME
+    owner could win, returning that trade's id instead. Scoping made it safe
+    across users and never made it correct within one. Not issuing the query
+    is strictly stronger than scoping it.
+    """
+    j, calls = scoped
+    _as(monkeypatch, "alice@x.com")
+    _run(j.create_trade(_trade(), object()))
+    insert_sql, _ = calls["x"][-1]
+    assert "RETURNING" in insert_sql.upper()
+    assert not any("SELECT id" in sql for sql, _ in calls["q"]), (
+        "the insert path issued a read-back SELECT; the id must come from "
+        "RETURNING in the insert statement itself")
 
 
 def test_delete_is_scoped_to_owner(scoped, monkeypatch):

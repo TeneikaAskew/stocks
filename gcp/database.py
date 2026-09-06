@@ -780,6 +780,44 @@ def execute_sql(sql: str, params: Optional[dict] = None) -> int:
         return result.rowcount
 
 
+def execute_returning_scalar(sql: str, params: Optional[dict] = None,
+                             allow_no_row: bool = False):
+    """Execute a statement with a RETURNING clause and give back one value.
+
+    The reason this exists: an INSERT followed by a separate
+    ``SELECT ... ORDER BY created_at DESC LIMIT 1`` to learn the new row's id
+    is not atomic. Another writer can insert between the two statements and
+    the SELECT then returns THAT row's id, so the caller hands its user an
+    identifier belonging to someone else's record — and a later close or
+    delete acts on the wrong row. `RETURNING` closes the window by making the
+    insert and the read one statement.
+
+    RAISES on any failure, and raises if the statement returns no row: a
+    RETURNING clause that yields nothing means the write did not happen, and
+    fabricating an id for it (Rule 3.7) is how the bug this replaces was
+    introduced.
+
+    ``allow_no_row=True`` returns ``None`` instead of raising, for the one
+    legitimate case: an ``ON CONFLICT DO NOTHING`` whose conflict is an
+    expected outcome rather than a failure. It is opt-in so the default
+    stays loud.
+
+    Returns the first column of the first returned row.
+    """
+    engine = get_engine()
+    import sqlalchemy
+    with engine.begin() as conn:
+        result = conn.execute(sqlalchemy.text(sql), params or {})
+        row = result.first()
+        if row is None:
+            if allow_no_row:
+                return None
+            raise RuntimeError(
+                "statement returned no row from its RETURNING clause; the "
+                "write did not take effect")
+        return row[0]
+
+
 # Single source of truth for `lib.indicators.add_all_indicators()` output
 # column names → `market_data_daily` SQL column names. Imported by both
 # `gcp/fetchers/fetch_market_data.py` (live writer) and `gcp/migrate_to_gcp.py`

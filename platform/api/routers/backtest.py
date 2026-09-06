@@ -49,6 +49,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -104,9 +105,9 @@ def _equity_pattern(ticker_upper: str, run: str | None = None) -> str:
     return rf"^equity_{re.escape(ticker_upper)}_\d{{8}}_\d{{6}}\.csv$"
 
 # ── Caches ──────────────────────────────────────────────────────────────────
-_RESULTS_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)   # 1h
-_EQUITY_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)    # 1h
-_ALL_RUNS_CACHE: TTLCache = TTLCache(maxsize=16, ttl=600)   # 10m
+_RESULTS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))   # 1h
+_EQUITY_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))    # 1h
+_ALL_RUNS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=600))   # 10m
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

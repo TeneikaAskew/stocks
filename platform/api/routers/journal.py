@@ -71,7 +71,8 @@ _ALLOWED_BROKERS = {"robinhood", "webull", "generic"}
 
 # ── Cloud SQL availability check ─────────────────────────────────────────────
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe, execute_sql
+    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
+                              execute_sql, execute_returning_scalar)
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception:
     _HAS_CLOUD_SQL = False
@@ -106,6 +107,16 @@ def _journal_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
 def _journal_exec(sql: str, params: Optional[dict] = None) -> int:
     """Forwards to `execute_sql` and returns its rowcount (see there)."""
     return execute_sql(sql, params)
+
+
+def _journal_insert_returning_id(sql: str, params: Optional[dict] = None,
+                                 allow_no_row: bool = False):
+    """Forwards to `execute_returning_scalar` — one statement, one id.
+
+    Same indirection rationale as `_journal_exec`: tests can patch either
+    this wrapper or the underlying name.
+    """
+    return execute_returning_scalar(sql, params, allow_no_row=allow_no_row)
 
 
 def _seed_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -456,18 +467,37 @@ _LOCAL_JOURNAL_LOCK = threading.RLock()
 
 
 def _load_local(ticker: str) -> list[dict]:
-    """Read a ticker's local journal.
+    """Read one ticker's local journal file.
 
-    A missing file legitimately means "no trades yet" and returns []. A file
-    that EXISTS but will not parse does not: swallowing that (CLAUDE.md Rule
-    3.7) returns an empty journal the caller cannot distinguish from a real
-    one, and every mutation path here writes its result straight back — so a
-    single transient read error silently destroys the file's contents.
+    A file that does not exist is genuinely empty -> ``[]``. A file that
+    exists but cannot be read or parsed is a FAILURE, and returning ``[]``
+    for it was worse than losing the read: `_save_local` writes the list
+    straight back, so the next trade the user logged would overwrite a
+    recoverable file with a one-entry list and destroy every trade in it.
+    Rule 3.7's distinction exactly -- missing input vs failed input.
     """
     p = _local_path(ticker)
     if not p.exists():
         return []
-    return json.loads(p.read_text())
+    try:
+        entries = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("journal: %s is unreadable (%s) -- refusing to report an "
+                     "empty journal, which would be overwritten on the next save",
+                     p, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(f"The local journal file for {ticker.upper()} could not be "
+                    f"read. It has NOT been overwritten. Fix or move {p.name} "
+                    f"and retry."),
+        ) from exc
+    if not isinstance(entries, list):
+        raise HTTPException(
+            status_code=500,
+            detail=(f"The local journal file for {ticker.upper()} does not "
+                    f"contain a list. It has NOT been overwritten."),
+        )
+    return entries
 
 
 def _save_local(ticker: str, entries: list[dict]) -> None:
@@ -501,17 +531,36 @@ def _insert_cloud_sql_trade(
     notes: str, owner: str, stop_loss: Optional[float],
     tp1: Optional[float], tp2: Optional[float], tp3: Optional[float],
     status: str, source: str, session_id: Optional[str],
-) -> str:
+    on_conflict_skip: bool = False,
+) -> Optional[str]:
     """Shared Cloud SQL insert path for one `journal_entries` row.
 
     Used by BOTH `POST /api/journal/trades` (manual entry) and
     `POST /api/journal/import/commit` (broker import) so the two write
     surfaces can never drift on columns or validation — exactly the same
-    INSERT + id-lookup SQL either way. Raises on failure; the caller decides
-    503 vs. local fallback (same convention as every other Cloud SQL branch
-    in this router).
+    INSERT either way. Raises on failure; the caller decides 503 vs. local
+    fallback (same convention as every other Cloud SQL branch in this router).
+
+    The id comes back from ``RETURNING`` in the insert statement itself. It
+    used to come from a follow-up
+    ``SELECT ... ORDER BY created_at DESC LIMIT 1``, which is not atomic:
+    a concurrent create for the same (ticker, entry_ts, user_email) could
+    land between the two statements and the SELECT would then return THAT
+    row's id. The response would hand the user an identifier belonging to
+    someone else's trade, and a later close or delete would act on it. Worse,
+    the miss case returned ``str(uuid.uuid4())`` — an id matching no row at
+    all, so a close or delete against it silently no-ops (Rule 3.7: a
+    fabricated value presented as real).
+
+    ``on_conflict_skip`` adds ``ON CONFLICT DO NOTHING`` and returns ``None``
+    when the row was already there. Only the broker import passes it: the
+    partial unique index `uq_journal_entries_import_dedupe` is what makes
+    that endpoint's idempotency atomic rather than a read-then-write, and
+    `None` is the caller's signal to count a skip. Every other caller leaves
+    it False and gets the raise, because for them "the insert produced no
+    row" is a failure, not an outcome.
     """
-    _journal_exec(
+    new_id = _journal_insert_returning_id(
         """
         INSERT INTO journal_entries
             (ticker, direction, entry_ts, exit_ts,
@@ -521,7 +570,9 @@ def _insert_cloud_sql_trade(
             (:ticker, :direction, :entry_ts, :exit_ts,
              :entry_price, :exit_price, :return_pct, :notes, :user_email,
              :stop_loss, :tp1, :tp2, :tp3, :status, :source, :session_id)
-        """,
+        """
+        + ("ON CONFLICT DO NOTHING\n" if on_conflict_skip else "")
+        + "RETURNING id::text",
         {
             "ticker": ticker,
             "direction": direction,
@@ -540,16 +591,9 @@ def _insert_cloud_sql_trade(
             "source": source,
             "session_id": session_id,
         },
+        allow_no_row=on_conflict_skip,
     )
-    df = _journal_query(
-        """
-        SELECT id::text FROM journal_entries
-        WHERE ticker = :ticker AND entry_ts = :entry_ts AND user_email = :user_email
-        ORDER BY created_at DESC LIMIT 1
-        """,
-        {"ticker": ticker, "entry_ts": entry_ts, "user_email": owner},
-    )
-    return str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
+    return None if new_id is None else str(new_id)
 
 
 _TS_NO_SECONDS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$")
@@ -1147,10 +1191,32 @@ def export_trades(ticker: str, request: ExportRequest):
             "Runner_Time": "",
         })
 
-    with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    # Two exports of the same ticker write the SAME path. Under threadpool
+    # dispatch their truncation, buffered writes and closes interleave, so
+    # the file can end up holding a mix of both — and both requests report
+    # success. The event loop used to serialise these by accident.
+    #
+    # Same treatment as `_save_local`: one writer at a time, and publish by
+    # rename so a concurrent reader sees a whole file rather than a partial
+    # one. The lock is per-process, so the atomic rename is what covers a
+    # second Cloud Run instance.
+    with _LOCAL_JOURNAL_LOCK:
+        fd, tmp = tempfile.mkstemp(dir=str(output_path.parent),
+                                   prefix=f".{output_path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, output_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     return {
         "success": True,
@@ -1327,15 +1393,25 @@ def import_commit(body: ImportCommitRequest, request: Request):
 
         if _HAS_CLOUD_SQL:
             try:
-                _insert_cloud_sql_trade(
+                new_id = _insert_cloud_sql_trade(
                     ticker=ticker_upper, direction=direction,
                     entry_ts=t.entry_ts, exit_ts=exit_ts,
                     entry_price=t.entry_price, exit_price=exit_price,
                     return_pct=ret_pct, notes="", owner=owner,
                     stop_loss=None, tp1=None, tp2=None, tp3=None,
                     status=status, source=source, session_id=None,
+                    # `uq_journal_entries_import_dedupe` is the authority.
+                    # `existing_keys` above is a read-then-write and cannot
+                    # see a row a CONCURRENT commit of the same CSV inserted
+                    # between the two statements; the index can. A conflict
+                    # here is the endpoint's documented idempotency working,
+                    # not an error, so it counts as a skip.
+                    on_conflict_skip=True,
                 )
-                imported += 1
+                if new_id is None:
+                    skipped_duplicates += 1
+                else:
+                    imported += 1
                 # Guard against duplicate rows WITHIN this same commit batch
                 # (e.g. a caller re-submitting the same trade twice) without
                 # a second round-trip to the DB.

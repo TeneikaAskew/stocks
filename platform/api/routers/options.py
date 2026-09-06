@@ -55,6 +55,7 @@ import math
 import httpx
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
@@ -78,17 +79,17 @@ VALID_TICKERS = {"SPY", "IWM", "QQQ", "SPX"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # (ticker, date_str) → response dict; 12h TTL (EOD rows are immutable).
-_CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
+_CHAIN_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
 # ticker → list[date_str]; 12h TTL. Dates list only changes once per day when
 # the scheduled AV fetcher runs, so long TTL avoids re-running the distinct
 # scan on cold caches. The composite (ticker, data_source, snapshot_date)
 # index DOES exist as idx_etf_options_ticker_source_date — an older comment
 # here claimed otherwise.
-_DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
+_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
-_LIVE_CACHE: TTLCache = TTLCache(maxsize=128, ttl=300)
+_LIVE_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=300))
 
 # AlphaVantage proxy config — mirrors api.routers.live so the env-var
 # resolution + endpoint URL stay in lockstep.

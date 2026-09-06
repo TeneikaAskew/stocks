@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional, Union
 from uuid import UUID, uuid4
 
-from typing import AsyncGenerator
+from typing import Generator
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
@@ -737,12 +737,21 @@ def get_insight_report_by_id(report_id: str):
     "/api/insights/report/{ticker}/refresh",
     response_model=RefreshResponse,
 )
-async def refresh_insight_report(
+def refresh_insight_report(
     ticker: str,
     background_tasks: BackgroundTasks,
     as_of: Optional[str] = None,
 ):
     """Enqueue a fresh pipeline run for the ticker.
+
+    Plain `def` on purpose. Scheduling a `BackgroundTask` does not make the
+    REQUEST path asynchronous, and this one is not: `_insert_run` opens and
+    commits a Cloud SQL connection, and in production `_enqueue_cloud_task`
+    makes a synchronous Cloud Tasks call — both before the response is
+    built. As `async def` those ran on the event loop, so a slow database or
+    a slow Cloud Tasks round trip stalled every other request. FastAPI
+    injects `BackgroundTasks` into a plain `def` handler exactly the same
+    way, so nothing else changes.
 
     Local dev: runs via FastAPI BackgroundTasks. Durable within the
     process but not across restarts — acceptable for dev only.
@@ -949,8 +958,25 @@ def _get_gemini_client():
     )
 
 
-async def _stream_gemini(request: ChatRequest) -> AsyncGenerator[str, None]:
-    """Stream response from Vertex AI Gemini."""
+def _stream_gemini(request: ChatRequest) -> Generator[str, None, None]:
+    """Stream a response from Vertex AI Gemini.
+
+    Deliberately a PLAIN generator, not an ``async`` one. Starlette iterates
+    an async generator on the event loop, and the body below drives
+    ``client.models.generate_content_stream(...)`` — the SDK's SYNCHRONOUS
+    iterator. So while Gemini was producing tokens, every other request on
+    the instance was stalled behind it, for as long as the model took to
+    answer. The `StreamingResponse` exemption in
+    `tests/test_api_handler_dispatch.py` did not save it: streaming is only
+    non-blocking if what is being streamed is.
+
+    Starlette wraps a synchronous iterator in ``iterate_in_threadpool``, so
+    as a plain generator the SDK's blocking reads happen on a worker thread
+    and the loop stays free. This is the smaller of the two available fixes
+    — the other is the SDK's async streaming API with ``async for`` — and it
+    is preferred here because it keeps one code path rather than making the
+    handler's correctness depend on which SDK entry point was used.
+    """
     try:
         from google.genai import types
 
@@ -990,7 +1016,7 @@ async def _stream_gemini(request: ChatRequest) -> AsyncGenerator[str, None]:
 
 
 @router.post("/api/insights/chat")
-async def insights_chat(request: ChatRequest):
+def insights_chat(request: ChatRequest):
     """Stream a Gemini response for the given mode and message."""
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")

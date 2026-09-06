@@ -11,6 +11,7 @@ from pathlib import Path
 
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -98,14 +99,16 @@ async def dashboard_brief(
     premarket = {}
     try:
         if date:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 "SELECT * FROM premarket_analysis "
                 "WHERE ticker = :ticker AND analysis_date <= :date "
                 "ORDER BY analysis_date DESC LIMIT 1",
                 {"ticker": ticker, "date": date},
             )
         else:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 "SELECT * FROM premarket_analysis "
                 "WHERE ticker = :ticker ORDER BY analysis_date DESC LIMIT 1",
                 {"ticker": ticker},
@@ -142,12 +145,14 @@ async def dashboard_brief(
             "FROM market_data_daily "
         )
         if date:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 base_cols + "WHERE ticker = :ticker AND date <= :date ORDER BY date DESC LIMIT 1",
                 {"ticker": ticker, "date": date},
             )
         else:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 base_cols + "WHERE ticker = :ticker ORDER BY date DESC LIMIT 1",
                 {"ticker": ticker},
             )
