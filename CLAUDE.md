@@ -777,6 +777,20 @@ what aggregates do. The conclusion drove a change that would have shifted
 premarket bars 4–5 hours and had to be reverted. **Ask for the distribution
 whenever you are characterising data, not the extremes.**
 
+#### Validate the proxy before reporting what it measures
+
+A test-coverage audit reported "**81 of 101 route handlers (80%) have no
+test**" as its headline. It had counted references to Python *handler function
+names*. The suite drives the API through `TestClient` using **URL paths**, so
+`client.get("/api/health")` never mentions `health_check` and scored as
+uncovered. Re-measured by mapping tested paths to registered routes: **23 of
+101 (22%)**. The number was wrong by a factor of three and a "rebalance the
+suite" recommendation had been built on it.
+
+Whenever a metric is a stand-in for the thing you care about, spot-check the
+stand-in against a handful of known cases before quoting it. Here, one glance
+at `test_platform_api.py` calling `/api/health` would have killed it.
+
 #### A comment that contradicts your measurement may be right
 
 The same episode: `fetch_market_data.py` said AlphaVantage timestamps are
