@@ -562,7 +562,10 @@ class TestMarketDataAPI:
                 pd.Timestamp("2026-01-15").date(),
             ],
         })
-        monkeypatch.setattr(main_module, "query_to_dataframe", lambda *a, **k: dates_df.copy())
+        # Patch _dates_query, not query_to_dataframe: the endpoint uses the
+        # RAISING helper so its 503 branch is reachable, and _dates_query is
+        # where that indirection lives.
+        monkeypatch.setattr(main_module, "_dates_query", lambda *a, **k: dates_df.copy())
 
         r = client.get("/api/market/dates/IWM")
         assert r.status_code == 200
@@ -571,6 +574,28 @@ class TestMarketDataAPI:
         assert data["dates"] == ["20260220", "20260219", "20260115"]
         # months derived from the dates, descending
         assert data["months"] == ["202602", "202601"]
+
+    def test_market_dates_db_failure_is_503_not_a_gcs_downgrade(self, client, monkeypatch):
+        """A configured-but-broken Cloud SQL must not fall through to GCS.
+
+        This is the assertion the endpoint's 503 branch existed for and could
+        not previously make: it called the SWALLOWING query helper, which
+        returns an empty frame instead of raising, so the except never fired
+        and the request dropped through to the staging parquets with a 200.
+        """
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+
+        def boom(*a, **k):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(main_module, "_dates_query", boom)
+        monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE", {})
+
+        r = client.get("/api/market/dates/IWM")
+        assert r.status_code == 503, (
+            "a database failure was served as a 200 from the GCS fallback")
+        assert "connection refused" in r.json()["detail"]
 
     def test_market_data_full_day(self, client, monkeypatch):
         """Fetch a full day of 1-min bars."""

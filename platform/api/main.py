@@ -472,6 +472,18 @@ only working path right now; curl/CI flows return 401.</p>
     return HTMLResponse(html)
 
 
+def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
+    """Run the trading-dates query, RAISING on failure.
+
+    The endpoint promises a 503 when Cloud SQL is configured but broken. That
+    promise is only keepable with the raising helper: the swallowing sibling
+    returns an empty frame, the `except` never fires, and the request falls
+    through to the GCS staging parquets with a 200.
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
 @app.get("/api/market/dates/{ticker}")
 async def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
@@ -488,7 +500,12 @@ async def get_available_dates(ticker: str):
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
         try:
-            df = query_to_dataframe(
+            # STRICT, deliberately. query_to_dataframe swallows and returns an
+            # empty frame -- its own docstring says "Do NOT use it where
+            # 'query failed' must surface as an error" -- which would make the
+            # 503 below unreachable and drop through to the GCS path with a
+            # stale 200. Same reasoning as _coverage_query above.
+            df = _dates_query(
                 """
                 -- `ts` is TIMESTAMPTZ and the Cloud SQL session runs in UTC,
                 -- so a bare DATE(ts) yields UTC calendar dates. Market data is
@@ -1331,7 +1348,17 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
-                      AND ts >= :start AND ts < :end
+                      -- Eastern month bounds, not UTC. `start`/`end` are
+                      -- naive 'YYYY-MM-01' strings; comparing a TIMESTAMPTZ
+                      -- against them makes Postgres read them in the session
+                      -- zone (UTC), which is 4-5 hours off the Eastern month
+                      -- the `months` list in /api/market/dates advertises. On
+                      -- a boundary that drops a late bar from its own month
+                      -- and pulls the previous month's late bars into the
+                      -- next one. AT TIME ZONE on a naive value produces the
+                      -- UTC instant for that Eastern wall-clock time.
+                      AND ts >= (:start)::timestamp AT TIME ZONE 'America/New_York'
+                      AND ts <  (:end)::timestamp   AT TIME ZONE 'America/New_York'
                     ORDER BY ts
                     """,
                     {"ticker": ticker_upper, "start": start, "end": end},
@@ -1341,20 +1368,37 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
 
             if not df.empty:
                 df.index = pd.to_datetime(df["ts"])
-                # Normalize timezone based on data source:
-                # - alphavantage: ET stored as UTC → just strip tz label
-                # - yfinance: real UTC → convert to ET then strip
-                is_yfinance = (
-                    "data_source" in df.columns
-                    and not df["data_source"].isna().all()
-                    and df["data_source"].iloc[0] == "yfinance"
-                )
+                # Normalize to Eastern wall-clock, source-independently.
+                #
+                # The branch that used to live here was built on a false
+                # premise: "alphavantage: ET stored as UTC -> just strip tz
+                # label". Measured on prod 2026-09-06, IWM, all 2,003,579 rows
+                # data_source='alphavantage':
+                #
+                #   raw UTC   11:29 - 00:00
+                #   as ET     06:29 - 20:00
+                #
+                # 06:29-20:00 ET is a real pre-market-to-after-hours session;
+                # 11:29-00:00 is not a session at all. The rows are true UTC
+                # instants. Stripping the label without converting left a
+                # naive UTC index, and the caller's
+                # `df.index.date == target` then dropped every bar at or
+                # after 20:00 ET from its own trading day.
                 df = df.drop(columns=["ts", "data_source"], errors="ignore")
                 if df.index.tz is not None:
-                    if is_yfinance:
-                        df.index = df.index.tz_convert("America/New_York").tz_localize(None)
-                    else:
-                        df.index = df.index.tz_localize(None)
+                    # ALWAYS convert to Eastern before dropping the zone.
+                    # `ts` is a true UTC instant for every source (verified on
+                    # prod: converting IWM to ET yields 06:29-20:00, i.e. real
+                    # pre-market-to-after-hours, not a shifted window), so
+                    # tz_localize(None) alone leaves a naive UTC index. The
+                    # caller then filters `df.index.date == target`, and a
+                    # 20:00 ET bar -- naive 00:00 the NEXT day in UTC -- is
+                    # silently dropped from its own trading session. That
+                    # undoes the ET fix in the SQL one layer up. The yfinance
+                    # branch already converted; the other branch did not, and
+                    # the two disagreeing was the bug.
+                    df.index = (df.index.tz_convert("America/New_York")
+                                        .tz_localize(None))
                 return df
         except Exception as e:
             logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
