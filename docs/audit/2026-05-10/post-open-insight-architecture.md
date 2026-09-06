@@ -438,7 +438,7 @@ This is the answer to "what if the market changes direction mid-session" — the
 | `lib/agents/schema.py` | Add `invalidation_level: Optional[float]` to InsightReport / PersonaPlan | ~5 |
 | `gcp/signal_monitor.py` | Add `insight_cache`, `_refresh_insight_cache()` (every 60s in run_loop), direction gate inside `evaluate_ticker`, regime annotation in `fire_alert`, invalidation tripwire in `_check_exits` (or new `_check_invalidation`), Cloud Tasks enqueue on higher-tf regime change | ~120 |
 | `tests/test_summarizers.py` | RTH-so-far query fixtures | ~30 |
-| `tests/test_trade_planner.py` | gap_faded scenarios (5/6 QQQ replay, hold case, distribute case) | ~80 |
+| `tests/lib/test_trade_planner.py` | gap_faded scenarios (5/6 QQQ replay, hold case, distribute case) | ~80 |
 | `tests/test_signal_monitor_insight_integration.py` (new) | Direction gate, invalidation tripwire, regime change auto-enqueue | ~100 |
 
 Total: ~460 LOC change including tests.

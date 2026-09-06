@@ -1139,11 +1139,36 @@ curl -sS -L -H "Authorization: Bearer $GH_TOKEN" \
 
 ### Testing Commands
 ```bash
-# Add project-specific test commands here
-# npm test
-# npm run lint
-# npm run typecheck
+make test              # hermetic unit/API suite (excludes tests/integration)
+make test-e2e          # archived Playwright E2E (archive/tests/; needs make install-playwright)
+make test-integration  # real-SQL tests (tests/integration/; needs Postgres + gcp/schema.sql)
+make test-scripts      # script CLI regressions (tests/scripts/test_scripts.py)
 ```
+
+### Test layout — one folder per area
+
+`tests/` is organized by the area of the codebase under test, mirroring the
+per-page layout solyra uses for its Playwright specs (`tests/<page>/*.spec.ts`
+over there). New test files go INSIDE the matching area folder, never at the
+`tests/` root:
+
+| Folder | Covers |
+|---|---|
+| `tests/api/` | FastAPI surface — `platform/api` routers, auth, endpoint contracts |
+| `tests/lib/` | the research library (`lib/`): strat, gamma, indicators, backtest, strategies |
+| `tests/agents/` | `lib/agents` — adapters, orchestrator, ranker, schema, pricing |
+| `tests/gcp/` | Cloud Run jobs, fetchers, `gcp/database.py`, schema migrations, deploy config, research engines under `gcp/research/` |
+| `tests/scripts/` | `scripts/` CLI regression tests |
+| `tests/audits/` | the `audit-*` job surfaces (freshness, drift, magnitude) |
+| `tests/meta/` | repo-level invariants (import coverage, workflow contracts) |
+| `archive/tests/` | Archived Playwright browser tests for the retired static report site — not in `make test`, not in CI |
+| `tests/integration/` | real-SQL tests needing a live Postgres (excluded from `make test`) |
+
+Shared fixtures stay at `tests/conftest.py` (cascades into every area) and
+`tests/fixtures/`. Area folders carry an `__init__.py` (the suite is a
+package). A moved or new test that derives the repo root from `__file__`
+must account for its depth: files inside an area folder are TWO levels below
+the repo root (`Path(__file__).resolve().parents[2]`).
 
 ### GitHub Actions Workflows
 

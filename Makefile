@@ -35,7 +35,7 @@ test-integration:
 
 ## Run script CLI regression tests only
 test-scripts:
-	$(PYTHON) -m pytest tests/test_scripts.py -v
+	$(PYTHON) -m pytest tests/scripts/test_scripts.py -v
 
 ## Install Playwright browsers and system deps (run once after pip install)
 install-playwright:

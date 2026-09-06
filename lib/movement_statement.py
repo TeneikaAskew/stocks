@@ -355,7 +355,7 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict) -> dict:
 # post-deployment detector in gcp/audit_magnitude_drift.py. Not imported from
 # mag_config because lib/ must not depend on gcp/research/ (the research
 # package pulls LightGBM); the number is asserted equal in
-# tests/test_movement_statement.py so the two cannot silently drift.
+# tests/lib/test_movement_statement.py so the two cannot silently drift.
 _MAG_DEGENERATE_MODAL_SHARE = 0.70
 _MAG_DEGENERACY_LOOKBACK_DAYS = 7
 

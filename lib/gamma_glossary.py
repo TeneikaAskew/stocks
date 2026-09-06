@@ -27,7 +27,7 @@ This module is the source of truth for:
      confirm what other names that level goes by in the wild.
 
 Adding a new term: append a `GammaTerm` entry below. Tests in
-`tests/test_gamma_glossary.py` enforce structural invariants (every term
+`tests/lib/test_gamma_glossary.py` enforce structural invariants (every term
 needs all aliases populated, both definitions present, etc.) so the
 contract stays uniform.
 

@@ -23,7 +23,7 @@
 
 ### Task 1: Schema + hourly snapshot mode on the fetcher
 
-**Files:** Modify `gcp/schema.sql` (append), `gcp/fetchers/fetch_top_movers.py`; Test `tests/test_fetch_top_movers_intraday.py` (hermetic — mock `requests` + upsert; follow the style of existing fetcher tests, find one via `ls tests/ | grep fetch`).
+**Files:** Modify `gcp/schema.sql` (append), `gcp/fetchers/fetch_top_movers.py`; Test `tests/gcp/test_fetch_top_movers_intraday.py` (hermetic — mock `requests` + upsert; follow the style of existing fetcher tests, find one via `ls tests/ | grep fetch`).
 
 **Schema (append to gcp/schema.sql, after top_movers_daily):**
 ```sql
@@ -47,14 +47,14 @@ CREATE INDEX IF NOT EXISTS idx_top_movers_intraday_date
 **Fetcher:** add `--intraday-snapshot` flag: same AV call, take `most_actively_traded` only, parse `change_percentage` ("+2.31%" → 2.31 float, strip %/sign correctly for negatives), one `snapshot_ts = datetime.now(timezone.utc)` for the batch, `snapshot_date` = that instant converted to ET date, upsert via the existing `upsert_dataframe` with the unique key. Reuse the existing AV-key/env handling and error paths in the file — on AV failure raise (job fails loudly; max-retries 0; scheduler fires again next hour — an hourly gap is acceptable and visible).
 
 - [ ] Failing tests: parse fixture JSON (real AV response shape incl. negative changes) → 20 rows, correct floats/volume ints; single snapshot_ts across batch; ET snapshot_date correct for a 20:30 UTC run (=16:30 ET same day) and a 13:30 UTC run; AV error → raises (no empty-success); `--dry-run` writes nothing.
-- [ ] Implement → green: `python -m pytest tests/test_fetch_top_movers_intraday.py -q`.
+- [ ] Implement → green: `python -m pytest tests/gcp/test_fetch_top_movers_intraday.py -q`.
 - [ ] Commit: `feat(fetchers): hourly most-active snapshots to top_movers_intraday`
 
 ---
 
 ### Task 2: Read endpoint
 
-**Files:** Modify the market/dashboard router that already serves public market reads (find where `/api/market/dates` lives — add alongside; likely `platform/api/main.py` or a router); Test `tests/test_most_active_endpoint.py` (TestClient scaffold from tests/test_journal_examples.py).
+**Files:** Modify the market/dashboard router that already serves public market reads (find where `/api/market/dates` lives — add alongside; likely `platform/api/main.py` or a router); Test `tests/api/test_most_active_endpoint.py` (TestClient scaffold from tests/api/test_journal_examples.py).
 
 **Interfaces (Produces):** `GET /api/market/most-active` →
 ```json
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_top_movers_intraday_date
 - Auth: match whatever gate `/api/market/dates` has (verify, don't assume).
 
 - [ ] Failing tests: shape; spark ordering; <2 snapshots → no spark key; empty table → items []; ranks ordered; auth parity with market/dates.
-- [ ] Implement → green + run the file alongside `tests/test_platform_api.py`.
+- [ ] Implement → green + run the file alongside `tests/api/test_platform_api.py`.
 - [ ] Commit: `feat(api): most-active endpoint with per-ticker snapshot sparklines`
 
 ---

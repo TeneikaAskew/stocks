@@ -412,7 +412,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 |-------|--------|-------|------|
 | Unit/Integration (`make test`) | ⚠️ 1 pre-existing failure | 247/248 (10 skipped) | 2026-04-26 |
 | Post-merge audit coverage suite (commit `c7ee564`) | ✅ PASS | 119 new (suite 531 → 650) | 2026-04-26 |
-| Platform API (`tests/test_platform_api.py`) | ⚠️ Cloud SQL gated in sandbox | 17 pre-existing fail / 156 pass | 2026-04-26 |
+| Platform API (`tests/api/test_platform_api.py`) | ⚠️ Cloud SQL gated in sandbox | 17 pre-existing fail / 156 pass | 2026-04-26 |
 | E2E Playwright (`make test-e2e`) | Not run | 28 | — |
 | Scripts CLI (`make test-scripts`) | ✅ PASS | 18/18 | 2026-02-22 |
 

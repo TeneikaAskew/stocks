@@ -22,7 +22,7 @@ neither.
 The owner's directive — **"none of these should be null, ever"** — settled §7's
 open decision in favour of fixing the metric rather than deleting its
 monitoring. Shipped, verification-first (failing suite written before the
-implementation: `tests/test_gamma_never_null.py`, 8 red → 14 green):
+implementation: `tests/lib/test_gamma_never_null.py`, 8 red → 14 green):
 
 | Item | Outcome |
 |---|---|
@@ -275,7 +275,7 @@ is a trading-math decision and #744 already flagged it as needing quant judgment
 | R2 | Add a nullity check for `gamma_flip` | High | It is the level `gamma_proximity` trades and it has **no** check today. Monitoring is currently inverted relative to value. |
 | R3 | Drop `gamma_balance_price` from `STRAT_NUMERIC_FEATURES` | Medium | A feature whose absence is confined to high-vol sessions thins out where it would matter most. LightGBM tolerates the NaN, so this is a cleanup, not a correctness fix — and it is worth confirming against §9 first, since the practical NULL rate is what makes it dead weight. |
 | R4 | Settle the incremental-vol question, then wire regime → `get_position_size` | Medium | The only recommendation here with revenue attached. Gated on the §6 caveat. |
-| R5 | If a balance price is still wanted as a distinct quantity, redefine it as the **gamma median** | Medium | The strike where cumulative `\|net_gamma\|` reaches half the chain total. Always exists for a non-empty chain, and matches what the docstring already claims ("a balance point in OI-weighted gamma space"). Note this changes `tests/test_gamma.py::TestComputeGammaBalance::test_no_crossing_returns_none`, which currently pins the degenerate behaviour. |
+| R5 | If a balance price is still wanted as a distinct quantity, redefine it as the **gamma median** | Medium | The strike where cumulative `\|net_gamma\|` reaches half the chain total. Always exists for a non-empty chain, and matches what the docstring already claims ("a balance point in OI-weighted gamma space"). Note this changes `tests/lib/test_gamma.py::TestComputeGammaBalance::test_no_crossing_returns_none`, which currently pins the degenerate behaviour. |
 
 `compute_gamma_flip_bs` is the ready replacement for R2/R3: across the same 42
 chains — including all 24 in the negative-gamma regime where `gamma_balance` is
@@ -302,7 +302,7 @@ stored, already in `realtime_gex_15m`.
 Every claim above is derived from the code at `8749b83` and from chains run
 through the **production** functions (`aggregate_by_strike` → `build_summary`),
 per CLAUDE.md Rule 3.6 — no throwaway harness; the proof lives in
-`tests/test_gamma.py` where it can be re-run.
+`tests/lib/test_gamma.py` where it can be re-run.
 
 **GCP credentials in this session return `ACCESS_TOKEN_TYPE_UNSUPPORTED`,** so no
 production rows were queried. The production figures quoted (24.8% / ~55% /
