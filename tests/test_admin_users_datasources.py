@@ -194,7 +194,7 @@ def test_users_merge_firebase_and_roles(monkeypatch):
     r = _client().get("/api/admin/users", headers=ADMIN_HEADERS)
     assert r.status_code == 200
     data = r.json()
-    assert data["available_roles"] == ["admin", "user"]
+    assert data["available_roles"] == ["admin", "user", "dev"]
     by_uid = {u["uid"]: u for u in data["users"]}
     # ADMIN_EMAIL holds admin via the env fallback despite having no table row.
     assert by_uid["u-admin"]["roles"] == ["admin"]
@@ -257,6 +257,14 @@ def test_roles_upsert_and_delete(monkeypatch):
     assert params["email"] == "a@x.com"  # normalized
     assert params["role"] == "user"
     assert params["created_by"] == ADMIN_EMAIL  # attributable, server-derived
+
+    # 'dev' is assignable like any other role (it drives the frontend's
+    # mock-data mode via /api/me is_dev; no extra API access).
+    r = c.put("/api/admin/users/u1/roles", json={"roles": ["dev"]}, headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    sql, params = exec_calls[-1]
+    assert "INSERT INTO user_roles" in sql
+    assert params["role"] == "dev"
 
     r = c.put("/api/admin/users/u1/roles", json={"roles": []}, headers=ADMIN_HEADERS)
     assert r.status_code == 200
