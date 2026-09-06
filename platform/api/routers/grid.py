@@ -377,6 +377,26 @@ _ONDEMAND_RATE_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=4096, t
 # uncounted and a burst slips past the ceiling into shared AlphaVantage quota.
 _ONDEMAND_RATE_LOCK = threading.Lock()
 
+# Per-ticker single-flight for the on-demand AlphaVantage dispatch.
+#
+# The rate limiter bounds DISTINCT tickers per IP and deliberately does not
+# count a repeat of the same one, so it cannot stop two concurrent requests
+# for the SAME off-list ticker from both reaching the vendor. Both would spend
+# an AV call and both would persist a full-chain snapshot, against a
+# documented expectation that only the first hit goes out.
+#
+# One lock per ticker, so a fetch for NVDA does not queue behind one for AMD.
+# The registry itself is guarded by `_INFLIGHT_REGISTRY_LOCK`; entries are
+# never removed, because the set of tickers that reach this path is bounded by
+# the rate limiter and a `threading.Lock` is cheap.
+_INFLIGHT_REGISTRY_LOCK = threading.Lock()
+_INFLIGHT_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _inflight_lock(ticker: str) -> threading.Lock:
+    with _INFLIGHT_REGISTRY_LOCK:
+        return _INFLIGHT_LOCKS.setdefault(ticker, threading.Lock())
+
 
 def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
     """Per-IP per-60s ceiling. Raises 429 when the IP has already
@@ -588,10 +608,18 @@ def get_grid_live(
             and ticker_upper not in _SCHEDULED_REALTIME_TICKERS):
         try:
             client_ip = request.client.host if request.client else "unknown"
-            contracts, ts_iso, snapshot_date = _fetch_on_demand(
-                ticker_upper, client_ip,
-            )
-            data_source = "realtime" if contracts else "unavailable"
+            # Single-flight. The second concurrent request for this ticker
+            # blocks here; when it gets the lock it re-reads Cloud SQL, where
+            # the first request has by then persisted its snapshot, and skips
+            # the vendor entirely. Only one AV call goes out per ticker.
+            with _inflight_lock(ticker_upper):
+                (contracts, ts_iso, snapshot_date,
+                 data_source, _days) = _load_chain_for_live(ticker_upper)
+                if data_source == "unavailable":
+                    contracts, ts_iso, snapshot_date = _fetch_on_demand(
+                        ticker_upper, client_ip,
+                    )
+                    data_source = "realtime" if contracts else "unavailable"
         except HTTPException:
             raise   # propagate 429 / 503 — typed signals the UI can render
         except Exception as exc:

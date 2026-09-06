@@ -206,6 +206,60 @@ def test_ticker_info_cache_is_never_observed_partially_written(tmp_path, monkeyp
     assert not torn, f"reader observed a partial cache {torn[:5]}"
 
 
+# ── grid on-demand single-flight ────────────────────────────────────────────
+
+def test_concurrent_on_demand_grid_requests_hit_the_vendor_once(monkeypatch):
+    """The rate limiter bounds DISTINCT tickers and deliberately lets a repeat
+    of the same one through, so it cannot stop two concurrent requests for the
+    SAME off-list ticker from both calling AlphaVantage and both persisting a
+    full-chain snapshot.
+
+    The per-ticker single-flight makes the second waiter re-read Cloud SQL,
+    where the first has by then persisted, and skip the vendor.
+    """
+    from api.routers import grid
+
+    av_calls: list[str] = []
+    persisted = threading.Event()
+    barrier = threading.Barrier(2, timeout=5)
+
+    def fake_load(ticker):
+        """Cloud SQL: empty until the first fetch has persisted."""
+        if persisted.is_set():
+            return (["contract"], "2026-09-04T20:00:00Z", None, "realtime", 1)
+        return ([], None, None, "unavailable", 0)
+
+    def fake_fetch(ticker, client_ip):
+        av_calls.append(ticker)
+        persisted.set()
+        return (["contract"], "2026-09-04T20:00:00Z", None)
+
+    monkeypatch.setattr(grid, "_load_chain_for_live", fake_load)
+    monkeypatch.setattr(grid, "_fetch_on_demand", fake_fetch)
+
+    def one_request(_n):
+        barrier.wait()                      # start both at the same moment
+        lock = grid._inflight_lock("ZZZZ")
+        with lock:
+            contracts, _ts, _d, source, _days = grid._load_chain_for_live("ZZZZ")
+            if source == "unavailable":
+                grid._fetch_on_demand("ZZZZ", "1.2.3.4")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(one_request, range(2)))
+
+    assert av_calls == ["ZZZZ"], (
+        f"AlphaVantage was called {len(av_calls)} times for one ticker")
+
+
+def test_inflight_locks_are_per_ticker_not_global():
+    """A fetch for NVDA must not queue behind one for AMD."""
+    from api.routers import grid
+
+    assert grid._inflight_lock("NVDA") is grid._inflight_lock("NVDA")
+    assert grid._inflight_lock("NVDA") is not grid._inflight_lock("AMD")
+
+
 # ── journal local file ──────────────────────────────────────────────────────
 
 def test_concurrent_journal_saves_never_expose_a_torn_file(tmp_path, monkeypatch):
