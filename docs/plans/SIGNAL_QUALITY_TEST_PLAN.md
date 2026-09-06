@@ -274,7 +274,7 @@ class MomentumStrategy(Strategy):
 
 **Tests:**
 
-1. `tests/test_calibrate_thresholds.py` — table-driven: synthetic bars with known ATR/RVOL distributions, verify calibration output matches expected
+1. `tests/scripts/test_calibrate_thresholds.py` — table-driven: synthetic bars with known ATR/RVOL distributions, verify calibration output matches expected
 2. `tests/test_strategy_uses_calibration.py` — instantiate `MomentumStrategy()`, verify it reads ticker-specific thresholds via `get_calibration()`
 3. **`tests/test_universal_param_validity.py` (NEW — guards Tier B)** — for each of the 5 universal-tested constants, run a small grid search over plausible alternate values on 60-day historical data per ticker. If any ticker shows a materially better outcome (≥3pp clean-rate improvement) under a different value, the test fails. This forces us to reconsider whether the constant should remain universal or move to Tier A.
 4. Regression: re-run the morning audit on 5/1 with calibrated thresholds, expect different (more accurate) clean-rates per ticker
@@ -380,11 +380,11 @@ def get_strategy(name: str) -> Strategy:
 
 **Tests added:**
 
-1. `tests/test_strategy_interface.py` — instantiate both, evaluate the same fixture row, assert schema parity (same field names, same types, JSON-serializable)
+1. `tests/lib/test_strategy_interface.py` — instantiate both, evaluate the same fixture row, assert schema parity (same field names, same types, JSON-serializable)
 2. `tests/test_momentum_conditions.py` — table-driven: 20 hand-crafted bars, expected condition outputs (catches accidental logic changes)
 3. `tests/test_mean_reversion_conditions.py` — same pattern
-4. `tests/test_strategy_isolation.py` — neither strategy mutates the input DataFrame, neither modifies global state, both are thread-safe (matters for Phase 3)
-5. `tests/test_strategy_legacy_parity.py` — diff `MomentumStrategy().generate_signals(enriched)` vs the old `MarketAnalyzer.generate_technical_signals(enriched)` on a fixed week of bars; row-for-row equivalence required (modulo schema migration)
+4. `tests/lib/test_strategy_isolation.py` — neither strategy mutates the input DataFrame, neither modifies global state, both are thread-safe (matters for Phase 3)
+5. `tests/lib/test_strategy_legacy_parity.py` — diff `MomentumStrategy().generate_signals(enriched)` vs the old `MarketAnalyzer.generate_technical_signals(enriched)` on a fixed week of bars; row-for-row equivalence required (modulo schema migration)
 
 **Live parity validation:** deploy refactored code to a staging Cloud Run revision, run for 1 trading day, assert `signal_alerts` rows match what the prod (old) revision wrote on the same minute. Differences > 0 = revert.
 
@@ -732,7 +732,7 @@ ALTER TABLE historical_signals
 
 **Tests:**
 
-1. `tests/test_catalyst_proximity.py` — table-driven: synthetic catalyst entries + signal timestamps at known offsets; verify `proximity_bucket` returns expected value
+1. `tests/lib/test_catalyst_proximity.py` — table-driven: synthetic catalyst entries + signal timestamps at known offsets; verify `proximity_bucket` returns expected value
 2. `tests/test_catalyst_session_classification.py` — every catalyst type maps to the correct session; new types fail loudly until classified
 3. `tests/test_signal_with_catalyst.py` — `MomentumStrategy().evaluate(row)` correctly populates the 6 catalyst fields
 4. **Regression statistical test** — re-run Apr-May historical analysis with proximity tagging; assert clean-rate variation across proximity buckets is statistically significant (chi-squared p < 0.05). If not, the feature isn't doing real work and we revisit.
@@ -1230,14 +1230,14 @@ gantt
 | Phase | Files |
 |---|---|
 | 0 | `gcp/signal_monitor.py` (bug fix), `gcp/fetchers/fetch_market_data.py:102-104` |
-| 0.6 | `scripts/calibrate_thresholds.py` (NEW), `gcp/schema.sql` (`ticker_calibration` table), `gcp/deploy.sh` (`calibrate-thresholds` Cloud Run Job + scheduler), `tests/test_calibrate_thresholds.py` |
+| 0.6 | `scripts/calibrate_thresholds.py` (NEW), `gcp/schema.sql` (`ticker_calibration` table), `gcp/deploy.sh` (`calibrate-thresholds` Cloud Run Job + scheduler), `tests/scripts/test_calibrate_thresholds.py` |
 | 0.8 | `lib/strategies/__init__.py`, `lib/strategies/base.py`, `lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py` (NEW package); `lib/signals.py` (back-compat shim); `lib/trading_analysis.py` (signal-gen removed; indicators only); `gcp/signal_monitor.py` (use `get_strategy()`); `scripts/run_historical_signals.py` (use `get_strategy()`); `tests/test_strategy_*.py` (5 new test files) |
 | 0.7 | `gcp/schema.sql` (strategy column on historical_signals); `scripts/run_historical_signals.py` (`--strategy` flag); `gcp/insight_discord_push.py` (strategy tag in embed) |
 | 0.7.1 | `lib/strategies/momentum.py` (tier conditions, drop free-score noise, loosen consec_up); `tests/test_momentum_conditions_v2.py` |
 | 0.7.2 | `lib/strategies/mean_reversion.py` (mirror fixes); `tests/test_mean_reversion_conditions_v2.py` |
 | 0.5 | `scripts/signal_quality_report.py` (NEW, promoted from `_signal_multi_tf.py`), `gcp/schema.sql` (signal_metrics table + strategy column), `gcp/deploy.sh` (new job + scheduler entries), `gcp/signal_quality_alarm.py` (NEW, regression check + stale-data fail-loud) |
 | 1 | `gcp/schema.sql` (timeframe_tag column), `gcp/signal_monitor.py`, `lib/signals.py` (timeframe heuristic from §3.4), `gcp/insight_discord_push.py` (embed format) |
-| 1.5 | `lib/strategies/catalyst_proximity.py` (NEW), `gcp/schema.sql` (proximity columns on signal_alerts + historical_signals), `lib/strategies/base.py` (Signal dataclass adds proximity fields), `tests/test_catalyst_proximity.py` + 3 more catalyst tests |
+| 1.5 | `lib/strategies/catalyst_proximity.py` (NEW), `gcp/schema.sql` (proximity columns on signal_alerts + historical_signals), `lib/strategies/base.py` (Signal dataclass adds proximity fields), `tests/lib/test_catalyst_proximity.py` + 3 more catalyst tests |
 | 2 | `gcp/signal_monitor.py`, `gcp/schema.sql` (signal_outcomes table), `scripts/simulate_signal_changes.py` (NEW) |
 | 3 | `gcp/signal_monitor.py` (multi-tf evaluator), `lib/trading_analysis.py` (resampling) |
 | 4 | `lib/signals.py` (weights), `lib/trading_analysis.py` (score calc) |

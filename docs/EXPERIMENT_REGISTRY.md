@@ -526,7 +526,7 @@ Artifacts: `gs://adept-mountain-474619-d4-trading-data/research/{strat,magnitude
   | `scripts/strat_oos_clv_ablation.py` | **CLV ablation** held-out (FULL / NO_CLV / CLV_ONLY / STRUCT_ONLY); imports `build_bars` read-only |
   | `scripts/strat_clv_demech.py` | **CLV de-mechanization** — 2 targets (gap-aided `next_up` vs gap-neutral `next_intrabar`) × 5 sets incl. `CLV_LAG1`; imports `build_bars`+`FEATS` read-only |
   | `scripts/strat_struct_backtest.py` | **costed underlying backtest** of the STRUCT (momentum+FTFC) residual — held-out per-year, 2bps/side, `oc`/`cc` holds, vs buy-hold; imports `build_bars`+`FEATS` read-only |
-  | `tests/test_strat_history.py` · `tests/test_strat_clv_demech.py` · `tests/test_strat_struct_backtest.py` | hermetic tests (history+1-3-1; demech wiring/mechanical-signature; backtest cost/band monotonicity) — 8 + 7 + 6 pass |
+  | `tests/lib/test_strat_history.py` · `tests/scripts/test_strat_clv_demech.py` · `tests/scripts/test_strat_struct_backtest.py` | hermetic tests (history+1-3-1; demech wiring/mechanical-signature; backtest cost/band monotonicity) — 8 + 7 + 6 pass |
 
 - **Results — descriptive (full-sample, SPY representative):**
   - Single current-candle is a **weak** predictor: after 2U → next 2U ~47–57% (continuation) vs 2D ~23–33%; after 2D ≈ coin-flip; inside(1) rarely stays inside, ~14–26% expand to a 3; the candle *type* itself ranks LOW in mutual information.
@@ -892,7 +892,7 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Worked/not:** OFI **destroys** the lone IWM long edge (z 2.85→0.30; fires 726→1054 while precision falls — identical overfit-dilution signature to E5 flow) and **surfaces a NEW unvalidated SPY-long flicker** (z 2.97, +5.8pp cost-free, n=658) plus a marginal QQQ-long (z 1.52). It does not augment or replicate cross-ticker — it **moves** which single ticker is significant (IWM→SPY).
 - **Verdict:** ❌ falsified as a robust directional edge. Swapping the significant ticker rather than adding/replicating signal is the multiple-comparisons signature (one of 6 tests crossing z≈3 while the prior winner vanishes). Cost-free only; E4-family miscalibration (ECE≈0.10); net-untradeable like the rest of the E-series.
 - **Open items:** the **SPY-long intraflow flicker (z 2.97)** is now the standing E4-style candidate alongside the IWM E4 long flicker — both need replicate-or-reject (more names / OOS window) before any belief; neither is deployable today.
-- **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq{,_intraflow}_178067926x.json` per ticker; `lib/features/intraday_flow.py`; `gcp/build_intraday_flow.py`; `tests/test_intraday_flow.py`; commits e60a114 (feature), 6323cfd (resumable builder).
+- **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq{,_intraflow}_178067926x.json` per ticker; `lib/features/intraday_flow.py`; `gcp/build_intraday_flow.py`; `tests/gcp/test_intraday_flow.py`; commits e60a114 (feature), 6323cfd (resumable builder).
 
 ### B5c (E5c) — Reconstructed intraday dealer GEX/DEX (intragex)
 - **Status:** failed (null; dilutes the IWM flicker). **Dates:** 2026-06-05/06. **Question:** does *reconstructed intraday dealer positioning* (the "reverse-engineer what GEX/DEX was at 11:30am" idea) add direction?
@@ -928,7 +928,7 @@ DB result tables: `walk_forward_results`, `magnitude_walk_forward_results`,
 - **Lesson:** an IC must be evaluated within-day (the tradeable frame); pooled IC on
   intraday data is Simpson-paradox-prone. Any option-greek feature monotonic in
   moneyness must be residualized against spot before it can claim directional signal.
-- **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq_intragex_178070441x.json`; `lib/features/intraday_gex.py`; `gcp/build_intraday_gex.py`; `intraday_gex_15m`; `tests/test_intraday_gex.py`; commits 2e36c50 (feature), c8265ff (s_eod fix).
+- **Artifacts:** `dir_probe_e4_tb_h12_k1.0_topq_intragex_178070441x.json`; `lib/features/intraday_gex.py`; `gcp/build_intraday_gex.py`; `intraday_gex_15m`; `tests/lib/test_intraday_gex.py`; commits 2e36c50 (feature), c8265ff (s_eod fix).
 
 ### B6 (gamma reassessment) — VOL confirmed, DIRECTION null, + a regime-label BUG (2026-06-07)
 - **Status:** done. **Trigger:** domain-expert pushback that gamma should be valuable — prompted a step-back reevaluation of how gamma was tested.

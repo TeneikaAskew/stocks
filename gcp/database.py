@@ -113,7 +113,7 @@ def _build_engine():
         # Same pool config as the Cloud SQL engine below: pool_pre_ping
         # guards dropped connections on long local-dev sessions (same
         # failure mode as the 2026-05-14 Cloud SQL TLS postmortem), and
-        # tests/test_database_pool_pre_ping.py pins all of these args.
+        # tests/gcp/test_database_pool_pre_ping.py pins all of these args.
         _engine = sqlalchemy.create_engine(
             direct_url,
             pool_size=5,

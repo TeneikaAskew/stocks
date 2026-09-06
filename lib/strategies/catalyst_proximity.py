@@ -10,7 +10,7 @@ reweighting, Phase 2 cooldown) can stratify by proximity_bucket.
 Design split:
   - PURE helpers (`classify_event_type`, `classify_event_session`,
     `classify_proximity_bucket`) — no I/O, table-driven; tested
-    exhaustively in tests/test_catalyst_proximity.py.
+    exhaustively in tests/lib/test_catalyst_proximity.py.
   - DB lookup (`get_catalyst_context`) — queries Cloud SQL
     economic_events / earnings_calendar / sec_filings; lru_cache'd
     keyed on (ticker, ts.floor('5min')) so a 60-second monitor cycle

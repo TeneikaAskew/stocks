@@ -115,7 +115,7 @@ Not investigated in detail in this audit; logged here for the issue-cleanup pass
 
 **Job-level disposition**: The per-ticker exception handler in `scripts/run_historical_signals.py:_process_ticker` logged the traceback and continued, so the job reported `Execution completed successfully in 50.18s` — but produced ZERO output. This is a silent-fallback violation of CLAUDE.md §3.7 (data-quality counter would catch it; exit-non-zero on `errors == n_tickers` would catch it).
 
-**Fix**: ✅ This PR. Replaced with `.ffill(limit=30)` — semantically identical, supported in every pandas version from 1.0 forward. Added `tests/test_order_blocks_pandas3_compat.py` (3 cases).
+**Fix**: ✅ This PR. Replaced with `.ffill(limit=30)` — semantically identical, supported in every pandas version from 1.0 forward. Added `tests/lib/test_order_blocks_pandas3_compat.py` (3 cases).
 
 **Follow-up**: Tighten the per-ticker exception handler in `scripts/run_historical_signals.py` so `errors == n_tickers` exits non-zero. Currently it can't distinguish "all tickers crashed" from "all tickers succeeded."
 

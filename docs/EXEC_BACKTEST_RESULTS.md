@@ -262,7 +262,7 @@ Snapshots for this run:
 | `lib/exec_backtest/runner.py`     | Per-cell walk-forward orchestrator.                       |
 | `lib/exec_backtest/ftfc.py`       | Lightweight strat-candle FTFC weighted score (variant 1). |
 | `lib/exec_backtest/cli.py`        | Cloud Run Job entry point.                                |
-| `tests/test_exec_backtest.py`     | 9 hermetic unit tests (entry, exit, gap, costs, voiding). |
+| `tests/lib/test_exec_backtest.py`     | 9 hermetic unit tests (entry, exit, gap, costs, voiding). |
 | `docs/exec_backtest_data/*.csv`   | Per-trade audit ledger (one row per executed trade).      |
 | `docs/exec_backtest_data/*.json`  | Per-fold and per-cell results.                            |
 
