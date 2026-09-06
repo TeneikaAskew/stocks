@@ -85,6 +85,37 @@ def list_matching_blobs(prefix: str, pattern: str) -> list[str]:
     return matching
 
 
+def list_matching_blobs_strict(prefix: str, pattern: str) -> list[str]:
+    """`list_matching_blobs`, but a storage failure RAISES.
+
+    The swallowing sibling returns `[]` for a rejected or timed-out listing,
+    which the caller cannot tell from "this prefix genuinely holds nothing".
+    That made a 503 in `get_available_dates` unreachable: with Cloud SQL down
+    AND GCS failing, both listings returned `[]`, execution fell through to
+    the empty payload, and the endpoint answered 200 as if the ticker simply
+    had no data.
+
+    Same relationship as `gcp.database.query_to_dataframe` and its `_strict`
+    sibling: use this wherever "the listing failed" must be distinguishable
+    from "the listing was empty".
+    """
+    cache_key = (prefix, pattern)
+    if cache_key in _LIST_CACHE:
+        return _LIST_CACHE[cache_key]
+
+    full_prefix = BASE_PREFIX + prefix
+    blobs = _get_client().list_blobs(BUCKET, prefix=full_prefix)
+    names = [b.name for b in blobs]
+
+    regex = re.compile(pattern)
+    matching = sorted(
+        [n for n in names if regex.search(n.rsplit("/", 1)[-1])],
+        reverse=True,
+    )
+    _LIST_CACHE[cache_key] = matching
+    return matching
+
+
 def blob_exists(blob_path: str) -> bool:
     """Return True if a blob exists in GCS under BASE_PREFIX+blob_path."""
     full_path = BASE_PREFIX + blob_path

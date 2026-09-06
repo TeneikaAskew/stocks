@@ -516,7 +516,7 @@ def get_available_dates(ticker: str):
     months: list[str] = []
     try:
         # Daily minute parquets
-        minute_blobs = gcs_reader.list_matching_blobs(
+        minute_blobs = gcs_reader.list_matching_blobs_strict(
             f"data/{ticker_lower}/minute/",
             rf"^{ticker_lower}_minute_(\d{{8}})\.parquet$",
         )
@@ -526,7 +526,7 @@ def get_available_dates(ticker: str):
             if len(date_part) == 8 and date_part.isdigit():
                 dates.append(date_part)
         # Monthly intraday parquets
-        intraday_blobs = gcs_reader.list_matching_blobs(
+        intraday_blobs = gcs_reader.list_matching_blobs_strict(
             f"data/{ticker_lower}/intraday/",
             rf"^{ticker_lower}_av_1min_(\d{{6}})\.parquet$",
         )
@@ -553,7 +553,15 @@ def get_available_dates(ticker: str):
         "dates": sorted(set(dates), reverse=True),
         "months": sorted(set(months), reverse=True),
     }
-    if payload["dates"]:
+    # Cache the GCS answer ONLY when Cloud SQL is unconfigured, i.e. when GCS
+    # is the intended source rather than a consolation prize.
+    #
+    # When Cloud SQL IS configured and merely failed, caching this under the
+    # same 12h key pins a transient outage: every request after the database
+    # recovers keeps serving the potentially incomplete GCS date set, and
+    # nothing retries Cloud SQL until the TTL expires. A failure-driven answer
+    # must not outlive the failure.
+    if payload["dates"] and not _CLOUD_SQL:
         _MARKET_DATES_CACHE[ticker_upper] = payload
     return payload
 

@@ -587,6 +587,58 @@ class TestMarketDataAPI:
         # months derived from the dates, descending
         assert data["months"] == ["202602", "202601"]
 
+    def test_market_dates_gcs_failure_is_503_not_an_empty_200(self, client, monkeypatch):
+        """Cloud SQL down AND GCS failing must not read as "no data".
+
+        `gcs_reader.list_matching_blobs` swallows storage errors and returns
+        `[]`, which is indistinguishable from an empty prefix, so the 503 this
+        endpoint promises was unreachable: execution fell through to an empty
+        payload and answered 200. The dates path uses the strict lister now.
+        """
+        import api.main as main_module
+        from api import gcs_reader
+
+        monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+
+        def db_down(*a, **k):
+            raise RuntimeError("cloud sql unreachable")
+
+        def gcs_down(*a, **k):
+            raise RuntimeError("403 from GCS")
+
+        monkeypatch.setattr(main_module, "query_to_dataframe", db_down)
+        monkeypatch.setattr(gcs_reader, "list_matching_blobs_strict", gcs_down)
+        main_module._MARKET_DATES_CACHE.clear()
+
+        r = client.get("/api/market/dates/ZZZZ")
+        assert r.status_code == 503, (
+            f"both sources failed but the response was {r.status_code}: {r.json()!r}")
+
+    def test_market_dates_gcs_answer_is_not_cached_when_cloud_sql_merely_failed(
+            self, client, monkeypatch):
+        """A failure-driven answer must not outlive the failure.
+
+        Caching the GCS result under the same 12h key pinned a transient
+        outage: every request after the database recovered kept serving the
+        GCS set and nothing retried Cloud SQL until the TTL expired.
+        """
+        import api.main as main_module
+        from api import gcs_reader
+
+        monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+        monkeypatch.setattr(main_module, "query_to_dataframe",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+        monkeypatch.setattr(
+            gcs_reader, "list_matching_blobs_strict",
+            lambda prefix, pattern: ["x/iwm_minute_20260220.parquet"]
+            if "minute" in prefix else [])
+        main_module._MARKET_DATES_CACHE.clear()
+
+        r = client.get("/api/market/dates/IWM")
+        assert r.status_code == 200 and r.json()["source"] == "gcs"
+        assert "IWM" not in main_module._MARKET_DATES_CACHE, (
+            "a GCS answer served because Cloud SQL failed was cached for 12h")
+
     def test_market_data_full_day(self, client, monkeypatch):
         """Fetch a full day of 1-min bars."""
         self._patch_intraday(monkeypatch, self._intraday_day_df(n_bars=120))
