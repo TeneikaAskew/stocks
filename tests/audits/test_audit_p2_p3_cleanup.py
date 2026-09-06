@@ -6,7 +6,7 @@ Three concerns:
   2. G.P2.6 — compute_score_quality_correlation returns sensible
      Spearman ρ for a synthetic high-discrimination dataset and signals
      insufficient-data correctly.
-  3. G.P3.4 — already covered in tests/test_strategy_agreement.py;
+  3. G.P3.4 — already covered in tests/lib/test_strategy_agreement.py;
      this file just adds the fire_alert→persist round-trip integration.
 """
 from __future__ import annotations

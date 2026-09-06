@@ -14,7 +14,7 @@ Asserts (contract with solyra src/types/profile.ts + CLAUDE.md Rule 3.7):
   (i) the row is always scoped by the SERVER-verified identity.
 
 Hermetic: gcp.database.get_engine is patched — no Cloud SQL. Same
-conventions as tests/test_preferences_router.py.
+conventions as tests/api/test_preferences_router.py.
 """
 from __future__ import annotations
 

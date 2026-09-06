@@ -204,7 +204,7 @@ def _bars(rows):
     """Build a minimal OHLC bars DataFrame from (time, close) pairs,
     indexed by time (no 'Time' column — exercises the `bars.index[i]`
     fallback path in the exit walk, matching how day_df is indexed in
-    the fixtures used elsewhere in tests/test_backtest.py)."""
+    the fixtures used elsewhere in tests/lib/test_backtest.py)."""
     times = [r[0] for r in rows]
     closes = [r[1] for r in rows]
     return pd.DataFrame({'Close': closes}, index=pd.DatetimeIndex(times))

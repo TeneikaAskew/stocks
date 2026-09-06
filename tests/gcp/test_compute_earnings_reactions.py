@@ -1025,7 +1025,7 @@ class TestFetchDailyWindowsForTickerDates:
 
 # ────────────────────────────────────────────────────────────────────────────
 # Regression guard for the 2026-05-14 timezone fix (Codex P2 review on #488).
-# Same shape as the guard in tests/test_fetch_earnings_history.py.
+# Same shape as the guard in tests/gcp/test_fetch_earnings_history.py.
 # ────────────────────────────────────────────────────────────────────────────
 
 class TestTickersReportingInWindowTimezone:

@@ -26,14 +26,14 @@
 
 ### Task 2.1: Schema migration — journal_entries grows chart-trade fields
 
-**Files:** Modify `gcp/schema.sql` (journal_entries block, ~line 1095); Test `tests/test_schema_journal_migration.py` (create)
+**Files:** Modify `gcp/schema.sql` (journal_entries block, ~line 1095); Test `tests/gcp/test_schema_journal_migration.py` (create)
 
 **Interfaces — Produces (later tasks rely on these exact columns):** `stop_loss DOUBLE PRECISION NULL`, `tp1/tp2/tp3 DOUBLE PRECISION NULL`, `status VARCHAR(10) NOT NULL DEFAULT 'closed'` (values: active|win|loss|breakeven|closed), `source VARCHAR(10) NOT NULL DEFAULT 'manual'` (chart|manual|replay), `session_id UUID NULL`; `exit_ts`/`exit_price` become NULLABLE.
 
 - [ ] **Step 1: Failing test** — the repo has schema tests (grep `tests/` for schema/DDL test precedents; if a pattern exists for asserting schema.sql contains idempotent migrations, follow it; otherwise):
 
 ```python
-# tests/test_schema_journal_migration.py
+# tests/gcp/test_schema_journal_migration.py
 """Phase 2 journal_entries migration is present and idempotent-by-construction."""
 from pathlib import Path
 
@@ -79,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
 
 ### Task 2.2: Journal API — create-with-levels, PATCH close, seed layer
 
-**Files:** Modify `platform/api/routers/journal.py`; Test `tests/test_journal_phase2.py` (create)
+**Files:** Modify `platform/api/routers/journal.py`; Test `tests/api/test_journal_phase2.py` (create)
 
 **Interfaces — Produces:**
 - `JournalTradeCreate` gains OPTIONAL fields: `exit_date/exit_time/exit_price` become `Optional[...] = None` (active trades), plus `stop_loss: Optional[float] = None`, `take_profits: Optional[list[float]] = None` (≤3, maps to tp1..tp3), `status: Optional[str] = None` (derived if omitted: active when no exit, else win/loss/breakeven from return_pct), `source: str = "manual"`, `session_id: Optional[str] = None`.
@@ -87,10 +87,10 @@ CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
 - `GET /api/journal/seed/{ticker}?date=YYYY-MM-DD` → read-only admin seed from the pipeline `trades` table: `{ticker, date, count, trades: [{id, direction, entry_time, entry_price, exit_time, exit_price, return_pct, strat_combo, exit_reason}]}` with `return_pct` CONVERTED fraction→percent (×100, commented — pipeline stores fractions). Strict query + 503; ANY-bind not needed (single ticker + date equality).
 - `GET /api/journal/trades/{ticker}` response rows gain the new columns (nullable passthrough).
 
-- [ ] **Step 1: Failing tests** (import/TestClient mechanics: copy tests/test_market_coverage.py's established pattern; monkeypatch the module's query/execute indirections — journal.py uses `query_to_dataframe`/`execute_sql` directly, so add module-level `_journal_query = query_to_dataframe` / `_journal_exec = execute_sql` indirections in the implementation and patch those):
+- [ ] **Step 1: Failing tests** (import/TestClient mechanics: copy tests/api/test_market_coverage.py's established pattern; monkeypatch the module's query/execute indirections — journal.py uses `query_to_dataframe`/`execute_sql` directly, so add module-level `_journal_query = query_to_dataframe` / `_journal_exec = execute_sql` indirections in the implementation and patch those):
 
 ```python
-# tests/test_journal_phase2.py — substance to keep, adapt mechanics:
+# tests/api/test_journal_phase2.py — substance to keep, adapt mechanics:
 def test_create_active_trade_without_exit_returns_null_return_pct(client_local_owner):
     r = client.post("/api/journal/trades", json={
         "ticker": "SPY", "direction": "CALL",
@@ -123,7 +123,7 @@ def test_take_profits_capped_at_three():
 ```
 
 - [ ] **Step 2-3: fail → implement.** Keep the local-file (open dev) branch working for create/list (new fields flow into the JSON file rows too); PATCH + seed are Cloud-SQL-only (open dev: PATCH updates the JSON file row; seed returns `{status:"unavailable", reason:"no Cloud SQL"}`-shaped honest empty in local mode — decide by reading how get_trades handles local vs SQL and stay consistent). Derive status: no exit → `active`; else sign of return_pct → win/loss/breakeven.
-- [ ] **Step 4: `python -m pytest tests/test_journal_phase2.py -v` all pass.** Step 5: commit `feat(api): journal supports active trades, close PATCH, and admin seed layer`
+- [ ] **Step 4: `python -m pytest tests/api/test_journal_phase2.py -v` all pass.** Step 5: commit `feat(api): journal supports active trades, close PATCH, and admin seed layer`
 
 ### Task 2.3: ChartsPage persistence — tradeStore → journal API
 
@@ -168,7 +168,7 @@ Hook: `useJournalChartTrades(ticker, date)` → TanStack query on `GET /api/jour
 
 ### Task 3.1: Extract reusable exit simulation in BacktestEngine
 
-**Files:** Modify `lib/backtest.py` (run() ~lines 521-578); Test `tests/test_backtest_exit_extraction.py` (create)
+**Files:** Modify `lib/backtest.py` (run() ~lines 521-578); Test `tests/lib/test_backtest_exit_extraction.py` (create)
 
 **Interfaces — Produces:** method `BacktestEngine.simulate_exit(trade: Trade, bars: pd.DataFrame, entry_idx: int, close_col: str = 'Close') -> Trade` — walks bars after `entry_idx`, per bar calls the EXISTING `_check_exit`, tracks MAE/MFE identically to run(), applies the same eod_close force-close on the last bar, fills `exit_time/exit_price/exit_reason/return_pct` (RAW FRACTION — engine-internal convention, documented) and returns the trade. `run()` is refactored to call it (behavior-identical).
 
@@ -178,7 +178,7 @@ Hook: `useJournalChartTrades(ticker, date)` → TanStack query on `GET /api/jour
 
 ### Task 3.2: `replay_labeled_trades` + POST /api/backtest/replay-trades
 
-**Files:** Modify `lib/backtest.py` (new module-level function), `platform/api/routers/backtest.py` (new endpoint); Test `tests/test_replay_labeled_trades.py` (create)
+**Files:** Modify `lib/backtest.py` (new module-level function), `platform/api/routers/backtest.py` (new endpoint); Test `tests/lib/test_replay_labeled_trades.py` (create)
 
 **Interfaces — Produces:**
 
@@ -213,7 +213,7 @@ Per-trade scorecard: `{id, status: "ok"|"unavailable", reason?, actual_return_pc
 
 ### Task 4.1: Schema — `user_style_results` + `playbook_cards_staging`
 
-**Files:** Modify `gcp/schema.sql`; Test `tests/test_schema_style_tables.py` (same pattern as 2.1)
+**Files:** Modify `gcp/schema.sql`; Test `tests/gcp/test_schema_style_tables.py` (same pattern as 2.1)
 
 ```sql
 CREATE TABLE IF NOT EXISTS user_style_results (
@@ -253,7 +253,7 @@ CREATE TABLE IF NOT EXISTS playbook_cards_staging (
 
 ### Task 4.2: `lib/style_miner.py`
 
-**Files:** Create `lib/style_miner.py`; Test `tests/test_style_miner.py`
+**Files:** Create `lib/style_miner.py`; Test `tests/lib/test_style_miner.py`
 
 **Interfaces — Produces:**
 
@@ -283,7 +283,7 @@ Condition vocabulary maps 1:1 onto `SignalConfig`'s tunables so a profile conver
 
 ### Task 4.3: Labeled walk-forward + persistence + run endpoint
 
-**Files:** Modify `lib/walk_forward.py` (new method), `platform/api/routers/backtest.py` (or a new small router `platform/api/routers/style.py` — prefer extending backtest.py); Test `tests/test_style_walk_forward.py`
+**Files:** Modify `lib/walk_forward.py` (new method), `platform/api/routers/backtest.py` (or a new small router `platform/api/routers/style.py` — prefer extending backtest.py); Test `tests/lib/test_style_walk_forward.py`
 
 **Interfaces — Produces:**
 - `WalkForwardValidator.run_profile(self, df, profile: StyleProfile, close_col='Close') -> WalkForwardResult` — converts the profile to a `SignalConfig` override (map each condition to its tunable; conditions outside the vocabulary raise ValueError) and runs the EXISTING fold loop with engines built from that config. No engine changes needed — the profile becomes configuration, which is exactly how the sweep already parameterizes (`walk_forward_sweep` precedent, walk_forward.py:253-347).

@@ -71,7 +71,7 @@ def _discover() -> list[str]:
         for m in pkgutil.walk_packages([str(REPO / pkg)], prefix=f"{pkg}."):
             mods.append(m.name)
     # platform/api is imported as `api.*` with platform/ on sys.path —
-    # same convention as tests/test_backtest_router_units.py.
+    # same convention as tests/api/test_backtest_router_units.py.
     api_dir = PLATFORM_DIR / "api"
     if api_dir.exists():
         mods.append("api")

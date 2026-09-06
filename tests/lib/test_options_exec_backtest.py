@@ -31,7 +31,7 @@ def _pvv_price(S, K, T, sigma, r, q, kind):
     `py_vollib` as the reference. Both are now poisoned by an import-
     time side effect: when `py_vollib_vectorized.api` loads anywhere in
     the test session (e.g. via `pytest.importorskip("py_vollib_vectorized")`
-    at the top of tests/test_options_greeks.py), it monkey-patches both
+    at the top of tests/lib/test_options_greeks.py), it monkey-patches both
     `py_vollib.black_scholes_merton.black_scholes_merton` AND
     `vollib.black_scholes_merton.black_scholes_merton` to route through
     a numba-decorated `_black_scholes_merton_vectorized_call`. Inside

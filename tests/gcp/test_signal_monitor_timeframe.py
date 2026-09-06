@@ -1,7 +1,7 @@
 """Phase 1 — integration tests for the timeframe-tag wiring in signal_monitor.
 
 The pure helper (`assign_timeframe`) is exhaustively covered in
-`tests/test_strategy_timeframe.py`. This file verifies the WIRING:
+`tests/lib/test_strategy_timeframe.py`. This file verifies the WIRING:
 
   1. _evaluate strategies → assign_timeframe → stash on self
   2. fire_alert embed title includes the [timeframe] label

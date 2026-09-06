@@ -20,7 +20,7 @@ Three test classes:
     engine is built from, independent of real indicator/price realism.
   TestMineAndValidateEndpoint — the FastAPI endpoint, with the journal
     query / bar loaders / mine_style / WalkForwardValidator / persistence
-    all monkeypatched (hermetic, mirrors tests/test_replay_labeled_trades.py's
+    all monkeypatched (hermetic, mirrors tests/lib/test_replay_labeled_trades.py's
     TestClient pattern) — pins the closed-trade prefilter (open trades
     excluded BEFORE mine_style sees them), the <10-honest path, and that
     persisted/staged values are percent-converted.
@@ -329,7 +329,7 @@ class TestProfileToSignalConfig:
 
 def _make_long_intraday(n_months=4, bars_per_day=60, seed=7):
     """Small synthetic multi-month 1-min frame — same shape
-    tests/test_walk_forward.py's `_make_long_intraday` uses, kept local
+    tests/lib/test_walk_forward.py's `_make_long_intraday` uses, kept local
     (and smaller) so this file doesn't depend on that test module's
     private helper staying importable."""
     import numpy as np
@@ -482,7 +482,7 @@ def _make_raw_loader_frame(date_str: str, n_bars: int = 40) -> pd.DataFrame:
 class _StubValidator:
     """Replaces `backtest_router.WalkForwardValidator` in endpoint tests so
     the walk-forward's OWN correctness (tested above / in
-    tests/test_walk_forward.py) doesn't need to be re-proven through a full
+    tests/lib/test_walk_forward.py) doesn't need to be re-proven through a full
     HTTP round trip — only the endpoint's data flow and percent conversion."""
     captured_kwargs: dict = {}
 

@@ -13,7 +13,7 @@ Skipped when DB_HOST / CLOUD_SQL_URL isn't configured. Run locally:
         pgvector/pgvector:pg15
     export DB_HOST=localhost DB_PORT=55432 DB_NAME=trading \
            DB_USER=postgres DB_PASSWORD=test
-    pytest tests/test_routers_insights_admin.py
+    pytest tests/lib/test_routers_insights_admin.py
 """
 
 from __future__ import annotations

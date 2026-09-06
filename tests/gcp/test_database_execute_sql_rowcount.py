@@ -6,11 +6,11 @@ so callers can distinguish "statement ran but matched 0 rows" from
 This was landed in commit 1b6b2067; `gcp/premarket_brief.py`'s
 `_delete_null_close_rows` was updated in #702 to actually use the real
 count instead of a hardcoded "1 = attempted" sentinel (see
-tests/test_premarket_brief.py::TestDeleteNullCloseRows).
+tests/gcp/test_premarket_brief.py::TestDeleteNullCloseRows).
 
 Hermetic — fakes the SQLAlchemy engine/connection so no live DB is hit,
 following the `_FakeEngine`/`_FakeConn`/context-manager pattern in
-tests/test_options_retention_job.py.
+tests/gcp/test_options_retention_job.py.
 """
 from __future__ import annotations
 

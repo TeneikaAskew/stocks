@@ -1,6 +1,6 @@
 """Validation tests for run_pipeline.py's --walk-forward / --walk-forward-only flags.
 
-Subprocess-based — mirrors tests/test_run_pipeline_all_combos.py. The
+Subprocess-based — mirrors tests/scripts/test_run_pipeline_all_combos.py. The
 pipeline validates flag combinations before any DB / subprocess work,
 so these run hermetically (no Cloud SQL needed). Each assertion checks
 the exit code + the stderr/stdout message so the regression is visible

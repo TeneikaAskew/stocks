@@ -48,7 +48,7 @@ def journal_client(db_engine, monkeypatch, tmp_path):
 
     Import is deferred into the fixture (not module level) so a local
     no-DB run skips at the ``pytestmark`` guard without ever importing
-    FastAPI or the platform app. Mirrors tests/test_journal_phase2.py's
+    FastAPI or the platform app. Mirrors tests/api/test_journal_phase2.py's
     platform import dance.
     """
     pytest.importorskip("fastapi")

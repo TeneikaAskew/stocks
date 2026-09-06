@@ -9,7 +9,7 @@ Covers the three modes and the access switch:
 
 Hermetic: the Firebase verify primitive (`_verify_bearer_email`) is stubbed so
 the test exercises OUR middleware decision logic without firebase-admin or a
-real token. Run with `make test` or `pytest tests/test_platform_auth.py`.
+real token. Run with `make test` or `pytest tests/api/test_platform_auth.py`.
 """
 from __future__ import annotations
 

@@ -18,9 +18,9 @@ from gcp.research.magnitude_engine.mag_pred_train import make_lgbm
 def _require_real_lgbm():
     """Skip unless a REAL lightgbm is importable. make_lgbm lazy-imports
     lightgbm, so a MagicMock stub leaked into sys.modules by a sibling test
-    (tests/test_magnitude_inference.py) would otherwise make make_lgbm return a
+    (tests/gcp/test_magnitude_inference.py) would otherwise make make_lgbm return a
     mock classifier and these assertions meaningless — same contract as
-    tests/test_strat_walk_forward_calibration.py::_require_real_heavy_stack."""
+    tests/lib/test_strat_walk_forward_calibration.py::_require_real_heavy_stack."""
     import importlib
     from unittest.mock import Mock
     try:

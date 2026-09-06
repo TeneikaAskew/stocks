@@ -12,8 +12,8 @@ The legacy options-heatseeker static app was retired in #255 (cutover
 to FastAPI under platform/) — its directory no longer exists.
 
 Run these separately from the unit suite:
-  pytest tests/test_e2e.py --headed       # visible browser
-  pytest tests/test_e2e.py               # headless (CI)
+  pytest tests/e2e/test_e2e.py --headed       # visible browser
+  pytest tests/e2e/test_e2e.py               # headless (CI)
 """
 
 import http.server

@@ -2,7 +2,7 @@
 
 Uses a local Postgres connection from DB_* env vars. Run via:
 
-    pytest tests/test_agent_model_routing.py
+    pytest tests/agents/test_agent_model_routing.py
 
 The test is skipped if TEST_DB_URL / DB_HOST is not set in the
 environment, so it won't block `make test` on machines without a DB.
@@ -13,7 +13,7 @@ To run it locally:
         pgvector/pgvector:pg15
     export DB_HOST=localhost DB_PORT=55432 DB_NAME=trading \
            DB_USER=postgres DB_PASSWORD=test
-    pytest tests/test_agent_model_routing.py
+    pytest tests/agents/test_agent_model_routing.py
 """
 
 from __future__ import annotations
