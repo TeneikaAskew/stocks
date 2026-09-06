@@ -25,7 +25,7 @@ Asserts:
 Hermetic: firebase-admin, gcp.database, and the run_v2 dispatch are all
 patched via the module's indirections (_fb_auth, _roles_query/_roles_exec,
 _run_refresh_job); identity uses iap mode + the IAP header, per
-tests/test_structure_continuation.py's convention.
+tests/api/test_structure_continuation.py's convention.
 """
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 
 The daily TOP_GAINERS_LOSERS path (`fetch_top_movers` / `main()` default
 mode / `top_movers_daily`) must stay byte-identical — see
-tests/test_phase2_fetchers.py::test_top_movers_parses_three_categories
+tests/gcp/test_phase2_fetchers.py::test_top_movers_parses_three_categories
 for the pinned daily-path regression test.
 
 Covers (per .superpowers/sdd/task-1-brief.md):

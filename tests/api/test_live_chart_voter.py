@@ -25,7 +25,7 @@ if str(PLATFORM_DIR) not in sys.path:
 def client():
     """Create a TestClient for the FastAPI app (no live server needed).
 
-    Mirrors tests/test_live_signal_series.py's import pattern: chdir
+    Mirrors tests/api/test_live_signal_series.py's import pattern: chdir
     into platform/ so the app's relative asset paths resolve, then import
     api.main once sys.path has the platform dir.
     """

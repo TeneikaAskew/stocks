@@ -50,7 +50,7 @@ def _require_real_heavy_stack():
 
     strat_walk_forward lazy-imports lightgbm only when a fold trains, so the
     module import below succeeds even when lightgbm is a MagicMock stub leaked
-    into sys.modules by a sibling test (tests/test_magnitude_inference.py).
+    into sys.modules by a sibling test (tests/gcp/test_magnitude_inference.py).
     Running against that fake yields empty predictions; treat it as unavailable
     per the documented "skip if heavy stack isn't installed" contract."""
     import importlib

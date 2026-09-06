@@ -13,7 +13,7 @@ Coverage:
 Hermetic — mocks the momentum strategy evaluator so we don't depend on
 constructing a synthetic bar that satisfies both opposing strategies.
 The agreement helper itself is exhaustively tested in
-tests/test_strategy_agreement.py; this file verifies the WIRING.
+tests/lib/test_strategy_agreement.py; this file verifies the WIRING.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ if str(_REPO) not in sys.path:
 from lib.strategies.base import Signal  # noqa: E402
 
 
-# Same fixture pattern as tests/test_signal_monitor_persist.py
+# Same fixture pattern as tests/gcp/test_signal_monitor_persist.py
 def _make_monitor():
     from gcp.signal_monitor import SignalMonitor
     monitor = SignalMonitor()

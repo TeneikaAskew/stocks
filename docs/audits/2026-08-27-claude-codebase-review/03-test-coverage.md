@@ -4,8 +4,8 @@
 
 | Assumed | Actual |
 |---|---|
-| Playwright E2E at `tests/e2e/*.spec.ts` via `make test-e2e` | `make test-e2e` runs `pytest tests/test_e2e.py` — a **static-HTML smoke test** for `success-report-site`/`website`, unrelated to the trading platform. The real Playwright suite (**29 specs**: `signals.spec.ts`, `dashboard.spec.ts`, `admin.spec.ts`, …) lives at `platform/tests/`, run via `npm run e2e`. **No Makefile target, no CI workflow runs it.** |
-| CLI tests at `tests/test_scripts_*.py` (18 files) | One file, `tests/test_scripts.py` (268 lines). |
+| Playwright E2E at `tests/e2e/*.spec.ts` via `make test-e2e` | `make test-e2e` runs `pytest tests/e2e/test_e2e.py` — a **static-HTML smoke test** for `success-report-site`/`website`, unrelated to the trading platform. The real Playwright suite (**29 specs**: `signals.spec.ts`, `dashboard.spec.ts`, `admin.spec.ts`, …) lives at `platform/tests/`, run via `npm run e2e`. **No Makefile target, no CI workflow runs it.** |
+| CLI tests at `tests/test_scripts_*.py` (18 files) | One file, `tests/scripts/test_scripts.py` (268 lines). |
 | "No frontend unit tests exist" | False — **16 Vitest files** under `platform/src/**/*.test.{ts,tsx}` (`"test": "vitest run"`), including `expectedMove.test.ts`, which tests position-sizing and risk-hint math. **Not wired into any Makefile target or CI workflow.** |
 | ~339 tests | **~3,692 tests across 226 files.** |
 | (not mentioned) | A fourth suite exists: `tests/integration/` (`make test-integration`), real-Postgres contract tests, wired into CI as a separate `integration-tests` job. This is the tier that actually satisfies Rule 0 §3 — but covers a fraction of `schema.sql`'s 62 tables. |
@@ -15,8 +15,8 @@ manually invokes them.** Nothing in CI enforces it.
 
 > **VERIFIED BY CLAUDE:** `.github/workflows/backtest-pipeline.yml`
 > contains no `npm`/`vitest`/`playwright` job (its only playwright
-> reference is installing Chromium for the Python `tests/test_e2e.py`);
-> `Makefile:24-25` confirms `test-e2e` → `pytest tests/test_e2e.py`;
+> reference is installing Chromium for the Python `tests/e2e/test_e2e.py`);
+> `Makefile:24-25` confirms `test-e2e` → `pytest tests/e2e/test_e2e.py`;
 > counts confirmed at 16 Vitest + 29 Playwright.
 
 ## Ranked gaps
@@ -80,7 +80,7 @@ recurs.
 ### G6 — The silent-success fetcher pattern was fixed in one file, never swept
 The 2026-04-14 root cause was `fetch_market_data.py` logging a WARNING
 on missing API key and `exit(0)` — Scheduler recorded success, the gap
-sat 4 days. `tests/test_fetch_market_data_fail_fast.py` now exists.
+sat 4 days. `tests/gcp/test_fetch_market_data_fail_fast.py` now exists.
 **The pattern was never swept across the other 19 fetchers** —
 `fetch_fred_rates.py`, `fetch_av_indicators.py`, `fetch_rss_news.py`
 have no equivalent "missing credential / empty payload → nonzero exit"
@@ -111,7 +111,7 @@ through every downstream mining phase.
 `schema.sql` declares **62 tables**;
 `test_schema_query_contract.py::test_schema_core_tables_exist` checks
 **8**. The `exit_config_overrides` gap that caused the 2026-05-09
-incident is now closed (`tests/test_exit_config_overrides_schema.py`).
+incident is now closed (`tests/gcp/test_exit_config_overrides_schema.py`).
 **The `trades` table has no presence check and no column contract test
 anywhere** — same exposure class, unaddressed.
 

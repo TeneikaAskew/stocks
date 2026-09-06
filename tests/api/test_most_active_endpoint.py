@@ -24,10 +24,10 @@ auth._OPEN_API_PREFIXES, so both are gated identically in firebase mode
 (and unaffected identically in iap/open mode). No new auth code is added
 for this endpoint; parity is verified directly against auth._path_requires_auth.
 
-Scaffold: TestClient + monkeypatch conventions from tests/test_journal_examples.py
+Scaffold: TestClient + monkeypatch conventions from tests/api/test_journal_examples.py
 (sys.path setup, chdir-guarded import of api.main, SQL-text pinning inside the
 fake query so a mutation that drops the WHERE/ORDER BY clauses fails loudly)
-combined with tests/test_market_sectors.py's simpler single-function-monkeypatch
+combined with tests/api/test_market_sectors.py's simpler single-function-monkeypatch
 shape, since /api/market/most-active lives in the same main.py module as its
 sibling /api/market/sectors.
 """
@@ -89,7 +89,7 @@ _ALL_ROWS = pd.DataFrame([
 def _make_fake_query(calls: list, df: pd.DataFrame = _ALL_ROWS):
     """Fake `_most_active_query`.
 
-    Mutation-proof SQL-text pins (mirrors tests/test_journal_examples.py's
+    Mutation-proof SQL-text pins (mirrors tests/api/test_journal_examples.py's
     `_make_fake_query`): the real query must scope to `top_movers_intraday`,
     filter to the MAX(snapshot_date), and order by snapshot_ts then rank. The
     fake then applies that exact filter/order itself so the endpoint's

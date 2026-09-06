@@ -2,7 +2,7 @@
 
 All tests monkey-patch `_query` with a fake that returns canned
 DataFrames per SQL substring — same pattern as
-tests/test_agent_summarizers.py. No live DB or network.
+tests/agents/test_agent_summarizers.py. No live DB or network.
 """
 
 from __future__ import annotations

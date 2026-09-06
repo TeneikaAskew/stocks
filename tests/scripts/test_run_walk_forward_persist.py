@@ -1,6 +1,6 @@
 """Tests for scripts/run_walk_forward.py:persist_walk_forward.
 
-Mirrors tests/test_backtest_pipeline_tables.py:TestPersistTrades — the
+Mirrors tests/gcp/test_backtest_pipeline_tables.py:TestPersistTrades — the
 walk-forward stage of the backtest pipeline writes per-fold aggregate
 metrics to backtest_walk_forward_folds. These tests pin:
 

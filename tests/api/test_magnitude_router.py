@@ -49,7 +49,7 @@ _stub_missing_modules([
 
 
 # Skip the whole module if fastapi isn't installed (sandbox parity with
-# tests/test_routers_insights_admin.py).
+# tests/lib/test_routers_insights_admin.py).
 try:
     from fastapi.testclient import TestClient
 except ModuleNotFoundError:

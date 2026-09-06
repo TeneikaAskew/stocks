@@ -36,14 +36,14 @@ roughly:
 
 | Test file | Synthetic data used | Migration shape |
 |---|---|---|
-| `tests/test_indicators.py` | `sample_ohlcv`, `sample_daily` | Replace with `market_data` + add property-style assertions (e.g. RSI ∈ [0,100]) instead of pinned numeric values |
-| `tests/test_strat.py` | `known_strat_sequence`, `strat_combo_sequence` | Find real bars in IWM history that exhibit each candle/combo and use those |
-| `tests/test_strat_levels.py` | hand-built daily DataFrames | Use `market_data` directly — the existing behavior tests become structural assertions |
-| `tests/test_signals.py` | hand-built rows | Pull recent `signal_alerts` rows for IWM |
-| `tests/test_premarket_brief.py` | mocked Cloud SQL queries | Replace mocks with real `db_conn` + on-the-fly `build_level_map` calls |
-| `tests/test_signal_monitor.py` | hand-crafted level breaks | Drive from persisted `strat_levels` table for IWM at fixed `as_of` |
-| `tests/test_backtest.py` | synthetic price series | Use IWM 400d window |
-| `tests/test_data_loader.py` | hand-rolled minute data | Pull from `market_data_intraday_iwm` |
+| `tests/lib/test_indicators.py` | `sample_ohlcv`, `sample_daily` | Replace with `market_data` + add property-style assertions (e.g. RSI ∈ [0,100]) instead of pinned numeric values |
+| `tests/lib/test_strat.py` | `known_strat_sequence`, `strat_combo_sequence` | Find real bars in IWM history that exhibit each candle/combo and use those |
+| `tests/lib/test_strat_levels.py` | hand-built daily DataFrames | Use `market_data` directly — the existing behavior tests become structural assertions |
+| `tests/lib/test_signals.py` | hand-built rows | Pull recent `signal_alerts` rows for IWM |
+| `tests/gcp/test_premarket_brief.py` | mocked Cloud SQL queries | Replace mocks with real `db_conn` + on-the-fly `build_level_map` calls |
+| `tests/gcp/test_signal_monitor.py` | hand-crafted level breaks | Drive from persisted `strat_levels` table for IWM at fixed `as_of` |
+| `tests/lib/test_backtest.py` | synthetic price series | Use IWM 400d window |
+| `tests/lib/test_data_loader.py` | hand-rolled minute data | Pull from `market_data_intraday_iwm` |
 | `tests/test_options_*` | mocked option chains | Pull from `etf_options_snapshots` for IWM |
 | `tests/test_routers_*` | FastAPI test client + mocks | Wire test client to `db_conn` so the router queries hit the real DB |
 

@@ -27,7 +27,7 @@ For the underlying methodology see
 
 - **Strat label (2U / 312_bull_reversal / FTFC): trustworthy.**
   Deterministic, exhaustive classification, unit-tested in
-  `tests/test_strat.py` (candle, combo, FTFC, and as-of/timezone
+  `tests/lib/test_strat.py` (candle, combo, FTFC, and as-of/timezone
   regression tests). Verified against live data — see §3.
 - **Card win-rate / avg-return: read with care.** Historically the card
   stat defined "win" as *did the very next 1-minute bar close green*

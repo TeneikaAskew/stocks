@@ -296,7 +296,7 @@ gcloud run jobs execute direction-probe --region us-east1 --async \
           --barrier-atr=1.0,--mag-cond=topq,--mag-thresh=0.2"
 # Artifacts: gs://adept-mountain-474619-d4-trading-data/research/strat_engine/iwm_15m/dir_probe_*.json
 ```
-Hermetic helper tests: `tests/test_strat_dir_probes.py` (19 passing, incl. 6 for
+Hermetic helper tests: `tests/gcp/test_strat_dir_probes.py` (19 passing, incl. 6 for
 `triple_barrier_labels`).
 
 ## E5 — The "rethink": a genuinely NEW information class (dealer flow)
@@ -362,8 +362,8 @@ gcloud run jobs execute build-options-greeks --region us-east1 --wait \
 gcloud run jobs execute direction-probe --region us-east1 --async \
   --args="^|^-m|gcp.research.strat_engine.strat_dir_probes|--experiment=e4_triple_barrier|--ticker=SPY|--tf=15m|--horizon=12|--barrier-atr=1.0|--mag-cond=topq|--mag-thresh=0.2|--feature-blocks=flow|--window=expanding"
 ```
-Hermetic helper tests: `tests/test_flow_direction.py` (22), `tests/test_fracdiff.py`
-(11), `tests/test_information_bars.py`.
+Hermetic helper tests: `tests/lib/test_flow_direction.py` (22), `tests/lib/test_fracdiff.py`
+(11), `tests/lib/test_information_bars.py`.
 
 ---
 

@@ -15,7 +15,7 @@ serves BOTH shapes: a `journal_entries` query (as before) and a `trades`
 (pipeline) query, distinguished by SQL text ("from trades" without
 "journal_entries").
 
-Scaffold mirrors tests/test_journal_phase2.py: sys.path setup + chdir-guarded
+Scaffold mirrors tests/api/test_journal_phase2.py: sys.path setup + chdir-guarded
 import of `api.main` / `api.routers.journal`, then a real `TestClient(main.app)`
 so both the router logic AND the auth middleware (registered on `main.app`)
 are exercised end to end.

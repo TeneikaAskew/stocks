@@ -13,7 +13,7 @@ These tests pin the table-write / table-read logic added to:
 
 Cloud SQL is fully mocked (patch.object on the db helpers) — no live
 database is needed, matching the pattern in
-tests/test_backfill_daily_indicators.py.
+tests/gcp/test_backfill_daily_indicators.py.
 """
 from __future__ import annotations
 

@@ -8,7 +8,7 @@ POST /api/journal/import/commit   — {broker, trades:[selected PairedTrade dict
   path POST /api/journal/trades uses, source='import:<broker>', owner ALWAYS the
   authenticated caller.
 
-Scaffold mirrors tests/test_journal_phase2.py / tests/test_journal_examples.py:
+Scaffold mirrors tests/api/test_journal_phase2.py / tests/api/test_journal_examples.py:
 sys.path setup + chdir-guarded import of `api.main` / `api.routers.journal`, a
 real TestClient(main.app) so router logic AND auth middleware are both
 exercised end to end, and a `client_local_owner` fixture (force `_HAS_CLOUD_SQL`
@@ -45,7 +45,7 @@ FIXTURES = PROJECT_ROOT / "tests" / "fixtures" / "broker_csv"
 @pytest.fixture
 def client_local_owner(monkeypatch, tmp_path):
     """TestClient exercising the local/open-mode JSON-file branch (no Cloud
-    SQL, no auth). Same convention as tests/test_journal_phase2.py."""
+    SQL, no auth). Same convention as tests/api/test_journal_phase2.py."""
     monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", False)
     monkeypatch.setattr(journal_module, "LOCAL_JOURNAL_DIR", tmp_path)
     return TestClient(main.app)

@@ -6,8 +6,8 @@ fixture in `--mode=mock`. No hardcoded prices, ATRs, or level values:
 expected behavior is asserted as structural properties that hold for
 any real market data.
 
-Run live  : pytest tests/test_strat_levels_playbook.py
-Run mock  : pytest tests/test_strat_levels_playbook.py --mode=mock
+Run live  : pytest tests/lib/test_strat_levels_playbook.py
+Run mock  : pytest tests/lib/test_strat_levels_playbook.py --mode=mock
 
 The mock path is the deterministic regression baseline.
 The live path catches drift in real production data.

@@ -123,7 +123,7 @@ def _require_real_heavy_stack():
     """Import lightgbm + sklearn and raise (-> caller skips) if either is absent
     OR has been replaced by a unittest.mock stub.
 
-    A sibling test (tests/test_magnitude_inference.py) stubs heavy deps that
+    A sibling test (tests/gcp/test_magnitude_inference.py) stubs heavy deps that
     aren't installed with ``MagicMock`` in ``sys.modules`` at import time so it
     can import its own module without lightgbm. That stub LEAKS to sibling
     tests: a plain ``import lightgbm`` then SUCCEEDS but returns the fake, whose

@@ -35,7 +35,7 @@ from lib.backtest import BacktestEngine
 def _api_client():
     """Build a TestClient against the platform FastAPI app.
 
-    Mirrors `tests/test_platform_api.py::client` but is module-local
+    Mirrors `tests/api/test_platform_api.py::client` but is module-local
     so this file stays standalone (no shared conftest fixture).
     """
     import os

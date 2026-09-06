@@ -153,7 +153,7 @@ class TestComputeGammaBalance:
     GAMMA_BALANCE_AUDIT R5 / never-null directive): the price where cumulative
     |net_gamma| — anchored at each strike's center — reaches half the chain
     total. Always defined for a chain with any gamma; None only for genuine
-    data absence. tests/test_gamma_never_null.py carries the full verification
+    data absence. tests/lib/test_gamma_never_null.py carries the full verification
     suite; these pin the same convention on this file's original fixtures."""
 
     def test_one_sided_chain_returns_center_median(self):
@@ -976,7 +976,7 @@ class TestComputeGammaFlipBS:
 # ever"): gamma_balance is now the OI-weighted gamma MEDIAN — always defined
 # for a chain with any gamma at all — and compute_gamma_flip_bs escalates its
 # search window (±10% → ±25% → ±50%) before concluding "no flip".
-# tests/test_gamma_never_null.py is the verification suite for both; the sweep
+# tests/lib/test_gamma_never_null.py is the verification suite for both; the sweep
 # below pins density end-to-end through the production build_summary.
 
 
