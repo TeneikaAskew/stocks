@@ -462,8 +462,8 @@ def _load_local(ticker: str) -> list[dict]:
         entries = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         logger.error("journal: %s is unreadable (%s) -- refusing to report an "
-                  "empty journal, which would be overwritten on the next save",
-                  p, exc)
+                     "empty journal, which would be overwritten on the next save",
+                     p, exc)
         raise HTTPException(
             status_code=500,
             detail=(f"The local journal file for {ticker.upper()} could not be "
