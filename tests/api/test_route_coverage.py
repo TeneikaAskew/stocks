@@ -107,7 +107,7 @@ from typing import Any, Optional
 
 import pytest
 
-PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "platform"))
 
 pytest.importorskip("fastapi")
