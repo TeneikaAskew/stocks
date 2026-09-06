@@ -49,7 +49,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install Playwright browsers
-        # tests/test_e2e.py spins up Chromium via Playwright. The pip
+        # tests/e2e/test_e2e.py spins up Chromium via Playwright. The pip
         # `playwright` package only installs the Python bindings; the
         # browser binaries have to be downloaded separately.
         run: python -m playwright install --with-deps chromium
@@ -84,14 +84,14 @@ jobs:
       - name: Run research tests with the real ML stack
         # The strat-engine + magnitude tests need real lightgbm/sklearn; they
         # skip in the lean `test` job. The globs auto-include new test_strat_*
-        # and test_mag* files so this coverage doesn't silently rot.
+        # and test_mag* files (in any tests/<area>/ folder) so this coverage doesn't silently rot.
         run: |
           python -m pytest -q \
-            tests/test_strat*.py \
-            tests/test_mag*.py \
-            tests/test_featurize_all_nan_robust.py \
-            tests/test_feature_importance.py \
-            tests/test_import_coverage.py
+            tests/*/test_strat*.py \
+            tests/*/test_mag*.py \
+            tests/gcp/test_featurize_all_nan_robust.py \
+            tests/gcp/test_feature_importance.py \
+            tests/meta/test_import_coverage.py
 
   integration-tests:
     name: Integration Tests (ephemeral Postgres)

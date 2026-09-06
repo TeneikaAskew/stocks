@@ -136,7 +136,7 @@ Range: <commit range>
 Changed Python files: N
 
 ## Per-file mapping
-  [OK]      lib/signals.py → tests/test_signals.py
+  [OK]      lib/signals.py → tests/lib/test_signals.py
   [PARTIAL] gcp/fetchers/fetch_fred_rates.py → referenced in 1 test file
   [GAP]     platform/api/routers/dashboard.py → NO TEST
 

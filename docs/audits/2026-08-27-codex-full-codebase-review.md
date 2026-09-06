@@ -212,7 +212,7 @@ No presently active defect was proven to be **Critical** (immediate uncontrolled
 - **Finding:** The old pipeline filtered today out and then selected the second-to-last grouped period, producing day-before-yesterday and stale higher-period levels. Current `analysis_date` behavior is correct, but callers omitting it still use the positional `iloc[-2]` convention.
 - **Severity:** High
 - **Category:** Quant / Correctness
-- **Evidence:** `lib/strat_levels.py:compute_previous_levels`; regression case documented inline for QQQ 2026-05-06; `gcp/premarket_brief.py` supplies `analysis_date`; tests in `tests/test_strat_levels.py` and `tests/test_premarket_levels.py`.
+- **Evidence:** `lib/strat_levels.py:compute_previous_levels`; regression case documented inline for QQQ 2026-05-06; `gcp/premarket_brief.py` supplies `analysis_date`; tests in `tests/lib/test_strat_levels.py` and `tests/lib/test_premarket_levels.py`.
 - **Why it matters:** PDH/PDL/PWH and targets are direct trade inputs. A one-period shift changes triggers, room-to-run, LLM context, and outcome attribution.
 - **Confidence:** High.
 - **Recommended action:** Make `analysis_date` mandatory, delete the legacy fallback after enumerating callers, and version all rows created before the fix.
@@ -560,8 +560,8 @@ No presently active defect was proven to be **Critical** (immediate uncontrolled
 
 | Command | Result |
 |---|---|
-| `pytest -q` | **4,008 passed, 82 skipped, 11 setup errors, 264 warnings**. All 11 errors are `tests/test_e2e.py` browser cases and share one environmental cause: the Playwright Chromium executable is not installed. Warnings include four `earnings_options_analytics/test_system.py` functions that return booleans instead of asserting, timezone-naive datetime deprecations, pandas warnings, and a 200-occurrence `SettingWithCopyWarning` in the dashboard router. |
-| `pytest -q --ignore=tests/test_e2e.py` | **4,008 passed, 82 skipped, 264 warnings.** This distinguishes the passing Python application suite from the missing-browser limitation. |
+| `pytest -q` | **4,008 passed, 82 skipped, 11 setup errors, 264 warnings**. All 11 errors are `tests/e2e/test_e2e.py` browser cases and share one environmental cause: the Playwright Chromium executable is not installed. Warnings include four `earnings_options_analytics/test_system.py` functions that return booleans instead of asserting, timezone-naive datetime deprecations, pandas warnings, and a 200-occurrence `SettingWithCopyWarning` in the dashboard router. |
+| `pytest -q --ignore=tests/e2e/test_e2e.py` | **4,008 passed, 82 skipped, 264 warnings.** This distinguishes the passing Python application suite from the missing-browser limitation. |
 | `npm test -- --run` | **27 files / 253 tests passed.** |
 | `npm run build` | **Passed**; Vite warned that at least one output chunk exceeds 500 kB. |
 | `npm run lint` | **Failed: 31 errors, 11 warnings.** Dominant errors are `react-refresh/only-export-components` and synchronous state updates in effects; warnings include hook dependencies and TanStack Table compiler incompatibility. |

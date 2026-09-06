@@ -60,13 +60,13 @@ This project has three test tiers. Always use these commands instead of discover
 | Tier | Command | Scope | ~Duration |
 |------|---------|-------|-----------|
 | Unit/Integration | `make test` | `tests/` excluding E2E | ~70s, 339 tests |
-| Script CLI | `make test-scripts` | `tests/test_scripts.py` | ~40s, 18 tests |
-| E2E (Playwright) | `make test-e2e` | `tests/test_e2e.py` | ~15s, 28 tests |
+| Script CLI | `make test-scripts` | `tests/scripts/test_scripts.py` | ~40s, 18 tests |
+| E2E (Playwright) | `make test-e2e` | `tests/e2e/test_e2e.py` | ~15s, 28 tests |
 
 **Key conventions:**
 - Test files map to source: `tests/test_<module>.py` → `lib/<module>.py`
-- Integration tests: `tests/test_integration.py`
-- Platform API tests: `tests/test_platform_api.py`
+- Integration tests: `tests/lib/test_integration.py`
+- Platform API tests: `tests/api/test_platform_api.py`
 - Shared fixtures in `tests/conftest.py`: `sample_ohlcv`, `sample_daily`, `known_strat_sequence`, `tmp_journal_dir`
 - Core libraries: `lib/` (backtest, config, indicators, signals, strat, walk_forward, data_loader, insights)
 - GCP code: `gcp/` (database, fetchers, trade_logger, premarket_brief, signal_monitor)

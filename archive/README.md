@@ -26,7 +26,7 @@ moving or deleting them:
 - `archive/google-apps-script/data/` — the default `--data-dir` for
   `scripts/match_earnings_strategy.py`.
 - `archive/success-report-site/` and `archive/website/` — served by the
-  Playwright smoke tests in `tests/test_e2e.py` (`make test-e2e`; excluded
+  Playwright smoke tests in `tests/e2e/test_e2e.py` (`make test-e2e`; excluded
   from `make test` and not run in CI).
 
 ## Before removing anything from here

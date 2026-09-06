@@ -178,7 +178,7 @@ def bs_vanna(S, K, t, r, q, sigma):
         vanna = -exp(-q t) · pdf(d1) · d2 / sigma
 
     Vectorized; NaN propagates. Validated against finite-difference
-    ∂delta/∂sigma in tests/test_flow_direction.py.
+    ∂delta/∂sigma in tests/lib/test_flow_direction.py.
     """
     d1, d2 = _bs_d1_d2(S, K, t, r, q, sigma)
     q_arr = np.asarray(q, dtype="float64")
@@ -195,7 +195,7 @@ def bs_charm_per_day(S, K, t, r, q, sigma, is_call):
 
     so a positive charm_per_day means delta RISES as one calendar day
     elapses. Vectorized; NaN propagates. Validated against finite-difference
-    delta(t-1/365) - delta(t) in tests/test_flow_direction.py.
+    delta(t-1/365) - delta(t) in tests/lib/test_flow_direction.py.
     """
     d1, d2 = _bs_d1_d2(S, K, t, r, q, sigma)
     q_arr = np.asarray(q, dtype="float64")
