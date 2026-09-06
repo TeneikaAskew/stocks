@@ -720,7 +720,20 @@ async def get_insight_report_by_id(report_id: str):
         UUID(report_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="report_id must be a UUID")
-    row = _fetch_report_by_id(report_id)
+    try:
+        row = _fetch_report_by_id(report_id)
+    except Exception as exc:
+        # A Cloud SQL failure used to reach FastAPI as an unhandled exception:
+        # a bare 500 with the body "Internal Server Error" and no JSON
+        # envelope, so the frontend's error path had nothing to render. Every
+        # other DB-backed handler in this router answers 503 with a detail;
+        # this one was never requested by a test, so nothing noticed the
+        # difference. Found by `tests/test_route_coverage.py` on its first run.
+        logger.exception("insight report lookup failed for %s: %s", report_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"report lookup failed: {type(exc).__name__}",
+        )
     if row is None:
         raise HTTPException(status_code=404, detail=f"report {report_id} not found")
     return ReportEnvelope(
