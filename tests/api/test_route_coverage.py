@@ -78,9 +78,19 @@ So the harness disables the **connection layer** instead: `get_engine`,
 `model_routing.connect`, and `storage.Client` fail the way they fail when the
 database and GCS are genuinely unreachable. Every layer above them then
 behaves exactly as it does in production — the swallowing helpers still
-swallow, the strict ones still raise — and what surfaces is real. That is also
-what makes this file hermetic: no socket is opened, so no request here can
-reach a database (or write to one) even on a machine that has one configured.
+swallow, the strict ones still raise — and what surfaces is real.
+
+That is also what makes this file hermetic, and "hermetic" here means every
+door rather than the obvious one. Patching `gcs_reader._get_client` alone was
+not enough: `routers/admin.py` constructs `storage.Client()` directly, so the
+class itself is patched. `firebase_admin.initialize_app()` SUCCEEDS wherever
+ADC is configured, after which the admin user routes would reach the real
+project and `PUT /users/{uid}/status` could call `update_user`, so
+`_ensure_firebase` is patched to raise. `lib.ticker_info` scrapes FinViz on a
+cache miss, so its two fetchers are patched, and its on-disk cache — which it
+WRITES — is redirected to tmp along with the journal's write targets. No
+request in this file opens a socket or leaves a file behind, on any machine,
+whatever is configured. That matters because the table below includes writes.
 
 Nine genuine hard 500s were found this way, all of them plain-text
 "Internal Server Error" with no JSON envelope for the frontend to render:
@@ -458,8 +468,39 @@ def client(tmp_path_factory):
                     mp.setattr(module, flag, True, raising=False)
 
         import api.gcs_reader as gcs_reader
+        from google.cloud import storage as gcs
 
         mp.setattr(gcs_reader, "_get_client", _no_connection)
+        # `gcs_reader._get_client` is not the only door. `routers/admin.py`
+        # constructs `storage.Client()` DIRECTLY in two places, which
+        # `/api/admin/structure-brief` and `/api/admin/strat-engine/state`
+        # reach, so on a machine with Application Default Credentials those
+        # two requests read the real production bucket. Patching the class
+        # itself closes every door at once, including ones added later.
+        mp.setattr(gcs, "Client", _no_connection)
+
+        # Same shape, worse consequence. `_fb_auth()` calls
+        # `firebase_admin.initialize_app()`, which SUCCEEDS wherever ADC is
+        # configured -- and then the three admin user requests below list and
+        # look up accounts in the real project, with
+        # `PUT /users/{uid}/status` able to call `update_user`. A route
+        # sweep must not be able to disable somebody's account because the
+        # developer happened to be logged in. The failure is injected rather
+        # than assumed absent.
+        import api.auth as api_auth
+
+        mp.setattr(api_auth, "_ensure_firebase", _no_connection)
+
+        # `lib.ticker_info` reaches the network on a cache miss:
+        # `get_peers` scrapes FinViz, with a screener lookup as fallback.
+        # `/api/insights/ticker/{ticker}/peers` calls it unconditionally, so
+        # "no socket is opened" was not true of this file until now -- the
+        # sweep could block on FinViz being slow and vary with what it
+        # returned.
+        import lib.ticker_info as ticker_info
+
+        mp.setattr(ticker_info, "_fetch_finviz_peers", lambda _t: None)
+        mp.setattr(ticker_info, "_fetch_industry_peers", lambda _t: None)
 
         import api.routers.admin as admin
 
