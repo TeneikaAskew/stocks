@@ -442,7 +442,7 @@ def _build_movement_level_map(ticker: str):
 
 
 @router.get("/api/movement-statement")
-async def movement_statement(
+def movement_statement(
     ticker: str = Query(..., description="One of IWM / SPY / QQQ (validated cells)."),
     timeframe: str = Query("15m", description="5m or 15m ONLY (30m is never consulted)."),
 ):

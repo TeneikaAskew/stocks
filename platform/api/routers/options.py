@@ -55,7 +55,7 @@ import math
 import httpx
 import pandas as pd
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 # Project root so we can import gcp.database the same way the journal router does.
@@ -64,7 +64,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
+                              query_to_dataframe_strict)
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception as _exc:  # pragma: no cover - import-time guard
     _HAS_CLOUD_SQL = False
@@ -260,65 +261,93 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 
-# Widening range schedule used by the dates endpoint. The first query tries a
-# 60-day window, then 1y, 3y, 10y, unlimited — stopping as soon as we have a
-# reasonable number of dates. This keeps the index scan bounded on large tables
-# (critical without the composite (ticker, data_source, snapshot_date) index)
-# while still returning the full history if the table is small.
-_DATES_WINDOW_DAYS = (60, 365, 1100, 3650, None)
-_DATES_MIN_RESULTS = 40  # ≈ 2 months of weekdays
+# The dates endpoint walks DISTINCT snapshot_date values with a LOOSE INDEX
+# SCAN (recursive CTE), not `SELECT DISTINCT`. The composite index
+# `idx_etf_options_ticker_source_date` on (ticker, data_source, snapshot_date)
+# exists, but `SELECT DISTINCT snapshot_date` still has to READ every matching
+# index row before deduping. Measured on prod 2026-09-06 for IWM/60d:
+#
+#   SELECT DISTINCT ...      10,373,012 rows read -> 43 returned   9,870 ms
+#   loose index scan            43 index descents -> 43 returned       5.5 ms
+#
+# The recursive form asks the index for "the next date strictly older than the
+# one I have" and costs one descent per date RETURNED, not one read per row
+# MATCHED. That makes the widening-window schedule unnecessary: cost now scales
+# with `limit`, so a caller that wants one date pays for one date.
+_DATES_MAX_LIMIT = 1000
 
 
 @router.get("/api/options/dates/{ticker}")
-async def get_options_dates(ticker: str):
-    """Return up to 1000 most-recent snapshot dates that have AlphaVantage data
-    in Cloud SQL for the given ticker (newest first).
+def get_options_dates(
+    ticker: str,
+    limit: int = Query(_DATES_MAX_LIMIT, ge=1, le=_DATES_MAX_LIMIT,
+                       description="How many snapshot dates to return, newest "
+                                   "first. Callers that only render the latest "
+                                   "snapshot should pass limit=1 — cost scales "
+                                   "with this value."),
+):
+    """Return the `limit` most-recent snapshot dates with AlphaVantage data.
 
-    Uses a widening-range scan: tries a 60-day window first, expanding to 1y,
-    3y, 10y, and then unbounded if fewer than 40 dates are found. This keeps
-    cold queries bounded when the covering index on (ticker, data_source,
-    snapshot_date) isn't yet in place.
+    Newest first. `limit=1` is the cheap path used by any view that renders
+    only the latest snapshot; the full list is for date pickers.
     """
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
 
-    cached = _DATES_CACHE.get(ticker_upper)
+    cache_key = (ticker_upper, limit)
+    cached = _DATES_CACHE.get(cache_key)
     if cached is not None:
-        return {"ticker": ticker_upper, "dates": cached, "source": "cloud_sql", "cached": True}
+        return {"ticker": ticker_upper, "dates": cached,
+                "source": "cloud_sql", "cached": True}
 
-    dates: list[str] = []
-    window_used: str | None = None
-    for days in _DATES_WINDOW_DAYS:
-        if days is None:
-            sql = """
-                SELECT DISTINCT snapshot_date
-                FROM   etf_options_snapshots
-                WHERE  ticker = :ticker
-                  AND  data_source = 'alphavantage'
-                ORDER  BY snapshot_date DESC
-                LIMIT  1000
-            """
-            params = {"ticker": ticker_upper}
-            window_used = "unbounded"
-        else:
-            sql = """
-                SELECT DISTINCT snapshot_date
-                FROM   etf_options_snapshots
-                WHERE  ticker = :ticker
-                  AND  data_source = 'alphavantage'
-                  AND  snapshot_date >= CURRENT_DATE - make_interval(days => :days)
-                ORDER  BY snapshot_date DESC
-                LIMIT  1000
-            """
-            params = {"ticker": ticker_upper, "days": days}
-            window_used = f"{days}d"
+    if limit == 1:
+        # Single index descent — no dedupe needed for one row.
+        sql = """
+            SELECT snapshot_date
+            FROM   etf_options_snapshots
+            WHERE  ticker = :ticker
+              AND  data_source = 'alphavantage'
+            ORDER  BY snapshot_date DESC
+            LIMIT  1
+        """
+    else:
+        sql = """
+            WITH RECURSIVE d AS (
+                (SELECT snapshot_date
+                   FROM etf_options_snapshots
+                  WHERE ticker = :ticker AND data_source = 'alphavantage'
+                  ORDER BY snapshot_date DESC
+                  LIMIT 1)
+                UNION ALL
+                SELECT (SELECT s.snapshot_date
+                          FROM etf_options_snapshots s
+                         WHERE s.ticker = :ticker
+                           AND s.data_source = 'alphavantage'
+                           AND s.snapshot_date < d.snapshot_date
+                         ORDER BY s.snapshot_date DESC
+                         LIMIT 1)
+                  FROM d
+                 WHERE d.snapshot_date IS NOT NULL
+            )
+            SELECT snapshot_date
+              FROM d
+             WHERE snapshot_date IS NOT NULL
+             ORDER BY snapshot_date DESC
+             LIMIT :limit
+        """
 
-        df = query_to_dataframe(sql, params)
-        if not df.empty:
-            dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
-                     for d in df["snapshot_date"].tolist()]
-        if len(dates) >= _DATES_MIN_RESULTS or days is None:
-            break
+    # STRICT: a connection failure or missing relation must surface as a 5xx.
+    # The swallowing sibling would return an empty frame here, which this
+    # handler cannot tell apart from "ticker genuinely has no data" and would
+    # report as a 404 telling the operator to run the fetcher — a false
+    # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
+    params = {"ticker": ticker_upper}
+    if limit != 1:
+        params["limit"] = limit
+    df = query_to_dataframe_strict(sql, params)
+
+    dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+             for d in df["snapshot_date"].tolist()] if not df.empty else []
 
     if not dates:
         raise HTTPException(
@@ -330,18 +359,17 @@ async def get_options_dates(ticker: str):
             ),
         )
 
-    _DATES_CACHE[ticker_upper] = dates
+    _DATES_CACHE[cache_key] = dates
     return {
         "ticker": ticker_upper,
         "dates": dates,
         "source": "cloud_sql",
-        "window": window_used,
         "cached": False,
     }
 
 
 @router.get("/api/options/{ticker}/{date_str}")
-async def get_options(ticker: str, date_str: str):
+def get_options(ticker: str, date_str: str):
     """Return the AlphaVantage option chain for `ticker` on `date_str`
     (YYYY-MM-DD) from Cloud SQL.
     """

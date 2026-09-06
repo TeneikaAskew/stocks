@@ -622,7 +622,7 @@ def _existing_entry_keys(owner: str, tickers: list[str]) -> set[tuple]:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/journal/trades/{ticker}")
-async def get_trades(ticker: str, request: Request):
+def get_trades(ticker: str, request: Request):
     """Return the signed-in user's journal entries for the ticker, newest first."""
     ticker_upper = ticker.upper()
 
@@ -662,7 +662,7 @@ async def get_trades(ticker: str, request: Request):
 
 
 @router.get("/api/journal/examples/{ticker}")
-async def get_examples(ticker: str):
+def get_examples(ticker: str):
     """Read-only teaching "Examples" — the UNION of the admin's own journal
     trades AND every automated-pipeline `trades` row for a ticker
     (task-examples-union, 2026-07-11 user decision).
@@ -821,7 +821,7 @@ async def get_examples(ticker: str):
 
 
 @router.post("/api/journal/trades")
-async def create_trade(trade: JournalTradeCreate, request: Request):
+def create_trade(trade: JournalTradeCreate, request: Request):
     """Insert a journal entry for the signed-in user. Returns it with its id.
 
     exit_date/exit_time/exit_price are optional — an omitted exit creates an
@@ -895,7 +895,7 @@ def _find_local_entry(trade_id: str) -> tuple[Optional[str], Optional[list[dict]
 
 
 @router.patch("/api/journal/trades/{trade_id}")
-async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
+def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
     """Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct
     (percent, via the existing `_return_pct`) and status win/loss/breakeven.
 
@@ -977,7 +977,7 @@ async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
 
 
 @router.delete("/api/journal/trades/{trade_id}")
-async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
+def delete_trade(trade_id: str, request: Request, ticker: str = ""):
     """Delete one of the signed-in user's journal entries by UUID."""
     if _HAS_CLOUD_SQL:
         owner = _journal_owner(request)
@@ -1012,7 +1012,7 @@ async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
 
 
 @router.get("/api/journal/seed/{ticker}")
-async def seed_trades(ticker: str, date: str):
+def seed_trades(ticker: str, date: str):
     """Read-only admin seed pull from the automated pipeline `trades` table.
 
     Lets a user pre-populate the manual journal from what the signal engine
@@ -1078,7 +1078,7 @@ async def seed_trades(ticker: str, date: str):
 
 
 @router.post("/api/journal/export/{ticker}")
-async def export_trades(ticker: str, request: ExportRequest):
+def export_trades(ticker: str, request: ExportRequest):
     """Write journal trades to {ticker}_trade_tracker.csv in data/signals/."""
     ticker_lower = ticker.lower()
     SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1200,7 +1200,7 @@ async def import_preview(
 
 
 @router.post("/api/journal/import/commit")
-async def import_commit(body: ImportCommitRequest, request: Request):
+def import_commit(body: ImportCommitRequest, request: Request):
     """Insert the caller-selected `PairedTrade`s from a preview.
 
     Re-checks duplicates server-side (idempotent: committing the exact same

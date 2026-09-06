@@ -450,7 +450,7 @@ class WatchlistAddResponse(BaseModel):
 
 
 @router.get("/api/insights/ticker/search")
-async def search_tickers(keywords: str, limit: int = 10):
+def search_tickers(keywords: str, limit: int = 10):
     """Search for tickers by keyword (company name, symbol, etc).
 
     Proxies to Alpha Vantage SYMBOL_SEARCH. Used by the watchlist
@@ -465,7 +465,7 @@ async def search_tickers(keywords: str, limit: int = 10):
 
 
 @router.get("/api/insights/ticker/{ticker}/info")
-async def get_ticker_info(ticker: str):
+def get_ticker_info(ticker: str):
     """Return cached ticker details (AV OVERVIEW), fetching if needed."""
     from lib.ticker_info import get_ticker_info as av_info
 
@@ -485,7 +485,7 @@ async def get_ticker_info(ticker: str):
 
 
 @router.get("/api/insights/ticker/{ticker}/quote")
-async def get_ticker_quote(ticker: str):
+def get_ticker_quote(ticker: str):
     """Return latest price/volume from AV GLOBAL_QUOTE."""
     from lib.ticker_info import get_quote as av_quote
 
@@ -496,7 +496,7 @@ async def get_ticker_quote(ticker: str):
 
 
 @router.get("/api/insights/ticker/{ticker}/peers")
-async def get_ticker_peers(ticker: str):
+def get_ticker_peers(ticker: str):
     """Return peer tickers from FinViz (cached)."""
     from lib.ticker_info import get_peers
 
@@ -505,7 +505,7 @@ async def get_ticker_peers(ticker: str):
 
 
 @router.post("/api/insights/watchlist/add")
-async def add_to_watchlist(body: WatchlistAddRequest, request: Request):
+def add_to_watchlist(body: WatchlistAddRequest, request: Request):
     """Add a ticker to the watchlist and return its info + quote.
 
     Persists to the `watchlists` Cloud SQL table (durable, per-user)
@@ -582,7 +582,7 @@ async def add_to_watchlist(body: WatchlistAddRequest, request: Request):
 
 
 @router.delete("/api/insights/watchlist/{ticker}")
-async def remove_from_watchlist(ticker: str, request: Request):
+def remove_from_watchlist(ticker: str, request: Request):
     """Soft-delete a ticker from the watchlist (sets removed_at=NOW()).
 
     Persists to the `watchlists` Cloud SQL table; the alert_config.json
@@ -615,7 +615,7 @@ async def remove_from_watchlist(ticker: str, request: Request):
 
 
 @router.get("/api/insights/watchlist")
-async def get_watchlist(
+def get_watchlist(
     request: Request,
     catalyst: Optional[str] = None,
     limit: int = 10,
@@ -670,7 +670,7 @@ async def get_watchlist(
 
 
 @router.get("/api/insights/report/{ticker}", response_model=ReportEnvelope)
-async def get_insight_report(ticker: str, as_of: Optional[str] = None):
+def get_insight_report(ticker: str, as_of: Optional[str] = None):
     """Return the most recent InsightReport for the ticker.
 
     With ``?as_of=YYYY-MM-DD`` returns the latest report dated on or before
@@ -699,7 +699,7 @@ async def get_insight_report(ticker: str, as_of: Optional[str] = None):
 
 
 @router.get("/api/insights/report/{ticker}/history")
-async def get_insight_history(ticker: str, limit: int = 20):
+def get_insight_history(ticker: str, limit: int = 20):
     """Return a scannable list of recent reports for the ticker."""
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
@@ -708,7 +708,7 @@ async def get_insight_history(ticker: str, limit: int = 20):
 
 
 @router.get("/api/insights/reports/{report_id}", response_model=ReportEnvelope)
-async def get_insight_report_by_id(report_id: str):
+def get_insight_report_by_id(report_id: str):
     """Return a single insight report by row id.
 
     Used by the frontend History tab to open a past report in the
@@ -858,7 +858,7 @@ def _sync_run(
 
 
 @router.get("/api/insights/runs/{run_id}", response_model=RunStatus)
-async def get_run_status(run_id: str):
+def get_run_status(run_id: str):
     """Poll the status of a refresh run."""
     try:
         UUID(run_id)

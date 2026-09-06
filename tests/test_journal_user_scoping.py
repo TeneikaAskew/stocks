@@ -9,6 +9,7 @@ rather than falling back to the shared local file (which would leak trades).
 Hermetic: the DB layer is mocked and the recorded SQL + params are asserted —
 no network, no real Postgres.
 """
+import inspect
 import sys
 from pathlib import Path
 
@@ -23,17 +24,24 @@ import api.routers.journal as journal  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
-def _run(coro):
-    """Drive a no-await coroutine to completion without an event loop.
+def _run(result):
+    """Return an endpoint's result, whether it is sync or a no-await coroutine.
 
-    The journal endpoints are ``async def`` but contain no ``await`` (the DB
-    layer is synchronous), so a single ``.send(None)`` runs the whole body and
-    StopIteration carries the return value. This avoids ``asyncio.run()``, which
-    raises "cannot be called from a running event loop" under the repo's test
-    session.
+    The journal endpoints are plain ``def`` now. They were ``async def`` with no
+    ``await`` in the body, which is the worst of both worlds: the synchronous DB
+    layer ran ON the event loop and serialised every concurrent request behind
+    it. As ``def``, FastAPI dispatches them to its threadpool and they return
+    their value directly.
+
+    The coroutine branch stays so this helper remains correct if an endpoint
+    legitimately becomes ``async`` later. It drives a no-await coroutine with a
+    single ``.send(None)`` rather than ``asyncio.run()``, which would raise
+    "cannot be called from a running event loop" under this test session.
     """
+    if not inspect.iscoroutine(result):
+        return result
     try:
-        coro.send(None)
+        result.send(None)
     except StopIteration as e:
         return e.value
     raise AssertionError("journal endpoint unexpectedly awaited")

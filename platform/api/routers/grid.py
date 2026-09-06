@@ -527,7 +527,7 @@ def _fetch_on_demand(
 
 
 @router.get("/api/options/{ticker}/grid")
-async def get_grid_live(
+def get_grid_live(
     ticker: str,
     request: Request,
     response: Response,
@@ -616,7 +616,7 @@ async def get_grid_live(
 
 
 @router.get("/api/options/{ticker}/{date_str}/grid")
-async def get_grid_historical(
+def get_grid_historical(
     ticker: str,
     date_str: str,
     response: Response,
@@ -792,7 +792,7 @@ def _build_nodes_payload(
 
 
 @router.get("/api/options/{ticker}/nodes")
-async def get_nodes_live(
+def get_nodes_live(
     ticker: str,
     response: Response,
     strike_window_pct: float = Query(8.0, ge=0.5, le=50.0),
@@ -842,7 +842,7 @@ async def get_nodes_live(
 
 
 @router.get("/api/options/{ticker}/{date_str}/nodes")
-async def get_nodes_historical(
+def get_nodes_historical(
     ticker: str,
     date_str: str,
     response: Response,
@@ -901,7 +901,7 @@ _TIMESERIES_CACHE: TTLCache = TTLCache(maxsize=128, ttl=60)
 
 
 @router.get("/api/options/{ticker}/grid/timeseries")
-async def get_grid_timeseries(
+def get_grid_timeseries(
     ticker: str,
     response: Response,
     strikes: Optional[str] = Query(

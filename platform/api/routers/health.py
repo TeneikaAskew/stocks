@@ -68,7 +68,7 @@ def freshness_report_dict() -> dict:
 
 
 @router.get("/api/health/freshness")
-async def get_freshness():
+def get_freshness():
     """Return the cached freshness report (see freshness_report_dict).
 
     Response shape:

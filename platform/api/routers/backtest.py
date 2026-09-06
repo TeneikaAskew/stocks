@@ -167,7 +167,7 @@ def _validate_run(run: str | None) -> None:
 
 
 @router.get("/api/backtest/results/{ticker}")
-async def get_backtest_results(ticker: str, run: str | None = None):
+def get_backtest_results(ticker: str, run: str | None = None):
     """Return trades from the most recent backtest CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
@@ -217,7 +217,7 @@ async def get_backtest_results(ticker: str, run: str | None = None):
 
 
 @router.get("/api/backtest/equity/{ticker}")
-async def get_equity_curve(ticker: str, run: str | None = None):
+def get_equity_curve(ticker: str, run: str | None = None):
     """Return equity curve from the most recent equity CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
@@ -296,7 +296,7 @@ async def get_equity_curve(ticker: str, run: str | None = None):
 
 
 @router.get("/api/backtest/all/{ticker}")
-async def list_all_backtests(ticker: str):
+def list_all_backtests(ticker: str):
     """List all backtest runs for a ticker, sorted by timestamp descending."""
     ticker_upper = ticker.upper()
 
@@ -417,7 +417,7 @@ def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @router.post("/api/backtest/replay-trades")
-async def replay_trades(body: ReplayTradesRequest, request: Request):
+def replay_trades(body: ReplayTradesRequest, request: Request):
     """Score the signed-in user's labeled journal trades against actual bars
     and benchmark them against the system (Task 3.2). 422 if neither
     `trade_ids` nor `session_id` is given; 404 if nothing matches; strict
@@ -595,7 +595,7 @@ def _walk_forward_metrics_to_percent(agg: dict) -> dict:
 
 
 @router.post("/api/style/mine-and-validate")
-async def mine_and_validate(body: MineAndValidateRequest, request: Request):
+def mine_and_validate(body: MineAndValidateRequest, request: Request):
     """Mine the caller's closed journal trades into a condition profile,
     walk-forward validate the top one, and stage the result (Task 4.3).
 

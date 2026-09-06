@@ -327,7 +327,7 @@ def _cards_from_db(ticker_upper: str, as_of: str | None = None) -> list | None:
 
 
 @router.get("/api/playbook/{ticker}")
-async def get_playbook(ticker: str, date: str | None = None):
+def get_playbook(ticker: str, date: str | None = None):
     """Return structured setup cards for a ticker.
 
     Primary source is the typed ``playbook_cards`` Cloud SQL table. Until that
@@ -380,7 +380,7 @@ async def get_playbook(ticker: str, date: str | None = None):
 
 
 @router.get("/api/reports/list/{ticker}")
-async def list_reports(ticker: str):
+def list_reports(ticker: str):
     """List available phase report files for a given ticker (from GCS)."""
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
@@ -436,7 +436,7 @@ async def list_reports(ticker: str):
 
 
 @router.get("/api/reports/{ticker}/{phase}", response_class=PlainTextResponse)
-async def get_report(ticker: str, phase: str):
+def get_report(ticker: str, phase: str):
     """Return the raw markdown text of a specific phase report for a ticker from GCS."""
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()

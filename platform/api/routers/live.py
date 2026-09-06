@@ -160,7 +160,7 @@ def _next_open_et(now_et: datetime) -> str | None:
 
 
 @router.get("/api/live/status")
-async def get_market_status():
+def get_market_status():
     """Return current market open/closed status based on Eastern Time."""
     now_et = datetime.now(ET_TZ)
     is_open, session = _is_market_open(now_et)

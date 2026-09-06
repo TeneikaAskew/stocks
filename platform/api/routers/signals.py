@@ -153,7 +153,7 @@ def _query_signals_sql(
 
 
 @router.get("/api/signals/{ticker}")
-async def get_signals(
+def get_signals(
     ticker: str,
     limit: int = Query(default=5000, le=50000),
     direction: str = Query(default="", description="CALL or PUT filter"),
@@ -255,7 +255,7 @@ async def get_signals(
 # 404 rather than degrading silently.
 
 @router.get("/api/signals/{ticker}/similar")
-async def get_similar_signals(
+def get_similar_signals(
     ticker: str,
     direction: str = Query(..., description="CALL or PUT — the direction we're scouting"),
     rsi: float = Query(..., description="RSI value of the bar we're matching"),
