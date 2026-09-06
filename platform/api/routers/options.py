@@ -85,6 +85,10 @@ _CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
 # index DOES exist as idx_etf_options_ticker_source_date — an older comment
 # here claimed otherwise.
 _DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
+# ticker -> newest snapshot_date last observed. Drives ticker-wide
+# invalidation so every `limit` variant is dropped together; without it the
+# variants are independent keys that can hold different "latest" dates.
+_DATES_CACHE_LATEST: TTLCache = TTLCache(maxsize=16, ttl=43200)
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
@@ -294,6 +298,34 @@ async def get_options_dates(
     """
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
+
+    # Freshness is ticker-wide, not per-limit. Keying the cache on
+    # (ticker, limit) alone lets sibling variants disagree: a caller that
+    # cached the default list before av-options-daily writes, and a caller
+    # that asks for limit=1 after, would see different "latest" dates from
+    # the same process for up to the TTL. So the newest snapshot_date is
+    # probed once and every variant for that ticker is dropped when it moves.
+    #
+    # The probe is the same single index descent as the limit=1 query
+    # (idx_etf_options_ticker_source_date, measured 2.5 ms on prod).
+    latest_date = None
+    probe = query_to_dataframe_strict(
+        """
+        SELECT snapshot_date
+        FROM   etf_options_snapshots
+        WHERE  ticker = :ticker AND data_source = 'alphavantage'
+        ORDER  BY snapshot_date DESC
+        LIMIT  1
+        """,
+        {"ticker": ticker_upper},
+    )
+    if not probe.empty:
+        latest_date = probe["snapshot_date"].iloc[0]
+
+    if _DATES_CACHE_LATEST.get(ticker_upper) != latest_date:
+        for key in [k for k in _DATES_CACHE if k[0] == ticker_upper]:
+            del _DATES_CACHE[key]
+        _DATES_CACHE_LATEST[ticker_upper] = latest_date
 
     cache_key = (ticker_upper, limit)
     cached = _DATES_CACHE.get(cache_key)

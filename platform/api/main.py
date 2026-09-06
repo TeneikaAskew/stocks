@@ -492,8 +492,22 @@ only working path right now; curl/CI flows return 401.</p>
 # full scan), and rebuild the list only when the newest bar has advanced.
 # Correct for any number of writers on any schedule, including ad-hoc
 # backfills that no schedule describes.
-_MARKET_DATES_CACHE: "OrderedDict[str, tuple[object, dict]]" = OrderedDict()
+# MAX(ts) only moves FORWARD, so it cannot see a backfill that fills a gap
+# older than the newest bar -- and that is a supported production path:
+# av-intraday-nightly refetches the PREVIOUS month as well as the current one,
+# and the fetcher deliberately fills partially covered months. With the probe
+# alone a Saturday repair would stay hidden until Monday's session landed, and
+# for a ticker receiving no newer bars, indefinitely.
+#
+# MAX(inserted_at) would catch any write, but there is no index on it:
+# measured as a Parallel Seq Scan, 977 ms, so it cannot go on the request path.
+# Adding one is a migration on a partitioned ~14M-row table.
+#
+# So: the probe for the common case (new bar -> invalidate in 10.8 ms) plus a
+# bounded TTL as the backstop that catches everything the probe cannot see.
+_MARKET_DATES_CACHE: "OrderedDict[str, tuple[object, datetime, dict]]" = OrderedDict()
 _MARKET_DATES_CACHE_MAX = 64
+_MARKET_DATES_TTL = timedelta(hours=1)
 
 
 def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
@@ -547,8 +561,10 @@ async def get_available_dates(ticker: str):
 
     entry = _MARKET_DATES_CACHE.get(ticker_upper)
     if entry is not None:
-        cached_ts, payload = entry
-        if latest_ts is not None and cached_ts == latest_ts:
+        cached_ts, cached_at, payload = entry
+        fresh = latest_ts is not None and cached_ts == latest_ts
+        within_ttl = datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL
+        if fresh and within_ttl:
             _MARKET_DATES_CACHE.move_to_end(ticker_upper)   # LRU touch
             return payload
         del _MARKET_DATES_CACHE[ticker_upper]
@@ -605,7 +621,8 @@ async def get_available_dates(ticker: str):
                 # paid the full scan -- the cache defeating itself.
                 while len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
                     _MARKET_DATES_CACHE.popitem(last=False)
-                _MARKET_DATES_CACHE[ticker_upper] = (latest_ts, payload)
+                _MARKET_DATES_CACHE[ticker_upper] = (
+                    latest_ts, datetime.now(timezone.utc), payload)
                 return payload
         except Exception as e:
             # Cloud SQL is the system of record; GCS holds the ingestion
