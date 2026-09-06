@@ -107,10 +107,6 @@ dates. Every test that could have covered it would have passed.
 
 Guard tests targeting the mechanism rather than the symptom:
 
-- `tests/test_api_handler_dispatch.py` — no `async def` route handler without
-  an `await`; nothing may `await` a plain `def`. AST-based, because a regex
-  anchored to `^async def` cannot see a handler nested inside an `if`, and one
-  was.
 - `tests/test_market_dates_cache_expiry.py` — pins that cache freshness follows
   the **data** (a `MAX(ts)` probe plus a bounded TTL), and asserts the previous
   schedule-modelling constants are *gone*. An earlier version of this file
@@ -121,7 +117,14 @@ Guard tests targeting the mechanism rather than the symptom:
   the GCS fallback, and the driver's exception text does **not** reach the
   response body.
 
-**Not present:** an earlier draft of this document listed
+**Not in this branch, despite an earlier draft claiming it:**
+`tests/test_api_handler_dispatch.py` (the AST guard asserting no `async def`
+route handler lacks an `await`, and that nothing may `await` a plain `def`).
+It lives on the threading-migration branch, #991, not here. The handlers this
+PR touches still make synchronous database calls from `async def`, and nothing
+in *this* tree prevents that regression — see §5.
+
+**Also not present:** an earlier draft of this document listed
 `tests/test_market_dates_timezone.py`. That file was deleted along with the
 timezone change it guarded, once production data showed the table holds two
 timestamp conventions and the conversion would corrupt premarket bars. Nothing
@@ -129,6 +132,12 @@ currently guards timezone framing on that table; it needs the data migration
 first.
 
 ## 5. Recommended, not yet done
+
+0. **Port the dispatch guard from #991.** `tests/test_api_handler_dispatch.py`
+   exists only on the threading-migration branch. Until that lands, nothing in
+   this tree stops a synchronous database call being added to an `async def`
+   handler — and this PR's own endpoints still do exactly that.
+
 
 1. **Cover the remaining 23 routes.** A smoke test per route asserting status
    and response shape would have caught the `/levels` 500. 23 is a morning's

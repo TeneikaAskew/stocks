@@ -1070,23 +1070,6 @@ SECTOR_NAMES = {
 
 _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
 
-# Trading dates for a ticker change once a day, and the query behind
-# /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
-# (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms
-# — DATE(ts) is a function on the column, so the (ticker, interval, ts DESC)
-# index cannot be used, and there is no LIMIT). Uncached, every ChartsPage and
-# JournalPage mount paid that.
-#
-# Expiry is anchored to the daily ingestion, NOT to a fixed TTL from request
-# time. `fetch-market-data` writes market_data_intraday at 23:00 UTC
-# (docs/PIPELINE.md), so a plain 12h TTL populated at 22:00 UTC would hide the
-# newly ingested trading date from the date picker until 10:00 the next
-# morning. Caching until just after the next run instead means one scan per
-# ticker per day AND the new date appears within the grace window.
-#
-# ONLY the Cloud SQL result is cached. Caching the GCS fallback would pin a
-# possibly-incomplete date set until the next boundary after a transient
-# database blip, with nothing retrying Cloud SQL in between.
 _ET_TZ = ZoneInfo("America/New_York")
 
 
