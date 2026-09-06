@@ -128,7 +128,19 @@ def _model_to_row(m: AvailableModel) -> AvailableModelRow:
 @router.get("/routes", response_model=RouteListResponse)
 async def admin_list_routes(request: Request):
     _require_admin(request)
-    rows = [_route_to_row(r) for r in list_routes()]
+    try:
+        rows = [_route_to_row(r) for r in list_routes()]
+    except Exception as exc:
+        # `list_routes()` opens its own Cloud SQL connection. Unguarded, a
+        # connection failure reached FastAPI as an unhandled exception: 500
+        # with a plain-text body, which the admin UI cannot render and which
+        # reads as a bug in our code rather than an unreachable database.
+        # Verified against a real `psycopg2.OperationalError` in
+        # tests/test_route_coverage.py.
+        logger.error("model route listing failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="model route store temporarily unavailable"
+        ) from exc
     return RouteListResponse(routes=rows)
 
 
@@ -771,8 +783,23 @@ def _fb_auth():
     """
     from api.auth import _ensure_firebase  # noqa: PLC0415
 
-    _ensure_firebase()
-    from firebase_admin import auth as fb_auth  # noqa: PLC0415
+    try:
+        _ensure_firebase()
+        from firebase_admin import auth as fb_auth  # noqa: PLC0415
+    except Exception as exc:
+        # firebase-admin is an optional dependency (`import firebase_admin`
+        # inside `_ensure_firebase`), and initialization needs ADC. On an
+        # instance without either, this raised `ModuleNotFoundError` /
+        # `DefaultCredentialsError` from OUTSIDE every try block in the three
+        # callers below, so FastAPI answered 500 with the plain-text body
+        # "Internal Server Error" — while those same callers already answer
+        # 503 "user directory temporarily unavailable" for a firebase call
+        # that fails one line later. Same failure, two different answers,
+        # because the guard was around the call and not the import.
+        logger.error("firebase-admin unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="user directory temporarily unavailable"
+        ) from exc
 
     return fb_auth
 
