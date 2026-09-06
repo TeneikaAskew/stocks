@@ -478,6 +478,10 @@ async def get_available_dates(ticker: str):
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
 
+    cached = _MARKET_DATES_CACHE.get(ticker_upper)
+    if cached is not None:
+        return cached
+
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
         try:
@@ -494,12 +498,14 @@ async def get_available_dates(ticker: str):
                 dates = [d.strftime("%Y%m%d") for d in df["trade_date"]]
                 # Derive months from the dates for month-level navigation
                 months = sorted(set(d[:6] for d in dates), reverse=True)
-                return {
+                payload = {
                     "ticker": ticker_upper,
                     "source": "cloud_sql",
                     "dates": dates,
                     "months": months,
                 }
+                _MARKET_DATES_CACHE[ticker_upper] = payload
+                return payload
         except Exception as e:
             logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
 
@@ -920,6 +926,18 @@ SECTOR_NAMES = {
 }
 
 _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
+
+# Trading dates for a ticker change once a day, and the query behind
+# /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
+# (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms
+# — DATE(ts) is a function on the column, so the (ticker, interval, ts DESC)
+# index cannot be used, and there is no LIMIT). Uncached, every ChartsPage and
+# JournalPage mount paid that. 12h matches the options dates cache.
+#
+# ONLY the Cloud SQL result is cached. Caching the GCS fallback here would pin
+# a possibly-incomplete date set for 12h after a transient database blip, and
+# nothing would retry Cloud SQL until the TTL expired.
+_MARKET_DATES_CACHE: TTLCache = TTLCache(maxsize=64, ttl=43200)
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
