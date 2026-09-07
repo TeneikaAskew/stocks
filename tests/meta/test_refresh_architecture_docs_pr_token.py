@@ -107,3 +107,92 @@ def test_existing_pr_for_branch_is_detected_before_create():
     assert exists_idx < create_match.start(), (
         "the existing-open-PR check must run before gh pr create, not after"
     )
+
+
+# ── 2026-09-07 rebuild: live snapshot, deterministic blocks, loss gates ──────
+# The 2026-09-02 run replaced a 394-line hand-maintained ARCHITECTURE.md with
+# a 158-line regeneration that named 4 of 67 declared jobs, and went green.
+# These tests pin the shape that prevents a repeat: the inventory blocks are
+# rendered by scripts/maintenance/doc_inventory.py BEFORE Gemini runs, the
+# live GCP snapshot and digests exist and fail loud, and the verify step runs
+# the structural gates plus scripts/verify_docs_against_live.py.
+
+def _steps():
+    return DOC["jobs"]["refresh"]["steps"]
+
+
+def _index(name_fragment: str) -> int:
+    for i, s in enumerate(_steps()):
+        if name_fragment in (s.get("name") or ""):
+            return i
+    raise AssertionError(f"no step named like {name_fragment!r}")
+
+
+def test_live_snapshot_step_exists_and_fails_loud():
+    step = _steps()[_index("Snapshot live")]
+    run = step["run"]
+    assert "doc_inventory --write-snapshot refresh-inputs/live.json --db-live" in run
+    assert "verify_docs_against_live.py --write-snapshot refresh-inputs/verify_live.json" in run
+    assert "refusing to generate docs" in run, "an empty snapshot must stop the run (Rule 3.7)"
+    for secret in ("CLOUD_SQL_CONNECTION_NAME", "DB_USER", "DB_PASS", "DB_NAME"):
+        assert secret in step["env"], f"live table stats need {secret}"
+
+
+def test_digest_and_render_precede_the_first_gemini_step():
+    first_gemini = min(i for i, s in enumerate(_steps()) if "Regenerate" in (s.get("name") or ""))
+    assert _index("Snapshot live") < first_gemini
+    assert _index("Digest inputs") < first_gemini
+    assert _index("Save previous doc versions") < first_gemini
+    assert _index("Render inventory blocks") < first_gemini
+    render = _steps()[_index("Render inventory blocks")]["run"]
+    assert "--insert ARCHITECTURE.md DATA_DEPENDENCIES.md" in render
+
+
+def test_digest_step_writes_the_small_files_the_prompts_read():
+    run = _steps()[_index("Digest inputs")]["run"]
+    for f in ("jobs.txt", "services.txt", "secrets.txt", "service_accounts.txt", "buckets.txt",
+              "billing_by_sku.csv", "billing_by_month.csv", "repo_inventory.json", "live_vs_repo.md"):
+        assert f in run, f"digest step must write refresh-inputs/{f}"
+    assert "is empty" in run, "an empty digest must fail the run"
+
+
+def test_gemini_transcripts_are_captured_for_the_truncation_gate():
+    for s in _steps():
+        if "Regenerate" in (s.get("name") or ""):
+            assert "refresh-inputs/transcripts/" in s["run"], s["name"]
+
+
+def test_verify_step_runs_the_structural_gates_and_the_live_verifier():
+    run = _steps()[_index("Verify regenerated docs")]["run"]
+    assert "scripts/maintenance/check_generated_docs.py" in run
+    assert "--previous-dir refresh-inputs/previous" in run
+    assert "--transcripts-dir refresh-inputs/transcripts" in run
+    assert "scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json" in run
+    # the original three gates survive
+    assert "Generated" in run and "CREATE TABLE" in run and "placeholder" in run
+
+
+def test_prompts_update_in_place_and_never_touch_marker_blocks():
+    prompts = REPO / ".github/prompts"
+    for name in ("architecture.md", "data-dependencies.md", "readme.md"):
+        text = (prompts / name).read_text()
+        assert "in place" in text.lower(), name
+        assert "never regenerate from scratch" in text.lower(), name
+        assert "marker" in text.lower(), name
+    for name in ("architecture.md", "data-dependencies.md", "readme.md", "cost-analysis.md"):
+        text = (prompts / name).read_text()
+        assert "hard stop" in text.lower(), name
+        for stale in ("React + FastAPI dashboard", "no public auth, no per-user", "Vite 5173", "`/watch`", "all 27 jobs"):
+            assert stale not in text, f"{name} still hardcodes {stale!r}"
+
+
+def test_marker_names_agree_between_module_docs_and_gate():
+    from scripts.maintenance import doc_inventory as inv
+    from scripts.maintenance import check_generated_docs as gate
+    arch = (REPO / "ARCHITECTURE.md").read_text()
+    deps = (REPO / "DATA_DEPENDENCIES.md").read_text()
+    for name in ("jobs", "schedulers", "tables", "routes", "services", "reconcile", "modules", "dbtables"):
+        assert inv.MARKER_START.format(name=name) in arch, name
+    for name in ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"):
+        assert inv.MARKER_START.format(name=name) in deps, name
+    assert set(gate.MARKER_DOCS) == {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md"}

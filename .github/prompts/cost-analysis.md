@@ -1,61 +1,43 @@
 # Prompt: regenerate COST_ANALYSIS.md
 
-You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from scratch using the inputs available.
+You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from the billing digests.
 
-**Output discipline (read this twice).** Produce the regenerated file by calling the **`write_file` tool** with `file_path: "COST_ANALYSIS.md"` and the full markdown body as `content`. **Do not** print the file contents to stdout, write a preamble like "Here's the regenerated doc:", or summarize what you did at the end. The workflow inspects the file on disk; any text you emit beyond tool calls is noise.
+**Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "COST_ANALYSIS.md"`, full markdown body). No stdout output, no preamble, no summary.
 
-## Inputs
+## Inputs (under `refresh-inputs/`)
 
-- `refresh-inputs/billing.json` — output of a BigQuery query against `adept-mountain-474619-d4.billing_export.gcp_billing_export_v1_*`. Schema: `[{service, sku, cost_usd, month}]`. Window: trailing 90 days from run time.
-- `ARCHITECTURE.md` — fresh component inventory (regenerated in the same workflow run, before this prompt fires)
-- The previous `COST_ANALYSIS.md` if one exists (style reference only)
+- `billing_by_month.csv` — `month, cost_usd` for the trailing 90 days (read this first; it is the headline).
+- `billing_by_sku.csv` — `service, sku, cost_usd_90d`, sorted descending (read this second).
+- `billing.json` — the raw `[{service, sku, cost_usd, month}]` rows, only if you need a per-month split for one SKU. Read it with `offset`/`limit`; **never conclude a month or SKU is absent because a read was truncated** — the CSVs above are complete.
+- `live.json` — `counts.jobs`, `counts.schedulers`, `counts.services`, `sql` (tier, disk), `image_tags`; use these for the per-component allocation.
+- `repo_inventory.json` → `schedulers` (cron per job) for runs-per-month estimates.
+- The fresh `ARCHITECTURE.md` §3/§6 for the component map.
+- The previous `COST_ANALYSIS.md` (style reference only).
 
 ## What to produce
 
-`COST_ANALYSIS.md` at the repo root with these sections:
-
 ### 1. Total spend by month
-
-A table covering the trailing 90-day window. Columns: Month | Spend (USD) | Notes. Flag partial months explicitly (the 90-day window often catches only the trailing few days of the oldest month).
+Table from `billing_by_month.csv`: Month | Spend (USD) | Notes. Flag partial months (the oldest month in a 90-day window, and the current month).
 
 ### 2. Top 10 cost line items by SKU
-
-A table sorted by 90-day cost descending. Columns: Rank | Service | SKU | 90-day cost | F/M/A breakdown | Maps to (ARCHITECTURE.md). For each SKU, identify which component from the inventory it represents. **If you can't confidently map a SKU to a component, say "not attributable from billing export alone" rather than guessing.**
+From `billing_by_sku.csv`: Rank | Service | SKU | 90-day cost | Maps to (ARCHITECTURE.md component). If a SKU cannot be mapped, write "not attributable from billing export alone".
 
 ### 3. Per-component cost estimate
-
-For each major component (Cloud SQL, Cloud Run Jobs aggregate, Cloud Scheduler, Cloud Run Services, GCS, Artifact Registry, Vertex AI, etc.):
-
-- The total 90-day cost for that component
-- Per-job/per-resource breakdown where the SKU permits it
-- **Flag fuzzy allocations.** If the SKU is "Cloud Run Jobs CPU in us-east1" — that's one number across all 27 jobs. State the allocation method explicitly: "best-effort proportional to runs-per-week × CPU-sec/run."
-- Specifically section "Not attributable from billing export alone" — list things billing can't tell us (per-job costs, per-table SQL costs, Discord egress).
+Cloud SQL, Cloud Run Jobs (one SKU across all N jobs — allocate best-effort by runs-per-month × typical duration, from the schedulers), Cloud Run Services (per service where the SKU permits), Cloud Scheduler (N entries, 3 free), Artifact Registry, GCS, Vertex AI, Secret Manager, Pub/Sub, Logging, Cloud Build. State the allocation method. Include "Not attributable from billing export alone".
 
 ### 4. Anomalies
-
-Investigate any of:
-- **Month-over-month change > 50%** in any line item — could be usage change, credit application, or backfill spike
-- **$0.00 cost for SKUs that should have nonzero spend** — Vertex AI Gemini at $0 for 90 days is suspicious if the insight pipeline is supposed to be running
-- **Trending up month over month** — anything growing at a rate that would 2x within 90 days
-
-For each, note: probable cause, how to confirm, urgency.
+Month-over-month change > 50% in any line item; $0.00 for SKUs that should be non-zero (Vertex AI when the insight pipeline runs daily); anything trending to double within 90 days. For each: probable cause, how to confirm (a gcloud or Console step), urgency.
 
 ### 5. Cost-reduction recommendations
-
-Three concrete recommendations, ranked by estimated monthly savings. For each:
-- The specific resource to change
-- The exact change (gcloud command or config edit)
-- Estimated $/month saving
-- Risk + validation step before pulling the trigger
-
-**Do not propose recommendations without a $/month estimate.** Vague advice ("consider optimizing") is worse than nothing.
+Three, ranked by $/month, each with the resource, the exact change (gcloud command or config edit), the estimate, the risk and a validation step. Reference `docs/audits/COST_AUDIT_2026-09-06.md` if present rather than repeating it.
 
 ## Rules
 
-- **Numbers must be honest.** If the data says $9.16, write $9.16 — don't round to $10 for prose.
-- **Total spend at top.** First sentence of the doc should answer "what does this cost me per month."
-- **No projections beyond what billing data supports.** Don't extrapolate trend lines from 2 months of data.
-- **A missing or empty input is a hard stop.** If a required input file is absent, unreadable, or empty, print one line explaining exactly which input is missing and STOP — do **not** write the output file, and never substitute a placeholder, an "Unknown" value, or a partial regeneration improvised from other sources. The workflow verifies the regeneration and fails loud on a stale doc; a plausible-looking wrong doc is worse than a red run.
-- **Date the doc.** Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
+- Numbers must be honest: write what the CSV says, never round for prose.
+- Total spend in the first sentence.
+- No projections beyond the data.
+- Use the live counts for N jobs / N schedulers; never hardcode a number from an older version.
+- A missing or empty input is a hard stop: print one line naming it and stop without writing.
+- Last line: `Generated YYYY-MM-DD by .github/workflows/refresh-architecture-docs.yml`.
 
-When done, write the file and exit. Do not narrate.
+When done, stop. Do not narrate.

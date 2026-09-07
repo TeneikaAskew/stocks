@@ -48,7 +48,7 @@ echo "SA_EMAIL=${SA_EMAIL}"   # save this — you'll need it as a GitHub secret
 
 ## 3. Grant the IAM roles
 
-Five roles cover everything the workflow does:
+Five roles cover the original workflow (asset inventory, IAM dump, billing rollup, Gemini). The 2026-09-07 rebuild added a live snapshot of Cloud Run, Cloud Scheduler, Cloud Build, Cloud SQL, Secret Manager, Pub/Sub, Logging, Cloud Tasks and Artifact Registry through `scripts/maintenance/doc_inventory.py`, plus a `pg_stat_user_tables` read for live table sizes; the block after this one grants those.
 
 ```bash
 # Read asset inventory
@@ -75,6 +75,23 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/aiplatform.user"
 ```
+
+Read-only roles for the live snapshot (added 2026-09-07; `arch-refresh-bot@` already holds `cloudsql.client`, `secretmanager.viewer` and `run.admin` as read live on 2026-09-07 — grant the rest):
+
+```bash
+for ROLE in roles/run.viewer roles/cloudscheduler.viewer roles/cloudbuild.builds.viewer \
+            roles/cloudsql.viewer roles/cloudsql.client roles/secretmanager.viewer \
+            roles/pubsub.viewer roles/logging.viewer roles/cloudtasks.viewer \
+            roles/artifactregistry.reader; do
+  gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${SA_EMAIL}" --role="${ROLE}" --condition=None
+done
+# sql-dumps listing (pg_dump health line)
+gcloud storage buckets add-iam-policy-binding "gs://${PROJECT}-trading-data" \
+  --member="serviceAccount:${SA_EMAIL}" --role="roles/storage.objectViewer"
+```
+
+The workflow also needs the four Cloud SQL GitHub secrets (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`, `DB_PASS`, `DB_NAME`) that `deploy-staging.yml` and the calibration step already use; nothing new is stored.
 
 > **Note on `roles/bigquery.dataViewer`:** This grant is project-wide. If you'd rather scope tighter, grant it on the `billing_export` dataset specifically:
 > ```bash
