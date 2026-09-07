@@ -1,0 +1,221 @@
+name: Re-run a doc refresh that died on a Vertex transport stall
+
+# Run 20 of the monthly refresh (2026-09-07) died at
+# "Regenerate 05-c-DATA_DEPENDENCIES.md" after 6m45s of silence:
+#
+#   Error when talking to Gemini API ... TypeError: terminated
+#     [cause]: BodyTimeoutError: Body Timeout Error  code: 'UND_ERR_BODY_TIMEOUT'
+#   An unexpected critical error occurred:[object Object]
+#
+# The Vertex streaming response body stalled and the Gemini CLI exits 1.
+# Confirmed transient: run 19 ran that identical prompt against that identical
+# file 20 minutes earlier in 28 seconds, and run 21 completed the same step in
+# 6m01s. One vendor blip cost a 13-minute run, and on the 1st of the month it
+# would cost the whole unattended refresh.
+#
+# WHY THE RE-RUN LIVES HERE AND NOT INSIDE THE REFRESH JOB
+#
+# An in-job retry was tried first (PR #1032) and abandoned. Retrying inside the
+# job means starting a second Gemini CLI process in a workspace the model has
+# already had write_file/replace over, and every guard that needs is a guard
+# that can be got wrong:
+#
+#   * the retry must not restore a pre-render document, or it carries stale
+#     marker blocks into the marker gate and loses the refresh anyway
+#   * it must restore EVERY generated document, or an edit smuggled into a
+#     different one survives
+#   * it must refuse if the failed attempt wrote .gemini/settings.json, which
+#     can define command-backed MCP servers that the fresh CLI process would
+#     spawn with this job's GCP and GitHub credentials
+#   * it must refuse if refresh-inputs/ changed, the one tree the stray-write
+#     scan deliberately skips
+#   * it must not classify on a signature appearing anywhere in the
+#     transcript, because the model can read the checkout and echo one
+#
+# Re-running the JOB deletes that entire class rather than defending against
+# it: a re-run gets a fresh checkout, so no model-written file survives into
+# the attempt, and the classification below runs on a different runner reading
+# the log through the API, where the model has no reach at all.
+#
+# BOUNDED BY CONSTRUCTION. `run_attempt == 1` means this can fire at most once
+# per run and needs no state to enforce it.
+#
+# NOTE: the refresh workflow's own handle-failure job has already opened or
+# updated its failure issue by the time this fires. A successful re-run does
+# not close that issue; the issue is the record that the stall happened.
+#
+# `workflow_run` only registers once this file is on the default branch, so it
+# cannot be exercised from a feature branch.
+
+on:
+  workflow_run:
+    workflows: ["Monthly architecture doc refresh"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rerun:
+    # Only a failure, and only the first attempt.
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Re-run once if the failure was a Vertex transport stall
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Three outcomes, not two. `gh` exits 1 on any failed request, and
+          # so did the classifier's "not transient", so a 403 or an unavailable
+          # log used to land in the negative branch and this job went green
+          # having examined nothing. Exit 2 is "could not classify" and fails
+          # this step, which is what fires handle-failure. (Codex, PR #1032.)
+          set +e
+          .github/scripts/is_transient_gemini_failure.sh "$RUN_ID"
+          VERDICT=$?
+          set -e
+          case "$VERDICT" in
+            0)
+              echo "::notice::run ${RUN_ID} died on a Vertex transport stall; re-running the failed jobs once"
+              gh api --method POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun-failed-jobs"
+              {
+                echo "### Re-ran the monthly doc refresh"
+                echo
+                echo "Run \`${RUN_ID}\` failed with a Vertex transport stall."
+                echo "Re-running the failed jobs once, from a fresh checkout."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            1)
+              echo "leaving run ${RUN_ID} red — this is the repo's own failure and the gates are supposed to catch it"
+              {
+                echo "### Not re-run"
+                echo
+                echo "Run \`${RUN_ID}\` failed without a Vertex transport-error record. That is a real failure, so it stays red."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::could not classify run ${RUN_ID} (classifier exit ${VERDICT}); not re-running, and failing so this is reported"
+              exit "$VERDICT"
+              ;;
+          esac
+
+  # The refresh workflow's handle-failure job runs with create_pr: true, so a
+  # transient stall leaves a draft `fix/workflow-refresh-architecture-docs-<run>`
+  # PR (or a comment on an older one) saying a fix is required. This job says
+  # on that PR that the re-run succeeded and no fix is needed. It does NOT
+  # close it: the only evidence it has is the same textual classifier over the
+  # same attempt-1 log, and a model that forged the record once would be
+  # believed twice. Closing someone's PR is the one action here with lasting
+  # effect, so it is left to a person. (Codex, PR #1032, rounds 8 and 11.)
+  annotate-obsolete-failure-pr:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt > 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A job-level block REPLACES the workflow-level one, so `actions: read`
+    # has to be repeated here: the classifier reads attempt 1's jobs and logs
+    # through the API, and without it every `gh api .../actions/...` call is
+    # "Resource not accessible by integration" -- the re-check this job exists
+    # to make would fail on its first request, every time.
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Annotate the failure PR if attempt 1 really was a stall
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          # scripts/handle_workflow_failure.py:584 builds the branch as
+          # fix/workflow-{workflow_file without .yml}-{run_number}.
+          BRANCH: fix/workflow-refresh-architecture-docs-${{ github.event.workflow_run.run_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          # `run_attempt > 1` alone is not evidence this workflow caused the
+          # re-run: a maintainer re-running a genuinely broken refresh by hand
+          # would also land here, and calling that a Vertex incident would
+          # mislabel real work. So re-derive the verdict from ATTEMPT 1's own
+          # logs rather than trusting the attempt counter. (Codex, PR #1032.)
+          set +e
+          .github/scripts/is_transient_gemini_failure.sh "$RUN_ID" 1
+          VERDICT=$?
+          set -e
+          case "$VERDICT" in
+            0) ;;
+            1) echo "attempt 1 of run ${RUN_ID} was not a transport stall; leaving its failure PR alone"; exit 0 ;;
+            *) echo "::error::could not classify attempt 1 of run ${RUN_ID} (classifier exit ${VERDICT}); failing so this is reported"; exit "$VERDICT" ;;
+          esac
+          PR=$(gh api "repos/${REPO}/pulls?state=open&head=${REPO%%/*}:${BRANCH}" --jq '.[0].number // empty')
+          if [ -z "$PR" ]; then
+            # scripts/handle_workflow_failure.py:find_existing_pr creates the
+            # per-run branch only when no `fix/workflow-refresh-architecture-docs-*`
+            # PR is open. Otherwise it comments "Please review this additional
+            # failure and update the fix in this PR" on the one that is -- a PR
+            # about some EARLIER, possibly real, failure. That PR must not be
+            # closed, but the request it now carries is answered here so it does
+            # not read as outstanding work.
+            OLDER=$(gh api "repos/${REPO}/pulls?state=open&per_page=100" \
+              --jq "[.[] | select(.head.label | startswith(\"${REPO%%/*}:${BRANCH%-*}-\"))] | .[0].number // empty")
+            if [ -z "$OLDER" ]; then
+              echo "no open failure PR for this workflow; nothing to annotate"
+              exit 0
+            fi
+            gh pr comment "$OLDER" --repo "$REPO" --body \
+              "The additional failure recorded here from run ${RUN_ID} classified as a transient Vertex transport stall on attempt 1's logs, and the re-run succeeded ([run]($RUN_URL)), so that entry needs no fix. This PR stays open for the failure it was originally opened for."
+            echo "annotated #${OLDER}; no per-run PR (${BRANCH})"
+            exit 0
+          fi
+          # Annotate only. Closing is the one action here with lasting effect,
+          # and the evidence behind it is a textual classification of a log the
+          # model's own stdout is part of. A person closes it.
+          gh pr comment "$PR" --repo "$REPO" --body \
+            "The failure this PR was opened for classified as a transient Vertex transport stall on attempt 1's logs, and the re-run succeeded ([run]($RUN_URL)). If that holds up on a look at the run, there is nothing to fix here and this PR can be closed. It is not closed automatically: the classification is textual, over a log the model's own output is part of, so the decision stays with a person. The failure issue is the incident record either way."
+          echo "annotated #${PR} (${BRANCH}); not closed"
+
+  # Repo convention: every workflow with a main job ends in handle-failure, or
+  # a red run is visible only on the Actions page (.github/workflows/README.md).
+  # Without it, a failure of the RECOVERY -- logs unavailable, a rerun API
+  # error -- would be silent, and the original issue would record only the
+  # stall. (Codex, PR #1032.)
+  handle-failure:
+    needs: [rerun, annotate-obsolete-failure-pr]
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    # handle-workflow-failure.yml declares this required: true; omitting it
+    # makes the call invalid, so the handler this job exists to provide would
+    # never run. (Codex, PR #1032.)
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Doc-refresh transient re-run"
+      failure_title: "❌ Automated re-run of the monthly doc refresh failed"
+      issue_labels: "workflow-failure,architecture-docs,automated"
+      workflow_file: "rerun-transient-doc-refresh.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false

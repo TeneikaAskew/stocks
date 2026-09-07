@@ -4,6 +4,22 @@ You are an automated documentation agent. Update `README.md` **in place**. It is
 
 **Output discipline (read this twice).** The file is `README.md` at the **repository root**: `file_path: "README.md"`, never `docs/README.md` or any other directory. Edit that path with the **`replace`** tool (or `write_file` with the complete body). Do not create a second copy anywhere. No stdout output, no preamble, no summary.
 
+## Live fleet counts — authoritative, already substituted below
+
+- Cloud Run Jobs: **{{LIVE_JOBS}}** live, **{{DECLARED_JOBS}}** declared in `gcp/deploy.sh`
+- Cloud Scheduler jobs: **{{LIVE_SCHEDULERS}}** live, **{{DECLARED_SCHEDULERS}}** declared
+- Cloud Run Services: **{{LIVE_SERVICES}}**
+- Secret Manager secrets: **{{LIVE_SECRETS}}**
+- Cloud SQL relations: **{{LIVE_DB_TABLES}}** live, **{{DECLARED_TABLES}}** declared in `gcp/schema.sql`
+
+These numbers were read from `live.json` and `repo_inventory.json` and written
+into this prompt by `scripts/maintenance/render_doc_prompts.py` before you were
+called. They are correct as of this run. **Use them verbatim wherever the
+document states a count.** Do not recount them from an input file, do not
+derive a count by counting entries you can see in a truncated read, and do not
+carry one forward from the previous version of the document. A 2026-09-07 run wrote a
+scheduler count under half the live figure and went red on that single line.
+
 ## Inputs (under `refresh-inputs/`)
 
 - `live.json` → `counts` (jobs, schedulers, services, secrets) and `db_tables` (count of live relations); `repo_inventory.json` → `counts` (declared jobs, tables).

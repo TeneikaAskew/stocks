@@ -4,6 +4,22 @@ You are an automated documentation agent. Bring the prose of `docs/product/infra
 
 **Output discipline (read this twice).** The file is `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md`, given from the repository root: `file_path: "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"`, never a bare `DATA_DEPENDENCIES.md` at the root and never any other directory. Edit that path with the **`replace`** tool (or `write_file` with the complete body). Do not create a second copy anywhere. A file written outside the four generated documents fails the run by name and nothing is published — run 15 died exactly that way, having written `docs/DATA_DEPENDENCIES.md`. No stdout output, no preamble, no summary. The workflow gates the file on disk.
 
+## Live fleet counts — authoritative, already substituted below
+
+- Cloud Run Jobs: **{{LIVE_JOBS}}** live, **{{DECLARED_JOBS}}** declared in `gcp/deploy.sh`
+- Cloud Scheduler jobs: **{{LIVE_SCHEDULERS}}** live, **{{DECLARED_SCHEDULERS}}** declared
+- Cloud Run Services: **{{LIVE_SERVICES}}**
+- Secret Manager secrets: **{{LIVE_SECRETS}}**
+- Cloud SQL relations: **{{LIVE_DB_TABLES}}** live, **{{DECLARED_TABLES}}** declared in `gcp/schema.sql`
+
+These numbers were read from `live.json` and `repo_inventory.json` and written
+into this prompt by `scripts/maintenance/render_doc_prompts.py` before you were
+called. They are correct as of this run. **Use them verbatim wherever the
+document states a count.** Do not recount them from an input file, do not
+derive a count by counting entries you can see in a truncated read, and do not
+carry one forward from the previous version of the document. A 2026-09-07 run wrote a
+scheduler count under half the live figure and went red on that single line.
+
 ## Inputs (under `refresh-inputs/`)
 
 - `repo_inventory.json` — includes `table_refs` (every table's writers, readers and mentions with `file:line`), `tables`, `materialized_views`, `views`, `jobs`, `modules`.
