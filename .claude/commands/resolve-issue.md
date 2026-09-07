@@ -271,6 +271,22 @@ failure. A test that passes against pre-fix code is testing something else, and
 this repo has caught exactly that: one #1016 test passed against the old code
 for the wrong reason and had to be verified by injection instead.
 
+**Where there is no behaviour, the same discipline takes a different form.**
+A dormant-surface deletion has nothing to exercise — that it has no consumer
+is the finding — and a permanent test naming a deleted module is worse than
+none. What is required is a check that FAILS before and PASSES after, run both
+ways and pasted; it does not have to be a pytest case:
+
+| Resolution | The before/after check |
+|---|---|
+| A behaviour changes | a test, as below |
+| A module or job is deleted | the consumer grep across `lib/ gcp/ platform/ scripts/ tests/` and solyra — hits before, silent after — plus `make test` clean |
+| A scheduler or job is retired | `gcloud scheduler jobs list` / `run jobs list` before and after |
+| A query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
+
+Skipping the before half is what is never acceptable. "It passes now" says
+nothing; "it failed before and passes now" is the evidence.
+
 Placement follows the per-area layout (`tests/api/`, `tests/lib/`,
 `tests/gcp/`, `tests/scripts/`, `tests/audits/`, `tests/meta/`). Never at the
 `tests/` root. A test inside an area folder is two levels below the repo root:
@@ -330,13 +346,31 @@ one. While writing, the standing gates:
   3. **then solyra again** — `contract:sync`, and the null moves into the
      canonical mock and fixtures now that the schema admits it.
 
-  A narrowing runs the same way: solyra stops reading or sending the field
-  first, and this repo drops it only once nothing consumes it. Say in both PR
-  descriptions which step yours is.
+  A narrowing splits, and lumping the two together gets one backwards:
+
+  - **A response field solyra READS that this repo will drop** — consumer
+    first, as above. solyra stops reading it, then this repo removes it.
+  - **A request field solyra SENDS that this repo will stop requiring** — the
+    reverse. If solyra stops sending a still-required field first, every
+    request to the deployed API fails validation immediately. This repo makes
+    it optional and deploys, THEN solyra stops sending, THEN this repo drops
+    it.
+
+  The invariant under all three cases: **whichever side is RECEIVING must
+  tolerate the new shape before the sending side produces it.** For a response
+  that is solyra; for a request body it is this API. "Consumer-first" is
+  shorthand for a response, not a rule about repositories.
+
+  Say in both PR descriptions which case and which step yours is.
 - **Rule 6** — a response shape change means: regenerate
   `platform/api/openapi.json` (`python scripts/export_openapi.py`), then on the
   solyra side `npm run contract:sync` plus the `src/types/` and fixture update,
-  in the same change set, and say so in **both** PR descriptions.
+  and say so in **both** PR descriptions. **On a widening those do not all
+  land together**: solyra's step 1 moves its type and readers only, because its
+  canonical mocks are validated against the vendored schema and a null in one
+  fails until the sync. Its `contract:sync`, type widening and fixture update
+  are step 3, after this repo has merged and deployed. The three-step sequence
+  is above.
 - **Rule 3.10** — a handler doing blocking I/O is declared `def`, not
   `async def`. Converting one is a concurrency change: audit for lazy
   singletons, module-cache read-modify-write, and check-then-insert first.
