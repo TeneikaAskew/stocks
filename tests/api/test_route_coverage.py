@@ -1,0 +1,1037 @@
+"""Every registered API operation is requested here, and none of them crashes.
+
+The gap this closes, measured rather than asserted: on `main` at 2026-09-06,
+**23 of 99** registered `/api` operations were never requested by any test.
+Both endpoints that broke this week were in that 23:
+
+    GET /api/options/{ticker}/{date_str}/levels   500 on every request (#991)
+    GET /api/options/dates/{ticker}               9,870 ms query      (#992)
+
+4,253 tests passed over a hard 500. Not because the suite is thin, but because
+the hole sat exactly where the defects were.
+
+
+What this file proves, and what it does not
+-------------------------------------------
+
+It proves that **every operation the app registers is requested from this
+file**, and that each one answers with a status FastAPI produced and a JSON
+body, rather than an unhandled exception. That is a low bar, and it is exactly
+the bar `/levels` failed.
+
+It does not prove the answers are *correct*. Per-endpoint assertions belong in
+`test_platform_api.py` next to their own fixtures.
+
+
+Three earlier versions of this file measured coverage in ways that were all
+too generous, and each was wrong in a way worth recording because the mistake
+is easy to repeat:
+
+1. It walked `app.routes` naively. This FastAPI version keeps included routers
+   as `_IncludedRouter` wrappers rather than flattening them, so it found 8
+   operations and reported "0 uncovered of 8" — a clean bill of health from an
+   audit seeing 8% of the surface.
+
+2. It regex-matched every route template independently, ignored the HTTP
+   method, and counted any `/api` string literal anywhere under `tests/` as a
+   caller. So one request to `/api/options/dates/IWM` also credited
+   `/api/options/{ticker}/{date_str}`, a tested `GET /api/me/profile` covered
+   `PUT` as well, and a URL in a docstring counted as a request.
+
+3. It parsed real request calls from the AST instead — better, and still
+   wrong. It credited calls inside modules that are **skipped** under the
+   default configuration (all of `test_routers_insights_admin.py`, the sole
+   coverage for `POST /api/insights/report/{ticker}/refresh` and
+   `GET /api/admin/models`) and calls against a test-local stub app rather
+   than `api.main.app` (the `/api/me` calls in `test_platform_auth.py`).
+
+The through-line: each version answered "does this URL appear somewhere" when
+the question is "does the suite issue this request". So the inventory is no
+longer inferred from other files at all. `REQUESTS` below declares one request
+per operation and this file issues them. There is nothing left to over-credit,
+and `test_every_operation_is_requested` compares the declared table against the
+app's real route table in registration order.
+
+
+The harness, and why it disables the *connection* rather than the helpers
+------------------------------------------------------------------------
+
+A request that stops at a pre-handler gate proves nothing about the handler.
+`/api/options/IWM/2026-09-04/levels` returned 503 at `_require_cloud_sql()`
+before reaching its `await get_options(...)` — the exact line whose regression
+this file is named after — so restoring that bug left the guard green. The
+same was true of every Cloud-SQL-gated route (503) and every admin route
+(401). `no_backend` below opens those gates: the `_CLOUD_SQL` / `_HAS_CLOUD_SQL`
+flags are set True and the admin identity is supplied, so the handler bodies
+actually run.
+
+With the gates open something has to stand in for the backend, and *what* is
+patched decides whether the result means anything. A first version replaced
+`query_to_dataframe` and the `gcs_reader` helpers with functions that raise.
+That reported **13 hard 500s** — and 11 of them were artifacts. Those helpers
+swallow in production (`query_to_dataframe` returns an empty DataFrame,
+`list_matching_blobs` returns `[]`; see the fallback audit), so making them
+raise did not simulate an outage, it deleted the app's own error handling and
+then blamed the app for not having any.
+
+So the harness disables the **connection layer** instead: `get_engine`,
+`model_routing.connect`, and `storage.Client` fail the way they fail when the
+database and GCS are genuinely unreachable. Every layer above them then
+behaves exactly as it does in production — the swallowing helpers still
+swallow, the strict ones still raise — and what surfaces is real.
+
+That is also what makes this file hermetic, and "hermetic" here means every
+door rather than the obvious one. Patching `gcs_reader._get_client` alone was
+not enough: `routers/admin.py` constructs `storage.Client()` directly, so the
+class itself is patched. `firebase_admin.initialize_app()` SUCCEEDS wherever
+ADC is configured, after which the admin user routes would reach the real
+project and `PUT /users/{uid}/status` could call `update_user`, so
+`_ensure_firebase` is patched to raise. `lib.ticker_info` scrapes FinViz on a
+cache miss, so its two fetchers are patched, and its on-disk cache — which it
+WRITES — is redirected to tmp along with the journal's write targets. No
+request in this file opens a socket or leaves a file behind, on any machine,
+whatever is configured. That matters because the table below includes writes.
+
+Nine genuine hard 500s were found this way, all of them plain-text
+"Internal Server Error" with no JSON envelope for the frontend to render:
+
+    GET  /api/insights/report/{ticker}            OperationalError escaped
+    GET  /api/insights/report/{ticker}/history    OperationalError escaped
+    GET  /api/insights/reports/{report_id}        OperationalError escaped
+    POST /api/insights/report/{ticker}/refresh    OperationalError escaped
+    GET  /api/insights/runs/{run_id}              OperationalError escaped
+    GET  /api/admin/routes                        OperationalError escaped
+    GET  /api/admin/users                         ModuleNotFoundError escaped
+    PUT  /api/admin/users/{uid}/roles             ModuleNotFoundError escaped
+    PUT  /api/admin/users/{uid}/status            ModuleNotFoundError escaped
+
+All nine are fixed in this change set.
+"""
+from __future__ import annotations
+
+import dataclasses
+import os
+import pathlib
+import sys
+from typing import Any, Optional
+
+import pytest
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "platform"))
+
+pytest.importorskip("fastapi")
+
+
+# ── the route table, from the app itself ────────────────────────────────────
+
+def _flatten(routes, out):
+    """Every real Route, in REGISTRATION ORDER.
+
+    Order is load-bearing rather than incidental: Starlette dispatches to the
+    FIRST matching route, which is why `main.py` says "grid MUST mount before
+    options — options has a greedy path".
+    """
+    for r in routes:
+        if type(r).__name__ == "_IncludedRouter":
+            _flatten(r.original_router.routes, out)
+        elif hasattr(r, "path") and hasattr(r, "path_regex"):
+            out.append(r)
+    return out
+
+
+def _registered_operations():
+    """[(METHOD, path, route)] for every /api operation the app serves."""
+    from api.main import app
+
+    out = []
+    for route in _flatten(app.routes, []):
+        if not route.path.startswith("/api"):
+            continue
+        for method in sorted((route.methods or set()) - {"HEAD", "OPTIONS"}):
+            out.append((method, route.path, route))
+    return out
+
+
+def _dispatch(method: str, url: str, ops) -> Optional[tuple[str, str]]:
+    """Which registered operation does this request actually reach?
+
+    Starlette dispatches to the first route whose pattern matches, so this
+    walks in registration order and stops there. Regex-matching every template
+    independently over-credits: `/api/options/dates/IWM` also matches
+    `/api/options/{ticker}/{date_str}`, so one request would mark two
+    operations covered.
+
+    Uses Starlette's own compiled `path_regex` rather than a pattern rebuilt
+    from the template — a hand-rolled `{param}` -> `[^/]+` happens to match
+    these routes but diverges the moment anyone uses a path converter.
+    """
+    path_only = url.split("?", 1)[0]
+    for m, path, route in ops:
+        if method != m:
+            continue
+        if route.path_regex.fullmatch(path_only):
+            return (m, path)
+    return None
+
+
+# ── the declared requests ───────────────────────────────────────────────────
+
+@dataclasses.dataclass(frozen=True)
+class Req:
+    """One request, and what it is expected to answer with no backend.
+
+    `expect` is the status measured against a backend-less instance. It is
+    pinned rather than left as "anything but 500" because a change from 404 to
+    503, or from 200 to 401, is a contract change someone should have to look
+    at. `body_ran=False` marks the requests that stop at FastAPI's own request
+    validation and therefore say nothing about the handler; everything else
+    entered the endpoint function.
+    """
+    method: str
+    url: str
+    expect: int
+    json: Optional[dict[str, Any]] = None
+    body_ran: bool = True
+    note: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.method} {self.url}"
+
+
+T = "IWM"
+D = "2026-09-04"
+UUID0 = "00000000-0000-0000-0000-000000000000"
+
+REQUESTS: list[Req] = [
+    # ── live ────────────────────────────────────────────────────────────────
+    Req("GET", "/api/live/status", 200),
+    Req("GET", f"/api/live/quote/{T}", 503, note="no AV key"),
+    Req("GET", f"/api/live/history/{T}", 503, note="no AV key"),
+    Req("GET", f"/api/live/avg-volume/{T}", 503, note="no AV key, no DB"),
+    Req("POST", "/api/live/indicators", 200, json={"bars": []}),
+    Req("POST", "/api/live/signal-series", 422, json={"bars": []},
+        note="the handler's own warm-up check, not request validation"),
+
+    # ── options ─────────────────────────────────────────────────────────────
+    Req("GET", f"/api/options/{T}/grid", 503),
+    Req("GET", f"/api/options/{T}/{D}/grid", 503),
+    Req("GET", f"/api/options/{T}/nodes", 503),
+    Req("GET", f"/api/options/{T}/{D}/nodes", 503),
+    Req("GET", f"/api/options/{T}/grid/timeseries", 503),
+    Req("GET", f"/api/options/dates/{T}", 404, note="#992's endpoint"),
+    Req("GET", f"/api/options/{T}/{D}", 404),
+    Req("GET", f"/api/options/live/{T}/{D}", 503, note="no AV key"),
+    Req("POST", "/api/options/greeks", 422, json={"options": [], "spot": 200.0},
+        body_ran=False, note="spot_price is required; see the deep test below"),
+    Req("GET", f"/api/options/{T}/{D}/levels", 404,
+        note="#991's endpoint; see test_levels_actually_awaits_the_chain"),
+
+    # ── playbook / reports ──────────────────────────────────────────────────
+    # #1005 moved this handler off GCS onto playbook_cards in Cloud SQL, so
+    # the backend-less answer changed from 502 (GCS unreachable) to 503 at
+    # the `is_cloud_sql_configured()` gate. That gate is the first thing the
+    # handler does, so this row proves the route is wired and little else;
+    # the freshness contract underneath it (stale refusal, the age boundary,
+    # 404 on no rows) is covered by tests/api/test_playbook_evaluate.py.
+    Req("GET", f"/api/playbook/{T}", 503,
+        note="Cloud SQL not configured; deep paths in test_playbook_evaluate.py"),
+    Req("GET", f"/api/reports/list/{T}", 404,
+        note="404 not 502: list_matching_blobs swallows (fallback backlog)"),
+    Req("GET", f"/api/reports/{T}/premarket", 404, note="same swallow"),
+    Req("POST", "/api/playbook/evaluate", 422, json={"snapshot": {}},
+        body_ran=False),
+
+    # ── backtest / style ────────────────────────────────────────────────────
+    Req("GET", f"/api/backtest/results/{T}", 404, note="same swallow"),
+    Req("GET", f"/api/backtest/equity/{T}", 404, note="same swallow"),
+    Req("GET", f"/api/backtest/all/{T}", 404, note="same swallow"),
+    Req("POST", "/api/backtest/replay-trades", 422,
+        json={"ticker": T, "trades": []},
+        note="the handler's own check for trade_ids/session_id"),
+    Req("POST", "/api/style/mine-and-validate", 200, json={"ticker": T}),
+
+    # ── signals ─────────────────────────────────────────────────────────────
+    Req("GET", f"/api/signals/{T}", 200),
+    Req("GET", f"/api/signals/{T}/similar?direction=CALL&rsi=50&stoch_k=50"
+               "&atr_pct=1.0&score=5.0", 200),
+
+    # ── insights ────────────────────────────────────────────────────────────
+    Req("GET", "/api/insights/ticker/search?keywords=russell", 200),
+    Req("GET", f"/api/insights/ticker/{T}/info", 404,
+        note="deterministic miss: the on-disk cache is redirected to tmp"),
+    Req("GET", f"/api/insights/ticker/{T}/quote", 404),
+    Req("GET", f"/api/insights/ticker/{T}/peers", 200),
+    Req("POST", "/api/insights/watchlist/add", 503, json={"ticker": T}),
+    Req("DELETE", f"/api/insights/watchlist/{T}", 503),
+    Req("GET", "/api/insights/watchlist", 200),
+    Req("GET", f"/api/insights/report/{T}", 503, note="was a bare 500"),
+    Req("GET", f"/api/insights/report/{T}/history", 503, note="was a bare 500"),
+    Req("GET", f"/api/insights/reports/{UUID0}", 503, note="was a bare 500"),
+    Req("POST", f"/api/insights/report/{T}/refresh", 503, json={},
+        note="was a bare 500; only covered by a SKIPPED module before"),
+    Req("GET", f"/api/insights/runs/{UUID0}", 503, note="was a bare 500"),
+    Req("POST", "/api/insights/chat", 400, json={"message": ""},
+        note="rejects an empty message before touching Gemini"),
+
+    # ── journal ─────────────────────────────────────────────────────────────
+    Req("GET", f"/api/journal/trades/{T}", 200),
+    Req("GET", f"/api/journal/examples/{T}", 200),
+    Req("POST", "/api/journal/trades", 200,
+        json={"ticker": T, "direction": "CALL", "entry_date": D,
+              "entry_time": "10:00", "entry_price": 200.0}),
+    Req("PATCH", f"/api/journal/trades/{UUID0}", 404,
+        json={"exit_date": D, "exit_time": "11:00", "exit_price": 201.0}),
+    Req("DELETE", f"/api/journal/trades/{UUID0}", 200),
+    Req("GET", f"/api/journal/seed/{T}?date={D}", 503),
+    Req("POST", f"/api/journal/export/{T}", 200, json={"trades": []}),
+    Req("POST", "/api/journal/import/preview", 422, json={"broker": "generic"},
+        body_ran=False),
+    Req("POST", "/api/journal/import/commit", 422,
+        json={"broker": "schwab", "trades": []},
+        note="the handler's own broker allow-list"),
+
+    # ── dashboard / movement ────────────────────────────────────────────────
+    Req("GET", f"/api/dashboard/brief/{T}", 200),
+    Req("GET", f"/api/movement-statement?ticker={T}", 404),
+
+    # ── catalysts ───────────────────────────────────────────────────────────
+    Req("GET", "/api/catalysts/events", 200),
+    Req("GET", f"/api/catalysts/ticker/{T}", 200),
+    Req("GET", f"/api/catalysts/snapshot/{T}", 200),
+    Req("GET", f"/api/catalysts/asof/{T}", 200),
+    Req("GET", "/api/catalysts/types", 200),
+
+    # ── admin ───────────────────────────────────────────────────────────────
+    Req("GET", "/api/admin/routes", 503, note="was a bare 500"),
+    Req("PUT", "/api/admin/routes/analyst", 503,
+        json={"provider": "vertex", "model": "gemini-2.5-flash"},
+        note="a REAL provider/model, so it reaches set_route's DB write; "
+             "an invalid one 400s at adapter validation and covers nothing"),
+    Req("GET", "/api/admin/models", 200),
+    Req("GET", "/api/admin/structure-brief", 200),
+    Req("GET", "/api/admin/strat-engine/state", 200),
+    Req("POST", "/api/admin/strat-engine/predict", 503,
+        json={"ticker": T, "timeframe": "15m"},
+        note="a VALID timeframe, so it reaches get_engine(); '1d' stopped at "
+             "the handler's own timeframe check and covered nothing past it"),
+    Req("POST", "/api/admin/strat-engine/structure-continuation", 404,
+        json={"ticker": T, "timeframe": "15m"}),
+    Req("GET", "/api/admin/users", 503, note="was a bare 500"),
+    Req("PUT", f"/api/admin/users/test-uid/roles", 503, json={"roles": []},
+        note="was a bare 500"),
+    Req("PUT", f"/api/admin/users/test-uid/status", 503,
+        json={"disabled": False}, note="was a bare 500"),
+    Req("GET", "/api/admin/data-sources", 200),
+    Req("POST", "/api/admin/data-sources/market_data_daily/refresh", 503),
+
+    # ── analytics ───────────────────────────────────────────────────────────
+    Req("POST", "/api/analytics/trade-stats", 200, json={"trades": []}),
+    Req("GET", f"/api/analytics/summary/{T}", 200),
+
+    # ── config / health / glossary ──────────────────────────────────────────
+    Req("GET", "/api/config/firebase", 200),
+    Req("GET", "/api/config/indicators", 200),
+    Req("GET", "/api/config/market-hours", 200),
+    Req("GET", "/api/health/freshness", 200),
+    Req("GET", "/api/glossary/gamma", 200),
+    Req("GET", "/api/health", 200),
+    Req("GET", "/api/me", 200),
+
+    # ── magnitude ───────────────────────────────────────────────────────────
+    Req("GET", f"/api/magnitude/{T}/1d/latest", 404),
+    Req("GET", f"/api/magnitude/{T}/1d/at/2026-09-04T14:30:00Z", 404),
+
+    # ── earnings ────────────────────────────────────────────────────────────
+    Req("GET", "/api/earnings/upcoming", 503),
+    Req("GET", f"/api/earnings/history/{T}", 503),
+    Req("GET", f"/api/earnings/event/{T}/{D}", 503),
+    Req("GET", "/api/earnings/lean", 503),
+    Req("GET", f"/api/earnings/ticker/{T}/lean", 503),
+    Req("GET", "/api/earnings/insights/grid", 503),
+    Req("GET", "/api/earnings/insights/winners", 503),
+    Req("GET", "/api/earnings/calibration", 503),
+    Req("GET", "/api/earnings/health/ping", 200),
+
+    # ── waitlist / me ───────────────────────────────────────────────────────
+    Req("POST", "/api/waitlist", 503,
+        json={"email": "route-coverage@example.test"},
+        note="hermetic: the write cannot reach a database, see no_backend"),
+    Req("GET", "/api/me/preferences", 503),
+    Req("PUT", "/api/me/preferences", 422, json={"preferences": {}},
+        body_ran=False),
+    Req("GET", "/api/me/profile", 503),
+    Req("PUT", "/api/me/profile", 503, json={"display_name": "rc"}),
+
+    # ── market ──────────────────────────────────────────────────────────────
+    Req("GET", f"/api/market/dates/{T}", 200),
+    Req("GET", f"/api/market/data/{T}/{D}", 404),
+    Req("GET", f"/api/market/reference/{T}/{D}", 404),
+    Req("GET", f"/api/market/coverage?symbols={T}", 503),
+    Req("GET", "/api/market/sectors", 503),
+    Req("GET", "/api/market/most-active", 503),
+]
+
+
+# ── the harness ─────────────────────────────────────────────────────────────
+
+class _BackendDown(RuntimeError):
+    """Raised where a socket to Cloud SQL or GCS would be opened."""
+
+
+def _no_connection(*_a, **_k):
+    raise _BackendDown("backend disabled by the route-coverage harness")
+
+
+_GATE_FLAGS = ("_HAS_CLOUD_SQL", "_CLOUD_SQL")
+
+
+def _clear_process_caches() -> None:
+    """Empty every module-level response cache before the sweep runs.
+
+    These caches live on the module, not on the app, so they outlive a
+    `TestClient` and are shared with every other test file in the session.
+    `test_market_sectors.py` leaves a canned payload in
+    `main._SECTORS_CACHE`, and `GET /api/market/sectors` then answered 200
+    here instead of the 503 an unreachable database produces — passing alone
+    and failing in the full suite, which is the worst way for a test to be
+    wrong.
+
+    A pinned status is only meaningful if the state behind it is this file's
+    own. Clearing is also the honest direction: a cache hit skips the handler
+    entirely, so a stale entry would mean an operation is inventoried without
+    executing any of the code it is supposed to cover.
+    """
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("api."):
+            continue
+        for attr in dir(module):
+            if not attr.endswith("_CACHE"):
+                continue
+            cache = getattr(module, attr, None)
+            if hasattr(cache, "clear"):
+                try:
+                    cache.clear()
+                except Exception:            # pragma: no cover - defensive
+                    pass
+    import api.routers.health as health
+
+    health._cache_value = None
+    health._cache_expires_at = 0.0
+
+
+@pytest.fixture(scope="module")
+def client(tmp_path_factory):
+    """TestClient for the real app, with the pre-handler gates opened.
+
+    Four things happen here and each is load-bearing:
+
+    * `os.chdir` into `platform/`, restored in a `finally`. Without the
+      `finally`, an import error inside `api.main` left pytest in `platform/`
+      for every test collected afterwards, turning one setup failure into
+      unrelated cascading failures.
+    * the connection layer is disabled, so nothing here opens a socket. This
+      is what makes the file hermetic even on a machine with a database
+      configured, which matters because the table above includes writes.
+    * the `_CLOUD_SQL` / `_HAS_CLOUD_SQL` gates are set True and an admin
+      identity is supplied, so requests reach the handler bodies instead of
+      stopping at `_require_cloud_sql()` or `_require_admin()`.
+    * the journal's two write targets are redirected into a tmp directory.
+      Opening the gates is what made this necessary: `POST /api/journal/trades`
+      and `POST /api/journal/export/{ticker}` now reach their handlers and
+      succeed, and unredirected they would write `data/journal/iwm_journal.json`
+      and `data/signals/iwm_trade_tracker.csv` into the repository — dirtying
+      the tree and handing the journal tests a file this one wrote.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    original_cwd = os.getcwd()
+    platform_dir = str(PROJECT_ROOT / "platform")
+    if platform_dir not in sys.path:
+        sys.path.insert(0, platform_dir)
+    os.chdir(platform_dir)
+    try:
+        from starlette.testclient import TestClient
+
+        import gcp.database as database
+        from lib.agents import model_routing
+
+        # The app is imported BEFORE the sources are patched, and the order is
+        # load-bearing. Patching first meant that when this fixture was the
+        # first code to import `api.main`, `routers/insights.py` bound
+        # `_no_connection` at import; the module sweep below then recorded THAT
+        # as the alias's previous value, so `mp.undo()` restored the stub
+        # rather than the real function and every later insights test in the
+        # same process saw a harness-injected outage it never asked for
+        # (Codex, PR #999). Importing first means every alias's recorded
+        # previous value is the real one.
+        #
+        # Safe because nothing under `api.` opens a connection at import time:
+        # the routers bind names and register routes. If that ever changes,
+        # this fixture is where it will show up, as a real connection attempt
+        # during collection rather than a silent one.
+        from api.main import app
+
+        mp.setattr(database, "get_engine", _no_connection)
+        mp.setattr(model_routing, "connect", _no_connection)
+        mp.setattr(model_routing, "_get_connector", _no_connection, raising=False)
+
+        # Names bound at import time in a router's own namespace do not see
+        # the patch above, so patch them where they are looked up.
+        for name, module in list(sys.modules.items()):
+            if not name.startswith("api."):
+                continue
+            for attr in ("get_engine", "connect", "_get_connector"):
+                if callable(getattr(module, attr, None)):
+                    mp.setattr(module, attr, _no_connection, raising=False)
+            for flag in _GATE_FLAGS:
+                if isinstance(getattr(module, flag, None), bool):
+                    mp.setattr(module, flag, True, raising=False)
+
+        import api.gcs_reader as gcs_reader
+        from google.cloud import storage as gcs
+
+        mp.setattr(gcs_reader, "_get_client", _no_connection)
+        # `gcs_reader._get_client` is not the only door. `routers/admin.py`
+        # constructs `storage.Client()` DIRECTLY in two places, which
+        # `/api/admin/structure-brief` and `/api/admin/strat-engine/state`
+        # reach, so on a machine with Application Default Credentials those
+        # two requests read the real production bucket. Patching the class
+        # itself closes every door at once, including ones added later.
+        mp.setattr(gcs, "Client", _no_connection)
+
+        # Same shape, worse consequence. `_fb_auth()` calls
+        # `firebase_admin.initialize_app()`, which SUCCEEDS wherever ADC is
+        # configured -- and then the three admin user requests below list and
+        # look up accounts in the real project, with
+        # `PUT /users/{uid}/status` able to call `update_user`. A route
+        # sweep must not be able to disable somebody's account because the
+        # developer happened to be logged in. The failure is injected rather
+        # than assumed absent.
+        import api.auth as api_auth
+
+        mp.setattr(api_auth, "_ensure_firebase", _no_connection)
+
+        # `lib.ticker_info` reaches the network on a cache miss:
+        # `get_peers` scrapes FinViz, with a screener lookup as fallback.
+        # `/api/insights/ticker/{ticker}/peers` calls it unconditionally, so
+        # "no socket is opened" was not true of this file until now -- the
+        # sweep could block on FinViz being slow and vary with what it
+        # returned.
+        import lib.ticker_info as ticker_info
+
+        mp.setattr(ticker_info, "_fetch_finviz_peers", lambda _t: None)
+        mp.setattr(ticker_info, "_fetch_industry_peers", lambda _t: None)
+        # AlphaVantage is the other vendor these routes reach. `/live/quote`,
+        # `/live/history` and `/options/live/...` go out over httpx when a key
+        # is configured, and ticker search/info/quote go through
+        # `fetch_with_retry`. The key is read into a module-level constant at
+        # import time, so clearing the environment is not enough on an already
+        # imported module -- blank the constants where they are looked up.
+        # `api.main` binds its own copy and `_fetch_av_daily_reference` opens
+        # an httpx connection with it; its failures are swallowed before the
+        # expected 404, so the sweep stayed green while making an external
+        # request and the pinned status varied with whether a key was
+        # configured (Codex, PR #999). Four modules, not three.
+        for mod_name, attr in (("api.main", "AV_API_KEY"),
+                               ("api.routers.live", "AV_API_KEY"),
+                               ("api.routers.grid", "_AV_API_KEY"),
+                               ("api.routers.options", "_AV_API_KEY")):
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, attr):
+                mp.setattr(mod, attr, "")
+        mp.setattr(ticker_info, "_get_av_key",
+                   lambda: (_ for _ in ()).throw(KeyError("no AV key in tests")))
+
+        # Benzinga is the third vendor these routes reach. `/catalysts/events`
+        # and `/catalysts/ticker/{t}` call `_fetch_live_events` on a cache
+        # miss, which hits the Benzinga calendar with a 30 s timeout and, on
+        # success, calls `save_catalysts` -- writing
+        # `platform/data/catalysts/catalyst_calendar.json`, because this
+        # fixture chdirs into `platform/`. So the sweep could spend vendor
+        # quota, block on the network, and leave state behind while still
+        # returning the expected 200 (Codex, PR #999).
+        #
+        # Read from the environment at CALL time (`catalysts.py`
+        # `_fetch_live_events`), so clearing the variable is enough here --
+        # unlike the AV constants above, which are bound at import.
+        mp.delenv("BENZINGA_API_KEY", raising=False)
+
+        # Pin the auth mode. It is read from the environment at import time,
+        # and under `AUTH_MODE=firebase` the middleware 401s every gated route
+        # before its handler runs -- the sweep would fail at `GET
+        # /api/live/status` and the pinned statuses would describe a different
+        # deployment than the one under test.
+        import api.auth as api_auth_mode
+
+        mp.setattr(api_auth_mode, "AUTH_MODE", "open")
+
+        # Feature flags. Both are read from the environment at call time and
+        # default OFF, so the table's expectations described whichever
+        # deployment the developer's shell happened to describe. Pinned OFF
+        # here, which is what the flag-OFF 404 rows assert; the enabled paths
+        # get their own requests in
+        # `test_the_feature_gated_handlers_survive_a_backend_outage`, because
+        # a sweep that only ever sees the 404 marks the operation covered
+        # without executing the code that serves users (Codex, PR #999).
+        mp.delenv("MOVEMENT_STATEMENT_ENABLED", raising=False)
+        mp.delenv("STRUCTURE_CONTINUATION_ENABLED", raising=False)
+
+        import api.routers.admin as admin
+
+        mp.setattr(admin, "current_user_email", lambda _request: "admin@example.test")
+        mp.setattr(admin, "is_admin_email", lambda _email: True)
+
+        import api.routers.journal as journal
+
+        scratch = tmp_path_factory.mktemp("route-coverage")
+        mp.setattr(journal, "LOCAL_JOURNAL_DIR", scratch / "journal")
+        mp.setattr(journal, "SIGNALS_DIR", scratch / "signals")
+
+        # Same reason, one layer down. `GET /api/insights/ticker/{ticker}/info`
+        # reads lib/ticker_info's on-disk cache and WRITES to it, so the first
+        # request creates `data/ticker_info.json` and every later run answers
+        # 200 from what an earlier run left there. That is how this file passed
+        # locally and failed in CI on a fresh checkout: 200 against a cache my
+        # own probe had written, 404 on a machine that had never run it. The
+        # environment was answering, not the code.
+        import lib.ticker_info as ticker_info
+
+        mp.setattr(ticker_info, "_LOCAL_CACHE_PATH", scratch / "ticker_info.json")
+
+        _clear_process_caches()
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            yield c
+    finally:
+        # Clear again on the way out. The sweep populates the same
+        # process-wide caches it cleared on the way in, and leaving a response
+        # this file produced (under an admin identity, with the Cloud SQL
+        # gates forced open) in a cache another test file reads would export
+        # this file's harness to the rest of the suite.
+        _clear_process_caches()
+        mp.undo()
+        os.chdir(original_cwd)
+
+        # `mp.undo()` restores each attribute to whatever it held when
+        # `setattr` recorded it -- which is only the real function if the
+        # routers had already bound the real function. Patching the sources
+        # before importing the app made the recorded value the stub itself,
+        # so undo restored the stub and every later insights test in this
+        # process saw an outage this file injected (Codex, PR #999). The
+        # import above is ordered to prevent that; this is the assertion that
+        # says so out loud, because the ordering has no other visible effect.
+        leaked = sorted(
+            f"{name}.{attr}"
+            for name, module in list(sys.modules.items())
+            if name.startswith("api.")
+            for attr in ("get_engine", "connect", "_get_connector")
+            if getattr(module, attr, None) is _no_connection
+        )
+        assert not leaked, (
+            "this harness left its outage stub bound after teardown, so every "
+            "later test in this process sees a failure it did not ask for:\n  "
+            + "\n  ".join(leaked))
+
+
+# ── coverage: the declared table against the real route table ───────────────
+
+# A route may sit here only with a reason a reader can check. It is empty, and
+# that is the state to keep it in: the two endpoints that broke this week both
+# lived in the uncovered set, so "we'll add a test later" has a track record.
+COVERAGE_ALLOWLIST: dict[tuple[str, str], str] = {}
+
+
+def test_the_route_table_is_not_truncated(client):
+    """Guards the "0 uncovered of 8" failure mode.
+
+    An earlier version walked `app.routes` without unwrapping `_IncludedRouter`
+    and found 8 operations. Every assertion below passed, over 8% of the app.
+    """
+    ops = _registered_operations()
+    assert len(ops) > 50, (
+        f"only {len(ops)} operations found — did the route table move? "
+        "A truncated table makes every coverage assertion here vacuous.")
+
+
+def test_every_operation_is_requested(client):
+    ops = _registered_operations()
+    requested = set()
+    for req in REQUESTS:
+        hit = _dispatch(req.method, req.url, ops)
+        if hit is not None:
+            requested.add(hit)
+
+    uncovered = [
+        (m, p) for m, p, _route in ops
+        if (m, p) not in COVERAGE_ALLOWLIST and (m, p) not in requested
+    ]
+    assert not uncovered, (
+        f"{len(uncovered)} of {len(ops)} registered API operations have no "
+        f"request in REQUESTS. A handler nothing calls can return 500 on every "
+        f"request with the whole suite green — /levels did:\n  "
+        + "\n  ".join(f"{m} {p}" for m, p in uncovered))
+
+
+def test_every_declared_request_reaches_an_operation(client):
+    """The other direction: no entry in the table is dead.
+
+    A renamed route would otherwise leave its old URL in `REQUESTS`, still
+    requested, still green, and covering nothing.
+    """
+    ops = _registered_operations()
+    stale = [r.label for r in REQUESTS if _dispatch(r.method, r.url, ops) is None]
+    assert not stale, (
+        "declared requests that match no registered operation:\n  "
+        + "\n  ".join(stale))
+
+
+def test_no_two_requests_cover_the_same_operation(client):
+    """Keeps the table a one-to-one inventory rather than a pile.
+
+    Two entries hitting one operation means some other operation is being
+    covered by nothing while the count still looks right.
+    """
+    ops = _registered_operations()
+    seen: dict[tuple[str, str], str] = {}
+    dupes = []
+    for req in REQUESTS:
+        hit = _dispatch(req.method, req.url, ops)
+        if hit is None:
+            continue
+        if hit in seen:
+            dupes.append(f"{hit[0]} {hit[1]}: {seen[hit]} and {req.label}")
+        seen[hit] = req.label
+    assert not dupes, "operations covered twice:\n  " + "\n  ".join(dupes)
+
+
+def test_the_allowlist_is_empty():
+    """A separate assertion so shrinking coverage is a visible diff."""
+    assert not COVERAGE_ALLOWLIST, (
+        "routes exempted from coverage:\n  "
+        + "\n  ".join(f"{m} {p} — {why}"
+                      for (m, p), why in COVERAGE_ALLOWLIST.items()))
+
+
+# ── every operation answers, rather than raising ────────────────────────────
+
+# A status in this set means FastAPI produced it. 500 means an unhandled
+# exception reached the framework, which is what `/levels` did for every
+# request while 4,253 tests passed.
+ANSWERED = {200, 204, 304, 400, 401, 403, 404, 409, 422, 429, 500, 502, 503}
+NOT_A_CRASH = ANSWERED - {500}
+
+
+@pytest.mark.parametrize("req", REQUESTS, ids=lambda r: r.label)
+def test_operation_answers(client, req: Req):
+    r = client.request(req.method, req.url, json=req.json)
+
+    assert r.status_code in NOT_A_CRASH, (
+        f"{req.label} returned {r.status_code}. A 500 here is an unhandled "
+        f"exception reaching FastAPI, not an error the frontend can render.\n"
+        f"body: {r.text[:400]}")
+
+    # An error still has to be a JSON envelope, not a stack trace or a bare
+    # "Internal Server Error" string. The nine handlers this file fixed all
+    # answered `text/plain` before.
+    assert r.headers.get("content-type", "").startswith("application/json"), (
+        f"{req.label} answered {r.status_code} with content-type "
+        f"{r.headers.get('content-type')!r}")
+
+    assert r.status_code == req.expect, (
+        f"{req.label} answered {r.status_code}, the table says {req.expect}. "
+        f"Either this is a regression or the contract changed and the table "
+        f"needs updating — both deserve a look.\nbody: {r.text[:400]}")
+
+
+def _handler_ran(response) -> bool:
+    """Did the endpoint function execute, judged from the response?
+
+    FastAPI raises `RequestValidationError` BEFORE calling the endpoint and
+    answers 422 with a distinctive body: `detail` is a list of
+    `{"type", "loc", "msg"}` objects. Every other status -- including a 422 a
+    handler raises itself, whose `detail` is a plain string -- means the
+    endpoint ran.
+
+    Derived rather than declared. `body_ran` on the table is an annotation I
+    wrote, defaulting to True, so counting it measured my own bookkeeping: if
+    an entry currently answering a handler-raised 422 started failing
+    FastAPI's validation instead, the status would not change and the count
+    would not change, and the sweep would stay green while quietly executing
+    one less handler.
+    """
+    if response.status_code != 422:
+        return True
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return True
+    return not (isinstance(detail, list) and detail
+                and isinstance(detail[0], dict) and "loc" in detail[0])
+
+
+def test_the_declared_handler_reach_matches_what_actually_happened(client):
+    """Every `body_ran` annotation is checked against the real response."""
+    wrong = []
+    for req in REQUESTS:
+        r = client.request(req.method, req.url, json=req.json)
+        actual = _handler_ran(r)
+        if actual != req.body_ran:
+            wrong.append(
+                f"{req.label}: table says body_ran={req.body_ran}, the "
+                f"response says {actual} ({r.status_code}: {r.text[:90]})")
+    assert not wrong, (
+        "the table's handler-reach annotations disagree with the responses:"
+        "\n  " + "\n  ".join(wrong))
+
+
+def test_most_requests_reach_the_handler(client):
+    """The file states how much of itself is real, and holds itself to it.
+
+    A request stopped by FastAPI's own body validation says nothing about the
+    handler behind it. Those are the honest exceptions and they are meant to
+    stay few: a table that drifted to mostly 422s would still report "every
+    operation requested" while executing almost no application code, which is
+    the shape of over-claim this whole file exists to avoid.
+
+    Measured from the responses, not read off the table -- see `_handler_ran`.
+    """
+    shallow = []
+    for req in REQUESTS:
+        r = client.request(req.method, req.url, json=req.json)
+        if not _handler_ran(r):
+            shallow.append(f"{req.label} -> {r.status_code}")
+    assert len(shallow) <= 5, (
+        f"{len(shallow)} of {len(REQUESTS)} requests stop at request "
+        f"validation:\n  " + "\n  ".join(shallow))
+
+
+# ── deep tests: the specific regressions, pinned by name ────────────────────
+
+def test_levels_actually_awaits_the_chain(client, monkeypatch):
+    """The regression this file is named after, tested where it lives.
+
+    `/api/options/{ticker}/{date_str}/levels` returned 500 on every request
+    after 69 handlers were converted to `def` while `get_gamma_levels` kept
+    `await get_options(...)`. Nothing requested it, so nothing noticed.
+
+    Two gates stand between a request and that `await`, and both had to be
+    opened before this test meant anything:
+
+    1. `_require_cloud_sql()` answers 503 two lines earlier when no database
+       is configured. The `client` fixture opens that.
+    2. With the gate open but no data, `get_options` raises `HTTPException`
+       404 — and `await f(...)` evaluates `f(...)` FIRST, so a raising call
+       never reaches the await at all. A version of this test asserted that
+       404 and claimed it proved the await had run. It did not: making
+       `get_options` synchronous left it green, which is the same failure the
+       whole file is about. That was caught by trying the regression rather
+       than reasoning about it.
+
+    So the chain query is stubbed with a canned frame, `get_options` returns
+    normally, and the await is the only thing left between that and the 200
+    asserted here. Against a synchronous `get_options` this raises
+    `TypeError: object dict can't be used in 'await' expression` and answers
+    500 — verified by editing the `async` off and re-running.
+    """
+    import pandas as pd
+
+    from api.routers import options as options_module
+
+    strikes = [195.0, 200.0, 205.0, 210.0]
+    chain = pd.DataFrame([
+        {
+            "contract_symbol": f"IWM260904{t[0]}{int(k * 1000):08d}",
+            "expiration": "2026-09-19", "strike": k, "option_type": t,
+            "bid": 1.0, "ask": 1.2, "mark": 1.1, "last_price": 1.1,
+            "volume": 100, "open_interest": 500,
+            "implied_volatility": 0.2, "delta": d, "gamma": 0.01,
+            "theta": -0.05, "vega": 0.10, "rho": 0.01,
+            "snapshot_ts": pd.Timestamp("2026-09-04T20:00:00Z"),
+        }
+        for k in strikes
+        for t, d in (("call", 0.5), ("put", -0.5))
+    ])
+
+    monkeypatch.setattr(options_module, "query_to_dataframe",
+                        lambda _sql, _params=None: chain)
+    monkeypatch.setattr(options_module, "_CHAIN_CACHE", {})
+
+    r = client.get(f"/api/options/{T}/{D}/levels")
+    assert r.status_code == 200, (
+        "the levels handler did not complete. A 500 here with "
+        "\"can't be used in 'await' expression\" is the #991 regression: "
+        f"get_options is no longer a coroutine.\nbody: {r.text[:400]}")
+    body = r.json()
+    assert body["chain_size"] == len(chain), (
+        "the handler answered without the chain get_options returned — "
+        f"chain_size={body.get('chain_size')}, expected {len(chain)}")
+
+
+def test_insight_report_lookups_are_503_not_a_bare_500(client, monkeypatch):
+    """The five DB-backed insights handlers, with the failure injected.
+
+    Each let a `psycopg2.OperationalError` reach FastAPI, which answered
+    `500 Internal Server Error` with a plain-text body. Every other DB-backed
+    router in this app answers 503 with a JSON detail.
+
+    The failure is INJECTED rather than relied upon. An earlier version just
+    requested one of these and asserted `!= 500`, which passes for the wrong
+    reason wherever a database happens to be reachable, and quietly stopped
+    being hermetic. Same shape as the ticker-info test on #991 that passed
+    because the test supplied what production lacked.
+    """
+    from api.routers import insights as insights_module
+
+    def boom(*_a, **_k):
+        raise RuntimeError("connection to server at 127.0.0.1:5432 refused")
+
+    for name in ("_fetch_latest_report", "_fetch_report_history",
+                 "_fetch_report_by_id", "_insert_run", "_fetch_run"):
+        monkeypatch.setattr(insights_module, name, boom)
+
+    for method, url in [
+        ("GET", f"/api/insights/report/{T}"),
+        ("GET", f"/api/insights/report/{T}/history"),
+        ("GET", f"/api/insights/reports/{UUID0}"),
+        ("POST", f"/api/insights/report/{T}/refresh"),
+        ("GET", f"/api/insights/runs/{UUID0}"),
+    ]:
+        r = client.request(method, url, json={} if method == "POST" else None)
+        assert r.status_code == 503, f"{method} {url}: {r.text[:300]}"
+        assert r.headers["content-type"].startswith("application/json")
+        assert "RuntimeError" in r.json()["detail"], r.text[:300]
+
+
+def test_admin_answers_503_when_firebase_is_unavailable(client):
+    """`_fb_auth()` raised ModuleNotFoundError from outside every try block.
+
+    The three admin user routes each guard the firebase *call* and answer 503,
+    but the SDK import and initialization sat before that guard, so an
+    instance without `firebase-admin` or without ADC answered a bare 500 on
+    all three. This environment has neither, which is why the assertion below
+    needs no injection.
+    """
+    for method, url, body in [
+        ("GET", "/api/admin/users", None),
+        ("PUT", "/api/admin/users/test-uid/roles", {"roles": []}),
+        ("PUT", "/api/admin/users/test-uid/status", {"disabled": False}),
+    ]:
+        r = client.request(method, url, json=body)
+        assert r.status_code == 503, f"{method} {url}: {r.text[:300]}"
+        assert r.json()["detail"] == "user directory temporarily unavailable"
+
+
+def test_options_dates_is_not_a_500(client):
+    """The other endpoint from this week's defects (#992)."""
+    r = client.get(f"/api/options/dates/{T}")
+    assert r.status_code == 404, r.text[:300]
+
+
+@pytest.mark.parametrize("flag,method,path,body", [
+    ("MOVEMENT_STATEMENT_ENABLED", "GET",
+     f"/api/movement-statement?ticker={T}&timeframe=15m", None),
+    ("STRUCTURE_CONTINUATION_ENABLED", "POST",
+     "/api/admin/strat-engine/structure-continuation",
+     {"ticker": T, "timeframe": "15m"}),
+])
+def test_the_feature_gated_handlers_survive_a_backend_outage(
+    client, monkeypatch, flag, method, path, body,
+):
+    """A flag-OFF 404 covers the route and executes none of the real code.
+
+    The sweep's rows for these two operations stop at the feature-flag check,
+    which is the first statement in each handler. The table therefore marked
+    both covered while the code that serves users -- the part behind the flag,
+    which reads the database -- was never executed. Turned on with the same
+    backend outage injected, both returned a BARE 500 from an unguarded
+    `get_engine()` (Codex, PR #999).
+
+    So the flag is turned ON here and the response is required to be a handled
+    one. 503 is the contract: these endpoints already return explicit
+    UNAVAILABLE envelopes for "the model has nothing to say", and a database
+    that is unreachable is infrastructure rather than a consulted-but-empty
+    model -- answering 200 with an envelope would tell the caller the opposite
+    of what happened.
+    """
+    monkeypatch.setenv(flag, "1")
+    resp = client.request(method, path, json=body) if body else client.get(path)
+
+    assert resp.status_code != 500, (
+        f"{method} {path} with {flag}=1 returned a bare 500 — an unhandled "
+        f"exception reaching FastAPI, not an error the frontend can render.\n"
+        f"body: {resp.text[:400]}")
+    assert resp.status_code == 503, (
+        f"expected 503 for a backend outage on the enabled path, got "
+        f"{resp.status_code}: {resp.text[:400]}")
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+@pytest.mark.parametrize("path,flag", [
+    ("/api/admin/strat-engine/predict", None),
+    ("/api/admin/strat-engine/structure-continuation",
+     "STRUCTURE_CONTINUATION_ENABLED"),
+])
+def test_a_malformed_as_of_timestamp_is_the_callers_error(
+    client, monkeypatch, path, flag,
+):
+    """400, not 503.
+
+    The parse sat inside the infrastructure guard, so `"not-a-date"` came back
+    as "strat engine temporarily unavailable" -- telling an authenticated
+    admin to retry a request that can never succeed, and accusing a backend
+    that is healthy (Codex, PR #999). Both endpoints had it.
+    """
+    if flag:
+        monkeypatch.setenv(flag, "1")
+    resp = client.post(path, json={
+        "ticker": T, "timeframe": "15m", "as_of_timestamp": "not-a-date"})
+
+    assert resp.status_code == 400, (
+        f"{path} answered {resp.status_code} for a malformed as_of_timestamp; "
+        f"a bad request is not a backend outage.\nbody: {resp.text[:300]}")
+    assert "as_of_timestamp" in resp.text
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+def test_a_valid_as_of_timestamp_still_reaches_the_backend(client, monkeypatch):
+    """The 400 above must not swallow a well-formed request.
+
+    With the same outage injected, a parseable timestamp has to get past the
+    parse and fail on the infrastructure instead -- otherwise the fix would
+    have replaced one wrong answer with another.
+    """
+    monkeypatch.setenv("STRUCTURE_CONTINUATION_ENABLED", "1")
+    resp = client.post("/api/admin/strat-engine/structure-continuation", json={
+        "ticker": T, "timeframe": "15m", "as_of_timestamp": "2026-09-04T14:30:00"})
+
+    assert resp.status_code == 503, (
+        f"a valid timestamp answered {resp.status_code}; it should reach the "
+        f"backend guard.\nbody: {resp.text[:300]}")
+
+
+def test_a_successful_route_write_still_guards_its_reload(client, monkeypatch):
+    """`set_route` and `list_routes` open separate connections.
+
+    The sweep's `PUT /api/admin/routes/analyst` row makes the WRITE fail, so
+    it never reaches the reload underneath. A committed write followed by a
+    transient read failure therefore still escaped as a bare 500, past the 503
+    the write had just gained (Codex, PR #999). Stub the write to SUCCEED and
+    only the read to fail.
+    """
+    import api.routers.admin as admin
+
+    monkeypatch.setattr(admin, "set_route", lambda *a, **k: None)
+    monkeypatch.setattr(
+        admin, "list_routes",
+        lambda: (_ for _ in ()).throw(RuntimeError("connection refused")))
+
+    resp = client.put("/api/admin/routes/analyst",
+                      json={"provider": "vertex", "model": "gemini-2.5-flash"})
+
+    assert resp.status_code == 503, (
+        f"a read failure after a successful write is still a bare "
+        f"{resp.status_code}: {resp.text[:400]}")
+    assert resp.json()["detail"] == "model route store temporarily unavailable"
