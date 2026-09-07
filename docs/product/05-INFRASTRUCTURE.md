@@ -9,7 +9,7 @@ captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-decl
 
 **VERIFIED — LIVE, 2026-09-07.** `gcloud run jobs list --region=us-east1` returns
 **76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **65 scheduler
-entries** — and 0 in every other Cloud Scheduler location, so 66 is the whole fleet.
+entries** — and 0 in every other Cloud Scheduler location, so 65 is the whole fleet.
 This previously read 84, dated 2026-09-06, and that figure does not reproduce; only
 the reading above is vouched for here. The dated audit under
 `docs/audits/2026-08-27-claude-codebase-review/` also records 84 and is left as
@@ -41,7 +41,7 @@ these comparisons.
 |---|---|---|---|---|---|
 | FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
 | Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (65 live) / manual | 8 jobs exist only by hand — see the table above |
-| Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (America/New_York) | one entry targets a nonexistent job |
+| Cloud Scheduler (65 live) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers plus `deploy_notifier` | OIDC | cron (`America/New_York`) | the declared total is not tracked here: the entries are created across several helpers and a count derived by grep is not evidence |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |
 | Cloud Build + GitHub Actions | image build, test, deploy | `gcp/cloudbuild/`, `.github/workflows/` | build identities | commit / manual | frontend suites not in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868) |
@@ -57,7 +57,7 @@ without reading the audit — the plan should carry this check, not just cite it
 | `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | **NO** | [#829](https://github.com/TeneikaAskew/stocks/issues/829) |
 
 Related infra-drift issues not detectable from source alone (they compare *live* state):
-[#833](https://github.com/TeneikaAskew/stocks/issues/833) `signal-quality-report-hourly` PAUSED live · 
+[#833](https://github.com/TeneikaAskew/stocks/issues/833) `signal-quality-report-hourly` retired and deleted 2026-09-07 · 
 [#834](https://github.com/TeneikaAskew/stocks/issues/834) `p2-build-gamma-levels` has zero IaC · 
 [#835](https://github.com/TeneikaAskew/stocks/issues/835) five jobs on stale image tags · 
 [#859](https://github.com/TeneikaAskew/stocks/issues/859) five live-vs-repo config drifts.
@@ -72,13 +72,13 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 | Environment | Service | URL | Auth | Evidence |
 |---|---|---|---|---|
 | **Production** | `solyra-api-prod` (us-east1) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
-| **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `stocks.insightscollective.org` since 2026-09-05 | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
+| **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `api.stocks.insightscollective.org` | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
 | **Discord interactions** | `discord-interactions` | `https://discord-interactions-5sjtb3yl7a-ue.a.run.app` | `--allow-unauthenticated` (Discord cannot IAM-auth); Ed25519 signature verification at the app layer | live read 2026-09-05 |
 | **Failure notifier** | `failure-notifier` | `https://failure-notifier-5sjtb3yl7a-ue.a.run.app` | internal | live read 2026-09-05 |
 | **Local dev (frontend)** | Vite — in the solyra repo since the #957 split | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | solyra `vite.config.ts`; `platform/` here holds only the API |
 | **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; solyra's Vite proxies `/api` → `:8000` |
 
-**A custom domain now exists.** `stocks.insightscollective.org` maps to
+**A custom domain now exists.** `api.stocks.insightscollective.org` maps to
 `solyra-api-staging` (moved off the prod service 2026-09-05; the CNAME to
 `ghs.googlehosted.com` is service-independent so the move needed no DNS change).
 It is committed nowhere in source — Cloud Run holds the mapping — so treat

@@ -183,16 +183,52 @@ def test_the_interlock_is_re_asserted_before_the_manual_deploy():
 
 def test_the_deploy_refuses_a_service_that_moved_under_it():
     baseline, submit, compare, deploy = _deploy_sh_order(
-        "DEPLOY_BASELINE_REVISION=",
+        "DEPLOY_BASELINE=",
         "gcloud builds submit",
-        "SERVING_NOW=",
+        "DEPLOY_NOW=",
         "gcloud run deploy ",
     )
     assert baseline < submit < compare < deploy, (
-        "the serving revision must be read before the build and compared "
+        "the serving state must be read before the build and compared "
         "after it, or the comparison proves nothing")
-    assert 'if [[ "${SERVING_NOW}" != "${DEPLOY_BASELINE_REVISION}" ]]' in \
+    assert 'if [[ "${DEPLOY_NOW}" != "${DEPLOY_BASELINE}" ]]' in \
         DEPLOY_SH.read_text()
+
+
+def test_an_absent_service_is_a_baseline_state_not_an_empty_string():
+    """First creation is raced too, and an empty baseline did not guard it.
+
+    The previous fix compared revisions only when the baseline was non-empty,
+    so the create path -- where there is no revision to name -- skipped the
+    comparison entirely. A peer that created and deployed the service while
+    this build ran was then overwritten by this older invocation, which is the
+    same overwrite the compare-and-swap exists to refuse (Codex, PR #990).
+    """
+    text = DEPLOY_SH.read_text()
+    assert "printf 'absent" in text, (
+        "absence must be a value the comparison can hold, not the empty string")
+    assert text.count("describe_deploy_state)") == 2, (
+        "the state must be read once before the build and once after it, "
+        "through the same reader, or the two are not comparable")
+    assert '-n "${DEPLOY_BASELINE' not in text, (
+        "a non-empty test in front of the comparison skips the create path")
+
+
+def test_the_manual_deploy_pins_the_digest_it_made_current():
+    """The pre-build pin tags the revision this run REPLACES, not the new one.
+
+    `pin-images` runs before the build, when the digest being deployed does not
+    exist in the service inventory yet, so it comes out of that sweep with no
+    `inuse-svc-*` tag. Against the 30-day delete rule this PR adds to the
+    gcr.io cleanup policy, an unpinned digest is deletable while it is still
+    the serving revision (Codex, PR #990).
+    """
+    text = DEPLOY_SH.read_text()
+    call = "./gcp/deploy.sh pin-images"
+    assert text.count(call) == 2, (
+        "pin before the build and again after the deploy lands")
+    assert text.rindex(call) > text.index("gcloud run deploy "), (
+        "the deployed digest is only in the inventory after the deploy")
 
 
 def test_both_deploy_paths_resolve_the_serving_revision_the_same_way():
@@ -200,16 +236,21 @@ def test_both_deploy_paths_resolve_the_serving_revision_the_same_way():
     assert SERVING.exists()
     assert "serving_revision.py" in DEPLOY_SH.read_text()
     assert "serving_revision.py" in PROMOTE.read_text()
-    body = _all_args(yaml.safe_load(PROMOTE.read_text())["steps"][0])
+    body = _all_args(_promote_step(yaml.safe_load(PROMOTE.read_text())))
     assert "latestReadyRevisionName" not in body, (
         "the promote config must not resolve the revision itself")
     assert "traffic" not in body
 
 
+def _promote_step(cfg):
+    """The step that deploys, not the interlock that now precedes it."""
+    return next(s for s in cfg["steps"] if s.get("id") == "promote")
+
+
 def test_promotion_requires_the_revision_the_operator_validated():
     cfg = yaml.safe_load(PROMOTE.read_text())
     assert "_EXPECT_STAGING_REVISION" in cfg.get("substitutions", {})
-    body = _all_args(cfg["steps"][0])
+    body = _all_args(_promote_step(cfg))
     assert 'if [ -z "$$EXPECT" ]' in body, (
         "an absent expectation must abort; resolving the serving revision at "
         "run time answers a different question than what was validated")
@@ -227,11 +268,14 @@ def test_the_baseline_read_fails_closed():
     text = DEPLOY_SH.read_text()
     assert "NOT_FOUND" in text, (
         "only an explicit not-found may be treated as the create case")
-    assert "2>/dev/null" not in text.split("DEPLOY_BASELINE_REVISION")[1][:600], (
+    start = text.index("describe_deploy_state() {")
+    body = text[start:text.index("\n}\n", start)]
+    assert "2>/dev/null" not in body, (
         "the describe error is needed to tell not-found from a real failure")
-    baseline = text.index("DEPLOY_BASELINE_REVISION=\"\"")
-    tail = text[baseline:text.index("gcloud builds submit", baseline)]
-    assert "exit 1" in tail, "an unreadable service must stop the deploy"
+    assert "return 1" in body, "an unreadable service must stop the deploy"
+    assert "set -e" in text[:text.index("describe_deploy_state() {")], (
+        "the caller assigns the state, so `set -e` is what turns the "
+        "function's failure into a stopped deploy")
 
 
 def test_both_triggers_pin_what_they_deployed():
@@ -263,3 +307,43 @@ def test_the_cleanup_policy_expires_build_tags_but_keeps_pins():
     assert '"tagPrefixes": ["inuse-", "latest"]' in gcr
     assert '"name": "keep-tagged"' not in gcr, (
         "a blanket keep-tagged rule is what let the build tags accumulate")
+
+
+def test_two_prod_promotions_cannot_overlap():
+    """The one that finishes last wins, which can roll prod backwards.
+
+    Promotion A (validated revision A) and promotion B (validated later) can
+    both pass their expectation checks; without an interlock both reach
+    `gcloud run deploy` and the older one can land after the newer
+    (Codex, PR #990).
+    """
+    cfg = yaml.safe_load(PROMOTE.read_text())
+    assert "solyra-api-prod-promote" in cfg.get("tags", []), (
+        "a promotion can only see a peer through a tag in this file")
+    ids = [s.get("id") for s in cfg["steps"]]
+    assert ids[0] == "no-concurrent-promote", (
+        "the interlock must be the first step, so the build is registered and "
+        "tagged before the scan")
+    body = _all_args(cfg["steps"][0])
+    assert "|| true" not in "\n".join(
+        l for l in body.splitlines() if not l.strip().startswith("#")), (
+        "the scan must fail closed: an unlistable peer is not an absent one")
+
+
+def test_the_promotion_refuses_when_prod_moved():
+    body = "\n".join(_all_args(s) for s in _steps(PROMOTE))
+    assert "PROD_BEFORE" in body and "PROD_NOW" in body
+    assert body.index("PROD_BEFORE=") < body.index("gcloud run deploy"), (
+        "the baseline must be read before the deploy it guards")
+
+
+def test_the_staging_trigger_filter_gap_is_recorded():
+    """The image copies scripts/ and gcp/; the trigger filter does not.
+
+    Trigger configuration is not repository content, so this file cannot carry
+    the fix -- it carries the command and the reason (Codex, PR #990).
+    """
+    header = TRIGGER.read_text().split("steps:")[0]
+    assert "includedFiles" in header
+    assert "scripts/**" in header and "gcp/**" in header
+    assert "gcloud builds triggers update github deploy-solyra-api-staging" in header

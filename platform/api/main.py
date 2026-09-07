@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from collections import OrderedDict
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -491,17 +492,135 @@ only working path right now; curl/CI flows return 401.</p>
     return HTMLResponse(html)
 
 
+# Freshness is decided by the DATA, not by a model of the ingest schedule.
+#
+# Three attempts at modelling that schedule were each wrong in a different
+# way: a fixed 12h TTL spanned the ingestion entirely; a 23:00 UTC boundary
+# expired hours before the job (the scheduler runs in Eastern); an Eastern
+# boundary still missed a second writer. There are at least three writers to
+# this table, read live rather than from any doc:
+#
+#   av-intraday-nightly      0 21 * * 1-6   America/New_York   (Mon-SAT)
+#   fetch-market-data-daily  0 23 * * 1-5   America/New_York
+#   av-intraday-monthly      0 21 1 * *     America/New_York   (any weekday)
+#
+# Any model of that drifts the moment a schedule changes, and nothing fails
+# when it does — the endpoint keeps returning plausible dates, just stale
+# ones. So instead: probe MAX(ts), which is a single index descent
+# (Index Only Scan Backward, measured 10.8 ms on prod against the 1,716 ms
+# full scan), and rebuild the list only when the newest bar has advanced.
+# Correct for any number of writers on any schedule, including ad-hoc
+# backfills that no schedule describes.
+# MAX(ts) only moves FORWARD, so it cannot see a backfill that fills a gap
+# older than the newest bar -- and that is a supported production path:
+# av-intraday-nightly refetches the PREVIOUS month as well as the current one,
+# and the fetcher deliberately fills partially covered months. With the probe
+# alone a Saturday repair would stay hidden until Monday's session landed, and
+# for a ticker receiving no newer bars, indefinitely.
+#
+# MAX(inserted_at) would catch any write, but there is no index on it:
+# measured as a Parallel Seq Scan, 977 ms, so it cannot go on the request path.
+# Adding one is a migration on a partitioned ~14M-row table.
+#
+# So: the probe for the common case (new bar -> invalidate in 10.8 ms) plus a
+# bounded TTL as the backstop that catches everything the probe cannot see.
+_MARKET_DATES_CACHE: "OrderedDict[str, tuple[object, datetime, dict]]" = OrderedDict()
+_MARKET_DATES_CACHE_MAX = 64
+_MARKET_DATES_TTL = timedelta(hours=1)
+
+
+def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
+    """Run the trading-dates query, RAISING on failure.
+
+    The endpoint promises a 503 when Cloud SQL is configured but broken. That
+    promise is only keepable with the raising helper: the swallowing sibling
+    returns an empty frame, the `except` never fires, and the request falls
+    through to the GCS staging parquets with a 200.
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
 @app.get("/api/market/dates/{ticker}")
 async def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
 
+    # Cheap freshness probe: one index descent (~11 ms) instead of the
+    # 1,716 ms scan below. A cached list stays valid exactly as long as no
+    # newer bar exists, whichever writer produced it.
+    latest_ts = None
+    if _CLOUD_SQL:
+        try:
+            probe = _dates_query(
+                """
+                SELECT MAX(ts) AS max_ts
+                FROM   market_data_intraday
+                WHERE  ticker = :ticker AND interval = '1min'
+                """,
+                {"ticker": ticker_upper},
+            )
+        except Exception as e:
+            # The probe runs before the main query's handler, so without this
+            # a database failure here escapes as an unhandled 500 rather than
+            # the 503 this endpoint promises. Same failure, same answer,
+            # whichever query hit it first.
+            logger.error("Cloud SQL freshness probe failed for %s: %s",
+                         ticker_upper, e)
+            # The exception stays in the log above. It is NOT interpolated
+            # into the response: a driver/SQLAlchemy error renders the SQL,
+            # its bound parameters, and connection metadata, and this endpoint
+            # is reachable unauthenticated. The client needs to know the
+            # database is unavailable, not what the query looked like.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Could not read trading dates for {ticker_upper}: the "
+                        f"database is unavailable. Not falling back to the GCS "
+                        f"staging parquets, which may be stale or incomplete."),
+            )
+        if not probe.empty:
+            latest_ts = probe["max_ts"].iloc[0]
+
+    entry = _MARKET_DATES_CACHE.get(ticker_upper)
+    if entry is not None:
+        cached_ts, cached_at, payload = entry
+        fresh = latest_ts is not None and cached_ts == latest_ts
+        within_ttl = datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL
+        if fresh and within_ttl:
+            _MARKET_DATES_CACHE.move_to_end(ticker_upper)   # LRU touch
+            return payload
+        del _MARKET_DATES_CACHE[ticker_upper]
+
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
         try:
-            df = query_to_dataframe(
+            # STRICT, deliberately. query_to_dataframe swallows and returns an
+            # empty frame -- its own docstring says "Do NOT use it where
+            # 'query failed' must surface as an error" -- which would make the
+            # 503 below unreachable and drop through to the GCS path with a
+            # stale 200. Same reasoning as _coverage_query above.
+            df = _dates_query(
                 """
+                -- REVERTED 2026-09-06. This was an ET conversion, on the
+                -- belief that every row is a true UTC instant. That is FALSE:
+                -- the table holds BOTH conventions and no per-row rule tells
+                -- them apart.
+                --
+                --   2025-06-02  raw UTC 08:00-23:59 = 04:00-20:00 ET  true UTC
+                --   2026-03-02  raw UTC 09:00-23:58 = 04:00-19:00 ET  true UTC
+                --   2026-09-04  raw UTC 00:00-23:59 = a full 24 hours, which
+                --                                     is no session either way
+                --
+                -- gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
+                -- naively BY DESIGN ("ET-as-UTC convention") under the SAME
+                -- data_source='alphavantage' label the true-UTC rows carry.
+                -- Converting unconditionally shifts those rows 4-5 hours early.
+                --
+                -- DATE(ts) is also wrong (351 phantom dates), but it is the
+                -- wrong we already had; a new wrong that corrupts premarket
+                -- bars is worse. Own PR: normalise the writer, migrate the
+                -- ET-framed rows, THEN convert here.
                 SELECT DISTINCT DATE(ts) AS trade_date
                 FROM market_data_intraday
                 WHERE ticker = :ticker AND interval = '1min'
@@ -513,16 +632,73 @@ async def get_available_dates(ticker: str):
                 dates = [d.strftime("%Y%m%d") for d in df["trade_date"]]
                 # Derive months from the dates for month-level navigation
                 months = sorted(set(d[:6] for d in dates), reverse=True)
-                return {
+                payload = {
                     "ticker": ticker_upper,
                     "source": "cloud_sql",
                     "dates": dates,
                     "months": months,
                 }
+                # Evict the least-recently-used single entry, never clear.
+                # Clearing meant a working set of 65 tickers flushed all 64
+                # still-valid entries on every miss, so nearly every request
+                # paid the full scan -- the cache defeating itself.
+                while len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
+                    _MARKET_DATES_CACHE.popitem(last=False)
+                _MARKET_DATES_CACHE[ticker_upper] = (
+                    latest_ts, datetime.now(timezone.utc), payload)
+                return payload
+            # Configured, and the query SUCCEEDED returning no rows. The
+            # system of record says this ticker has no 1-minute bars; that is
+            # an ANSWER, not a failure, and it must be returned as one.
+            #
+            # Without this return the block fell off its end and execution
+            # continued into the GCS branch below -- the branch whose own
+            # comment says it runs only when Cloud SQL is unconfigured. So a
+            # ticker absent from market_data_intraday but still holding
+            # staging parquets answered from GCS, with `source: "gcs"` that
+            # no frontend reads: exactly the cross-source silent fallback the
+            # `except` above raises 503 to prevent, reached by the one path
+            # that raises nothing.
+            #
+            # Deliberately NOT cached. MAX(ts) over zero rows is NULL, so
+            # `latest_ts` is None and the freshness check (`latest_ts is not
+            # None and cached_ts == latest_ts`) can never call such an entry
+            # fresh -- it would be stored, rejected, and deleted on every
+            # request. Both queries are index-bounded and return nothing for
+            # an unknown ticker, and skipping the cache means the first bar
+            # ingested for it shows up on the next request rather than after
+            # a TTL.
+            return {
+                "ticker": ticker_upper,
+                "source": "cloud_sql",
+                "dates": [],
+                "months": [],
+            }
         except Exception as e:
-            logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
+            # Cloud SQL is the system of record; GCS holds the ingestion
+            # staging parquets, which are a DIFFERENT and possibly staler
+            # dataset. Quietly serving those on a database error is a silent
+            # fallback (Rule 3.7): the response does set source="gcs", but no
+            # frontend code reads that field, so a database outage degraded
+            # the answer with nothing visible to the user or the operator.
+            #
+            # Fail loud instead. The GCS path below still runs when Cloud SQL
+            # is deliberately UNCONFIGURED (local dev), which is a different
+            # situation from configured-and-broken.
+            logger.error("Cloud SQL dates query failed for %s: %s", ticker_upper, e)
+            # The exception stays in the log above. It is NOT interpolated
+            # into the response: a driver/SQLAlchemy error renders the SQL,
+            # its bound parameters, and connection metadata, and this endpoint
+            # is reachable unauthenticated. The client needs to know the
+            # database is unavailable, not what the query looked like.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Could not read trading dates for {ticker_upper}: the "
+                        f"database is unavailable. Not falling back to the GCS "
+                        f"staging parquets, which may be stale or incomplete."),
+            )
 
-    # ── GCS fallback ─────────────────────────────────────────────────────────
+    # ── GCS path — only when Cloud SQL is UNCONFIGURED (local dev) ───────────
     from api import gcs_reader
     dates: list[str] = []
     months: list[str] = []
@@ -940,6 +1116,10 @@ SECTOR_NAMES = {
 
 _SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
 
+_ET_TZ = ZoneInfo("America/New_York")
+
+
+
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     """Run the sector-rotation SQL query, raising on failure.
@@ -1084,7 +1264,6 @@ async def market_sectors():
 # auth._OPEN_API_PREFIXES, so both are gated identically by AUTH_MODE=firebase
 # and unaffected identically in iap/open mode) — no new auth code needed.
 
-_ET_TZ = ZoneInfo("America/New_York")
 # RTH-window constants formerly lived here but are now superseded by
 # api.routers.live._is_market_open (weekend/holiday-aware) -- see
 # _most_active_label below.
@@ -1227,6 +1406,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
                 df = query_to_dataframe(
                     """
+                    -- Framing must match get_available_dates; both are DATE(ts)
+                    -- pending the data normalisation described there.
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
@@ -1248,6 +1429,7 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
+                      -- Naive bounds, matching the DATE(ts) framing above.
                       AND ts >= :start AND ts < :end
                     ORDER BY ts
                     """,
@@ -1258,9 +1440,21 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
 
             if not df.empty:
                 df.index = pd.to_datetime(df["ts"])
-                # Normalize timezone based on data source:
-                # - alphavantage: ET stored as UTC → just strip tz label
-                # - yfinance: real UTC → convert to ET then strip
+                # Normalize timezone based on data source.
+                #
+                # REVERTED 2026-09-06 to this branch. It was replaced with an
+                # unconditional ET conversion on evidence from IWM aggregates,
+                # which hid that the table holds TWO conventions:
+                # gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
+                # naively BY DESIGN and labels it 'alphavantage' -- the same
+                # label the true-UTC rows carry. Converting every row shifts the
+                # ET-framed ones 4-5 hours early, and under EST moves 04:00 ET
+                # bars to the previous date where the caller's filter drops them.
+                #
+                # This branch is ALSO wrong: data_source cannot distinguish the
+                # two. But it is what production runs today, and a new wrong
+                # that corrupts premarket bars is worse than the existing one.
+                # Own PR: normalise the writer, migrate the ET-framed rows.
                 is_yfinance = (
                     "data_source" in df.columns
                     and not df["data_source"].isna().all()
@@ -1269,7 +1463,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 df = df.drop(columns=["ts", "data_source"], errors="ignore")
                 if df.index.tz is not None:
                     if is_yfinance:
-                        df.index = df.index.tz_convert("America/New_York").tz_localize(None)
+                        df.index = (df.index.tz_convert("America/New_York")
+                                            .tz_localize(None))
                     else:
                         df.index = df.index.tz_localize(None)
                 return df

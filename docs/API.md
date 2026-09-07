@@ -85,7 +85,7 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:233`](../platform/api/routers/earnings.py#L233) | Lean stats for one ticker. |
 | `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:108`](../platform/api/routers/earnings.py#L108) | Next N days of earnings reporters, decorated with full history. |
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
-| `GET` | `/api/health` | [`platform/api/main.py:223`](../platform/api/main.py#L223) |  |
+| `GET` | `/api/health` | [`platform/api/main.py:224`](../platform/api/main.py#L224) |  |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:70`](../platform/api/routers/health.py#L70) | Return the cached freshness report (see freshness_report_dict). |
 | `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:992`](../platform/api/routers/insights.py#L992) | Stream a Gemini response for the given mode and message. |
 | `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:672`](../platform/api/routers/insights.py#L672) | Return the most recent InsightReport for the ticker. |
@@ -117,27 +117,27 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/live/status` | [`platform/api/routers/live.py:162`](../platform/api/routers/live.py#L162) | Return current market open/closed status based on Eastern Time. |
 | `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:153`](../platform/api/routers/magnitude.py#L153) | Return the prediction for exactly this (ticker, tf, ts). |
 | `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:109`](../platform/api/routers/magnitude.py#L109) | Return the most-recent prediction for this (ticker, tf). |
-| `GET` | `/api/market/coverage` | [`platform/api/main.py:887`](../platform/api/main.py#L887) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
-| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:561`](../platform/api/main.py#L561) | Load intraday OHLCV data for a specific ticker and date. |
-| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:494`](../platform/api/main.py#L494) | List available trading dates for a ticker (Cloud SQL → local fallback). |
-| `GET` | `/api/market/most-active` | [`platform/api/main.py:1134`](../platform/api/main.py#L1134) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
-| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:717`](../platform/api/main.py#L717) | Get previous day OHLC reference levels for support/resistance. |
-| `GET` | `/api/market/sectors` | [`platform/api/main.py:1026`](../platform/api/main.py#L1026) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
-| `GET` | `/api/me` | [`platform/api/main.py:234`](../platform/api/main.py#L234) | Return the authenticated identity + role flags. |
+| `GET` | `/api/market/coverage` | [`platform/api/main.py:1063`](../platform/api/main.py#L1063) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
+| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:737`](../platform/api/main.py#L737) | Load intraday OHLCV data for a specific ticker and date. |
+| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:544`](../platform/api/main.py#L544) | List available trading dates for a ticker (Cloud SQL → local fallback). |
+| `GET` | `/api/market/most-active` | [`platform/api/main.py:1313`](../platform/api/main.py#L1313) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
+| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:893`](../platform/api/main.py#L893) | Get previous day OHLC reference levels for support/resistance. |
+| `GET` | `/api/market/sectors` | [`platform/api/main.py:1206`](../platform/api/main.py#L1206) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
+| `GET` | `/api/me` | [`platform/api/main.py:235`](../platform/api/main.py#L235) | Return the authenticated identity + role flags. |
 | `GET` | `/api/me/preferences` | [`platform/api/routers/preferences.py:129`](../platform/api/routers/preferences.py#L129) |  |
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:146`](../platform/api/routers/preferences.py#L146) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:142`](../platform/api/routers/profile.py#L142) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:159`](../platform/api/routers/profile.py#L159) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:444`](../platform/api/routers/dashboard.py#L444) | PHASE 3 — read-only, feature-flagged movement statement. |
-| `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:272`](../platform/api/routers/options.py#L272) | Return up to 1000 most-recent snapshot dates that have AlphaVantage data |
-| `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:555`](../platform/api/routers/options.py#L555) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
-| `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:435`](../platform/api/routers/options.py#L435) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
+| `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:285`](../platform/api/routers/options.py#L285) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
+| `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:619`](../platform/api/routers/options.py#L619) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
+| `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:499`](../platform/api/routers/options.py#L499) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
 | `GET` | `/api/options/{ticker}/grid` | [`platform/api/routers/grid.py:529`](../platform/api/routers/grid.py#L529) | Live 2-D strike × expiration grid. |
 | `GET` | `/api/options/{ticker}/grid/timeseries` | [`platform/api/routers/grid.py:903`](../platform/api/routers/grid.py#L903) | Per-strike GEX time-series for a single expiration over the last |
 | `GET` | `/api/options/{ticker}/nodes` | [`platform/api/routers/grid.py:794`](../platform/api/routers/grid.py#L794) | Live semantic taxonomy — King / Gates / Midpoints / Hedge Nodes / |
-| `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:343`](../platform/api/routers/options.py#L343) | Return the AlphaVantage option chain for `ticker` on `date_str` |
+| `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:407`](../platform/api/routers/options.py#L407) | Return the AlphaVantage option chain for `ticker` on `date_str` |
 | `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:618`](../platform/api/routers/grid.py#L618) | Historical 2-D grid for a past date — EOD only. |
-| `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:611`](../platform/api/routers/options.py#L611) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
+| `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:675`](../platform/api/routers/options.py#L675) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
 | `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:844`](../platform/api/routers/grid.py#L844) | Historical semantic taxonomy — EOD only. |
 | `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:695`](../platform/api/routers/playbook.py#L695) | Evaluate playbook condition strings against a live snapshot. |
 | `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:288`](../platform/api/routers/playbook.py#L288) | Return structured setup cards for a ticker from ``playbook_cards``. |
@@ -147,8 +147,8 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:257`](../platform/api/routers/signals.py#L257) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:597`](../platform/api/routers/backtest.py#L597) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:81`](../platform/api/routers/waitlist.py#L81) |  |
-| `GET` | `/dev` | [`platform/api/main.py:385`](../platform/api/main.py#L385) |  |
-| `GET` | `/{full_path:path}` | [`platform/api/main.py:1334`](../platform/api/main.py#L1334) | SPA fallback — serve index.html for any non-API, non-asset route. |
+| `GET` | `/dev` | [`platform/api/main.py:386`](../platform/api/main.py#L386) |  |
+| `GET` | `/{full_path:path}` | [`platform/api/main.py:1529`](../platform/api/main.py#L1529) | SPA fallback — serve index.html for any non-API, non-asset route. |
 <!-- inventory:routes:end -->
 
 ## Conventions

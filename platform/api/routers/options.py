@@ -55,7 +55,7 @@ import math
 import httpx
 import pandas as pd
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
 # Project root so we can import gcp.database the same way the journal router does.
@@ -64,7 +64,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
+                              query_to_dataframe_strict)
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception as _exc:  # pragma: no cover - import-time guard
     _HAS_CLOUD_SQL = False
@@ -80,9 +81,14 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
 # ticker → list[date_str]; 12h TTL. Dates list only changes once per day when
 # the scheduled AV fetcher runs, so long TTL avoids re-running the distinct
-# scan on cold caches (which is expensive on db-g1-small without the composite
-# (ticker, data_source, snapshot_date) index in place).
+# scan on cold caches. The composite (ticker, data_source, snapshot_date)
+# index DOES exist as idx_etf_options_ticker_source_date — an older comment
+# here claimed otherwise.
 _DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
+# ticker -> newest snapshot_date last observed. Drives ticker-wide
+# invalidation so every `limit` variant is dropped together; without it the
+# variants are independent keys that can hold different "latest" dates.
+_DATES_CACHE_LATEST: TTLCache = TTLCache(maxsize=16, ttl=43200)
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
@@ -260,65 +266,124 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 
-# Widening range schedule used by the dates endpoint. The first query tries a
-# 60-day window, then 1y, 3y, 10y, unlimited — stopping as soon as we have a
-# reasonable number of dates. This keeps the index scan bounded on large tables
-# (critical without the composite (ticker, data_source, snapshot_date) index)
-# while still returning the full history if the table is small.
-_DATES_WINDOW_DAYS = (60, 365, 1100, 3650, None)
-_DATES_MIN_RESULTS = 40  # ≈ 2 months of weekdays
+# The dates endpoint walks DISTINCT snapshot_date values with a LOOSE INDEX
+# SCAN (recursive CTE), not `SELECT DISTINCT`. The composite index
+# `idx_etf_options_ticker_source_date` on (ticker, data_source, snapshot_date)
+# exists, but `SELECT DISTINCT snapshot_date` still has to READ every matching
+# index row before deduping. Measured on prod 2026-09-06 for IWM/60d:
+#
+#   SELECT DISTINCT ...      10,373,012 rows read -> 43 returned   9,870 ms
+#   loose index scan            43 index descents -> 43 returned       5.5 ms
+#
+# The recursive form asks the index for "the next date strictly older than the
+# one I have" and costs one descent per date RETURNED, not one read per row
+# MATCHED. That makes the widening-window schedule unnecessary: cost scales
+# with `limit`, so a caller that wants one date pays for one date.
+_DATES_MAX_LIMIT = 1000
 
 
 @router.get("/api/options/dates/{ticker}")
-async def get_options_dates(ticker: str):
-    """Return up to 1000 most-recent snapshot dates that have AlphaVantage data
-    in Cloud SQL for the given ticker (newest first).
+async def get_options_dates(
+    ticker: str,
+    limit: int = Query(_DATES_MAX_LIMIT, ge=1, le=_DATES_MAX_LIMIT,
+                       description="How many snapshot dates to return, newest "
+                                   "first. Callers that only render the latest "
+                                   "snapshot should pass limit=1 — cost scales "
+                                   "with this value."),
+):
+    """Return the `limit` most-recent snapshot dates with AlphaVantage data.
 
-    Uses a widening-range scan: tries a 60-day window first, expanding to 1y,
-    3y, 10y, and then unbounded if fewer than 40 dates are found. This keeps
-    cold queries bounded when the covering index on (ticker, data_source,
-    snapshot_date) isn't yet in place.
+    Newest first. `limit=1` is the cheap path used by any view that renders
+    only the latest snapshot; the full list is for date pickers.
     """
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
 
-    cached = _DATES_CACHE.get(ticker_upper)
+    # Freshness is ticker-wide, not per-limit. Keying the cache on
+    # (ticker, limit) alone lets sibling variants disagree: a caller that
+    # cached the default list before av-options-daily writes, and a caller
+    # that asks for limit=1 after, would see different "latest" dates from
+    # the same process for up to the TTL. So the newest snapshot_date is
+    # probed once and every variant for that ticker is dropped when it moves.
+    #
+    # The probe is the same single index descent as the limit=1 query
+    # (idx_etf_options_ticker_source_date, measured 2.5 ms on prod).
+    latest_date = None
+    probe = query_to_dataframe_strict(
+        """
+        SELECT snapshot_date
+        FROM   etf_options_snapshots
+        WHERE  ticker = :ticker AND data_source = 'alphavantage'
+        ORDER  BY snapshot_date DESC
+        LIMIT  1
+        """,
+        {"ticker": ticker_upper},
+    )
+    if not probe.empty:
+        latest_date = probe["snapshot_date"].iloc[0]
+
+    if _DATES_CACHE_LATEST.get(ticker_upper) != latest_date:
+        for key in [k for k in _DATES_CACHE if k[0] == ticker_upper]:
+            del _DATES_CACHE[key]
+        _DATES_CACHE_LATEST[ticker_upper] = latest_date
+
+    cache_key = (ticker_upper, limit)
+    cached = _DATES_CACHE.get(cache_key)
     if cached is not None:
-        return {"ticker": ticker_upper, "dates": cached, "source": "cloud_sql", "cached": True}
+        return {"ticker": ticker_upper, "dates": cached,
+                "source": "cloud_sql", "cached": True}
 
-    dates: list[str] = []
-    window_used: str | None = None
-    for days in _DATES_WINDOW_DAYS:
-        if days is None:
-            sql = """
-                SELECT DISTINCT snapshot_date
-                FROM   etf_options_snapshots
-                WHERE  ticker = :ticker
-                  AND  data_source = 'alphavantage'
-                ORDER  BY snapshot_date DESC
-                LIMIT  1000
-            """
-            params = {"ticker": ticker_upper}
-            window_used = "unbounded"
-        else:
-            sql = """
-                SELECT DISTINCT snapshot_date
-                FROM   etf_options_snapshots
-                WHERE  ticker = :ticker
-                  AND  data_source = 'alphavantage'
-                  AND  snapshot_date >= CURRENT_DATE - make_interval(days => :days)
-                ORDER  BY snapshot_date DESC
-                LIMIT  1000
-            """
-            params = {"ticker": ticker_upper, "days": days}
-            window_used = f"{days}d"
+    sql = None
+    if limit != 1:
+        # The depth counter `n` is load-bearing, not decoration. Bounding the
+        # recursion only in the OUTER query does not work: ORDER BY has to
+        # materialise the whole CTE before LIMIT can discard any of it, so the
+        # walk runs to the end of history regardless. Measured on prod for
+        # IWM ?limit=2 — unbounded recursion: 2,682 rows walked, 3,013 ms;
+        # bounded by `n < :limit`: 2 rows walked, 0.27 ms.
+        sql = """
+            WITH RECURSIVE d AS (
+                (SELECT snapshot_date, 1 AS n
+                   FROM etf_options_snapshots
+                  WHERE ticker = :ticker AND data_source = 'alphavantage'
+                  ORDER BY snapshot_date DESC
+                  LIMIT 1)
+                UNION ALL
+                SELECT (SELECT s.snapshot_date
+                          FROM etf_options_snapshots s
+                         WHERE s.ticker = :ticker
+                           AND s.data_source = 'alphavantage'
+                           AND s.snapshot_date < d.snapshot_date
+                         ORDER BY s.snapshot_date DESC
+                         LIMIT 1),
+                       d.n + 1
+                  FROM d
+                 WHERE d.snapshot_date IS NOT NULL
+                   AND d.n < :limit
+            )
+            SELECT snapshot_date
+              FROM d
+             WHERE snapshot_date IS NOT NULL
+             ORDER BY snapshot_date DESC
+        """
 
-        df = query_to_dataframe(sql, params)
-        if not df.empty:
-            dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
-                     for d in df["snapshot_date"].tolist()]
-        if len(dates) >= _DATES_MIN_RESULTS or days is None:
-            break
+    # STRICT: a connection failure or missing relation must surface as a 5xx.
+    # The swallowing sibling would return an empty frame here, which this
+    # handler cannot tell apart from "ticker genuinely has no data" and would
+    # report as a 404 telling the operator to run the fetcher — a false
+    # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
+    if limit == 1:
+        # The freshness probe above IS this query, and it has already run.
+        # Re-issuing it would make the advertised single-descent path pay two
+        # descents plus a second pool checkout and pre-ping on every miss --
+        # exactly the requests the cache exists to make cheap.
+        df = probe
+    else:
+        df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
+                                             "limit": limit})
+
+    dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+             for d in df["snapshot_date"].tolist()] if not df.empty else []
 
     if not dates:
         raise HTTPException(
@@ -330,12 +395,11 @@ async def get_options_dates(ticker: str):
             ),
         )
 
-    _DATES_CACHE[ticker_upper] = dates
+    _DATES_CACHE[cache_key] = dates
     return {
         "ticker": ticker_upper,
         "dates": dates,
         "source": "cloud_sql",
-        "window": window_used,
         "cached": False,
     }
 

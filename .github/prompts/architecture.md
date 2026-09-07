@@ -34,6 +34,22 @@ The tables between `<!-- inventory:<name>:start -->` and `<!-- inventory:<name>:
 5. Update the read date in the header note and the final `Generated YYYY-MM-DD …` line to today.
 6. Cite: every claim about code carries a `file:line` markdown link; every claim about live state says it was read live with the date. Never write "approximately N" where the inputs give N.
 
+## Two facts to keep asserting
+
+A generator that infers these from an older doc gets both wrong, and this file
+is regenerated every month, so they are restated here rather than trusted to
+survive (carried forward from PR #990):
+
+- **The API is served by TWO API-only Cloud Run services**: `solyra-api-prod`
+  behind IAP, and `solyra-api-staging` on a public edge gated per request by a
+  Firebase ID token. The React frontend left this repo in #957 and lives at
+  github.com/TeneikaAskew/solyra; the image contains no SPA.
+- **Never write "no public auth" or "no per-user data partitioning."**
+  `solyra-api-staging` is publicly reachable with open self-signup
+  (`AUTH_OPEN_SIGNUP=1`) over production data, and per-user scoping exists
+  where a feature is per-user (journal entries, watchlists, preferences,
+  profile, roles). Say what the live config says.
+
 ## Rules
 
 - **Update in place; never regenerate from scratch.** The previous version is the baseline, not a style reference.

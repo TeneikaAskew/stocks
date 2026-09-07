@@ -241,7 +241,7 @@
 ### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
 
 > **Historical record — superseded.** This is what was provisioned in Feb–Apr
-> 2026. Read live 2026-09-07 there are **66** scheduler entries. Three of the
+> 2026. Read live 2026-09-07 there are **65** scheduler entries. Three of the
 > lines below are no longer true of the live system: `fetch-market-data-daily`
 > now runs `0 23 * * 1-5` (not `0 17`), the 9 `etf-options-*` triggers were
 > removed with their job on 2026-04-26, and the 6 `earnings-opts-*` triggers

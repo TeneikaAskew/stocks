@@ -56,10 +56,17 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT }}
 
-      # --write-snapshot saves the exact state THIS comparison read, so a red
-      # run is reproducible offline with --snapshot live.json. A second read
-      # after the fact could see a project that had already moved, or succeed
-      # where the first read failed (Codex, PR #1009).
+      # The snapshot makes a failure reproducible offline: re-run the same
+      # comparison locally with --snapshot rather than needing gcloud access to
+      # see what the run saw.
+      #
+      # Written by the comparison itself, in ONE invocation. A separate
+      # `always()` step calling the script a second time read live GCP AGAIN,
+      # so infrastructure moving between the two calls produced an artifact
+      # with different counts or schedules -- or a clean one -- attached to a
+      # failure it could not reproduce (Codex, PR #990). `--write-snapshot`
+      # writes the state it read and then runs the comparison on that same
+      # state, so the artifact is by construction what produced the findings.
       - name: Compare the operational docs against live GCP
         run: python scripts/verify_docs_against_live.py --write-snapshot live.json
 

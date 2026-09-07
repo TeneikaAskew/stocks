@@ -81,6 +81,7 @@ LIVE = {
     "services": ["solyra-api-prod", "solyra-api-staging"],
     "secrets": ["av-api-key"],
     "queues": ["insight-pipeline-queue"],
+    "domain_mappings": {"api.stocks.example.org": "solyra-api-staging"},
 }
 
 
@@ -94,6 +95,7 @@ def _check(tmp_path, text, name="docs/PIPELINE.md"):
     vd.check_schedules(p, name, LIVE, out)
     vd.check_known_names(p, name, LIVE, out)
     vd.check_counts(p, name, LIVE, out)
+    vd.check_domain_mappings(p, name, LIVE, out)
     return out
 
 
@@ -153,23 +155,6 @@ def test_service_account_is_not_the_deleted_service(tmp_path):
     assert out == []
 
 
-def test_utc_column_header_over_eastern_schedules_is_caught(tmp_path):
-    """`| Scheduler | Cron (UTC) |` labels every row beneath it. The per-line
-    guard only read the line carrying the job name, so two tables asserted UTC
-    over an all-Eastern fleet and read clean (Codex, PR #1009)."""
-    doc = tmp_path / "d.md"
-    doc.write_text("| Scheduler | Cron (UTC) | Job |\n|---|---|---|\n"
-                   "| fetch-market-data-daily | 0 23 * * 1-5 | fetch-market-data |\n")
-    out = []
-    vd.check_timezone_headers(doc, "d.md", LIVE, out)
-    assert len(out) == 1 and out[0].check == "utc-claim", out
-    # ...and a header that names the real zone is not a finding
-    doc.write_text("| Scheduler | Cron (America/New_York) | Job |\n")
-    out = []
-    vd.check_timezone_headers(doc, "d.md", LIVE, out)
-    assert out == []
-
-
 def test_count_claim_in_adjacent_table_columns_is_compared(tmp_path):
     """`| Cloud Run Jobs | 7 jobs |` -- resource in one column, count in the
     next. Every other pattern wants them adjacent or parenthesized, so a whole
@@ -184,6 +169,22 @@ def test_count_claim_in_adjacent_table_columns_is_compared(tmp_path):
     vd.check_counts(doc, "d.md", live, out)
     blob = " ".join(f"{f.detail}" for f in out)
     assert "76" in blob and "65" in blob, blob
+
+
+def test_utc_column_header_over_eastern_schedules_is_caught(tmp_path):
+    """`| Scheduler | Cron (UTC) |` labels every row beneath it. The per-line
+    guard only read the line carrying the job name, so tables asserted UTC
+    over an all-Eastern fleet and read clean (Codex, PR #1009)."""
+    doc = tmp_path / "d.md"
+    doc.write_text("| Scheduler | Cron (UTC) | Job |\n|---|---|---|\n"
+                   "| fetch-market-data-daily | 0 23 * * 1-5 | fetch-market-data |\n")
+    out = []
+    vd.check_timezone_headers(doc, "d.md", LIVE, out)
+    assert len(out) == 1 and out[0].check == "utc-claim", out
+    doc.write_text("| Scheduler | Cron (America/New_York) | Job |\n")
+    out = []
+    vd.check_timezone_headers(doc, "d.md", LIVE, out)
+    assert out == []
 
 
 def test_count_claim_is_compared(tmp_path):
@@ -586,3 +587,153 @@ def test_a_declared_live_pair_reports_once_not_twice(tmp_path):
     """Two patterns can match the same claim; only one finding should result."""
     out = _check(tmp_path, "| Cloud Scheduler (60 live / 58 declared) |")
     assert len(out) == 1, [str(f) for f in out]
+
+
+def test_a_hostname_that_no_longer_maps_is_caught(tmp_path):
+    """The mapping lives in Cloud Run, so a doc is its only record.
+
+    Nine places said `stocks.insightscollective.org` maps to
+    solyra-api-staging while the live mapping was `api.stocks...`; the bare
+    host had become the Firebase email sending domain. Nothing compared a
+    hostname to anything (Codex, PR #990).
+    """
+    out = _check(tmp_path, "`stocks.example.org` maps to `solyra-api-staging`.")
+    assert [f.check for f in out] == ["mapping-drift"], [f.detail for f in out]
+    assert "api.stocks.example.org" in out[0].detail
+
+
+def test_the_live_hostname_is_clean(tmp_path):
+    assert _check(tmp_path, "`api.stocks.example.org` maps to `solyra-api-staging`.") == []
+
+
+def test_a_hostname_is_a_claim_even_without_maps_to(tmp_path):
+    """"via", "also served at", "points at" -- chasing phrasings is how the
+    timezone guard lost four rounds. A host under our own domain is the claim."""
+    out = _check(tmp_path, "| Staging | run.app URL, also `stocks.example.org` |")
+    assert [f.check for f in out] == ["mapping-drift"]
+
+
+def test_a_hostname_under_another_domain_is_not_our_claim(tmp_path):
+    assert _check(tmp_path, "Docs live at `example.com` and `docs.other.org`.") == []
+
+
+def test_deleting_every_mapping_does_not_silence_the_mapping_check(tmp_path):
+    """The outage this check exists to expose must not be what disables it.
+
+    An empty live mapping set early-returned, so a run made against a project
+    with every domain mapping deleted reported `no findings` while the docs
+    still routed readers at a hostname that served nothing (Codex, PR #990).
+    The scope therefore does not come from the live mappings alone.
+    """
+    p = tmp_path / "RUNBOOK.md"
+    p.write_text("The API answers at `api.stocks.insightscollective.org`.\n")
+
+    out: list[vd.Finding] = []
+    vd.check_domain_mappings(p, "RUNBOOK.md", {"domain_mappings": {}}, out)
+    assert [f.check for f in out] == ["mapping-drift"]
+    assert "no domain mappings at all" in out[0].detail
+
+    # A snapshot written before the field existed says nothing was READ, which
+    # is not the same claim as "nothing is mapped", and must not report.
+    out = []
+    vd.check_domain_mappings(p, "RUNBOOK.md", {}, out)
+    assert out == []
+
+
+def test_a_misspelled_cloud_run_service_is_caught(tmp_path):
+    """A typo or rename that preserves the service count was invisible.
+
+    `check_counts` compares totals, and `check_retired_services` only knows the
+    two hard-coded legacy names, so `solyra-api-stagin` sat in an operational
+    doc under a run this script reported clean (Codex, PR #990).
+    """
+    out = _check(tmp_path, "Deployed to the `solyra-api-stagin` Cloud Run service.")
+    assert [f.check for f in out] == ["unknown-name"]
+    assert _check(tmp_path,
+                  "Deployed to the `solyra-api-staging` Cloud Run service.") == []
+
+
+def test_a_retired_service_is_reported_once_not_twice(tmp_path):
+    """Two findings for one fact is the noise that teaches people to skim.
+
+    Widening the known-name context to Cloud Run services made a retired name
+    match both checks; `check_retired_services` owns it, because its message
+    says why the name is wrong rather than only that it is unknown.
+    """
+    out = _check(tmp_path, "The API runs on the `trading-platform` Cloud Run service.")
+    assert [f.check for f in out] == ["retired-service"]
+
+
+def test_the_workflow_uploads_the_snapshot_the_comparison_actually_read():
+    """One invocation, or the artifact cannot reproduce the failure.
+
+    A separate `always()` step ran the script a SECOND time to write the
+    snapshot, reading live GCP again. Infrastructure moving between the two
+    calls then produced an artifact with different counts and schedules -- or a
+    clean one -- attached to a failure it could not explain, which is the
+    opposite of what the artifact is for (Codex, PR #990). `--write-snapshot`
+    writes the state it read and compares against that same state.
+    """
+    import yaml
+    wf = yaml.safe_load(
+        (_SRC.parent.parent / ".github/workflows/verify-docs-against-live.yml").read_text())
+    steps = wf["jobs"]["verify"]["steps"]
+    runs = [s["run"] for s in steps if "run" in s and "verify_docs_against_live.py" in s["run"]]
+    assert len(runs) == 1, (
+        "two invocations read live GCP twice and can disagree; the snapshot "
+        "must come from the run that produced the findings")
+    assert "--write-snapshot live.json" in runs[0]
+    uploads = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
+    assert uploads, "the snapshot is only useful if it leaves the runner"
+    assert uploads[0]["with"]["path"] == "live.json"
+    assert uploads[0]["if"] == "always()", (
+        "the drift run exits nonzero, which is exactly when the snapshot matters")
+
+
+def test_a_noun_first_scheduler_count_is_checked(tmp_path):
+    """`Schedulers (66)` — the form RUNBOOK.md's recovery table uses.
+
+    The noun-first patterns covered Jobs and Services but not Schedulers, so
+    `| **Cloud Run Jobs (76 jobs) + Schedulers (66)** |` reported the jobs half
+    and walked past the schedulers half on the same line (Codex, PR #1014).
+    """
+    n_jobs = len(LIVE["run_jobs"])
+    n_sched = len(LIVE["schedulers"])
+
+    out = _check(tmp_path,
+                 f"| **Cloud Run Jobs ({n_jobs} jobs) + Schedulers (66)** | 60-90 min |",
+                 name="RUNBOOK.md")
+    assert [f.check for f in out] == ["count-drift"], out
+    assert f"claims 66 Cloud Scheduler jobs; live count is {n_sched}" == out[0].detail
+
+    # Both halves correct is not a finding — and the jobs half must not be
+    # reported twice now that a second pattern can reach the same line.
+    assert _check(tmp_path,
+                  f"| **Cloud Run Jobs ({n_jobs} jobs) + Schedulers ({n_sched})** |",
+                  name="RUNBOOK.md") == []
+
+
+def test_a_history_word_does_not_suppress_a_count_claim(tmp_path):
+    """`RETIRED_OK` exempts a line for naming a retired SERVICE, not for
+    stating a count.
+
+    Its vocabulary is ordinary past tense — `was`, `were`, `deleted`, `old` —
+    so `Cloud Scheduler (66 jobs) ... premarket-brief schedulers were
+    recreated` had its count suppressed by the word `were`, and a stale
+    disaster-recovery figure sat behind an advertised clean run
+    (Codex, PR #1014).
+    """
+    line = ("| **Cloud Scheduler (66 jobs)** | ✅ Implicitly tested | Last-tested "
+            "2026-05-01 when premarket-brief schedulers were recreated. |")
+    out = _check(tmp_path, line, name="RUNBOOK.md")
+    assert [f.check for f in out] == ["count-drift"], out
+
+    # A genuinely historical count says so where a reader can see it.
+    marked = ("<!-- verify-docs-ok: quotes the wrong historical claim -->\n" + line)
+    assert _check(tmp_path, marked, name="RUNBOOK.md") == []
+
+    # And a retired SERVICE name on the same line is still exempted, because
+    # that is what RETIRED_OK is for.
+    assert [f.check for f in _check(
+        tmp_path, "`trading-platform` was deleted on 2026-09-06.",
+        name="RUNBOOK.md")] == []
