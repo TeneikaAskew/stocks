@@ -757,6 +757,7 @@ plausible mechanism.
 
 #### A doc is a claim, not evidence
 
+<!-- verify-docs-ok: quotes the WRONG claim in order to correct it; the live schedule is on the next line -->
 `docs/PIPELINE.md` said `fetch-market-data` runs "23:00 UTC daily". The live job
 is `0 23 * * 1-5 America/New_York`. That doc was cited as justification for a
 cache boundary, produced a wrong fix, and the doc had to be corrected too.
