@@ -229,7 +229,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `earnings_calendar`
 - [`gcp/fetchers/evaluate_ew_strikes.py`](gcp/fetchers/evaluate_ew_strikes.py) — line [170](gcp/fetchers/evaluate_ew_strikes.py#L170)
-- [`scripts/fetch_earnings_calendar.py`](scripts/fetch_earnings_calendar.py) — line [1198](scripts/fetch_earnings_calendar.py#L1198)
+- [`scripts/fetch_earnings_calendar.py`](scripts/fetch_earnings_calendar.py) — line [1202](scripts/fetch_earnings_calendar.py#L1202)
 
 ### `earnings_calibration`
 - [`scripts/calibrate_earnings.py`](scripts/calibrate_earnings.py) — line [156](scripts/calibrate_earnings.py#L156)
@@ -518,7 +518,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/strategies/catalyst_proximity.py`](lib/strategies/catalyst_proximity.py) — line [235](lib/strategies/catalyst_proximity.py#L235)
 - [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [446](platform/api/routers/catalysts.py#L446), [453](platform/api/routers/catalysts.py#L453), [633](platform/api/routers/catalysts.py#L633), [716](platform/api/routers/catalysts.py#L716)
 - [`scripts/analysis/earnings_reaction_walkforward.py`](scripts/analysis/earnings_reaction_walkforward.py) — line [18](scripts/analysis/earnings_reaction_walkforward.py#L18)
-- [`scripts/fetch_earnings_calendar.py`](scripts/fetch_earnings_calendar.py) — line [153](scripts/fetch_earnings_calendar.py#L153), [329](scripts/fetch_earnings_calendar.py#L329), [357](scripts/fetch_earnings_calendar.py#L357), [1208](scripts/fetch_earnings_calendar.py#L1208), [1209](scripts/fetch_earnings_calendar.py#L1209)
+- [`scripts/fetch_earnings_calendar.py`](scripts/fetch_earnings_calendar.py) — line [153](scripts/fetch_earnings_calendar.py#L153), [329](scripts/fetch_earnings_calendar.py#L329), [357](scripts/fetch_earnings_calendar.py#L357), [1212](scripts/fetch_earnings_calendar.py#L1212), [1213](scripts/fetch_earnings_calendar.py#L1213)
 
 ### `earnings_calibration`
 - [`lib/earnings_reactions.py`](lib/earnings_reactions.py) — line [107](lib/earnings_reactions.py#L107), [434](lib/earnings_reactions.py#L434)
