@@ -361,6 +361,48 @@ def test_level_map_anchors_to_last_valid_close_not_nan(monkeypatch):
     assert level_map.current_price == pytest.approx(expected_close)
 
 
+def test_level_map_anchors_prior_levels_to_the_session_before_analysis_date(monkeypatch):
+    """Codex P1 on #1030: with the NaN placeholder dropped, the last retained
+    row is yesterday's COMPLETE bar. build_level_map without analysis_date
+    reads iloc[-2] (it assumes the last row is today's in-progress bar), so
+    PDH came from the day before yesterday — a ladder one session stale that
+    the playbook, built WITH analysis_date, never matched. Passing today's
+    date as analysis_date anchors PDH/PDL to yesterday."""
+    import datetime as _dt  # noqa: PLC0415
+
+    df = _synthetic_daily(nan_last=True)
+    valid = df.dropna(subset=["Close"])
+    yesterday_high = float(valid["High"].iloc[-1])
+    day_before_high = float(valid["High"].iloc[-2])
+    today = (valid.index[-1] + _dt.timedelta(days=1)).date()
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        level_map = dashboard_router._build_movement_level_map("SPY", analysis_date=today)
+
+    assert level_map is not None
+    pdh = next(lv for lv in level_map.levels if lv.name == "PDH")
+    assert pdh.price == pytest.approx(yesterday_high)
+    assert pdh.price != pytest.approx(day_before_high)
+
+
+def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
+    """The default is today's date in America/New_York, not UTC, so an
+    evening request does not roll the ladder forward a session (Rule 3.9)."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    import datetime as _dt  # noqa: PLC0415
+
+    seen = {}
+
+    def _spy(*a, **k):
+        seen["analysis_date"] = k.get("analysis_date")
+        raise RuntimeError("stop here")
+
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=_synthetic_daily()), \
+         patch("lib.strat_levels.build_level_map", side_effect=_spy):
+        assert dashboard_router._build_movement_level_map("SPY") is None  # RuntimeError → None
+    assert seen["analysis_date"] == _dt.datetime.now(ZoneInfo("America/New_York")).date()
+
+
 def test_no_valid_close_returns_none_levels_unavailable(monkeypatch):
     """REAL _build_movement_level_map: when NO row has a real OHLC quad (every
     close NaN), the helper returns None → the assembler degrades the levels

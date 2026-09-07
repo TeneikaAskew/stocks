@@ -393,8 +393,28 @@ def _movement_statement_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _build_movement_level_map(ticker: str):
+def _movement_analysis_date() -> _date_cls:
+    """Today's trading date in market time (Rule 3.9: Eastern, named zone).
+
+    The API serves requests at any hour; a UTC date would already be tomorrow
+    after 20:00 ET and would push the ladder one session forward.
+    """
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = None):
     """Best-effort LevelMap for the movement statement, or None.
+
+    `analysis_date` (default: today in America/New_York) is passed through to
+    build_level_map so compute_previous_levels anchors PDH/PDL to the session
+    BEFORE it. Without it that function assumes df's LAST row is today's
+    in-progress bar and reads iloc[-2]; this helper drops the NULL-close
+    premarket placeholder, so the last retained row is already yesterday's
+    complete bar and iloc[-2] is the day before — a ladder one session stale,
+    which the premarket playbook (built with analysis_date) never matched
+    (Codex P1 on #1030).
 
     The assembler degrades the levels block to an explicit UNAVAILABLE
     envelope when level_map is None (Rule 3.7 — never a fabricated ladder),
@@ -453,6 +473,7 @@ def _build_movement_level_map(ticker: str):
             daily_df=df,
             current_price=current_price,
             atr=atr_for_filter,
+            analysis_date=analysis_date or _movement_analysis_date(),
         )
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         logger.warning("movement-statement level map unavailable for %s: %s", ticker, exc)

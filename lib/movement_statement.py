@@ -261,11 +261,11 @@ def _reach_rate_sql(side: str) -> str:
       conditional on row 0 already being touched.
     * count a zero-distance target. Before identify_triggers de-duplicated
       targets by price, t1 sat AT the trigger price on 13-17% of rows and the
-      resolver marked it hit on the trigger bar. Requiring `t1 > trigger`
-      (calls) / `t1 < trigger` (puts) drops those rows from BOTH sides of the
-      ratio, so the historical series stays honest without a rewrite.
+      resolver marked it hit on the trigger bar. Requiring t1 to sit at least
+      one cent beyond the trigger (above for calls, below for puts) drops
+      those rows from BOTH sides of the ratio, so the historical series stays
+      honest without a rewrite.
     """
-    beyond = ">" if side == "calls" else "<"
     price = {k: f"{side}_{k}_price" for k in _REACH_SLOTS}
     hit = {k: f"{side}_{k}_hit_ts" for k in _REACH_SLOTS}
     parts = []
@@ -273,7 +273,15 @@ def _reach_rate_sql(side: str) -> str:
     for k in _REACH_SLOTS:
         cond = _finite(price[k])
         if prev is not None:
-            cond += f" AND {_finite(price[prev])} AND {price[k]} {beyond} {price[prev]}"
+            # "Beyond" by at least one cent — the same distinctness rule
+            # _distinct_targets and select_nearest_levels apply — so a target
+            # persisted a fraction of a cent past its predecessor (the resolver
+            # marks it hit on the same bar) is out of the population too.
+            gap = (
+                f"{price[k]} - {price[prev]}" if side == "calls"
+                else f"{price[prev]} - {price[k]}"
+            )
+            cond += f" AND {_finite(price[prev])} AND {gap} >= {_LEVEL_PRICE_TOL}"
         parts.append(f"COUNT(*) FILTER (WHERE {cond}) AS {k}_n")
         parts.append(f"COUNT(*) FILTER (WHERE {cond} AND {hit[k]} IS NOT NULL) AS {k}_hits")
         prev = k
@@ -384,7 +392,10 @@ def _match_slot(price, tracked_side: list) -> Optional[dict]:
     if price is None:
         return None
     for t in tracked_side:
-        if abs(float(price) - t["price"]) <= _LEVEL_PRICE_TOL:
+        # Strict: two slots a full cent apart are distinct lines (the same
+        # rule select_nearest_levels / _distinct_targets use), so 240.01
+        # must not collapse onto a 240.00 trigger.
+        if abs(float(price) - t["price"]) < _LEVEL_PRICE_TOL:
             return t
     return None
 
@@ -698,6 +709,33 @@ def _build_regime(ticker: str, as_of, gamma_fn) -> dict:
     )
 
 
+def _as_of_market_date(as_of):
+    """The market-calendar date an `as_of` cutoff belongs to (Rule 3.9).
+
+    Playbook rows (`premarket_analysis.analysis_date`) and gamma snapshots are
+    keyed by Eastern trading date, so a replay cutoff must be converted to
+    America/New_York BEFORE taking its date: `2026-06-23T01:00:00Z` is still
+    21:00 ET on June 22, and reading it as June 23 would let the tracked-level
+    and regime queries see the next session's playbook (Codex P2 on #1030).
+
+    * tz-aware datetime / pd.Timestamp → converted to Eastern, then `.date()`
+    * naive datetime → treated as Eastern wall-clock, `.date()`
+    * date → unchanged; None → None
+
+    A datetime / pd.Timestamp IS a `date` subclass, so the datetime test
+    comes first.
+    """
+    if as_of is None:
+        return None
+    if isinstance(as_of, datetime_type):
+        if as_of.tzinfo is not None:
+            from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+            as_of = as_of.astimezone(ZoneInfo("America/New_York"))
+        return as_of.date()
+    return as_of
+
+
 # ── Top-level assembler ────────────────────────────────────────────────────
 
 
@@ -788,13 +826,9 @@ def assemble_movement_statement(
         engine = get_engine()
 
     as_of_arg = as_of
-    # summarize_gamma_levels takes a date; normalize a datetime/Timestamp.
-    # A datetime / pd.Timestamp IS a `date` subclass, so an isinstance(date)
-    # test never converts it; test for datetime explicitly so the gamma and
-    # tracked-levels reads get a calendar date, not a timestamp.
-    gamma_as_of = as_of
-    if isinstance(gamma_as_of, datetime_type):
-        gamma_as_of = gamma_as_of.date()
+    # The gamma summary and the tracked-levels read are keyed by Eastern
+    # trading date; convert the cutoff to market time before taking its date.
+    gamma_as_of = _as_of_market_date(as_of)
 
     # ── Piece 1: continuation (HEADLINE source) ────────────────────────────
     continuation = _build_continuation(engine, ticker, tf, as_of_arg)

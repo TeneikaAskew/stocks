@@ -625,6 +625,26 @@ def test_price_match_tolerance_is_one_cent(monkeypatch):
     assert calls[1]["reach_rate"]["status"] == "UNAVAILABLE"  # 102.0 vs 102.02
 
 
+def test_slots_exactly_one_cent_apart_stay_distinct(monkeypatch):
+    """select_nearest_levels and _distinct_targets treat a full cent as a
+    different line, so matching must too: a 102.01 rung must take the t1 slot
+    at 102.01, not the trigger at 102.00 that a `<=` tolerance would accept
+    first (Codex P2 on #1030)."""
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 102.00, "day", 2.0), _level("PWH", 102.01, "week", 2.01)],
+        put_levels=[], current_price=100.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(102.00, 102.01, 103.0, 104.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert calls[0]["reach_rate"]["slot"] == "trigger"
+    assert calls[1]["reach_rate"]["slot"] == "t1"
+    assert calls[1]["reach_rate"]["hits"] == 25
+
+
 def test_slot_population_is_per_slot_not_the_trigger_count(monkeypatch):
     """Each slot's denominator is its own population (rows where that slot
     had a real price strictly beyond the previous one), so a t2 reached on 37
@@ -666,11 +686,14 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
     ratio."""
     calls = ms._reach_rate_sql("calls")
     puts = ms._reach_rate_sql("puts")
-    assert "calls_t1_price > calls_trigger_price" in calls
-    assert "calls_t2_price > calls_t1_price" in calls
-    assert "calls_t3_price > calls_t2_price" in calls
-    assert "puts_t1_price < puts_trigger_price" in puts
-    assert "puts_t3_price < puts_t2_price" in puts
+    # At least one cent beyond, not merely greater: a target persisted a
+    # fraction of a cent past its predecessor is the same line under the
+    # one-cent rule every other level comparison here uses.
+    assert "calls_t1_price - calls_trigger_price >= 0.01" in calls
+    assert "calls_t2_price - calls_t1_price >= 0.01" in calls
+    assert "calls_t3_price - calls_t2_price >= 0.01" in calls
+    assert "puts_trigger_price - puts_t1_price >= 0.01" in puts
+    assert "puts_t2_price - puts_t3_price >= 0.01" in puts
     for sql in (calls, puts):
         assert "<> 'NaN'::float8" in sql
         # unconditional: no `WHERE ..._trigger_hit_ts IS NOT NULL` gate
@@ -701,6 +724,54 @@ def test_tracked_levels_bounded_by_as_of(monkeypatch):
     assert "analysis_date <= :as_of" in seen["sql"]
     assert seen["params"]["as_of"] == date_type(2026, 6, 20)
     assert "ORDER BY analysis_date DESC LIMIT 1" in seen["sql"]
+
+
+@pytest.mark.parametrize(
+    "as_of, expected",
+    [
+        # 01:00 UTC on the 23rd is 21:00 ET on the 22nd: still the 22nd's session.
+        (pd.Timestamp("2026-06-23T01:00:00Z"), date_type(2026, 6, 22)),
+        # Mid-session UTC is the same calendar day in Eastern.
+        (pd.Timestamp("2026-06-23T15:45:00Z"), date_type(2026, 6, 23)),
+        # Naive datetimes are Eastern wall-clock.
+        (pd.Timestamp("2026-06-23T01:00:00"), date_type(2026, 6, 23)),
+        # A bare date passes through.
+        (date_type(2026, 6, 23), date_type(2026, 6, 23)),
+        (None, None),
+    ],
+)
+def test_as_of_market_date_converts_to_eastern_before_taking_the_date(as_of, expected):
+    """Rule 3.9 / Codex P2 on #1030: the playbook and gamma reads are keyed
+    by Eastern trading date, so an evening UTC cutoff must not select the next
+    session's rows."""
+    assert ms._as_of_market_date(as_of) == expected
+
+
+def test_evening_utc_as_of_matches_the_same_sessions_playbook(monkeypatch):
+    seen = {}
+
+    def _q(sql, params=None):
+        if "premarket_analysis" in sql and "FILTER" not in sql:
+            seen["params"] = dict(params or {})
+            return _tracked_df()
+        return _make_query_fn(_reach_df(50, 35, 24, 18, 11),
+                              _reach_df(40, 28, 19, 14, 8), _mag_df())(sql, params)
+
+    gamma_seen = {}
+
+    def _gamma(ticker, as_of=None):
+        gamma_seen["as_of"] = as_of
+        return _gamma_ok()
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    import gcp.research.strat_engine.strat_pred_serve as serve
+    monkeypatch.setattr(serve, "predict_one", _predict_one_ok)
+    ms.assemble_movement_statement(
+        "SPY", "15m", as_of=pd.Timestamp("2026-06-23T01:00:00Z"),
+        engine=object(), level_map=_sample_level_map(), query_fn=_q, gamma_fn=_gamma,
+    )
+    assert seen["params"]["as_of"] == date_type(2026, 6, 22)
+    assert gamma_seen["as_of"] == date_type(2026, 6, 22)
 
 
 def test_degenerate_magnitude_leaves_headline_and_levels_ok(monkeypatch):
