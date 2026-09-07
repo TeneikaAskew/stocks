@@ -2045,3 +2045,60 @@ def test_the_naive_import_timestamp_forms_still_parse():
         keys.add(journal._dedupe_key(trade.ticker, trade.direction,
                                      trade.entry_ts, trade.entry_price))
     assert len(keys) == 1, f"accepted forms must share one key: {keys}"
+
+
+def test_a_zoned_generic_import_row_is_skipped_at_preview():
+    """Preview must not offer a row that commit will refuse.
+
+    `_parse_generic` passes the mapped timestamp through with only a
+    non-empty check, so `2026-09-07T10:00:00Z` reached `PairedTrade.entry_ts`
+    and preview returned it as a selectable trade. The commit validator then
+    rejected it -- and because Pydantic validates the whole `trades` list,
+    ONE such row 422s the entire batch, blocking every other selected trade
+    (Codex, PR #1016).
+
+    The row lands in `skipped` with its real `raw_index`, which is the
+    mechanism this module already uses for every dropped row (Rule 3.7): the
+    client is told which row and why, rather than the row vanishing or the
+    whole import failing.
+    """
+    from lib.broker_import import pair_orders, parse_csv
+
+    mapping = {"ticker": "sym", "direction": "kind", "action": "act",
+               "ts": "when", "price": "px", "quantity": "qty"}
+    csv_text = (
+        "sym,kind,act,when,px,qty\n"
+        "IWM,CALL,open,2026-09-07T10:00:00Z,1.00,1\n"
+        "IWM,CALL,open,2026-09-07 10:05,2.00,1\n"
+    )
+    preview = pair_orders(parse_csv(csv_text, "generic", mapping=mapping))
+
+    assert [t.entry_ts for t in preview.trades] == ["2026-09-07 10:05"], (
+        f"a zoned timestamp was offered as a selectable trade: {preview.trades}")
+    assert any(s["raw_index"] == 0 for s in preview.skipped), preview.skipped
+    assert any("naive" in s["reason"] or "timezone" in s["reason"]
+               for s in preview.skipped), preview.skipped
+
+    # And every row preview DOES offer is one the commit model accepts, which
+    # is the property the finding is really about.
+    import api.routers.journal as journal
+    for t in preview.trades:
+        journal.ImportCommitTrade(ticker=t.ticker, direction=t.direction,
+                                  entry_ts=t.entry_ts, entry_price=t.entry_price,
+                                  exit_ts=t.exit_ts, exit_price=t.exit_price)
+
+
+def test_the_broker_parsers_still_emit_the_canonical_timestamp():
+    """The rejection must not narrow the two real broker paths.
+
+    Robinhood and Webull both build `YYYY-MM-DD HH:MM` themselves, so neither
+    can produce a zoned value -- pinned here so the skip above cannot start
+    dropping real broker rows.
+    """
+    from lib import broker_import as bi
+
+    assert bi._rh_date_to_ts("6/19/2026") == "2026-06-19 00:00"
+    assert bi._webull_time_to_ts("06/01/2026 09:40:00 EDT") == "2026-06-01 09:40"
+    for ts in (bi._rh_date_to_ts("6/19/2026"),
+               bi._webull_time_to_ts("06/01/2026 09:40:00 EDT")):
+        assert bi.is_naive_wall_clock(ts), ts

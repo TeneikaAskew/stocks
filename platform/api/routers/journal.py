@@ -81,7 +81,8 @@ except Exception:
 # Task 2 broker-import core (lib/broker_import.py) — pure parse/pairing, no
 # I/O. This router owns duplicate detection and DB writes (see module
 # docstring pt. 5 in lib/broker_import.py).
-from lib.broker_import import detect_broker, pair_orders, parse_csv  # noqa: E402
+from lib.broker_import import (detect_broker, is_naive_wall_clock,  # noqa: E402
+                               pair_orders, parse_csv)
 
 # Server-verified identity for per-user scoping.
 from api.auth import current_user_email
@@ -246,9 +247,6 @@ class ExportRequest(BaseModel):
     trades: list[JournalTradeExportItem]
 
 
-_NAIVE_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
-
-
 def _reject_zoned_timestamp(value):
     """Refuse an import timestamp that carries a UTC offset or zone name.
 
@@ -266,10 +264,17 @@ def _reject_zoned_timestamp(value):
     for a column that does not store one. There is no correct instant to
     normalise TO, and picking one would be a fabricated interpretation of the
     caller's data (Rule 3.7).
+
+    The predicate is `lib.broker_import.is_naive_wall_clock`, shared with the
+    generic CSV parser rather than restated here. Validating only at commit
+    let preview offer a zoned row that this model then refused -- and since
+    the model validates the whole trade list, one such row 422'd the entire
+    batch (Codex, PR #1016). One definition means preview and commit cannot
+    disagree about which rows are importable.
     """
     if value is None:
         return value
-    if not _NAIVE_TS_RE.match(str(value).strip()):
+    if not is_naive_wall_clock(value):
         raise ValueError(
             "must be naive 'YYYY-MM-DD HH:MM' wall-clock (seconds and a 'T' "
             f"separator are allowed); a UTC offset or zone is not, got {value!r}")
