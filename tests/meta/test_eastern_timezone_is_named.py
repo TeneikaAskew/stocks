@@ -1747,6 +1747,28 @@ def _embedded_sql_hit(text: str):
     return None
 
 
+def _tzrange_is_frozen(flat_args, flat_kwargs, env) -> bool:
+    """Does this `tzrange(...)` keep one offset all year?
+
+    dateutil's signature is `(stdabbr, stdoffset, dstabbr, dstoffset, ...)`.
+    No daylight abbreviation means no daylight time. With one, the daylight
+    offset defaults to the standard offset plus an hour, so only an explicit
+    daylight offset EQUAL to the standard one is frozen; anything not
+    statically known is not decided.
+    """
+    kw = dict(flat_kwargs)
+    dstabbr = flat_args[2] if len(flat_args) > 2 else kw.get("dstabbr")
+    if dstabbr is None or (isinstance(dstabbr, ast.Constant)
+                           and dstabbr.value is None):
+        return True
+    stdoffset = flat_args[1] if len(flat_args) > 1 else kw.get("stdoffset")
+    dstoffset = flat_args[3] if len(flat_args) > 3 else kw.get("dstoffset")
+    if stdoffset is None or dstoffset is None:
+        return False
+    std, dst = _const_number(stdoffset, env), _const_number(dstoffset, env)
+    return std is not None and dst is not None and std == dst
+
+
 def _destructured(targets, value: ast.AST):
     """`(target, value)` pairs, descending through tuple and list unpacking.
 
@@ -2252,10 +2274,15 @@ def _python_hits(path: pathlib.Path, text: str):
                 # `env={"TZ": "EST"}` -- uppercase -- and a case-sensitive
                 # membership test walked straight past it while the adjacent
                 # `os.environ["TZ"]` form was caught (Codex, PR #993).
-                if (isinstance(k, ast.Constant) and isinstance(k.value, str)
-                        and k.value.lower() in _TZ_KEYWORDS):
+                # Through the environment, as the subscript branch already
+                # reads its key: `KEY = "TZ"; env={KEY: "EST"}` hands the
+                # child process the frozen zone, and a literal-only test
+                # walked past it (Codex, PR #993 final review). A `**spread`
+                # entry has no key and is skipped.
+                key_text = _const_string(k, env) if k is not None else None
+                if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
                     follow(legacy, offsets, node, v, env,
-                           lambda shown, k=k: f"{k.value!r}: {shown}")
+                           lambda shown, k=key_text: f"{k!r}: {shown}")
 
         # A legacy zone name as the value of a timezone-ish keyword, anywhere.
         # `.lower()`, matching the dict-key and subscript branches. Building
@@ -2503,6 +2530,16 @@ def _python_hits(path: pathlib.Path, text: str):
             # non-Eastern zone failed CI (Codex, PR #993). A float that is
             # exactly the integer still compares equal, so the ordinary
             # spellings are unaffected.
+            # `tzrange` is frozen only WITHOUT daylight time. After the
+            # standard offset it takes `dstabbr` and `dstoffset`, and with
+            # them it alternates: `tzrange("X", -18000, "Y", -21600)` is UTC-5
+            # in winter and UTC-6 in summer -- neither a frozen UTC-5 nor
+            # Eastern -- and reading the standard offset alone reported it
+            # (Codex, PR #993 final review). Its abbreviations still go
+            # through `follow` below like any other constructor argument.
+            if name == "tzrange" and not _tzrange_is_frozen(
+                    flat_args, flat_kwargs, env):
+                value = None
             if value is not None and value in wanted:
                 reported.add(id(candidate))
                 note(offsets, node,
@@ -3036,11 +3073,29 @@ _PINE_IDENT = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0
 
 
 def _pine_constants(text: str) -> dict:
-    """`{NAME: value}` for every string constant assigned once at top level."""
+    """`{NAME: [(offset, value), ...]}` for every string constant assigned, in order.
+
+    By POSITION, because Pine reassigns with `:=`: `zone = "America/New_York"`
+    then `zone := "EST"` hands `time(...)` the frozen zone, and keeping the
+    first binding as a constant read it as canonical -- and, reversed, read a
+    canonical call as a violation (Codex, PR #993 final review). The same
+    model `_shell_scalars` keeps, for the same reason.
+    """
     out: dict = {}
     for m in _PINE_CONST.finditer(text):
-        out.setdefault(m.group(1), m.group(2) if m.group(2) is not None else m.group(3))
+        value = m.group(2) if m.group(2) is not None else m.group(3)
+        out.setdefault(m.group(1), []).append((m.start(1), value))
     return out
+
+
+def _pine_constant_at(consts: dict, name: str, at: int):
+    """The value bound to `name` by the last assignment before offset `at`."""
+    latest = None
+    for offset, value in consts.get(name, ()):
+        if offset >= at:
+            break
+        latest = value
+    return latest
 
 
 def _pine_call_hits(text: str) -> list:
@@ -3060,7 +3115,7 @@ def _pine_call_hits(text: str) -> list:
         # A bare identifier bound to a string constant is that string.
         bare = _PINE_STRING.sub(lambda q: " " * len(q.group(0)), args)
         for m in _PINE_IDENT.finditer(bare):
-            value = consts.get(m.group(1))
+            value = _pine_constant_at(consts, m.group(1), call.start())
             if value is None:
                 continue
             is_offset = _bad_zone_value(value)
@@ -3432,7 +3487,12 @@ _SHELL_OUTPUT_CMD = re.compile(
 _SHELL_REDIRECT = re.compile(
     r"\d?>>?(?!\s*(?:&\d|/dev/(?:stderr|stdout|null|tty)\b))"
     r"|\||(?<![A-Za-z0-9_-])tee(?![A-Za-z0-9_-])")
-_SHELL_QUOTED = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'")
+# Escape-aware, like `_command_end` and the comment stripper: a `\"` inside a
+# double-quoted argument is data, and reading it as the closing quote left
+# `TZ=EST` exposed between two blanked fragments of
+# `echo "Never set \"TZ=EST\" here"` -- a false CI failure on a line that
+# only prints (Codex, PR #993 final review).
+_SHELL_QUOTED = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'[^'\n]*'")
 
 
 def _redirects_outside_quotes(text: str) -> bool:
@@ -3839,16 +3899,19 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
 # is two commands on one line, and requiring the whole line to be one
 # assignment collected neither (Codex, PR #993). The value may end at a
 # separator as well as at end of line, and an assignment may start after one.
+# `{` and `(` open a command position too, so a one-line body,
+# `helper() { LEGACY=EST; }`, is collected like a multi-line one (Codex,
+# PR #993 final review).
 _SHELL_SCALAR = re.compile(
-    r"(?:^|[;&|][ \t]*)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:^|[;&|{(][ \t]*)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
-    r"(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))[ \t]*(?=$|[;&|])",
+    r"(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))[ \t]*(?=$|[;&|)}])",
     re.M)
 
 
 # A declaring builtin with its options and ALL of its `NAME=value` operands.
 _SHELL_DECL_MULTI = re.compile(
-    r"(?:^|[;&|][ \t]*)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:^|[;&|{(][ \t]*)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*((?:[A-Za-z_][A-Za-z0-9_]*="
     r"(?:\"[^\"`\\\n]*\"|'[^'\n]*'|[^\s\"'`;|&\n]+)[ \t]*)+)", re.M)
 _SHELL_DECL_OPERAND = re.compile(
@@ -3922,13 +3985,37 @@ def _shell_scalars(text: str) -> dict:
     # PR #993 final review). A single-quoted value is literal text and is kept
     # as written; a reference to something not statically known stays
     # unresolved rather than guessed at.
+    # A bare assignment INSIDE a function body binds globally in bash -- but
+    # only when the body runs, and defining a function runs nothing. Ordered
+    # by position alone, `LEGACY=EST`, an uncalled `helper() { LEGACY=America/
+    # New_York; }` and `export TZ="$LEGACY"` read the dormant body as the
+    # value in force and the frozen export as canonical; reversed, a correct
+    # script failed CI (Codex, PR #993 final review). So a body assignment is
+    # visible inside its own body, like a `local`, and outside it only from
+    # each top-level command that invokes the function after its definition
+    # -- the same rule the Python side applies to a `global` writer.
+    named = _named_function_spans(text)
+    spans = [(s, e) for _, s, e in named]
+    invoked: dict[str, list] = {}
+    applied: list = []
+    for i, (at, name, value, local, single) in enumerate(raw):
+        if local:
+            continue
+        body = next(((fn, s, e) for fn, s, e in named if s <= at < e), None)
+        if body is None:
+            continue
+        fn, _s, end = body
+        raw[i] = (at, name, value, True, single)
+        if fn not in invoked:
+            # `end` is the offset just past the body's closing line, so a call
+            # on the very next line starts AT it.
+            invoked[fn] = [c for c in _invoked_at(text, fn, named) if c >= end]
+        applied.extend((c, name, value, False, single) for c in invoked[fn])
+    raw.extend(applied)
     raw.sort(key=lambda r: r[0])
     out: dict[str, list] = {}
-    spans = None
     for at, name, value, local, single in raw:
         if "$" in value and not single:
-            if spans is None:
-                spans = _function_spans(text)
             value = _resolve_shell_value(value, out, at, spans)
             if value is None:
                 continue
@@ -3967,50 +4054,76 @@ def _within_a_span(spans, offset: int, at: int) -> bool:
     return True             # not in any body after all -- treat as file scope
 
 
-def _function_spans(text: str) -> list[tuple[int, int]]:
-    """Character span of each shell function BODY, outermost only.
+def _named_function_spans(text: str) -> list[tuple[str, int, int]]:
+    """`(name, start, end)` of each shell function BODY, outermost only.
 
     Same brace accounting as `_shell_functions`, which segments the text; this
     reports offsets, because the scalar collector records assignments by
-    position and has to compare them against a reference's position.
+    position and has to compare them against a reference's position -- and
+    names, because whether a body's assignments ever run depends on whether
+    something calls the function (Codex, PR #993 final review).
     """
     spans = []
     header = re.compile(
-        r"^\s*(?:function\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\)\s*)?"
-        r"|[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*)\{")
+        r"^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\)\s*)?"
+        r"|([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*)\{")
     at = 0
     depth = 0
     start = None
-    pending = None                              # header awaiting its `{`
+    name = None
+    pending = None                              # (offset, name) awaiting its `{`
     for line in text.splitlines(keepends=True):
         if depth == 0 and pending is not None:
-            p_start = pending
+            p_start, p_name = pending
             pending = None
             if line.strip().startswith("{"):
-                start = p_start
+                start, name = p_start, p_name
                 depth = _brace_delta(line)
                 if depth <= 0:
-                    spans.append((start, at + len(line)))
+                    spans.append((name, start, at + len(line)))
                     depth, start = 0, None
                 at += len(line)
                 continue
-        if depth == 0 and header.match(line):
-            start = at
+        opened = header.match(line) if depth == 0 else None
+        if opened:
+            start, name = at, (opened.group(1) or opened.group(2))
             depth = _brace_delta(line)
             if depth <= 0:                      # a one-line function body
-                spans.append((start, at + len(line)))
+                spans.append((name, start, at + len(line)))
                 depth, start = 0, None
-        elif depth == 0 and _HEADER_NO_BRACE.match(line):
-            pending = at                        # same layout as `_shell_functions`
+        elif depth == 0 and (bare := _HEADER_NO_BRACE.match(line)):
+            pending = (at, bare.group(1) or bare.group(2))
         elif depth:
             depth += _brace_delta(line)
             if depth <= 0:
-                spans.append((start, at + len(line)))
+                spans.append((name, start, at + len(line)))
                 depth, start = 0, None
         at += len(line)
     if start is not None:                       # unterminated, to end of file
-        spans.append((start, at))
+        spans.append((name, start, at))
     return spans
+
+
+def _function_spans(text: str) -> list[tuple[int, int]]:
+    """Character span of each shell function BODY, outermost only."""
+    return [(s, e) for _, s, e in _named_function_spans(text)]
+
+
+def _invoked_at(text: str, name: str, spans) -> list[int]:
+    """Offset of each top-level command that invokes function `name`.
+
+    A command position -- the start of a line, a separator, a subshell or
+    group opener, a `!`, or an `if`/`then`/`do`/`else` keyword, optionally
+    after `VAR=value` prefixes -- followed by the name as a whole word that is
+    not itself being defined or assigned. Outside every function body, since
+    a body runs only when its own function does.
+    """
+    call = re.compile(
+        r"(?:^|[;&|({!]|\b(?:then|do|else|elif|if|until|while)\b)[ \t]*"
+        r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(" + re.escape(name)
+        + r")(?![A-Za-z0-9_=/.(-])", re.M)
+    return [m.start(1) for m in call.finditer(text)
+            if not any(s <= m.start(1) < e for _, s, e in spans)]
 
 
 # A function header WITHOUT its brace: `helper()` or `function helper`, with
@@ -9051,3 +9164,104 @@ def test_sql_text_in_a_diagnostic_is_not_a_statement(tmp_path):
     assert _python_finds(tmp_path, "SQL = \"SET TIME ZONE 'EST'\"\nlog.info(SQL)\ncur.execute(SQL)\n")
     assert _python_finds(tmp_path, "log.info(cur.execute(\"SET TIME ZONE 'EST'\"))\n")
     assert _python_finds(tmp_path, "log.info(\"x\", \"SET TIME ZONE 'EST'\") if False else cur.execute(\"SET TIME ZONE 'EST'\")\n")
+
+
+def test_a_pine_reassignment_is_the_binding_in_force():
+    """`zone := "EST"` after `zone = "America/New_York"` hands `time()` EST.
+
+    The first binding was kept as a constant, so the frozen zone passed and,
+    reversed, a canonical call failed CI (Codex, PR #993 final review).
+    """
+    call = 't = time(timeframe.period, session, zone)\n'
+    assert _pine_call_hits('string zone = "America/New_York"\nzone := "EST"\n' + call)
+    assert not _pine_call_hits('string zone = "EST"\nzone := "America/New_York"\n' + call)
+    # Position, not order of appearance: a rebinding AFTER the call does not
+    # reach it.
+    assert _pine_call_hits('zone = "EST"\n' + call + 'zone := "America/New_York"\n')
+    assert not _pine_call_hits('zone = "America/New_York"\n' + call + 'zone := "EST"\n')
+    assert _pine_constants('a = "x"\na := "y"\n')["a"] == [(0, "x"), (8, "y")]
+
+
+def test_an_escaped_quote_does_not_end_a_shell_diagnostic():
+    """`echo "Never set \\"TZ=EST\\" here"` prints; it configures nothing.
+
+    The quoted-argument pattern read the escaped quote as the closing one and
+    left `TZ=EST` exposed between two blanked fragments (Codex, PR #993 final
+    review).
+    """
+    assert not _scanned_shell('echo "Never set \\"TZ=EST\\" here"\n')
+    assert not _scanned_shell('printf "%s\\n" "set \\"TZ=EST\\" to reproduce"\n')
+    assert not _scanned_shell('echo "quoted \\"x\\""; echo "TZ=EST"\n')
+    # A real assignment after the diagnostic, and a diagnostic that WRITES
+    # configuration, still report.
+    assert _scanned_shell('echo "quoted \\"x\\""; export TZ=EST\n')
+    assert _scanned_shell('echo "\\"TZ=EST\\"" > app.env\n')
+
+
+def test_a_function_body_assignment_runs_only_when_the_function_does():
+    """Defining `helper() { LEGACY=...; }` assigns nothing until it is called.
+
+    Ordered by position alone, the dormant body was the value in force: the
+    frozen export read as canonical and, reversed, a correct script failed CI
+    (Codex, PR #993 final review). A body assignment is visible inside its
+    body and, outside it, from each top-level call after the definition.
+    """
+    multi = 'LEGACY={a}\nhelper() {{\n    LEGACY={b}\n}}\n{call}export TZ="$LEGACY"\n'
+    one = 'LEGACY={a}\nhelper() {{ LEGACY={b}; }}\n{call}export TZ="$LEGACY"\n'
+    for form in (multi, one):
+        est_then_dormant = form.format(a="EST", b="America/New_York", call="")
+        canonical_then_dormant = form.format(a="America/New_York", b="EST", call="")
+        assert _scanned_shell(est_then_dormant), form
+        assert not _scanned_shell(canonical_then_dormant), form
+        # Called, the body runs and its assignment is in force afterwards.
+        assert _scanned_shell(form.format(a="America/New_York", b="EST", call="helper\n")), form
+        assert not _scanned_shell(form.format(a="EST", b="America/New_York", call="helper\n")), form
+        assert _scanned_shell(form.format(a="America/New_York", b="EST",
+                                          call="if true; then helper; fi\n")), form
+    # Inside its own body the assignment is in force at once, as before.
+    assert _scanned_shell('LEGACY=America/New_York\nhelper() {\n    LEGACY=EST\n    export TZ="$LEGACY"\n}\n')
+    # A call BEFORE the export but before the definition is not a call the
+    # shell could make; the definition must precede it.
+    assert not _scanned_shell('LEGACY=America/New_York\nhelper\nhelper() {\n    LEGACY=EST\n}\nexport TZ="$LEGACY"\n')
+    # The definition line itself is not an invocation.
+    assert _invoked_at('helper() {\n  :\n}\nhelper\n', "helper",
+                       _named_function_spans('helper() {\n  :\n}\nhelper\n')) == [17]
+    assert _named_function_spans('function f {\n  :\n}\ng()\n{\n  :\n}\n')[0][0] == "f"
+    assert _named_function_spans('function f {\n  :\n}\ng()\n{\n  :\n}\n')[1][0] == "g"
+
+
+def test_tzrange_is_frozen_only_without_daylight_time(tmp_path):
+    """`tzrange("X", -18000, "Y", -21600)` alternates; it is not a fixed zone.
+
+    The standard offset alone was compared, so a zone that is UTC-5 in winter
+    and UTC-6 in summer -- not Eastern in either -- failed the offset guard
+    (Codex, PR #993 final review).
+    """
+    head = "from dateutil.tz import tzrange, tzoffset\n"
+    def offsets_of(src):
+        return _python_hit_lists(head + src)[1]
+    assert not offsets_of('z = tzrange("X", -18000, "Y", -21600)\n')
+    assert not offsets_of('z = tzrange("X", stdoffset=-18000, dstabbr="Y")\n')
+    assert not offsets_of('z = tzrange("X", -18000, dstabbr="Y", dstoffset=-14400)\n')
+    # No daylight time, or daylight time at the same offset, is frozen.
+    assert offsets_of('z = tzrange("EST", -18000)\n')
+    assert offsets_of('z = tzrange("EST", stdoffset=-18000)\n')
+    assert offsets_of('z = tzrange("X", -18000, None)\n')
+    assert offsets_of('z = tzrange("X", -18000, "Y", -18000)\n')
+    assert offsets_of('z = tzoffset("EST", -18000)\n')
+    # A daylight abbreviation that is not statically known is not decided.
+    assert not offsets_of('z = tzrange("X", -18000, dst_name())\n')
+
+
+def test_a_dict_key_bound_to_a_name_is_read(tmp_path):
+    """`KEY = "TZ"; env={KEY: "EST"}` gives the child the frozen zone.
+
+    The dict branch accepted literal keys only, unlike the subscript branch
+    beside it (Codex, PR #993 final review).
+    """
+    assert _python_finds(tmp_path, 'KEY = "TZ"\nsubprocess.run(cmd, env={KEY: "EST"})\n')
+    assert _python_finds(tmp_path, 'KEY = "timezone"\ncfg = {KEY: "-05:00"}\n')
+    assert _python_finds(tmp_path, 'cfg = {**base, "TZ": "EST"}\n')
+    assert not _python_finds(tmp_path, 'KEY = "PATH"\ncfg = {KEY: "EST"}\n')
+    assert not _python_finds(tmp_path, 'cfg = {key_from_call(): "EST"}\n')
+    assert not _python_finds(tmp_path, 'KEY = "TZ"\ncfg = {KEY: "America/New_York"}\n')
