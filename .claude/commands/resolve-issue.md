@@ -353,11 +353,59 @@ changed:
 
 | What changed | How to exercise the candidate |
 |---|---|
-| Signal, indicator, strategy or fire-path code | `python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. Hermetic, in-process, and the production path per Rule 3.6, so it runs YOUR tree. |
+| Signal, indicator, strategy or fire-path code | `env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. In-process and the production path per Rule 3.6, so it runs YOUR tree — but read the two notes below before believing its output. |
 | Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree — but they are NOT hermetic; see below before running one. |
 | A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job** — but read the isolation note below first: a renamed job is not an isolated one. |
 | API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. |
-| A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now. |
+| A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now — for a **SELECT**. On a mutation it EXECUTES the statement; see below. |
+
+**`EXPLAIN ANALYZE` on an INSERT, UPDATE or DELETE runs it.** `ANALYZE` means
+"execute and report actual timings", and Postgres makes no exception for a
+mutation. So tuning a write with it against production writes to production.
+Two ways out, and say which you used:
+
+- plain `EXPLAIN` (no `ANALYZE`), which plans without executing — estimated
+  rows rather than actual, which is weaker but often enough to see a seq scan;
+- `./scripts/db_query_cr.sh` **without** `--commit`, whose rollback-by-default
+  transaction is exactly the isolation this needs. That is the load-bearing
+  safety guarantee CLAUDE.md describes for a typo'd UPDATE, and it covers this
+  case for free.
+
+Never run `EXPLAIN ANALYZE <mutation>` through a connection you opened
+yourself.
+
+**The signal replay is hermetic only if `REPLAY_PERSIST` is unset.**
+`scripts/replay_signal_monitor.py:465-466` treats that variable as an alias for
+`--persist`:
+
+```python
+# REPLAY_PERSIST env var is an alias for --persist. Either source enables.
+persist_mode = args.persist or os.environ.get('REPLAY_PERSIST', '').lower() == 'true'
+```
+
+So an environment carrying it from an earlier acceptance run commits captured
+fires to `signal_alerts` through production credentials, while the instruction
+above calls the command side-effect-free. Hence `env -u REPLAY_PERSIST` in the
+table, rather than trusting the shell you happen to be in.
+
+**A replay that exits 0 with zero fires may mean every bar failed.**
+`scripts/replay_signal_monitor.py:174-178` catches every exception from
+`evaluate_ticker` as a `logger.warning` and continues, and the no-fire path
+prints "No signals fired during the replay window." and `return 0`. A candidate
+that raises on every single bar therefore produces a clean-looking summary and
+a zero exit — the shape of a passing run, from code that evaluated nothing.
+
+So "zero fires" is only evidence once you have checked it is not zero
+evaluations:
+
+```bash
+env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor \
+    --date <D> --tickers SPY,IWM,QQQ 2>&1 | tee /tmp/replay.log
+grep -c "evaluate_ticker raised" /tmp/replay.log   # must be 0
+```
+
+A non-zero count fails the verification regardless of what the summary says.
+Paste that count alongside the fire counts.
 
 **`BRIEF_AS_OF` and `INSIGHT_AS_OF` are not sandbox flags.** Setting either
 resolves to `allow_update=True`:
@@ -527,7 +575,13 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
-   - the Codex summary comment showing **Completed** against the head SHA.
+   - the Codex summary comment showing **Completed** against the head SHA,
+     **and started after the ready-for-review transition** — the same cutoff
+     as the first alternative, for the same reason. Marking a draft ready does
+     not move the head, so the previous run's summary keeps reading Completed
+     for that SHA until the newly triggered run replaces it, and a SHA-only
+     summary check merges straight through that window. The summary carries
+     its own timestamp; compare it, not just the commit.
 
    **Check the author, not just the SHA.** Every reply you post on a thread is
    itself recorded as a review on the current head. Measured on this PR:
