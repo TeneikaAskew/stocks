@@ -162,14 +162,28 @@ declare -A _TAG_CACHE=()
 declare -A _SEEN_REPOS=()
 
 _load_tags() {
-    # _load_tags <repo_image>  -> fills _TAG_CACHE[<repo_image>]; nonzero on failure
+    # _load_tags <repo_image>  -> fills _TAG_CACHE[<repo_image>]; nonzero on failure.
+    # A package that does not exist (retired, e.g. trading-platform after
+    # retire-legacy-images) has no tags and is NOT a failure; any other
+    # error (permission, API) is, because a sweep over an unreadable
+    # package could release nothing or the wrong thing.
     local repo_image=$1
     if [ -z "${_TAG_CACHE[${repo_image}]+x}" ]; then
-        local out
-        out=$(gcloud artifacts docker tags list "${repo_image}" \
-            --format="value(tag,version)" 2>/dev/null) || {
-            echo "  ERROR: cannot list tags on ${repo_image}" >&2; return 1; }
-        _TAG_CACHE[${repo_image}]="${out}"
+        local out err errf
+        errf=$(mktemp)
+        if out=$(gcloud artifacts docker tags list "${repo_image}" \
+                --format="value(tag,version)" 2>"${errf}"); then
+            _TAG_CACHE[${repo_image}]="${out}"
+        else
+            err=$(cat "${errf}" 2>/dev/null)
+            if [[ "${err}" == *NOT_FOUND* || "${err}" == *"not found"* ]]; then
+                _TAG_CACHE[${repo_image}]=""
+            else
+                echo "  ERROR: cannot list tags on ${repo_image}: ${err%%$'\n'*}" >&2
+                return 1
+            fi
+        fi
+        rm -f "${errf}"
     fi
 }
 
