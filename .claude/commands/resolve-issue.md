@@ -368,9 +368,13 @@ one. While writing, the standing gates:
   and say so in **both** PR descriptions. **On a widening those do not all
   land together**: solyra's step 1 moves its type and readers only, because its
   canonical mocks are validated against the vendored schema and a null in one
-  fails until the sync. Its `contract:sync`, type widening and fixture update
-  are step 3, after this repo has merged and deployed. The three-step sequence
-  is above.
+  fails until the sync. Its `contract:sync` and fixture update are step 3,
+  after this repo has merged and deployed — the type does NOT move again, it
+  widened in step 1 — and step 3 needs its own solyra branch and PR, since the
+  step-1 PR merged two steps earlier and a commit pushed to a merged head
+  lands in no PR at all. Until it merges, solyra's vendored snapshot is stale
+  against this repo's `main` and its `contract:check` fails on every unrelated
+  PR over there. The three-step sequence is above.
 - **Rule 3.10** — a handler doing blocking I/O is declared `def`, not
   `async def`. Converting one is a concurrency change: audit for lazy
   singletons, module-cache read-modify-write, and check-then-insert first.
