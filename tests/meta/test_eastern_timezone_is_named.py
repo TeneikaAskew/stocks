@@ -983,7 +983,7 @@ def _target_names(node: ast.AST) -> set[str]:
             if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store)}
 
 
-def _bound_names(scope: ast.AST) -> set[str]:
+def _bound_names(scope: ast.AST, nodes=None) -> set[str]:
     """Every name this scope binds, by ANY construct, nested scopes excluded.
 
     This is the shadowing question, and it is separate from "can I resolve
@@ -1010,7 +1010,7 @@ def _bound_names(scope: ast.AST) -> set[str]:
     declarations gets both right with no branch.
     """
     out: set[str] = set()
-    for node in _scope_nodes(scope):
+    for node in (nodes if nodes is not None else _scope_nodes(scope)):
         if isinstance(node, ast.Assign):
             for tgt in node.targets:
                 out |= _target_names(tgt)
@@ -1066,7 +1066,7 @@ def _replaces_the_module_binding(tree: ast.AST, name: str) -> bool:
     return False
 
 
-def _local_aliases(scope: ast.AST) -> dict[str, str]:
+def _local_aliases(scope: ast.AST, nodes=None) -> dict[str, str]:
     """`alias -> original name`, for `import X as Y` / `from X import Y as Z`.
 
     `_call_name` reports the name as written, so `from zoneinfo import
@@ -1096,7 +1096,7 @@ def _local_aliases(scope: ast.AST) -> dict[str, str]:
     """
     seen: dict[str, str] = {}
     conflicted: set[str] = set()
-    for node in _scope_nodes(scope):
+    for node in (nodes if nodes is not None else _scope_nodes(scope)):
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
         for a in node.names:
@@ -1111,7 +1111,7 @@ def _local_aliases(scope: ast.AST) -> dict[str, str]:
     return {k: v for k, v in seen.items() if k not in conflicted}
 
 
-def _local_modules(scope: ast.AST) -> dict[str, str]:
+def _local_modules(scope: ast.AST, nodes=None) -> dict[str, str]:
     """`local name -> module it was imported from`, for `from X import Y`.
 
     Separate from `_local_aliases`, which answers "what was this renamed
@@ -1131,7 +1131,7 @@ def _local_modules(scope: ast.AST) -> dict[str, str]:
     """
     seen: dict[str, str] = {}
     conflicted: set[str] = set()
-    for node in _scope_nodes(scope):
+    for node in (nodes if nodes is not None else _scope_nodes(scope)):
         if not isinstance(node, ast.ImportFrom) or not node.module:
             continue
         tail = node.module.rsplit(".", 1)[-1]
@@ -1142,7 +1142,7 @@ def _local_modules(scope: ast.AST) -> dict[str, str]:
     return {k: v for k, v in seen.items() if k not in conflicted}
 
 
-def _local_attrs(scope: ast.AST) -> dict[str, dict[str, ast.AST]]:
+def _local_attrs(scope: ast.AST, nodes=None) -> dict[str, dict[str, ast.AST]]:
     """`obj -> {attr: (value, node)}`, for resolving `obj.attr` as a zone.
 
     Two spellings land in one map because they read identically at the use
@@ -1169,7 +1169,7 @@ def _local_attrs(scope: ast.AST) -> dict[str, dict[str, ast.AST]]:
     # effect at a given line is a flow question, so a conflicted name resolves
     # to nothing, exactly as `_local_aliases` handles two imports of one name.
     seen_classes: dict[str, int] = {}
-    for node in _scope_nodes(scope):
+    for node in (nodes if nodes is not None else _scope_nodes(scope)):
         if isinstance(node, ast.ClassDef):
             seen_classes[node.name] = seen_classes.get(node.name, 0) + 1
             body = _collect_bindings(_scope_nodes(node), {})
@@ -1393,15 +1393,21 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
         # ALL -- by any construct, not just the ones resolvable to a literal --
         # and that one `shadowed` set governs all three maps, because Python
         # has one namespace per scope and not three.
+        # ONE traversal of this scope, shared by every collector below. Each
+        # of them materialised `_scope_nodes(scope)` again, and the final
+        # descent walked it once more, so a cold `_scan()` spent most of its
+        # time re-walking the same trees -- 23.7 s here, 39 s on the
+        # reviewer's checkout, in the ordinary suite (Codex, PR #993).
+        nodes = list(_scope_nodes(scope))
         shadowed, defaults = _parameter_bindings(scope)
-        shadowed |= _bound_names(scope)
+        shadowed |= _bound_names(scope, nodes)
 
         def survives(m):
             return {k: v for k, v in m.items() if k not in shadowed}
 
         bindings = survives(inherited.bindings)
         bindings.update(defaults)
-        bindings.update(_collect_bindings(_scope_nodes(scope), {}))
+        bindings.update(_collect_bindings(nodes, {}))
         if scope is tree:
             for name, src in globals_.items():
                 _keep(bindings, name, src)
@@ -1409,13 +1415,13 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
             _keep(bindings, name, src)
 
         aliases = survives(inherited.aliases)
-        aliases.update(_local_aliases(scope))
+        aliases.update(_local_aliases(scope, nodes))
 
         modules = survives(inherited.modules)
-        modules.update(_local_modules(scope))
+        modules.update(_local_modules(scope, nodes))
 
         attrs = {k: dict(v) for k, v in survives(inherited.attrs).items()}
-        for obj, members in _local_attrs(scope).items():
+        for obj, members in _local_attrs(scope, nodes).items():
             attrs.setdefault(obj, {}).update(members)
 
         env = _Env(bindings, aliases, attrs, modules)
@@ -1430,7 +1436,7 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
         # PR #993). A nested scope under a class inherits what the CLASS
         # inherited, not what the class defines.
         nested = inherited if isinstance(scope, ast.ClassDef) else env
-        for node in _scope_nodes(scope):
+        for node in nodes:
             out[id(node)] = env
             if not isinstance(node, _SCOPES):
                 continue
@@ -2058,12 +2064,22 @@ def _python_hits(path: pathlib.Path, text: str):
         # filter below skipped them before either was looked at (Codex,
         # PR #993). Read before that filter, since the point is that the call
         # name is not the thing that makes this a timezone context.
-        if name in _ENV_SETTER_CALLS and len(node.args) >= 2:
-            key = node.args[0]
-            if (isinstance(key, ast.Constant) and isinstance(key.value, str)
-                    and key.value.lower() in _TZ_KEYWORDS):
-                follow(legacy, offsets, node, node.args[1], env,
-                       lambda shown, k=key.value, n=name: f"{n}({k!r}, {shown})")
+        if name in _ENV_SETTER_CALLS:
+            # Positional OR keyword: `os.environ.setdefault("TZ",
+            # default="EST")` is the same call as the two-positional form,
+            # and requiring `len(node.args) >= 2` skipped it (Codex, PR
+            # #993). `key`/`default` are `MutableMapping.setdefault`'s
+            # names; `value` is accepted as well so the spelling in the
+            # finding cannot walk past either.
+            kws = {k.arg: k.value for k in node.keywords if k.arg}
+            key = node.args[0] if node.args else kws.get("key")
+            value = (node.args[1] if len(node.args) >= 2
+                     else kws.get("default", kws.get("value")))
+            key_text = _const_string(key, env) if key is not None else None
+            if (value is not None and key_text is not None
+                    and key_text.lower() in _TZ_KEYWORDS):
+                follow(legacy, offsets, node, value, env,
+                       lambda shown, k=key_text, n=name: f"{n}({k!r}, {shown})")
 
         # `os.environ.update(...)` takes a mapping OR an iterable of pairs,
         # and both install the process zone. `update` is not a two-positional
@@ -2495,7 +2511,17 @@ def _salvage(text: str):
 # `%%bash`, `%%sh`, `%%script bash` -- the cell magics whose BODY is shell
 # rather than Python. `%%time` and `%%capture` are not here: their body is
 # ordinary Python and the parser should keep reading it.
-_SHELL_CELL_MAGIC = re.compile(r"^[ \t]*%%(?:bash|sh|script\b.*)")
+_SHELLS = r"(?:bash|sh|zsh|ksh|dash|fish)"
+_SHELL_CELL_MAGIC = re.compile(
+    r"^[ \t]*%%(?:" + _SHELLS + r"|script\s+" + _SHELLS + r")\b")
+# `%%python`, `%%python3`, `%%script python`: the body is Python and belongs
+# on the parse path with the header blanked. `script\b.*` used to send EVERY
+# `%%script` cell to the shell pass, so `%%script python` followed by
+# `print("Never set TZ=EST")` reported text Python only prints (Codex,
+# PR #993). Another interpreter -- ruby, perl -- is neither: its body goes to
+# the regex pass as text, the weaker reader, which is how an unparseable
+# Python cell is treated and errs toward reporting.
+_PYTHON_CELL_MAGIC = re.compile(r"^[ \t]*%%(?:python3?|script\s+python3?)\b")
 
 
 def _notebook_shell(cells) -> str:
@@ -2565,6 +2591,8 @@ def _notebook_hits(path, text: str):
         lines = cell.splitlines()
         if lines and _SHELL_CELL_MAGIC.match(lines[0]):
             continue
+        if lines and _PYTHON_CELL_MAGIC.match(lines[0]):
+            lines = [""] + lines[1:]        # header blanked, body is Python
         stripped = "\n".join(_strip_magic(l) for l in lines)
         if _parses(stripped):
             parseable.append(stripped)
@@ -3088,7 +3116,13 @@ _SHELL_OUTPUT_CMD = re.compile(
 # sources it, so blanking it hid a real assignment -- the previous version of
 # this pass blanked every matching command regardless of where its output
 # went (Codex, PR #993).
-_SHELL_REDIRECT = re.compile(r">>?|\||(?<![A-Za-z0-9_-])tee(?![A-Za-z0-9_-])")
+# `>` and `>>` count only when they write somewhere that can be read back. A
+# redirect to stderr (`>&2`, `1>&2`, `>/dev/stderr`), to a descriptor, or to
+# the bit bucket is still a diagnostic: `echo 'Never set TZ=EST' >&2` prints,
+# and the raw operator test failed CI on it (Codex, PR #993).
+_SHELL_REDIRECT = re.compile(
+    r"\d?>>?(?!\s*(?:&\d|/dev/(?:stderr|stdout|null|tty)\b))"
+    r"|\||(?<![A-Za-z0-9_-])tee(?![A-Za-z0-9_-])")
 _SHELL_QUOTED = re.compile(r"\"[^\"\n]*\"|'[^'\n]*'")
 
 
@@ -3195,6 +3229,14 @@ def _command_end(line: str, start: int) -> int:
         elif line.startswith("&&", i) or line.startswith("||", i):
             return i
         elif ch == "&":
+            # `>&2`, `2>&1`, `&>file`: the `&` belongs to the redirect. Reading
+            # it as a background operator cut the command before the
+            # descriptor, so `echo 'Never set TZ=EST' >&2` was bounded to
+            # `... >` and the redirect check saw a write to a file
+            # (Codex, PR #993).
+            if (i > 0 and line[i - 1] in "<>") or line.startswith("&>", i):
+                i += 1
+                continue
             return i
         i += 1
     return len(line)
@@ -3381,10 +3423,14 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool) -> str:
 # then `export TZ="$LEGACY"` resolved to nothing and the fixed zone passed both
 # guards. A helper-scoped variable is the ordinary way to write this, so the
 # gap was on the commoner spelling (Codex, PR #993).
+# Anchored to a COMMAND, not a physical line: `LEGACY=EST; export TZ="$LEGACY"`
+# is two commands on one line, and requiring the whole line to be one
+# assignment collected neither (Codex, PR #993). The value may end at a
+# separator as well as at end of line, and an assignment may start after one.
 _SHELL_SCALAR = re.compile(
-    r"^[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:^|[;&|][ \t]*)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
-    r"(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))[ \t]*$",
+    r"(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))[ \t]*(?=$|[;&|])",
     re.M)
 
 
@@ -3413,7 +3459,9 @@ def _shell_scalars(text: str) -> dict:
         # bind globally. `_scalar_in_force` decides what a given reference can
         # see; this only records which kind it is.
         local = m.group(1) in ("local", "declare", "typeset")
-        out.setdefault(m.group(2), []).append((m.start(), value, local))
+        # The NAME's offset, not the match's: the match may begin at the
+        # separator that ended the previous command.
+        out.setdefault(m.group(2), []).append((m.start(2), value, local))
     return out
 
 
@@ -3619,8 +3667,15 @@ def _scheduler_offenders(name: str, func: str) -> list[str]:
         # only the earliest definition read that as covered while the
         # scheduler was created with no zone at all (Codex, PR #993).
         covered = False
+        expanded = _array_expansions(cmd)
         for spelling, assignments in zoned.items():
-            if spelling not in cmd:
+            # A real expansion, not the text of one inside another
+            # argument. `--message-body '{"note":"${flags[@]}"}'` carries the
+            # spelling and expands nothing -- single quotes are literal, and
+            # even double-quoted it would be part of the body, not a flag --
+            # while the raw substring test read it as covered (Codex, PR
+            # #993). Same shape as the `--time-zone` substring one round ago.
+            if spelling not in expanded:
                 continue
             in_force = [carries for pos, carries in assignments if pos <= at]
             if in_force and in_force[-1]:
@@ -3629,6 +3684,44 @@ def _scheduler_offenders(name: str, func: str) -> list[str]:
         if covered:
             continue
         out.append(f"{name}: {' '.join(cmd.split())[:90]}")
+    return out
+
+
+def _array_expansions(cmd: str) -> set[str]:
+    """The `${name[@]}` spellings that are whole, expanding words in `cmd`.
+
+    Walked with the quote state machine: an expansion inside single quotes is
+    literal, and one that shares a word with other text -- quoted or not --
+    is the text of an argument rather than the array's elements. Only a word
+    that IS the expansion, bare or double-quoted, hands the array to gcloud.
+    """
+    out: set[str] = set()
+    words: list[tuple[str, bool]] = []        # (text, was single-quoted)
+    word, quote, escaped, single = "", None, False, False
+    for ch in cmd:
+        if escaped:
+            word += ch; escaped = False; continue
+        if quote:
+            if ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+            else:
+                word += ch
+            continue
+        if ch in "\"'":
+            quote = ch; single = single or ch == "'"; continue
+        if ch.isspace():
+            if word or single:
+                words.append((word, single))
+            word, single = "", False
+            continue
+        word += ch
+    if word or single:
+        words.append((word, single))
+    for text, was_single in words:
+        if not was_single and re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\}", text):
+            out.add(text)
     return out
 
 
@@ -7814,3 +7907,142 @@ def test_pine_positional_timezone_arguments_are_read():
     src = 'x = 1\nt = time(timeframe.period, session, "EST")'
     assert src[_pine_call_hits(src)[0][0].start():].startswith('"EST"')
     assert not _pine_call_hits(_strip_pine_comments('// t = time(timeframe.period, session, "EST")'))
+# -- Round 28 (Codex, PR #993) ---------------------------------------------------
+#
+# Six findings on the head before the audit commits; all six fixed here rather
+# than recorded, per the standing direction to close what a review could find.
+
+
+def test_an_assignment_before_a_separator_is_collected():
+    """`LEGACY=EST; export TZ="$LEGACY"` is two commands on one line."""
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out) or NONPY_UNAMBIGUOUS.search(out))
+
+    assert scanned('LEGACY=EST; export TZ="$LEGACY"')
+    assert scanned('LEGACY=EST && export TZ="$LEGACY"')
+    # Ordering and the canonical zone, on the compound form.
+    assert scanned('LEGACY=EST; export TZ="$LEGACY"; LEGACY=America/New_York')
+    assert not scanned('LEGACY=America/New_York; export TZ="$LEGACY"')
+    # The offset recorded is the NAME's, so the in-force rule still orders
+    # assignments correctly when a match begins at the separator.
+    scalars = _shell_scalars("A=one; A=two")
+    assert [v for _, v, _ in scalars["A"]] == ["one", "two"]
+    assert scalars["A"][0][0] < scalars["A"][1][0]
+
+
+def test_a_diagnostic_to_stderr_is_still_a_diagnostic():
+    """`echo 'Never set TZ=EST' >&2` prints; only a readable sink is configuration."""
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out) or NONPY_UNAMBIGUOUS.search(out))
+
+    for line in ("echo 'Never set TZ=EST' >&2", "echo 'Never set TZ=EST' 1>&2",
+                 "echo 'Never set TZ=EST' >/dev/stderr", "echo 'TZ=EST' > /dev/null"):
+        assert not scanned(line), line
+    for line in ("echo 'TZ=EST' > /tmp/app.env", "echo 'TZ=EST' >> app.env",
+                 "echo 'TZ=EST' | tee app.env", "echo 'TZ=EST' 2>&1 > app.env",
+                 "echo 'TZ=EST' &> app.env"):
+        assert scanned(line), line
+    # The root cause was one level down: `_command_end` read the `&` of a
+    # redirect as a background operator and cut the command before the
+    # descriptor. A real `&` still separates.
+    assert _command_end("echo x >&2", 4) == len("echo x >&2")
+    assert _command_end("sleep 1 & export TZ=EST", 5) == 8
+    assert scanned("sleep 1 & export TZ=EST")
+
+
+def test_an_array_expansion_must_be_a_whole_shell_word():
+    """`--message-body '{"note":"${flags[@]}"}'` expands nothing."""
+    zoned = "flags=(--time-zone America/New_York)\n"
+    payload = zoned + "gcloud scheduler jobs create http j --message-body '{\"note\":\"${flags[@]}\"}'\n"
+    assert _scheduler_offenders("<top level>", payload), "text inside another argument"
+    literal = zoned + "gcloud scheduler jobs create http j '${flags[@]}'\n"
+    assert _scheduler_offenders("<top level>", literal), "single quotes are literal"
+    for real in ('"${flags[@]}"', "${flags[@]}"):
+        cmd = zoned + f"gcloud scheduler jobs create http j {real}\n"
+        assert not _scheduler_offenders("<top level>", cmd), real
+    assert _array_expansions('a "${flags[@]}" b') == {"${flags[@]}"}
+    assert _array_expansions("a '${flags[@]}' b") == set()
+    assert _array_expansions('a "x ${flags[@]}" b') == set()
+
+
+def test_script_cell_magics_route_by_interpreter():
+    """`%%script python` is Python; `%%script bash` is shell; ruby is text."""
+    def probe(cells):
+        nb = json.dumps({"cells": [{"cell_type": "code", "source": c}
+                                   for c in cells]})
+        return _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+
+    _l, _o, rest = probe([["%%script python\n", 'print("Never set TZ=EST")\n']])
+    assert not NONPY_AMBIGUOUS.search(rest), "printed text is not a setting"
+    _l, offsets, _r = probe([["%%python\n", "from datetime import timezone, timedelta\n",
+                              "ET = timezone(timedelta(hours=-5))\n"]])
+    assert offsets, "a Python cell magic's body is parsed"
+    for header in ("%%bash\n", "%%script bash\n", "%%sh\n"):
+        _l, _o, rest = probe([[header, "export TZ=EST\n"]])
+        assert NONPY_AMBIGUOUS.search(rest), header
+    # Another interpreter is not blanked: it goes to the parse path like any
+    # other cell, and whatever does not parse goes to the regex pass. Ruby's
+    # `ENV['TZ'] = 'EST'` happens to parse as Python and is reported there;
+    # the property is that it is reported SOMEWHERE rather than nowhere.
+    legacy, _o, rest = probe([["%%script ruby\n", 'puts "hi"\n', "ENV['TZ'] = 'EST'\n"]])
+    assert legacy or NONPY_AMBIGUOUS.search(rest)
+    assert 'puts "hi"' in rest, "the line that is not Python reaches the weaker reader"
+
+
+def test_environment_setters_take_keyword_arguments():
+    """`os.environ.setdefault("TZ", default="EST")` installs the zone."""
+    legacy, _ = _probe_py('import os\nos.environ.setdefault("TZ", default="EST")\n')
+    assert legacy
+    legacy, _ = _probe_py('import os\nos.environ.setdefault(key="TZ", default="EST")\n')
+    assert legacy
+    legacy, _ = _probe_py('import os\nos.environ.setdefault("TZ", "EST")\n')
+    assert legacy
+    legacy, _ = _probe_py('import os\nos.environ.setdefault("REGION", default="EST")\n')
+    assert not legacy
+    legacy, _ = _probe_py('import os\nos.environ.setdefault("TZ", default="America/New_York")\n')
+    assert not legacy
+
+
+def test_each_scope_is_traversed_once():
+    """The collectors share one materialised node list per scope.
+
+    Each collector re-walked `_scope_nodes(scope)`, and the descent walked it
+    again, so a cold `_scan()` was mostly repeated traversal: 23.7 s here and
+    39 s on the reviewer's checkout, in the ordinary suite (Codex, PR #993).
+    Measured after: 17.4 s. This pins the sharing, not the wall clock -- a
+    timing assertion in CI is a flake generator.
+    """
+    tree = ast.parse("import os\nx = 1\ndef f(tz):\n    return tz\n")
+    nodes = list(_scope_nodes(tree))
+    calls = []
+    real = _scope_nodes
+
+    def counting(scope):
+        calls.append(id(scope))
+        return real(scope)
+
+    import builtins
+    globals_ = globals()
+    saved = globals_["_scope_nodes"]
+    globals_["_scope_nodes"] = counting
+    try:
+        _scoped_envs(tree)
+    finally:
+        globals_["_scope_nodes"] = saved
+    # `descend` walks each scope ONCE and shares the list with its five
+    # collectors: the module once, `f` once. The two one-time passes that
+    # run before the descent, `_declared_global_bindings` and
+    # `_nonlocal_bindings`, look INSIDE the inner scopes for `global` and
+    # `nonlocal` statements -- which is where those live -- so each walks `f`
+    # once more and the module not at all. Measured, not reasoned: the first
+    # version of this assertion had the two scopes the other way round. A
+    # collector that starts re-walking its scope again shows up here as an
+    # extra call against that scope.
+    f = tree.body[2]
+    assert calls.count(id(tree)) == 1, calls
+    assert calls.count(id(f)) == 3, calls
+    assert len(calls) == 4, calls
+    # And the helpers still accept a scope alone.
+    assert _bound_names(tree) == _bound_names(tree, nodes)
