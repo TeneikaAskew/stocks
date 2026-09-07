@@ -51,7 +51,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from gcp.signal_monitor import rvol_gate_verdict
+from gcp.signal_monitor import _ET, rvol_gate_verdict
 
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
@@ -163,7 +163,14 @@ def replay_ticker(
             # instance, so without this rollover date 1 exhausting the cap
             # would suppress every candidate on every later date (Codex P1 on
             # PR #934). Harmless for a single-date replay.
-            _bar_date = _ts.date()
+            #
+            # A session is an EASTERN date, and it is derived through the
+            # monitor's own clock so it matches the date refresh_level_map
+            # bounds by. Replay bars carry naive UTC stamps, so the bar's
+            # own .date() rolled at 00:00 UTC: extended-hours bars between
+            # 00:00 and 04:00 UTC reset the session early and the real ET
+            # change then reset nothing (Codex on #1022).
+            _bar_date = monitor._now(_ET).date()
             if prev_date is not None and _bar_date != prev_date:
                 monitor.daily_trades[ticker] = 0
                 # The level map is SESSION state too: refresh_level_map

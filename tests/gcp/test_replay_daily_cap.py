@@ -166,3 +166,32 @@ def test_multi_date_replay_invalidates_the_cached_level_map():
     replay_ticker(m, 'SPY', bars, captured)
     assert m.level_maps.get('SPY') is not stale, (
         "crossing into a new session must drop the previous session's level map")
+
+
+def test_multi_date_replay_rolls_over_on_the_eastern_date_not_utc():
+    """Codex on #1022 (round 10): refresh_level_map bounds the frame by the
+    monitor's ET date (_now(_ET)), so the rollover must key on the same
+    date. Replay bars carry naive UTC stamps: 23:30 UTC and 01:30 UTC the
+    next day are ONE Eastern session (19:30 and 21:30 ET) and must not
+    reset; 12:00 UTC the next day (08:00 ET) is the next session and must."""
+    from scripts.replay_signal_monitor import replay_ticker
+    m = _monitor()
+    captured = []
+    _install_stub(m, captured)
+    stale = object()
+    m.level_maps['SPY'] = stale
+    m.daily_trades['SPY'] = 2
+    seen: list = []
+    m.evaluate_ticker = lambda ticker: seen.append(
+        (m.level_maps.get(ticker) is stale, m.daily_trades.get(ticker)))
+
+    bars = pd.DataFrame([
+        {'Time': pd.Timestamp('2026-08-27 23:30:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+        {'Time': pd.Timestamp('2026-08-28 01:30:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+        {'Time': pd.Timestamp('2026-08-28 12:00:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+    ])
+    replay_ticker(m, 'SPY', bars, captured)
+    assert seen == [(True, 2), (True, 2), (False, 0)], seen
