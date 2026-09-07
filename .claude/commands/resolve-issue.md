@@ -164,7 +164,8 @@ if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
   # A non-fast-forward is a STOP: a diverged branch would be implemented and
   # tested against a head missing remote commits, and only fail at push.
 else
-  git checkout -b "<headRefName>" --track "origin/<headRefName>"
+  git checkout -b "<headRefName>" --track "origin/<headRefName>" \
+    || { echo "CANNOT CREATE <headRefName> — stop, do not edit"; false; }
 fi
 
 # CASE B — no existing PR. Create one branch, and remember its name; every
@@ -172,8 +173,17 @@ fi
 # Name the base explicitly: without it the branch forks from whatever is
 # checked out, so an unrelated feature branch's commits ride into the PR, or
 # the branch starts behind main. `git fetch` above does not move HEAD.
-git checkout -b fix/<short-description> origin/main   # or feature/ chore/ docs/ test/
+git checkout -b fix/<short-description> origin/main \
+  || { echo "CANNOT CREATE the branch — stop, do not edit"; false; }
 ```
+
+**Every one of those checkouts is guarded, not just the first.** `checkout -b`
+fails when the name is already taken — by an earlier attempt, or a closed PR's
+leftover branch — and a failed checkout leaves you **on the branch you were
+already on**, which is often `main`. The run then captures that name, edits,
+commits, and pushes it. The chained CASE A form above exists for the same
+reason; guarding one branch of an `if` and not the other is how this file grew
+the defect in the first place.
 
 **CASE A has taken your baseline away.** Phase 1 requires reproducing the
 finding against the current tree, and the tree you are now on carries the
@@ -187,8 +197,11 @@ which one you used:
 
 ```bash
 BASE_TREE=$(mktemp -d -t base-tree-XXXXXX) && rmdir "$BASE_TREE"
-git worktree add "$BASE_TREE" \
-  "$(git merge-base origin/main <headRefName>)"   # the PR's own base
+git worktree add "$BASE_TREE" origin/main          # validity: is it still real?
+# ...and for the PR's own before/after, the base it forked from:
+#   git worktree add "$BASE_TREE" "$(git merge-base origin/main <headRefName>)"
+# Two questions, two baselines: an old merge base can still reproduce a defect
+# main has since fixed, and continuing the PR then finishes redundant work.
 # reproduce there; the failing-before test in Phase 4 runs there too
 ...
 git worktree remove "$BASE_TREE"    # when the before-half is captured
