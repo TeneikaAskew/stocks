@@ -1,0 +1,189 @@
+name: Audit finding
+description: A finding carried out of an audit report or an adversarial review, tracked to a defensible close
+title: "[audit] <ID> — <the finding in one line>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For findings sourced from an audit document or a cross-review, where the
+        report is the provenance and this issue is the tracked remediation.
+
+        **The report is a claim, not evidence.** An audit is a measurement made
+        on the date it ran. Re-run it now and paste today's numbers. #861 was
+        filed at 77 days stale, was 85 when work started, and the drift itself
+        turned out to be evidence about the writer. Two of its stated root
+        causes were only findable by running the job, not by reading the report.
+
+        A finding that no longer reproduces closes on that evidence. A finding
+        whose proposed remedy is measurably wrong closes on the counterfactual:
+        #815's whole resolution is "do not add the stop", backed by 736 real
+        fires and a sweep showing every stop level is worse than none.
+
+  - type: input
+    id: source
+    attributes:
+      label: Source
+      description: The audit document, section, and finding ID.
+      placeholder: "docs/audits/2026-08-27-claude-codebase-review/06-trading-logic.md § CRITICAL, T1"
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File and line range the finding points at, as it stands on main today.
+      placeholder: "lib/gamma.py:740-741,755-760"
+
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: >-
+        The mechanism, in your own words, not a quote of the report. Say what is
+        wrong and why it produces the observed effect.
+      placeholder: |
+        `_crossings_at` treats `g1 == 0.0` as a zero-crossing. `bs_gamma` calls
+        `scipy.stats.norm.pdf(d1)`, which underflows to exactly 0.0 for deep-wing spots
+        on short-dated contracts. The escalating search added in #771 pushes the grid into
+        that region, and `min(crossings, key=|p-spot|)` then returns the boundary of the
+        underflow zone as "the true dealer-gamma zero".
+    validations:
+      required: true
+
+  - type: textarea
+    id: reverification
+    attributes:
+      label: Re-verified against the live system on <date>
+      description: >-
+        Run the report's own measurement again now and paste the command with
+        its output. If the numbers moved, say by how much. If it no longer
+        reproduces, say so here and close the issue on this evidence.
+      render: shell
+      placeholder: |
+        $ ./scripts/db_query_cr.sh -q "SELECT count(*) FROM gamma_levels_eod WHERE abs(gamma_flip - spot)/spot > 0.20"
+        54
+
+        $ ./scripts/db_query_cr.sh -q "SELECT sign(total_gex) s, count(*) FROM gamma_levels_eod WHERE abs(gamma_flip-spot)/spot > 0.20 GROUP BY 1"
+        -1 | 54
+         1 |  0
+        All 54 artifacts fall on negative-GEX days, zero on positive. The regime split is the signature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: already-addressed
+    attributes:
+      label: Partially addressed already
+      description: >-
+        What has already shipped against this finding, and what that shipment
+        deliberately did not do. #810 shipped observability, not enforcement,
+        and saying so is what stopped it being re-litigated as unfixed.
+      placeholder: |
+        #810 shipped observability, not enforcement: every fire now records
+        `concurrent_positions` and `mtm_pnl`, plus a `risk_shadow:` log line naming which
+        control would have blocked. That was deliberate. #815's result is why: a
+        prudent-looking control cost -12.70pct here. These get measured before they are
+        switched on.
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - critical — user-facing output that looks current and is not, or a live fire path
+        - high — decision-critical correctness
+        - medium — parity, architecture, contained
+        - low — cleanup, cost
+    validations:
+      required: true
+
+  - type: dropdown
+    id: historical-impact
+    attributes:
+      label: Historical evidence impact
+      description: >-
+        Where provenance cannot identify affected artifacts, choose UNKNOWN
+        rather than assuming old evidence is clean.
+      options:
+        - NONE — no artifact was produced under the finding
+        - RERUN — affected artifacts can be identified and recomputed
+        - DISCARD AFFECTED RESULTS — outputs where the finding changed decisions
+        - UNKNOWN — NEEDS ARTIFACT MAPPING
+    validations:
+      required: true
+
+  - type: textarea
+    id: resolution
+    attributes:
+      label: Proposed resolution
+      description: >-
+        Numbered, in the order they should happen. Boundary first if the surface
+        is user-facing: one line, reversible, stops the misinformation today,
+        before the writer is diagnosed.
+      placeholder: |
+        1. Drop the `g1 == 0.0` branch; require `g2 != 0` and a non-degenerate neighbourhood.
+        2. Require |G| above a scale-relative floor (1e-9 x max|G|) before accepting a crossing.
+        3. Reconsider the #771 escalation itself: `None` on a one-sided chain was the correct answer.
+        4. Backfill-correct the 54 contaminated ticker-days, or mark them NULL.
+    validations:
+      required: true
+
+  - type: textarea
+    id: change-my-mind
+    attributes:
+      label: What would change my mind
+      description: >-
+        Especially where you are proposing NOT to act, or where the obvious
+        remedy is the one you are rejecting. State the measurement that would
+        reverse the conclusion.
+      placeholder: |
+        - If #814's fill realism materially changes the live-vs-backtest gap, the
+          counterfactual needs re-running. It used live fills throughout so it is not itself
+          contaminated, but the comparison it argues about would shift.
+        - If the time-stop is ever relaxed, the tail argument weakens and the stop question
+          reopens. The two are coupled and should be decided together.
+
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: Definition of done
+      description: >-
+        Closure requires the stated regression, integration or parity test, plus
+        an explicit disposition for affected historical artifacts. Make it a bar
+        a run can clear.
+      placeholder: |
+        - A test reproducing the pure-put 0DTE case that fails before the fix.
+        - The production query re-run: zero flips >20% from spot, or every remaining one explained.
+        - A decision recorded on the 54 historical rows, since leaving them is a silent lie to
+          anything reading gamma_levels_eod.
+    validations:
+      required: true
+
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues and ordered dependencies
+      description: Which findings must land first, and which are related but genuinely distinct.
+      placeholder: |
+        C-01 and C-02 are ordered dependencies. C-03 is related to #812 and #845 but distinct.
+        T3 (#814) and T4 (#815) must be resolved together.
+
+  - type: checkboxes
+    id: attestation
+    attributes:
+      label: Evidence attestation
+      options:
+        - label: >-
+            The re-verification above was run against the live system while
+            filing this issue. It is not the report's original numbers restated,
+            not recalled from a previous session, and not read off a doc.
+          required: true
+        - label: >-
+            Where I characterised a population, I asked for the distribution
+            rather than the extremes.
+          required: true
+        - label: >-
+            Corrections and retractions in the source report are carried across
+            here rather than dropped. The report's own retraction of a proposed
+            mechanism is worth preserving.

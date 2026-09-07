@@ -1,0 +1,151 @@
+name: Follow-up — deferred work from a PR, review, or move
+description: Work knowingly left out of something that shipped, or carried across from the other repo
+title: "<area>: <the remainder, stated as work not as regret>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For the remainder: a finding whose fix exceeded a PR's scope, a coverage
+        gap a review surfaced, a check that only covers one direction, or an
+        issue moved between repos after the frontend split.
+
+        This form exists so a review thread can resolve against a tracked item
+        instead of being left open. #940 was split out of a review on #933
+        rather than patched there, said exactly why, and recorded that it was
+        not a regression that PR introduced.
+
+        **If this is a move, re-verify on arrival.** Every moved issue here
+        carries a "Verified <date> that the defect still exists in this repo"
+        line, with the paths updated. A moved issue that no longer reproduces
+        gets closed on that evidence, not re-filed.
+
+  - type: input
+    id: parent
+    attributes:
+      label: Parent
+      description: The PR, review thread, issue, or source repo this comes out of.
+      placeholder: "Follow-up from #1013 | Split out of the Codex review on #933 at commit 7b82f10 | Moved from TeneikaAskew/stocks#868"
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-deferred
+    attributes:
+      label: Why it was not done there
+      description: >-
+        Say it plainly. "Out of scope" is a reason; so is "the fix is
+        cross-cutting and needs a capacity design under Rule 0"; so is "these
+        were left out because they sit outside the frontend's main fan-out".
+        A deferral without a stated reason reads as an oversight.
+      placeholder: |
+        The fix is cross-cutting and needs a capacity design under CLAUDE.md Rule 0: the obvious
+        repair puts a Cloud SQL round-trip in the per-bar fire path, 3 tickers x 390 RTH bars per
+        session, on a gate that runs before the signal is even scored.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence from the live system
+      description: >-
+        Show the remainder is real and still open, now. For a move, this is the
+        "still reproduces in this repo" check with the updated paths. For a
+        coverage gap, run the check and paste what it reports. Command and
+        output together.
+      render: shell
+      placeholder: |
+        $ python scripts/export_openapi.py --check && grep -c '"200"' platform/api/openapi.json
+        17 operations still emit an empty 200 schema.
+
+        $ gcloud scheduler jobs describe phase6-playbook-daily --location=us-east1 --format='value(schedule,state)'
+        30 4 * * 1-5   ENABLED
+    validations:
+      required: true
+
+  - type: textarea
+    id: holds-the-line
+    attributes:
+      label: What holds the line today
+      description: >-
+        What stops this getting worse while it is open, and what that mechanism
+        does not cover. A floor that can only shrink is a real control and
+        deserves saying; so does its blind spot.
+      placeholder: |
+        `UNMOCKED_REQUESTED` records them as a floor that can only shrink: a requested operation
+        with no mock and no entry fails the suite, and an entry that gains a mock must be
+        deleted, which the test enforces. So a route disappearing is caught and the existing
+        gaps stay visible. What it does not do is make the mutation paths exercisable.
+
+  - type: textarea
+    id: why-it-matters
+    attributes:
+      label: Why it matters
+      description: >-
+        The concrete consequence, ideally one that has already happened. "An
+        operation without a response_model emits an empty schema, so a renamed
+        field passes CI in both repos and breaks the other at runtime" is worth
+        more than "improves type safety".
+      placeholder: |
+        Widening is not caught: if a field goes from required `string` to nullable, the mock and
+        the type both stay valid while production can now return a null the app does not handle.
+        This is not hypothetical: the nullable typing in #54 caused two real UI bugs, found by
+        review rather than by the suite.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doing-the-work
+    attributes:
+      label: Doing the work
+      description: >-
+        Concrete enough that someone else could pick it up: the pattern to
+        follow, the files, and the check that tells them when they are done.
+      placeholder: |
+        Same pattern as #1013: write each model in platform/api/schemas.py from the router's
+        actual return statements, not from solyra's types. `extra="allow"` on the model,
+        `response_model_exclude_unset=True` on the route, `Literal` only where the code provably
+        emits nothing else. Then regenerate the snapshot and run `npm run contract:sync` on the
+        solyra side in the same change set, per Rule 6.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope-cost
+    attributes:
+      label: Scope and cost
+      description: >-
+        What this pulls in, and what it will surface on first run. Expect a
+        batch of existing mismatches and budget for it rather than assuming a
+        clean bill.
+      placeholder: |
+        - New devDependency plus a codegen step.
+        - Covers only the typed operations; 17 of 98 are still untyped, so a renamed field in an
+          untyped response stays invisible either way.
+        - Expect a batch of existing mismatches on first run, the way the mock alignment did.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - A newly-nullable field in the vendored snapshot fails `tsc -b` until the hand-written
+          type admits null.
+        - The count printed by the contract test goes to zero, or every remaining exemption
+          states its reason.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: attestation
+    attributes:
+      label: Evidence attestation
+      options:
+        - label: >-
+            The evidence above was produced by running against the live system
+            or the current tree while filing this issue, not recalled from the
+            parent PR's description or a previous session.
+          required: true
+        - label: >-
+            If this is a move between repos, I re-verified the defect still
+            reproduces here and updated the paths.

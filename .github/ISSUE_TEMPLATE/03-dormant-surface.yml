@@ -1,0 +1,165 @@
+name: Dormant surface — retire or restore
+description: A table, job, endpoint, or module that is unfed, unread, or unscheduled. Decide its fate on evidence.
+title: "<surface>: <unfed | unread | unscheduled> — retire or restore?"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For surfaces that are neither clearly alive nor clearly dead: a table
+        nothing writes, a job nothing schedules, an endpoint nothing calls, a
+        module whose consumers vanished in a rewrite.
+
+        **"Nothing reads it" is a claim that has to be measured, in both repos.**
+        The frontend lives in TeneikaAskew/solyra; a table with no Python
+        consumer can still be rendered on a dashboard tile. `playbook_cards`
+        looked dormant and was being served to the user as today's setups.
+
+        **Distinguish "never scheduled" from "the writer failed".** They have
+        different fixes and the failure history will not tell you which. The
+        `phase6-playbook` job had six executions, all on one day in June, and no
+        Cloud Scheduler entry at all. Reading the code would not have found
+        that; `gcloud scheduler jobs list` did.
+
+  - type: input
+    id: surface
+    attributes:
+      label: Surface
+      description: The table, job, endpoint, or module, named exactly.
+      placeholder: "playbook_cards (table) + phase6-playbook (Cloud Run Job)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: condition
+    attributes:
+      label: Condition
+      options:
+        - Unfed — consumers exist, writer stopped or never ran
+        - Unread — writer runs on schedule, nothing consumes the output
+        - Unscheduled — the job exists and is deployable but no scheduler fires it
+        - Orphaned — neither written nor read
+        - Never populated — created but has never held a row
+    validations:
+      required: true
+
+  - type: textarea
+    id: freshness-evidence
+    attributes:
+      label: Freshness and writer state, from the live system
+      description: >-
+        Query the data and read GCP. Not the docs: `docs/PIPELINE.md` was wrong
+        about a schedule in two places. Paste command and output together.
+      render: shell
+      placeholder: |
+        $ ./scripts/db_query_cr.sh -q "SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM playbook_cards"
+        2026-06-13 | 85 | 36
+
+        $ gcloud scheduler jobs list --location=us-east1 --filter="name~phase6"
+        Listed 0 items.
+
+        $ gcloud beta run jobs executions list --job=phase6-playbook --region=us-east1 --limit=10
+        (six executions, all 2026-06-14)
+
+        $ grep -n "phase6-playbook" gcp/deploy.sh
+        (no _schedule entry; not in the all) target)
+    validations:
+      required: true
+
+  - type: textarea
+    id: consumers
+    attributes:
+      label: Consumers, measured in both repos
+      description: >-
+        Paste the searches. A surface is only dead when both sides come back
+        empty. Say explicitly if you checked source only and not the deployed
+        build.
+      render: shell
+      placeholder: |
+        $ grep -rEn "playbook_cards|/api/playbook" lib/ gcp/ platform/ scripts/ tests/
+        (11 hits: router, writer, tests)
+
+        solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
+        Both live. So this is Tier 1: stale rows rendered as today's setups.
+    validations:
+      required: true
+
+  - type: textarea
+    id: forensics
+    attributes:
+      label: How it got here
+      description: >-
+        Git forensics with dates and commits. A surface dropped as collateral of
+        an unrelated rewrite reads differently from one deliberately retired,
+        and the commit message usually does not mention it. Use the pickaxe.
+      render: shell
+      placeholder: |
+        $ git log --oneline -S "DataPipelineStatus" -- src platform/src
+        911ec69 (Apr 26) added it and wired it into DashboardPage
+        8829f0b (Jun 5) rebuilt the Dashboard as briefing-first, silently dropping the mount
+
+        The Jun 5 commit enumerates the new page's contents and states "all other pages are
+        untouched"; the widget's removal is never mentioned. Accidental rewrite debris.
+
+  - type: textarea
+    id: options
+    attributes:
+      label: Options, with a recommendation
+      description: >-
+        Give the reader a decision to make, and say which one you would take and
+        why. If the surface is user-facing and stale, disabling the render is
+        one line and stops the misinformation today, before the writer is
+        diagnosed.
+      placeholder: |
+        - **Retire** — nobody noticed its absence for three months and the briefing-first
+          dashboard has no slot for an ops widget. Recommended unless the next option is
+          actually wanted.
+        - **Restore** — if operators want this visibility back, decide where it mounts and
+          add a fixture so E2E covers it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost of leaving it running
+      description: >-
+        For an unread writer, the compute is a live bill and the audit rows are
+        false confidence. Estimate $/run x runs/day x 30 where a schedule fires.
+        Write "n/a" for a pure code surface.
+      placeholder: |
+        Weekly regime-combination job: ~4 min at 4 CPU / 8Gi, weekly, ~$0.30/run x 4 = ~$1.20/mo.
+        Small, but the audit table it writes has no reader, which is the part that misleads.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: >-
+        Retirement and restoration have different bars. Retiring means proving
+        no caller and recording the retention decision. Restoring means a
+        writer, a deploy path, a schedule, a freshness SLO, and a consumer-age
+        guard, not just a re-run.
+      placeholder: |
+        Retire: `grep -r "<name>" lib/ gcp/ platform/ scripts/` returns nothing; the schedule is
+        deleted; the retention/export decision is recorded; the cost delta is measured.
+
+        Restore: writer scheduled and in gcp/deploy.sh `all)`; an entry in
+        scripts/audit_data_freshness.py with writer_job and min_rows_per_day; a max-age guard at
+        the read boundary that fails loud; the table current, shown by the query re-run.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: attestation
+    attributes:
+      label: Evidence attestation
+      options:
+        - label: >-
+            The freshness, scheduler, and execution state above were read from
+            the live system while filing this issue, not from a doc, a code
+            comment, or a previous session's notes.
+          required: true
+        - label: >-
+            The consumer search covered both repos, and I have said so if I
+            checked source only rather than the deployed build.
+          required: true

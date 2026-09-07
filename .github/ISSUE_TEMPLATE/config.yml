@@ -1,0 +1,36 @@
+# Blank issues stay enabled deliberately. The forms encode the standard; they
+# are not a gate. A finding that does not fit one of them is better filed
+# freehand than squeezed into the wrong shape.
+#
+# Note that these forms apply to the GitHub web UI only. Issues created through
+# the API bypass them entirely, which covers every automated filer in this repo:
+# .github/workflows/handle-workflow-failure.yml (workflow-failure) and
+# gcp/failure_notifier.py (gcp-job-failure), plus anything an agent opens. Those
+# carry their own body format and their own dedupe-by-label behaviour.
+blank_issues_enabled: true
+
+contact_links:
+  - name: A workflow or Cloud Run Job just failed
+    url: https://github.com/TeneikaAskew/stocks/issues?q=is%3Aissue+is%3Aopen+label%3Aautomated
+    about: >-
+      Do not file these by hand. handle-workflow-failure.yml and
+      gcp/failure_notifier.py open them automatically and append repeat failures
+      as comments to the existing issue rather than opening a new one. Check the
+      automated label first; if one is already open, add your findings there.
+
+  - name: The rules these forms are enforcing
+    url: https://github.com/TeneikaAskew/stocks/blob/main/CLAUDE.md
+    about: >-
+      Rule 3.11 (a claim without evidence is a guess, say which one it is),
+      Rule 0 (capacity math before merge), Rule 3.5 (replay now, never next
+      session), Rule 3.6 (production replay paths, no throwaway harnesses),
+      Rule 3.7 (no silent fallbacks), Rule 2.5 (read reviews before merging).
+      Each one names the incident that produced it.
+
+  - name: How to get evidence out of the live system from a sandbox
+    url: https://github.com/TeneikaAskew/stocks/blob/main/docs/CLAUDE_CODE_ON_WEB.md
+    about: >-
+      Outbound egress is port 443 only, so psql and the Cloud SQL proxy time
+      out. Use ./scripts/db_query_cr.sh for SQL and gcloud for GCP state; both
+      run the real work inside GCP. There is no excuse for filing an unmeasured
+      claim on the grounds that the database was unreachable.

@@ -1,0 +1,193 @@
+name: Defect
+description: Something is wrong in code, data, or infrastructure, and you can show it from the live system
+title: "<area>: <what is wrong, stated as the defect not the symptom>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Evidence comes from the system, not from memory.** CLAUDE.md Rule 3.11:
+        a claim without evidence is a guess, and you must say which one it is.
+        Every measurement below has to be produced by running something against
+        the live system while filing this issue.
+
+        Not evidence: a doc, a code comment, a number from an older issue, a
+        plausible mechanism, or a recollection of a previous session.
+        `docs/PIPELINE.md` said `fetch-market-data` runs "23:00 UTC daily"; the
+        live scheduler is `0 23 * * 1-5 America/New_York`. The doc was cited as
+        justification for a cache boundary, produced a wrong fix, and had to be
+        corrected too.
+
+        "I have not measured this" is a complete and acceptable answer. Write it
+        where it applies rather than filling a section with a guess.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong. One or two sentences, stating the defect rather than the symptom.
+      placeholder: |
+        `lib/options_greeks.py::get_rate_and_yield` substitutes fixed risk-free and
+        dividend rates on import, query, or missing-row failures, with no freshness
+        gate. Gamma-flip computation consumes the same path.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence from the live system
+      description: >-
+        Paste the command AND its output, together. Read the system, not the
+        docs: `./scripts/db_query_cr.sh -q "..."`, `gcloud scheduler jobs
+        describe <job> --location=us-east1`, `gcloud run jobs describe <job>
+        --region=us-east1`, `gcloud beta run jobs executions list --job=<job>`,
+        `gcloud logging read ...`, `EXPLAIN (ANALYZE, BUFFERS)`, or a test run.
+        For a performance claim, read `rows=` on the scan node, not just
+        Execution Time: a LIMIT in an outer query does not bound an inner scan.
+      render: shell
+      placeholder: |
+        $ ./scripts/db_query_cr.sh -q "SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM playbook_cards"
+        2026-06-13 | 85 | 36
+
+        $ gcloud scheduler jobs list --location=us-east1 --filter="name~phase6"
+        Listed 0 items.
+    validations:
+      required: true
+
+  - type: textarea
+    id: distribution
+    attributes:
+      label: Distribution, where you are characterising data
+      description: >-
+        An aggregate cannot characterise a population. MIN/MAX on
+        `market_data_intraday` implied one timestamp convention and there were
+        two; the conclusion drove a change that shifted premarket bars four to
+        five hours and had to be reverted. If this issue makes a claim about
+        what a table or a population looks like, paste the grouped counts, not
+        the extremes. Otherwise write "n/a".
+      render: shell
+      placeholder: |
+        $ ./scripts/db_query_cr.sh -q "SELECT extract(hour from ts) h, count(*), min(ts::date), max(ts::date) FROM market_data_intraday WHERE ticker='IWM' GROUP BY 1 ORDER BY 1"
+        4 | 5636 | 2016-12-13 | 2026-09-04
+        5 | 4887 | 2026-04-06 | 2026-09-04
+
+  - type: textarea
+    id: current-expected
+    attributes:
+      label: Current vs expected behaviour
+      description: State both. "Expected" is what a correct system does, not what you wish it did.
+      placeholder: |
+        **Current:** the failure or missing value is replaced silently, and the caller
+        cannot tell the substitute from a real result.
+        **Expected:** invalid required input fails visibly; any allowed degradation is
+        typed, observable, and carries provenance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and blast radius
+      description: >-
+        Who consumes this surface. Establish it by grep, not by recollection,
+        and check the frontend in TeneikaAskew/solyra too before calling a
+        surface dead. Paste what you ran.
+      render: shell
+      placeholder: |
+        $ grep -rEn "playbook_cards" lib/ gcp/ platform/ scripts/ tests/ | wc -l
+        11
+        Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 — fires wrong, loses money, or serves a lie to the user right now
+        - P1 — decision-critical correctness, not currently firing
+        - P2 — architecture or parity, contained
+        - P3 — cleanup, cost, maintainability
+    validations:
+      required: true
+
+  - type: dropdown
+    id: historical-impact
+    attributes:
+      label: Historical evidence impact
+      description: >-
+        What happens to artifacts already produced under the broken behaviour.
+        Where provenance cannot identify them, choose UNKNOWN rather than
+        assuming old evidence is clean.
+      options:
+        - NONE — no artifact was produced under the defect
+        - RERUN — affected artifacts can be identified and recomputed
+        - DISCARD AFFECTED RESULTS — outputs where the defect changed decisions
+        - UNKNOWN — NEEDS ARTIFACT MAPPING
+    validations:
+      required: true
+
+  - type: textarea
+    id: remediation
+    attributes:
+      label: Proposed remediation direction
+      description: >-
+        Direction, not a patch. Prefer the order this repo has learned: stop the
+        misinformation at the boundary first (reversible, ships today), fix the
+        writer second, guard the class third. If the correct answer is "do not
+        fix", say so here and put the measurement that supports it under
+        Evidence.
+      placeholder: |
+        1. Disable the render behind an explicit max-age contract that fails loud.
+        2. Then diagnose the writer; the June stop is worth checking against deploy history.
+        3. Add a freshness guard at the render layer regardless, so the next instance surfaces itself.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: >-
+        The bar this issue closes against. Make it something a run can prove.
+        A regression test that fails against the unfixed code is the minimum.
+      placeholder: |
+        - A test reproducing the pure-put 0DTE case (gamma_flip = 424.5 at spot 600) that fails before the fix.
+        - The production query re-run: zero flips >20% from spot, or every remaining one explained.
+        - A decision recorded on the 54 historical rows (corrected or nulled).
+    validations:
+      required: true
+
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Provenance
+      description: >-
+        Where this came from, and whether it is a regression. #940 was split out
+        of a review on #933 rather than patched there because the fix exceeded
+        that PR's scope, and said so.
+      placeholder: |
+        Found by Codex on #933 at commit 7b82f10. Not a regression introduced by that PR:
+        daily_trades has had this property since long before it; the new ceilings inherit it.
+
+  - type: checkboxes
+    id: attestation
+    attributes:
+      label: Evidence attestation
+      options:
+        - label: >-
+            Every command output pasted above was produced by running it against
+            the live system while filing this issue. None of it is recalled from
+            memory, copied from a doc or a code comment, carried over from an
+            older issue, or inferred from a plausible mechanism.
+          required: true
+        - label: >-
+            Where a metric stands in for the thing I actually care about, I
+            spot-checked the stand-in against a known case. A coverage audit
+            here once reported 81 of 101 handlers untested by counting function
+            names while the suite drives URL paths; the real figure was 23.
+          required: true
+        - label: >-
+            Where a code comment contradicts my measurement, I widened the
+            measurement rather than overruling the comment.
