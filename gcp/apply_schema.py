@@ -271,11 +271,12 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
                       "the checkout (git fetch --deepen) and re-run.",
                       commit_sha, commit_time, newest_sha, len(ancestors))
         elif verdict == "ancestor":
-            log.error("Refusing to apply revision %s: the newest applied revision %s "
-                      "recorded it as an ancestor (its committer time %d is higher than "
-                      "%d, so the clocks were skewed). Out-of-order applies roll CREATE "
-                      "OR REPLACE objects back.",
-                      commit_sha, newest_sha, commit_time, newest_time)
+            log.error("Refusing to apply revision %s (commit time %d): the newest applied "
+                      "revision %s (commit time %d) recorded it as an ancestor%s. "
+                      "Out-of-order applies roll CREATE OR REPLACE objects back.",
+                      commit_sha, commit_time, newest_sha, newest_time,
+                      " although its committer time is higher, so the clocks were skewed"
+                      if commit_time > newest_time else "")
         else:
             log.error("Refusing to apply revision %s (commit time %d): a newer revision "
                       "%s (commit time %d) has already been applied. Out-of-order "

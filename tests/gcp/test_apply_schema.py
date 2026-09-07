@@ -589,3 +589,18 @@ def test_main_sweeps_unpopulated_matviews_even_when_a_unit_failed(tmp_path, monk
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema)])
     assert mod.main() == 1
     assert calls == ["unit", "unit", "sweep"]
+
+
+def test_ancestor_refusal_message_claims_skew_only_when_the_times_are_reversed(caplog):
+    """Seen in production (build e4be0456): an ordinary ancestor with a LOWER
+    committer time was refused with a message claiming its time was higher."""
+    import logging
+    with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
+        eng = _FakeEngine([[("b", 200, "b a")]])
+        assert guard_revision(eng, "a", 100) == (False, "b")
+    assert "skewed" not in caplog.text and "recorded it as an ancestor" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
+        eng = _FakeEngine([[("b", 90, "b a")]])
+        assert guard_revision(eng, "a", 100) == (False, "b")
+    assert "skewed" in caplog.text
