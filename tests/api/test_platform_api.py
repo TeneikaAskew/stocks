@@ -958,14 +958,14 @@ class TestBacktestAPI:
 
 # ── Playbook API ────────────────────────────────────────────────────────────
 
-# Hermetic: patches api.routers.playbook.gcs_reader (download_text +
-# list_matching_blobs) so /api/playbook and /api/reports/list parse a
-# synthetic markdown playbook / blob list — no real GCS. Module caches
-# are cleared per test.
+# Hermetic: /api/playbook reads the playbook_cards Cloud SQL table through
+# gcp.database.query_to_dataframe_strict (patched here with a canned frame);
+# /api/reports/list patches api.routers.playbook.gcs_reader. Module caches
+# are cleared per test. The freshness contract itself (#861) is covered in
+# tests/test_playbook_evaluate.py; this pins the wire shape the frontend reads.
 class TestPlaybookAPI:
-    """`/api/playbook/{ticker}` (parses a phase6 markdown file) and
-    `/api/reports/list/{ticker}` (lists phase report blobs). Both read GCS
-    via `api.gcs_reader`."""
+    """`/api/playbook/{ticker}` (structured cards + analysis_date) and
+    `/api/reports/list/{ticker}` (lists phase report blobs via GCS)."""
 
     def _clear_caches(self):
         from api.routers import playbook as pb_module
@@ -974,32 +974,34 @@ class TestPlaybookAPI:
         pb_module._REPORT_TEXT_CACHE.clear()
 
     def test_playbook(self, client, monkeypatch):
-        from api.routers import playbook as pb_module
+        from datetime import date
+        from gcp import database
         self._clear_caches()
 
-        # Minimal phase6 playbook markdown with one card the parser
-        # recognises: a ### heading + "-> CALL ENTRY" + a win rate.
-        markdown = (
-            "# Phase 6 Playbook IWM\n\n"
-            "### Morning Trend Continuation\n\n"
-            "**WHAT YOU SEE ON THE CHART:**\n"
-            "  * Price riding above EMA9\n"
-            "  * Higher highs since the open\n\n"
-            "**WHAT TO CHECK:**\n"
-            "- [ ] Price above VWAP\n"
-            "- [ ] RSI between 50-70\n\n"
-            "**IF ALL CONFIRMED -> CALL ENTRY**\n\n"
-            "Historical win rate: 62.5%\n"
-            "Avg return: 8.0 bps\n"
-        )
+        rows = pd.DataFrame([{
+            "analysis_date": date.today(), "generated_at": pd.Timestamp.utcnow(),
+            "card_num": 1, "name": "Morning Trend Continuation",
+            "description": "Price riding above EMA9", "direction": "CALL",
+            "conditions": ["Price above VWAP", "RSI between 50-70"],
+            "win_rate": 0.625, "avg_return_bps": 8.0, "sample_n": 40,
+            "target_pct": "+0.30%", "stop_pct": "-0.15%", "horizons": [],
+            "best_horizon_min": None, "best_horizon_win_rate": None,
+            "best_horizon_avg_bps": None,
+        }])
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(
-            pb_module.gcs_reader, "download_text", lambda blob: markdown
+            database, "query_to_dataframe_strict",
+            lambda sql, params=None, timeout_s=None: rows.copy(),
         )
 
         r = client.get("/api/playbook/IWM")
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         data = r.json()
         assert data["ticker"] == "IWM"
+        assert data["source"] == "cloud_sql"
+        # The age fields are what let the UI show (and refuse) stale cards.
+        assert data["analysis_date"] == date.today().isoformat()
+        assert data["age_days"] == 0
         assert "cards" in data
         assert len(data["cards"]) == 1
         card = data["cards"][0]
@@ -1007,6 +1009,7 @@ class TestPlaybookAPI:
         assert card["direction"] == "CALL"
         assert card["direction"] in ("CALL", "PUT", "NEUTRAL")
         assert card["win_rate"] == 62.5
+        assert card["conditions"] == ["Price above VWAP", "RSI between 50-70"]
 
     def test_reports_list(self, client, monkeypatch):
         from api.routers import playbook as pb_module
@@ -1655,18 +1658,24 @@ class TestReviewModeIntegration:
         monkeypatch.setattr(bt_module.gcs_reader, "list_matching_blobs", fake_bt_list)
         monkeypatch.setattr(bt_module.gcs_reader, "download_csv", fake_bt_csv)
 
-        # ── Playbook (GCS) ───────────────────────────────────────────────
+        # ── Playbook (Cloud SQL, strict query) ──────────────────────────
         pb_module._PLAYBOOK_CACHE.clear()
         pb_module._LIST_CACHE.clear()
         pb_module._REPORT_TEXT_CACHE.clear()
-        playbook_md = (
-            "# Phase 6 Playbook IWM\n\n"
-            "### Morning Trend Continuation\n\n"
-            "**IF ALL CONFIRMED -> CALL ENTRY**\n\n"
-            "Historical win rate: 60.0%\n"
-        )
+        from datetime import date as _date
+        playbook_rows = pd.DataFrame([{
+            "analysis_date": _date.today(), "generated_at": pd.Timestamp.utcnow(),
+            "card_num": 1, "name": "Morning Trend Continuation",
+            "description": "", "direction": "CALL", "conditions": ["Above VWAP"],
+            "win_rate": 0.60, "avg_return_bps": 5.0, "sample_n": 30,
+            "target_pct": "+0.30%", "stop_pct": "-0.15%", "horizons": [],
+            "best_horizon_min": None, "best_horizon_win_rate": None,
+            "best_horizon_avg_bps": None,
+        }])
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(
-            pb_module.gcs_reader, "download_text", lambda blob: playbook_md
+            database, "query_to_dataframe_strict",
+            lambda sql, params=None, timeout_s=None: playbook_rows.copy(),
         )
 
         # ── Reference (Cloud SQL — older than 30d so AV branch skipped) ──
