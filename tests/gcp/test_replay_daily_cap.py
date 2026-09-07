@@ -218,10 +218,20 @@ def test_reset_session_state_returns_every_session_field_to_fresh():
     m._brief_bias_cache['SPY'] = {'bias': 'LONG'}
     m._brief_bias_cache['IWM'] = {'bias': 'SHORT'}
     m._last_fire_ts['SPY'] = 'ts'
+    m.insight_cache.get('SPY', lambda t: None)
+    m.insight_cache.get('IWM', lambda t: None)
+    m.insight_invalidated['SPY'] = True
+    m.insight_invalidated['IWM'] = True
     m.windows['SPY'] = pd.DataFrame({'Close': [1.0, 2.0]})
     m.level_refresh_success_count['SPY'] = 4
 
     m.reset_session_state('SPY')
+
+    fetched: list = []
+    m.insight_cache.get('SPY', lambda t: fetched.append(t))
+    m.insight_cache.get('IWM', lambda t: fetched.append(t))
+    assert fetched == ['SPY'], "SPY's insight evicted (refetched), IWM's still cached"
+    assert 'SPY' not in m.insight_invalidated and m.insight_invalidated['IWM'] is True
 
     assert m.daily_trades['SPY'] == 0 and m.daily_pnl['SPY'] == 0.0
     assert m.active_positions['SPY'] == [] and m.orb_levels['SPY'] == {}

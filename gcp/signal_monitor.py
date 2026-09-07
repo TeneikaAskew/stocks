@@ -759,7 +759,8 @@ class SignalMonitor:
         cache is keyed by ticker only, so day 2's leg trackers were built
         from day 1's brief, and last_prices / fired_breaks let the first
         bar false-cross yesterday's close while suppressing a repeat
-        crossing (Codex on #1022). This is the one list.
+        crossing (Codex on #1022); the insight cache is keyed by ticker
+        with a wall-clock staleness window. This is the one list.
 
         Kept on purpose: the rolling bar window (indicators need history
         across the boundary) and the observability counters.
@@ -777,6 +778,12 @@ class SignalMonitor:
         self.fired_breaks = {k for k in self.fired_breaks if k[0] != ticker}
         self._brief_bias_cache.pop(ticker, None)
         self._last_fire_ts.pop(ticker, None)
+        # The insight cache is keyed by ticker with a 60 s wall-clock
+        # staleness window, so a replay crossing into the next session
+        # within that window would gate day 2's signals on day 1's
+        # insight (Codex on #1022).
+        self.insight_cache.evict(ticker)
+        self.insight_invalidated.pop(ticker, None)
 
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
