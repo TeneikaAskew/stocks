@@ -60,25 +60,32 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         found += [psycopg2.OperationalError, psycopg2.InterfaceError]
     except Exception:                       # pragma: no cover - image without it
         logger.debug("psycopg2 not importable; its errors are not classified")
-    try:                                    # pg8000, the PRODUCTION Cloud SQL driver
-        import pg8000.exceptions as pg8000_exc   # noqa: PLC0415
-        # `lib/agents/model_routing.py` and `gcp/database.py` both reach Cloud
-        # SQL through `connector.connect(..., "pg8000")`, and the routing path
-        # hands back a bare pg8000 connection with no SQLAlchemy wrapper -- so
-        # a dropped or closed connection surfaces as a raw
-        # `pg8000.exceptions.InterfaceError` ("network error", "connection is
-        # closed"), often with no `__cause__`. Registering only the psycopg2
-        # equivalents left that as the bare 500 these guards exist to replace
-        # (Codex P1 on #999).
-        #
-        # `InterfaceError` ONLY. pg8000's hierarchy is not DB-API-complete: it
-        # has no `ProgrammingError`, and folds a syntax error -- our SQL being
-        # wrong -- into `DatabaseError`, so including that class would hide
-        # our own bugs again, exactly the conflation this module was written
-        # to end.
-        found += [pg8000_exc.InterfaceError]
+    # pg8000, the PRODUCTION Cloud SQL driver, is deliberately NOT registered
+    # by class. `lib/agents/model_routing.py` and `gcp/database.py` both reach
+    # Cloud SQL through `connector.connect(..., "pg8000")`, and the routing
+    # path hands back a bare pg8000 connection with no SQLAlchemy wrapper, so
+    # its failures arrive raw and often without a `__cause__` (Codex P1 on
+    # #999). But each of its two classes mixes outages with defects, so both
+    # are decided by PREDICATE instead: `_pg8000_transport_failure` and
+    # `_pg8000_server_gone` below.
+    try:                                    # the Cloud SQL connector's control plane
+        import aiohttp                      # noqa: PLC0415
+        # `Connector.connect()` fetches instance metadata and an ephemeral
+        # certificate from the SQL Admin API over aiohttp before any socket
+        # to the database is opened, and the lazy refresh both callers use
+        # logs and re-raises whatever that fetch raised. A network failure
+        # there is `aiohttp.ClientConnectionError` -- neither the builtin
+        # `ConnectionError` nor any google.api_core class -- so a cold
+        # connection or a certificate refresh during an Admin API outage was
+        # a bare 500 in every guard (Codex P1 on #999). A response the
+        # connector gave up on after its own 5xx retries is
+        # `ClientResponseError`, decided by STATUS in
+        # `_retryable_http_response`: 429 and 5xx are the service; a 4xx is
+        # our credentials or configuration and stays loud.
+        found += [aiohttp.ClientConnectionError]
     except Exception:                       # pragma: no cover - image without it
-        logger.debug("pg8000 not importable; its errors are not classified")
+        logger.debug("aiohttp not importable; connector transport errors are "
+                     "not classified")
     try:                                    # SQLAlchemy wraps the above
         from sqlalchemy import exc as sa_exc     # noqa: PLC0415
         # `sa_exc.TimeoutError` is the pool saying every configured connection
@@ -127,6 +134,77 @@ def _optional_dependency_missing(exc: BaseException) -> bool:
     return exc.name.split(".")[0] in OPTIONAL_DEPENDENCIES
 
 
+try:                                        # pragma: no cover - image without it
+    import pg8000.exceptions as _pg8000_exc
+except Exception:                           # pragma: no cover
+    _pg8000_exc = None
+try:                                        # pragma: no cover - image without it
+    import aiohttp as _aiohttp
+except Exception:                           # pragma: no cover
+    _aiohttp = None
+
+#: pg8000 raises `InterfaceError` for two unrelated things. The socket failing
+#: or the connection already being gone -- these three messages, verbatim from
+#: `pg8000.core` at 1.31.5 -- is an outage. Everything else it raises under the
+#: same class is the application misusing the driver: "Cursor closed", an
+#: identifier of the wrong type, a parameter it cannot encode, "Server refuses
+#: SSL". Registering the whole class read a lifecycle or argument regression
+#: inside one of the guarded helpers as a retryable 503 (Codex P1 on #999).
+_PG8000_TRANSPORT_MESSAGES: frozenset[str] = frozenset(
+    {"network error", "communication error", "connection is closed"})
+
+
+def _pg8000_transport_failure(exc: BaseException) -> bool:
+    """A pg8000 `InterfaceError` that means the transport, not the caller."""
+    if _pg8000_exc is None or not isinstance(exc, _pg8000_exc.InterfaceError):
+        return False
+    return bool(exc.args) and exc.args[0] in _PG8000_TRANSPORT_MESSAGES
+
+
+#: PostgreSQL SQLSTATEs that mean the SERVER went away, not that our SQL is
+#: wrong. Class 08 is "connection exception". 57P01, 57P02 and 57P03 are what
+#: a Cloud SQL restart or failover sends every open session -- administrator
+#: shutdown, crash shutdown, cannot connect now. 53300 is too_many_connections,
+#: a capacity outage of the same kind as the pool's `TimeoutError` above.
+_SERVER_GONE_SQLSTATES: frozenset[str] = frozenset(
+    {"57P01", "57P02", "57P03", "53300"})
+
+
+def _pg8000_server_gone(exc: BaseException) -> bool:
+    """A pg8000 `DatabaseError` carrying a connection or shutdown SQLSTATE.
+
+    pg8000 delivers every PostgreSQL error response as `DatabaseError`, with
+    the protocol fields in a dict and the SQLSTATE under `C` -- so a
+    failover's `57P01` and a syntax error's `42601` are the same class and
+    differ only in that payload (Codex P1 on #999). Reading the code keeps the
+    class out, as before, and lets the outage in. SQLAlchemy wraps the same
+    response as `sqlalchemy.exc.DatabaseError` raised FROM the driver's, which
+    the `__cause__` walk reaches.
+    """
+    if _pg8000_exc is None or not isinstance(exc, _pg8000_exc.DatabaseError):
+        return False
+    payload = exc.args[0] if exc.args else None
+    if not isinstance(payload, dict):
+        return False
+    code = payload.get("C")
+    return isinstance(code, str) and (
+        code.startswith("08") or code in _SERVER_GONE_SQLSTATES)
+
+
+def _retryable_http_response(exc: BaseException) -> bool:
+    """The SQL Admin API answered the connector 429 or 5xx after its retries."""
+    if _aiohttp is None or not isinstance(exc, _aiohttp.ClientResponseError):
+        return False
+    return exc.status == 429 or exc.status >= 500
+
+
+#: What cannot be decided by class alone. Each reads the one exception it is
+#: about and answers False for everything else.
+_INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
+                              _pg8000_transport_failure,
+                              _pg8000_server_gone,
+                              _retryable_http_response)
+
 #: Evaluated once at import. The set of installed drivers does not change
 #: while the process runs, and rebuilding it per request would put a dozen
 #: imports on every error path.
@@ -147,7 +225,8 @@ def is_infrastructure_error(exc: BaseException) -> bool:
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if isinstance(cur, INFRASTRUCTURE_ERRORS) or _optional_dependency_missing(cur):
+        if (isinstance(cur, INFRASTRUCTURE_ERRORS)
+                or any(decide(cur) for decide in _INFRASTRUCTURE_PREDICATES)):
             return True
         cur = cur.__cause__
     return False

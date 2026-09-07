@@ -1291,15 +1291,68 @@ def test_infrastructure_errors_are_classified_by_type():
     # `DatabaseError`, so that class stays OUT: it is where our own SQL
     # mistakes land.
     import pg8000.exceptions as pg8000_exc
-    assert is_infrastructure_error(pg8000_exc.InterfaceError("network error"))
-    assert is_infrastructure_error(
-        pg8000_exc.InterfaceError("connection is closed"))
-    assert not is_infrastructure_error(
-        pg8000_exc.DatabaseError({"C": "42601", "M": "syntax error at or near"}))
+    # The transport, in the words `pg8000.core` uses: an outage.
+    for message in ("network error", "communication error",
+                    "connection is closed"):
+        assert is_infrastructure_error(pg8000_exc.InterfaceError(message)), message
+    # The same class for the application misusing the driver: a defect.
+    # Registering the class wholesale hid these (Codex P1 on #999).
+    for message in ("Cursor closed", "identifier must be a str",
+                    "The parameter x can't be of type <class 'object'>.",
+                    "Server refuses SSL"):
+        assert not is_infrastructure_error(
+            pg8000_exc.InterfaceError(message)), message
+    assert not is_infrastructure_error(pg8000_exc.InterfaceError())
+    # A PostgreSQL error response is `DatabaseError` whatever it says; the
+    # SQLSTATE under `C` decides. A failover's shutdown, a lost connection
+    # and an exhausted server are outages; our SQL being wrong is not
+    # (Codex P1 on #999).
+    for code in ("57P01", "57P02", "57P03", "08006", "08003", "08001", "53300"):
+        assert is_infrastructure_error(pg8000_exc.DatabaseError(
+            {"S": "FATAL", "C": code, "M": "terminating connection"})), code
+    for code in ("42601", "42P01", "23505", "22P02", "0A000", "57014"):
+        assert not is_infrastructure_error(pg8000_exc.DatabaseError(
+            {"S": "ERROR", "C": code, "M": "syntax error at or near"})), code
+    assert not is_infrastructure_error(pg8000_exc.DatabaseError("no payload"))
+    assert not is_infrastructure_error(pg8000_exc.DatabaseError({"M": "no code"}))
     assert not is_infrastructure_error(pg8000_exc.Error("base class"))
     assert not hasattr(pg8000_exc, "ProgrammingError"), (
         "pg8000 grew a ProgrammingError: revisit whether DatabaseError can "
         "now be split and the connection half classified")
+    # SQLAlchemy wraps the same response as its own DatabaseError raised FROM
+    # the driver's; the cause walk reaches the SQLSTATE either way.
+    gone = pg8000_exc.DatabaseError(
+        {"S": "FATAL", "C": "57P01", "M": "administrator command"})
+    try:
+        raise sa_exc.DatabaseError("SELECT 1", {}, gone) from gone
+    except sa_exc.DatabaseError as wrapped_sa:
+        assert is_infrastructure_error(wrapped_sa)
+    wrong = pg8000_exc.DatabaseError({"S": "ERROR", "C": "42601", "M": "syntax"})
+    try:
+        raise sa_exc.DatabaseError("SELEC 1", {}, wrong) from wrong
+    except sa_exc.DatabaseError as wrapped_sa:
+        assert not is_infrastructure_error(wrapped_sa)
+
+    # The Cloud SQL connector's control plane. `Connector.connect()` fetches
+    # metadata and an ephemeral certificate from the SQL Admin API over
+    # aiohttp before opening a socket, and its lazy refresh re-raises what
+    # that fetch raised: a network failure is `ClientConnectionError`, and a
+    # response it gave up on after its own 5xx retries is
+    # `ClientResponseError` -- neither the builtin ConnectionError nor any
+    # google.api_core class (Codex P1 on #999). Status decides the second:
+    # 429 and 5xx are the service; a 4xx is our credentials or configuration.
+    import aiohttp
+    from types import SimpleNamespace
+    assert is_infrastructure_error(
+        aiohttp.ClientConnectionError("Cannot connect to sqladmin.googleapis.com"))
+    assert issubclass(aiohttp.ClientConnectorError, aiohttp.ClientConnectionError)
+    req = SimpleNamespace(real_url="https://sqladmin.googleapis.com/sql/v1beta4/x")
+    for status in (429, 500, 502, 503, 504):
+        assert is_infrastructure_error(
+            aiohttp.ClientResponseError(req, (), status=status)), status
+    for status in (400, 401, 403, 404):
+        assert not is_infrastructure_error(
+            aiohttp.ClientResponseError(req, (), status=status)), status
 
 
 def test_the_final_four_guards_keep_the_split(client, monkeypatch):
