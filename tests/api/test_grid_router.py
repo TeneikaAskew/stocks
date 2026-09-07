@@ -670,7 +670,13 @@ class TestGridTimeseries:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["ticker"] == "SPY"
-        assert data["data_source"] == "realtime"
+        # This fixture carries no quotes or deltas, so the spot is the
+        # chain's median strike. Since #825 that is served but labelled:
+        # `realtime_degraded` with a warning naming the method, never a
+        # bare `realtime` as if a $102.50 spot had come from the market.
+        assert data["data_source"] == "realtime_degraded"
+        assert data["spot_method"] == "median_strike"
+        assert any("median strike" in w for w in data["warnings"])
         assert data["expiration"] is not None
         assert isinstance(data["series"], list)
         assert len(data["series"]) > 0
@@ -760,3 +766,156 @@ class TestGridTimeseries:
 
         r = client.get("/api/options/SPY/grid/timeseries?strikes=,,")
         assert r.status_code == 400
+
+
+# ─── /grid/timeseries — #825 (fabricated $100 spot) + #826 (`or 0` on gamma/OI) ──
+
+
+def _ts_chain(snapshot_ts: pd.Timestamp, *, gamma_values=None,
+              with_quotes: bool = True) -> pd.DataFrame:
+    """One REALTIME snapshot for the /grid/timeseries query shape
+    (snapshot_ts, snapshot_date, expiration, strike, option_type,
+    open_interest, gamma, vega) plus the quote columns `_df_to_contracts`
+    reads for the parity spot. `with_quotes=False` blanks bid/ask/mark/
+    last so `gamma.estimate_spot` has nothing to work with (method='none',
+    price=0.0) — the #825 path. `gamma_values` overrides the per-row gamma
+    (use None entries to simulate a vendor outage — the #826 path)."""
+    exp = date(2026, 6, 19)
+    base = [
+        ("calls", 95.0, 500, 0.02, 5.50, 5.60),
+        ("puts", 95.0, 800, 0.02, 0.50, 0.60),
+        ("calls", 100.0, 1000, 0.05, 2.50, 2.60),
+        ("puts", 100.0, 800, 0.05, 2.45, 2.55),
+    ]
+    rows = []
+    for i, (ot, k, oi, g, bid, ask) in enumerate(base):
+        if gamma_values is not None:
+            g = gamma_values[i]
+        rows.append({
+            "snapshot_ts": snapshot_ts, "snapshot_date": snapshot_ts.date(),
+            "expiration": exp, "strike": k, "option_type": ot,
+            "open_interest": oi, "gamma": g, "vega": 0.1,
+            "bid": bid if with_quotes else None,
+            "ask": ask if with_quotes else None,
+            "mark": (bid + ask) / 2 if with_quotes else None,
+            "last_price": (bid + ask) / 2 if with_quotes else None,
+        })
+    return pd.DataFrame(rows)
+
+
+class TestGridTimeseriesFallbacks:
+    """GET /api/options/{ticker}/grid/timeseries — Rule 3.7 on the two
+    fabricated-value sites the 2026-08-27 audit found (issues #825, #826).
+    The endpoint has no frontend caller today, so these pin the contract
+    before anything wires it up."""
+
+    def test_no_spot_returns_unavailable_not_100(self, client, monkeypatch):
+        """#825: when `gamma.estimate_spot` has nothing to work with it
+        returns price=0.0 / method='none' (empty contract list, or a chain
+        with no strikes). The endpoint used to substitute a literal $100 and
+        compute GEX = net_gamma × 100² on it. Pin the exact code path by
+        making the estimator report 'none'."""
+        from lib import gamma as g
+        ts = pd.Timestamp("2026-06-01T15:55:00")
+        _install_query_router(monkeypatch, realtime_df=_ts_chain(ts, with_quotes=False))
+        monkeypatch.setattr(
+            grid_router.gamma, "estimate_spot",
+            lambda contracts: g.SpotEstimate(price=0.0, method="none", note="test"),
+        )
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["data_source"] == "unavailable"
+        assert body["series"] == []
+        assert "spot_used" not in body or body["spot_used"] is None
+        assert any("spot" in w.lower() for w in body["warnings"])
+        assert "100" not in str(body.get("spot_used"))
+
+    def test_all_gamma_missing_is_unavailable_not_zero_gex(self, client, monkeypatch):
+        """#826: a vendor outage that blanks gamma on every contract must
+        read as UNAVAILABLE. The inline `float(r['gamma'] or 0)` math
+        produced a well-formed series of GEX == 0.0 at every strike."""
+        ts = pd.Timestamp("2026-06-01T15:55:00")
+        df = _ts_chain(ts, gamma_values=[None, None, None, None])
+        _install_query_router(monkeypatch, realtime_df=df)
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["data_source"] == "unavailable"
+        assert body["series"] == []
+        assert any("gamma" in w.lower() for w in body["warnings"])
+
+    def test_partial_gamma_missing_is_flagged_degraded(self, client, monkeypatch):
+        """#826: partial coverage still returns a series, but the payload
+        must say the GEX is understated and by how much."""
+        ts = pd.Timestamp("2026-06-01T15:55:00")
+        df = _ts_chain(ts, gamma_values=[0.02, None, 0.05, 0.05])
+        _install_query_router(monkeypatch, realtime_df=df)
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["data_source"] == "realtime_degraded"
+        assert len(body["series"]) == 2
+        assert body["gamma_coverage"] == pytest.approx(0.75)
+        assert any("understated" in w.lower() for w in body["warnings"])
+
+    def test_gex_uses_lib_gamma_aggregation(self, client, monkeypatch):
+        """One source of truth for math: the per-strike net gamma must equal
+        lib.gamma.aggregate_by_strike on the same contracts, and the GEX
+        must use the parity spot, not a constant."""
+        from lib import gamma as g
+        ts = pd.Timestamp("2026-06-01T15:55:00")
+        df = _ts_chain(ts)
+        _install_query_router(monkeypatch, realtime_df=df)
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["data_source"] == "realtime"
+        spot = body["spot_used"]
+        assert spot is not None and 90 < spot < 110 and spot != 100.0
+        contracts = grid_router._df_to_contracts(df)
+        expected = {row["strike"]: row["net_gamma"] * spot * spot * g.GEX_MULTIPLIER
+                    for row in g.aggregate_by_strike(contracts)}
+        got = {row["strike"]: row["gex"] for row in body["series"]}
+        assert got.keys() == expected.keys()
+        for k in expected:
+            assert got[k] == pytest.approx(expected[k])
+
+    def test_median_strike_spot_is_labelled_not_silent(self, client, monkeypatch):
+        """With no quotes and no deltas `estimate_spot` falls back to the
+        chain's median strike (method='median_strike'). That is not a
+        market price, so the series must be labelled degraded and say so."""
+        ts = pd.Timestamp("2026-06-01T15:55:00")
+        _install_query_router(monkeypatch, realtime_df=_ts_chain(ts, with_quotes=False))
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["spot_method"] == "median_strike"
+        assert body["data_source"] == "realtime_degraded"
+        assert any("median strike" in w.lower() for w in body["warnings"])
+
+    def test_snapshot_with_no_gamma_is_omitted_not_served_as_zero(self, client, monkeypatch):
+        """Codex P1 on #1005: coverage was gated over the whole window, so a
+        latest snapshot with every gamma NULL slipped through when earlier
+        snapshots were populated, and aggregate_by_strike turned it into a
+        real-looking collapse to GEX == 0.0 as the current point. Each
+        snapshot must be gated on its own: an all-missing snapshot is
+        omitted (and named), never published as zero."""
+        t1 = pd.Timestamp("2026-06-01T15:50:00")
+        t2 = pd.Timestamp("2026-06-01T15:55:00")
+        df = pd.concat([_ts_chain(t1), _ts_chain(t2, gamma_values=[None] * 4)], ignore_index=True)
+        _install_query_router(monkeypatch, realtime_df=df)
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["data_source"] == "realtime_degraded"
+        stamps = {row["snapshot_ts"] for row in body["series"]}
+        assert stamps == {t1.isoformat()}, "the zero-coverage snapshot must be omitted"
+        assert all(row["gex"] != 0.0 for row in body["series"])
+        assert any(t2.isoformat() in w and "omitted" in w.lower() for w in body["warnings"])
+        # Auto-ranked strikes and the reference spot must come from the latest
+        # snapshot that HAS gamma, not from the omitted one.
+        r2 = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19")
+        assert r2.status_code == 200
+        assert r2.json()["data_source"] == "realtime_degraded"
+        assert r2.json()["strikes_resolved"] == [95.0, 100.0]
