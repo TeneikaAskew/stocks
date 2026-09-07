@@ -407,22 +407,43 @@ Codex posts its review roughly 3 minutes after the PR opens. **Never merge
 inside that window.** An empty review list at 60 seconds means "wait", not
 "clean". In order:
 
+0. **If the PR is a draft, mark it ready — before any check below.** CASE A can
+   land you on an auto-created `fix/workflow-*` draft, and pushing to a draft
+   does not un-draft it; GitHub refuses the merge. CLAUDE.md's failure-handler
+   procedure requires converting it once fixed.
+
+   This is step 0 rather than a late step because **marking ready is itself a
+   review trigger** (CLAUDE.md §2.5: "a PR opened for review, a draft marked
+   ready, or an explicit `@codex review`"). Undrafting after the review checks
+   starts a fresh review that the remaining steps would walk straight past, and
+   the PR merges while it is still running. Undraft first, then let every check
+   below run against the review that transition triggered.
+
+   If you cannot or should not undraft it — a PR this session did not open —
+   stop and say a human must.
 1. `pull_request_read` `method: "get_review_comments"` — **before** CI, not
    after.
 2. Confirm the current head **has been reviewed**, which is not the same as "a
    review object exists for it". A clean run posts no review at all, only a
    reaction, so requiring a review object would deadlock every PR that has
    nothing wrong with it. Either of these satisfies this step:
-   - `pull_request_read` `method: "get_reviews"` returning a review whose
+   - `pull_request_read` `method: "get_reviews"` returning a review that is
+     **authored by the review bot**, is not `CHANGES_REQUESTED`, and whose
      `commit_id` is the head SHA. **It returns oldest first, so the current
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
    - the Codex summary comment showing **Completed** against the head SHA.
 
-   What fails this step is neither of those: a summary still showing Running,
-   or naming an older commit, with all threads `is_outdated`. That head is
-   genuinely unreviewed — comment `@codex review` and wait.
+   **Check the author, not just the SHA.** Every reply you post on a thread is
+   itself recorded as a review on the current head. Measured on this PR:
+   `get_reviews` returned eight entries for `dcc8843`, seven of them mine, and
+   the only Codex review named `06160ad`. A SHA-only test would have let your
+   own replies satisfy the gate while the real review was still running.
+
+   What fails this step: a summary showing Running, or naming an older commit
+   with all threads `is_outdated`, or a head whose only reviews are yours. That
+   head is unreviewed — comment `@codex review` and wait.
 3. Every thread fixed-and-resolved, naming what changed and the covering test
    and commit, or replied to with why not. Zero unresolved is the bar.
 4. Verify each finding against the code before fixing it: reproduce, write the
@@ -435,13 +456,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    route. Push the fix, let the review re-run on the new SHA, and re-check.
    There is no round limit: repeated findings mean fix the root cause, not
    stop.
-6. **If the PR is a draft, mark it ready.** CASE A can land you on an
-   auto-created `fix/workflow-*` draft, and pushing to a draft does not
-   un-draft it; GitHub will refuse the merge. CLAUDE.md's failure-handler
-   procedure requires converting it once fixed. Either mark it ready or stop
-   and say it needs a human to.
-7. Only then CI green on the current head, and no merge conflict.
-8. **Merge it.** Steps 1-7 are the gate, not the destination; stopping here
+6. Only then CI green on the current head, and no merge conflict.
+7. **Merge it.** Steps 0-6 are the gate, not the destination; stopping here
    leaves the fix on a branch while Phase 9 describes the issue as landed.
    Merge once every step above passes, and record the merge commit in the
    Phase 9 status comment.
