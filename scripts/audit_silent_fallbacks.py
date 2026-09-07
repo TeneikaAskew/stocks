@@ -138,11 +138,32 @@ def _handler_returns(node: ast.ExceptHandler) -> tuple[list[str], list[str]]:
     An inventory that cannot see those cannot be diffed against the
     hand-written audit it replaces, which is the claim this script makes.
     """
+    # An UNCONDITIONAL re-raise, and only that.
+    #
+    # This used to fire on a `Raise` ANYWHERE in the handler, which silenced
+    # the shape that matters most -- one that raises on one branch and
+    # substitutes on another:
+    #
+    #     except Exception:
+    #         if owner != "local":
+    #             raise HTTPException(status_code=503, ...)
+    #         existing_keys = set()      # invisible to the inventory
+    #
+    # That is `platform/api/routers/journal.py` twice, and it is a real
+    # swallow: a signed-out user's failed dedupe lookup becomes "no existing
+    # entries", so an import re-adds trades it already holds (Codex, PR #994).
+    #
+    # Top-level is what makes a raise unconditional: everything after it in
+    # the handler is dead, so an assignment above it never escapes either and
+    # is not a substitution. A handler that raises on every branch through a
+    # conditional still reports nothing, because there is no neutral value to
+    # name -- the scan below only records substitutions.
+    if any(isinstance(st, ast.Raise) for st in node.body):
+        return [], []
+
     out: list[str] = []
     shapes: list[str] = []
     for n in _own_nodes(node):
-        if isinstance(n, ast.Raise):
-            return [], []      # re-raises: not a silent swallow
         if isinstance(n, ast.Return):
             name = _neutral(n.value)
             if name:

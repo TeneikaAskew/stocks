@@ -703,10 +703,10 @@ Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`):
 
 ```
 $ python scripts/audit_silent_fallbacks.py
-418 swallowing handlers in 122 files; 239 return a container or a zero rather than None
+423 swallowing handlers in 122 files; 243 return a container or a zero rather than None
 
 $ python scripts/audit_silent_fallbacks.py --worst
-52 swallowing handlers in 35 files (broad, unlogged, container-or-zero); 52 return a container or a zero rather than None
+54 swallowing handlers in 35 files (broad, unlogged, container-or-zero); 54 return a container or a zero rather than None
 ```
 
 The 2026-09-06 reading recorded here was `255 swallowing handlers in 88 files;
@@ -719,6 +719,13 @@ right. Two scanner defects, both found in review (Codex, PR #994):
 * `forbidden_shape` intersected the DISPLAY strings (`dc = []`) with the
   shape set (`[]`), so no assignment ever counted as a forbidden shape and
   `--worst` omitted them all;
+* a `Raise` ANYWHERE in a handler short-circuited the whole scan, so a
+  handler that raises on one branch and substitutes on another reported
+  nothing. Only an UNCONDITIONAL raise -- one at the handler's top level, where
+  everything after it is dead -- suppresses a finding now. That is what made
+  `platform/api/routers/journal.py:1211` and `:1277` visible: for a signed-out
+  owner a failed dedupe lookup becomes `existing_keys = set()`, so an import
+  re-adds trades the journal already holds;
 * it did not record LOOP-CONTROL swallows at all. `except Exception: continue`
   drops the current item and the collection comes back short with no caller
   able to tell -- `lib/data_loader.py:513` omits a timeframe that was asked

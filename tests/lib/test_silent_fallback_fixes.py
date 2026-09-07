@@ -573,3 +573,108 @@ def test_a_logged_continue_is_recorded_but_not_ranked_worst():
                    if isinstance(n, ast.ExceptHandler))
     display, _ = mod._handler_returns(handler)
     assert display == ["continue (item dropped)"]
+
+
+def test_a_row_that_solved_before_is_not_nulled_by_a_failed_re_solve():
+    """The gap-filling drop is destructive without this.
+
+    `load_chain` selects the sidecars, so the loaded frame is the only copy of
+    what a previous run solved, and `update_computed_columns` writes whatever
+    it is handed for every row. Dropping the columns to defeat the chain-wide
+    early return therefore puts NULL over a valid Greek for any contract that
+    solved last week and fails today (Codex, PR #994).
+    """
+    import numpy as np
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = pd.DataFrame({
+        "id": [1, 2],
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        # id=1 solved on an earlier run; id=2 is why this date was selected.
+        "gamma_computed": [0.05, None],
+        "delta_computed": [0.42, None],
+    })
+
+    def _enrich(df, ticker, snap):
+        out = df.copy()
+        # id=1 fails this time (an underivable spot for that contract),
+        # id=2 solves.
+        out["gamma_computed"] = [np.nan, 0.03]
+        out["delta_computed"] = [np.nan, 0.31]
+        return out
+
+    written: list = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", _enrich)
+        mp.setattr(mod, "update_computed_columns",
+                   lambda df: (written.append(df.copy()), len(df))[1])
+        loaded, n_updated = mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert (loaded, n_updated) == (2, 2)
+    got = written[0].set_index("id")
+    assert got.loc[1, "gamma_computed"] == pytest.approx(0.05), (
+        "a previously solved row was overwritten with the failed re-solve")
+    assert got.loc[1, "delta_computed"] == pytest.approx(0.42)
+    assert got.loc[2, "gamma_computed"] == pytest.approx(0.03), (
+        "the newly solved value must still be written")
+
+
+def test_the_carry_forward_aligns_on_id_not_on_position():
+    """Enrichment may drop rows; aligning by index would shift every value
+    after the gap onto the wrong contract."""
+    import numpy as np
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    prior = pd.DataFrame({"id": [1, 2, 3],
+                          "gamma_computed": [0.11, 0.22, 0.33]})
+    enriched = pd.DataFrame({"id": [3, 1],
+                             "gamma_computed": [np.nan, np.nan]})
+
+    out = mod._keep_solved(enriched, prior).set_index("id")
+    assert out.loc[3, "gamma_computed"] == pytest.approx(0.33)
+    assert out.loc[1, "gamma_computed"] == pytest.approx(0.11)
+    assert 2 not in out.index
+
+
+def test_a_conditional_re_raise_does_not_hide_the_other_branch():
+    """`raise` on one path, a neutral substitution on another.
+
+    The short-circuit fired on a `Raise` ANYWHERE in the handler, so the
+    branch that substitutes was invisible. That is the live shape at
+    `platform/api/routers/journal.py:1211` and `:1277`: a signed-out user's
+    failed dedupe lookup becomes "no existing entries", and the import re-adds
+    trades the journal already holds (Codex, PR #994).
+    """
+    import ast
+    mod = _scanner()
+    src = (
+        "def conditional():\n"
+        "    try:\n        g()\n    except Exception:\n"
+        "        if owner != 'local':\n"
+        "            raise HTTPException(status_code=503)\n"
+        "        keys = set()\n"
+        "def unconditional():\n"
+        "    try:\n        g()\n    except Exception:\n"
+        "        keys = set()\n"
+        "        raise\n"
+        "def every_branch_raises():\n"
+        "    try:\n        g()\n    except Exception:\n"
+        "        if x:\n            raise A()\n"
+        "        raise B()\n"
+    )
+    handlers = [n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.ExceptHandler)]
+    conditional, unconditional, all_raise = (
+        mod._handler_returns(h)[0] for h in handlers)
+
+    assert conditional == ["keys = set()"], conditional
+    assert unconditional == [], (
+        "a top-level raise makes everything above it unable to escape; that "
+        "assignment is not a substitution")
+    assert all_raise == [], (
+        "a handler with no neutral value has nothing to report, conditional "
+        "raises or not")

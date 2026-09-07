@@ -188,6 +188,34 @@ class GreeksUnavailable(RuntimeError):
     """
 
 
+def _keep_solved(enriched: pd.DataFrame, prior: pd.DataFrame) -> pd.DataFrame:
+    """Fill non-finite results from the values the table already held.
+
+    A re-solve is not always an improvement: an underivable spot or a failed
+    IV solve produces NaN for a contract whose Greeks are already stored and
+    correct. Writing that back is data loss dressed as a backfill, so a new
+    value replaces the old one only where the new value is finite.
+
+    Merged on `id`, not on position: `enrich_av_chain_with_greeks` may drop
+    rows, and aligning two frames of different lengths by index would shift
+    every value after the first gap onto the wrong contract.
+    """
+    if prior.empty or "id" not in enriched.columns:
+        return enriched
+    carried = prior.set_index("id")
+    out = enriched.set_index("id")
+    for col in COMPUTED_COLS:
+        if col not in carried.columns:
+            continue
+        old = pd.to_numeric(carried[col], errors="coerce").reindex(out.index)
+        if col not in out.columns:
+            out[col] = old
+            continue
+        new = pd.to_numeric(out[col], errors="coerce")
+        out[col] = new.where(np.isfinite(new), old)
+    return out.reset_index()
+
+
 def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
     """Load → enrich → UPDATE for one snapshot date.
 
@@ -213,6 +241,17 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
     # job was selected for is actually computed. The skip stays useful on the
     # request path, where re-solving a fully populated chain is wasted work;
     # this job's entire purpose is to fill the gaps.
+    # Kept FIRST, because the drop below is otherwise destructive. `load_chain`
+    # selects the sidecars, so this frame is the only copy of every value a
+    # previous run already solved; `update_computed_columns` writes whatever
+    # comes back for every row it is given. Dropping the columns and writing
+    # the result therefore puts NULL over a valid Greek for any contract that
+    # solved last week and fails today -- a fix for a silent fallback that
+    # destroys data, which is worse than the fallback (Codex, PR #994).
+    have = [c for c in COMPUTED_COLS if c in chain.columns]
+    prior = (chain[["id", *have]].copy()
+             if "id" in chain.columns and have else pd.DataFrame())
+
     pending_before = int(
         pd.to_numeric(chain.get("gamma_computed"), errors="coerce").isna().sum()
     ) if "gamma_computed" in chain.columns else len(chain)
@@ -220,6 +259,7 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
         columns=[c for c in COMPUTED_COLS if c in chain.columns], errors="ignore")
 
     enriched = enrich_av_chain_with_greeks(chain, ticker, snap)
+    enriched = _keep_solved(enriched, prior)
 
     # How many rows carry a finite gamma_computed after enrichment. This was
     # a log-line statistic and nothing else, which made the job unable to fail
@@ -243,6 +283,10 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
             f"date is a failure rather than a no-op")
 
     n_updated = update_computed_columns(enriched)
+    # Counted on the MERGED frame, so a row carried over from a previous run
+    # is not reported as missing. `finite` is the same count for the same
+    # reason -- it is what the table will hold after this write, which is the
+    # only number an operator can act on.
     still_missing = len(enriched) - finite
     log.info(
         "  %s %s: loaded=%d pending=%d enriched_finite=%d still_missing=%d updated=%d",
