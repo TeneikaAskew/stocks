@@ -1,160 +1,52 @@
 # Stocks Trading Platform
 
-A private stocks/trading platform on GCP for a single user or small team. It delivers scheduled briefs and real-time alerts to Discord, and provides an internal dashboard for analysis. The system uses a fleet of ~76 Cloud Run Jobs for data fetching, processing, and signal generation, all orchestrated by Cloud Scheduler. The primary user surfaces are Discord for interactions and a React/FastAPI dashboard for deep analysis.
+A private stocks and options trading intelligence platform on GCP: Cloud Run Jobs pull market, options, earnings, macro, filings and news data into Cloud SQL, compute Strat, gamma and signal analytics with one shared `lib/` engine, and deliver briefs and alerts to Discord. A FastAPI service (`solyra-api-prod` behind IAP, `solyra-api-staging` public with Firebase login) serves the [solyra](https://github.com/TeneikaAskew/solyra) React UI. This repository is the backend; the frontend moved to solyra in #957.
 
-![Last refresh](https://img.shields.io/badge/last_doc_refresh-2026--09--02-blue)
-![Monthly cost](https://img.shields.io/badge/monthly_cost-%24208.66-red)
-![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76-blue)
-![Cloud Scheduler crons](https://img.shields.io/badge/scheduled_crons-44-blue)
+![Last audit](https://img.shields.io/badge/docs_verified-2026--09--07-blue)
+![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_67_declared-blue)
+![Cloud Scheduler](https://img.shields.io/badge/schedulers-66_live-blue)
+![Cloud SQL tables](https://img.shields.io/badge/schema_tables-66_declared_%2F_94_live-blue)
 ![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/workflows/refresh-architecture-docs.yml/badge.svg)
 
----
+Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; the badges are updated by the monthly refresh.
 
 ## Documentation map
 
-This repo documents itself. Read these in order if you're new — or jump to whichever one matches what you're trying to do.
-
-| Document | Purpose | Read this when |
-|---|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, components, and data flows. | You want the 30,000-ft view of how the pieces fit together. |
-| [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md) | Per-table write/read graph and data lineage. | You're changing a data source and need to know what it impacts. |
-| [COST_ANALYSIS.md](COST_ANALYSIS.md) | GCP billing rollup mapped to components. | You want to know what's driving cost. |
-| [RUNBOOK.md](RUNBOOK.md) | Disaster recovery playbooks for common failure scenarios. | Something is on fire and you need a checklist. |
-| [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md) | Specification for the operator-facing signal quality dashboard. | You want to build out the UI for monitoring signal performance. |
-| [SETUP.md](SETUP.md) | One-time setup for the auto-doc-refresh workflow. | You're enabling the monthly documentation auto-refresh. |
-| [CLAUDE.md](CLAUDE.md) | Project rules and instructions for AI agents. | You are an AI agent or are collaborating with one on this repo. |
-| [docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md) | Per-table freshness budgets and reliability targets. | You're triaging a stale data incident. |
-| [docs/GCP_IMPLEMENTATION_GUIDE.md](docs/GCP_IMPLEMENTATION_GUIDE.md) | Narrative guide to the GCP infrastructure and deployment. | You want more detailed context on the GCP setup. |
-
----
-
-## Architecture at a glance
-
-The system runs as a fleet of ~76 Cloud Run Jobs orchestrated by Cloud Scheduler. Most jobs follow the shape *pull external API → upsert Cloud SQL*. A second class of jobs reads from Cloud SQL, computes derived analytics, and posts results to Discord.
-
-```mermaid
-flowchart TD
-    subgraph External APIs
-        AlphaVantage
-        FRED
-        Discord
-        EDGAR
-    end
-
-    subgraph GCP
-        subgraph "Cloud Run Services"
-            solyra_api_prod["solyra-api-prod (FastAPI, IAP)"]
-            solyra_api_staging["solyra-api-staging (FastAPI, Firebase)"]
-            discord_interactions["discord-interactions"]
-            failure_notifier
-        end
-
-        subgraph "Cloud Run Jobs (Fetchers)"
-            fetch_market_data
-            fetch_earnings
-        end
-
-        subgraph "Cloud Run Jobs (Compute)"
-            premarket_brief
-            signal_monitor
-            insight_pipeline
-        end
-
-        subgraph "Data Stores"
-            db[(Cloud SQL)]
-            gcs[(GCS Bucket)]
-        end
-
-        subgraph "Messaging"
-            pubsub(Pub/Sub)
-            tasks(Cloud Tasks)
-        end
-    end
-
-    subgraph User Surfaces
-        user_dashboard[Dashboard]
-        discord_channel[Discord Channel]
-    end
-
-    AlphaVantage --> fetch_market_data
-    FRED --> fetch_market_data
-    EDGAR --> fetch_earnings
-
-    fetch_market_data --> db
-    fetch_market_data --> gcs
-    fetch_earnings --> db
-
-    db --> premarket_brief
-    db --> signal_monitor
-    db --> insight_pipeline
-
-    premarket_brief --> discord_channel
-    signal_monitor --> discord_channel
-    insight_pipeline --> solyra_api_staging
-
-    solyra_api_staging --> user_dashboard
-    solyra_api_staging --> tasks
-    tasks --> insight_pipeline
-
-    discord_channel --> discord_interactions
-    discord_interactions --> premarket_brief
-    discord_interactions --> signal_monitor
-
-    failure_notifier --> pubsub
-    fetch_market_data -- "failure" --> pubsub
-    premarket_brief -- "failure" --> pubsub
-```
-
-Full per-table flow is in [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md).
-
----
-
-## Cost at a glance
-
-- **~$209/month run-rate** based on partial data for August 2026.
-- **Biggest line item:** Cloud Run Services CPU (`$47.89`).
-- **Top recommendation:** Implement Artifact Registry retention policies (estimated saving: `$20-25/mo`).
-
-Full breakdown: [COST_ANALYSIS.md](COST_ANALYSIS.md).
-
----
+| Read this | When you want |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | the whole system: every job, scheduler, service, table, route, deploy path, data flow, failure path, live-vs-repo reconciliation |
+| [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md) | which module writes and reads each table, multi-writer risks, orphan tables, blast radius per job |
+| [COST_ANALYSIS.md](COST_ANALYSIS.md) | the monthly GCP bill by SKU and component |
+| [RUNBOOK.md](RUNBOOK.md) | something is on fire: failure scenarios, recovery steps, rebuild sequence |
+| [ERD.md](ERD.md) | the schema as entity-relationship diagrams, by cluster |
+| [docs/PIPELINE.md](docs/PIPELINE.md) | the two-lane model: live trading vs research, and the one indicator engine both share |
+| [docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md) | per-table freshness budgets and canonical writers |
+| [docs/API.md](docs/API.md) | the FastAPI route reference (partially stale; ARCHITECTURE §7.3 is generated from the code) |
+| [docs/GCP_IMPLEMENTATION_GUIDE.md](docs/GCP_IMPLEMENTATION_GUIDE.md) | the Python engine internals: indicators, signals, Strat, backtest, data layer |
+| [docs/product/README.md](docs/product/README.md) | the living product plan: capabilities, requirements, security, roadmap |
+| [docs/audits/](docs/audits/) | dated audits, including the 2026-09-07 architecture-doc audit that produced this layout |
+| [gcp/cloudbuild/README.md](gcp/cloudbuild/README.md) | the Cloud Build triggers that deploy the API and apply the schema |
+| [SETUP.md](SETUP.md) | one-time setup of the monthly documentation refresh (WIF, roles, secrets) |
+| [CLAUDE.md](CLAUDE.md) | project rules for AI agents and the operational command cookbook (sandbox network limits, database access, backups) |
+| [solyra](https://github.com/TeneikaAskew/solyra) | the React frontend, its screens and its own docs |
 
 ## Quick start
 
-### I want to run this locally
-
-1.  Run `make install` to install Python and Node dependencies.
-2.  Ensure you have a `.env` file with `GOOGLE_APPLICATION_CREDENTIALS` pointing to your `.gcp-key.json`. See [CLAUDE.md](CLAUDE.md) for full setup.
-3.  Run `make dev` to start the FastAPI backend on `:8000`. The frontend moved to
-    [github.com/TeneikaAskew/solyra](https://github.com/TeneikaAskew/solyra) in #957 —
-    run `npm run dev` there; its proxy probes `:8000` and uses this API when it is up.
-4.  Available routes once the frontend is running: `/`, `/live`, `/charts`, `/options`, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`, `/admin`.
-
-### I want to add a new fetcher
-
-1.  Add a new Python module in `gcp/fetchers/`.
-2.  Add a `deploy_<name>()` function to `gcp/deploy.sh`.
-3.  Add the new function to `deploy_fetchers()` and a new scheduler entry in `deploy_schedulers()` within `gcp/deploy.sh`.
-4.  If adding a new table, add the schema to `gcp/schema.sql`.
-5.  Update [ARCHITECTURE.md](ARCHITECTURE.md) and [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md).
-
-### Something is broken
-
-See [RUNBOOK.md](RUNBOOK.md) for detailed failure scenarios and recovery steps. The system has a failure-notifier flow (Cloud Logging sink → Pub/Sub → Cloud Run Service → GitHub issue) which automatically creates issues for most job failures. See [ARCHITECTURE.md §3 "Failure notification"](ARCHITECTURE.md#3-data-flow-5-named-subsections) for details.
-
----
+- **Run the API locally**: `make install`, then `make dev` starts FastAPI on `:8000` (no frontend here; run solyra's `npm run dev`, whose proxy uses `:8000` when it is up). Environment and credentials: [CLAUDE.md](CLAUDE.md).
+- **Add a fetcher**: module under `gcp/fetchers/`, a `deploy_<name>()` function and a scheduler entry in `gcp/deploy.sh`, schema in `gcp/schema.sql` if it writes a new table. The next monthly refresh picks it up in ARCHITECTURE.md and DATA_DEPENDENCIES.md; run `python -m scripts.maintenance.doc_inventory --insert` to update them now.
+- **Query Cloud SQL from a sandbox**: `./scripts/db_query_cr.sh -q "SELECT …"` (only port 443 is open there; see [CLAUDE.md → Database access](CLAUDE.md#database-access)).
+- **Something is broken**: [RUNBOOK.md](RUNBOOK.md); failed jobs already open a GitHub issue through the failure notifier ([ARCHITECTURE.md §10.10](ARCHITECTURE.md#1010-failure-flow)).
 
 ## Maintenance
 
-Documentation auto-refreshes monthly via [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml). This workflow regenerates `ARCHITECTURE.md`, `DATA_DEPENDENCIES.md`, `COST_ANALYSIS.md`, and this `README.md`. Bot PRs with these changes should be reviewed and merged within a week.
+`ARCHITECTURE.md`, `DATA_DEPENDENCIES.md`, `COST_ANALYSIS.md` and this file are refreshed monthly by [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml): it snapshots live GCP, renders the inventory tables inside the `<!-- inventory:* -->` marker blocks deterministically, has Gemini update the surrounding prose in place, gates the result (job, scheduler, table and route coverage, no lost sections, no dead links, docs-vs-live drift), and opens a PR. Prose outside the markers is hand-maintained; content inside them is overwritten. `RUNBOOK.md`, `ERD.md` and `docs/` are hand-edited.
 
-The `RUNBOOK.md` and `DASHBOARD_SPEC.md` are operator-edited and not part of the auto-generation process.
+## Removed since last refresh
 
----
+- 2026-09-07: README became a pointer-only map. "Architecture at a glance" (the embedded diagram) now lives in ARCHITECTURE.md §2; "Cost at a glance" in COST_ANALYSIS.md; "I want to run this locally", "I want to add a new fetcher" and "Something is broken" are the Quick start bullets above; "Tech stack" is ARCHITECTURE.md §16 and the solyra README.
 
 ## License and contact
 
 No explicit license has been added to this repo. Treat as **all rights reserved** until that changes. Contact: see git log / GitHub repo owner.
 
----
-Generated 2026-09-02 by .github/workflows/refresh-architecture-docs.yml
+Generated 2026-09-07 by hand from the audit in [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md). The monthly refresh updates this line.
