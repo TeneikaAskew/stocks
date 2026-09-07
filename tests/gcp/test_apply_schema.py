@@ -355,18 +355,22 @@ def test_run_unit_singleton_uses_execute_sql():
 def test_run_unit_group_is_one_transaction():
     """A multi-statement unit must execute every statement on ONE
     engine.begin() connection — that single transaction is the whole
-    point of the markers."""
+    point of the markers. The same connection then checks pg_matviews for
+    views the group left unpopulated (none here), so the count is the two
+    statements plus that probe."""
     engine = MagicMock()
     conn = MagicMock()
     engine.begin.return_value.__enter__.return_value = conn
     engine.begin.return_value.__exit__.return_value = False
+    conn.execute.return_value.fetchall.return_value = []
     stmts = ["DROP MATERIALIZED VIEW v;", "CREATE MATERIALIZED VIEW v AS SELECT 1;"]
     with patch("gcp.database.get_engine", return_value=engine), \
          patch("gcp.apply_schema.execute_sql") as ex:
         run_unit(stmts)
     ex.assert_not_called()
     assert engine.begin.call_count == 1
-    assert conn.execute.call_count == 2
+    assert conn.execute.call_count == 3
+    assert "pg_matviews" in str(conn.execute.call_args_list[2].args[0])
 
 
 def test_run_unit_group_failure_propagates():
@@ -404,10 +408,12 @@ class _FakeEngine:
     def __init__(self, results):
         self.results = list(results)
         self.executed: list[str] = []
+        self.begin_calls = 0
 
     @contextmanager
     def begin(self):
         engine = self
+        self.begin_calls += 1
 
         class _Conn:
             def execute(self, stmt, params=None):
@@ -492,3 +498,46 @@ def test_no_unpopulated_matviews_means_no_refresh():
     eng = _FakeEngine([[]])
     assert refresh_unpopulated_matviews(eng) == []
     assert not any(e.startswith("REFRESH") for e in eng.executed)
+
+
+def test_run_unit_group_populates_its_matviews_before_commit():
+    """Codex on #1022: the earnings ATOMIC group commits both views WITH NO
+    DATA, and the refresh ran only after the whole statement loop, so the
+    endpoints failed with an unpopulated-view error for the whole refresh
+    and, if a later unit failed, until the weekly job. The refresh now runs
+    on the group's own connection, inside its transaction: readers see the
+    old view or the new populated one, never an empty one."""
+    eng = _FakeEngine([[("public", "earnings_event_outcomes"),
+                        ("public", "earnings_ticker_lean")]])
+    with patch("gcp.database.get_engine", return_value=eng):
+        run_unit(["DROP MATERIALIZED VIEW IF EXISTS earnings_event_outcomes CASCADE;",
+                  "CREATE MATERIALIZED VIEW earnings_event_outcomes AS SELECT 1 WITH NO DATA;"])
+    assert eng.begin_calls == 1, "drop, create, probe and refresh share one transaction"
+    heads = [" ".join(e.split()[:2]) for e in eng.executed]
+    assert heads == ["DROP MATERIALIZED", "CREATE MATERIALIZED", "SELECT schemaname,",
+                     "REFRESH MATERIALIZED", "REFRESH MATERIALIZED"], eng.executed
+
+
+def test_main_sweeps_unpopulated_matviews_even_when_a_unit_failed(tmp_path, monkeypatch):
+    """The end-of-run sweep is the net for anything the per-group refresh
+    did not cover; it must run before the failed-units return, not be
+    skipped by it (Codex on #1022)."""
+    import gcp.apply_schema as mod
+
+    schema = tmp_path / "s.sql"
+    schema.write_text("CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n")
+    calls: list[str] = []
+
+    def _run(unit):
+        calls.append("unit")
+        if "b" in unit[0]:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(mod, "run_unit", _run)
+    monkeypatch.setattr(mod, "refresh_unpopulated_matviews",
+                        lambda engine: calls.append("sweep") or ["v"])
+    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema)])
+    assert mod.main() == 1
+    assert calls == ["unit", "unit", "sweep"]

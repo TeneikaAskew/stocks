@@ -149,6 +149,17 @@ def run_unit(unit: list[str]) -> None:
     with engine.begin() as conn:
         for stmt in unit:
             conn.execute(sqlalchemy.text(stmt))
+        # Populate what this group recreated BEFORE it commits. The earnings
+        # group commits both views WITH NO DATA; a refresh after the loop
+        # left the endpoints failing with an unpopulated-view error for the
+        # length of the refresh, and forever if a later unit failed (Codex
+        # on #1022). Inside the transaction, readers see the old view or the
+        # new populated one, never an empty one (refresh-earnings-views
+        # measures 23-46 s per run, so the lock is held under a minute).
+        refreshed = _refresh_unpopulated_matviews_on(conn)
+        if refreshed:
+            log.info("Populated %d materialized view(s) inside the group's transaction: %s",
+                     len(refreshed), ", ".join(refreshed))
 
 
 # ── Revision guard ─────────────────────────────────────────────────────────
@@ -263,28 +274,36 @@ def record_revision(engine, commit_sha: str, commit_time: int) -> None:
 # their column set changes), and refresh-earnings-views repopulates them
 # only weekly. Now that every staging deploy applies the schema, an
 # unpopulated view would break the earnings endpoints until Sunday (Codex on
-# #1022). So an apply is not complete until every unpopulated materialized
-# view has been refreshed.
+# #1022). So the ATOMIC group that recreates them populates them inside its
+# own transaction (run_unit), and an end-of-run sweep refreshes anything
+# still unpopulated, whether or not every unit succeeded.
 _UNPOPULATED_MATVIEWS_SQL = (
     "SELECT schemaname, matviewname FROM pg_matviews "
     "WHERE NOT ispopulated ORDER BY schemaname, matviewname"
 )
 
 
-def refresh_unpopulated_matviews(engine) -> list[str]:
-    """Refresh every materialized view Postgres reports as unpopulated.
-    Returns the qualified names refreshed. Raises on the first failure so
-    the apply fails loud rather than leaving an empty view behind."""
+def _refresh_unpopulated_matviews_on(conn) -> list[str]:
+    """Refresh, on ``conn`` (inside whatever transaction it is in), every
+    materialized view Postgres reports as unpopulated. Returns the qualified
+    names refreshed. Raises on the first failure so the caller's transaction
+    rolls back rather than committing an empty view."""
     import sqlalchemy  # noqa: PLC0415
 
-    with engine.begin() as conn:
-        rows = conn.execute(sqlalchemy.text(_UNPOPULATED_MATVIEWS_SQL)).fetchall()
+    rows = conn.execute(sqlalchemy.text(_UNPOPULATED_MATVIEWS_SQL)).fetchall()
     names = [f'"{r[0]}"."{r[1]}"' for r in rows]
     for name in names:
         log.info("Refreshing unpopulated materialized view %s", name)
-        with engine.begin() as conn:
-            conn.execute(sqlalchemy.text(f"REFRESH MATERIALIZED VIEW {name}"))
+        conn.execute(sqlalchemy.text(f"REFRESH MATERIALIZED VIEW {name}"))
     return names
+
+
+def refresh_unpopulated_matviews(engine) -> list[str]:
+    """End-of-run sweep: one transaction refreshing every view still
+    unpopulated. Raises on the first failure so the apply fails loud rather
+    than leaving an empty view behind."""
+    with engine.begin() as conn:
+        return _refresh_unpopulated_matviews_on(conn)
 
 
 def main() -> int:
@@ -352,14 +371,21 @@ def main() -> int:
             failed += 1
             log.error("  [%d/%d] FAILED %s — %s", i, len(units), label, exc)
 
+    # The sweep runs whether or not every unit succeeded: a failed unit
+    # after the views must not leave them empty until the weekly job.
+    try:
+        refreshed = refresh_unpopulated_matviews(engine)
+    except Exception as exc:
+        failed += 1
+        log.error("  materialized-view sweep FAILED — %s", exc)
+    else:
+        if refreshed:
+            log.info("Refreshed %d materialized view(s) still unpopulated after the apply: %s",
+                     len(refreshed), ", ".join(refreshed))
+
     if failed:
         log.error("Schema apply finished with %d failed units", failed)
         return 1
-
-    refreshed = refresh_unpopulated_matviews(engine)
-    if refreshed:
-        log.info("Refreshed %d materialized view(s) left unpopulated by the apply: %s",
-                 len(refreshed), ", ".join(refreshed))
 
     if args.revision is not None:
         record_revision(engine, args.revision, args.revision_time)
