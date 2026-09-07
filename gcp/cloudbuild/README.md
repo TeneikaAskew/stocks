@@ -45,6 +45,29 @@ gcloud projects add-iam-policy-binding adept-mountain-474619-d4 \
   --condition=None
 ```
 
+`platform/deploy.sh` also runs `./gcp/deploy.sh pin-images --no-sweep`
+before its sub-build, so the digest every live revision runs keeps an
+`inuse-*` tag when `:latest` moves (the Artifact Registry cleanup policy
+deletes untagged versions older than 14 days). That step needs, and the
+SA already holds:
+
+- `roles/run.developer` — `run.jobs.get/list`, `run.executions.get`,
+  `run.services.get`, `run.revisions.get` to read what is deployed;
+- `roles/artifactregistry.writer` — `artifactregistry.tags.create/update`
+  and `dockerimages.get` to write the pins.
+
+The same step runs when `.github/workflows/deploy-staging.yml` dispatches
+`platform/deploy.sh` under the WIF identity `arch-refresh-bot@`. That
+account holds `roles/run.admin` (the reads) but only
+`roles/artifactregistry.reader` on `gcr.io` and nothing on `trading`, so
+it needs `roles/artifactregistry.writer` on both repos before its next
+dispatch; the workflow header carries the grant commands.
+
+It does NOT hold `artifactregistry.tags.delete`, which is why the trigger
+path passes `--no-sweep`: releasing pins nothing needs any more is left to
+the interactive `gcp/deploy.sh` path (`build`, `pin-images`, any deploy
+command), which runs as an operator or `claude-web@`.
+
 These bindings need `roles/resourcemanager.projectIamAdmin` (or
 `roles/owner`) to set. The sandbox `claude-web@` SA only has
 `roles/editor` which lacks `setIamPolicy` — must be applied by an
