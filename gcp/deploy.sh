@@ -4537,6 +4537,73 @@ backfill_watchlist() {
     python3 -m scripts.backfill_watchlist_data "${args[@]}"
 }
 
+# ── Cloud Build triggers ─────────────────────────────────────────────────────
+# The API deploy triggers carry their build config INLINE in Cloud Build; the
+# YAML under gcp/cloudbuild/ is a copy, and until this target nothing synced
+# the two. Read live on 2026-09-07 (#1033): both triggers still ran the
+# three-step configs they were created with on 2026-05-31, so every change
+# merged to those files since (#990 interlocks, #1004 pin-images, #1030
+# --update-env-vars) had never executed.
+#
+#   ./gcp/deploy.sh cloudbuild-triggers          # import each file into its trigger
+#   ./gcp/deploy.sh cloudbuild-triggers --check  # print drift, change nothing; exit 2 on drift
+#
+# Export the live trigger, replace ONLY its `build` block with the committed
+# file, import it back. The trigger's event filter, includedFiles, repo and
+# service account are untouched. Import is idempotent.
+_CLOUDBUILD_TRIGGERS=(
+    "deploy-solyra-api-staging:gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"
+    "deploy-solyra-api-prod:gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml"
+    "apply-schema-on-change:gcp/cloudbuild/apply-schema-cloudbuild.yaml"
+)
+sync_cloudbuild_triggers() {
+    local mode="import"
+    [ "${1:-}" = "--check" ] && mode="check"
+    python3 -c 'import yaml' 2>/dev/null \
+        || { echo "ERROR: python3 needs PyYAML (pip3 install --user pyyaml)" >&2; return 1; }
+    local pair name file tmp rc=0
+    for pair in "${_CLOUDBUILD_TRIGGERS[@]}"; do
+        name="${pair%%:*}"; file="${pair#*:}"
+        tmp="$(mktemp)"
+        gcloud beta builds triggers export "$name" --region=global --project "$PROJECT_ID" \
+            --destination="$tmp"
+        if python3 - "$mode" "$tmp" "$file" "$name" <<'PY'
+import difflib, sys, yaml
+mode, trig_path, build_path, name = sys.argv[1:5]
+with open(trig_path) as fh:
+    trig = yaml.safe_load(fh)
+with open(build_path) as fh:
+    build = yaml.safe_load(fh)
+live = trig.get("build")
+a = yaml.safe_dump(live, sort_keys=True).splitlines()
+b = yaml.safe_dump(build, sort_keys=True).splitlines()
+if a == b:
+    print(f"{name}: live build config matches {build_path}")
+    sys.exit(0)
+print(f"{name}: live build config differs from {build_path}")
+print("\n".join(difflib.unified_diff(a, b, "live", build_path, lineterm="")))
+if mode == "check":
+    sys.exit(2)
+trig.pop("filename", None)
+trig.pop("gitFileSource", None)
+trig["build"] = build
+with open(trig_path, "w") as fh:
+    yaml.safe_dump(trig, fh, sort_keys=False)
+PY
+        then
+            if [ "$mode" = "import" ]; then
+                gcloud beta builds triggers import --region=global --project "$PROJECT_ID" \
+                    --source="$tmp"
+                echo "imported $file into trigger $name"
+            fi
+        else
+            rc=2
+        fi
+        rm -f "$tmp"
+    done
+    return "$rc"
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 # Every command that deploys a job or service is followed by pin_image_tags
 # (see the tail of this file), so the digest a job was just pinned to gets
@@ -4559,6 +4626,7 @@ case "${1:-help}" in
     migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
     build)       _PIN_AFTER=0; build_image ;;
     pin-images)  _PIN_AFTER=0; pin_image_tags "${2:-}" ;;
+    cloudbuild-triggers) _PIN_AFTER=0; shift; sync_cloudbuild_triggers "$@" ;;
     registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
     retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
     build-research) _PIN_AFTER=0; build_research_image ;;
@@ -4643,6 +4711,10 @@ case "${1:-help}" in
         echo "  setup      Provision Cloud SQL, GCS bucket, service account"
         echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
         echo "  build      Build and push Docker image"
+        echo "  cloudbuild-triggers [--check]"
+        echo "             Import gcp/cloudbuild/*.yaml into the Cloud Build triggers"
+        echo "             that carry them inline (the file is not read by the trigger"
+        echo "             otherwise; see #1033). --check prints drift, exit 2, no write."
         echo "  premarket  Deploy pre-market brief job"
         echo "  earnings-reactions-brief"
         echo "             Deploy earnings-reactions-brief job (Discord post"
