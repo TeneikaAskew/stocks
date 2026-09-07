@@ -475,6 +475,41 @@ def test_promotion_verdict_measures_the_model_not_the_labels():
     assert mwf.promotion_verdict(beyond, y_true=y_true)["ok"] is False
 
 
+def test_promotion_verdict_excess_boundary_is_exact_not_floating_point():
+    """4/10 predicted vs 3/10 true is exactly the allowed +10 points; in
+    binary floating point the subtraction is 0.10000000000000003 and a
+    float compare blocked it with the contradictory reason "+10.0% > 10%"
+    (Codex, #1042). Counts are compared exactly."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    assert (4 / 10) - (3 / 10) > 0.10, "the hazard this test guards"
+    y_pred = np.array([0] * 4 + [1] * 3 + [2] * 3)
+    y_true = np.array([0] * 3 + [1] * 4 + [2] * 3)
+    v = mwf.promotion_verdict(y_pred, y_true=y_true)
+    assert v["ok"] is True, v["reason"]
+    assert v["modal_excess"] == pytest.approx(0.10)
+
+
+def test_promotion_verdict_judges_every_class_tied_for_the_mode():
+    """Predicted {0: 4, 1: 4, 2: 2} against true {0: 6, 1: 1, 2: 3}: class 0
+    is under-predicted by 20 points but class 1, equally modal, is over-
+    predicted by 30. Picking the lowest id would pass this (Codex, #1042);
+    the tied class with the greatest excess is judged and named."""
+    from gcp.research.magnitude_engine import mag_walk_forward as mwf
+
+    y_pred = np.array([0] * 4 + [1] * 4 + [2] * 2)
+    y_true = np.array([0] * 6 + [1] * 1 + [2] * 3)
+    v = mwf.promotion_verdict(y_pred, y_true=y_true)
+    assert v["ok"] is False
+    assert v["modal_class"] == 1
+    assert v["true_modal_share"] == pytest.approx(0.1)
+    assert v["modal_excess"] == pytest.approx(0.3)
+    assert "over-predicts bucket 1" in v["reason"]
+    # Without labels a tie falls back to the lowest id, and only the collapse
+    # criterion can judge it.
+    assert mwf.promotion_verdict(y_pred)["modal_class"] == 0
+
+
 def test_promotion_verdict_refuses_mismatched_labels():
     """A label vector for different rows would make the excess meaningless;
     that is an error, never a silent skip of the criterion."""

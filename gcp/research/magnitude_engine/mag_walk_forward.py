@@ -20,6 +20,7 @@ Run:
 from __future__ import annotations
 import argparse
 import json
+from fractions import Fraction
 import logging
 import os
 import sys
@@ -406,15 +407,31 @@ def promotion_verdict(y_pred: np.ndarray, y_true: np.ndarray | None = None) -> d
                 f"y_true has {y_true.size} rows but y_pred has {n}; the excess "
                 "criterion needs the labels for the same rows")
     classes, counts = np.unique(y_pred, return_counts=True)
-    top = int(np.argmax(counts))
-    modal_class = int(classes[top])
-    modal_share = float(counts[top]) / n
+    modal_count = int(counts.max())
+    modal_share = modal_count / n
     distinct = int(classes.size)
+    # Every class tied for the mode is a candidate: np.argmax would pick the
+    # lowest class id, and the excess criterion must not depend on label
+    # numbering (Codex, #1042). With labels, the tied class with the greatest
+    # excess is the one reported and judged; without them, the lowest id.
+    tied = [int(c) for c, k in zip(classes, counts) if int(k) == modal_count]
+    modal_class = tied[0]
     true_modal_share = None
     modal_excess = None
+    excess_frac = None
     if y_true is not None:
-        true_modal_share = float(np.count_nonzero(y_true == modal_class)) / n
-        modal_excess = modal_share - true_modal_share
+        # Exact arithmetic on counts: 4/10 - 3/10 is 0.10000000000000003 in
+        # binary floating point, which would block a candidate sitting on
+        # the documented inclusive boundary (Codex, #1042).
+        best = None
+        for c in tied:
+            true_count = int(np.count_nonzero(y_true == c))
+            frac = Fraction(modal_count - true_count, n)
+            if best is None or frac > best[1]:
+                best = (c, frac, true_count)
+        modal_class, excess_frac, true_count = best
+        true_modal_share = true_count / n
+        modal_excess = float(excess_frac)
     reasons = []
     if distinct < PROMOTION_MIN_DISTINCT_CLASSES:
         reasons.append(
@@ -422,9 +439,9 @@ def promotion_verdict(y_pred: np.ndarray, y_true: np.ndarray | None = None) -> d
             f"(min {PROMOTION_MIN_DISTINCT_CLASSES})")
     if modal_share >= PROMOTION_COLLAPSE_MODAL_SHARE:
         reasons.append(
-            f"collapsed: modal bucket {modal_class} on {counts[top]}/{n} rows "
+            f"collapsed: modal bucket {modal_class} on {modal_count}/{n} rows "
             f"({modal_share:.1%} >= {PROMOTION_COLLAPSE_MODAL_SHARE:.0%})")
-    if modal_excess is not None and modal_excess > PROMOTION_MAX_MODAL_EXCESS:
+    if excess_frac is not None and excess_frac > Fraction(str(PROMOTION_MAX_MODAL_EXCESS)):
         reasons.append(
             f"over-predicts bucket {modal_class}: {modal_share:.1%} predicted "
             f"vs {true_modal_share:.1%} true on the same rows "
