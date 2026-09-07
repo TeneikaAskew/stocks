@@ -75,10 +75,10 @@ SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM play
 3. `scripts/audit_data_freshness.py`: `playbook_cards` CHECKS entry
    (per ticker, `writer_job: phase6-playbook`, `min_rows_per_day: 12`,
    `settle_hour_et: 5`).
-4. Tests: `tests/test_playbook_evaluate.py` (freshness contract, boundary,
+4. Tests: `tests/api/test_playbook_evaluate.py` (freshness contract, boundary,
    cache re-check, as-of relative age, 404/422/503 paths, strict-query
-   propagation), `tests/test_platform_api.py` (wire shape),
-   `tests/test_phase6_playbook_scheduler.py` (scheduler, `all)` target, job
+   propagation), `tests/api/test_platform_api.py` (wire shape),
+   `tests/gcp/test_phase6_playbook_scheduler.py` (scheduler, `all)` target, job
    args, watchdog entry).
 
 **solyra**

@@ -279,3 +279,136 @@ def test_latest_execution_image_handles_malformed_template():
         got = mod.latest_execution_image("malformed-job")
 
     assert got == ""
+
+
+# ──────────────────── #835 — tag-form images are not exempt ────────────────────
+
+def test_image_drift_resolves_tag_form_execution_image(monkeypatch):
+    """#835 (audit D3): `fetch-fred-rates` ran on
+    `trading-system:spx-removal-fred-20260516` for 3.5 months while the
+    detector `continue`d past every tag-form image. A tag must be resolved
+    to its digest through Artifact Registry and compared like any other."""
+    from gcp import audit_infra_drift as mod
+
+    latest = "sha256:" + "a" * 64
+    old = "sha256:" + "b" * 64
+    with patch.object(mod, "latest_image_digest", return_value=latest), \
+         patch.object(mod, "list_run_jobs",
+                      return_value=[{"name": "fetch-fred-rates",
+                                     "image": "..../trading-system:spx-removal-fred-20260516"}]), \
+         patch.object(mod, "latest_execution_image",
+                      return_value="..../trading-system:spx-removal-fred-20260516"), \
+         patch.object(mod, "resolve_tag_digest", return_value=old) as resolve:
+        r = mod.Report()
+        mod.check_image_drift(r)
+
+    resolve.assert_called_once_with("spx-removal-fred-20260516")
+    assert [f.check for f in r.findings] == ["image-drift"]
+    assert r.findings[0].target == "fetch-fred-rates"
+    assert "spx-removal-fred-20260516" in r.findings[0].detail
+
+
+def test_image_drift_tag_form_matching_latest_is_silent(monkeypatch):
+    """A job executing on a tag that currently resolves to :latest's digest
+    (e.g. the `latest` tag itself) is not drift."""
+    from gcp import audit_infra_drift as mod
+
+    latest = "sha256:" + "a" * 64
+    with patch.object(mod, "latest_image_digest", return_value=latest), \
+         patch.object(mod, "list_run_jobs",
+                      return_value=[{"name": "premarket-brief",
+                                     "image": "..../trading-system:latest"}]), \
+         patch.object(mod, "latest_execution_image",
+                      return_value="..../trading-system:latest"), \
+         patch.object(mod, "resolve_tag_digest", return_value=latest):
+        r = mod.Report()
+        mod.check_image_drift(r)
+
+    assert r.findings == []
+
+
+def test_image_drift_unresolvable_tag_is_reported_not_skipped(monkeypatch):
+    """If Artifact Registry cannot resolve the tag the detector must say so
+    (report.errors), never fall back to a silent `continue`."""
+    from gcp import audit_infra_drift as mod
+
+    with patch.object(mod, "latest_image_digest", return_value="sha256:" + "a" * 64), \
+         patch.object(mod, "list_run_jobs",
+                      return_value=[{"name": "exec-backtest",
+                                     "image": "..../trading-system:research-exec-backtest"}]), \
+         patch.object(mod, "latest_execution_image",
+                      return_value="..../trading-system:research-exec-backtest"), \
+         patch.object(mod, "resolve_tag_digest", side_effect=RuntimeError("no such tag")):
+        r = mod.Report()
+        mod.check_image_drift(r)
+
+    assert r.findings == []
+    assert any("exec-backtest" in e and "research-exec-backtest" in e for e in r.errors)
+
+
+def test_configured_image_tag_other_than_latest_is_flagged():
+    """The job SPEC can drift too: deploy.sh deploys `${IMAGE}` (implicit
+    :latest) but a hand `gcloud run jobs update --image=...:sometag` leaves
+    the spec pinned to that tag forever. Flag it independently of whether
+    the job has executed."""
+    from gcp import audit_infra_drift as mod
+
+    with patch.object(mod, "list_run_jobs", return_value=[
+        {"name": "fetch-fred-rates", "image": "..../trading-system:spx-removal-fred-20260516"},
+        {"name": "premarket-brief", "image": "..../trading-system:latest"},
+        {"name": "strat-engine", "image": "..../trading-system"},
+        {"name": "regime-combo", "image": "..../trading-research:latest"},
+    ]):
+        r = mod.Report()
+        mod.check_configured_image_tags(r)
+
+    assert [(f.check, f.target) for f in r.findings] == [("image-tag-pinned", "fetch-fred-rates")]
+    assert "spx-removal-fred-20260516" in r.findings[0].detail
+
+
+# ──────────────────── #833 — paused schedulers are drift ────────────────────
+
+def test_paused_scheduler_is_flagged():
+    """#833 (audit D1): `signal-quality-report-hourly` sat PAUSED for four
+    months with nothing in the repo recording why. Nothing in the detector
+    read scheduler state. A PAUSED scheduler that deploy.sh would (re)create
+    ENABLED is drift either way — resume it or retire it in deploy.sh."""
+    from gcp import audit_infra_drift as mod
+
+    with patch.object(mod, "list_schedulers", return_value=[
+        {"name": "signal-quality-report-hourly", "target_job": "signal-quality-report",
+         "uri": "..../jobs/signal-quality-report:run", "state": "PAUSED"},
+        {"name": "premarket-brief-daily", "target_job": "premarket-brief",
+         "uri": "..../jobs/premarket-brief:run", "state": "ENABLED"},
+    ]):
+        r = mod.Report()
+        mod.check_scheduler_state(r)
+
+    assert [(f.check, f.target) for f in r.findings] == [("scheduler-paused", "signal-quality-report-hourly")]
+    assert "PAUSED" in r.findings[0].detail
+
+
+def test_scheduler_state_missing_is_reported_not_assumed_enabled():
+    """A listing row without `state` (older shape) must not pass as ENABLED."""
+    from gcp import audit_infra_drift as mod
+
+    with patch.object(mod, "list_schedulers", return_value=[
+        {"name": "x", "target_job": "y", "uri": "..../jobs/y:run"},
+    ]):
+        r = mod.Report()
+        mod.check_scheduler_state(r)
+
+    assert r.findings == []
+    assert any("state" in e for e in r.errors)
+
+
+def test_main_runs_all_checks():
+    from gcp import audit_infra_drift as mod
+    calls = []
+    with patch.object(mod, "check_image_drift", side_effect=lambda r: calls.append("image")), \
+         patch.object(mod, "check_configured_image_tags", side_effect=lambda r: calls.append("tags")), \
+         patch.object(mod, "check_scheduler_orphans", side_effect=lambda r: calls.append("orphans")), \
+         patch.object(mod, "check_scheduler_state", side_effect=lambda r: calls.append("state")), \
+         patch.object(mod, "post_to_discord", return_value=True):
+        assert mod.main() == 0
+    assert set(calls) == {"image", "tags", "orphans", "state"}

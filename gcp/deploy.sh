@@ -3359,7 +3359,7 @@ deploy_schedulers() {
     # caught it. Three things now catch a repeat: this cron, the
     # playbook_cards entry in scripts/audit_data_freshness.py CHECKS, and
     # the MAX_PLAYBOOK_AGE_DAYS 503 guard in platform/api/routers/playbook.py.
-    # tests/test_phase6_playbook_scheduler.py pins the first two.
+    # tests/gcp/test_phase6_playbook_scheduler.py pins the first two.
     _schedule "phase6-playbook-daily" "30 4 * * 1-5" "phase6-playbook"
 
     # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the
