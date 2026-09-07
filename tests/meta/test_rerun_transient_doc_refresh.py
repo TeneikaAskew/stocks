@@ -13,6 +13,7 @@ of -- so these tests RUN it rather than reading its shape.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -23,7 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/rerun-transient-doc-refresh.yml"
 REFRESH = REPO / ".github/workflows/refresh-architecture-docs.yml"
 DOC = yaml.safe_load(WORKFLOW.read_text())
-STEP = DOC["jobs"]["rerun"]["steps"][0]["run"]
+STEP = next(st["run"] for st in DOC["jobs"]["rerun"]["steps"] if "run" in st)
 # YAML 1.1 reads a bare `on:` key as the boolean True.
 TRIGGERS = DOC.get("on", DOC.get(True))
 
@@ -70,33 +71,41 @@ REAL_CLI_INTERNAL_ERROR = """\
 """
 
 
-def _classify(log_text: str) -> bool:
-    """Run the workflow's own classifier over a log, returning whether it would
-    re-run.
+SCRIPT = REPO / ".github/scripts/is_transient_gemini_failure.sh"
 
-    The block is sliced out of the step VERBATIM -- from `TAIL=$(` through the
-    `; then` -- and executed. An earlier version of this helper rebuilt the
-    condition from the extracted RECORD and TRANSPORT variables, and so tested
-    a combination the workflow did not necessarily use: it reported the real
-    run-20 log as not-a-transport-failure while the shipped workflow would have
-    recognised it. A test that reconstructs the logic it is checking is not
+
+def _classify(log_text: str, tmp_path=None) -> bool:
+    """Run the REAL classifier script over a log, returning whether it would
+    re-run. `gh` is stubbed on PATH so the script's own API calls and its own
+    parsing are exercised -- not a reconstruction of them.
+
+    An earlier helper rebuilt the condition from variables scraped out of the
+    workflow and so tested a combination the workflow did not use: it reported
+    run 20's real log as not-a-transport-failure while the shipped code would
+    have recognised it. A test that reconstructs the logic it checks is not
     checking that logic.
     """
-    start = STEP.index("TAIL=$(")
-    end = STEP.index("; then", start) + len("; then")
-    block = STEP[start:end]
-    script = (
-        "set -euo pipefail\n"
-        "cat > failed.log\n"
-        + block + "\n"
-        "  echo RERUN\n"
-        "else\n"
-        "  echo LEAVE_RED\n"
-        "fi\n"
+    import tempfile
+    d = Path(tmp_path or tempfile.mkdtemp())
+    (d / "log.txt").write_text(log_text)
+    bin_dir = d / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        # `gh api .../jobs` -> one failed job id; `gh api .../logs` -> the log.
+        'case "$*" in\n'
+        '  *"/logs"*) cat "$LOG_FIXTURE" ;;\n'
+        '  *) echo 1 ;;\n'
+        'esac\n'
     )
-    out = subprocess.run(["bash", "-c", script], input=log_text,
-                         capture_output=True, text=True, check=True)
-    return out.stdout.strip() == "RERUN"
+    gh.chmod(0o755)
+    env = dict(os.environ)
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", REPO="TeneikaAskew/stocks",
+               LOG_FIXTURE=str(d / "log.txt"))
+    out = subprocess.run(["bash", str(SCRIPT), "12345"], cwd=d, env=env,
+                         capture_output=True, text=True)
+    return out.returncode == 0
 
 
 def test_workflow_yaml_is_valid_and_watches_the_refresh():
@@ -125,6 +134,50 @@ GH_RUN_VIEW_COLUMNS = (
 )
 
 
+# Codex's exact forgery: the model emitting the COMPLETE expected line, with a
+# plausible-looking report path, before the CLI exits for an unrelated refusal.
+FORGED_FULL_RECORD = """\
+2026-09-07T13:20:44.7Z Error when talking to Gemini API Full report available at: /tmp/gemini-client-error-forged.json TypeError: terminated
+2026-09-07T13:20:44.9Z The input file could not be read. Stopping.
+2026-09-07T13:20:45.0Z ##[error]Process completed with exit code 1.
+"""
+
+
+def test_a_fully_forged_record_is_still_accepted_and_that_is_bounded():
+    """Codex P2, round 8, reproduced -- and NOT fixed, deliberately.
+
+    The classifier matches a textual shape in a stream that merges the model's
+    stdout with the CLI's stderr, so a model emitting the whole line verbatim
+    is believed. This test pins that as a known limit rather than letting it be
+    discovered later as a surprise.
+
+    Separating the CLI's diagnostics would need the refresh workflow to capture
+    stderr to its own file, and that file would live in the workspace the model
+    can write to -- not obviously stronger, and it would un-revert a workflow
+    this PR deliberately restored to byte-identical with main.
+
+    What bounds the damage is the job-level design, not the match:
+
+      * a false positive costs one re-run and can publish nothing, because the
+        re-run passes through every gate exactly as a first attempt does
+      * the cleanup job re-derives this verdict from attempt 1 before closing
+        anything, so a forgery cannot close a still-actionable failure PR
+    """
+    assert _classify(FORGED_FULL_RECORD) is True, \
+        "if this now returns False the limitation is fixed -- update the docs and this test"
+
+
+def test_the_cleanup_is_gated_on_re_deriving_the_verdict():
+    """The bound that makes the forgery above tolerable: the only consequence
+    with lasting effect -- closing someone's failure PR -- re-checks attempt 1
+    rather than trusting that a re-run happened."""
+    job = DOC["jobs"]["close-obsolete-failure-pr"]
+    run = next(st for st in job["steps"] if "run" in st)["run"]
+    assert 'is_transient_gemini_failure.sh "$RUN_ID" 1' in run
+    # And it must bail out, not continue, when attempt 1 was a real failure.
+    assert "leaving its failure PR alone" in run and "exit 0" in run
+
+
 def test_the_classifier_reads_raw_job_logs_not_gh_run_view():
     """`gh run view --log-failed` prefixes `<job>\\t<step>\\t<timestamp> ...`, so
     the start-anchored record never matches and nothing is ever re-run. The raw
@@ -133,7 +186,7 @@ def test_the_classifier_reads_raw_job_logs_not_gh_run_view():
     # Comments only, stripped: the step explains at length WHY it does not use
     # `gh run view --log-failed`, and a naive substring check trips on that
     # explanation rather than on the code -- a trap this repo has hit before.
-    code = "\n".join(ln.split("#", 1)[0] for ln in STEP.splitlines())
+    code = "\n".join(ln.split("#", 1)[0] for ln in SCRIPT.read_text().splitlines())
     assert "actions/jobs/" in code and "/logs" in code, \
         "the classifier does not read raw per-job logs"
     assert "--log-failed" not in code and "run view" not in code, \
@@ -155,6 +208,15 @@ def test_a_failed_recovery_is_not_silent():
     # No second placeholder PR for a failure of the thing that cleans up
     # placeholder PRs.
     assert hf["with"]["create_pr"] is False
+    # handle-workflow-failure.yml declares PR_WORKFLOW_TOKEN required: true.
+    # Omitting it makes the call invalid, so the handler this job exists to
+    # provide would never run -- the reporting gap, still unreported.
+    # (Codex, PR #1032.)
+    reusable = yaml.safe_load((REPO / ".github/workflows/handle-workflow-failure.yml").read_text())
+    required = {k for k, v in (reusable.get("on", reusable.get(True))["workflow_call"]
+                               .get("secrets") or {}).items() if v.get("required")}
+    assert required <= set(hf.get("secrets") or {}), \
+        f"required secrets not passed to the reusable workflow: {required - set(hf.get('secrets') or {})}"
 
 
 def test_a_successful_rerun_closes_the_obsolete_failure_pr():
@@ -165,7 +227,7 @@ def test_a_successful_rerun_closes_the_obsolete_failure_pr():
     cond = " ".join(job["if"].split())
     assert "conclusion == 'success'" in cond
     assert "run_attempt > 1" in cond, "it would close the PR on a first-attempt success too"
-    step = job["steps"][0]
+    step = next(st for st in job["steps"] if "run" in st)
     # The branch name must match what the failure handler actually builds.
     src = (REPO / "scripts/handle_workflow_failure.py").read_text()
     assert 'f"fix/workflow-{workflow_file.replace(\'.yml\', \'\')}-{run_number}"' in src, \
@@ -173,6 +235,18 @@ def test_a_successful_rerun_closes_the_obsolete_failure_pr():
     assert step["env"]["BRANCH"].startswith("fix/workflow-refresh-architecture-docs-")
     assert "run_number" in step["env"]["BRANCH"]
     assert "gh pr close" in step["run"]
+    # `run_attempt > 1` is not evidence this workflow caused the re-run: a
+    # maintainer re-running a genuinely broken refresh by hand also lands here.
+    # The verdict must be re-derived from attempt 1. (Codex, PR #1032.)
+    assert 'is_transient_gemini_failure.sh "$RUN_ID" 1' in step["run"], \
+        "the cleanup trusts the attempt counter instead of re-checking attempt 1"
+    # --delete-branch would need contents: write, which this job has no other
+    # reason to hold. Comments stripped: the step explains its own absence, and
+    # a naive substring check trips on the explanation -- the third time that
+    # trap has fired on this branch.
+    run_code = "\n".join(ln.split("#", 1)[0] for ln in step["run"].splitlines())
+    assert "--delete-branch" not in run_code
+    assert job["permissions"]["contents"] == "read"
 
 
 def test_it_can_rerun_and_asks_for_nothing_more():
