@@ -1172,9 +1172,9 @@ named. Merged is not the same as resolved: #861 stayed open through merge until
 the scheduler existed and the table was current.
 
 **And the acceptance criteria are not the only bar the form sets.**
-`01-defect.yml` has a required **Historical evidence impact** field
-(`:117`) whose options include `RERUN`, `DISCARD AFFECTED RESULTS` and
-`UNKNOWN` — and the form does not ask the filer to repeat that answer in the
+Both `01-defect.yml` and `02-audit-finding.yml` have a required
+**Historical evidence impact** dropdown whose options include `RERUN`,
+`DISCARD AFFECTED RESULTS` and `UNKNOWN` — and the form does not ask the filer to repeat that answer in the
 acceptance field, so a rule that reads only acceptance never sees it. A
 forward fix then closes while contaminated artifacts stay in place and
 readable, which is the whole thing that field exists to prevent. Read the
