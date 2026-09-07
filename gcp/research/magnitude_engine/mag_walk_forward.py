@@ -37,7 +37,8 @@ from gcp.research.magnitude_engine.mag_config import (
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
     DEFAULT_CUTOFFS, MIN_TEST_BARS,
     DEFAULT_CALIBRATION, DEFAULT_CV,
-    PROMOTION_MAX_MODAL_SHARE, PROMOTION_MIN_DISTINCT_CLASSES,
+    PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MAX_MODAL_EXCESS,
+    PROMOTION_MIN_DISTINCT_CLASSES,
     ECE_CEILING_BY_TF, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
@@ -365,48 +366,77 @@ def _persist_predictions_table(engine, ticker: str, tf: str,
              len(df))
 
 
-def promotion_verdict(y_pred: np.ndarray) -> dict:
+def promotion_verdict(y_pred: np.ndarray, y_true: np.ndarray | None = None) -> dict:
     """Decide whether a freshly-trained production candidate may be promoted.
 
-    Takes the candidate's argmax predictions over its own training matrix and
-    applies the SAME modal-dominance criterion the post-deployment detector
-    (gcp/audit_magnitude_drift.py) applies to live rows — see
-    mag_config.PROMOTION_MAX_MODAL_SHARE for the incident this encodes.
+    Takes the candidate's argmax predictions over its own training matrix, and
+    the true buckets for the same rows, and applies two criteria (see
+    mag_config for the incidents each encodes):
 
-    A model that argmax-picks one bucket on >= PROMOTION_MAX_MODAL_SHARE of the
-    data it was fit on has not learned the minority buckets; it has learned the
-    base rate. On the training matrix that is the most generous possible test —
-    a candidate that collapses HERE cannot do better out-of-sample.
+      * collapse — the modal bucket on >= PROMOTION_COLLAPSE_MODAL_SHARE of
+        rows, whatever the labels say. This is the criterion the
+        post-deployment detector (gcp/audit_magnitude_drift.py) applies to
+        live rows, which carry no labels.
+      * excess — the modal bucket's predicted share exceeds its TRUE share on
+        the same rows by more than PROMOTION_MAX_MODAL_EXCESS. A calibrated
+        model predicts TIGHT about as often as TIGHT happens (~68.5% on the
+        15m cells), and a fixed ceiling just above that measured the labels,
+        not the model (slv7m, #1025).
+
+    Scored on the training matrix on purpose: it is the most generous possible
+    test, so a candidate that fails HERE cannot do better out-of-sample.
+    `y_true` is optional only so the collapse criterion can be evaluated where
+    labels are genuinely absent; the persist path always passes it.
 
     Returns a dict with `ok` plus the numbers behind the decision, so the caller
     can log exactly why a promotion was refused (and the same dict lands in the
-    run summary for later forensics).
+    run summary and the PROMOTION_BLOCKED marker for later forensics).
     """
     y_pred = np.asarray(y_pred)
     n = int(y_pred.size)
     if n == 0:
         return {"ok": False, "reason": "no predictions to evaluate",
                 "n": 0, "modal_share": None, "distinct_classes": 0,
-                "modal_class": None}
+                "modal_class": None, "true_modal_share": None,
+                "modal_excess": None}
+    if y_true is not None:
+        y_true = np.asarray(y_true)
+        if y_true.size != n:
+            raise ValueError(
+                f"y_true has {y_true.size} rows but y_pred has {n}; the excess "
+                "criterion needs the labels for the same rows")
     classes, counts = np.unique(y_pred, return_counts=True)
     top = int(np.argmax(counts))
+    modal_class = int(classes[top])
     modal_share = float(counts[top]) / n
     distinct = int(classes.size)
+    true_modal_share = None
+    modal_excess = None
+    if y_true is not None:
+        true_modal_share = float(np.count_nonzero(y_true == modal_class)) / n
+        modal_excess = modal_share - true_modal_share
     reasons = []
     if distinct < PROMOTION_MIN_DISTINCT_CLASSES:
         reasons.append(
             f"predicts only {distinct} distinct bucket(s) "
             f"(min {PROMOTION_MIN_DISTINCT_CLASSES})")
-    if modal_share >= PROMOTION_MAX_MODAL_SHARE:
+    if modal_share >= PROMOTION_COLLAPSE_MODAL_SHARE:
         reasons.append(
-            f"modal bucket {int(classes[top])} on {counts[top]}/{n} rows "
-            f"({modal_share:.1%} >= {PROMOTION_MAX_MODAL_SHARE:.0%})")
+            f"collapsed: modal bucket {modal_class} on {counts[top]}/{n} rows "
+            f"({modal_share:.1%} >= {PROMOTION_COLLAPSE_MODAL_SHARE:.0%})")
+    if modal_excess is not None and modal_excess > PROMOTION_MAX_MODAL_EXCESS:
+        reasons.append(
+            f"over-predicts bucket {modal_class}: {modal_share:.1%} predicted "
+            f"vs {true_modal_share:.1%} true on the same rows "
+            f"(+{modal_excess:.1%} > {PROMOTION_MAX_MODAL_EXCESS:.0%})")
     return {
         "ok": not reasons,
         "reason": "; ".join(reasons) if reasons else "passed",
         "n": n,
         "modal_share": modal_share,
-        "modal_class": int(classes[top]),
+        "modal_class": modal_class,
+        "true_modal_share": true_modal_share,
+        "modal_excess": modal_excess,
         "distinct_classes": distinct,
         "class_counts": {int(c): int(k) for c, k in zip(classes, counts)},
     }
@@ -466,16 +496,23 @@ def _persist_production_model_artifact(
         )
         model.fit(X_full, y_full)
 
-    # Promotion gate — refuse to make a collapsed model LATEST.
-    # Scored on the training matrix on purpose: it is the most generous test
-    # available, so a candidate that collapses here cannot do better live.
-    # See mag_config.PROMOTION_MAX_MODAL_SHARE for the c49qf incident.
-    verdict = promotion_verdict(model.predict(X_full))
-    log.info("promotion gate %s:%s — %s (n=%d modal_share=%s distinct=%d)",
+    # Promotion gate — refuse to make a collapsed or TIGHT-over-predicting
+    # model LATEST. Scored on the training matrix on purpose: it is the most
+    # generous test available, so a candidate that fails here cannot do
+    # better live. y_full is the true bucket for the same rows, which is what
+    # the excess criterion compares against. See mag_config for the c49qf
+    # and slv7m incidents.
+    verdict = promotion_verdict(model.predict(X_full), y_true=y_full)
+    log.info("promotion gate %s:%s — %s (n=%d modal_share=%s true=%s "
+             "excess=%s distinct=%d)",
              ticker, tf, "PASS" if verdict["ok"] else "BLOCK",
              verdict["n"],
              "n/a" if verdict["modal_share"] is None
              else f"{verdict['modal_share']:.3f}",
+             "n/a" if verdict["true_modal_share"] is None
+             else f"{verdict['true_modal_share']:.3f}",
+             "n/a" if verdict["modal_excess"] is None
+             else f"{verdict['modal_excess']:+.3f}",
              verdict["distinct_classes"])
 
     # Upload artifacts under run_prefix; update LATEST pointer LAST.

@@ -264,7 +264,26 @@ DEFAULT_CV = 3
 #
 # Deliberately NOT env-tunable: an operator racing a bad retrain must not be
 # able to widen the gate to push it through. Changing it is a code change.
-PROMOTION_MAX_MODAL_SHARE = 0.70
+#
+# 2026-09-07 (#1025): the first gated retrain, `magnitude-engine-slv7m`,
+# showed the original fixed 70% ceiling measured the LABELS, not the model.
+# The true share of TIGHT is 68.4-68.9% on every 15m cell (63.1% on IWM/5m),
+# so a perfectly calibrated model predicts TIGHT on ~68.5% of bars and sat
+# 1.5 points from the gate; SPY/15m passed at 68.7% while IWM/15m, over-
+# predicting by 7 points at 76%, and QQQ/30m at 70.3% were both blocked as
+# if they were c49qf's 100%. Two criteria replace the one number:
+#
+#   * PROMOTION_COLLAPSE_MODAL_SHARE — absolute. A candidate that argmax-
+#     picks one bucket on >= 90% of its training rows is collapsed whatever
+#     the labels say (c49qf: 100%; rmcwj before it). This is the number the
+#     post-deployment detector and the render-layer backstop share, since
+#     neither has labels.
+#   * PROMOTION_MAX_MODAL_EXCESS — relative. The predicted share of the modal
+#     bucket may exceed that bucket's TRUE share on the same rows by at most
+#     this much. Scored on the training matrix, where y is in hand. IWM/15m
+#     at +7.4 passes; a model at +15 does not.
+PROMOTION_COLLAPSE_MODAL_SHARE = 0.90
+PROMOTION_MAX_MODAL_EXCESS = 0.10
 PROMOTION_MIN_DISTINCT_CLASSES = 2
 
 

@@ -533,13 +533,17 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
 # ── Piece 3: expected move (CONTEXT / sizing only — never the headline) ────
 
 
-# Modal-share ceiling for the served model. Mirrors the promotion gate in
-# gcp/research/magnitude_engine/mag_config.PROMOTION_MAX_MODAL_SHARE and the
-# post-deployment detector in gcp/audit_magnitude_drift.py. Not imported from
-# mag_config because lib/ must not depend on gcp/research/ (the research
-# package pulls LightGBM); the number is asserted equal in
-# tests/lib/test_movement_statement.py so the two cannot silently drift.
-_MAG_DEGENERATE_MODAL_SHARE = 0.70
+# Modal-share ceiling for the served model. Mirrors the promotion gate's
+# collapse criterion, gcp/research/magnitude_engine/mag_config
+# .PROMOTION_COLLAPSE_MODAL_SHARE, and the post-deployment detector's HIGH
+# tier in gcp/audit_magnitude_drift.py. Not imported from mag_config because
+# lib/ must not depend on gcp/research/ (the research package pulls
+# LightGBM); the number is asserted equal in tests/lib/test_movement_statement
+# .py so the two cannot silently drift. Inference rows carry no labels, so
+# the gate's relative criterion has no counterpart here: this backstop
+# catches c49qf's 100%, not a model a few points over the ~68% TIGHT base
+# rate (that is the gate's job, before the model is ever served).
+_MAG_DEGENERATE_MODAL_SHARE = 0.90
 _MAG_DEGENERACY_LOOKBACK_DAYS = 7
 
 
