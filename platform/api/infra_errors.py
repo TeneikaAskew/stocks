@@ -259,18 +259,24 @@ def _psycopg2_sqlstates() -> dict:
 _PSYCOPG2_SQLSTATE_OF: dict = _psycopg2_sqlstates()
 
 
-def _psycopg2_operational_outage(exc: BaseException) -> bool:
-    """A psycopg2 `OperationalError` that is the server's, not our setup.
+def _psycopg2_server_gone(exc: BaseException) -> bool:
+    """A psycopg2 server error whose SQLSTATE says the server is gone.
 
-    The class is the DB-API base of every server error in SQLSTATE classes
-    08, 28, 53, 57 and 58 alike, so registering it read `InvalidPassword`
-    (28P01) -- a permanently wrong credential -- as a retryable outage
-    (Codex P2 on #999). The SQLSTATE decides, from `pgcode` when the server
-    set it and from the class otherwise. A code-less plain `OperationalError`
-    is the driver's own connection failure -- refused, "server closed the
-    connection unexpectedly", an SSL SYSCALL error -- and is an outage.
+    `OperationalError` is the DB-API base of every server error in SQLSTATE
+    classes 08, 28, 53, 57 and 58 alike, so registering it read
+    `InvalidPassword` (28P01) -- a permanently wrong credential -- as a
+    retryable outage (Codex P2 on #999). And the server's own failures, class
+    XX, arrive under `InternalError` rather than `OperationalError`, so a
+    predicate gated on the latter never consulted their code and answered a
+    bare 500 for `XX000` where the pg8000 path answered 503 (Codex P2 on
+    #999). So every `DatabaseError` subclass is decided by SQLSTATE, from
+    `pgcode` when the server set it and from the class otherwise, through the
+    same code sets pg8000 uses. A code-less plain `OperationalError` is the
+    driver's own connection failure -- refused, "server closed the connection
+    unexpectedly", an SSL SYSCALL error -- and is an outage; any other
+    code-less error is not decided here.
     """
-    if _psycopg2 is None or not isinstance(exc, _psycopg2.OperationalError):
+    if _psycopg2 is None or not isinstance(exc, _psycopg2.DatabaseError):
         return False
     code = getattr(exc, "pgcode", None) or _PSYCOPG2_SQLSTATE_OF.get(type(exc))
     if code is None:
@@ -355,7 +361,7 @@ _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
                               _pg8000_transport_failure,
                               _pg8000_server_gone,
                               _psycopg2_transport_failure,
-                              _psycopg2_operational_outage,
+                              _psycopg2_server_gone,
                               _connector_transport_failure,
                               _retryable_http_response)
 

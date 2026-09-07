@@ -1363,6 +1363,23 @@ def test_infrastructure_errors_are_classified_by_type():
                 pg_errors.ObjectInUse("database is being accessed")):    # 55006
         assert isinstance(exc, psycopg2.OperationalError), type(exc).__name__
         assert not is_infrastructure_error(exc), type(exc).__name__
+    # The server's OWN failures, class XX, arrive as `InternalError`
+    # subclasses rather than `OperationalError`, and a predicate gated on the
+    # latter never reached their code while pg8000 already answered 503 for
+    # the same codes (Codex P2 on #999). The class-level SQLSTATE rules
+    # decide every DatabaseError subclass the same way.
+    for exc in (pg_errors.InternalError_("internal error"),              # XX000
+                pg_errors.DataCorrupted("invalid page"),                 # XX001
+                pg_errors.IndexCorrupted("index corrupted")):            # XX002
+        assert isinstance(exc, psycopg2.InternalError), type(exc).__name__
+        assert not isinstance(exc, psycopg2.OperationalError)
+        assert is_infrastructure_error(exc), type(exc).__name__
+    for exc in (pg_errors.ConfigFileError("config"),                     # F0000
+                pg_errors.UndefinedTable("no such table"),               # 42P01
+                pg_errors.UniqueViolation("duplicate key"),              # 23505
+                psycopg2.InternalError("no code at all"),
+                psycopg2.DatabaseError("no code at all")):
+        assert not is_infrastructure_error(exc), type(exc).__name__
     # The SQLAlchemy wrapper is decided by what it wraps, in both directions.
     for orig, expected in ((pg_errors.InvalidPassword("bad password"), False),
                            (pg_errors.AdminShutdown("terminating"), True),
