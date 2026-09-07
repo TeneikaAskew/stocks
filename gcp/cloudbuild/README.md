@@ -56,6 +56,13 @@ SA already holds:
 - `roles/artifactregistry.writer` — `artifactregistry.tags.create/update`
   and `dockerimages.get` to write the pins.
 
+The same step runs when `.github/workflows/deploy-staging.yml` dispatches
+`platform/deploy.sh` under the WIF identity `arch-refresh-bot@`. That
+account holds `roles/run.admin` (the reads) but only
+`roles/artifactregistry.reader` on `gcr.io` and nothing on `trading`, so
+it needs `roles/artifactregistry.writer` on both repos before its next
+dispatch; the workflow header carries the grant commands.
+
 It does NOT hold `artifactregistry.tags.delete`, which is why the trigger
 path passes `--no-sweep`: releasing pins nothing needs any more is left to
 the interactive `gcp/deploy.sh` path (`build`, `pin-images`, any deploy

@@ -109,6 +109,29 @@ name: Deploy staging
 #                                      act as service account <numeric id>"
 #                                      AFTER the source tarball uploads
 #                                      (run #12)
+#   roles/artifactregistry.writer    on BOTH image repos (gcr.io, location
+#                                    us, and trading, location us-east1) —
+#                                    platform/deploy.sh now runs
+#                                    `./gcp/deploy.sh pin-images --no-sweep`
+#                                    before its build, which lists tags on
+#                                    every package a Cloud Run job or service
+#                                    runs and creates/moves inuse-* tags so
+#                                    the Artifact Registry cleanup policy
+#                                    never deletes a digest that is still
+#                                    deployed. Reader is not enough (no
+#                                    tags.create/update) and it must cover
+#                                    the trading repo too (the jobs image is
+#                                    inventoried as well). It fails closed:
+#                                    without this grant the run stops before
+#                                    building, with the failing call named.
+#                                    NOT yet granted to arch-refresh-bot@ as
+#                                    of 2026-09-07 (reader on gcr.io only);
+#                                    an owner must add it before the next
+#                                    dispatch:
+#                                      for r in "gcr.io us" "trading us-east1"; do set -- $r
+#                                        gcloud artifacts repositories add-iam-policy-binding $1 --location=$2 \
+#                                          --member=serviceAccount:arch-refresh-bot@adept-mountain-474619-d4.iam.gserviceaccount.com \
+#                                          --role=roles/artifactregistry.writer; done
 #   roles/artifactregistry.reader    on the gcr.io repo (location us) —
 #                                    `gcloud run deploy` resolves the freshly
 #                                    built image via

@@ -74,9 +74,19 @@ What shipped:
   only: `solyra-api` is also built by the Cloud Build trigger from #990,
   which cannot run `pin-images` before it moves `:latest`, so a prod
   revision's digest could otherwise lose its only tag on a later staging
-  build. `platform/deploy.sh` now pins before its build; widen the prefix
-  once the trigger does too. Applied 2026-09-06, re-applied with the
-  scoped rule 2026-09-07 (`--no-dry-run`). Sweeps are asynchronous.
+  build. `platform/deploy.sh` now pins before its build; the live
+  `deploy-solyra-api-staging` trigger (read back 2026-09-07) does not call
+  that script: it runs `docker build` / `docker push ${_IMAGE}` /
+  `gcloud run deploy` directly, so its tag move is unpinned and the
+  exclusion stands until that trigger gains a pin step. Applied
+  2026-09-06, re-applied with the scoped rule 2026-09-07
+  (`--no-dry-run`). Sweeps are asynchronous.
+- Identities that run `pin-images`: `trading-runner@` (Cloud Build
+  trigger, has what it needs), operators / `claude-web@` (interactive
+  path, sweeps too), and `arch-refresh-bot@` via
+  `.github/workflows/deploy-staging.yml`, which still needs
+  `roles/artifactregistry.writer` on both repos (commands in the workflow
+  header).
 - Both image builds (`build_image`, `build_research_image`) pin before
   moving their tag and refuse to build if pinning fails; the dispatcher
   runs deploy steps one at a time (never as `a && b`) so a failed build
