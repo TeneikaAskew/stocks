@@ -66,6 +66,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) §5 (schema by domain) a
 | `ranker_runs` | table | [`gcp/schema.sql:1039`](gcp/schema.sql#L1039) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:437`](gcp/schema.sql#L437) |
 | `regime_combo_results` | table | [`gcp/schema.sql:3316`](gcp/schema.sql#L3316) |
+| `schema_apply_history` | table | [`gcp/schema.sql:4118`](gcp/schema.sql#L4118) |
 | `sec_filings` | table | [`gcp/schema.sql:931`](gcp/schema.sql#L931) |
 | `signal_alerts` | table | [`gcp/schema.sql:1057`](gcp/schema.sql#L1057) |
 | `signal_metrics` | table | [`gcp/schema.sql:2647`](gcp/schema.sql#L2647) |
@@ -188,6 +189,8 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) §5 (schema by domain) a
 | `waitlist_signups` | 1 | 48 kB | `gcp/schema.sql` |
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
+
+Declared in `gcp/schema.sql` but absent live: `schema_apply_history`
 <!-- inventory:dbtables:end -->
 
 ---
@@ -386,6 +389,9 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `regime_combo_results`
 - [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) — line [189](gcp/regime_combo_job.py#L189), [190](gcp/regime_combo_job.py#L190)
+
+### `schema_apply_history`
+- [`gcp/apply_schema.py`](gcp/apply_schema.py) — line [165](gcp/apply_schema.py#L165), [205](gcp/apply_schema.py#L205)
 
 ### `sec_filings`
 - [`gcp/fetchers/fetch_sec_filings.py`](gcp/fetchers/fetch_sec_filings.py) — line [581](gcp/fetchers/fetch_sec_filings.py#L581), [582](gcp/fetchers/fetch_sec_filings.py#L582), [583](gcp/fetchers/fetch_sec_filings.py#L583)
@@ -790,6 +796,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `regime_combo_results`
 - [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) — line [7](gcp/regime_combo_job.py#L7), [51](gcp/regime_combo_job.py#L51)
 
+### `schema_apply_history`
+- [`gcp/apply_schema.py`](gcp/apply_schema.py) — line [188](gcp/apply_schema.py#L188)
+
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](lib/agents/ranker/candidates.py) — line [116](lib/agents/ranker/candidates.py#L116)
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [542](lib/agents/ranker/signals.py#L542)
@@ -967,7 +976,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 <!-- inventory:blast:start -->
 | Job | Entry module | Tables written (entry module + its direct repo imports) | Readers of those tables |
 |---|---|---|---|
-| `apply-schema-migrations` | `gcp/apply_schema.py` | — (Discord / GCS / no Cloud SQL write found) | — |
+| `apply-schema-migrations` | `gcp/apply_schema.py` | `schema_apply_history` | — |
 | `audit-brief-bias` | `gcp/audit_job_runner.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `audit-infra-drift` | `gcp/audit_infra_drift.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `audit-magnitude-drift` | `gcp/audit_magnitude_drift.py` | — (Discord / GCS / no Cloud SQL write found) | — |

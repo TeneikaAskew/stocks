@@ -189,3 +189,17 @@ def test_all_builds_the_research_image_before_any_research_job():
     assert research_users, "expected at least one research-image deploy in all)"
     early = [f for f in research_users if order.index(f) < build_at]
     assert not early, f"research-image deploys before build_research_image: {early}"
+
+
+@pytest.mark.parametrize("fn, flag", [
+    ("deploy_build_options_greeks", r"--task-timeout\s+7200"),
+    ("deploy_strat_engine", r"--memory\s+16Gi"),
+])
+def test_research_jobs_newly_in_all_declare_their_live_sizing(fn, flag):
+    """Codex on #1022: `all` now redeploys these jobs, and their declared
+    sizing was below the values raised by hand after production failures
+    (greeks timeout 3600 vs live 7200; strat-engine 8Gi vs live 16Gi, read
+    with `gcloud run jobs describe` on 2026-09-07). Both branches carry the
+    live value so a redeploy converges rather than halves the budget."""
+    body = FNS[fn]
+    assert len(re.findall(flag, body)) == 2, f"{fn}: {flag} must be on the create and update branches"

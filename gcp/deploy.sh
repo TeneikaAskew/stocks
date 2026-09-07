@@ -1443,8 +1443,10 @@ build_research_image() {
 
 deploy_strat_engine() {
     echo "Deploying strat-engine job..."
-    # 8Gi memory is sized for the production cron path (incremental
-    # daily update on the per-bar feature tables). Operator-only mode
+    # 16Gi memory matches the live job (raised by hand from 8Gi after the
+    # daily incremental run outgrew it; docs/audits/2026-08-27-claude-
+    # codebase-review/08-infra-drift.md). Declared on both branches so `all`
+    # converges to it instead of halving the budget (Codex on #1022). Operator-only mode
     # `--rebuild --start-date=2016-01-01` loads ~1M 1-min SPY bars +
     # the equivalent for IWM/QQQ into memory before featurizing and
     # has tripped OOM at 8Gi (rrjlc, 2026-06-01 05:53 UTC — see
@@ -1481,7 +1483,7 @@ deploy_strat_engine() {
 
     gcloud run jobs create strat-engine \
         --image "${research_image}" --region "${REGION}" \
-        --memory 8Gi --cpu 4 --max-retries 0 \
+        --memory 16Gi --cpu 4 --max-retries 0 \
         --task-timeout 5400 \
         --service-account "${SA_EMAIL}" \
         --command "python" \
@@ -1491,6 +1493,7 @@ deploy_strat_engine() {
         --quiet 2>/dev/null || \
     gcloud run jobs update strat-engine \
         --image "${research_image}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
         --command "python" \
         --args="${default_args}" \
         --task-timeout 5400 \
@@ -1555,7 +1558,7 @@ deploy_build_options_greeks() {
     gcloud run jobs create build-options-greeks \
         --image "${research_image}" --region "${REGION}" \
         --memory 4Gi --cpu 2 --max-retries 0 \
-        --task-timeout 3600 \
+        --task-timeout 7200 \
         --service-account "${SA_EMAIL}" \
         --command "python" \
         --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
@@ -1566,7 +1569,7 @@ deploy_build_options_greeks() {
         --image "${research_image}" --region "${REGION}" \
         --command "python" \
         --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
-        --task-timeout 3600 \
+        --task-timeout 7200 \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -3103,9 +3106,13 @@ EOF
 #   gcloud run jobs execute apply-schema-migrations --region us-east1 --wait
 deploy_apply_schema_migrations() {
     echo "Deploying apply-schema-migrations job..."
+    # 1800 s: the apply itself is seconds, but gcp/apply_schema.py now
+    # refreshes any materialized view the apply left unpopulated (the two
+    # earnings views, whose weekly refresh job is sized at 1200 s), so the
+    # budget covers apply + refresh with Rule 0 headroom (Codex on #1022).
     gcloud run jobs create apply-schema-migrations \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 600 \
+        --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.apply_schema" \
         ${DB_SECRET_FLAG} \
@@ -3113,6 +3120,7 @@ deploy_apply_schema_migrations() {
         --quiet 2>/dev/null || \
     gcloud run jobs update apply-schema-migrations \
         --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
         --command "python,-m,gcp.apply_schema" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \

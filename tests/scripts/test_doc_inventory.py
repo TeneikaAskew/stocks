@@ -404,7 +404,10 @@ def test_live_job_config_drift_is_reported():
     live = json.loads(FIXTURE.read_text())
     drift = inv.reconcile(inv.repo_inventory(REPO), live)["jobs_config_drift"]
     assert any("compute-earnings-reactions.memory" in d and "1Gi" in d and "2Gi" in d for d in drift), drift
-    assert any("strat-engine.memory" in d for d in drift), drift
+    # strat-engine.memory and build-options-greeks.task_timeout were raised
+    # to their live values on #1022; db-query still drifts on both axes.
+    assert any("db-query.memory" in d and "512Mi" in d and "8Gi" in d for d in drift), drift
+    assert not any("strat-engine.memory" in d for d in drift), drift
 
 
 def test_a_deploy_time_variable_is_not_config_drift():
