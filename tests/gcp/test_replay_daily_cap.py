@@ -195,3 +195,74 @@ def test_multi_date_replay_rolls_over_on_the_eastern_date_not_utc():
     ])
     replay_ticker(m, 'SPY', bars, captured)
     assert seen == [(True, 2), (True, 2), (False, 0)], seen
+
+
+def test_reset_session_state_returns_every_session_field_to_fresh():
+    """Codex on #1022 (round 11): the rollover reset fields one at a time
+    and kept missing some (brief cache, last price, fired breaks). The
+    monitor now owns the list: everything a fresh SignalMonitor starts a
+    session with is reset for the ticker, while the rolling bar window
+    and the observability counters survive, and other tickers are untouched."""
+    m = _monitor()
+    m.daily_trades['SPY'] = 3
+    m.daily_pnl['SPY'] = 1.5
+    m.active_positions['SPY'] = [{'x': 1}]
+    m.orb_levels['SPY'] = {'high': 1.0}
+    m.session_extremes['SPY'] = {'date': 'd', 'high': 1.0, 'low': 0.5}
+    m.leg_trackers['SPY'] = {'date': 'd'}
+    m.volume_baselines['SPY'] = {'date': 'd', 'baseline': {}}
+    m.level_maps['SPY'] = object()
+    m.level_map_atr['SPY'] = 2.0
+    m.last_prices['SPY'] = 100.0
+    m.fired_breaks = {('SPY', 'PDH', 'up'), ('IWM', 'PDL', 'down')}
+    m._brief_bias_cache['SPY'] = {'bias': 'LONG'}
+    m._brief_bias_cache['IWM'] = {'bias': 'SHORT'}
+    m._last_fire_ts['SPY'] = 'ts'
+    m.windows['SPY'] = pd.DataFrame({'Close': [1.0, 2.0]})
+    m.level_refresh_success_count['SPY'] = 4
+
+    m.reset_session_state('SPY')
+
+    assert m.daily_trades['SPY'] == 0 and m.daily_pnl['SPY'] == 0.0
+    assert m.active_positions['SPY'] == [] and m.orb_levels['SPY'] == {}
+    assert m.session_extremes['SPY'] == {} and m.leg_trackers['SPY'] == {}
+    assert m.volume_baselines['SPY'] == {}
+    assert m.level_maps['SPY'] is None and 'SPY' not in m.level_map_atr
+    assert m.last_prices['SPY'] is None
+    assert m.fired_breaks == {('IWM', 'PDL', 'down')}
+    assert 'SPY' not in m._brief_bias_cache and m._brief_bias_cache['IWM'] == {'bias': 'SHORT'}
+    assert 'SPY' not in m._last_fire_ts
+    assert len(m.windows['SPY']) == 2, "the rolling bar window is not session state"
+    assert m.level_refresh_success_count['SPY'] == 4, "counters are observability, kept"
+
+
+def test_multi_date_replay_rollover_clears_brief_cache_and_level_break_state():
+    """Codex on #1022 (round 11): day 2's leg trackers were built from day
+    1's cached brief (cached by ticker only), and last_prices / fired_breaks
+    carried over so the first bar could false-cross yesterday's close and a
+    repeat crossing was suppressed."""
+    from scripts.replay_signal_monitor import replay_ticker
+    m = _monitor()
+    captured = []
+    _install_stub(m, captured)
+    day1_brief = {'bias': 'LONG'}
+    m._brief_bias_cache['SPY'] = day1_brief
+    m.last_prices['SPY'] = 100.0
+    m.fired_breaks = {('SPY', 'PDH', 'up')}
+    seen: list = []
+    # Observed inside evaluate_ticker, i.e. AFTER update_window has run for
+    # the bar: on day 2 the leg trackers reload the brief through the
+    # replay clock, so the cache may be populated again, but never with
+    # day 1's object.
+    m.evaluate_ticker = lambda ticker: seen.append(
+        (m._brief_bias_cache.get('SPY') is day1_brief, m.last_prices.get('SPY'),
+         ('SPY', 'PDH', 'up') in m.fired_breaks))
+
+    bars = pd.DataFrame([
+        {'Time': pd.Timestamp('2026-08-27 14:31:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+        {'Time': pd.Timestamp('2026-08-28 14:31:00'), 'Open': 100.0,
+         'High': 100.5, 'Low': 99.5, 'Close': 100.0, 'Volume': 1000},
+    ])
+    replay_ticker(m, 'SPY', bars, captured)
+    assert seen == [(True, 100.0, True), (False, None, False)], seen

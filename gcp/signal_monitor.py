@@ -748,6 +748,36 @@ class SignalMonitor:
                 "cannot apply the as-of bound (#823)")
         return df.loc[np.asarray(idx < cutoff)]
 
+    def reset_session_state(self, ticker: str) -> None:
+        """Return ``ticker`` to the state a fresh SignalMonitor starts a
+        session with.
+
+        Production runs one monitor per trading day, so every per-session
+        field starts empty each morning. A multi-day replay drives many
+        sessions through one instance (scripts/replay_signal_monitor.py),
+        and resetting fields one at a time kept missing some: the brief
+        cache is keyed by ticker only, so day 2's leg trackers were built
+        from day 1's brief, and last_prices / fired_breaks let the first
+        bar false-cross yesterday's close while suppressing a repeat
+        crossing (Codex on #1022). This is the one list.
+
+        Kept on purpose: the rolling bar window (indicators need history
+        across the boundary) and the observability counters.
+        """
+        self.daily_trades[ticker] = 0
+        self.daily_pnl[ticker] = 0.0
+        self.active_positions[ticker] = []
+        self.orb_levels[ticker] = {}
+        self.session_extremes[ticker] = {}
+        self.leg_trackers[ticker] = {}
+        self.volume_baselines[ticker] = {}
+        self.level_maps[ticker] = None
+        self.level_map_atr.pop(ticker, None)
+        self.last_prices[ticker] = None
+        self.fired_breaks = {k for k in self.fired_breaks if k[0] != ticker}
+        self._brief_bias_cache.pop(ticker, None)
+        self._last_fire_ts.pop(ticker, None)
+
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
         the LevelMap for this ticker. Called at startup and periodically

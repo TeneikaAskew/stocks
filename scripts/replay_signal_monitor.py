@@ -172,17 +172,16 @@ def replay_ticker(
             # change then reset nothing (Codex on #1022).
             _bar_date = monitor._now(_ET).date()
             if prev_date is not None and _bar_date != prev_date:
-                monitor.daily_trades[ticker] = 0
-                # The level map is SESSION state too: refresh_level_map
-                # bounds the daily frame to rows before the session's
-                # analysis date (#823), so date 1's map is wrong for date
-                # 2, and evaluate_ticker refreshes only a None entry
-                # (Codex on #1022). Drop it so the next bar rebuilds it
-                # from rows before the new date.
-                monitor.level_maps[ticker] = None
+                # Everything a fresh production monitor starts a session
+                # without: the fire counter, the level map (bounded to rows
+                # before the session's date, #823), the brief cache the leg
+                # trackers are built from, last price and fired breaks, ORB
+                # and session extremes. The monitor owns the list (Codex on
+                # #1022, rounds 9 to 11).
+                monitor.reset_session_state(ticker)
                 logger.info(
-                    "replay: %s session rollover %s -> %s, daily_trades reset, "
-                    "level map dropped", ticker, prev_date, _bar_date)
+                    "replay: %s session rollover %s -> %s, session state reset",
+                    ticker, prev_date, _bar_date)
             prev_date = _bar_date
         monitor.update_window(ticker, single_bar)
         try:
