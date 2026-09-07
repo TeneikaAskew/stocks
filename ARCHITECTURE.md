@@ -67,7 +67,7 @@ flowchart LR
     BZ[Benzinga]:::ext
     VAI[Vertex AI Gemini + embeddings]:::ext
 
-    SCH[Cloud Scheduler<br/>66 entries live, all America/New_York]:::gcp
+    SCH[Cloud Scheduler<br/>65 entries live, all America/New_York]:::gcp
     JOBS[Cloud Run Jobs<br/>76 live / 67 in deploy.sh]:::gcp
     API1[solyra-api-prod<br/>FastAPI, IAP]:::gcp
     API2[solyra-api-staging<br/>FastAPI, public edge + Firebase]:::gcp
@@ -109,7 +109,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 94 relations (66 declared in `gcp/schema.sql`, 28 created at runtime by research and analytics jobs; §5) |
 | Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 67 declared in [`gcp/deploy.sh`](gcp/deploy.sh) |
 | Cloud Run Services | 4 long-lived HTTP services | `solyra-api-prod`, `solyra-api-staging`, `discord-interactions` (min-instances 1), `failure-notifier` |
-| Cloud Scheduler | cron triggers, all `America/New_York` | 66 entries, 1 paused (`signal-quality-report-hourly`) |
+| Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`signal-quality-report-hourly` deleted 2026-09-07) |
 | Cloud Build | image builds and the API deploy triggers | triggers `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) |
 | Artifact Registry + GCR | `trading/trading-system` (448 versions, cleanup policy applied live per #1004) and the single `gcr.io/…/solyra-api` API image (legacy packages retired 2026-09-07, #1007) | live tag list, `gcloud container images list` 2026-09-07 |
 | Cloud Storage | parquet snapshots, `query-results/`, `sql-dumps/` (5 weekly dumps, latest 2026-09-06), reports | live listing |
@@ -576,7 +576,7 @@ Deployed by [`gcp/deploy.sh:2922`](gcp/deploy.sh#L2922); stdlib `http.server`, n
 
 ## 8. Cloud Scheduler timeline
 
-All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- verify-docs-ok: repo-declared count; the live count is stated in the same paragraph --> and live has 66: #1004 consolidated the per-hour news and sec-filings entries into `news-sentiment-hourly`, `news-topics-hourly` and `sec-filings-intraday` (each created through `_schedule_verified`, which deletes the per-hour entries only after the replacement reads back ENABLED) and added the Discord warm window; #1005 added `phase6-playbook-daily` and retired `signal-quality-report-hourly`, which is still present live in the PAUSED state until the delete command in its retirement comment is run. The table carries both views.
+All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- verify-docs-ok: repo-declared count; the live count is stated in the same paragraph --> and live has 65: #1004 consolidated the per-hour news and sec-filings entries into `news-sentiment-hourly`, `news-topics-hourly` and `sec-filings-intraday` (each created through `_schedule_verified`, which deletes the per-hour entries only after the replacement reads back ENABLED) and added the Discord warm window; #1005 added `phase6-playbook-daily` and retired `signal-quality-report-hourly`, whose live entry (PAUSED since 2026-05-05) was deleted on 2026-09-07. The table carries both views.
 
 <!-- inventory:schedulers:start -->
 | Scheduler | Cron (America/New_York) | Target | Args override | State (live) | Last attempt |
@@ -636,8 +636,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | `signal-monitor-daily` | `25 9 * * 1-5` | `signal-monitor` |  | ENABLED | 2026-09-04 |
 | `signal-monitor-eod-resolver-daily` | `30 16 * * 1-5` | `signal-monitor-eod-resolver` |  | ENABLED | 2026-09-04 |
 | `signal-quality-alarm-daily` | `0 2 * * 2-6` | `signal-quality-alarm` |  | ENABLED | 2026-09-05 |
-| `signal-quality-report-hourly` | `0 10-16 * * 1-5` | `signal-quality-report` |  | PAUSED — **not in deploy.sh** |  |
-| `signal-quality-report-nightly` | `0 1 * * 2-6` | `signal-quality-report` | --mode=historical --lookback-days=2 | ENABLED <!-- verify-docs-ok: sibling scheduler signal-quality-report-hourly is paused; this entry fires --> | 2026-09-05 |
+| `signal-quality-report-nightly` | `0 1 * * 2-6` | `signal-quality-report` | --mode=historical --lookback-days=2 | ENABLED | 2026-09-05 |
 | `strat-engine-daily` | `35 23 * * 1-5` | `strat-engine` |  | ENABLED | 2026-09-05 |
 | `strat-enrich-daily` | `0 2 * * 2-6` | `strat-engine` | -m gcp.research.strat_engine.strat_enrich_levels --mode=backfill-all | ENABLED | 2026-09-05 |
 | `top-movers-daily` | `15 16 * * 1-5` | `fetch-top-movers` |  | ENABLED | 2026-09-04 |
@@ -653,7 +652,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 
 | Time | Fires |
 |---|---|
-| 01:00 Tue–Sat | `historical-signals-watchlist-daily`, `signal-quality-report-nightly` (`--mode=historical --lookback-days=2`) <!-- verify-docs-ok: the nightly entry fires; the paused hourly entry is its own row below --> |
+| 01:00 Tue–Sat | `historical-signals-watchlist-daily`, `signal-quality-report-nightly` (`--mode=historical --lookback-days=2`) |
 | 02:00 | `options-retention-daily` (daily); `signal-quality-alarm-daily`, `strat-enrich-daily` (Tue–Sat) |
 | 02:30 Mon–Sat | `backfill-indicators-daily` |
 | 03:00 Sun | `backfill-indicators-weekly` (`BACKFILL_MODE=full` override) |
@@ -672,7 +671,6 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | 09:30–15:30 hourly | `top-movers-intraday-hourly` |
 | 09:45 / 10:00 | `orb-15m-alert` / `orb-30m-alert` (`signal-monitor --mode=orb-snapshot`) |
 | 09:55 | `audit-magnitude-drift-daily` |
-| 10:00–16:00 | `signal-quality-report-hourly` — **PAUSED** (retired by #1005) |
 | 12:30 daily | `audit-infra-drift-daily` |
 | 16:05 / 16:15 / 16:30 | `top-movers-intraday-close`, `top-movers-daily`, `signal-monitor-eod-resolver-daily`, `discord-warm-close` |
 | 17:00 | `realtime-gex-daily` |
@@ -865,13 +863,13 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 ## 15. Live-vs-repo reconciliation
 
 <!-- inventory:reconcile:start -->
-Live read 2026-09-07T03:09:14Z. Repo declares 67 jobs / 65 schedulers; live has 76 / 66. <!-- verify-docs-ok: repo-declared and live counts side by side -->
+Live read 2026-09-07T04:23:13Z. Repo declares 67 jobs / 65 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
 
 **Jobs live but not in deploy.sh** (11): `backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-build-gamma-levels`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`
 **Jobs in deploy.sh but not live** (2): `compute-spx-greeks-backfill`, `options-exec-backtest`
-**Schedulers live but not in deploy.sh** (1): `signal-quality-report-hourly`
+**Schedulers live but not in deploy.sh** (0): none
 **Schedulers in deploy.sh but not live** (0): none
-**Schedulers paused** (1): `signal-quality-report-hourly`
+**Schedulers paused** (0): none
 **Live schedulers targeting a missing job** (0): none
 **deploy.sh schedulers targeting a job deploy.sh never creates** (1): `gamma-levels-daily`
 **Cron drift (same name, different cron)** (0): none
@@ -879,7 +877,7 @@ Live read 2026-09-07T03:09:14Z. Repo declares 67 jobs / 65 schedulers; live has 
 **Jobs with no execution in the last window** (27): `backfill-ticker`, `backtest`, `backtest-pipeline`, `backtest-playability`, `calibrate-thresholds`, `compare-tier-fires`, `direction-baseline`, `direction-importance`, `direction-phase2`, `direction-probe`, `earnings-options-backfill`, `earnings-sweep`, `exec-backtest`, `indicator-correlation`, `intraday-bulk-backfill`, `magnitude-engine`, `magnitude-recal`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `param-sweep`, `signal-replay`, `strat-dir-features`, `validate-brief`
 <!-- inventory:reconcile:end -->
 
-Interpretation (2026-09-07): the live-only jobs are hand-created research jobs from May plus `exec-backtest` (research image `research-exec-backtest`, last run 2026-05-27); `p2-build-gamma-levels` is the one that matters because a scheduler depends on it (#829, #834). The one live-only scheduler, `signal-quality-report-hourly`, is paused and was retired from `gcp/deploy.sh` by #1005; it disappears from this list once the delete command in that retirement comment is run. `gamma-levels-daily` still targets a job `deploy.sh` never creates. The 27 jobs with no recent execution are on-demand or research jobs. Live table drift (28 runtime relations) is in §5.2.
+Interpretation (2026-09-07): the live-only jobs are hand-created research jobs from May plus `exec-backtest` (research image `research-exec-backtest`, last run 2026-05-27); `p2-build-gamma-levels` is the one that matters because a scheduler depends on it (#829, #834). Schedulers reconcile exactly: `signal-quality-report-hourly` (retired by #1005) was deleted live on 2026-09-07. `gamma-levels-daily` still targets a job `deploy.sh` never creates. The 27 jobs with no recent execution are on-demand or research jobs. Live table drift (28 runtime relations) is in §5.2.
 
 ## 16. Code modules
 

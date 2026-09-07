@@ -18,8 +18,8 @@
  ],
  "counts": {
   "jobs": 76,
-  "paused_schedulers": 1,
-  "schedulers": 66,
+  "paused_schedulers": 0,
+  "schedulers": 65,
   "secrets": 22,
   "services": 4
  },
@@ -1735,7 +1735,7 @@
    "gcp-job-failures-dlq"
   ]
  },
- "read_at": "2026-09-07T03:09:14Z",
+ "read_at": "2026-09-07T04:23:13Z",
  "region": "us-east1",
  "schedulers": {
   "audit-brief-bias-weekly": {
@@ -2210,7 +2210,7 @@
   },
   "reconcile-failure-notifier-hourly": {
    "cron": "0 * * * *",
-   "last_attempt": "2026-09-07T03:00:01.441255Z",
+   "last_attempt": "2026-09-07T04:00:01.670464Z",
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "",
@@ -2284,16 +2284,6 @@
    "last_status": 0,
    "state": "ENABLED",
    "target_job": "signal-quality-alarm",
-   "target_service": "",
-   "target_uri": "",
-   "time_zone": "America/New_York"
-  },
-  "signal-quality-report-hourly": {
-   "cron": "0 10-16 * * 1-5",
-   "last_attempt": "",
-   "last_status": -1,
-   "state": "PAUSED",
-   "target_job": "signal-quality-report",
    "target_service": "",
    "target_uri": "",
    "time_zone": "America/New_York"
@@ -2509,15 +2499,15 @@
   "ipv4_enabled": true,
   "latest_backups": [
    {
+    "start": "2026-09-07T03:45:32.339Z",
+    "status": "SUCCESSFUL"
+   },
+   {
     "start": "2026-09-06T05:32:32.931Z",
     "status": "SUCCESSFUL"
    },
    {
     "start": "2026-09-05T05:45:07.622Z",
-    "status": "SUCCESSFUL"
-   },
-   {
-    "start": "2026-09-04T03:28:47.851Z",
     "status": "SUCCESSFUL"
    }
   ],

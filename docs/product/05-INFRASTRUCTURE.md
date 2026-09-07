@@ -8,7 +8,7 @@ captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-decl
 **67 Cloud Run jobs** and **58 Cloud Scheduler entries** are *declared in the repo*.
 
 **VERIFIED — LIVE, 2026-09-07.** `gcloud run jobs list --region=us-east1` returns
-**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **66 scheduler
+**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **65 scheduler
 entries** — and 0 in every other Cloud Scheduler location, so 66 is the whole fleet.
 This previously read 84, dated 2026-09-06, and that figure does not reproduce; only
 the reading above is vouched for here. The dated audit under
@@ -40,7 +40,7 @@ these comparisons.
 | Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |
 |---|---|---|---|---|---|
 | FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
-| Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (66 live) / manual | 8 jobs exist only by hand — see the table above |
+| Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (65 live) / manual | 8 jobs exist only by hand — see the table above |
 | Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |

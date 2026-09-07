@@ -4,7 +4,7 @@ A private stocks and options trading intelligence platform on GCP: Cloud Run Job
 
 ![Last audit](https://img.shields.io/badge/docs_verified-2026--09--07-blue)
 ![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_67_declared-blue)
-![Cloud Scheduler](https://img.shields.io/badge/schedulers-66_live-blue)
+![Cloud Scheduler](https://img.shields.io/badge/schedulers-65_live-blue)
 ![Cloud SQL tables](https://img.shields.io/badge/schema_tables-66_declared_%2F_94_live-blue)
 ![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/workflows/refresh-architecture-docs.yml/badge.svg)
 

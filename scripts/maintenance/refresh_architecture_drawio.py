@@ -76,7 +76,8 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("Insulates the React dashboard", "Insulates the UI"),
     ("daily 7:15 ET", "daily 19:00 ET (prior evening)"),
     ("7:15 ET", "19:00 ET (prior evening)"),
-    ("Cloud Scheduler (49 crons)", "Cloud Scheduler (66 live entries)"),
+    ("Cloud Scheduler (49 crons)", "Cloud Scheduler (65 live entries)"),
+    ("Cloud Scheduler (66 live entries)", "Cloud Scheduler (65 live entries)"),
     ("trading-runner SA\nruntime identity for all Jobs", "trading-runner@ (jobs, Discord, notifier)\ntrading-platform-svc@ (API services)"),
 ]
 
@@ -152,7 +153,9 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     by_id[SUBTITLE_ID].set("value",
         f"{counts['jobs']} Cloud Run Jobs (live) • {counts['services']} Cloud Run Services • {counts['schedulers']} Cloud Scheduler entries "
         f"• Cloud SQL trading-db: {len(live.get('db_tables', {}))} relations • {counts['secrets']} secrets • read live {read} — companion to ARCHITECTURE.md")
-    by_id[SCHED_GROUP_ID].set("value", f"② Cloud Scheduler — {counts['schedulers']} live entries, all America/New_York (read {read}; 1 paused: signal-quality-report-hourly)")
+    paused = [n for n, x in live["schedulers"].items() if x.get("state") != "ENABLED"]
+    paused_note = f"; {len(paused)} paused: {', '.join(paused)}" if paused else "; none paused"
+    by_id[SCHED_GROUP_ID].set("value", f"② Cloud Scheduler — {counts['schedulers']} live entries, all America/New_York (read {read}{paused_note})")
     for cid, text in SCHED_LABELS.items():
         by_id[cid].set("value", text)
 

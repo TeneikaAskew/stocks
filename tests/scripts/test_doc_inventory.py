@@ -201,9 +201,9 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
     assert {"backtest-playability", "compare-tier-fires", "p2-build-gamma-levels",
             "strat-dir-features"} <= set(rec["jobs_live_only"])
     assert "compute-spx-greeks-backfill" in rec["jobs_repo_only"]
-    assert "signal-quality-report-hourly" in rec["schedulers_paused"]
-    # retired in deploy.sh by #1005 but still (paused) live: the only live-only entry
-    assert rec["schedulers_live_only"] == ["signal-quality-report-hourly"]
+    # signal-quality-report-hourly was retired by #1005 and its paused live
+    # entry deleted on 2026-09-07, so schedulers reconcile exactly.
+    assert rec["schedulers_paused"] == [] and rec["schedulers_live_only"] == []
     assert rec["schedulers_repo_only"] == [] and rec["schedulers_cron_drift"] == []
     assert rec["counts"]["jobs_live"] == live["counts"]["jobs"]
 

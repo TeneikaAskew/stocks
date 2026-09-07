@@ -1,6 +1,6 @@
 # GitHub Actions workflows
 
-Scheduled data fetching and analysis moved from GitHub Actions to Cloud Run Jobs driven by Cloud Scheduler (66 entries live on 2026-09-07); see [ARCHITECTURE.md §6](../../ARCHITECTURE.md#6-cloud-run-jobs) and [§8](../../ARCHITECTURE.md#8-cloud-scheduler-timeline). What remains here is CI, two manual bridges, the shared failure handler, a daily docs-vs-live check and the monthly documentation refresh. [ARCHITECTURE.md §14](../../ARCHITECTURE.md#14-ci-cloud-build-and-github-actions) carries the same inventory next to the Cloud Build triggers.
+Scheduled data fetching and analysis moved from GitHub Actions to Cloud Run Jobs driven by Cloud Scheduler (65 entries live on 2026-09-07); see [ARCHITECTURE.md §6](../../ARCHITECTURE.md#6-cloud-run-jobs) and [§8](../../ARCHITECTURE.md#8-cloud-scheduler-timeline). What remains here is CI, two manual bridges, the shared failure handler, a daily docs-vs-live check and the monthly documentation refresh. [ARCHITECTURE.md §14](../../ARCHITECTURE.md#14-ci-cloud-build-and-github-actions) carries the same inventory next to the Cloud Build triggers.
 
 ## Live workflows
 

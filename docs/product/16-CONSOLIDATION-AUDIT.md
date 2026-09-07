@@ -111,7 +111,7 @@ issue is marked fixed by this documentation change.
 | 02 Feature catalog | full issue map and code traceability | feature-ID set and per-capability issue-count comparison | 26 capabilities synchronized |
 | 03 UI screens | `platform/src/App.tsx`, route components, Playwright/Vitest files | route-set and named-test comparison | 15 routed surfaces retained |
 | 04 Backend/API | all FastAPI and Discord decorators | Python AST, including multiline decorators; route/method set comparison | 92 platform + 2 Discord endpoints |
-| 05 Infrastructure | uncommented Cloud Run job commands and Scheduler commands | name-set extraction; create/update/scheduler review | 76 jobs and 66 schedulers documented |
+| 05 Infrastructure | uncommented Cloud Run job commands and Scheduler commands | name-set extraction; create/update/scheduler review | 76 jobs and 65 schedulers documented |
 | 06 Data architecture | comment-stripped schema plus runtime `CREATE TABLE`/writers | relation-set, producer and consumer scans | 64 declared relations; runtime magnitude table called out |
 | 07 Model registry | deterministic/ML/LLM implementation paths and audit findings | path existence, lifecycle/status and recommendation review | Negative/invalid models retained |
 | 08 AI architecture | `lib/agents/orchestrator.py` | analyst/risk/node roster and edge review | six analysts, three risk personas, full current graph retained |
