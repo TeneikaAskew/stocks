@@ -6541,6 +6541,17 @@
       "ReachRate": {
         "additionalProperties": true,
         "properties": {
+          "analysis_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Date"
+          },
           "hits": {
             "anyOf": [
               {
@@ -6595,6 +6606,17 @@
               }
             ],
             "title": "Sample N"
+          },
+          "slot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot"
           },
           "status": {
             "title": "Status",
