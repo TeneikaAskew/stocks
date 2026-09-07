@@ -20,6 +20,8 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 is listed under "Removed since last refresh"
 * size          each doc is at least 80% of its previous line count
 * stale         no retired name or phrase appears outside history context
+* scaling       no doc states a fixed min-instances for a service whose
+                minInstanceCount is PATCHed on a schedule
 * links         every relative markdown link resolves
 * readme        README.md is a pointer map: links the required docs, embeds
                 no mermaid block, does not describe a Vite frontend here
@@ -410,6 +412,36 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     return out
 
 
+# A service whose minInstanceCount is PATCHed on a schedule has no single
+# scaling value, so any prose stating one is wrong half the day. This claim
+# about `discord-interactions` was corrected five separate times on PR #1009 --
+# §3, §7, the diagram, and twice more -- because each correction fixed the copy
+# that had been read rather than the class. The windowed set is derived from
+# `_schedule_min_instances` in gcp/deploy.sh, so a second scheduled service is
+# covered the day it is declared.
+SCALING_CLAIM = re.compile(r"min[- ]instances?\s*[=:]?\s*(\d+)|minInstanceCount\s*[=:]\s*(\d+)", re.I)
+WINDOW_OK = re.compile(r"window|warm|weekday|market hours|from the clock|inside|outside|schedul", re.I)
+
+
+def gate_scheduled_scaling(root: pathlib.Path, repo: dict) -> list[str]:
+    windowed = {s["target_service"] for s in repo["schedulers"]
+                if s.get("helper") == "_schedule_min_instances" and s.get("target_service")}
+    if not windowed:
+        return []
+    out = []
+    for doc in DOCS:
+        for i, line in enumerate((root / doc).read_text().splitlines(), 1):
+            for svc in windowed:
+                if svc not in line or not SCALING_CLAIM.search(line):
+                    continue
+                if WINDOW_OK.search(line) or HISTORY_OK.search(line):
+                    continue
+                out.append(f"{doc}:{i}: states a fixed min-instances for {svc!r}, whose "
+                           f"minInstanceCount is PATCHed on a schedule "
+                           f"(_schedule_min_instances in gcp/deploy.sh) — say which window it holds in")
+    return out
+
+
 def gate_stale(root: pathlib.Path) -> list[str]:
     out = []
     for doc in DOCS:
@@ -470,6 +502,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)
+    findings += gate_scheduled_scaling(root, repo)
     findings += gate_stale(root)
     findings += gate_links(root)
     findings += gate_readme(root)

@@ -327,3 +327,34 @@ def test_a_spelled_out_retry_count_is_validated(live, repo, tmp_path):
     a.write_text(a.read_text().replace("`2` for one", "`2` for two"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 2 jobs at --max-retries 2" in f for f in findings), findings
+
+
+def test_a_fixed_min_instances_for_a_windowed_service_is_a_finding(repo, tmp_path):
+    """`discord-interactions` has its minInstanceCount PATCHed by two schedulers
+    (`discord-warm-open` sets 1, `discord-warm-close` sets 0), so no single value
+    is true all day. This exact claim was corrected five times on PR #1009,
+    each time in the copy that had been read rather than as a class."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_scheduled_scaling(root, repo) == []
+    a = root / "ARCHITECTURE.md"
+    a.write_text(a.read_text().replace(
+        "`discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4)",
+        "`discord-interactions` (min-instances 1)"))
+    findings = gate.gate_scheduled_scaling(root, repo)
+    assert any("states a fixed min-instances for 'discord-interactions'" in f for f in findings), findings
+
+
+def test_the_windowed_set_is_derived_not_hardcoded(tmp_path):
+    """A second service scaled on a schedule must be covered the day it is
+    declared, so the gate reads `_schedule_min_instances` rather than a name."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    (root / "ARCHITECTURE.md").write_text("The `solyra-api-prod` service runs min-instances 3.\n")
+    plain = {"schedulers": [{"name": "x", "helper": "_schedule_min_instances",
+                             "target_service": "solyra-api-prod"}]}
+    assert any("solyra-api-prod" in f for f in gate.gate_scheduled_scaling(root, plain))
+    none = {"schedulers": [{"name": "x", "helper": "_schedule_job", "target_service": ""}]}
+    assert gate.gate_scheduled_scaling(root, none) == []

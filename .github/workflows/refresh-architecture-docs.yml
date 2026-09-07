@@ -500,6 +500,19 @@ jobs:
           # What must not happen is a difference from the FROZEN copy, which
           # only the model could produce. (Codex, PR #1009.)
           DETERMINISTIC="Architecture.drawio Architecture-icons.drawio docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md"
+          # google-github-actions/auth@v2 writes gha-creds-*.json into
+          # $GITHUB_WORKSPACE on every run (create_credentials_file defaults to
+          # true, and the ADC path gcloud, BigQuery and the Gemini CLI all use
+          # points at it, so it cannot be turned off). Untracked and unignored,
+          # it landed in the scan below and failed EVERY run here, before
+          # verification and before the PR. .gitignore carries the pattern the
+          # action's docs recommend; assert it still does, so a future
+          # .gitignore edit says so plainly instead of resurfacing as "the model
+          # wrote outside the generated docs". (Codex, PR #1009.)
+          if ! git check-ignore -q gha-creds-probe.json; then
+            echo "::error::gha-creds-*.json is not gitignored — the WIF credentials file google-github-actions/auth writes into the workspace will be scanned as a stray model write. Restore the pattern in .gitignore."
+            exit 1
+          fi
           STRAY=""
           for F in $(git diff --name-only; git ls-files --others --exclude-standard | grep -v '^refresh-inputs/' || true); do
             case " $ALLOWED " in *" $F "*) continue;; esac

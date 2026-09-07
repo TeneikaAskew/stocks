@@ -61,6 +61,6 @@ survive (carried forward from PR #990):
 
 ## What is checked after you finish
 
-Today's `Generated` stamp; every declared and live job, table, router, scheduler and service named; marker blocks identical to a fresh render; no heading lost since the previous version unless listed in §18; ≥ 80% of the previous line count; no stale references (`db-query.yml`, `platform/src`, `X-Admin-Token`, `deploy-platform-staging.yml`, `FastAPI + React`, `no public authentication`, retired service names outside history context); every relative link resolves; `scripts/verify_docs_against_live.py` reports no schedule, clock, count or name drift.
+Today's `Generated` stamp; every declared and live job, table, router, scheduler and service named; marker blocks identical to a fresh render; no heading lost since the previous version unless listed in §18; ≥ 80% of the previous line count; no stale references (`db-query.yml`, `platform/src`, `X-Admin-Token`, `deploy-platform-staging.yml`, `FastAPI + React`, `no public authentication`, retired service names outside history context); no fixed `min-instances` stated for a service whose `minInstanceCount` is PATCHed on a schedule (`discord-interactions`: say which window the value holds in); every relative link resolves; `scripts/verify_docs_against_live.py` reports no schedule, clock, count or name drift.
 
 When done, stop. Do not narrate.

@@ -421,3 +421,34 @@ def test_a_pure_line_move_is_not_treated_as_timestamp_only():
     assert ".rold" in detect and ".rnew" in detect, "the unmasked sides are not compared"
     # timestamp-only requires masked-equal AND unmasked-different
     assert 'diff -q "/tmp/${DIFF_NAME}.rold" "/tmp/${DIFF_NAME}.rnew"' in detect
+
+
+def test_the_wif_credentials_file_is_ignored_and_the_guard_says_so():
+    """google-github-actions/auth@v2 writes gha-creds-*.json into
+    $GITHUB_WORKSPACE on every run. Untracked and unignored, it was picked up by
+    the stray-write scan, so EVERY run would have died at
+    "the model wrote outside the generated docs" before verification or the PR.
+    (Codex, PR #1009.)"""
+    import subprocess
+    gitignore = (REPO / ".gitignore").read_text()
+    assert "gha-creds-*.json" in gitignore, "the WIF credentials file is not ignored"
+    # the pattern must actually take effect: a later negation could undo it
+    probe = subprocess.run(["git", "check-ignore", "-q", "gha-creds-probe.json"],
+                           cwd=REPO)
+    assert probe.returncode == 0, "gha-creds-*.json is present but does not match"
+    # and the workflow asserts it rather than trusting it
+    restore = {s.get("name"): s.get("run") or "" for s in _steps()}[
+        "Restore gate inputs and refuse model edits outside the docs"]
+    assert "git check-ignore -q gha-creds-probe.json" in restore, \
+        "the stray-write step does not verify the credentials file is ignored"
+    assert restore.index("git check-ignore -q gha-creds-probe.json") < restore.index('STRAY=""'), \
+        "the guard must run before the scan it protects"
+
+
+def test_auth_still_writes_the_credentials_file_the_gemini_steps_need():
+    """The fix is to ignore the file, not to stop creating it: gcloud, the
+    BigQuery client and the Gemini CLI on Vertex all resolve ADC through it."""
+    auth = [s for s in _steps() if str(s.get("uses", "")).startswith("google-github-actions/auth")]
+    assert len(auth) == 1, auth
+    assert "create_credentials_file" not in (auth[0].get("with") or {}), \
+        "credential-file creation was disabled; ADC for gcloud/BigQuery/Gemini would break"
