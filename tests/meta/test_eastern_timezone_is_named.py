@@ -50,11 +50,33 @@ def _repo_root() -> pathlib.Path:
     class of breakage the file move already caused once on this branch, so
     counting depth twice would have been a poor lesson.
     """
-    here = pathlib.Path(__file__).resolve()
-    for candidate in here.parents:
+    return _find_repo_root(pathlib.Path(__file__).resolve())
+
+
+# Directories that together identify THIS checkout. Requiring `.git` as well
+# made the no-git fallback in `_tracked_files` unreachable: `REPO` is computed
+# at import, so a source export raised `RuntimeError` and the entire guard did
+# not run -- while its own docstring claimed it degraded gracefully. A comment
+# describing behaviour the code cannot perform is worse than no comment
+# (Codex, PR #993).
+_ROOT_MARKERS = ("gcp", "lib", "platform", "tests")
+
+
+def _find_repo_root(start: pathlib.Path) -> pathlib.Path:
+    """The nearest ancestor that looks like this repository.
+
+    `.git` still wins where both could match, so a fixture tree that happens
+    to carry the marker directories cannot capture the root ahead of the real
+    checkout.
+    """
+    parents = list(start.parents)
+    for candidate in parents:
         if (candidate / ".git").exists() and (candidate / "gcp").is_dir():
             return candidate
-    raise RuntimeError(f"could not locate the repository root above {here}")
+    for candidate in parents:
+        if all((candidate / d).is_dir() for d in _ROOT_MARKERS):
+            return candidate
+    raise RuntimeError(f"could not locate the repository root above {start}")
 
 
 REPO = _repo_root()
@@ -304,6 +326,19 @@ NONPY_FIXED_OFFSET = re.compile(
     r"(?:" + _TZ_CONTEXT + r")\s*['\"]?\s*" + _FIXED_OFFSET_TEXT
     + r"\s*['\"]?(?![A-Za-z0-9_])", re.I
 )
+# Postgres also takes a bare number: `SET TIME ZONE -5` installs the same
+# frozen UTC-5 session zone as `SET TIME ZONE '-05:00'`, and the matcher above
+# requires the trailing `00` (Codex, PR #993).
+#
+# Confined to the SQL statement forms ON PURPOSE. POSIX inverts the sign in a
+# `TZ` value, so `TZ=-5` selects UTC+5 and is not Eastern in either season --
+# the same trap that keeps `UTC-05:00` out of `_FIXED_OFFSET_TEXT`. One
+# spelling, two opposite meanings, decided by which side of the assignment it
+# sits on.
+NONPY_SQL_NUMERIC_OFFSET = re.compile(
+    r"\bSET\s+(?:LOCAL\s+|SESSION\s+)?TIME\s+ZONE\s+['\"]?\s*"
+    r"-\s*0?[45]\s*['\"]?(?![0-9:])", re.I
+)
 
 # ── Python: parsed, not pattern-matched ────────────────────────────────────
 #
@@ -390,6 +425,10 @@ _ENV_SETTER_CALLS = {"putenv", "setdefault"}
 # `os.getenv(...)` and `os.environ.get(...)` present, and both take the value
 # that runs when the variable is absent as their second argument.
 _ENV_GETTER_CALLS = {"getenv", "get"}
+# DB-API statement executors. Their FIRST argument is the query and the rest
+# are bound parameters, which is how a timezone value reaches Postgres without
+# ever appearing in a string this guard would otherwise read.
+_SQL_EXECUTE_CALLS = {"execute", "executemany"}
 # A fixed offset does not have to be spelled as a number. `Etc/GMT+5` is a
 # real IANA zone frozen at UTC-5 (POSIX inverts the sign), so it stands in for
 # Eastern through the winter and is wrong all summer -- exactly what this
@@ -427,21 +466,33 @@ def _call_name(node: ast.Call) -> str:
     return ""
 
 
-def _resolve_callable(name: str, env, depth: int = 0) -> str:
-    """Follow `NAME = <constructor>` chains to the constructor's own name.
+def _resolve_callable(name: str, env, seen=None):
+    """Follow `NAME = <constructor>` chains to the constructor and its receiver.
 
-    Bounded by depth rather than by cycle detection because the answer is a
-    NAME rather than a node: a two-name cycle would otherwise spin. Four hops
-    is past any alias chain worth writing and short of a pathological one.
+    Returns `(name, receiver)`, because resolving the NAME alone was half a
+    fix: `make_zone = pytz.timezone` reduces to the generic `timezone`, and
+    provenance was then read off the original bare `make_zone(...)` call whose
+    receiver is empty, so the name resolved and the context did not (Codex,
+    PR #993).
+
+    Cycle detection, not a hop cap. An earlier round replaced a four-hop cap
+    in `follow()` with exactly this and recorded why: an alias chain has no
+    natural length, and what it cannot do is revisit a name. This function
+    then shipped with `depth > 4` in the same file, which is the same defect
+    reintroduced one function along (Codex, PR #993).
     """
-    if depth > 4:
-        return name
+    seen = seen or set()
+    if name in seen:
+        return name, ""
+    seen = seen | {name}
     bound = env.bindings.get(name)
     if isinstance(bound, ast.Name):
-        return _resolve_callable(bound.id, env, depth + 1)
+        return _resolve_callable(bound.id, env, seen)
     if isinstance(bound, ast.Attribute):
-        return _resolve_callable(bound.attr, env, depth + 1)
-    return name
+        inner = bound.value
+        receiver = inner.id if isinstance(inner, ast.Name) else ""
+        return bound.attr, receiver
+    return name, ""
 
 
 def _call_receiver(node: ast.Call) -> str:
@@ -532,8 +583,13 @@ def _is_eastern_fixed_timedelta(node: ast.AST, env=None) -> bool:
     # same provenance gap already closed for ZoneInfo and timezone
     # (Codex, PR #993).
     called = _call_name(node)
+    # Import alias, then assignment alias. Round 13 taught this check about
+    # `from datetime import timedelta as TD` and round 14 added the callable
+    # resolver, but this call site was never pointed at it, so `TD = timedelta`
+    # still walked past (Codex, PR #993).
     if called != "timedelta" and env.aliases.get(called) != "timedelta":
-        return False
+        if _resolve_callable(called, env)[0] != "timedelta":
+            return False
     total = 0.0
     for arg, (_, scale) in zip(node.args, _TIMEDELTA_UNITS):
         v = _const_number(arg)
@@ -1423,7 +1479,25 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # aliases, which live in `env.aliases`; an ASSIGNMENT alias lives in
         # `env.bindings` and was never consulted, so the call name failed this
         # filter before its argument was looked at (Codex, PR #993).
-        name = _resolve_callable(name, env)
+        name, resolved_receiver = _resolve_callable(name, env)
+        # `cur.execute("SET TIME ZONE %s", ("EST",))`. The statement carries
+        # the context and the parameters carry the value, so each half looked
+        # innocent on its own and `execute` was not a timezone call at all
+        # (Codex, PR #993). When the query text IS a timezone context, its
+        # statically known parameters are followed as if they were arguments
+        # to a constructor -- which, one layer down, is what they are.
+        if name in _SQL_EXECUTE_CALLS and node.args:
+            query = node.args[0]
+            if (isinstance(query, ast.Constant)
+                    and isinstance(query.value, str)
+                    and re.search(_TZ_CONTEXT, query.value, re.I)):
+                for param in node.args[1:]:
+                    items = (param.elts
+                             if isinstance(param, (ast.Tuple, ast.List))
+                             else [param])
+                    for item in items:
+                        follow(legacy, offsets, node, item, env,
+                               lambda shown, n=name: f"{n}(..., {shown})")
         if name not in _TZ_CALLS:
             continue
         # Whether the CALL is enough of a timezone context to convict a bare
@@ -1431,7 +1505,11 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # its receiver says so. Without this, `translator.localize("EST")` and
         # `cache.now("EDT")` were reported, which is a false CI failure on
         # code that has no timezone in it (Codex, PR #993).
-        receiver = _call_receiver(node)
+        # The receiver the ALIAS carried, when the call itself has none. A bare
+        # `make_zone(...)` has an empty receiver and no import module, so
+        # resolving only the name left `specific` false and the ambiguous
+        # `EST` ignored (Codex, PR #993).
+        receiver = _call_receiver(node) or resolved_receiver
         # Provenance, in either of the two ways it can be written: the
         # RECEIVER for `pytz.timezone(...)`, or the module a bare
         # `timezone(...)` was imported from. Reading only the receiver made
@@ -1548,22 +1626,28 @@ def _notebook_hits(path, text: str):
     cells = _notebook_cells(text)
     if not cells:
         return [], [], ""
-    legacy, offsets, unparsed = [], [], []
+    parseable, unparsed = [], []
     for cell in cells:
         stripped = "\n".join("" if _MAGIC_LINE.match(l) else l
                               for l in cell.splitlines())
         try:
             ast.parse(stripped)
         except SyntaxError:
-            # PER CELL, not per notebook. Parsing the joined source meant one
-            # `%%bash` or one line of IPython syntax dropped every OTHER cell
-            # to the regex path -- and a constant `timedelta` offset in a
-            # sibling cell has nothing textual to match (Codex, PR #993).
+            # Parseability is decided PER CELL, so one `%%bash` or one line of
+            # IPython syntax does not drop every other cell to the regex path
+            # (Codex, PR #993).
             unparsed.append(stripped)
-            continue
-        l, o = _python_hits(path, stripped)
-        legacy += l
-        offsets += o
+        else:
+            parseable.append(stripped)
+    # ...but the cells that DO parse are analysed TOGETHER, because a notebook
+    # executes them in one namespace. Analysing each on its own lost exactly
+    # that: `LEGACY = "EST"` in one cell and `ZoneInfo(LEGACY)` in the next
+    # resolved to nothing, since the literal is ambiguous without a context
+    # and the second cell could not see the binding (Codex, PR #993). Both
+    # properties hold at once this way.
+    legacy, offsets = ([], [])
+    if parseable:
+        legacy, offsets = _python_hits(path, "\n".join(parseable))
     # Always the same shape: findings from the cells that parsed, plus the
     # text of the ones that did not, for the caller's regex pass. Empty when
     # every cell parsed. A variable-arity return would put the caller's
@@ -1663,7 +1747,8 @@ def _scan() -> tuple[list[str], list[str]]:
         for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
                                 (NONPY_AMBIGUOUS, legacy),
                                 (NONPY_FIXED_ZONE, offsets),
-                                (NONPY_FIXED_OFFSET, offsets)):
+                                (NONPY_FIXED_OFFSET, offsets),
+                                (NONPY_SQL_NUMERIC_OFFSET, offsets)):
             for m in pattern.finditer(text):
                 report(bucket, m)
         if p.suffix in (".yml", ".yaml"):
@@ -3630,3 +3715,148 @@ def test_one_unparseable_notebook_cell_does_not_blind_the_rest():
     # And the cell that could not be parsed is handed back rather than
     # dropped, so the caller still scans it by the only means left.
     assert "pd?" in unparsed, unparsed
+
+
+# ── Round 15 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Four of these are defects I introduced in rounds 13 and 14, and one is a
+# docstring of mine describing behaviour the code could not reach. They are
+# grouped with the two genuinely new gaps because the fix for several is the
+# same: resolution has to carry provenance, not just a name.
+
+
+def test_the_repo_root_is_found_without_git_metadata(tmp_path):
+    """`_tracked_files` documents a no-git fallback that could never run.
+
+    `REPO = _repo_root()` executes at import and required `.git`, so in a
+    source export the module raised `RuntimeError` before any fallback was
+    reachable and the ENTIRE guard silently did not run. A comment claiming
+    behaviour the code cannot perform is worse than no comment (Codex,
+    PR #993).
+    """
+    export = tmp_path / "export"
+    for d in ("gcp", "lib", "platform", "tests"):
+        (export / d).mkdir(parents=True)
+    probe = export / "tests" / "meta"
+    probe.mkdir(parents=True, exist_ok=True)
+
+    assert _find_repo_root(probe / "probe.py") == export, (
+        "a checkout is identifiable by its own directories, with or without "
+        "git metadata")
+    # And `.git` still wins where both could match, so a nested fixture tree
+    # cannot capture the root.
+    assert _find_repo_root(pathlib.Path(__file__).resolve()) == REPO
+
+
+def test_a_callable_alias_chain_has_no_hop_cap():
+    """The callable resolver reintroduced the cap `follow()` had removed.
+
+    An earlier round replaced a four-hop cap with cycle detection and wrote
+    down why: an alias chain has no natural length, and what it cannot do is
+    revisit a name. `_resolve_callable` then shipped with `depth > 4` in the
+    same file (Codex, PR #993).
+    """
+    src = ('from zoneinfo import ZoneInfo\n'
+           'a = ZoneInfo\nb = a\nc = b\nd = c\ne = d\nf = e\n'
+           'ET = f("EST")\n')
+    legacy, _ = _hits(src)
+    assert legacy, f"a six-hop alias chain resolved to nothing: {legacy}"
+
+    # A cycle must terminate rather than spin.
+    legacy, _ = _hits('a = b\nb = a\nET = a("EST")\n')
+    assert legacy == [], legacy
+
+
+def test_provenance_survives_an_assigned_constructor_alias():
+    """`make_zone = pytz.timezone; make_zone("EST")`.
+
+    `_resolve_callable` reduced the alias to the generic name `timezone`, but
+    provenance was still read off the original bare call, whose receiver and
+    import module are both empty. So the name resolved and the context did
+    not, and an ambiguous `EST` stayed ignored (Codex, PR #993).
+    """
+    legacy, _ = _hits('import pytz\nmake_zone = pytz.timezone\n'
+                      'ET = make_zone("EST")\n')
+    assert legacy, legacy
+
+    # An unrelated callable of the same shape must still not convict.
+    legacy, _ = _hits('make_zone = factory.timezone\nET = make_zone("EST")\n')
+    assert not legacy, legacy
+
+
+def test_an_assigned_timedelta_alias_is_resolved():
+    """`TD = timedelta; timezone(TD(hours=-5))`.
+
+    Round 13 taught the offset check about import aliases and round 14 added
+    a callable resolver, but the timedelta check was never pointed at it.
+    """
+    _legacy, offsets = _hits('from datetime import timezone, timedelta\n'
+                             'TD = timedelta\n'
+                             'ET = timezone(TD(hours=-5))\n')
+    assert offsets, offsets
+
+
+def test_notebook_cells_share_one_namespace():
+    """A notebook executes its cells in one namespace, so the guard must too.
+
+    Round 14 split them to stop one unparseable cell blinding the rest, and
+    that lost cross-cell bindings: `LEGACY = "EST"` in one cell and
+    `ZoneInfo(LEGACY)` in the next resolved to nothing (Codex, PR #993).
+    Both properties have to hold at once.
+    """
+    nb = json.dumps({"cells": [
+        {"cell_type": "code", "source": ['LEGACY = "EST"\n']},
+        {"cell_type": "code", "source": ["from zoneinfo import ZoneInfo\n",
+                                         "ET = ZoneInfo(LEGACY)\n"]},
+    ]})
+    legacy, _offsets, _rest = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    assert legacy, "a binding from an earlier cell must reach a later one"
+
+    # And the round-14 property still holds: one bad cell does not blind the
+    # parseable ones.
+    nb = json.dumps({"cells": [
+        {"cell_type": "code", "source": ["import pandas as pd\n", "pd?\n"]},
+        {"cell_type": "code", "source": [
+            "from datetime import timezone, timedelta\n",
+            "ET = timezone(timedelta(hours=-5))\n"]},
+    ]})
+    _legacy, offsets, unparsed = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    assert any("timedelta" in h for h in offsets), offsets
+    assert "pd?" in unparsed, unparsed
+
+
+def test_a_numeric_postgres_session_offset_is_rejected():
+    """`SET TIME ZONE -5` installs a fixed UTC-5 session zone.
+
+    The offset matcher required the trailing `00`, so the numeric-hour form
+    Postgres accepts went through while the quoted `'-05:00'` was rejected.
+    """
+    assert NONPY_SQL_NUMERIC_OFFSET.search("SET TIME ZONE -5")
+    assert NONPY_SQL_NUMERIC_OFFSET.search("SET LOCAL TIME ZONE -4;")
+    assert not NONPY_SQL_NUMERIC_OFFSET.search("SET TIME ZONE 5")
+    # Not a partial match of a longer number.
+    assert not NONPY_SQL_NUMERIC_OFFSET.search("SET TIME ZONE -530")
+
+    # A SEPARATE pattern from `NONPY_FIXED_OFFSET`, confined to the SQL
+    # statement forms on purpose: POSIX inverts the sign in a `TZ` value, so
+    # `TZ=-5` selects UTC+5 and is not Eastern in either season. Same trap as
+    # `UTC-05:00`, which this file already refuses to match for that reason.
+    assert not NONPY_SQL_NUMERIC_OFFSET.search("export TZ=-5")
+    assert not NONPY_FIXED_OFFSET.search("export TZ=-5")
+
+
+def test_a_bound_sql_parameter_is_inspected():
+    """`cur.execute("SET TIME ZONE %s", ("EST",))`.
+
+    The statement carries the context and the value sits in the parameters,
+    so each half looked innocent on its own.
+    """
+    legacy, _ = _hits('cur.execute("SET TIME ZONE %s", ("EST",))\n')
+    assert legacy, legacy
+
+    _legacy, offsets = _hits('cur.execute("SET TIME ZONE %s", ["-05:00"])\n')
+    assert offsets, offsets
+
+    # A statement with no timezone context does not make its parameters ones.
+    legacy, _ = _hits('cur.execute("SELECT %s", ("EST",))\n')
+    assert not legacy, legacy
