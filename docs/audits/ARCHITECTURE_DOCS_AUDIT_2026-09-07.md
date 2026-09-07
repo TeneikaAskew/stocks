@@ -118,7 +118,7 @@ Severity: **H** = a reader acting on it would do the wrong thing; **M** = wrong 
 | Cloud Build triggers | `gcp/cloudbuild/*.yaml` (#990) | `deploy-solyra-api-staging`, `deploy-solyra-api-prod`, `apply-schema-on-change` | none |
 | Domain mapping | #990 says `stocks.insightscollective.org → solyra-api-staging` | `api.stocks.insightscollective.org → solyra-api-staging` | #990's text names the apex; live is the `api.` host |
 | Cloud SQL | `db-g1-small`, no `--no-assign-ip` in setup | `db-g1-small`, 191 GB, public IPv4 + 1 authorized network, SSL optional, PITR on, 7 backups, deletion protection on | docs said 55 GB / no public IP |
-| Tables | 66 declared | 94 | 28 runtime-created (`strat_features_*` ×12, `magnitude_*` ×2, `gamma_levels_eod`, `daily_vex`, `gamma_events`, `{iwm,qqq,spy}_30m_predictions`, `market_data_indicators*` ×5, `market_data_cross_asset`, the two MVs) |
+| Tables | 69 declared (66 tables, 2 materialized views, 1 view) | 95 | 26 runtime-created (`strat_features_*` ×12, `magnitude_*` ×2, `gamma_levels_eod`, `daily_vex`, `gamma_events`, `{iwm,qqq,spy}_30m_predictions`, `market_data_indicators*` ×5, `market_data_cross_asset`, the two MVs) |
 | Secrets / SAs | — | 22 secrets; 8 SAs incl. `arch-refresh-bot@` (`run.admin`, `cloudsql.client`, `secretmanager.viewer` already granted) | — |
 | Executions | — | every job has a latest execution (read per job from `status.latestCreatedExecution`, 2026-09-07 04:35Z): 74 succeeded, `intraday-bulk-backfill` failed 2026-05-23, `strat-dir-features` cancelled 2026-05-27. An earlier read through a shared `executions list --limit 600` showed 27 jobs as "never in window"; that was the cap, not the jobs (Codex, #1009) | — |
 
@@ -206,3 +206,23 @@ Codex's second pass (head `f57dd11`) filed eight more, again all real:
 | `gemini … \| tee` without `pipefail` returned tee's exit status | `set -o pipefail` in all four regeneration steps |
 | the verifier's gcloud reads had no `--project`, so an operator with another active project would verify the wrong fleet | `--project=adept-mountain-474619-d4` on every read |
 | the icon page kept 42 jobs / ~50 crons / 19 secrets / 44 tables and was never checked | `refresh_icons()` rewrites the count labels and the seven per-page reconciliation notes from the snapshot; `check_icons()` fails on any stale label or missing live count and runs under `--check` |
+
+Codex's third pass (head `2291596`) found two P1 runtime breakers and eight further P2s, all real:
+
+| Finding | Fix |
+|---|---|
+| **P1** `jq '[.jobs[].name]'` — `doc_inventory --json` nests under `.repo`, so the expression returns null and the render step aborts the whole run before Gemini | reads `.repo.jobs[].name`; a meta test pins it |
+| **P1** the snapshot step ran the verifier under `set -e`, and the verifier exits 1 when the current docs have drifted — the exact condition the refresh exists to repair, so every real monthly run would have aborted at that step | exit 0 and 1 both continue; anything else, or a missing snapshot file, fails |
+| Cloud SQL storage stated as 20 GB in the implementation guide and its cost table | 191 GB, read live |
+| ARCHITECTURE.md said 94 relations / 66 declared / 28 runtime | 95 live, 69 declared (66 tables + 2 materialized views + 1 view), 26 runtime — corrected in the topology, §3, §5 and §17 |
+| ARCHITECTURE.md said "the other 9" live-only jobs while listing 11, and a 56 + 27 retry split that sums to 83 of 67 jobs | 11 live-only and 2 declared-not-live; retries parsed from `deploy.sh`: 41 zero, 25 one, 1 two |
+| the verifier could not read a count split across markdown table columns | three table-column patterns added; they immediately caught four more stale claims (`7 jobs`, `21 triggers`, `all 7 jobs`, `22 triggers`) in two files the verifier already scanned |
+| the icon page's count labels matched only the 2026-06 literals, so the next change would not update them | rewritten by cell id and current-value regex |
+| a scheduler firing at several times was bucketed only by its first | range and list crons are placed in every session they fire in |
+| README called all of `docs/` hand-edited while the workflow overwrites `docs/API.md` and `docs/INVESTMENT_MODELS_SUMMARY.md` | the maintenance section is now a table of all eight generated files and what the run does to each |
+
+### The gate that was missing: an added/removed budget
+
+Every gate up to this point judged the OUTPUT (does it name all 76 jobs, does it still have its headings, is it at least 80% as long). None judged the TRANSITION, so a run that replaced a document with a same-length different one passed everything. `check_generated_docs.py` now computes, per document, lines and bytes on both sides, added and removed line counts, churn (removed ÷ previous lines) and which headings and inventory blocks appeared or vanished. Churn above 50% fails the run — a rewrite, not an update — and `docs/API.md`, which is wholly rendered, carries a 90% ceiling. The accounting is written to the job summary and the PR body whether the run passes or fails, because on a failure it is the first thing a reviewer needs.
+
+Measured against the 2026-09-02 regeneration, that run scored 85% churn on `ARCHITECTURE.md` and would have been stopped. `--allow-rewrite` exempts a document a human is deliberately reconstructing; the workflow never passes it, and a meta test asserts it never will.

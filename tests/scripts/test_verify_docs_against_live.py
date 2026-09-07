@@ -153,6 +153,22 @@ def test_service_account_is_not_the_deleted_service(tmp_path):
     assert out == []
 
 
+def test_count_claim_in_adjacent_table_columns_is_compared(tmp_path):
+    """`| Cloud Run Jobs | 7 jobs |` -- resource in one column, count in the
+    next. Every other pattern wants them adjacent or parenthesized, so a whole
+    component-summary table read as clean (Codex, PR #1009)."""
+    doc = tmp_path / "d.md"
+    doc.write_text("| Component | Detail |\n|---|---|\n| Cloud Run Jobs | 7 jobs x 50 runs |\n"
+                   "| Cloud Scheduler | 21 triggers |\n")
+    out = []
+    live = dict(LIVE)
+    live["run_jobs"] = {f"j{i}": {} for i in range(76)}
+    live["schedulers"] = {f"s{i}": {} for i in range(65)}
+    vd.check_counts(doc, "d.md", live, out)
+    blob = " ".join(f"{f.detail}" for f in out)
+    assert "76" in blob and "65" in blob, blob
+
+
 def test_count_claim_is_compared(tmp_path):
     out = _check(tmp_path, "The system has 34 Cloud Run Jobs.")
     assert [f.check for f in out] == ["count-drift"]

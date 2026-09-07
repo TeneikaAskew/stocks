@@ -199,3 +199,45 @@ def test_marker_names_agree_between_module_docs_and_gate():
     for name in ("routers", "routes"):
         assert inv.MARKER_START.format(name=name) in api, name
     assert set(gate.MARKER_DOCS) == {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md"}
+
+
+def test_gcp_reads_and_rendering_all_precede_gemini():
+    """The order the accuracy of this workflow depends on.
+
+    Every live read, the digest, the saved previous versions and the
+    deterministic block render must happen BEFORE the first model step, so
+    the model is editing prose around numbers that were already measured
+    rather than supplying numbers of its own.
+    """
+    first_gemini = min(i for i, s in enumerate(_steps()) if "Regenerate" in (s.get("name") or ""))
+    for name in ("Dump asset inventory", "Dump IAM policy", "Dump 90-day billing rollup",
+                 "Snapshot live", "Digest inputs", "Save previous doc versions",
+                 "Render inventory blocks", "Freeze gate inputs"):
+        assert _index(name) < first_gemini, f"{name} must run before Gemini"
+
+
+def test_snapshot_step_tolerates_drift_findings_but_not_a_crash():
+    """verify_docs_against_live exits 1 when the CURRENT docs have drifted --
+    the condition the refresh exists to repair. Under the Actions shell's
+    set -e that aborted the run before anything regenerated."""
+    run = _steps()[_index("Snapshot live")]["run"]
+    assert "VRC=$?" in run and '"$VRC" -ne 1' in run, (
+        "a findings exit (1) from the verifier must not abort the snapshot step")
+    assert "test -s refresh-inputs/verify_live.json" in run
+
+
+def test_repo_jobs_are_read_from_the_nested_inventory_key():
+    """doc_inventory --json nests under .repo; `.jobs[]` is null and jq exits 5."""
+    run = _steps()[_index("Render inventory blocks")]["run"]
+    assert ".repo.jobs[].name" in run
+    assert "refresh_architecture_drawio.py" in run, "the drawio companions are regenerated here"
+
+
+def test_gate_step_writes_the_added_removed_accounting():
+    run = _steps()[_index("Verify regenerated docs")]["run"]
+    assert "--report refresh-inputs/diff_report.md" in run
+    assert "GITHUB_STEP_SUMMARY" in run
+    commands = [ln for ln in run.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("--allow-rewrite" in ln for ln in commands), (
+        "the churn ceiling's escape hatch is for a human reconstruction; the bot "
+        "must never be able to exempt itself")

@@ -767,7 +767,7 @@ All sources are normalized to canonical names before returning:
 
 | Component | Service | Name | Config |
 |-----------|---------|------|--------|
-| Relational DB | Cloud SQL | `trading-db` | PostgreSQL 15, `db-g1-small`, 20 GB, us-east1 |
+| Relational DB | Cloud SQL | `trading-db` | PostgreSQL 15, `db-g1-small`, 191 GB (read live 2026-09-07; auto-grown from the original 20 GB), us-east1 |
 | Object Storage | Cloud Storage | `PROJECT-trading-data` | Standard, us-east1, 730-day raw/ lifecycle |
 | Scheduled Jobs | Cloud Run Jobs | 7 jobs | 1–2 Gi memory, max-retries 1–2 |
 | Real-time Monitor | Cloud Run Job | `signal-monitor` | 2 Gi, 8h timeout, 0 retries, scheduled 9:25 AM ET |
@@ -1532,11 +1532,11 @@ done
 
 | Service | Configuration | Est. Monthly Cost |
 |---------|--------------|------------------|
-| Cloud SQL | `db-g1-small`, 20 GB SSD, daily backups | ~$25/mo |
-| Cloud Run Jobs | 7 jobs × ~50 executions/day avg × 1-2 min | ~$3/mo |
+| Cloud SQL | `db-g1-small`, 191 GB SSD (read live 2026-09-07), daily backups + PITR | ~$45/mo — storage, not the instance, is the bulk of it; see COST_ANALYSIS.md |
+| Cloud Run Jobs | 76 jobs (live 2026-09-07) × ~50 executions/day avg × 1-2 min | see COST_ANALYSIS.md |
 | Cloud Run Job | signal-monitor, 8h timeout, 0 retries, scheduled daily | ~$3/mo |
 | Cloud Storage | ~50 GB + 15 write ops/day | ~$2/mo |
-| Cloud Scheduler | 21 triggers × ~20 weekdays/mo | ~$0.21/mo |
+| Cloud Scheduler | 65 triggers (live 2026-09-07; 3 free) × ~20 weekdays/mo | ~$6.20/mo |
 | Secret Manager | 22 secrets × ~100 accesses/day | ~$0.20/mo |
 | Artifact Registry | ~1 GB images | ~$0.10/mo |
 | Cloud Build | ~1 build/week × 5 min | ~$0.25/mo |

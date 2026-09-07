@@ -39,7 +39,17 @@ Counts are read live by `python -m scripts.maintenance.doc_inventory --live`; th
 
 ## Maintenance
 
-`ARCHITECTURE.md`, `DATA_DEPENDENCIES.md`, `COST_ANALYSIS.md` and this file are refreshed monthly by [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml): it snapshots live GCP, renders the inventory tables inside the `<!-- inventory:* -->` marker blocks deterministically, has Gemini update the surrounding prose in place, gates the result (job, scheduler, table and route coverage, no lost sections, no dead links, docs-vs-live drift), and opens a PR. Prose outside the markers is hand-maintained; content inside them is overwritten. `RUNBOOK.md`, `ERD.md` and `docs/` are hand-edited.
+Eight files are written by [`.github/workflows/refresh-architecture-docs.yml`](.github/workflows/refresh-architecture-docs.yml) on the 1st of each month and must not be hand-edited outside the rules below:
+
+| Generated file | What the workflow does to it |
+|---|---|
+| `ARCHITECTURE.md`, `DATA_DEPENDENCIES.md` | inventory tables re-rendered inside the `<!-- inventory:* -->` markers from a live GCP snapshot; the prose around them updated in place by Gemini |
+| `docs/API.md` | entirely rendered from the router files — every line inside its two marker blocks is overwritten |
+| `COST_ANALYSIS.md`, `README.md` | rewritten in place by Gemini from the billing digests and the other three docs |
+| `Architecture.drawio`, `Architecture-icons.drawio` | counts, scheduler labels, the add-on job grid and the icon reconciliation notes regenerated from the same snapshot |
+| `docs/INVESTMENT_MODELS_SUMMARY.md` | resolved-values table re-rendered from `ticker_calibration` |
+
+Prose outside a marker block survives the refresh and is yours to edit; anything inside one is overwritten on the 1st. Every run publishes an added/removed accounting (lines, bytes, churn, headings and blocks gained or lost per file) to its job summary and PR body, and a run that replaced a document rather than updating it fails the churn gate rather than opening a PR. `RUNBOOK.md`, `ERD.md`, `SETUP.md` and the rest of `docs/` are hand-edited.
 
 ## Removed since last refresh
 

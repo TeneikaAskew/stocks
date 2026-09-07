@@ -730,6 +730,19 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
      "secrets", "Secret Manager secrets"),
     (re.compile(rf"\bAll\s+{_NUM}\s+secrets\b", re.I),
      "secrets", "Secret Manager secrets"),
+    # MARKDOWN TABLE COLUMNS: `| Cloud Run Jobs | 7 jobs |` and
+    # `| Cloud Scheduler | 21 triggers |`. Every pattern above wants the count
+    # adjacent to the noun or inside parentheses, so a component-summary table
+    # that puts the resource in one column and its count in the next was
+    # invisible -- including in docs/GCP_IMPLEMENTATION_GUIDE.md, a file this
+    # verifier explicitly scans, which claimed 7 jobs and 21 triggers against a
+    # live 76 and 65 while the run reported clean (Codex, PR #1009).
+    (re.compile(rf"^\|[^|\n]*Cloud\s+Run\s+Jobs?[^|\n]*\|[^|\n]*?\b{_NUM}\s+(?:Cloud\s+Run\s+)?jobs?\b", re.I | re.M),
+     "run_jobs", "Cloud Run Jobs"),
+    (re.compile(rf"^\|[^|\n]*Cloud\s+Scheduler[^|\n]*\|[^|\n]*?\b{_NUM}\s+(?:cron\s+)?(?:triggers?|jobs?|entries|schedulers?)\b", re.I | re.M),
+     "schedulers", "Cloud Scheduler jobs"),
+    (re.compile(rf"^\|[^|\n]*Cloud\s+Run\s+Services?[^|\n]*\|[^|\n]*?\b{_NUM}\s+services?\b", re.I | re.M),
+     "services", "Cloud Run services"),
 )
 
 

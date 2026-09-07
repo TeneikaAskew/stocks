@@ -74,7 +74,7 @@ flowchart LR
     DI[discord-interactions<br/>slash commands]:::gcp
     FN[failure-notifier]:::gcp
     CB[Cloud Build triggers<br/>staging on push, prod manual]:::gcp
-    SQL[(Cloud SQL Postgres 15<br/>trading-db, 94 relations)]:::db
+    SQL[(Cloud SQL Postgres 15<br/>trading-db, 95 relations)]:::db
     GCS[GCS<br/>parquet, query results, pg_dumps]:::gcp
     PS[Pub/Sub gcp-job-failures]:::gcp
     LG[Cloud Logging sink severity>=ERROR]:::gcp
@@ -106,7 +106,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
-| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 94 relations (66 declared in `gcp/schema.sql`, 28 created at runtime by research and analytics jobs; §5) |
+| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations (69 declared in `gcp/schema.sql` — 66 tables, 2 materialized views, 1 view — and 26 created at runtime by research and analytics jobs; §5) |
 | Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 67 declared in [`gcp/deploy.sh`](gcp/deploy.sh) |
 | Cloud Run Services | 4 long-lived HTTP services | `solyra-api-prod`, `solyra-api-staging`, `discord-interactions` (min-instances 1), `failure-notifier` |
 | Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`signal-quality-report-hourly` deleted 2026-09-07) |
@@ -138,7 +138,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 ## 5. Schema catalog
 
-`gcp/schema.sql` declares **66 tables**, 2 materialized views and 1 view; the live database holds **94 relations** because research and analytics jobs create their own tables at runtime (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). The declared set, with definition lines:
+`gcp/schema.sql` declares **69 relations** (66 tables, 2 materialized views, 1 view); the live database holds **95** because research and analytics jobs create 26 of their own at runtime (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). The declared set, with definition lines:
 
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
@@ -333,7 +333,7 @@ There are **no foreign keys between domain tables** other than `insight_runs.rep
 
 ## 6. Cloud Run Jobs
 
-76 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](gcp/deploy.sh). The other 9 were created by hand with `gcloud run jobs create` in May 2026 and are not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-build-gamma-levels`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; 11 names, of which `p2-build-gamma-levels` is scheduled nightly by `gamma-levels-daily` and runs green). Two declared jobs are not deployed (`compute-spx-greeks-backfill`, `options-exec-backtest`). Retry policy is **`--max-retries 0` for 56 jobs and `1` for 27** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
+76 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](gcp/deploy.sh). 65 names appear on both sides, so 11 of the live jobs have no `deploy_*` function and 2 declared jobs are not deployed. Those 11 were created by hand with `gcloud run jobs create` in May 2026 and are not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-build-gamma-levels`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; 11 names, of which `p2-build-gamma-levels` is scheduled nightly by `gamma-levels-daily` and runs green). Two declared jobs are not deployed (`compute-spx-greeks-backfill`, `options-exec-backtest`). Retry policy is **`--max-retries 0` for 56 jobs and `1` for 27** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
 
 <!-- inventory:jobs:start -->
 | Job | Declared | Entrypoint | Memory / CPU / timeout / retries | Image | Last execution (live 2026-09-07) |
@@ -797,7 +797,7 @@ Job logs `severity>=ERROR` → sink `gcp-job-failures-sink` (filter excludes `fa
 
 ## 11. Failure handling
 
-1. **Per-job retries**: `--max-retries 0` is the norm (56 of 67 declared jobs); the 27 `--max-retries 1` jobs are idempotent fetchers whose transient upstream failures are worth one retry. Long-running `signal-monitor` never retries (a restart would drop its window).
+1. **Per-job retries**: `--max-retries 0` is the norm (41 of the 67 declared jobs); the 25 `--max-retries 1` jobs are idempotent fetchers whose transient upstream failures are worth one retry. Long-running `signal-monitor` never retries (a restart would drop its window).
 2. **Notification**: the pipeline in §10.10, ~60 s from exit to Discord; GitHub Actions failures use the separate `handle-workflow-failure.yml` reusable workflow.
 3. **Idempotent writes**: every fetcher upserts with `ON CONFLICT` keys, so re-running a failed job is safe. `apply_schema.py` is re-runnable but drops and recreates the two earnings materialized views, which is why `deploy-staging.yml` follows an apply with `refresh-earnings-views`.
 4. **Fail loud, no silent fallbacks**: data-access code raises rather than returning empty frames (CLAUDE.md Rule 3.7; [`docs/audits/FALLBACK_AUDIT_2026-05-13.md`](docs/audits/FALLBACK_AUDIT_2026-05-13.md)).
@@ -1058,7 +1058,7 @@ Production modules with their first docstring line and the job(s) whose entrypoi
 1. Cloud SQL has a public IPv4 with `ALLOW_UNENCRYPTED_AND_ENCRYPTED`; Cloud Run does not need it. Disable or require SSL? (operator decision)
 2. `solyra-api-staging` runs open self-signup against production data and owns the public hostname (#943, #990 §exposure). Flip `AUTH_OPEN_SIGNUP=0`?
 3. Eleven live jobs have no `deploy_*` function. Either add them to `gcp/deploy.sh` (at least `p2-build-gamma-levels`, which is scheduled) or delete them; `compute-spx-greeks-backfill` and `options-exec-backtest` are the reverse case.
-4. 28 runtime-created tables (`strat_features_*`, `magnitude_*`, `gamma_levels_eod`, …) are outside `gcp/schema.sql` and therefore outside the migration path and the freshness audit.
+4. 26 runtime-created relations (`strat_features_*`, `magnitude_*`, `gamma_levels_eod`, …) are outside `gcp/schema.sql` and therefore outside the migration path and the freshness audit.
 5. `gcp/fetchers/fetch_rss_news.py` writes `news_sentiment` but is neither deployed nor scheduled.
 6. `calibrate-thresholds-quarterly` has never fired (`lastAttemptTime` empty); the next slot is 2026-10-01 02:00 ET.
 

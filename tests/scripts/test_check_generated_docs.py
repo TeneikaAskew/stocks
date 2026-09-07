@@ -75,6 +75,44 @@ def test_removing_both_markers_of_a_block_is_a_finding(live, repo, tmp_path):
     assert any("inventory:orphans block is missing entirely" in f for f in findings), findings
 
 
+def test_a_rewrite_that_keeps_its_length_is_a_finding(tmp_path):
+    """The 2026-09-02 failure mode: a doc replaced rather than updated.
+
+    The size floor cannot see this one -- the line count is unchanged -- and
+    the heading gate cannot either if the headings are kept. Churn can.
+    """
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    old = (prev / "COST_ANALYSIS.md").read_text().splitlines()
+    heads = [ln for ln in old if ln.startswith("#")]
+    body = ["Every other line replaced with different prose." for _ in range(len(old) - len(heads))]
+    (root / "COST_ANALYSIS.md").write_text("\n".join(heads + body) + "\n")
+    stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
+    assert stats["COST_ANALYSIS.md"]["churn"] > 0.5
+    findings = gate.gate_diff_budget(list(stats.values()))
+    assert any("COST_ANALYSIS.md" in f and "rewrite" in f for f in findings), findings
+    # ...and a human reconstructing that one doc can say so, for that doc only
+    assert gate.gate_diff_budget(list(stats.values()), allow_rewrite=("COST_ANALYSIS.md",)) == []
+
+
+def test_diff_stats_report_names_what_moved(tmp_path):
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
+    text = (root / "COST_ANALYSIS.md").read_text()
+    (root / "COST_ANALYSIS.md").write_text(text + "\n## A brand new section\n\nbody\n")
+    stats = gate.diff_stats(root, prev)
+    report = gate.render_report(stats)
+    assert "A brand new section" in report and "+added" in report
+    cost = next(st for st in stats if st["doc"] == "COST_ANALYSIS.md")
+    assert cost["added"] >= 3 and cost["removed"] == 0 and cost["churn"] == 0.0
+
+
 def test_lost_heading_and_shrink_are_findings(tmp_path):
     root = tmp_path
     prev = tmp_path / "previous"

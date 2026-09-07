@@ -55,6 +55,19 @@ SIZE_FLOOR = 0.80
 # README.md is a pointer map by design (2026-09-07); its length is not a
 # content signal, so it is exempt from the size floor (headings still apply).
 SIZE_FLOOR_EXEMPT = ("README.md",)
+
+# An update that rewrites most of a document is a regeneration wearing an
+# update's clothes: the 2026-09-02 run replaced 394 lines with 158 and every
+# gate passed on the result because each gate looked at the OUTPUT, not at the
+# transition. Churn is removed_lines / previous_lines, so a doc that keeps its
+# length while replacing every line reads as 1.0 here and 1.0 on the size
+# floor's scale reads as "fine". Anything above this ceiling stops the run and
+# the report says which sections moved.
+CHURN_CEILING = 0.50
+# Documents that are wholly rendered from the inventory legitimately churn
+# hard when the fleet changes, so they carry a higher ceiling.
+CHURN_CEILING_RENDERED = {"docs/API.md": 0.90}
+DIFF_DOCS = DOCS + ("docs/API.md",)
 REMOVED_HEADING = "Removed since last refresh"
 
 # Names and phrases that describe a surface this repo no longer has. A line
@@ -183,6 +196,100 @@ def gate_headings_and_size(root: pathlib.Path, previous_dir: pathlib.Path | None
     return out
 
 
+def diff_stats(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[dict]:
+    """Per-document added/removed accounting for this run.
+
+    Byte and line counts on both sides plus the headings and marker blocks
+    that appeared or vanished, so a reviewer can see WHAT the run did rather
+    than only whether the result passed. Feeds both the budget gate below and
+    the run's markdown report.
+    """
+    import difflib
+
+    out: list[dict] = []
+    if previous_dir is None:
+        return out
+    for doc in DIFF_DOCS:
+        prev, cur = previous_dir / doc, root / doc
+        if not prev.exists() or not cur.exists():
+            continue
+        old_text, new_text = prev.read_text(), cur.read_text()
+        old_lines, new_lines = old_text.splitlines(), new_text.splitlines()
+        added = removed = 0
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+                None, old_lines, new_lines, autojunk=False).get_opcodes():
+            if tag in ("replace", "delete"):
+                removed += i2 - i1
+            if tag in ("replace", "insert"):
+                added += j2 - j1
+        old_heads, new_heads = set(_headings(old_text)), set(_headings(new_text))
+        old_marks = set(re.findall(r"<!-- inventory:([a-z]+):start -->", old_text))
+        new_marks = set(re.findall(r"<!-- inventory:([a-z]+):start -->", new_text))
+        out.append({
+            "doc": doc,
+            "lines_before": len(old_lines), "lines_after": len(new_lines),
+            "bytes_before": len(old_text.encode()), "bytes_after": len(new_text.encode()),
+            "added": added, "removed": removed,
+            "churn": (removed / len(old_lines)) if old_lines else 0.0,
+            "headings_removed": sorted(old_heads - new_heads),
+            "headings_added": sorted(new_heads - old_heads),
+            "blocks_removed": sorted(old_marks - new_marks),
+            "blocks_added": sorted(new_marks - old_marks),
+        })
+    return out
+
+
+def gate_diff_budget(stats: list[dict], allow_rewrite: tuple[str, ...] = ()) -> list[str]:
+    """Refuse a run that rewrote a document instead of updating it.
+
+    `allow_rewrite` names documents a HUMAN is deliberately reconstructing.
+    The refresh workflow never passes it, so the monthly bot can never exempt
+    itself; it exists for a one-off rebuild done under review.
+    """
+    out = []
+    for st in stats:
+        ceiling = CHURN_CEILING_RENDERED.get(st["doc"], CHURN_CEILING)
+        if st["doc"] in allow_rewrite:
+            continue
+        if st["churn"] > ceiling:
+            out.append(
+                f"{st['doc']}: {st['removed']} of {st['lines_before']} previous lines were replaced "
+                f"or deleted ({st['churn']:.0%} churn, ceiling {ceiling:.0%}) — this is a rewrite, "
+                f"not an in-place update"
+            )
+        if st["blocks_removed"]:
+            out.append(f"{st['doc']}: inventory block(s) disappeared since the previous version: "
+                       + ", ".join(st["blocks_removed"]))
+    return out
+
+
+def render_report(stats: list[dict]) -> str:
+    """Markdown accounting of what this run added and removed."""
+    if not stats:
+        return "_no previous versions supplied — nothing to diff_\n"
+    rows = ["| Document | Lines | Bytes | +added | -removed | Churn |",
+            "|---|---|---|---|---|---|"]
+    for st in stats:
+        dl = st["lines_after"] - st["lines_before"]
+        db = st["bytes_after"] - st["bytes_before"]
+        rows.append(
+            f"| `{st['doc']}` | {st['lines_before']} → {st['lines_after']} ({dl:+d}) "
+            f"| {st['bytes_before']:,} → {st['bytes_after']:,} ({db:+,d}) "
+            f"| {st['added']} | {st['removed']} | {st['churn']:.0%} |")
+    body = ["## What this run changed", "", *rows, ""]
+    for st in stats:
+        notes = []
+        if st["headings_removed"]:
+            notes.append("removed headings: " + ", ".join(f"`{h}`" for h in st["headings_removed"]))
+        if st["headings_added"]:
+            notes.append("new headings: " + ", ".join(f"`{h}`" for h in st["headings_added"]))
+        if st["blocks_added"]:
+            notes.append("new inventory blocks: " + ", ".join(st["blocks_added"]))
+        if notes:
+            body.append(f"**`{st['doc']}`** — " + "; ".join(notes))
+    return "\n".join(body) + "\n"
+
+
 def gate_stale(root: pathlib.Path) -> list[str]:
     out = []
     for doc in DOCS:
@@ -232,13 +339,14 @@ def gate_transcripts(transcripts_dir: pathlib.Path | None) -> list[str]:
 
 
 def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib.Path | None,
-        transcripts_dir: pathlib.Path | None) -> list[str]:
+        transcripts_dir: pathlib.Path | None, allow_rewrite: tuple[str, ...] = ()) -> list[str]:
     repo = inv.repo_inventory(root)
     live = json.loads(snapshot.read_text()) if snapshot else None
     findings: list[str] = []
     findings += gate_coverage(root, repo, live)
     findings += gate_subsections(root, repo)
     findings += gate_markers(root, repo, live)
+    findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
     findings += gate_stale(root)
     findings += gate_links(root)
@@ -253,10 +361,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--snapshot", help="live snapshot JSON from doc_inventory --write-snapshot")
     ap.add_argument("--previous-dir", help="directory holding the previous versions of the four docs")
     ap.add_argument("--transcripts-dir", help="directory holding the Gemini run transcripts")
+    ap.add_argument("--report", help="write the added/removed accounting here as markdown")
+    ap.add_argument("--allow-rewrite", action="append", default=[], metavar="DOC",
+                    help="a document a human is deliberately reconstructing; exempt it from the "
+                         "churn ceiling. The refresh workflow never passes this.")
     a = ap.parse_args(argv)
-    findings = run(pathlib.Path(a.root), pathlib.Path(a.snapshot) if a.snapshot else None,
-                   pathlib.Path(a.previous_dir) if a.previous_dir else None,
-                   pathlib.Path(a.transcripts_dir) if a.transcripts_dir else None)
+    root = pathlib.Path(a.root)
+    previous_dir = pathlib.Path(a.previous_dir) if a.previous_dir else None
+    findings = run(root, pathlib.Path(a.snapshot) if a.snapshot else None, previous_dir,
+                   pathlib.Path(a.transcripts_dir) if a.transcripts_dir else None,
+                   tuple(a.allow_rewrite))
+    # The accounting is written whether or not the gates passed: on a failure
+    # it is the first thing a reviewer needs.
+    report = render_report(diff_stats(root, previous_dir))
+    if a.report:
+        pathlib.Path(a.report).write_text(report)
+    print(report)
     for f in findings:
         _err(f)
     print(f"check_generated_docs: {len(findings)} finding(s)")
