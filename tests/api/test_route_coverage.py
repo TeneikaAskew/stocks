@@ -1284,6 +1284,23 @@ def test_infrastructure_errors_are_classified_by_type():
     assert not is_infrastructure_error(
         ModuleNotFoundError("No module named 'x'"))      # no name: not decided
 
+    # The PRODUCTION driver. `model_routing.connect()` returns a bare pg8000
+    # connection, so its client-side failures arrive raw and without a
+    # `__cause__`; they were classified as bugs (Codex P1 on #999). pg8000
+    # has no `ProgrammingError` and folds a syntax error into
+    # `DatabaseError`, so that class stays OUT: it is where our own SQL
+    # mistakes land.
+    import pg8000.exceptions as pg8000_exc
+    assert is_infrastructure_error(pg8000_exc.InterfaceError("network error"))
+    assert is_infrastructure_error(
+        pg8000_exc.InterfaceError("connection is closed"))
+    assert not is_infrastructure_error(
+        pg8000_exc.DatabaseError({"C": "42601", "M": "syntax error at or near"}))
+    assert not is_infrastructure_error(pg8000_exc.Error("base class"))
+    assert not hasattr(pg8000_exc, "ProgrammingError"), (
+        "pg8000 grew a ProgrammingError: revisit whether DatabaseError can "
+        "now be split and the connection half classified")
+
 
 def test_the_final_four_guards_keep_the_split(client, monkeypatch):
     """The catches the final review found still broad, each both ways.

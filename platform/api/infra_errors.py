@@ -60,6 +60,25 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         found += [psycopg2.OperationalError, psycopg2.InterfaceError]
     except Exception:                       # pragma: no cover - image without it
         logger.debug("psycopg2 not importable; its errors are not classified")
+    try:                                    # pg8000, the PRODUCTION Cloud SQL driver
+        import pg8000.exceptions as pg8000_exc   # noqa: PLC0415
+        # `lib/agents/model_routing.py` and `gcp/database.py` both reach Cloud
+        # SQL through `connector.connect(..., "pg8000")`, and the routing path
+        # hands back a bare pg8000 connection with no SQLAlchemy wrapper -- so
+        # a dropped or closed connection surfaces as a raw
+        # `pg8000.exceptions.InterfaceError` ("network error", "connection is
+        # closed"), often with no `__cause__`. Registering only the psycopg2
+        # equivalents left that as the bare 500 these guards exist to replace
+        # (Codex P1 on #999).
+        #
+        # `InterfaceError` ONLY. pg8000's hierarchy is not DB-API-complete: it
+        # has no `ProgrammingError`, and folds a syntax error -- our SQL being
+        # wrong -- into `DatabaseError`, so including that class would hide
+        # our own bugs again, exactly the conflation this module was written
+        # to end.
+        found += [pg8000_exc.InterfaceError]
+    except Exception:                       # pragma: no cover - image without it
+        logger.debug("pg8000 not importable; its errors are not classified")
     try:                                    # SQLAlchemy wraps the above
         from sqlalchemy import exc as sa_exc     # noqa: PLC0415
         # `sa_exc.TimeoutError` is the pool saying every configured connection
