@@ -1494,9 +1494,20 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
         # that the resolvers added this round need to find under their name
         # (Codex, PR #993). A container is never a finding by itself; only a
         # branch that already has a timezone context looks inside one.
+        # Plus a bound OFFSET CONSTRUCTOR call, kept by NAME rather than
+        # evaluated here. `_is_eastern_fixed_timedelta(v)` was asked without
+        # the environment this collector is still building, so
+        # `HOURS = -5; OFFSET = timedelta(hours=HOURS)` evaluated to "not
+        # decidable" and the binding was dropped -- while the same call
+        # written at the use site resolved fine, because `follow` HAS the
+        # environment (Codex, PR #993). Keeping the node and letting `follow`
+        # evaluate it is the same division of labour the string bindings
+        # already use; a `timedelta(hours=3)` kept this way still resolves to
+        # nothing there.
         if (_binding_text(v) is None
                 and _const_string(v) is None
                 and not _is_eastern_fixed_timedelta(v)
+                and not _is_offset_constructor_call(v)
                 and _const_number(v) is None
                 and not isinstance(v, (ast.Name, ast.Attribute, ast.Dict,
                                        ast.Tuple, ast.List, ast.Set))):
@@ -1504,7 +1515,35 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
         for t in targets:
             if isinstance(t, ast.Name):
                 _keep(out, t.id, v)
+            # `TZ, fallback = ("EST", "UTC")` binds element-wise, and the
+            # scope machinery already marked both names as bound -- to
+            # nothing, since only a Name target was recorded (Codex, PR
+            # #993). A literal sequence of the same length, no starred
+            # target: anything else is not statically known and stays
+            # unresolved rather than guessed at.
+            elif (isinstance(t, (ast.Tuple, ast.List))
+                    and isinstance(v, (ast.Tuple, ast.List))
+                    and len(t.elts) == len(v.elts)
+                    and not any(isinstance(e, ast.Starred) for e in t.elts)):
+                for elt, val in zip(t.elts, v.elts):
+                    if isinstance(elt, ast.Name):
+                        _keep(out, elt.id, val)
     return out
+
+
+def _is_offset_constructor_call(node: ast.AST) -> bool:
+    """Is this a `timedelta(...)`/`FixedOffset(...)`/`tzoffset(...)` call?
+
+    By written name, deliberately without the environment: this runs inside
+    the collector that builds the environment, so it can only ask a question
+    that needs none. Whether the call totals an Eastern offset is `follow`'s
+    question, asked later with the environment in hand.
+    """
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        node = node.operand
+    return (isinstance(node, ast.Call)
+            and _call_name(node) in ({"timedelta"} | _FIXED_OFFSET_CALLS
+                                     | _FIXED_OFFSET_SECOND_CALLS))
 
 
 def _python_hits(path: pathlib.Path, text: str):
@@ -1530,6 +1569,20 @@ def _python_hits(path: pathlib.Path, text: str):
     # Statement ids at module scope, and every name this module ever reads --
     # both for the configuration-export check below.
     _module_level = {id(n) for n in tree.body}
+    # A class body is a namespace read from OUTSIDE, as `Config.TIME_ZONE`,
+    # exactly as a module's is read as `settings.TIME_ZONE`. Asking only
+    # whether an assignment sits in `tree.body` exempted the class-based
+    # settings object -- the ordinary Django/Flask shape -- while a function
+    # local, which nobody reads from outside, correctly stayed exempt (Codex,
+    # PR #993). Classes reached through classes only: a class defined inside
+    # a function is that function's local.
+    stack = [tree]
+    while stack:
+        scope = stack.pop()
+        for stmt in scope.body:
+            if isinstance(stmt, ast.ClassDef):
+                _module_level.update(id(n) for n in stmt.body)
+                stack.append(stmt)
     # Value nodes this pass has actually REPORTED, and the module-level
     # settings assignments whose verdict has to wait for that answer.
     reported_values: set[int] = set()
@@ -1677,6 +1730,26 @@ def _python_hits(path: pathlib.Path, text: str):
             elif isinstance(arg, ast.Name):
                 target = env.bindings.get(arg.id)
                 label = arg.id
+            # `ZONES = {"primary": "EST"}; ZoneInfo(ZONES["primary"])` -- the
+            # registry is bound (containers have been kept since round 18)
+            # and the lookup is static, but this branch resolved only names
+            # and attributes, so the finding went with the subscript (Codex,
+            # PR #993). A constant key into a bound dict, or a constant index
+            # into a bound sequence; anything computed stays unresolved.
+            elif (isinstance(arg, ast.Subscript)
+                    and isinstance(arg.value, ast.Name)
+                    and isinstance(arg.slice, ast.Constant)):
+                base = env.bindings.get(arg.value.id)
+                idx = arg.slice.value
+                if isinstance(base, ast.Dict) and isinstance(idx, str):
+                    target = next((v for k, v in zip(base.keys, base.values)
+                                   if isinstance(k, ast.Constant)
+                                   and k.value == idx), None)
+                elif (isinstance(base, (ast.Tuple, ast.List))
+                        and isinstance(idx, int) and not isinstance(idx, bool)
+                        and -len(base.elts) <= idx < len(base.elts)):
+                    target = base.elts[idx]
+                label = f"{arg.value.id}[{idx!r}]"
             if target is not None:
                 return follow(bucket_legacy, bucket_offsets, node, target, env,
                               lambda shown, l=label: where(f"{l} (= {shown})"),
@@ -1768,10 +1841,15 @@ def _python_hits(path: pathlib.Path, text: str):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for tgt in targets:
                 key = tgt.slice if isinstance(tgt, ast.Subscript) else None
-                if (isinstance(key, ast.Constant) and isinstance(key.value, str)
-                        and key.value.lower() in _TZ_KEYWORDS):
+                # Through the environment, so `KEY = "TZ"; os.environ[KEY] =
+                # "EST"` reads its key the way every other named constant here
+                # is read. A literal-only comparison saw an `ast.Name` and
+                # walked past the assignment that installs the zone (Codex,
+                # PR #993).
+                key_text = _const_string(key, env) if key is not None else None
+                if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
                     follow(legacy, offsets, node, node.value, env,
-                           lambda shown, k=key.value: f"[{k!r}] = {shown}")
+                           lambda shown, k=key_text: f"[{k!r}] = {shown}")
                 # `settings.timezone = "EST"` -- an attribute target binds no
                 # NAME either, so the same argument applies to it as to the
                 # subscript above, and it was missed for the same reason
@@ -7423,3 +7501,85 @@ def test_every_ipython_line_is_classified_once():
     assert _classify_magic("x = 1") == (False, "x = 1")
     assert _classify_magic("%env TZ EST") == ("env", "export TZ=EST")
     assert probe([["%%bash\n", "export TZ=EST\n"]]).count("export TZ=EST") == 1
+# -- Audit: the scope-and-binding model, extended once -------------------------
+#
+# Four open threads described one subsystem: a value the guard could resolve
+# when written inline and could not when named once. They are closed together
+# because they share a mechanism, and each fix is checked against the case
+# that must stay quiet.
+
+
+def _probe_py(src: str):
+    """`_python_hits` on a module written to a probe path, as a pair."""
+    return _python_hits(REPO / "_probe.py", src)
+
+
+def test_a_class_body_setting_is_an_exported_setting():
+    """`class Config: TIME_ZONE = "EST"` is read from outside as `Config.TIME_ZONE`."""
+    legacy, _ = _probe_py('class Config:\n    TIME_ZONE = "EST"\n')
+    assert legacy, "a class-body setting is consumed externally"
+    legacy, _ = _probe_py('class Config:\n    TIME_ZONE: str = "US/Eastern"\n')
+    assert legacy, "the annotated form too"
+    # A function local of the same name is nobody's setting, and a class
+    # defined INSIDE a function is that function's local.
+    legacy, _ = _probe_py('def f():\n    TIME_ZONE = "EST"\n    return 1\n')
+    assert not legacy
+    legacy, _ = _probe_py('def f():\n    class C:\n        TIME_ZONE = "EST"\n    return C\n')
+    assert not legacy
+    # The canonical zone in a class body is not a finding.
+    legacy, _ = _probe_py('class Config:\n    TIME_ZONE = "America/New_York"\n')
+    assert not legacy
+
+
+def test_a_bound_offset_call_is_evaluated_with_the_environment():
+    """`HOURS = -5; OFFSET = timedelta(hours=HOURS); timezone(OFFSET)` reports."""
+    src = ("from datetime import timedelta, timezone\n"
+           "HOURS = -5\nOFFSET = timedelta(hours=HOURS)\nET = timezone(OFFSET)\n")
+    _, offsets = _probe_py(src)
+    assert offsets, "the composition of two forms that each resolve alone"
+    # A non-Eastern total through the same binding is not one.
+    _, offsets = _probe_py(src.replace("-5", "-3"))
+    assert not offsets
+    assert _is_offset_constructor_call(ast.parse("-timedelta(hours=5)").body[0].value)
+    assert not _is_offset_constructor_call(ast.parse("len(x)").body[0].value)
+
+
+def test_a_subscript_key_named_once_is_resolved():
+    """`KEY = "TZ"; os.environ[KEY] = "EST"` installs the zone."""
+    legacy, _ = _probe_py('import os\nKEY = "TZ"\nos.environ[KEY] = "EST"\n')
+    assert legacy
+    # An unrelated key, named once, is still not a timezone context.
+    legacy, _ = _probe_py('import os\nKEY = "REGION"\nos.environ[KEY] = "EST"\n')
+    assert not legacy
+
+
+def test_a_constant_lookup_into_a_bound_container_is_followed():
+    """`ZONES = {"primary": "EST"}; ZoneInfo(ZONES["primary"])` reports."""
+    head = "from zoneinfo import ZoneInfo\n"
+    legacy, _ = _probe_py(head + 'ZONES = {"primary": "EST"}\nZ = ZoneInfo(ZONES["primary"])\n')
+    assert legacy
+    legacy, _ = _probe_py(head + 'ZONES = ("EST", "UTC")\nZ = ZoneInfo(ZONES[0])\n')
+    assert legacy, "a constant index into a bound sequence"
+    # The lookup that selects the CANONICAL entry is clean even when a
+    # sibling entry is not, and a computed key stays unresolved.
+    legacy, _ = _probe_py(head + 'ZONES = {"primary": "America/New_York", "old": "EST"}\n'
+                          'Z = ZoneInfo(ZONES["primary"])\n')
+    assert not legacy
+    legacy, _ = _probe_py(head + 'ZONES = {"primary": "EST"}\nk = "primary"\n'
+                          'Z = ZoneInfo(ZONES[k])\n')
+    assert not legacy
+
+
+def test_a_destructuring_assignment_binds_each_name():
+    """`TZ, fallback = ("EST", "UTC"); ZoneInfo(TZ)` reports."""
+    head = "from zoneinfo import ZoneInfo\n"
+    legacy, _ = _probe_py(head + 'TZ, fallback = ("EST", "UTC")\nZ = ZoneInfo(TZ)\n')
+    assert legacy
+    legacy, _ = _probe_py(head + '[TZ, fallback] = ["EST", "UTC"]\nZ = ZoneInfo(TZ)\n')
+    assert legacy, "the list form too"
+    # The other element is the other name, and a starred or ragged unpack
+    # is not statically known.
+    legacy, _ = _probe_py(head + 'TZ, fallback = ("America/New_York", "EST")\nZ = ZoneInfo(TZ)\n')
+    assert not legacy
+    legacy, _ = _probe_py(head + 'TZ, *rest = ("EST", "UTC")\nZ = ZoneInfo(TZ)\n')
+    assert not legacy
