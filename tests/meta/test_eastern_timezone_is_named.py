@@ -140,10 +140,20 @@ ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 # files the scan was widened to cover kept their standard spelling outside it
 # (Codex, PR #993). The colon costs nothing elsewhere -- these keys mean a
 # timezone in any file that has them.
+# Every alternative is anchored at an identifier boundary. Without it the two
+# -character `tz` key matched the TAIL of any identifier ending in those
+# letters, so `quartz=EST` read as `tz=EST` and reported a timezone in a line
+# that has nothing to do with one -- a false CI failure on ordinary shell or
+# YAML, which is precisely what the ambiguous names are kept context-gated to
+# avoid (Codex, PR #993).
+_B = r"(?<![A-Za-z0-9_])"
 _TZ_CONTEXT = (
-    r"tz\s*[:=]|tzinfo\s*[:=]|time_?zone\s*[:=]|time-zone[:= ]|ZoneInfo\s*\(|"
-    r"pytz\.timezone\s*\(|tz_convert\s*\(|tz_localize\s*\(|"
-    r"AT TIME ZONE\s*|Timestamp\.now\s*\(|astimezone\s*\(|timezone\s*\("
+    _B + r"tz\s*[:=]|" + _B + r"tzinfo\s*[:=]|" + _B + r"time_?zone\s*[:=]|"
+    + _B + r"time-zone[:= ]|" + _B + r"ZoneInfo\s*\(|"
+    + _B + r"pytz\.timezone\s*\(|" + _B + r"tz_convert\s*\(|"
+    + _B + r"tz_localize\s*\(|" + _B + r"AT TIME ZONE\s*|"
+    + _B + r"Timestamp\.now\s*\(|" + _B + r"astimezone\s*\(|"
+    + _B + r"timezone\s*\("
 )
 
 # Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
@@ -300,6 +310,31 @@ def _scope_nodes(scope: ast.AST):
             stack.extend(ast.iter_child_nodes(node))
 
 
+def _import_aliases(tree: ast.AST) -> dict[str, str]:
+    """`alias -> original name`, for `import X as Y` and `from X import Y as Z`.
+
+    `_call_name` reports the name as written, so `from zoneinfo import
+    ZoneInfo as ZI` made `ZI("EST")` miss `_TZ_CALLS` entirely and the call
+    was skipped before its argument was looked at (Codex, PR #993). Renaming
+    an import is not obscure, and a whitelist that only knows the canonical
+    spelling is a whitelist of what someone thought of -- the argument this
+    file already makes about call-name whitelists, one level down.
+    """
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.asname:
+                    out[a.asname] = a.name
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    # `import pytz as p` -> the tail, so `p.timezone(...)`
+                    # still resolves through the attribute path.
+                    out[a.asname] = a.name.rsplit(".", 1)[-1]
+    return out
+
+
 def _class_attribute_bindings(tree: ast.AST) -> dict[tuple[str, str], tuple[str, ast.AST]]:
     """`(ClassName, attr) -> (value, node)` for `class C: attr = "..."`.
 
@@ -383,10 +418,20 @@ def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]
         bindings.update(defaults)
         bindings.update(_collect_bindings(_scope_nodes(scope), {}))
         out[id(scope)] = bindings
+
+        # Python does NOT close over a class namespace: a method does not see
+        # the class body's names, it sees the enclosing function or module. So
+        # a class-level `value = "EST"` label beside a global
+        # `value = "America/New_York"` made `ZoneInfo(value)` in a method
+        # resolve to the label the runtime never uses -- a false CI failure,
+        # and the third one this scoping machinery has produced (Codex,
+        # PR #993). A nested scope under a class inherits what the CLASS
+        # inherited, not what the class defines.
+        nested = inherited if isinstance(scope, ast.ClassDef) else bindings
         for node in _scope_nodes(scope):
             out[id(node)] = bindings
             if isinstance(node, _SCOPES):
-                descend(node, bindings)
+                descend(node, nested)
 
     descend(tree, {})
     return out
@@ -450,6 +495,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     rel = path.relative_to(REPO)
     scoped = _scoped_bindings(tree)
     attrs = _class_attribute_bindings(tree)
+    aliases = _import_aliases(tree)
 
     def note(bucket, node, what):
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
@@ -549,7 +595,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
 
         if not isinstance(node, ast.Call):
             continue
-        name = _call_name(node)
+        name = aliases.get(_call_name(node), _call_name(node))
         if name not in _TZ_CALLS:
             continue
 
@@ -1098,3 +1144,77 @@ def test_the_remaining_eastern_backward_links_are_rejected():
 
     # A Central backward link is a different zone, not this guard's business.
     assert _hits('tz = ZoneInfo("US/Central")\n') == ([], [])
+
+
+def test_an_identifier_ending_in_tz_is_not_a_timezone_key():
+    """`quartz=EST` is not `tz=EST`.
+
+    The two-character `tz` key had no left boundary, so it matched the TAIL of
+    any identifier ending in those letters and reported a timezone in a line
+    that has nothing to do with one — a false CI failure on ordinary shell or
+    YAML, which is exactly what keeping the ambiguous names context-gated is
+    for (Codex, PR #993).
+    """
+    assert not NONPY_AMBIGUOUS.search("quartz=EST")
+    assert not NONPY_AMBIGUOUS.search("SHOWBIZ_TZ_LABEL=EST".lower().replace("_tz", "xtz"))
+    assert not NONPY_AMBIGUOUS.search("my_timezone_label=EST".replace("_timezone", "xtimezone"))
+
+    # The real keys still match, in both syntaxes.
+    assert NONPY_AMBIGUOUS.search("tz=EST")
+    assert NONPY_AMBIGUOUS.search("  TZ: EST")
+    assert NONPY_AMBIGUOUS.search("timezone: EDT")
+    # And a boundary character before the key is still a boundary.
+    assert NONPY_AMBIGUOUS.search("export TZ=EST")
+
+
+def test_a_class_body_is_not_an_enclosing_scope_for_its_methods():
+    """Python does not close over a class namespace.
+
+    A method sees the enclosing function or module, not the class body — so a
+    class-level label beside a canonical global made `ZoneInfo(value)` resolve
+    to the label the runtime never uses. That is a false CI failure, and the
+    third one this scoping machinery has produced (Codex, PR #993).
+    """
+    assert _hits(
+        'value = "America/New_York"\n'
+        '\n'
+        'class C:\n'
+        '    value = "EST"          # a display label, not a timezone\n'
+        '\n'
+        '    def load(self):\n'
+        '        return ZoneInfo(value)\n'
+    ) == ([], [])
+
+    # Code directly IN the class body does see the class binding, which is
+    # what Python does and what the attribute test below relies on.
+    legacy, _ = _hits('class C:\n    value = "EST"\n    tz = ZoneInfo(value)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    # And the attribute path is untouched: `C.value` still resolves.
+    legacy, _ = _hits('class S:\n    tz = "EST"\n\ndef load():\n'
+                      '    return ZoneInfo(S.tz)\n')
+    assert any("S.tz" in h for h in legacy), legacy
+
+
+def test_an_aliased_import_still_resolves_to_the_constructor():
+    """`from zoneinfo import ZoneInfo as ZI` then `ZI("EST")`.
+
+    `_call_name` reports the name as written, so the call missed `_TZ_CALLS`
+    and was skipped before its argument was looked at. A whitelist that knows
+    only the canonical spelling is a list of what someone thought of — the
+    argument this file already makes about call-name whitelists, one level
+    down (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo as ZI\ntz = ZI("EST")\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    _, offsets = _hits('from zoneinfo import ZoneInfo as ZI\ntz = ZI("-05:00")\n')
+    assert any("-05:00" in h for h in offsets), offsets
+
+    # `import pytz as p` -> `p.FixedOffset(-300)` resolves through the tail.
+    _, offsets = _hits('import pytz as p\ntz = p.FixedOffset(-300)\n')
+    assert any("FixedOffset" in h for h in offsets), offsets
+
+    # The canonical value through an alias is still not a finding.
+    assert _hits('from zoneinfo import ZoneInfo as ZI\n'
+                 'tz = ZI("America/New_York")\n') == ([], [])
