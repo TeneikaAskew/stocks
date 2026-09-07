@@ -54,10 +54,14 @@ set:
 If exactly one issue matches, say so and proceed with it. If none match, say
 the label is empty rather than widening the search on your own.
 
-With an issue number, read the body **and every comment** before anything else.
-Comments carry the correction history: a severity that was challenged, a Codex
-reply that already implemented half of it, a prior status comment naming what
-is still open. Classify:
+With an issue number, read the body **and every comment** before anything else,
+paging `get_comments` to exhaustion rather than stopping at page 1 — the same
+discipline this file requires for issue listings and for review comments, and
+for the same reason: the correction is usually the newest thing on the thread.
+Comments carry that history: a severity that was challenged, a Codex reply that
+already implemented half of it, a prior status comment naming what is still
+open. Reading the first page of a long issue gets you the original claim and
+none of what has happened to it. Classify:
 
 | Signal | Class | Route |
 |---|---|---|
@@ -179,6 +183,14 @@ Paste the output. Three outcomes, all legitimate:
    counter-measurement. #815's whole resolution is "do not add the stop", backed
    by a counterfactual over 736 real fires. A well-evidenced "do not fix" closes
    an issue as legitimately as a patch does.
+
+**On outcomes 2 and 3, deal with the PR as well as the issue.** If Phase 0 took
+CASE A there is an open or draft PR attached to this issue, and closing only the
+issue leaves it live: it keeps drawing review rounds and CI minutes, and it can
+still be merged later by someone who never reads the close comment. Close it as
+superseded, naming the evidence, or say explicitly on the PR why it stays open.
+The auto-created `fix/workflow-*` drafts are the common case here — a workflow
+that has since gone green leaves both an issue and a draft behind.
 
 Two traps this repo has already hit:
 
@@ -356,8 +368,18 @@ changed:
 | Signal, indicator, strategy or fire-path code | `env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. In-process and the production path per Rule 3.6, so it runs YOUR tree — but read the two notes below before believing its output. |
 | Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree — but they are NOT hermetic; see below before running one. |
 | A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job** — but read the isolation note below first: a renamed job is not an isolated one. |
-| API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. |
+| API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. **For a MUTATING route, local is not isolated** — see below. |
 | A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now — for a **SELECT**. On a mutation it EXECUTES the statement; see below. |
+
+**A local `uvicorn` is process isolation, not data isolation.** The journal
+POST/PATCH/DELETE routes, the profile and preferences PUTs and every other
+mutating handler write through whatever `gcp/database.py:get_engine()` resolves
+to, and in an environment carrying the repo's Cloud SQL credentials that is
+production. Running the candidate on `localhost:8000` changes which process
+serves the request and nothing about which database it writes. So a mutating
+route gets the same treatment as everything else in this phase: an isolated
+database, or persistence mocked at the boundary the hermetic suite already
+mocks. Read-only handlers are fine as written.
 
 **`EXPLAIN ANALYZE` on an INSERT, UPDATE or DELETE runs it.** `ANALYZE` means
 "execute and report actual timings", and Postgres makes no exception for a
@@ -399,13 +421,30 @@ So "zero fires" is only evidence once you have checked it is not zero
 evaluations:
 
 ```bash
+set -o pipefail          # else the pipeline reports tee's status, not python's
 env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor \
     --date <D> --tickers SPY,IWM,QQQ 2>&1 | tee /tmp/replay.log
+echo "exit=$?"                                     # must be 0
 grep -c "evaluate_ticker raised" /tmp/replay.log   # must be 0
 ```
 
-A non-zero count fails the verification regardless of what the summary says.
-Paste that count alongside the fire counts.
+Three separate things have to hold, and each covers a hole the others do not:
+
+- **`pipefail` (or `${PIPESTATUS[0]}`).** Without it the pipeline's status is
+  `tee`'s, which is 0 whatever python did. A replay that died in imports, DB
+  init or argument parsing never reaches the summary, logs no
+  `evaluate_ticker raised`, and reports a clean pipeline.
+- **Zero warnings.** A non-zero count fails the verification regardless of what
+  the summary says.
+- **A positive `Bars` count for every ticker you asked for.** The summary's
+  per-ticker table is the check. `replay_ticker` returns `(0, 0)` at
+  `scripts/replay_signal_monitor.py:143-144` when `bars.empty` — before
+  `evaluate_ticker` is ever called — so a weekend date, a ticker with no
+  intraday ingestion, or a typo'd symbol produces zero fires, zero warnings and
+  a zero exit. Every signal this section relies on reads clean, and nothing
+  was evaluated.
+
+Paste all three alongside the fire counts.
 
 **`BRIEF_AS_OF` and `INSIGHT_AS_OF` are not sandbox flags.** Setting either
 resolves to `allow_update=True`:
@@ -592,8 +631,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    What fails this step: a summary showing Running, or naming an older commit
    with all threads `is_outdated`, or a head whose only reviews are yours. That
    head is unreviewed — comment `@codex review` and wait.
-3. Every thread fixed-and-resolved, naming what changed and the covering test
-   and commit, or replied to with why not. Zero unresolved is the bar.
+3. **Re-page `get_review_comments` now**, after step 2 established the review
+   is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
+   before CI and can therefore run while the current head's review is still
+   posting; every finding it lands between that read and step 2's completion is
+   absent from what you are holding. And a review WITH findings satisfies step 2
+   perfectly well, since the bar there is "not `CHANGES_REQUESTED`", so nothing
+   else catches it. Then: every thread fixed-and-resolved, naming what changed
+   and the covering test and commit, or replied to with why not. Zero unresolved
+   across every page is the bar.
 4. Verify each finding against the code before fixing it: reproduce, write the
    failing test, fix, show it pass. A fix built on a misread finding is worse
    than no fix.
@@ -655,6 +701,26 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      so a staging-only outcome leaves the fix not serving. Run that trigger
      and verify against prod, or take the next bullet — do not treat "staging
      is green" as the deployment.
+
+     **That trigger will not run without the revision you validated.**
+     `gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml:84-92` exits 1 on an
+     empty `_EXPECT_STAGING_REVISION`, and exits 1 again if the value does not
+     match what staging is serving now — by design, so a promotion moves the
+     revision you actually checked rather than whatever landed on staging while
+     you were checking. So capture the staging revision as part of the
+     verification, not afterwards:
+
+     ```bash
+     REV=$(gcloud run services describe solyra-api-staging --region=us-east1 \
+             --format='value(status.latestReadyRevisionName)')
+     # ...verify against staging while it is serving $REV...
+     gcloud builds triggers run deploy-solyra-api-prod \
+       --substitutions=_EXPECT_STAGING_REVISION="$REV"
+     ```
+
+     It fails closed, which is the safe direction — but "run the trigger" as
+     written simply does not promote anything, so the issue would be closed on a
+     deploy that never happened.
    - **Where promotion is an owner action this session cannot take**, keep the
      issue OPEN, put the exact command in "Still open before this closes", and
      say the fix is merged but not yet serving. Closing on candidate evidence
