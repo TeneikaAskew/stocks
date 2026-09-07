@@ -1,10 +1,14 @@
 """
-Playbook and reports router — reads markdown directly from GCS with TTL caching.
+Playbook and reports router.
 
 Endpoints
 ---------
 GET /api/playbook/{ticker}
-    Read phase6_playbook_{ticker}.md from GCS and parse into structured JSON cards.
+    Structured setup cards from the ``playbook_cards`` Cloud SQL table
+    (written by ``scripts/analysis/phase6_playbook.py --write-db``, run as
+    the ``phase6-playbook`` Cloud Run job). The response carries the card
+    set's ``analysis_date`` and the endpoint refuses to serve a set older
+    than ``MAX_PLAYBOOK_AGE_DAYS`` — see the freshness contract below.
 
 GET /api/reports/list/{ticker}
     List available phase report files for a ticker (globs GCS).
@@ -12,16 +16,36 @@ GET /api/reports/list/{ticker}
 GET /api/reports/{ticker}/{phase}
     Return the raw markdown of a specific phase report as plain text.
 
-Data source
------------
-gs://adept-mountain-474619-d4-trading-data/raw/reports/
+POST /api/playbook/evaluate
+    Evaluate card conditions against a live market snapshot.
 
-All three endpoints cache with a 24h TTL because markdown files change rarely.
+Freshness contract (issue #861)
+-------------------------------
+``playbook_cards`` went 85 days without a write (last ``analysis_date``
+2026-06-13; ``phase6-playbook`` had no Cloud Scheduler entry) while this
+endpoint kept resolving ``max(analysis_date)`` with no floor and omitting
+the date from the response, so the dashboard rendered a June card set as
+today's setups. Stale trading setups presented as current are worse than
+no setups (CLAUDE.md §3.7: never fabricate currency). So:
+
+* every response includes ``analysis_date``, ``generated_at`` and
+  ``age_days`` so the UI can show how old the cards are;
+* a set older than ``MAX_PLAYBOOK_AGE_DAYS`` (relative to today, or to the
+  requested ``?date=`` in historical mode) is a 503 naming the date and
+  the writer job — never rendered;
+* the old "bridge to the GCS markdown" fallback is gone: the markdown is
+  produced by the same job and carries no date, so it could only re-serve
+  the same stale cards with the age hidden.
+
+Report endpoints read markdown from
+gs://adept-mountain-474619-d4-trading-data/raw/reports/ with a 24h TTL
+cache because those files change rarely.
 """
 import json
 import logging
 import re
 import sys
+from datetime import date as date_cls, datetime, timezone
 from pathlib import Path
 
 from cachetools import TTLCache
@@ -43,138 +67,36 @@ router = APIRouter()
 GCS_PREFIX = "reports/"
 KNOWN_TICKERS = ("spy", "qqq", "iwm", "spx")
 
-# Caches — markdown changes rarely so 24h is generous
-_PLAYBOOK_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=86400))      # parsed playbook JSON
-_LIST_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=86400))          # list-reports response
-_REPORT_TEXT_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=86400))   # raw markdown text
+# Oldest card set this endpoint will serve as "current". phase6-playbook
+# is scheduled every weekday (gcp/deploy.sh: phase6-playbook-daily), so a
+# healthy table is 0-1 days old and a long weekend plus a holiday is 4.
+# Seven calendar days tolerates one missed run and still fails loud inside
+# a week; the freshness watchdog (scripts/audit_data_freshness.py) flags
+# the same table within ~30h so the operator hears about it first.
+MAX_PLAYBOOK_AGE_DAYS = 7
+# Named in the 503 detail so the operator knows what to run.
+PLAYBOOK_WRITER_JOB = "phase6-playbook"
+
+# Caches. The playbook cache holds the DB-derived response for one hour
+# (one cheap query; the freshness check is re-applied on every hit, so a
+# set that crosses MAX_PLAYBOOK_AGE_DAYS while cached is still refused).
+# Report markdown changes rarely, so 24h is generous there.
+#
+# ThreadSafeCache, not a bare TTLCache: #991 dispatches these handlers to
+# the threadpool, and cachetools makes no concurrency guarantee -- two
+# threads through one TTLCache can corrupt its link list.
+_PLAYBOOK_CACHE: ThreadSafeCache = ThreadSafeCache(
+    TTLCache(maxsize=32, ttl=3600))                             # /api/playbook responses
+_LIST_CACHE: ThreadSafeCache = ThreadSafeCache(
+    TTLCache(maxsize=16, ttl=86400))                            # list-reports response
+_REPORT_TEXT_CACHE: ThreadSafeCache = ThreadSafeCache(
+    TTLCache(maxsize=64, ttl=86400))                            # raw markdown text
 
 # Phases that may exist for any given ticker
 VALID_PHASES = {
     "phase1", "phase2", "phase3", "phase4",
     "phase5", "phase5d", "phase6", "phase7",
 }
-
-
-def _parse_playbook_markdown(content: str, ticker: str) -> dict:
-    """
-    Parse a phase6 playbook markdown file into structured setup cards.
-
-    Actual file format uses ### headings per card, with sections like:
-      **WHAT TO CHECK:** (conditions with - [ ] bullets)
-      **IF ALL CONFIRMED -> CALL/PUT ENTRY** (direction)
-      Historical win rate: XX.X%
-      Avg return: X.X bps
-    """
-    cards = []
-
-    # Split on ### card headings (also support ##)
-    sections = re.split(r"\n(?=###? )", content)
-
-    for i, section in enumerate(sections):
-        lines = section.strip().splitlines()
-        if not lines:
-            continue
-
-        heading_line = lines[0].strip()
-        if not (heading_line.startswith("## ") or heading_line.startswith("### ")):
-            continue
-
-        name = heading_line.lstrip("# ").strip()
-        # Skip meta-sections
-        lower_name = name.lower()
-        if any(skip in lower_name for skip in ("overview", "summary", "introduction", "table of contents", "phase 6", "playbook")):
-            continue
-        if lower_name in (ticker.lower(), ""):
-            continue
-
-        body = "\n".join(lines[1:])
-
-        # --- Direction ---
-        direction = "NEUTRAL"
-        if re.search(r"->\s*CALL\s*ENTRY", body, re.I):
-            direction = "CALL"
-        elif re.search(r"->\s*PUT\s*ENTRY", body, re.I):
-            direction = "PUT"
-
-        # --- Description ---
-        description = ""
-        chart_match = re.search(
-            r"\*\*WHAT YOU SEE ON THE CHART:?\*\*\s*\n((?:\s+\*.*\n?)+)", body
-        )
-        if chart_match:
-            bullets = re.findall(r"\*\s+(.+)", chart_match.group(1))
-            description = "; ".join(b.strip() for b in bullets[:3])
-        if not description:
-            for line in body.splitlines():
-                stripped = line.strip()
-                if stripped and not stripped.startswith(("#", "-", "*", "|", ">", "[")):
-                    description = stripped.lstrip("*").strip()
-                    break
-
-        # --- Conditions ---
-        conditions: list[str] = []
-        in_check = False
-        for line in body.splitlines():
-            stripped = line.strip()
-            if re.search(r"\*\*WHAT TO CHECK:?\*\*", stripped, re.I):
-                in_check = True
-                continue
-            if in_check and re.match(r"\*\*[A-Z]", stripped) and stripped.endswith("**"):
-                in_check = False
-            if in_check:
-                m = re.match(r"[-*]\s+(?:\[.\]\s+)?(.+)", stripped)
-                if m:
-                    conditions.append(m.group(1).strip())
-
-        if not conditions:
-            for line in body.splitlines():
-                m = re.match(r"\s*[-*]\s+\[.\]\s+(.+)", line)
-                if m:
-                    conditions.append(m.group(1).strip())
-
-        if not conditions:
-            for line in body.splitlines():
-                stripped = line.strip()
-                m = re.match(r"[-*+]\s+(.+)", stripped)
-                if m:
-                    conditions.append(m.group(1).strip())
-            conditions = conditions[:10]
-
-        # --- Win rate ---
-        win_rate: float | None = None
-        wr_match = re.search(r"(?:historical\s+)?win[\s_-]?rate[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%", body, re.I)
-        if wr_match:
-            win_rate = float(wr_match.group(1))
-
-        # --- Avg return ---
-        avg_return: float | None = None
-        ar_match = re.search(r"avg(?:erage)?\s+return[:\s]+([+-]?[0-9]+(?:\.[0-9]+)?)\s*(bps|%)?", body, re.I)
-        if ar_match:
-            val = float(ar_match.group(1))
-            unit = (ar_match.group(2) or "").lower()
-            avg_return = val / 100 if unit == "bps" else val
-
-        # --- Target / Stop move magnitudes (e.g. "Target: +0.30%") ---
-        def _move(label: str) -> float | None:
-            m = re.search(rf"{label}[:\s]+[+-]?([0-9]+(?:\.[0-9]+)?)\s*%", body, re.I)
-            return float(m.group(1)) if m else None
-
-        cards.append({
-            "id": f"card_{i}",
-            "name": name,
-            "description": description,
-            "direction": direction,
-            "conditions": conditions,
-            "win_rate": win_rate,
-            "avg_return": avg_return,
-            "target_pct": _move("target"),
-            "stop_pct": _move("stop"),
-        })
-
-    return {
-        "ticker": ticker.upper(),
-        "cards": cards,
-    }
 
 
 def _download_markdown(blob_path_relative: str) -> str:
@@ -188,45 +110,52 @@ def _download_markdown(blob_path_relative: str) -> str:
         raise HTTPException(status_code=502, detail=f"Failed to download report from GCS: {exc}")
 
 
-def _cards_from_db(ticker_upper: str, as_of: str | None = None) -> list | None:
-    """Read structured cards from the playbook_cards table.
+def _to_date(v) -> date_cls | None:
+    """Normalise a DB date/timestamp value to a plain ``date`` (None stays None)."""
+    if v is None:
+        return None
+    if hasattr(v, "to_pydatetime"):
+        v = v.to_pydatetime()
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date_cls):
+        return v
+    return date_cls.fromisoformat(str(v)[:10])
 
-    Returns the card list, or None when the structured source is unavailable
-    (Cloud SQL not configured, or no rows yet) so the caller can bridge to the
-    markdown parse. This is the typed path that replaces regex-scraping prose:
-    a formatting change in the markdown can no longer null a card's stats.
 
-    The table is date-keyed (``analysis_date``): a ticker has one card set per
-    date the playbook was computed as-of. We always resolve to a single date —
-    the most recent ``analysis_date`` (``<= as_of`` when given, for the
-    dashboard's historical "view as of" mode) — so cards from different dates
-    never mix. ``as_of`` selects the latest set knowable on that date, never a
-    later one (no look-ahead, §3.6).
+def _cards_from_db(ticker_upper: str, as_of: str | None = None) -> dict | None:
+    """Read the latest structured card set from ``playbook_cards``.
+
+    Returns ``{"analysis_date": date, "generated_at": str | None,
+    "cards": [...]}`` for the most recent ``analysis_date`` (``<= as_of``
+    when given, for the dashboard's historical "view as of" mode — the set
+    knowable on that date, never a later one; no look-ahead, §3.6), or
+    ``None`` when the table holds no rows for the ticker.
+
+    Uses the strict query so a DB failure propagates as a 5xx instead of
+    being indistinguishable from "no rows" (CLAUDE.md §3.7). Cards from
+    different dates never mix: exactly one ``analysis_date`` is selected.
     """
-    try:
-        from gcp.database import is_cloud_sql_configured, query_to_dataframe
-    except Exception:
-        return None
-    if not is_cloud_sql_configured():
-        return None
+    from gcp.database import query_to_dataframe_strict
 
+    cols = (
+        "SELECT analysis_date, generated_at, card_num, name, description, "
+        "direction, conditions, win_rate, avg_return_bps, sample_n, "
+        "target_pct, stop_pct, horizons, best_horizon_min, "
+        "best_horizon_win_rate, best_horizon_avg_bps "
+        "FROM playbook_cards WHERE ticker = :t "
+    )
     if as_of is None:
-        df = query_to_dataframe(
-            "SELECT card_num, name, description, direction, conditions, "
-            "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
-            "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
-            "FROM playbook_cards WHERE ticker = :t "
-            "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards WHERE ticker = :t) "
+        df = query_to_dataframe_strict(
+            cols
+            + "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards WHERE ticker = :t) "
             "ORDER BY card_num",
             {"t": ticker_upper},
         )
     else:
-        df = query_to_dataframe(
-            "SELECT card_num, name, description, direction, conditions, "
-            "win_rate, avg_return_bps, sample_n, target_pct, stop_pct, horizons, "
-            "best_horizon_min, best_horizon_win_rate, best_horizon_avg_bps "
-            "FROM playbook_cards WHERE ticker = :t "
-            "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards "
+        df = query_to_dataframe_strict(
+            cols
+            + "AND analysis_date = (SELECT max(analysis_date) FROM playbook_cards "
             "                     WHERE ticker = :t AND analysis_date <= :d) "
             "ORDER BY card_num",
             {"t": ticker_upper, "d": as_of},
@@ -324,61 +253,105 @@ def _cards_from_db(ticker_upper: str, as_of: str | None = None) -> list | None:
             "best_horizon_win_rate": _pct(row["best_horizon_win_rate"], 100),
             "best_horizon_avg_bps": _bps(row["best_horizon_avg_bps"]),
         })
-    return cards
+
+    # One analysis_date per response by construction (the subquery pins it);
+    # take it from the first row. generated_at is informational.
+    analysis_date = _to_date(df["analysis_date"].iloc[0])
+    gen = df["generated_at"].iloc[0] if "generated_at" in df.columns else None
+    generated_at = None
+    if gen is not None and not (isinstance(gen, float) and math.isnan(gen)):
+        generated_at = gen.isoformat() if hasattr(gen, "isoformat") else str(gen)
+    return {"analysis_date": analysis_date, "generated_at": generated_at, "cards": cards}
+
+
+def playbook_age_days(analysis_date: date_cls, reference: date_cls) -> int:
+    """Calendar days between the card set's date and the date it is being
+    served as current for (today, or the requested as-of date)."""
+    return (reference - analysis_date).days
+
+
+def _raise_if_stale(ticker_upper: str, analysis_date: date_cls,
+                    reference: date_cls, as_of: str | None) -> int:
+    """Refuse to serve a card set older than MAX_PLAYBOOK_AGE_DAYS.
+
+    Returns the age in days when acceptable. A 503 (not 404) because the
+    resource exists and the failure is operational — the writer job has
+    not run — and the detail names both the date and the job so the
+    operator does not have to grep for either.
+    """
+    age = playbook_age_days(analysis_date, reference)
+    if age > MAX_PLAYBOOK_AGE_DAYS:
+        scope = f"as of {as_of}" if as_of else "today"
+        detail = (
+            f"playbook_cards for {ticker_upper} is stale: latest analysis_date "
+            f"{analysis_date.isoformat()} is {age} days old ({scope}; max "
+            f"{MAX_PLAYBOOK_AGE_DAYS}). Refusing to render stale setups as "
+            f"current — run the {PLAYBOOK_WRITER_JOB} Cloud Run job."
+        )
+        log.error("%s", detail)
+        raise HTTPException(status_code=503, detail=detail)
+    return age
 
 
 @router.get("/api/playbook/{ticker}")
 def get_playbook(ticker: str, date: str | None = None):
-    """Return structured setup cards for a ticker.
+    """Return structured setup cards for a ticker from ``playbook_cards``.
 
-    Primary source is the typed ``playbook_cards`` Cloud SQL table. Until that
-    table is populated (it is written by phase6 ``--write-db`` after deploy), we
-    bridge to parsing ``phase6_playbook_{ticker}.md`` from GCS so the UI keeps
-    working through the cutover.
-
-    ``?date=YYYY-MM-DD`` (historical "view as of" mode) returns the latest card
-    set computed on or before that date. The markdown bridge is current-only,
-    so an as-of request with no matching DB rows 404s rather than falling back
-    to today's markdown (no look-ahead / no mislabelled cards, §3.6/§3.7).
+    ``?date=YYYY-MM-DD`` (historical "view as of" mode) returns the latest
+    card set computed on or before that date, subject to the same freshness
+    contract relative to that date: a card set 80 days older than the
+    reviewed date is the same lie as one 80 days older than today, just
+    relabelled (§3.6/§3.7). No rows at all → 404.
     """
-    ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
-    cache_key = (ticker_upper, date or "latest")
-    cached = _PLAYBOOK_CACHE.get(cache_key, MISS)
-    if cached is not MISS:
-        return cached
-
-    db_cards = _cards_from_db(ticker_upper, as_of=date)
-    if db_cards:
-        result = {"ticker": ticker_upper, "cards": db_cards, "source": "cloud_sql"}
-        if date:
-            result["as_of"] = date
-        _PLAYBOOK_CACHE[cache_key] = result
-        return result
-
-    # As-of requests don't fall back to the (current-only) markdown — a past
-    # date with no stored card set is an explicit 404, not today's cards.
+    as_of: date_cls | None = None
     if date:
+        try:
+            as_of = date_cls.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"date must be YYYY-MM-DD, got {date!r}")
+    reference = as_of or datetime.now(timezone.utc).date()
+
+    cache_key = (ticker_upper, date or "latest")
+    cached = _PLAYBOOK_CACHE.get(cache_key)
+    if cached is not None:
+        # Re-check on every hit: a set that was fresh when cached can cross
+        # the threshold before the TTL expires.
+        age = _raise_if_stale(ticker_upper, cached["_analysis_date"], reference, date)
+        return {**{k: v for k, v in cached.items() if not k.startswith("_")}, "age_days": age}
+
+    from gcp.database import is_cloud_sql_configured
+    if not is_cloud_sql_configured():
         raise HTTPException(
-            status_code=404,
-            detail=f"No playbook for '{ticker_upper}' as of {date}.",
+            status_code=503,
+            detail="playbook_cards source unavailable: Cloud SQL is not configured.",
         )
 
-    # Bridge: structured table not yet populated — parse the markdown.
-    log.info("playbook_cards empty for %s; bridging to markdown parse", ticker_upper)
-    blob_path = f"{GCS_PREFIX}phase6_playbook_{ticker_lower}.md"
-    content = _download_markdown(blob_path)
-    if not content:
+    found = _cards_from_db(ticker_upper, as_of=date)
+    if not found:
+        scope = f" as of {date}" if date else ""
         raise HTTPException(
             status_code=404,
-            detail=f"Playbook not found for ticker '{ticker_upper}' at gs://.../raw/{blob_path}",
+            detail=(f"No playbook_cards rows for '{ticker_upper}'{scope}. "
+                    f"Run the {PLAYBOOK_WRITER_JOB} Cloud Run job (--write-db)."),
         )
 
-    result = _parse_playbook_markdown(content, ticker)
-    result["source"] = "markdown"
-    _PLAYBOOK_CACHE[cache_key] = result
-    return result
+    analysis_date = found["analysis_date"]
+    age = _raise_if_stale(ticker_upper, analysis_date, reference, date)
+
+    result = {
+        "ticker": ticker_upper,
+        "cards": found["cards"],
+        "source": "cloud_sql",
+        "analysis_date": analysis_date.isoformat(),
+        "generated_at": found["generated_at"],
+        "max_age_days": MAX_PLAYBOOK_AGE_DAYS,
+    }
+    if date:
+        result["as_of"] = date
+    _PLAYBOOK_CACHE[cache_key] = {**result, "_analysis_date": analysis_date}
+    return {**result, "age_days": age}
 
 
 @router.get("/api/reports/list/{ticker}")

@@ -26,7 +26,7 @@ All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`.
 
 | ET cron | UTC | Job | What it writes |
 |---|---|---|---|
-| Mon–Fri 07:00 | 11:00 | `economic-events`, `sec-filings-0700` | `economic_events`, `sec_filings` |
+| Mon–Fri 07:00 | 11:00 | `economic-events`, `sec-filings-intraday` | `economic_events`, `sec_filings` |
 | **Mon–Fri 07:15** | **11:15** | **`earnings-calendar-daily`** | `earnings_calendar` (AV + EW + Yahoo + UW; ±7d window from today) |
 | Mon–Fri 08:10 | 12:10 | `auto-refresh-top-n` | Discord top-N watchlist refresh |
 | Mon–Fri 08:20 | 12:20 | `premarket-refresh-daily` | `market_data_daily.gap_pct`, `pre_high`, `pre_low`, `pre_vwap` |

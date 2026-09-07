@@ -11,6 +11,7 @@ Output: reports/phase6_playbook_{ticker}.md + reports/phase6_playbook_combined.m
 import sys
 import os
 import argparse
+import gc
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -993,6 +994,32 @@ def write_playbook_cards(ticker: str, records: List[Dict], analysis_date=None) -
     return n
 
 
+def select_tickers_for_task(tickers: List[str], task_index: Optional[int],
+                            task_count: Optional[int]) -> List[str]:
+    """Slice the ticker list for one Cloud Run task.
+
+    The job runs as ``--tasks N`` so each ticker's full 1-min history
+    (2.0-2.4M raw bars, 2015→today, before the RTH filter) is loaded in its
+    own process. A single process walking all three tickers sequentially
+    reached the 8Gi limit on the second ticker on 2026-09-06 (#861): the
+    first ticker's enriched frame is not reliably returned to the OS by the
+    allocator, so the working set grows with the ticker count instead of
+    staying bounded by one ticker. Task ``i`` of ``n`` takes
+    ``tickers[i::n]``; with n == len(tickers) that is one ticker per task,
+    and a task with nothing to do returns an empty list (exit 0, not an
+    error, so an over-provisioned ``--tasks`` never fails the execution).
+
+    Outside Cloud Run (``task_count`` None or 1) the full list is returned
+    and the caller's process handles them in sequence as before.
+    """
+    if not task_count or task_count <= 1 or task_index is None:
+        return list(tickers)
+    if task_index < 0 or task_index >= task_count:
+        raise ValueError(
+            f"CLOUD_RUN_TASK_INDEX {task_index} outside 0..{task_count - 1}")
+    return list(tickers)[task_index::task_count]
+
+
 def run_phase6(tickers: list = None, write_db: bool = False, as_of=None):
     """Run Phase 6 — generate all playbook cards.
 
@@ -1052,6 +1079,11 @@ def run_phase6(tickers: list = None, write_db: bool = False, as_of=None):
             write_playbook_cards(ticker, card_records, analysis_date=as_of)
 
         progress("Phase 6 complete!", ticker)
+        # Release this ticker's frames before the next load. The per-task
+        # split in Cloud Run (select_tickers_for_task) is what actually
+        # bounds the working set; this only helps a local multi-ticker run.
+        del df_1m, df, labels, card_records
+        gc.collect()
 
     save_report(combined_report, 'phase6_playbook_combined.md')
 
@@ -1081,4 +1113,19 @@ if __name__ == '__main__':
         if as_of_date > datetime.now(timezone.utc).date():
             parser.error(f"--as-of {as_of_date} is in the future")
 
-    run_phase6(tickers=args.tickers, write_db=args.write_db, as_of=as_of_date)
+    # Cloud Run Jobs set CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT per task
+    # (deploy.sh runs the job with --tasks 3 — one ticker per task).
+    task_index = os.environ.get('CLOUD_RUN_TASK_INDEX')
+    task_count = os.environ.get('CLOUD_RUN_TASK_COUNT')
+    tickers = select_tickers_for_task(
+        args.tickers,
+        int(task_index) if task_index is not None else None,
+        int(task_count) if task_count is not None else None,
+    )
+    if not tickers:
+        print(f"Task {task_index}/{task_count}: no ticker assigned, nothing to do")
+        sys.exit(0)
+    if task_count:
+        print(f"Task {task_index}/{task_count}: tickers={tickers}")
+
+    run_phase6(tickers=tickers, write_db=args.write_db, as_of=as_of_date)

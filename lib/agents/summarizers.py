@@ -882,6 +882,7 @@ def summarize_backtest_metrics(
     as_of: Optional[date_type] = None,
     *,
     cross_ticker: bool = True,
+    inclusive_today: bool = False,
 ) -> dict:
     """Catalyst-analog 'backtest' for the ticker's current pattern.
 
@@ -899,6 +900,16 @@ def summarize_backtest_metrics(
     analog row carries the source ticker so the user can see
     whether the historical move came from AVGO itself or e.g. SPY.
 
+    ``inclusive_today`` (default False — the premarket contract, matching
+    ``build_context_bundle``): the daily bar dated ``as_of`` itself is
+    EXCLUDED, so "today's pattern" is the last completed session. On a
+    live 8:30 AM run that bar does not exist yet; on an INSIGHT_AS_OF
+    replay it is the session being forecast, so reading it was
+    look-ahead (#822, audit R5). Set True only for explicit EOD
+    analytics that want the as-of day's closed bar. The same operator
+    is applied to the cross-ticker analog pull so the bar cannot leak
+    back in through SPY/QQQ/IWM analogs.
+
     No `trades` table dependency. Runs entirely against
     `market_data_daily` (which we already backfill).
 
@@ -912,6 +923,9 @@ def summarize_backtest_metrics(
                                    examples with their forward moves
     """
     cutoff = as_of or datetime.now(timezone.utc).date()
+    # `<` under the premarket contract: the as-of day's own bar is not
+    # knowable at brief time (see docstring / #822).
+    daily_op = "<=" if inclusive_today else "<"
 
     # 1. Pull raw OHLCV history. We compute indicators inline below
     #    rather than reading rsi_14 / sma_200 / ema_20 from the table —
@@ -923,7 +937,7 @@ def summarize_backtest_metrics(
         "SELECT date, open, high, low, close, volume "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
-        "  AND date <= CAST(:cutoff AS date) "
+        f"  AND date {daily_op} CAST(:cutoff AS date) "
         "ORDER BY date ASC",
         {"ticker": ticker.upper(), "cutoff": str(cutoff)},
     )
@@ -1042,7 +1056,7 @@ def summarize_backtest_metrics(
     # in the table at the *same* tolerance band — keeps match quality
     # comparable while widening the analog universe.
     if cross_ticker and len(matched) < 10:
-        cross_history = _build_cross_ticker_history(ticker, str(cutoff))
+        cross_history = _build_cross_ticker_history(ticker, str(cutoff), inclusive_today=inclusive_today)
         if cross_history is not None and not cross_history.empty:
             target_band = band_used or bands[-1]
             cross_matched = _matches_in(cross_history, *target_band)
@@ -1129,7 +1143,8 @@ def _round_or_none(v):
     return round(float(v), 2)
 
 
-def _build_cross_ticker_history(target_ticker: str, cutoff: str):
+def _build_cross_ticker_history(target_ticker: str, cutoff: str,
+                                inclusive_today: bool = False):
     """Pull every other ticker's daily history and engineer the same
     feature set used for analog matching. Returned frame has a `ticker`
     column so each match can be attributed to its source.
@@ -1140,11 +1155,14 @@ def _build_cross_ticker_history(target_ticker: str, cutoff: str):
     past 50 tickers, push the gap/vol/RSI math into SQL window
     functions instead.
     """
+    # Same operator as the same-ticker pull, or the as-of bar leaks back
+    # in through the analogs (#822).
+    daily_op = "<=" if inclusive_today else "<"
     df = _query(
         "SELECT ticker, date, open, high, low, close, volume "
         "FROM market_data_daily "
         "WHERE ticker <> :ticker "
-        "  AND date <= CAST(:cutoff AS date) "
+        f"  AND date {daily_op} CAST(:cutoff AS date) "
         "ORDER BY ticker ASC, date ASC",
         {"ticker": target_ticker.upper(), "cutoff": cutoff},
     )
@@ -1593,7 +1611,8 @@ def build_context_bundle(
         # ftfc_direction was bullish. summarize_signals_history()
         # remains callable for external analytics / debugging, but
         # the insight prompt no longer sees it.
-        "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
+        "backtest": lambda: summarize_backtest_metrics(
+            ticker, as_of=as_of, inclusive_today=inclusive_today),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
         "sentiment": lambda: summarize_news_sentiment(ticker, as_of),
     }
