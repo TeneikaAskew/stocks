@@ -21,10 +21,15 @@ def test_december_31_covers_the_closing_year():
     assert _default_year_range(date(2026, 12, 31)) == (2026, 2026)
 
 
-def test_first_week_of_january_still_rebuilds_the_prior_year():
-    for day in range(1, 8):
+def test_january_still_rebuilds_the_prior_year():
+    """Internal review of #1022 (monitor round): a 7-day lookback meant a
+    nightly job down for more than a week across the year boundary never
+    rebuilt December by default (gcp/deploy.sh records gamma_levels_eod
+    freezing silently on 2026-05-22). The scan is per year, so a month of
+    lookback costs nothing."""
+    for day in range(1, 32):
         assert _default_year_range(date(2027, 1, day)) == (2026, 2027), day
-    assert _default_year_range(date(2027, 1, 8)) == (2027, 2027)
+    assert _default_year_range(date(2027, 2, 1)) == (2027, 2027)
 
 
 def test_default_is_the_eastern_date(monkeypatch):

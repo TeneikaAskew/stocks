@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import ast
 import re
+
+import pytest
+from datetime import date, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -170,3 +173,41 @@ def test_main_stops_at_a_failed_discord_push(monkeypatch):
                      ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27", "--skip-backfill"])
     assert "insight-discord-push" in str(code)
     assert calls == ["insight-pipeline", "insight-discord-push"]
+
+
+def test_importing_the_module_does_not_need_psycopg2():
+    """Internal review of #1022 (monitor round): the tests that import this
+    module broke in a sandbox without psycopg2 because the driver was
+    imported at module level; the repo's convention for this family
+    (tests/scripts/test_generate_historical_report.py) is that importing
+    the script must not pull the driver. The import now lives in the two
+    functions that use it."""
+    assert not re.search(r"^import psycopg2", SRC, re.M), "module-level psycopg2 import"
+    for fn in ("db_connect", "report_comparison"):
+        body = SRC[SRC.index(f"def {fn}("):]
+        body = body[:body.index("\ndef ", 1)] if "\ndef " in body[1:] else body
+        assert "import psycopg2" in body, f"{fn} must import the driver locally"
+
+
+def test_a_comma_in_an_env_override_is_a_valueerror_not_an_assert():
+    """`assert` is stripped under python -O, after which a comma in a value
+    would be split by --update-env-vars into a bogus variable."""
+    import importlib
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    with pytest.raises(ValueError, match="comma"):
+        mod._execute_job("x", {"A": "1,2"})
+    assert not re.search(r"^\s*assert not any\(',' in v", SRC, re.M)
+
+
+def test_insight_as_of_is_converted_with_the_named_eastern_zone():
+    """`int(hh) + 4` hard-coded EDT: for an EST date 09:15 ET became 08:15 ET,
+    so a winter replay was not the as-of production ran (CLAUDE.md 3.9;
+    replay-integrity review of #1022)."""
+    import importlib
+    from datetime import timezone
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    summer = mod.insight_as_of_utc(date(2026, 7, 15), "09:15")
+    winter = mod.insight_as_of_utc(date(2026, 1, 15), "09:15")
+    assert summer == datetime(2026, 7, 15, 13, 15, tzinfo=timezone.utc)
+    assert winter == datetime(2026, 1, 15, 14, 15, tzinfo=timezone.utc)
+    assert mod.insight_as_of_utc(date(2026, 1, 15), "20:00").hour == 1

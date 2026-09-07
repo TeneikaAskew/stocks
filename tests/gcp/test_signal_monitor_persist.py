@@ -218,3 +218,80 @@ def test_persist_logs_warning_but_does_not_raise_on_upsert_failure():
             pytest.fail("_persist_signal_alert MUST NOT propagate upsert exceptions")
 
     assert mock_upsert.called, "should attempt the upsert even though it fails"
+
+
+# ── CLAUDE.md 3.7 on the persisted row (internal review of #1022) ────────
+
+def _persist(monitor, latest, **patches):
+    sig = {"direction": "CALL", "base_score": 4,
+           "conditions_met": ["consecutive_down", "rsi_oversold_zone"]}
+    upsert = patches.get("upsert") or MagicMock(return_value=1)
+    logged: list = []
+
+    class _TL:
+        def log_trade(self, trade_data):
+            if patches.get("trade_raises"):
+                raise RuntimeError("parquet write failed")
+            logged.append(trade_data)
+
+    with patch("gcp.database.upsert_dataframe", upsert), \
+         patch("gcp.database.is_cloud_sql_configured", return_value=True), \
+         patch("gcp.trade_logger.TradeLogger", _TL):
+        monitor._persist_signal_alert(
+            ticker="SPY", sig=sig, total_score=4.0, strength="STRONG", size=0.10,
+            strat_bonus=0, latest=latest, target=722.5, time_stop=30)
+    row = upsert.call_args[0][0].iloc[0] if upsert.call_args else None
+    return row, logged
+
+
+def test_persisted_rsi_and_rvol_are_null_when_the_bar_has_none():
+    """fire_alert refuses `.get('RVOL', 0)` for the gate (its comment cites
+    3.7) and then _persist_signal_alert wrote rvol=0.0 and rsi=0.0 into the
+    columns the out-of-sample GROUP BY reads, indistinguishable from a real
+    zero-volume minute or an RSI of 0."""
+    monitor = _make_monitor_with_mocked_persist()
+    latest = _make_synthetic_latest_bar("CALL").drop(labels=["RSI14"])
+    latest["RVOL"] = float("nan")
+    row, logged = _persist(monitor, latest)
+    assert row["rsi"] is None or pd.isna(row["rsi"]), row["rsi"]
+    assert row["rvol"] is None or pd.isna(row["rvol"]), row["rvol"]
+    assert row["price_at_signal"] == 720.0
+    assert logged[0]["entry_price"] == 720.0 and logged[0]["run_kind"] == "live"
+
+
+def test_persist_raises_when_the_bar_has_no_price():
+    """A bar with neither Close nor Last cannot have fired; writing
+    entry_price=0.0 (the old `.get(k, 0)`) fabricated a trade at $0. That
+    is an INTERNAL invariant, so it raises instead."""
+    monitor = _make_monitor_with_mocked_persist()
+    latest = _make_synthetic_latest_bar("CALL").drop(labels=["Close", "Last"])
+    with pytest.raises(ValueError, match="Close"):
+        _persist(monitor, latest)
+
+
+def test_persist_uses_the_monitor_clock_for_alert_ts():
+    """alert_ts came from datetime.now() rather than the monitor's clock; a
+    replay that persists through this path would have stamped wall-clock."""
+    monitor = _make_monitor_with_mocked_persist()
+    monitor.replay_clock_ts = pd.Timestamp("2026-08-28 14:31:00")
+    row, logged = _persist(monitor, _make_synthetic_latest_bar("CALL"))
+    assert pd.Timestamp(row["alert_ts"]) == pd.Timestamp("2026-08-28 14:31:00"), row["alert_ts"]
+    assert str(row["alert_date"]) == "2026-08-28"
+    assert logged[0]["trade_date"] == "2026-08-28"
+
+
+def test_persist_failures_are_counted_and_logged_with_traceback(caplog):
+    """Both writes swallowed their failure at logger.warning with no
+    counter, so a day of silent write failures looked like a quiet day
+    (the 4/14-4/30 gap shape). They now increment structured counters and
+    log the exception; the monitor loop still continues."""
+    import logging
+    monitor = _make_monitor_with_mocked_persist()
+    latest = _make_synthetic_latest_bar("CALL")
+    with caplog.at_level(logging.ERROR, logger="gcp.signal_monitor"):
+        _persist(monitor, latest, upsert=MagicMock(side_effect=RuntimeError("connection lost")),
+                 trade_raises=True)
+    assert monitor.persist_alert_failure_count["SPY"] == 1
+    assert monitor.persist_trade_failure_count["SPY"] == 1
+    assert "connection lost" in caplog.text and "parquet write failed" in caplog.text
+    assert "Traceback" in caplog.text

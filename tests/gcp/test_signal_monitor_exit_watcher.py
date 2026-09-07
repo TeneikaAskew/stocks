@@ -122,15 +122,21 @@ def test_check_exits_call_rsi_extreme():
     assert args[2] == 'rsi_extreme'
 
 
-def test_check_exits_put_rsi_extreme_with_zero_rsi_does_not_fire():
-    """Defensive: RSI=0 (uninitialized) should NOT trigger PUT rsi_exit."""
+def test_check_exits_put_rsi_extreme_with_a_real_zero_rsi_fires():
+    """An RSI of exactly 0.0 is a real reading (fourteen losing bars), the
+    most extreme a PUT can hope for. It used to be indistinguishable from
+    "uninitialised" because a missing RSI was coerced to 0, so the PUT
+    branch skipped 0 (`0 < current_rsi`). A missing RSI is now None (see
+    test_check_exits_with_a_missing_rsi_neither_exits_nor_fabricates_zero),
+    so the real value is honoured."""
     monitor = _make_monitor()
     _seed_position(monitor, 'QQQ', 'PUT', entry_price=678.00,
                    target_price=670.00)
-    with patch.object(monitor, '_fire_exit_alert') as mock_fire:
+    with patch.object(monitor, '_fire_exit_alert') as mock_fire, \
+         patch.object(monitor, '_persist_exit'):
         monitor._check_exits('QQQ', _bar(676.00, 0.0), 676.00)
-    assert not mock_fire.called, \
-        "RSI=0 must NOT trigger PUT rsi_exit (would be a false positive on init)"
+    assert mock_fire.called
+    assert mock_fire.call_args[0][2] == 'rsi_extreme'
 
 
 def test_check_exits_handles_multiple_positions_per_ticker():
@@ -425,3 +431,18 @@ def test_asymmetric_modes_call_targets_while_put_holds():
     remaining = monitor.active_positions['QQQ']
     assert len(remaining) == 1 and remaining[0]['direction'] == 'PUT', \
         "the PUT must still be open despite its target being crossed"
+
+
+def test_check_exits_with_a_missing_rsi_neither_exits_nor_fabricates_zero():
+    """Internal review of #1022: `float(latest.get(rsi_col, 0) or 0)` turned
+    a missing RSI into 0.0, which the PUT branch then had to guard with
+    `0 < current_rsi` (CLAUDE.md 3.7). A missing RSI is None end to end:
+    no RSI exit fires, and no fabricated 0 reaches the exit alert."""
+    from unittest.mock import patch
+    monitor = _make_monitor()
+    _seed_position(monitor, 'QQQ', 'PUT', entry_price=100.0, target_price=50.0)
+    bar = _bar(close=100.0, rsi=10.0).drop(labels=[monitor.indicator_cfg.rsi_col])
+    with patch.object(monitor, '_fire_exit_alert') as fire, patch.object(monitor, '_persist_exit'):
+        monitor._check_exits('QQQ', bar, 100.0)
+    assert not fire.called, "a missing RSI must not read as an extreme RSI"
+    assert len(monitor.active_positions['QQQ']) == 1

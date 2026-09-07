@@ -64,10 +64,11 @@ import subprocess
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
-import psycopg2
-import psycopg2.extras
+
+_ET = ZoneInfo('America/New_York')
 
 # Make `lib.*` importable when invoked as a script from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -105,6 +106,10 @@ def secret(name: str) -> str:
 
 
 def db_connect():
+    # Imported here, not at module level: importing this script must not
+    # need the driver (tests/scripts/test_generate_historical_report.py
+    # states the convention for this family).
+    import psycopg2  # noqa: PLC0415
     return psycopg2.connect(
         host=DB_HOST,
         user=secret('db-trading-user'),
@@ -124,7 +129,10 @@ def _execute_job(job: str, env: dict[str, str], wait: bool = True) -> bool:
     # A value containing ',' would be split by --update-env-vars; callers
     # must pre-join multi-valued settings with ';' (backfill_ticker's
     # _parse_dates accepts ';').
-    assert not any(',' in v for v in env.values()), env
+    bad = {k: v for k, v in env.items() if ',' in v}
+    if bad:
+        raise ValueError(f"env override values must not contain a comma "
+                         f"(--update-env-vars splits on it); pre-join with ';': {bad}")
     cmd = [
         GCLOUD, 'run', 'jobs', 'execute', job,
         f'--region={REGION}', f'--project={PROJECT}',
@@ -184,6 +192,17 @@ def trigger_backfill_ticker(ticker: str, dates: list[date], *,
     return True
 
 
+def insight_as_of_utc(d: date, hhmm_et: str) -> datetime:
+    """The UTC instant of ``hhmm_et`` on Eastern date ``d``.
+
+    Through the named zone (CLAUDE.md 3.9): the earlier ``int(hh) + 4``
+    hard-coded EDT, so on an EST date 09:15 ET became 08:15 ET and a
+    winter replay was not the as-of production ran.
+    """
+    hh, mm = (int(x) for x in hhmm_et.split(':'))
+    return datetime(d.year, d.month, d.day, hh, mm, tzinfo=_ET).astimezone(timezone.utc)
+
+
 def trigger_insight_pipeline(ticker: str, as_of_iso_utc: str, wait: bool = True) -> bool:
     """Execute the insight-pipeline Cloud Run Job for one (ticker, as_of) pair.
 
@@ -212,6 +231,7 @@ def report_comparison(conn, ticker: str, dates: list[date]):
     print('=' * 92)
     print(f'  {ticker}  --  insight vs actual')
     print('=' * 92)
+    import psycopg2.extras  # noqa: PLC0415
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         for d in dates:
             cur.execute(
@@ -311,13 +331,8 @@ def main():
 
     # 2. Replay LLM insight pipeline
     if not args.skip_replay:
-        hh, mm = args.insight_time_et.split(':')
         for d in dates:
-            # ET → UTC. ET is UTC-4 in DST (EDT, Mar-Nov), UTC-5 otherwise.
-            # Approximation: 09:15 ET = 13:15 UTC during DST.
-            as_of = datetime(d.year, d.month, d.day, int(hh) + 4, int(mm),
-                             tzinfo=timezone.utc)
-            as_of_iso = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+            as_of_iso = insight_as_of_utc(d, args.insight_time_et).strftime('%Y-%m-%dT%H:%M:%SZ')
             if not trigger_insight_pipeline(ticker, as_of_iso):
                 sys.exit(f'insight-pipeline failed for {ticker} as_of={as_of_iso}; '
                          'not continuing to the next date or the comparison report')

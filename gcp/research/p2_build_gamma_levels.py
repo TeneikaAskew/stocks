@@ -269,8 +269,12 @@ def _process_ticker(engine, ticker: str, start_year: int, end_year: int) -> int:
 _ET = ZoneInfo("America/New_York")
 # Sessions this many days back are always inside the default rebuild window,
 # so the nightly run straddling a year boundary still covers the last
-# sessions of the old year.
-_DEFAULT_LOOKBACK_DAYS = 7
+# sessions of the old year. A month, not a week: the scan is per year, so
+# the extra lookback costs nothing in January and a nightly job that is
+# down for more than a week across the boundary (gcp/deploy.sh records
+# gamma_levels_eod freezing silently on 2026-05-22) still rebuilds
+# December by default (internal review of #1022).
+_DEFAULT_LOOKBACK_DAYS = 31
 
 
 def _default_year_range(today_et: _date | None = None) -> tuple[int, int]:
@@ -280,8 +284,8 @@ def _default_year_range(today_et: _date | None = None) -> tuple[int, int]:
     container's UTC date is already January 1, and ``_date.today().year``
     would scan only the new year and never process December 31's freshly
     fetched chain (Codex on #1022). So the range is derived from the ET
-    date, and it starts from the year of ``today - 7 days`` so the first
-    week of January still rebuilds the prior year's tail.
+    date, and it starts from the year of ``today - 31 days`` so all of
+    January still rebuilds the prior year's tail.
     """
     if today_et is None:
         today_et = _datetime.now(_ET).date()

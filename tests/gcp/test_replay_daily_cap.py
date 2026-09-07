@@ -201,8 +201,12 @@ def test_reset_session_state_returns_every_session_field_to_fresh():
     """Codex on #1022 (round 11): the rollover reset fields one at a time
     and kept missing some (brief cache, last price, fired breaks). The
     monitor now owns the list: everything a fresh SignalMonitor starts a
-    session with is reset for the ticker, while the rolling bar window
-    and the observability counters survive, and other tickers are untouched."""
+    session with is reset for the ticker, including the rolling bar window
+    (internal review of #1022: production starts every session with an
+    empty window, fetch_latest_bar keeps today's bars only, so the 30-bar
+    warm-up before the first evaluation is production behaviour and a
+    warm window let days 2..N of a replay fire from 09:30). Only the
+    observability counters survive, and other tickers are untouched."""
     m = _monitor()
     m.daily_trades['SPY'] = 3
     m.daily_pnl['SPY'] = 1.5
@@ -242,8 +246,42 @@ def test_reset_session_state_returns_every_session_field_to_fresh():
     assert m.fired_breaks == {('IWM', 'PDL', 'down')}
     assert 'SPY' not in m._brief_bias_cache and m._brief_bias_cache['IWM'] == {'bias': 'SHORT'}
     assert 'SPY' not in m._last_fire_ts
-    assert len(m.windows['SPY']) == 2, "the rolling bar window is not session state"
+    assert m.windows['SPY'].empty, "the rolling bar window is session state: production starts each day empty"
     assert m.level_refresh_success_count['SPY'] == 4, "counters are observability, kept"
+
+
+def test_reset_session_state_covers_every_per_ticker_container(monkeypatch):
+    """Drift guard (internal review of #1022, replay-integrity round): the
+    reset is a hand-maintained list and this PR's own history is three
+    commits of "reset one more field". Every per-ticker container on a
+    fresh monitor must be either reset here or named on the monitor's
+    explicit keep-list of observability counters."""
+    m = _monitor()
+    sentinel = object()
+    per_ticker = {n for n, v in vars(m).items()
+                  if isinstance(v, dict) and v and set(m.tickers) <= set(v.keys())}
+    assert per_ticker, "no per-ticker containers found; the probe is broken"
+    keep = set(SignalMonitor.SESSION_KEEP)
+    assert keep <= per_ticker, keep - per_ticker
+    for n in per_ticker - keep:
+        getattr(m, n)['SPY'] = sentinel
+    for n in keep:
+        getattr(m, n)['SPY'] = sentinel
+    m.reset_session_state('SPY')
+    still = sorted(n for n in per_ticker - keep if getattr(m, n).get('SPY') is sentinel)
+    assert still == [], f"per-ticker state not reset and not on SESSION_KEEP: {still}"
+    assert all(getattr(m, n).get('SPY') is sentinel for n in keep), "keep-list fields must survive"
+
+
+def test_reset_session_state_clears_the_catalyst_proximity_cache(monkeypatch):
+    """lib.strategies.catalyst_proximity.reset_cache exists "at start of each
+    signal_monitor day so the cache doesn't span across days"; the reset is
+    that start for a replay."""
+    from lib.strategies import catalyst_proximity
+    calls: list = []
+    monkeypatch.setattr(catalyst_proximity, "reset_cache", lambda: calls.append(1))
+    _monitor().reset_session_state('SPY')
+    assert calls == [1]
 
 
 def test_multi_date_replay_rollover_clears_brief_cache_and_level_break_state():

@@ -162,7 +162,8 @@ def replay_ticker(
             # morning. A --start/--end replay drives many dates through one
             # instance, so without this rollover date 1 exhausting the cap
             # would suppress every candidate on every later date (Codex P1 on
-            # PR #934). Harmless for a single-date replay.
+            # PR #934). The window is framed in ET (resolve_window), so a
+            # single-date replay holds one session and never resets.
             #
             # A session is an EASTERN date, and it is derived through the
             # monitor's own clock so it matches the date refresh_level_map
@@ -421,8 +422,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--ticker", help="Single ticker to replay (alias for --tickers TICKER)")
     p.add_argument("--tickers", help="Comma-separated tickers (overrides --ticker)")
     p.add_argument("--date", help="Single trading date YYYY-MM-DD (alias for --start = --end)")
-    p.add_argument("--start", help="UTC start date YYYY-MM-DD")
-    p.add_argument("--end", help="UTC end date YYYY-MM-DD (exclusive)")
+    p.add_argument("--start", help="Eastern start date YYYY-MM-DD (a session is an ET day)")
+    p.add_argument("--end", help="Eastern end date YYYY-MM-DD (exclusive)")
     p.add_argument("--limit", type=int, default=None,
                    help="Max bars per ticker (debug/dev)")
     p.add_argument("--json", action="store_true",
@@ -442,18 +443,27 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
+    """The bar window to load, framed in ET like the session it replays.
+
+    A session is an Eastern date: the rollover keys on ``monitor._now(_ET)``
+    and refresh_level_map bounds by that date. The window was built on UTC
+    midnights, i.e. 20:00 ET of D-1 to 20:00 ET of D, so a single --date
+    replay began in session D-1, reset once at the 04:00Z bar, and never
+    saw D's 16:00-20:00 ET bars (internal review of #1022; CLAUDE.md 3.9:
+    the query that lists and the query that fetches must frame time
+    identically). ``ts`` is TIMESTAMPTZ, so the aware ET bounds compare as
+    instants.
+    """
     if args.date:
         d = date.fromisoformat(args.date)
-        return (
-            datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
-            datetime(d.year, d.month, d.day, tzinfo=timezone.utc) + timedelta(days=1),
-        )
+        start = datetime(d.year, d.month, d.day, tzinfo=_ET)
+        return start, start + timedelta(days=1)
     if args.start and args.end:
         s = date.fromisoformat(args.start)
         e = date.fromisoformat(args.end)
         return (
-            datetime(s.year, s.month, s.day, tzinfo=timezone.utc),
-            datetime(e.year, e.month, e.day, tzinfo=timezone.utc),
+            datetime(s.year, s.month, s.day, tzinfo=_ET),
+            datetime(e.year, e.month, e.day, tzinfo=_ET),
         )
     raise SystemExit("Must specify --date or --start/--end")
 
