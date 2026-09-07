@@ -241,3 +241,22 @@ def test_gate_step_writes_the_added_removed_accounting():
     assert not any("--allow-rewrite" in ln for ln in commands), (
         "the churn ceiling's escape hatch is for a human reconstruction; the bot "
         "must never be able to exempt itself")
+
+
+def test_freeze_and_restore_prove_they_actually_happened():
+    """A control that reports success without doing its job is the failure
+    class this whole pipeline is about. `cp -r src dst` nests when dst
+    exists, so a freeze into a dirty RUNNER_TEMP copied to
+    frozen/refresh-inputs/refresh-inputs/ and the restore then copied
+    nothing and exited 0, leaving the model's inputs for the gates to judge.
+    """
+    freeze = _steps()[_index("Freeze gate inputs")]["run"]
+    assert 'rm -rf "$RUNNER_TEMP/frozen"' in freeze, "the freeze destination must be cleared first"
+    assert "manifest.sha256" in freeze, "the freeze must record what it captured"
+    for f in ("live.json", "verify_live.json", "previous"):
+        assert f in freeze, f"the freeze must assert it captured {f}"
+
+    restore = _steps()[_index("Restore gate inputs")]["run"]
+    assert "manifest.sha256" in restore, "the restore must verify against the frozen manifest"
+    assert "sha256sum -c" in restore
+    assert "refusing to verify" in restore, "a missing frozen copy must stop the run"
