@@ -2117,6 +2117,16 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
 _ENV_TEMPLATE_SUFFIX = ".example"
 
 
+def _reads_as_make(p: pathlib.Path) -> bool:
+    """Is this file read by make rather than by a shell?
+
+    Make and bash disagree about `#`, so the file type has to decide which
+    rule applies -- see `_strip_shell_comments`.
+    """
+    return p.suffix == ".mk" or p.name.startswith(("Makefile", "GNUmakefile",
+                                                   "makefile"))
+
+
 def _reads_as_shell(p: pathlib.Path) -> bool:
     """Is this file's text subject to shell comment and default expansion?
 
@@ -2451,7 +2461,8 @@ def _scan() -> tuple[list[str], list[str]]:
         # container is the ordinary case (Codex, PR #993). Inline comments go
         # first, so a commented-out value cannot supply one.
         if _reads_as_shell(p):
-            text = _expand_shell_defaults(_strip_shell_comments(text))
+            text = _expand_shell_defaults(
+                _strip_shell_comments(text, make=_reads_as_make(p)))
         elif p.suffix == ".sql":
             # SQL has its own comment syntax and none of the shell expansion
             # forms, so it gets the one preprocessing step that applies to it
@@ -2559,7 +2570,7 @@ def test_every_scheduler_declaration_uses_the_named_zone():
         + "\n  ".join(offenders))
 
 
-def _strip_shell_comments(text: str) -> str:
+def _strip_shell_comments(text: str, make: bool = False) -> str:
     """Drop `#` to end of line, honouring quotes.
 
     Only FULL-line comments were removed, so a commented-out flag satisfied
@@ -2571,12 +2582,36 @@ def _strip_shell_comments(text: str) -> str:
 
     A `#` inside single or double quotes is data -- `msg="#tag"` -- so the
     scan tracks the quote state rather than cutting at the first `#`.
+
+    `make=True` for a Makefile or `.mk`, because make's rule is not bash's:
+    `#` starts a comment ANYWHERE, quotes and word boundaries included, so
+    `NOTE := old# TZ=EST is forbidden` is entirely a comment. Reading it with
+    bash's word-start rule -- added one round earlier for `${path#*/}` --
+    preserved the tail and failed CI on text make never executes
+    (Codex, PR #993).
+
+    A RECIPE line still gets the bash rule. Make hands a tab-indented line to
+    the shell verbatim, `#` and all, so the shell's rule is the one that
+    decides there. Two rules in one file, because that is what make does.
     """
     out = []
     for line in text.splitlines():
         quote = None
         cut = len(line)
         escaped = False
+        if make and not line.startswith("\t"):
+            # Make: the first unescaped `#`, wherever it sits.
+            j = 0
+            while j < len(line):
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                if line[j] == "#":
+                    cut = j
+                    break
+                j += 1
+            out.append(line[:cut].rstrip())
+            continue
         for i, ch in enumerate(line):
             if escaped:
                 # The previous character was a backslash inside double
@@ -2882,8 +2917,17 @@ def _strip_sql_comments(text: str) -> str:
 # Simple shell scalar assignments: `LEGACY=EST`, `export LEGACY="EST"`. Only a
 # bare word or a fully quoted literal -- anything containing an expansion, a
 # substitution or whitespace is not statically known and is left alone.
+#
+# The declaring builtins are accepted, with their options, exactly as
+# `_arrays_carrying_timezone` accepts them. That parity was missing: the array
+# collector learned `local`/`declare`/`typeset`/`readonly` in round 21 and this
+# one still knew only a bare assignment and `export`, so `local LEGACY=EST`
+# then `export TZ="$LEGACY"` resolved to nothing and the fixed zone passed both
+# guards. A helper-scoped variable is the ordinary way to write this, so the
+# gap was on the commoner spelling (Codex, PR #993).
 _SHELL_SCALAR = re.compile(
-    r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)="
+    r"^[ \t]*(?:(?:export|local|declare|typeset|readonly)[ \t]+"
+    r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
     r"(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))[ \t]*$",
     re.M)
 
@@ -6666,3 +6710,82 @@ def test_a_clock_offset_with_seconds_is_read_whole():
 # an environment the collector is still building, or retaining every call
 # binding for `follow` to sort out later, which widens what eleven resolvers
 # already compose over.
+def test_a_scalar_declared_with_a_builtin_is_collected():
+    """`local LEGACY=EST` then `export TZ="$LEGACY"` is a finding.
+
+    `_shell_scalars` accepted a bare assignment and `export`, so a value
+    declared with `local` -- the ordinary way to write it inside a helper --
+    resolved to nothing and the reference stayed unexpanded.
+
+    The parity is the point: `_arrays_carrying_timezone` learned
+    `local`/`declare`/`typeset`/`readonly` and their options in round 21, for
+    exactly this reason, and the scalar collector beside it did not. One half
+    of a pair fixed and the other left is how this file has produced most of
+    its misses (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    for decl in ("local", "declare", "declare -r", "typeset", "readonly",
+                 "export", ""):
+        src = f'{decl} LEGACY=EST\nexport TZ="$LEGACY"\n'
+        assert scanned(src), decl
+
+    # The canonical zone declared the same way is still clean, and a value
+    # that is not statically known is still left unresolved rather than
+    # guessed at.
+    assert not scanned('local LEGACY=America/New_York\nexport TZ="$LEGACY"\n')
+    assert not scanned('local LEGACY="$OTHER"\nexport TZ="$LEGACY"\n')
+
+
+def test_make_comments_are_read_with_makes_rule():
+    """`NOTE := old# TZ=EST is forbidden` is entirely a comment.
+
+    Make starts a comment at any unescaped `#`, word boundaries and quotes
+    included. Round 22 narrowed the stripper to bash's word-start rule to stop
+    it eating `${path#*/}`, and `.mk` and `Makefile` go through that same
+    path -- so a Make comment kept its tail and failed CI on text make never
+    executes. A false positive created by the interaction of two earlier
+    fixes rather than by either one alone (Codex, PR #993).
+
+    A RECIPE line keeps bash's rule, because make hands a tab-indented line
+    to the shell verbatim and the shell's rule is the one that decides there.
+    """
+    def scanned(text: str, make: bool) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text, make=make))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    # Comments, under make's rule.
+    assert not scanned("NOTE := old# TZ=EST is forbidden", make=True)
+    assert not scanned("# export TZ := EST", make=True)
+    assert not scanned('MSG := "keep # this"', make=True)
+
+    # Real settings still report, with and without a trailing comment.
+    assert scanned("export TZ := EST", make=True)
+    assert scanned("export TZ := EST # trailing", make=True)
+
+    # A recipe line is shell: the round-22 property holds inside a Makefile.
+    assert scanned("\texport TZ=EST", make=True)
+    assert scanned("\ttrimmed=${path#*/}; export TZ=EST", make=True)
+
+    # And the shell path is untouched.
+    assert scanned("trimmed=${path#*/}; export TZ=EST", make=False)
+    assert not scanned("a=1 # --time-zone America/New_York", make=False)
+
+    assert _reads_as_make(REPO / "Makefile")
+    assert _reads_as_make(REPO / "rules.mk")
+    assert not _reads_as_make(REPO / "gcp" / "deploy.sh")
+
+
+# Recorded on #1019 rather than fixed:
+#
+#   * `KEY = "TZ"; os.environ[KEY] = "EST"`.
+#
+# The subscript branch compares a literal slice against `_TZ_KEYWORDS` and
+# never resolves the name. Same category as the constant-subscript deferral
+# open since round 20 -- a value named once, where each half already works and
+# only the composition does not -- and closing it means resolving inside a
+# pass that is still building the environment it would resolve against.
