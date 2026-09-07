@@ -97,8 +97,17 @@ def test_run_and_latest_cache_entries_do_not_collide(client):
     entry for the same ticker, then verify the endpoint returns the correct
     one for each cache_key."""
     backtest._RESULTS_CACHE.clear()
-    backtest._RESULTS_CACHE["SPY:latest"] = {"marker": "latest"}
-    backtest._RESULTS_CACHE["SPY:20260101_010101"] = {"marker": "run"}
+    # Real-shaped payloads (the route now validates its response against
+    # BacktestResultsResponse) with a distinguishing extra key, which the
+    # model passes through untouched.
+    def _payload(marker):
+        return {
+            "ticker": "SPY", "filename": f"backtest_SPY_{marker}.csv",
+            "trade_count": 0, "summary": {}, "trades": [], "marker": marker,
+        }
+
+    backtest._RESULTS_CACHE["SPY:latest"] = _payload("latest")
+    backtest._RESULTS_CACHE["SPY:20260101_010101"] = _payload("run")
     try:
         # Request without run param → should hit "SPY:latest"
         r_latest = client.get("/api/backtest/results/SPY")
