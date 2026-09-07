@@ -355,7 +355,13 @@ jobs:
       - name: Save previous doc versions
         run: |
           mkdir -p refresh-inputs/previous
+          # docs/API.md too, under the same relative path: diff_stats() skips a
+          # document whose previous version is absent, so without this its 90%
+          # churn ceiling never fires and it is missing from the accounting
+          # (Codex, #1009).
+          mkdir -p refresh-inputs/previous/docs
           cp ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md refresh-inputs/previous/
+          cp docs/API.md refresh-inputs/previous/docs/API.md
 
       # ── Render the inventory blocks deterministically, BEFORE Gemini ──────
       # Jobs, schedulers, tables, routes, services, modules, write/read graph,
@@ -414,9 +420,9 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p refresh-inputs/transcripts
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "refresh-inputs/transcripts/architecture.log"
+            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/architecture.log"
 
       - name: Regenerate DATA_DEPENDENCIES.md
         env:
@@ -425,9 +431,9 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p refresh-inputs/transcripts
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "refresh-inputs/transcripts/data-dependencies.log"
+            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/data-dependencies.log"
 
       - name: Regenerate COST_ANALYSIS.md
         env:
@@ -436,9 +442,9 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p refresh-inputs/transcripts
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "refresh-inputs/transcripts/cost-analysis.log"
+            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/cost-analysis.log"
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
@@ -449,9 +455,9 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p refresh-inputs/transcripts
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "refresh-inputs/transcripts/readme.log"
+            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/readme.log"
 
       # ── Verify the regenerations actually happened and are complete ──────
       # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
@@ -533,7 +539,7 @@ jobs:
           python scripts/maintenance/check_generated_docs.py \
             --snapshot refresh-inputs/live.json \
             --previous-dir refresh-inputs/previous \
-            --transcripts-dir refresh-inputs/transcripts \
+            --transcripts-dir "$RUNNER_TEMP/transcripts" \
             --report refresh-inputs/diff_report.md || FAIL=1
           if [ -s refresh-inputs/diff_report.md ]; then
             cat refresh-inputs/diff_report.md >> "$GITHUB_STEP_SUMMARY"

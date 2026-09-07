@@ -126,18 +126,71 @@ def _cron_display(cron: str) -> tuple[int, str]:
     return (10**6, cron)
 
 
+def _declared_relations(root: pathlib.Path | None = None) -> int:
+    """Tables + materialized views + views declared in gcp/schema.sql.
+
+    The note used to hard-code 66, the TABLE count, so every regeneration
+    said "66 declared" against a 69-relation schema and misfiled three
+    declared relations as runtime-created (Codex, #1009).
+    """
+    import sys
+    here = pathlib.Path(__file__).resolve().parents[2]
+    if str(here) not in sys.path:            # run as a script, not a module
+        sys.path.insert(0, str(here))
+    from scripts.maintenance import doc_inventory as inv
+    r = inv.repo_inventory(root or inv.REPO)
+    return len(r["tables"]) + len(r["materialized_views"]) + len(r["views"])
+
+
+def _cron_hours(hour: str) -> list[int]:
+    """Every hour a cron's hour field fires in: `7,10,13,17` -> [7,10,13,17],
+    `8-17` -> 8..17, `*` -> every hour, `*/5` -> every hour it steps through.
+    A scheduler that fires morning AND afternoon belongs in both sessions;
+    keying off the first hour alone filed sec-filings-intraday, the hourly
+    news loops and freshness-watchdog under pre-market only (Codex, #1009).
+    """
+    out: set[int] = set()
+    for part in hour.split(","):
+        step = 1
+        if "/" in part:
+            part, _, st = part.partition("/")
+            step = int(st) if st.isdigit() else 1
+        if part == "*":
+            lo, hi = 0, 23
+        elif "-" in part:
+            a, _, b = part.partition("-")
+            if not (a.isdigit() and b.isdigit()):
+                continue
+            lo, hi = int(a), int(b)
+        elif part.isdigit():
+            lo = hi = int(part)
+        else:
+            continue
+        out.update(range(lo, hi + 1, step))
+    return sorted(out)
+
+
 def sched_labels(live: dict) -> dict[str, str]:
     """The three timeline labels, generated from live['schedulers'] so a
-    cadence change can never leave a stale time on the page (Codex, #1009)."""
+    cadence change can never leave a stale time on the page (Codex, #1009).
+    An entry appears in every session its cron actually fires in."""
     pre, intra, post = [], [], []
     for name, sc in sorted(live["schedulers"].items()):
         key, text = _cron_display(sc["cron"])
         entry = f"{text} {name}"
-        if key < 9 * 60 + 30:
+        fields = sc["cron"].split()
+        hours = _cron_hours(fields[1]) if len(fields) >= 2 else []
+        minute = fields[0] if fields else "0"
+        mins = int(minute) if minute.isdigit() else 0
+        buckets = set()
+        for h in hours or [key // 60]:
+            t = h * 60 + mins
+            buckets.add("pre" if t < 9 * 60 + 30 else ("intra" if t < 16 * 60 else "post"))
+        if "pre" in buckets:
             pre.append((key, entry))
-        elif key < 16 * 60:
+        if "intra" in buckets:
             intra.append((key, entry))
-        else:
+        if "post" in buckets:
             post.append((key, entry))
     def join(items):
         return " • ".join(e for _, e in sorted(items))
@@ -258,7 +311,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     notes = [
         ("addon_schema_box",
          f"★ Cloud SQL: {sql.get('tier','')} • {sql.get('disk_gb','')} GB • public IPv4 {'on' if sql.get('ipv4_enabled') else 'off'} • PITR {'on' if sql.get('pitr') else 'off'} • "
-         f"{len(live.get('db_tables', {}))} live relations (66 declared in gcp/schema.sql; strat_features_*, magnitude_*, gamma_levels_eod … created at runtime) • weekly pg_dump to gs://…/sql-dumps/",
+         f"{len(live.get('db_tables', {}))} live relations ({_declared_relations()} declared in gcp/schema.sql; strat_features_*, magnitude_*, gamma_levels_eod … created at runtime) • weekly pg_dump to gs://…/sql-dumps/",
          60, y_after, 2280, 40),
         ("addon_auth_box",
          "★ Auth: AUTH_MODE iap (solyra-api-prod) / firebase (solyra-api-staging) / open (local) • roles from user_roles (admin, user, dev) • /api/me → is_admin, is_dev • CORS Lovable hosts only outside iap",
@@ -325,6 +378,19 @@ def refresh_icons(root: ET.Element, live: dict) -> int:
             new = note
         for stale, tmpl in ICON_COUNT_TEMPLATES:
             new = new.replace(stale, tmpl.format(**vals))
+        # Matching only the 2026-06 literals made the fix a one-shot: after the
+        # first regeneration those strings are gone, so the NEXT count change
+        # left the subtitle stale while the notes moved on (Codex, #1009).
+        # These patterns match whatever number is there now.
+        for pat, repl in (
+            (r"\b\d+ Cloud Run Jobs\b", f"{vals['jobs']} Cloud Run Jobs"),
+            (r"\b\d+ cron entries\b", f"{vals['schedulers']} cron entries"),
+            (r"\b\d+ Scheduler entries\b", f"{vals['schedulers']} Scheduler entries"),
+            (r"\b\d+ secrets\b", f"{vals['secrets']} secrets"),
+            (r"\b\d+ relations\b", f"{vals['relations']} relations"),
+            (r"\b\d+ Services\b", f"{vals['services']} Services"),
+        ):
+            new = re.sub(pat, repl, new)
         if new != v:
             c.set("value", new)
             n += 1
@@ -338,9 +404,21 @@ def check_icons(root: ET.Element, live: dict) -> list[str]:
         if stale in text:
             problems.append(f"icons: stale label {stale!r}")
     vals = _icon_values(live)
-    for needle in (f"{vals['jobs']} Cloud Run Jobs", f"{vals['schedulers']} cron entries", f"{vals['secrets']} secrets"):
-        if needle not in text:
-            problems.append(f"icons: expected live count {needle!r} not found")
+    # Per CELL, not "somewhere in the document": a stale subtitle used to pass
+    # because a regenerated note elsewhere carried the right number.
+    for c in root.iter("mxCell"):
+        v = c.get("value") or ""
+        for pat, want, label in (
+            (r"\b(\d+) Cloud Run Jobs\b", vals["jobs"], "Cloud Run Jobs"),
+            (r"\b(\d+) cron entries\b", vals["schedulers"], "cron entries"),
+            (r"\b(\d+) Scheduler entries\b", vals["schedulers"], "Scheduler entries"),
+            (r"\b(\d+) secrets\b", vals["secrets"], "secrets"),
+            (r"\b(\d+) relations\b", vals["relations"], "relations"),
+        ):
+            for m in re.finditer(pat, v):
+                if int(m.group(1)) != int(want):
+                    problems.append(
+                        f"icons: cell {c.get('id')} says {m.group(1)} {label}, live is {want}")
     return problems
 
 

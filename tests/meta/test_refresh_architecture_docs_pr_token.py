@@ -159,14 +159,14 @@ def test_digest_step_writes_the_small_files_the_prompts_read():
 def test_gemini_transcripts_are_captured_for_the_truncation_gate():
     for s in _steps():
         if "Regenerate" in (s.get("name") or ""):
-            assert "refresh-inputs/transcripts/" in s["run"], s["name"]
+            assert "$RUNNER_TEMP/transcripts/" in s["run"], s["name"]
 
 
 def test_verify_step_runs_the_structural_gates_and_the_live_verifier():
     run = _steps()[_index("Verify regenerated docs")]["run"]
     assert "scripts/maintenance/check_generated_docs.py" in run
     assert "--previous-dir refresh-inputs/previous" in run
-    assert "--transcripts-dir refresh-inputs/transcripts" in run
+    assert '--transcripts-dir "$RUNNER_TEMP/transcripts"' in run
     assert "scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json" in run
     # the original three gates survive
     assert "Generated" in run and "CREATE TABLE" in run and "placeholder" in run
@@ -260,3 +260,22 @@ def test_freeze_and_restore_prove_they_actually_happened():
     assert "manifest.sha256" in restore, "the restore must verify against the frozen manifest"
     assert "sha256sum -c" in restore
     assert "refusing to verify" in restore, "a missing frozen copy must stop the run"
+
+
+def test_transcripts_are_written_where_the_model_cannot_reach_them():
+    """Gemini holds write_file/replace over the checkout for every one of the
+    four runs, so a transcript under refresh-inputs/ could be erased by a
+    later invocation before the truncation gate reads it -- and the stray-write
+    check excludes refresh-inputs/ (Codex, #1009)."""
+    for s in _steps():
+        if "Regenerate" in (s.get("name") or ""):
+            assert "refresh-inputs/transcripts" not in s["run"], s["name"]
+            assert "$RUNNER_TEMP/transcripts" in s["run"], s["name"]
+
+
+def test_previous_tree_carries_every_doc_the_churn_gate_scores():
+    """diff_stats() skips a document with no previous version, so a doc left
+    out of this copy silently bypasses its churn ceiling."""
+    run = _steps()[_index("Save previous doc versions")]["run"]
+    for d in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md", "docs/API.md"):
+        assert d in run, f"{d} must be saved for the loss and churn gates"

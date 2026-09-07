@@ -255,3 +255,15 @@ The Gemini CLI cannot run in this sandbox (`HttpsProxyAgent is not a constructor
 2. it recommended adding an Artifact Registry cleanup policy that #1004 had already deployed.
 
 The prompt now states the project id and region as a rule, and requires a proposed mitigation to be checked against `ARCHITECTURE.md` §3, the cost audit and `live.json` before being written — if it already exists, quantify what it saved instead of proposing it again. Re-run after the change: no invented ids, the correct project used, and no duplicate registry recommendation.
+
+Codex's fourth pass (head `ee0f1cd`) found eight more, and two of them were findings I had already reported as fixed and had not been:
+
+| Finding | Outcome |
+|---|---|
+| `docs/API.md` was never copied into `refresh-inputs/previous/`, and `diff_stats()` skips a document with no previous version — so the 90% ceiling advertised for it never fired and it was absent from the accounting | fixed; a meta test now asserts every doc the churn gate scores is in that copy |
+| **multi-hour crons were still bucketed once.** My earlier change fixed the label *text* and not the bucketing, so `sec-filings-intraday` (07/10/13/17), `news-sentiment-hourly` (08–17) and `freshness-watchdog-hourly` (09–19) were still filed under pre-market alone | fixed properly: `_cron_hours()` expands ranges, lists and steps, and an entry now appears in every session it fires in — verified on all three |
+| **icon counts were still matched by the 2026-06 literals**, so the fix was a one-shot: after the first regeneration those strings are gone and the next count change leaves the subtitle stale while the notes move on | fixed: count-bearing cells are rewritten from their current value by regex, and `check_icons()` validates per cell rather than "somewhere in the XML". Bumping the fixture from 76 to 77 jobs now reports `cell sub says 76 Cloud Run Jobs, live is 77` |
+| the drawio note hard-coded "66 declared in gcp/schema.sql" — the TABLE count — against a 69-relation schema, misfiling three declared relations as runtime-created on every regeneration | fixed; `_declared_relations()` computes tables + materialized views + views from the repo inventory |
+| transcripts were written under `refresh-inputs/`, which every later Gemini invocation can write to and which the stray-edit check excludes — so a later model could erase an earlier truncation report before the gate read it | fixed; transcripts are written to `$RUNNER_TEMP`, outside the checkout the model can reach |
+
+The two repeat findings are the useful lesson: a fix reported without a test that would have failed beforehand is a claim, not a change. Both now have one.
