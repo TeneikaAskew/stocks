@@ -4557,8 +4557,16 @@ _CLOUDBUILD_TRIGGERS=(
     "apply-schema-on-change:gcp/cloudbuild/apply-schema-cloudbuild.yaml"
 )
 sync_cloudbuild_triggers() {
-    local mode="import"
-    [ "${1:-}" = "--check" ] && mode="check"
+    # The default action writes to three live triggers, so anything that is
+    # not exactly the one documented option is a usage error, not a fall-
+    # through to import (Codex, #1037: `--checks` used to import).
+    local mode
+    case "$#:${1:-}" in
+        0:)         mode="import" ;;
+        1:--check)  mode="check" ;;
+        *) echo "ERROR: cloudbuild-triggers takes no argument or exactly --check; got: $*" >&2
+           return 64 ;;
+    esac
     python3 -c 'import yaml' 2>/dev/null \
         || { echo "ERROR: python3 needs PyYAML (pip3 install --user pyyaml)" >&2; return 1; }
     local pair name file tmp rc=0
