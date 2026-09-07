@@ -319,14 +319,16 @@ one. While writing, the standing gates:
 
   A widening is three steps:
 
-  1. **solyra first** — its reader tolerates BOTH shapes (null guard at the
-     presentation boundary, plus a fixture whose field is actually `null`).
-     No type or snapshot change, so its `contract:check` still passes against
-     the current stocks `main`. Merged and deployed.
+  1. **solyra first** — it widens its TS type and guards every call site `tsc`
+     then flags; that pair IS the compatibility change. The null is exercised
+     by a TEST-ONLY payload, never solyra's canonical mock, which `satisfies`
+     its types and is validated against the vendored schema — still the OLD
+     one at this step. No snapshot change, so its `contract:check` still
+     passes against the current stocks `main`. Merged and deployed.
   2. **then stocks** — widen the response model, regenerate
      `platform/api/openapi.json`, merge, deploy.
-  3. **then solyra again** — `contract:sync`, widen the TS type, update
-     fixtures.
+  3. **then solyra again** — `contract:sync`, and the null moves into the
+     canonical mock and fixtures now that the schema admits it.
 
   A narrowing runs the same way: solyra stops reading or sending the field
   first, and this repo drops it only once nothing consumes it. Say in both PR
