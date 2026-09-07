@@ -8,13 +8,14 @@
 # gcp/failure_notifier.py (gcp-job-failure), plus anything an agent opens.
 # Those carry their own body format and their own dedupe-by-label behaviour.
 #
-# contact_links: `name` is kept under 50 characters and `about` under 200,
-# because over-length values make the whole file invalid and the links then
-# silently do not render.
+# contact_links: `name` is kept to 30 characters or fewer and `about` under
+# 200. Codex cited a 30-char name limit; the page it cited states no limit at
+# all, and neither does the JSON schema. Applied anyway: if the cap is real an
+# over-length name makes the file invalid and every link silently vanishes.
 blank_issues_enabled: true
 
 contact_links:
-  - name: A workflow or Cloud Run Job failed
+  - name: Workflow or job failure
     url: https://github.com/TeneikaAskew/stocks/issues?q=is%3Aissue+is%3Aopen+label%3Aautomated
     about: >-
       Do not file these by hand. They are opened automatically and repeat
@@ -28,7 +29,7 @@ contact_links:
       Rule 3.5 (replay now), Rule 3.6 (production replay paths), Rule 3.7 (no
       silent fallbacks), Rule 2.5 (reviews before merge).
 
-  - name: Getting evidence from the live system
+  - name: Getting live evidence
     url: https://github.com/TeneikaAskew/stocks/blob/main/docs/CLAUDE_CODE_ON_WEB.md
     about: >-
       Egress is port 443 only, so psql and the Cloud SQL proxy time out. Use

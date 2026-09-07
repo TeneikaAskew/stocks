@@ -31,6 +31,13 @@ With no argument, list what is open and stop for a decision:
 #          orderBy=UPDATED_AT direction=DESC minimal_output=true
 ```
 
+**Page to exhaustion before reporting a count.** One `list_issues` call returns
+one page, and stocks carries well over a hundred open issues. Grouping page 1
+and calling it the inventory silently drops the oldest, which is where the audit
+backlog lives. Pass an explicit `perPage` and keep requesting `page` until a
+short page comes back, then report. The same applies to the label listing below
+when a label has more matches than one page.
+
 Group by label and report counts, then ask which to take. Do not pick one
 yourself unless the user named a label or a number.
 
@@ -91,7 +98,14 @@ git fetch origin
 
 # CASE A — a PR already exists for this issue (including an auto-created
 # fix/workflow-* draft). Work on ITS head. Do not open a second PR.
-git checkout -B "<the PR's headRefName>" "origin/<the PR's headRefName>"
+# Never `checkout -B` here: -B RESETS an existing local branch to the start
+# point, silently discarding unpushed commits from an earlier run.
+if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
+  git checkout "<headRefName>"        # already local: keep what it carries
+  git merge --ff-only "origin/<headRefName>" || echo "diverged — reconcile before working"
+else
+  git checkout -b "<headRefName>" --track "origin/<headRefName>"
+fi
 
 # CASE B — no existing PR. Create one branch, and remember its name; every
 # later phase refers back to it rather than reconstructing a prefix.
@@ -318,10 +332,22 @@ is wrong, what the tests do and that they were run against unfixed code first,
 and the suite count. Conventional format, imperative mood, subject under 72
 chars, no AI attribution.
 
-Push the branch you are actually on. Do not reconstruct a `fix/` prefix here:
-Phase 0 may have created a `feature/`, `chore/`, `docs/` or `test/` branch, or
-checked out an existing PR's head, and pushing a name that does not exist fails
-with a refspec error.
+**Commit before you push.** Phase 5 leaves the candidate in the working tree,
+and `git push` transfers only what is reachable from `HEAD`. Pushing without
+committing produces a PR containing none of the work you just did and tested,
+while every command above still reports success:
+
+```bash
+git status --short               # confirm the candidate is actually here
+git add <the files this issue's fix touches>   # never `git add -A` blindly
+git commit -F <message file>     # the body described above
+git log --oneline -1             # confirm the commit exists before pushing
+```
+
+Then push the branch you are actually on. Do not reconstruct a `fix/` prefix
+here: Phase 0 may have created a `feature/`, `chore/`, `docs/` or `test/`
+branch, or checked out an existing PR's head, and pushing a name that does not
+exist fails with a refspec error.
 
 ```bash
 git push -u origin HEAD          # or "$BRANCH", captured in Phase 0
@@ -366,7 +392,26 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 4. Verify each finding against the code before fixing it: reproduce, write the
    failing test, fix, show it pass. A fix built on a misread finding is worse
    than no fix.
-5. Only then CI green on the current head, and no merge conflict.
+5. **If step 4 produced a commit, go back to step 1 on the new head.** A fix
+   commit moves the head past the review that approved it, so merging straight
+   from here lets the review-fix itself merge unreviewed. That is the same
+   stale-head condition steps 1-3 exist to catch, arriving by a different
+   route. Push the fix, let the review re-run on the new SHA, and re-check.
+   There is no round limit: repeated findings mean fix the root cause, not
+   stop.
+6. **If the PR is a draft, mark it ready.** CASE A can land you on an
+   auto-created `fix/workflow-*` draft, and pushing to a draft does not
+   un-draft it; GitHub will refuse the merge. CLAUDE.md's failure-handler
+   procedure requires converting it once fixed. Either mark it ready or stop
+   and say it needs a human to.
+7. Only then CI green on the current head, and no merge conflict.
+
+**A completed review with no findings posts no review at all** — Codex reacts
+👍 instead. So `get_reviews` cannot by itself distinguish "reviewed clean" from
+"never reviewed": both look like an absent review for that SHA. Read the Codex
+summary comment's status table alongside it, which names the commit and whether
+the run is Running or Completed. Verified live on #1018, where the head showed
+no review for eleven minutes while the run was still in flight.
 
 A finding whose fix exceeds this PR's scope becomes a **new issue** with the
 provenance recorded, the way #940 was split out of the #933 review, so the
