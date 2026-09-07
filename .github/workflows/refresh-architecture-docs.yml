@@ -201,9 +201,13 @@ jobs:
       - name: Dump asset inventory
         run: |
           mkdir -p refresh-inputs
+          # `git check-ignore -q` exits 0 only when the path IS ignored. The -v
+          # form exits 0 on a NEGATION match too, so using it as the condition
+          # reports "is gitignored" for a file .gitignore explicitly re-includes
+          # -- which is what `!refresh-inputs/**` made every path here.
           for F in refresh-inputs/inventory.json refresh-inputs/iam.json refresh-inputs/billing.json; do
-            if PATTERN=$(git check-ignore -v "$F"); then
-              echo "::error::${F} is gitignored (${PATTERN}) — Gemini's file tools respect .gitignore, so the model would generate docs blind. Rename the file or fix .gitignore."
+            if git check-ignore -q "$F"; then
+              echo "::error::${F} is gitignored ($(git check-ignore -v "$F")) — Gemini's file tools respect .gitignore, so the model would generate docs blind. Rename the file or fix .gitignore."
               exit 1
             fi
           done
@@ -361,6 +365,21 @@ jobs:
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown schedulers > refresh-inputs/schedulers.md
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown jobs > refresh-inputs/jobs.md
           ls -la refresh-inputs/
+          # Every input, not the three that were listed by hand. The digest step
+          # writes billing_by_sku.csv and billing_by_month.csv, which the repo's
+          # broad `*.csv` rule hid from the model -- they are the ONLY inputs the
+          # cost prompt has, so run 16 produced no COST_ANALYSIS.md at all and
+          # its transcript said "ignored by configured ignore patterns". The
+          # earlier guard could not catch it: these files do not exist yet when
+          # it runs. Checking the tree after it is built covers whatever a
+          # future step adds.
+          IGNORED=$(git ls-files --others --ignored --exclude-standard -- refresh-inputs/)
+          if [ -n "$IGNORED" ]; then
+            echo "::error::these refresh inputs are gitignored, and Gemini's file tools respect .gitignore, so the model would read them as \"ignored by configured ignore patterns\" and generate blind:"
+            echo "$IGNORED" | sed 's/^/::error::  /'
+            exit 1
+          fi
+          echo "all $(find refresh-inputs -type f | wc -l) refresh inputs are readable by the model"
 
       # ── Keep the previous versions for the loss gates ─────────────────────
       - name: Save previous doc versions
@@ -552,6 +571,16 @@ jobs:
             esac
             # Present before the model ran, so a step put it there, not Gemini.
             if grep -qxF "$F" "$RUNNER_TEMP/frozen/untracked.before"; then continue; fi
+            # A stray whose basename IS one of the generated docs is the model
+            # having written the right document to the wrong directory rather
+            # than an unrelated file. Run 15 produced docs/DATA_DEPENDENCIES.md
+            # and the bare name told a reader nothing about which of the two
+            # mistakes it was; the prompts now pin file_path to the repo root.
+            case " $ALLOWED " in
+              *" $(basename "$F") "*)
+                STRAY="$STRAY $F(wrong directory: $(basename "$F") belongs at the repo root)"
+                continue;;
+            esac
             STRAY="$STRAY $F"
           done
           if [ -n "$STRAY" ]; then
@@ -688,6 +717,30 @@ jobs:
           fi
 
           exit $FAIL
+
+      # A churn or heading failure reports a percentage and a heading name and
+      # nothing else, so the document that caused it cannot be read: the run
+      # ends without committing and the runner is reclaimed. Run 16 failed
+      # README.md at 66% churn and the only evidence of WHAT changed was a
+      # re-cased heading in the accounting. Upload what the gates judged so the
+      # next failure is diagnosable from the run page.
+      #
+      # The four documents and the accounting only. NOT refresh-inputs/: it
+      # holds the IAM policy and the full asset inventory, and this repository
+      # is public. These four are published to it by design.
+      - name: Upload the regenerated documents when a gate fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-docs
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ARCHITECTURE.md
+            DATA_DEPENDENCIES.md
+            COST_ANALYSIS.md
+            README.md
+            refresh-inputs/diff_report.md
 
       # ── Refresh INVESTMENT_MODELS_SUMMARY.md resolved-values table ────────
       # Closes the doc-drift loop for ticker_calibration (issue #251). This
