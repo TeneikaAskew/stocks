@@ -1,0 +1,168 @@
+"""The Gemini step retries a vendor transport failure and nothing else.
+
+Run 20 (2026-09-07) died at "Regenerate 05-c-DATA_DEPENDENCIES.md" after
+6m45s of silence with `UND_ERR_BODY_TIMEOUT` from the Gemini CLI's undici
+client. Run 19 had run the identical prompt against the identical file in 28
+seconds twenty minutes earlier. One vendor transport blip threw away a
+13-minute run; on the 1st of the month it would throw away the whole
+unattended refresh.
+
+The retry that fixes that is also the retry that could hide a real failure,
+so these tests run the script -- with a stub `gemini` on PATH -- rather than
+asserting the shape of its source. Runs 15 and 16 (a model writing to the
+wrong path, a model refusing on unreadable input) must still go red on the
+first attempt.
+"""
+from __future__ import annotations
+
+import os
+import stat
+import subprocess
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+SCRIPT = REPO / ".github/scripts/gemini_doc_step.sh"
+WORKFLOW = REPO / ".github/workflows/refresh-architecture-docs.yml"
+
+BODY_TIMEOUT = (
+    "Error when talking to Gemini API Full report available at: /tmp/x.json "
+    "TypeError: terminated\\n  [cause]: BodyTimeoutError: Body Timeout Error "
+    "code: 'UND_ERR_BODY_TIMEOUT'"
+)
+# Run 16's shape: the model read its inputs, found them unreadable, and said
+# so. A retry here would burn a second Vertex call and still fail the gate.
+REFUSAL = "The input file refresh-inputs/billing_by_sku.csv could not be read (ignored by configured ignore patterns). Stopping."
+
+
+def _stub_gemini(bin_dir: Path, script: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    g = bin_dir / "gemini"
+    g.write_text("#!/usr/bin/env bash\n" + script)
+    g.chmod(g.stat().st_mode | stat.S_IEXEC)
+
+
+def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+         prompt="data-dependencies", with_previous=True):
+    """Run the real script in a sandbox repo, with `gemini` stubbed."""
+    work = tmp_path / "work"
+    (work / ".github/prompts").mkdir(parents=True)
+    (work / ".github/scripts").mkdir(parents=True)
+    (work / ".github/scripts/gemini_doc_step.sh").write_bytes(SCRIPT.read_bytes())
+    (work / ".github/scripts/gemini_doc_step.sh").chmod(0o755)
+    (work / f".github/prompts/{prompt}.md").write_text("do the thing\n")
+    (work / doc).parent.mkdir(parents=True, exist_ok=True)
+    (work / doc).write_text("BASELINE\n")
+    if with_previous:
+        prev = work / "refresh-inputs/previous" / doc
+        prev.parent.mkdir(parents=True, exist_ok=True)
+        prev.write_text("BASELINE\n")
+
+    bin_dir = tmp_path / "bin"
+    _stub_gemini(bin_dir, stub)
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{bin_dir}:{env['PATH']}",
+        RUNNER_TEMP=str(tmp_path / "runner"),
+        GEMINI_MODEL="stub-model",
+        ATTEMPTS_FILE=str(tmp_path / "attempts"),
+        GEMINI_RETRY_SLEEP="0",
+        DOC_PATH=doc,
+    )
+    (tmp_path / "runner").mkdir(exist_ok=True)
+    proc = subprocess.run(
+        ["bash", ".github/scripts/gemini_doc_step.sh", prompt, doc],
+        cwd=work, env=env, capture_output=True, text=True,
+    )
+    attempts = 0
+    if (tmp_path / "attempts").exists():
+        attempts = len((tmp_path / "attempts").read_text().split())
+    return proc, attempts, work
+
+
+def test_a_body_timeout_is_retried_and_the_second_attempt_wins(tmp_path):
+    """Exactly run 20's failure, followed by the success run 19 had."""
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'N=$(wc -w < "$ATTEMPTS_FILE")\n'
+        'if [ "$N" -eq 1 ]; then\n'
+        f'  echo "{BODY_TIMEOUT}"\n'
+        '  exit 1\n'
+        'fi\n'
+        'echo WROTE > "$DOC_PATH"\n'
+        'echo "done"\n'
+    )
+    proc, attempts, work = _run(tmp_path, stub)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert attempts == 2, f"expected a retry, got {attempts} attempt(s)"
+    doc = work / "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"
+    assert doc.read_text() == "WROTE\n"
+
+
+def test_the_retry_starts_from_the_same_baseline_as_the_first_attempt(tmp_path):
+    """A failed attempt can leave the document half-edited. The second must
+    not compound that: it starts from the frozen previous copy."""
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'N=$(wc -w < "$ATTEMPTS_FILE")\n'
+        'if [ "$N" -eq 1 ]; then\n'
+        '  echo HALF-APPLIED > "$DOC_PATH"\n'
+        f'  echo "{BODY_TIMEOUT}"\n'
+        '  exit 1\n'
+        'fi\n'
+        'cat "$DOC_PATH" > "$ATTEMPTS_FILE.seen"\n'
+        'echo "done"\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    seen = (tmp_path / "attempts.seen").read_text()
+    assert seen == "BASELINE\n", f"attempt 2 saw the half-applied edit: {seen!r}"
+
+
+def test_a_non_transport_failure_is_not_retried(tmp_path):
+    """Run 16's shape. A second Vertex call cannot fix an unreadable input,
+    and retrying it would be the silent fallback CLAUDE.md 3.7 forbids."""
+    stub = 'echo x >> "$ATTEMPTS_FILE"\n' f'echo "{REFUSAL}"\n' 'exit 1\n'
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 1, f"a non-transport failure was retried ({attempts} attempts)"
+    assert "no vendor-transport signature" in proc.stdout
+
+
+def test_two_transport_failures_still_fail_the_run(tmp_path):
+    """The retry is bounded. Vertex being down does not loop."""
+    stub = 'echo x >> "$ATTEMPTS_FILE"\n' f'echo "{BODY_TIMEOUT}"\n' 'exit 1\n'
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 2, f"expected exactly 2 attempts, got {attempts}"
+    assert "is not answering" in proc.stdout
+
+
+def test_a_missing_frozen_copy_refuses_to_retry(tmp_path):
+    """Without the baseline there is no safe state to retry from, so the
+    script says that rather than running the prompt against unknown content."""
+    stub = 'echo x >> "$ATTEMPTS_FILE"\n' f'echo "{BODY_TIMEOUT}"\n' 'exit 1\n'
+    proc, attempts, _ = _run(tmp_path, stub, with_previous=False)
+    assert proc.returncode != 0
+    assert attempts == 1
+    assert "refusing to retry" in proc.stdout
+
+
+def test_every_gemini_step_goes_through_the_script():
+    """A step added later that calls `gemini` directly would silently opt out
+    of the retry, which is how this regression would come back."""
+    doc = yaml.safe_load(WORKFLOW.read_text())
+    steps = doc["jobs"]["refresh"]["steps"]
+    runs = [s.get("run") or "" for s in steps]
+    called = [r for r in runs if "gemini_doc_step.sh" in r]
+    assert len(called) == 4, f"expected 4 prompt steps, found {len(called)}"
+    for r in runs:
+        code = "\n".join(ln.split("#", 1)[0] for ln in r.splitlines())
+        assert "gemini --model" not in code, \
+            "a step invokes the Gemini CLI directly, bypassing the retry"
+    # The script is executable in git, or the runner cannot invoke it.
+    mode = subprocess.run(["git", "ls-files", "-s", ".github/scripts/gemini_doc_step.sh"],
+                          cwd=REPO, capture_output=True, text=True).stdout.split()
+    if mode:  # empty before the file is added to the index
+        assert mode[0] == "100755", f"script is not executable in git ({mode[0]})"

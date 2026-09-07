@@ -481,10 +481,11 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p "$RUNNER_TEMP/transcripts"
-          gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/architecture.log"
+          # One bounded retry, for a vendor transport failure only; anything
+          # else still fails on the first attempt. See the script's header for
+          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
+          # 13-minute run). It writes the transcript the truncation gate reads.
+          .github/scripts/gemini_doc_step.sh architecture docs/product/infrastructure/05-a-ARCHITECTURE.md
 
       - name: Regenerate 05-c-DATA_DEPENDENCIES.md
         env:
@@ -492,10 +493,11 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p "$RUNNER_TEMP/transcripts"
-          gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/data-dependencies.log"
+          # One bounded retry, for a vendor transport failure only; anything
+          # else still fails on the first attempt. See the script's header for
+          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
+          # 13-minute run). It writes the transcript the truncation gate reads.
+          .github/scripts/gemini_doc_step.sh data-dependencies docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md
 
       - name: Regenerate 05-d-COST_ANALYSIS.md
         env:
@@ -503,10 +505,11 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p "$RUNNER_TEMP/transcripts"
-          gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/cost-analysis.log"
+          # One bounded retry, for a vendor transport failure only; anything
+          # else still fails on the first attempt. See the script's header for
+          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
+          # 13-minute run). It writes the transcript the truncation gate reads.
+          .github/scripts/gemini_doc_step.sh cost-analysis docs/product/infrastructure/05-d-COST_ANALYSIS.md
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
@@ -516,10 +519,11 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
-          mkdir -p "$RUNNER_TEMP/transcripts"
-          gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/readme.log"
+          # One bounded retry, for a vendor transport failure only; anything
+          # else still fails on the first attempt. See the script's header for
+          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
+          # 13-minute run). It writes the transcript the truncation gate reads.
+          .github/scripts/gemini_doc_step.sh readme README.md
 
       # ── Verify the regenerations actually happened and are complete ──────
       # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
