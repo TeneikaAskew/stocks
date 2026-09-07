@@ -55,5 +55,8 @@
       changed and the covering test/commit) or replied to with why not
 - [ ] A review exists for the **current head SHA** — compare `get_reviews`
       `commit_id` against head; all threads `is_outdated` means the head is
-      unreviewed → comment `@codex review` and wait
+      unreviewed → comment `@codex review` and wait.
+      `get_reviews` returns OLDEST FIRST, so the current review is on the
+      LAST page: reading page 1 and finding an older "no findings" is how
+      #991 was merged two minutes after a review it never saw
 - [ ] CI green on the current head, no merge conflict

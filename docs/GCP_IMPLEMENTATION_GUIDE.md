@@ -109,7 +109,7 @@ An event-driven options trading intelligence system that:
 | Backup Storage | Google Cloud Storage | Raw Parquet archives |
 | Scheduled Jobs | Cloud Run Jobs | All data fetching + analysis |
 | Real-time Monitor | Cloud Run Job | Intraday signal polling (scheduled 9:25 AM ET) |
-| Scheduling | Cloud Scheduler | 66 cron triggers |
+| Scheduling | Cloud Scheduler | 65 cron triggers |
 | Alerts | Discord Webhooks | Real-time trade alerts |
 | Secrets | Secret Manager | API keys, DB credentials, webhook URLs |
 | Container Build | Cloud Build | Docker image CI |
@@ -767,11 +767,11 @@ All sources are normalized to canonical names before returning:
 
 | Component | Service | Name | Config |
 |-----------|---------|------|--------|
-| Relational DB | Cloud SQL | `trading-db` | PostgreSQL 15, `db-g1-small`, 20 GB, us-east1 |
+| Relational DB | Cloud SQL | `trading-db` | PostgreSQL 15, `db-g1-small`, 191 GB (read live 2026-09-07; auto-grown from the original 20 GB), us-east1 |
 | Object Storage | Cloud Storage | `PROJECT-trading-data` | Standard, us-east1, 730-day raw/ lifecycle |
-| Scheduled Jobs | Cloud Run Jobs | 7 jobs | 1–2 Gi memory, max-retries 1–2 |
+| Scheduled Jobs | Cloud Run Jobs | 76 jobs live, 67 declared in `gcp/deploy.sh` (read live 2026-09-07) | 1–16 Gi memory; retries 0 on 41 declared jobs, 1 on 25, 2 on one |
 | Real-time Monitor | Cloud Run Job | `signal-monitor` | 2 Gi, 8h timeout, 0 retries, scheduled 9:25 AM ET |
-| Cron Triggers | Cloud Scheduler | 21 triggers | All America/New_York timezone |
+| Cron Triggers | Cloud Scheduler | 65 triggers (read live 2026-09-07) | All America/New_York timezone |
 | Container Images | Artifact Registry | `trading/trading-system` | us-east1 |
 | Build | Cloud Build | (default) | `gcloud builds submit` |
 | Secrets | Secret Manager | 22 secrets | See §14 |
@@ -1316,7 +1316,10 @@ echo -n 'YOUR_AV_KEY' | \
 **Step 6 — Create Cloud Scheduler triggers**
 
 ```bash
-./gcp/deploy.sh schedulers  # creates all 66 cron triggers
+<!-- verify-docs-ok: 64 is what THIS subcommand creates, not the live fleet of 65; the difference is the point of the comment -->
+./gcp/deploy.sh schedulers  # creates 64 cron triggers (the 65th live one,
+                            # reconcile-failure-notifier-hourly, comes from
+                            # `deploy.sh notifier`)
 ```
 
 **Step 7 — Full deploy (steps 4-6)**
@@ -1349,7 +1352,8 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/raw/
 ./gcp/deploy.sh monitor     # Deploy signal-monitor service
 ./gcp/deploy.sh weekend     # Deploy weekend-review job
 ./gcp/deploy.sh fetchers    # Deploy all 4 fetch jobs
-./gcp/deploy.sh schedulers  # Create the Cloud Scheduler triggers (66 live)
+./gcp/deploy.sh schedulers  # Create 64 of the 65 live Cloud Scheduler
+                            # triggers; `notifier` creates the last one
 ./gcp/deploy.sh all         # build + fetchers + premarket + monitor + weekend + schedulers
 ```
 
@@ -1532,11 +1536,11 @@ done
 
 | Service | Configuration | Est. Monthly Cost |
 |---------|--------------|------------------|
-| Cloud SQL | `db-g1-small`, 20 GB SSD, daily backups | ~$25/mo |
-| Cloud Run Jobs | 7 jobs × ~50 executions/day avg × 1-2 min | ~$3/mo |
+| Cloud SQL | `db-g1-small`, 191 GB SSD (read live 2026-09-07), daily backups + PITR | ~$45/mo — storage, not the instance, is the bulk of it; see COST_ANALYSIS.md |
+| Cloud Run Jobs | 76 jobs (live 2026-09-07) × ~50 executions/day avg × 1-2 min | see COST_ANALYSIS.md |
 | Cloud Run Job | signal-monitor, 8h timeout, 0 retries, scheduled daily | ~$3/mo |
 | Cloud Storage | ~50 GB + 15 write ops/day | ~$2/mo |
-| Cloud Scheduler | 21 triggers × ~20 weekdays/mo | ~$0.21/mo |
+| Cloud Scheduler | 65 triggers (live 2026-09-07; 3 free) × ~20 weekdays/mo | ~$6.20/mo |
 | Secret Manager | 22 secrets × ~100 accesses/day | ~$0.20/mo |
 | Artifact Registry | ~1 GB images | ~$0.10/mo |
 | Cloud Build | ~1 build/week × 5 min | ~$0.25/mo |

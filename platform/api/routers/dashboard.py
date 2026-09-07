@@ -11,6 +11,11 @@ from pathlib import Path
 
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
+from api.schemas import (
+    DashboardBriefResponse,
+    MovementStatementResponse,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -73,7 +78,7 @@ def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
     return count
 
 
-@router.get("/api/dashboard/brief/{ticker}")
+@router.get("/api/dashboard/brief/{ticker}", response_model=DashboardBriefResponse, response_model_exclude_unset=True)
 async def dashboard_brief(
     ticker: str,
     date: Optional[str] = Query(None, description="Historical date as YYYY-MM-DD. If omitted, returns latest."),
@@ -98,14 +103,16 @@ async def dashboard_brief(
     premarket = {}
     try:
         if date:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 "SELECT * FROM premarket_analysis "
                 "WHERE ticker = :ticker AND analysis_date <= :date "
                 "ORDER BY analysis_date DESC LIMIT 1",
                 {"ticker": ticker, "date": date},
             )
         else:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 "SELECT * FROM premarket_analysis "
                 "WHERE ticker = :ticker ORDER BY analysis_date DESC LIMIT 1",
                 {"ticker": ticker},
@@ -142,12 +149,14 @@ async def dashboard_brief(
             "FROM market_data_daily "
         )
         if date:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 base_cols + "WHERE ticker = :ticker AND date <= :date ORDER BY date DESC LIMIT 1",
                 {"ticker": ticker, "date": date},
             )
         else:
-            df = _query_fn(
+            df = await run_in_threadpool(
+                _query_fn,
                 base_cols + "WHERE ticker = :ticker ORDER BY date DESC LIMIT 1",
                 {"ticker": ticker},
             )
@@ -256,7 +265,16 @@ async def _apply_live_overlay(ticker: str, daily: dict) -> dict:
         return {}
 
     # 1. Pull recent daily history (chronological, oldest first)
-    hist = _query_fn(
+    #
+    # Threadpooled, like every other query in this module. This one was
+    # missed because it is not in the route handler: `dashboard_brief` is
+    # one of the seven handlers that genuinely `await`, and it awaits THIS
+    # helper, so a synchronous query here runs on the event loop just as
+    # surely as one in the handler body -- serialising every concurrent
+    # request across the instance behind a 250-row Cloud SQL read, on every
+    # dashboard load while the market is open.
+    hist = await run_in_threadpool(
+        _query_fn,
         "SELECT date, close FROM market_data_daily "
         "WHERE ticker = :ticker ORDER BY date DESC LIMIT 250",
         {"ticker": ticker},
@@ -441,8 +459,8 @@ def _build_movement_level_map(ticker: str):
         return None
 
 
-@router.get("/api/movement-statement")
-async def movement_statement(
+@router.get("/api/movement-statement", response_model=MovementStatementResponse, response_model_exclude_unset=True)
+def movement_statement(
     ticker: str = Query(..., description="One of IWM / SPY / QQQ (validated cells)."),
     timeframe: str = Query("15m", description="5m or 15m ONLY (30m is never consulted)."),
 ):

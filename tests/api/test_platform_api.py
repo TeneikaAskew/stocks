@@ -368,15 +368,28 @@ class TestJournalCRUD:
     capturing the SQL+params, and local fallback with `tmp_path`.
     """
 
-    def _patch_cloud_sql(self, monkeypatch, query_returns=None):
+    def _patch_cloud_sql(self, monkeypatch, query_returns=None,
+                         returning_id="abc-123"):
         """Force the journal router into Cloud SQL mode and capture every
-        execute_sql + query_to_dataframe call."""
+        execute_sql / query_to_dataframe / execute_returning_scalar call.
+
+        `execute_returning_scalar` is the insert seam since the trade INSERT
+        moved to `RETURNING id` (the follow-up
+        `SELECT ... ORDER BY created_at DESC` could return a concurrent
+        writer's row). Its calls land in `captured["execute"]` alongside the
+        plain statements, so assertions on the INSERT's SQL and params are
+        unchanged.
+        """
         from api.routers import journal as journal_module
 
         captured = {"execute": [], "query": []}
 
         def fake_execute(sql, params=None):
             captured["execute"].append((sql, dict(params or {})))
+
+        def fake_returning(sql, params=None, allow_no_row=False):
+            captured["execute"].append((sql, dict(params or {})))
+            return returning_id
 
         def fake_query(sql, params=None):
             captured["query"].append((sql, dict(params or {})))
@@ -386,6 +399,8 @@ class TestJournalCRUD:
 
         monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
         monkeypatch.setattr(journal_module, "execute_sql", fake_execute)
+        monkeypatch.setattr(journal_module, "execute_returning_scalar",
+                            fake_returning)
         monkeypatch.setattr(journal_module, "query_to_dataframe", fake_query)
         return captured
 
@@ -562,7 +577,19 @@ class TestMarketDataAPI:
                 pd.Timestamp("2026-01-15").date(),
             ],
         })
-        monkeypatch.setattr(main_module, "query_to_dataframe", lambda *a, **k: dates_df.copy())
+        # Patch _dates_query, not query_to_dataframe: the endpoint uses the
+        # RAISING helper so its 503 branch is reachable, and _dates_query is
+        # where that indirection lives. It serves two queries -- a cheap
+        # MAX(ts) freshness probe and the expensive list -- so the fake has to
+        # answer both.
+        def fake_dates_query(sql, params=None):
+            if "MAX(ts)" in sql:
+                return pd.DataFrame({"max_ts": [pd.Timestamp("2026-02-20 20:00")]})
+            return dates_df.copy()
+
+        monkeypatch.setattr(main_module, "_dates_query", fake_dates_query)
+        monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE",
+                            main_module._MARKET_DATES_CACHE.fresh())
 
         r = client.get("/api/market/dates/IWM")
         assert r.status_code == 200
@@ -571,6 +598,98 @@ class TestMarketDataAPI:
         assert data["dates"] == ["20260220", "20260219", "20260115"]
         # months derived from the dates, descending
         assert data["months"] == ["202602", "202601"]
+
+    def test_market_dates_db_failure_is_503_not_a_gcs_downgrade(self, client, monkeypatch):
+        """A configured-but-broken Cloud SQL must not fall through to GCS.
+
+        This is the assertion the endpoint's 503 branch existed for and could
+        not previously make: it called the SWALLOWING query helper, which
+        returns an empty frame instead of raising, so the except never fired
+        and the request dropped through to the staging parquets with a 200.
+        """
+        from collections import OrderedDict
+
+        import api.main as main_module
+        from api.threadsafe_cache import ThreadSafeCache
+        monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+
+        def boom(*a, **k):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(main_module, "_dates_query", boom)
+        # Rebuilt explicitly, not as `type(cache)()`: the cache is a
+        # ThreadSafeCache now (the handler runs on the threadpool), and its
+        # constructor takes the mapping it wraps, so the zero-argument form
+        # raises TypeError before the test can assert anything.
+        monkeypatch.setattr(main_module, "_MARKET_DATES_CACHE",
+                            ThreadSafeCache(OrderedDict()))
+
+        r = client.get("/api/market/dates/IWM")
+        assert r.status_code == 503, (
+            "a database failure was served as a 200 from the GCS fallback")
+        detail = r.json()["detail"]
+        assert "database is unavailable" in detail
+        # The driver message must NOT reach the client: a SQLAlchemy error
+        # renders the SQL, its bound parameters and connection metadata, and
+        # this endpoint is reachable unauthenticated.
+        assert "connection refused" not in detail, (
+            "internal exception text leaked into the response body")
+
+    def test_market_dates_gcs_failure_is_503_not_an_empty_200(self, client, monkeypatch):
+        """A failing GCS list must not read as "this ticker has no data".
+
+        `gcs_reader.list_matching_blobs` swallows storage errors and returns
+        `[]`, which is indistinguishable from an empty prefix, so the 503 this
+        endpoint promises was unreachable: execution fell through to an empty
+        payload and answered 200. The dates path uses the strict lister now.
+
+        Cloud SQL is UNCONFIGURED here, which is the only way to reach the GCS
+        branch at all — configured-and-broken raises 503 at the freshness probe
+        (see the test above), so this exercises the local-dev path.
+        """
+        import api.main as main_module
+        from api import gcs_reader
+
+        monkeypatch.setattr(main_module, "_CLOUD_SQL", False)
+
+        def gcs_down(*a, **k):
+            raise RuntimeError("403 from GCS")
+
+        monkeypatch.setattr(gcs_reader, "list_matching_blobs_strict", gcs_down)
+        main_module._MARKET_DATES_CACHE.clear()
+
+        r = client.get("/api/market/dates/ZZZZ")
+        assert r.status_code == 503, (
+            f"the GCS list failed but the response was {r.status_code}: {r.json()!r}")
+
+    def test_market_dates_gcs_answer_is_never_cached(self, client, monkeypatch):
+        """The GCS path must write nothing into the freshness-keyed cache.
+
+        Entries are `(latest_ts, cached_at, payload)` triples, and the probe
+        that produces `latest_ts` only runs when Cloud SQL is configured — the
+        one condition the GCS path runs under is the one where there is no
+        freshness signal at all. Storing a bare payload here (which is what
+        this branch did before the merge) makes the NEXT request raise while
+        unpacking it.
+        """
+        import api.main as main_module
+        from api import gcs_reader
+
+        monkeypatch.setattr(main_module, "_CLOUD_SQL", False)
+        monkeypatch.setattr(
+            gcs_reader, "list_matching_blobs_strict",
+            lambda prefix, pattern: ["x/iwm_minute_20260220.parquet"]
+            if "minute" in prefix else [])
+        main_module._MARKET_DATES_CACHE.clear()
+
+        first = client.get("/api/market/dates/IWM")
+        assert first.status_code == 200 and first.json()["source"] == "gcs"
+        assert "IWM" not in main_module._MARKET_DATES_CACHE, (
+            "the GCS answer was cached under a key whose entries are triples")
+        # The second request is where a bare payload would have raised.
+        second = client.get("/api/market/dates/IWM")
+        assert second.status_code == 200
+        assert second.json() == first.json()
 
     def test_market_data_full_day(self, client, monkeypatch):
         """Fetch a full day of 1-min bars."""
@@ -1051,13 +1170,12 @@ class TestHealthFreshnessAPI:
     """`GET /api/health/freshness` — wraps `scripts/audit_data_freshness.py`.
 
     The endpoint has a module-level 5-minute TTL cache. Tests must reset
-    `_cache_value` between cases or stale results leak across.
+    `_cache` between cases or stale results leak across.
     """
 
     def _reset_cache(self):
         from api.routers import health as health_module
-        health_module._cache_value = None
-        health_module._cache_expires_at = 0.0
+        health_module._cache = None
 
     def test_freshness_returns_audit_dict(self, client, monkeypatch):
         from api.routers import health as health_module
@@ -1203,6 +1321,32 @@ class TestReportMarkdownAPI:
 # Hermetic: every test monkeypatches `lib.agents.ranker.rank_tickers`, so the
 # endpoint's deterministic SQL+Python ranker is never actually invoked against
 # Cloud SQL. Runs in the no-DB CI `Run Tests` job.
+def _watchlist_payload(ranked=()):
+    """A minimal payload in the shape lib.agents.ranker.rank_tickers really
+    returns (run_id/ranked/weights_used/...). The earlier stubs answered an
+    {as_of, count, tickers} shape the ranker never produced; the response
+    model added on 2026-09-07 rejects it, which is the point of the model."""
+    return {
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "as_of": "2026-04-25T20:00:00+00:00",
+        "candidate_count": len(ranked),
+        "excluded_count": 0,
+        "ranked": [
+            {
+                "ticker": t,
+                "score": score,
+                "pct_of_max": 1.0,
+                "catalyst_types": [],
+                "catalyst_metadata": {},
+                "score_breakdown": [],
+            }
+            for t, score in ranked
+        ],
+        "weights_used": {},
+        "duration_ms": 0,
+    }
+
+
 class TestInsightsWatchlistAPI:
     """`GET /api/insights/watchlist` — wraps `lib.agents.ranker.rank_tickers`.
 
@@ -1217,14 +1361,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {
-                "as_of": "2026-04-25",
-                "count": 2,
-                "tickers": [
-                    {"ticker": "AAPL", "score": 0.81, "breakdown": {}},
-                    {"ticker": "MSFT", "score": 0.74, "breakdown": {}},
-                ],
-            }
+            return _watchlist_payload([("AAPL", 0.81), ("MSFT", 0.74)])
 
         # Patch the late-imported reference in the route
         monkeypatch.setattr(
@@ -1234,8 +1371,8 @@ class TestInsightsWatchlistAPI:
         r = client.get("/api/insights/watchlist?limit=2")
         assert r.status_code == 200
         data = r.json()
-        assert data["count"] == 2
-        assert [t["ticker"] for t in data["tickers"]] == ["AAPL", "MSFT"]
+        assert data["candidate_count"] == 2
+        assert [t["ticker"] for t in data["ranked"]] == ["AAPL", "MSFT"]
         # The route clamps limit into [1, 50]
         assert called_with["limit"] == 2
 
@@ -1244,7 +1381,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "2026-04-25", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         r = client.get("/api/insights/watchlist?limit=999")
@@ -1256,7 +1393,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         r = client.get(
@@ -1272,7 +1409,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         r = client.get("/api/insights/watchlist?extras=avgo,nvda,tsla")
@@ -1288,7 +1425,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         client.get("/api/insights/watchlist")
@@ -1303,7 +1440,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         client.get("/api/insights/watchlist")
@@ -1318,7 +1455,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         monkeypatch.setattr(

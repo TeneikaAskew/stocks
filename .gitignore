@@ -183,3 +183,12 @@ archive/**/credentials/
 archive/**/*.key
 archive/**/*-credentials.json
 archive/**/.gcp-key.json
+
+# Workload Identity Federation credentials written into $GITHUB_WORKSPACE by
+# google-github-actions/auth@v2. `create_credentials_file` defaults to true and
+# the ADC path every downstream step uses (gcloud, BigQuery, the Gemini CLI on
+# Vertex) points at this file, so it cannot be turned off — the action's own
+# docs say to ignore the pattern instead. Untracked and unignored, it was
+# picked up by the stray-write scan in refresh-architecture-docs.yml and failed
+# every run before verification. (Codex, PR #1009.)
+gha-creds-*.json

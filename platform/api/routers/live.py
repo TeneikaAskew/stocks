@@ -16,6 +16,7 @@ from typing import Optional
 import httpx
 import pandas as pd
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from zoneinfo import ZoneInfo
 
@@ -51,6 +52,14 @@ from lib.signals import generate_signals
 # distinct from the production alerting voter above. See lib/chart_voter.py
 # module docstring for the full voter taxonomy (issue #701).
 from lib.chart_voter import evaluate_chart_voter
+from api.schemas import (
+    AvgVolumeResponse,
+    IndicatorsResponse,
+    LiveHistoryResponse,
+    LiveQuoteResponse,
+    LiveStatusResponse,
+    SignalSeriesResponse,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -161,8 +170,8 @@ def _next_open_et(now_et: datetime) -> str | None:
     return None
 
 
-@router.get("/api/live/status")
-async def get_market_status():
+@router.get("/api/live/status", response_model=LiveStatusResponse, response_model_exclude_unset=True)
+def get_market_status():
     """Return current market open/closed status based on Eastern Time."""
     now_et = datetime.now(ET_TZ)
     is_open, session = _is_market_open(now_et)
@@ -176,7 +185,7 @@ async def get_market_status():
     }
 
 
-@router.get("/api/live/quote/{ticker}")
+@router.get("/api/live/quote/{ticker}", response_model=LiveQuoteResponse, response_model_exclude_unset=True)
 async def get_live_quote(ticker: str):
     """Fetch real-time quote from Alpha Vantage GLOBAL_QUOTE."""
     ticker_upper = ticker.upper()
@@ -302,7 +311,7 @@ async def get_live_quote(ticker: str):
     }
 
 
-@router.get("/api/live/history/{ticker}")
+@router.get("/api/live/history/{ticker}", response_model=LiveHistoryResponse, response_model_exclude_unset=True)
 async def get_live_history(ticker: str):
     """Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY."""
     ticker_upper = ticker.upper()
@@ -372,7 +381,7 @@ async def get_live_history(ticker: str):
     }
 
 
-@router.get("/api/live/avg-volume/{ticker}")
+@router.get("/api/live/avg-volume/{ticker}", response_model=AvgVolumeResponse, response_model_exclude_unset=True)
 async def get_avg_volume(ticker: str):
     """Return the 20-day average daily volume for RVOL calculation.
 
@@ -384,7 +393,15 @@ async def get_avg_volume(ticker: str):
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL and query_to_dataframe is not None:
         try:
-            df = query_to_dataframe(
+            # `get_avg_volume` stays `async def` for its AlphaVantage
+            # fallback (a real `await` on httpx), so the Cloud SQL branch has
+            # to be threadpooled explicitly rather than by declaring the
+            # handler `def`. Without this the handler can return from the
+            # Cloud SQL path having never reached the await, holding the loop
+            # for the whole query -- the mixed-handler case the dispatch
+            # guard was too weak to see.
+            df = await run_in_threadpool(
+                query_to_dataframe,
                 """
                 SELECT date, volume
                 FROM market_data_daily
@@ -506,7 +523,7 @@ def _make_condition(
     }
 
 
-@router.post("/api/live/indicators")
+@router.post("/api/live/indicators", response_model=IndicatorsResponse, response_model_exclude_unset=True)
 def compute_live_indicators(req: _IndicatorsRequest) -> dict:
     """Compute indicators and CALL/PUT signals from a bar series.
 
@@ -589,7 +606,7 @@ def compute_live_indicators(req: _IndicatorsRequest) -> dict:
     return {"indicators": indicators, "signals": signals, "chart_voter": chart_voter}
 
 
-@router.post("/api/live/signal-series")
+@router.post("/api/live/signal-series", response_model=SignalSeriesResponse, response_model_exclude_unset=True)
 def compute_live_signal_series(req: _IndicatorsRequest) -> dict:
     """Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay.
 

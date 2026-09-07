@@ -7,12 +7,14 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from collections import OrderedDict
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -20,11 +22,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# Add project root to path so we can import lib/
+# Add project root to path so we can import lib/.
+#
+# EVERY `lib.*` import must stay BELOW this line. `make api` and
+# scripts/dev_server.sh both `cd platform` before launching uvicorn, so the
+# repository root is not on sys.path until the insert above runs -- an eager
+# `from lib...` above it raises ModuleNotFoundError before the server starts.
+# The test suite cannot see that: pytest runs from the repository root, where
+# `lib` is importable via the cwd, so the whole suite passes while `make api`
+# is broken. tests/api/test_dev_server_import.py runs the real launch layout.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
+from lib.single_flight import SingleFlight
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import (
     AUTH_MODE,
@@ -32,6 +43,16 @@ from api.auth import (
     configured_admin_email,
     current_user_email,
     stored_role_for,
+)
+from api.schemas import (
+    CoverageResponse,
+    HealthResponse,
+    MarketDataResponse,
+    MarketDatesResponse,
+    MeResponse,
+    MostActiveResponse,
+    ReferenceResponse,
+    SectorsResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,19 +241,46 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
 # ── App-level API routes ─────────────────────────────────────────────────────
 
 
-@app.get("/api/health")
+# Read once at import. The image is immutable, so this cannot change while the
+# process lives, and hoisting it leaves the health handler with no I/O at all —
+# which is what lets it stay on the event loop honestly rather than by
+# assertion (see the exemption in tests/api/test_api_handler_dispatch.py).
+_LIB_DIR_EXISTS = (PROJECT_ROOT / "lib").is_dir()
+
+
+# `async def`, and the ONLY handler in this file that should be. This is a
+# comment rather than part of the docstring because #1013 made docstrings the
+# public OpenAPI `description`, and the reason a handler is on the event loop
+# is not something an API consumer should be reading.
+#
+# Everything else here is `def` on purpose: a synchronous handler belongs on
+# the threadpool so a blocking query cannot stall the loop. This one is the
+# exception, and for the opposite reason. It exists to answer while the
+# service is in trouble, and the trouble worth reporting is usually worker
+# saturation — a burst of DB requests queued behind the 5+2 SQLAlchemy pool
+# can hold every AnyIO worker token for up to the 30-second pool timeout. A
+# threadpooled health check waits in that same queue, so the probe goes silent
+# exactly when the answer matters (Codex, PR #991).
+#
+# It holds the loop for microseconds and touches nothing: no database, no
+# filesystem, no network. `_LIB_DIR_EXISTS` is read at import for that reason.
+# If this handler ever grows a call that blocks, it belongs back on the
+# threadpool and the exemption in tests/api/test_api_handler_dispatch.py must
+# go with it.
+@app.get("/api/health", response_model=HealthResponse, response_model_exclude_unset=True)
 async def health_check():
+    """Liveness probe: reports the service version and its configured backends."""
     return {
         "status": "ok",
         "project_root": str(PROJECT_ROOT),
         "cloud_sql": _CLOUD_SQL,
         "gcs_bucket": "adept-mountain-474619-d4-trading-data",
-        "lib_dir_exists": (PROJECT_ROOT / "lib").is_dir(),
+        "lib_dir_exists": _LIB_DIR_EXISTS,
     }
 
 
-@app.get("/api/me")
-async def get_current_user(request: Request):
+@app.get("/api/me", response_model=MeResponse, response_model_exclude_unset=True)
+def get_current_user(request: Request):
     """Return the authenticated identity + role flags.
 
     `email` is the server-VERIFIED identity: the Firebase token's email in
@@ -383,7 +431,7 @@ def _strat_engine_state() -> list[dict]:
 
 
 @app.get("/dev", include_in_schema=False)
-async def dev_info(request: Request):
+def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
 
     email = _iap_user_email(request)
@@ -491,44 +539,329 @@ only working path right now; curl/CI flows return 401.</p>
     return HTMLResponse(html)
 
 
-@app.get("/api/market/dates/{ticker}")
-async def get_available_dates(ticker: str):
+# Freshness is decided by the DATA, not by a model of the ingest schedule.
+#
+# Three attempts at modelling that schedule were each wrong in a different
+# way: a fixed 12h TTL spanned the ingestion entirely; a 23:00 UTC boundary
+# expired hours before the job (the scheduler runs in Eastern); an Eastern
+# boundary still missed a second writer. There are at least three writers to
+# this table, read live rather than from any doc:
+#
+#   av-intraday-nightly      0 21 * * 1-6   America/New_York   (Mon-SAT)
+#   fetch-market-data-daily  0 23 * * 1-5   America/New_York
+#   av-intraday-monthly      0 21 1 * *     America/New_York   (any weekday)
+#
+# Any model of that drifts the moment a schedule changes, and nothing fails
+# when it does — the endpoint keeps returning plausible dates, just stale
+# ones. So instead: probe MAX(ts), which is a single index descent
+# (Index Only Scan Backward, measured 10.8 ms on prod against the 1,716 ms
+# full scan), and rebuild the list only when the newest bar has advanced.
+# Correct for any number of writers on any schedule, including ad-hoc
+# backfills that no schedule describes.
+# MAX(ts) only moves FORWARD, so it cannot see a backfill that fills a gap
+# older than the newest bar -- and that is a supported production path:
+# av-intraday-nightly refetches the PREVIOUS month as well as the current one,
+# and the fetcher deliberately fills partially covered months. With the probe
+# alone a Saturday repair would stay hidden until Monday's session landed, and
+# for a ticker receiving no newer bars, indefinitely.
+#
+# MAX(inserted_at) would catch any write, but there is no index on it:
+# measured as a Parallel Seq Scan, 977 ms, so it cannot go on the request path.
+# Adding one is a migration on a partitioned ~14M-row table.
+#
+# So: the probe for the common case (new bar -> invalidate in 10.8 ms) plus a
+# bounded TTL as the backstop that catches everything the probe cannot see.
+# WRAPPED, because this branch moves the handler onto the threadpool. A bare
+# `OrderedDict` was safe while every handler was `async def` and could not
+# overlap; `move_to_end`, `popitem` and `del` on one from two threads at once
+# is the corruption `threadsafe_cache` exists to prevent (#991 x #992 merge).
+_MARKET_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(
+    OrderedDict())      # str -> (latest_ts, cached_at, payload)
+_MARKET_DATES_CACHE_MAX = 64
+_MARKET_DATES_TTL = timedelta(hours=1)
+
+
+def _market_dates_are_fresh(cached_ts, cached_at, latest_ts) -> bool:
+    """One definition of fresh, read both before and inside the claim.
+
+    Two copies of this expression is how the pre-claim shortcut and the
+    in-claim check drift into disagreeing about the same entry.
+    """
+    return (latest_ts is not None
+            and cached_ts == latest_ts
+            and datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL)
+
+
+def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
+    """Run the trading-dates query, RAISING on failure.
+
+    The endpoint promises a 503 when Cloud SQL is configured but broken. That
+    promise is only keepable with the raising helper: the swallowing sibling
+    returns an empty frame, the `except` never fires, and the request falls
+    through to the GCS staging parquets with a 200.
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
+@app.get("/api/market/dates/{ticker}", response_model=MarketDatesResponse, response_model_exclude_unset=True)
+def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
 
-    # ── Cloud SQL primary ────────────────────────────────────────────────────
+    # Cheap freshness probe: one index descent (~11 ms) instead of the
+    # 1,716 ms scan below. A cached list stays valid exactly as long as no
+    # newer bar exists, whichever writer produced it.
+    latest_ts = None
     if _CLOUD_SQL:
         try:
-            df = query_to_dataframe(
+            probe = _dates_query(
                 """
-                SELECT DISTINCT DATE(ts) AS trade_date
-                FROM market_data_intraday
-                WHERE ticker = :ticker AND interval = '1min'
-                ORDER BY trade_date DESC
+                SELECT MAX(ts) AS max_ts
+                FROM   market_data_intraday
+                WHERE  ticker = :ticker AND interval = '1min'
                 """,
                 {"ticker": ticker_upper},
             )
-            if not df.empty:
-                dates = [d.strftime("%Y%m%d") for d in df["trade_date"]]
-                # Derive months from the dates for month-level navigation
-                months = sorted(set(d[:6] for d in dates), reverse=True)
+        except Exception as e:
+            # The probe runs before the main query's handler, so without this
+            # a database failure here escapes as an unhandled 500 rather than
+            # the 503 this endpoint promises. Same failure, same answer,
+            # whichever query hit it first.
+            logger.error("Cloud SQL freshness probe failed for %s: %s",
+                         ticker_upper, e)
+            # The exception stays in the log above. It is NOT interpolated
+            # into the response: a driver/SQLAlchemy error renders the SQL,
+            # its bound parameters, and connection metadata, and this endpoint
+            # is reachable unauthenticated. The client needs to know the
+            # database is unavailable, not what the query looked like.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Could not read trading dates for {ticker_upper}: the "
+                        f"database is unavailable. Not falling back to the GCS "
+                        f"staging parquets, which may be stale or incomplete."),
+            )
+        if not probe.empty:
+            latest_ts = probe["max_ts"].iloc[0]
+
+    # A FRESH entry needs no claim. Without this the hot path entered the
+    # flight, and a request whose cached answer was already current would
+    # `wait` for a peer's refresh before returning the answer it walked in
+    # with -- a held worker bought nothing (Codex, PR #991 -- after the
+    # merge). Only the fresh case shortcuts: a stale entry still needs the
+    # claim, because whether it is served or refreshed depends on who wins.
+    entry = _MARKET_DATES_CACHE.get_and_touch(ticker_upper)
+    if entry is not None:
+        cached_ts, cached_at, payload = entry
+        if _market_dates_are_fresh(cached_ts, cached_at, latest_ts):
+            return payload
+
+    # Coalesce cold misses. The scan below is a Parallel Seq Scan of the whole
+    # per-ticker partition — 2,003,580 rows in 1,716 ms, measured — and this
+    # branch is what moves the handler onto the threadpool, so a burst of
+    # Charts/Journal mounts on one ticker now runs one copy PER REQUEST,
+    # filling the 5+2 connection pool with identical work and queueing
+    # everything else behind it. It could not happen while the handler was
+    # `async def`; it can now, so the guard belongs with the change that
+    # allows it.
+    #
+    # `wait`, not claim-and-decline: a decliner here has no honest answer of
+    # its own to return, only the one the claimant is about to produce. So it
+    # waits a BOUNDED moment and re-reads the cache — the claimant normally
+    # finishes first, turning a duplicate scan into a hit.
+    #
+    # A decliner NEVER runs the scan, not even after the wait times out. It
+    # used to fall through and run it, which is worse than either half alone:
+    # under the database contention that makes the claimant slow, every
+    # decliner holds a worker for the full wait AND then starts its own copy
+    # of a 1,716 ms scan, filling the 5+2 connection pool with duplicate work
+    # at exactly the moment the pool is the scarce thing (Codex, PR #991).
+    # That is the same trade — counting what the waiter gains and ignoring
+    # what it costs — that was overturned twice on the catalyst path in this
+    # PR, and this is the third instance of it.
+    #
+    # What a decliner returns instead, in order: a fresh entry; a STALE entry,
+    # labelled in `source` so a slow refresh is not served as a live read; and
+    # if there is nothing cached at all, a 503, because the honest answer is
+    # that the list is not available yet rather than a fabricated empty one.
+    #
+    # The freshness probe stays OUTSIDE: it is one index descent, it is what
+    # produces `latest_ts` for the check below, and serialising it would make
+    # every request wait on a peer for a query that costs 11 ms.
+    with _MARKET_DATES_FLIGHT.claim(ticker_upper) as mine:
+        if not mine:
+            _MARKET_DATES_FLIGHT.wait(ticker_upper, _MARKET_DATES_WAIT_S)
+        # Re-read inside the claim. A decliner re-reads because the claimant
+        # it waited for has usually just stored the answer; a CLAIMANT
+        # re-reads because winning the claim does not mean being first — a
+        # request descheduled between the probe and the claim can take it
+        # moments after the previous claimant populated the cache.
+        # One locked read-and-touch. Reading and then touching is two locked
+        # operations, and on a full cache a concurrent miss for another ticker
+        # can evict this entry in the window between them, so the touch raised
+        # KeyError out of what was a valid hit (Codex, PR #991).
+        entry = _MARKET_DATES_CACHE.get_and_touch(ticker_upper)
+        if entry is not None:
+            cached_ts, cached_at, payload = entry
+            if _market_dates_are_fresh(cached_ts, cached_at, latest_ts):
+                return payload
+            if not mine:
+                # Stale, and someone else is already refreshing it. The date
+                # list only grows, so a stale copy is a real answer missing at
+                # most the newest session — far better than a duplicate scan.
+                # `source` is a free-form string in the response contract, so
+                # saying which it is costs no schema change (Rule 6), and NOT
+                # saying it would make a slow refresh indistinguishable from a
+                # live read (Rule 3.7).
+                return {**payload,
+                        "source": f"{payload['source']} (stale, refresh in flight)"}
+            # `pop`, not `del`. The claim above does not give exclusive access:
+            # a request that entered before this claimant took the flight can
+            # still be inside this block, and `del` on a key the other one
+            # already dropped raises KeyError out of a handler that was only
+            # invalidating a stale entry.
+            _MARKET_DATES_CACHE.pop(ticker_upper, None)
+        elif not mine:
+            # Nothing cached and the claimant has not finished. There is no
+            # answer to give, and an empty `dates` list would read as "this
+            # ticker has no bars" — a fabricated result, which is exactly what
+            # the 503s further down this handler exist to avoid.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Trading dates for {ticker_upper} are being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "2"},
+            )
+
+        # ── Cloud SQL primary ────────────────────────────────────────────────────
+        if _CLOUD_SQL:
+            try:
+                # STRICT, deliberately. query_to_dataframe swallows and returns an
+                # empty frame -- its own docstring says "Do NOT use it where
+                # 'query failed' must surface as an error" -- which would make the
+                # 503 below unreachable and drop through to the GCS path with a
+                # stale 200. Same reasoning as _coverage_query above.
+                df = _dates_query(
+                    """
+                    -- REVERTED 2026-09-06. This was an ET conversion, on the
+                    -- belief that every row is a true UTC instant. That is FALSE:
+                    -- the table holds BOTH conventions and no per-row rule tells
+                    -- them apart.
+                    --
+                    --   2025-06-02  raw UTC 08:00-23:59 = 04:00-20:00 ET  true UTC
+                    --   2026-03-02  raw UTC 09:00-23:58 = 04:00-19:00 ET  true UTC
+                    --   2026-09-04  raw UTC 00:00-23:59 = a full 24 hours, which
+                    --                                     is no session either way
+                    --
+                    -- gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
+                    -- naively BY DESIGN ("ET-as-UTC convention") under the SAME
+                    -- data_source='alphavantage' label the true-UTC rows carry.
+                    -- Converting unconditionally shifts those rows 4-5 hours early.
+                    --
+                    -- DATE(ts) is also wrong (351 phantom dates), but it is the
+                    -- wrong we already had; a new wrong that corrupts premarket
+                    -- bars is worse. Own PR: normalise the writer, migrate the
+                    -- ET-framed rows, THEN convert here.
+                    SELECT DISTINCT DATE(ts) AS trade_date
+                    FROM market_data_intraday
+                    WHERE ticker = :ticker AND interval = '1min'
+                    ORDER BY trade_date DESC
+                    """,
+                    {"ticker": ticker_upper},
+                )
+                if not df.empty:
+                    dates = [d.strftime("%Y%m%d") for d in df["trade_date"]]
+                    # Derive months from the dates for month-level navigation
+                    months = sorted(set(d[:6] for d in dates), reverse=True)
+                    payload = {
+                        "ticker": ticker_upper,
+                        "source": "cloud_sql",
+                        "dates": dates,
+                        "months": months,
+                    }
+                    # Evict the least-recently-used single entry, never clear.
+                    # Clearing meant a working set of 65 tickers flushed all 64
+                    # still-valid entries on every miss, so nearly every request
+                    # paid the full scan -- the cache defeating itself.
+                    # Under the lock, so the length that decides the
+                    # eviction is the length it evicts from. Read and evict as
+                    # separate locked calls and two threads can both see the
+                    # cache full, both evict, and the second `popitem` can hit
+                    # an empty mapping and raise.
+                    # The INSERT is inside the same acquisition as the length
+                    # check and the eviction. Releasing between them let two
+                    # claimants for different tickers both read 63, both skip
+                    # eviction, and both insert -- and the backing mapping here
+                    # is a plain OrderedDict, which unlike TTLCache has no size
+                    # bound of its own, so the documented 64-entry maximum
+                    # stayed exceeded until some later miss happened to repair
+                    # it (Codex, PR #991). The lock is an RLock, so the nested
+                    # `__setitem__` re-enters it rather than deadlocking.
+                    with _MARKET_DATES_CACHE.lock:
+                        while len(_MARKET_DATES_CACHE) >= _MARKET_DATES_CACHE_MAX:
+                            _MARKET_DATES_CACHE.popitem(last=False)
+                        _MARKET_DATES_CACHE[ticker_upper] = (
+                            latest_ts, datetime.now(timezone.utc), payload)
+                    return payload
+                # Configured, and the query SUCCEEDED returning no rows. The
+                # system of record says this ticker has no 1-minute bars; that is
+                # an ANSWER, not a failure, and it must be returned as one.
+                #
+                # Without this return the block fell off its end and execution
+                # continued into the GCS branch below -- the branch whose own
+                # comment says it runs only when Cloud SQL is unconfigured. So a
+                # ticker absent from market_data_intraday but still holding
+                # staging parquets answered from GCS, with `source: "gcs"` that
+                # no frontend reads: exactly the cross-source silent fallback the
+                # `except` above raises 503 to prevent, reached by the one path
+                # that raises nothing.
+                #
+                # Deliberately NOT cached. MAX(ts) over zero rows is NULL, so
+                # `latest_ts` is None and the freshness check (`latest_ts is not
+                # None and cached_ts == latest_ts`) can never call such an entry
+                # fresh -- it would be stored, rejected, and deleted on every
+                # request. Both queries are index-bounded and return nothing for
+                # an unknown ticker, and skipping the cache means the first bar
+                # ingested for it shows up on the next request rather than after
+                # a TTL.
                 return {
                     "ticker": ticker_upper,
                     "source": "cloud_sql",
-                    "dates": dates,
-                    "months": months,
+                    "dates": [],
+                    "months": [],
                 }
-        except Exception as e:
-            logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
+            except Exception as e:
+                # Cloud SQL is the system of record; GCS holds the ingestion
+                # staging parquets, which are a DIFFERENT and possibly staler
+                # dataset. Quietly serving those on a database error is a silent
+                # fallback (Rule 3.7): the response does set source="gcs", but no
+                # frontend code reads that field, so a database outage degraded
+                # the answer with nothing visible to the user or the operator.
+                #
+                # Fail loud instead. The GCS path below still runs when Cloud SQL
+                # is deliberately UNCONFIGURED (local dev), which is a different
+                # situation from configured-and-broken.
+                logger.error("Cloud SQL dates query failed for %s: %s", ticker_upper, e)
+                # The exception stays in the log above. It is NOT interpolated
+                # into the response: a driver/SQLAlchemy error renders the SQL,
+                # its bound parameters, and connection metadata, and this endpoint
+                # is reachable unauthenticated. The client needs to know the
+                # database is unavailable, not what the query looked like.
+                raise HTTPException(
+                    status_code=503,
+                    detail=(f"Could not read trading dates for {ticker_upper}: the "
+                            f"database is unavailable. Not falling back to the GCS "
+                            f"staging parquets, which may be stale or incomplete."),
+                )
 
-    # ── GCS fallback ─────────────────────────────────────────────────────────
+    # ── GCS path — only when Cloud SQL is UNCONFIGURED (local dev) ───────────
     from api import gcs_reader
     dates: list[str] = []
     months: list[str] = []
     try:
         # Daily minute parquets
-        minute_blobs = gcs_reader.list_matching_blobs(
+        minute_blobs = gcs_reader.list_matching_blobs_strict(
             f"data/{ticker_lower}/minute/",
             rf"^{ticker_lower}_minute_(\d{{8}})\.parquet$",
         )
@@ -538,7 +871,7 @@ async def get_available_dates(ticker: str):
             if len(date_part) == 8 and date_part.isdigit():
                 dates.append(date_part)
         # Monthly intraday parquets
-        intraday_blobs = gcs_reader.list_matching_blobs(
+        intraday_blobs = gcs_reader.list_matching_blobs_strict(
             f"data/{ticker_lower}/intraday/",
             rf"^{ticker_lower}_av_1min_(\d{{6}})\.parquet$",
         )
@@ -548,18 +881,37 @@ async def get_available_dates(ticker: str):
             if len(month_part) == 6 and month_part.isdigit():
                 months.append(month_part)
     except Exception as e:
-        logger.warning("GCS dates list failed for %s: %s", ticker_upper, e)
+        # Rule 3.7: returning [] here is indistinguishable from "this ticker has
+        # no data", and the caller renders an empty date picker as if that were
+        # the truth. Cloud SQL already failed to reach this branch, so both
+        # sources are down — say so.
+        logger.error("GCS dates list failed for %s: %s", ticker_upper, e)
+        raise HTTPException(
+            status_code=503,
+            detail=(f"Could not list trading dates for {ticker_upper}: Cloud SQL "
+                    f"unavailable and the GCS fallback failed ({e})."),
+        )
 
-    return {
+    payload = {
         "ticker": ticker_upper,
         "source": "gcs",
         "dates": sorted(set(dates), reverse=True),
         "months": sorted(set(months), reverse=True),
     }
+    # NOT cached, which is what #992 already does and what this merge restores.
+    # This branch cached the GCS answer when Cloud SQL is unconfigured, and
+    # under #992's protocol that stores a bare payload in a cache whose entries
+    # are `(latest_ts, cached_at, payload)` triples — so the NEXT request
+    # unpacks it and raises. Storing the triple instead would not help either:
+    # the freshness probe only runs when Cloud SQL is configured, so such an
+    # entry can never be judged fresh and would be deleted on every read. A
+    # cache keyed on a Cloud SQL freshness signal has nothing to say about a
+    # path that runs precisely when there is no Cloud SQL.
+    return payload
 
 
-@app.get("/api/market/data/{ticker}/{date}")
-async def get_market_data(
+@app.get("/api/market/data/{ticker}/{date}", response_model=MarketDataResponse, response_model_exclude_unset=True)
+def get_market_data(
     ticker: str,
     date: str,
     timeframe: int = Query(default=1, description="Timeframe in minutes: 1, 5, 15, 30, 60"),
@@ -714,8 +1066,8 @@ def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
         return None
 
 
-@app.get("/api/market/reference/{ticker}/{date}")
-async def get_reference_levels(ticker: str, date: str):
+@app.get("/api/market/reference/{ticker}/{date}", response_model=ReferenceResponse, response_model_exclude_unset=True)
+def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
     Strategy:
@@ -884,8 +1236,8 @@ def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     return query_to_dataframe_strict(sql, params)
 
 
-@app.get("/api/market/coverage")
-async def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
+@app.get("/api/market/coverage", response_model=CoverageResponse, response_model_exclude_unset=True)
+def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
     """Data coverage per symbol — drives the type-ahead's full/daily/new badges.
 
     Issues exactly two batched queries regardless of symbol count (CLAUDE.md
@@ -938,7 +1290,39 @@ SECTOR_NAMES = {
     "XLC": "Communication",
 }
 
-_SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
+_SECTORS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=1, ttl=600))  # 10m — sector closes update once/day
+
+# Trading dates for a ticker change once a day, and the query behind
+# /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
+# (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms).
+# Uncached, every ChartsPage and JournalPage mount paid that.
+#
+# **One hour, not twelve.** A 12h entry filled in the evening spans the nightly
+# ingestion (`av-intraday-nightly` 21:00 ET, `fetch-market-data-daily` 23:00
+# ET), so the new session stayed missing from the Charts and Journal date
+# pickers until the following morning — a wrong answer that looks completely
+# normal. One hour cannot span a writer, and bounds the worst case at an hour
+# rather than a night.
+#
+# RESOLVED on merge, as this comment used to say it would be: #992's endpoint
+# won, with its `MAX(ts)` freshness probe (one index descent, 10.8 ms) plus a
+# 1h TTL backstop, and this branch kept `list_matching_blobs_strict`, which
+# #992 does not carry. The cache itself is defined with that endpoint above and
+# is wrapped for the threadpool; the duplicate TTLCache that stood here was a
+# second live definition of the same name, and being the later one it shadowed
+# the endpoint's — which calls `move_to_end` and `popitem`, neither of which a
+# TTLCache has. Two PRs each adding a definition in their own file position is
+# a conflict git cannot see.
+
+# Coalesces cold misses per ticker. Bounded at slightly over the measured
+# 1,716 ms query so a decliner normally wakes to a populated cache, and gives
+# up rather than holding a worker if the claimant is slower than that.
+_MARKET_DATES_FLIGHT = SingleFlight()
+_MARKET_DATES_WAIT_S = 2.5
+
+_ET_TZ = ZoneInfo("America/New_York")
+
+
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1023,8 +1407,8 @@ def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
     return as_of, sectors
 
 
-@app.get("/api/market/sectors")
-async def market_sectors():
+@app.get("/api/market/sectors", response_model=SectorsResponse, response_model_exclude_unset=True)
+def market_sectors():
     """Sector rotation snapshot computed from SPDR sector ETF daily closes.
 
     One batched query (CLAUDE.md Rule 0: batch by grouping key, never
@@ -1033,8 +1417,9 @@ async def market_sectors():
     days per ticker in the common case. Cached 10 minutes since sector
     closes only update once per trading day.
     """
-    if "sectors" in _SECTORS_CACHE:
-        return _SECTORS_CACHE["sectors"]
+    cached = _SECTORS_CACHE.get("sectors", MISS)
+    if cached is not MISS:
+        return cached
 
     # no _CLOUD_SQL gate needed: get_engine() raises RuntimeError, caught below -> 503
     try:
@@ -1084,7 +1469,6 @@ async def market_sectors():
 # auth._OPEN_API_PREFIXES, so both are gated identically by AUTH_MODE=firebase
 # and unaffected identically in iap/open mode) — no new auth code needed.
 
-_ET_TZ = ZoneInfo("America/New_York")
 # RTH-window constants formerly lived here but are now superseded by
 # api.routers.live._is_market_open (weekend/holiday-aware) -- see
 # _most_active_label below.
@@ -1131,8 +1515,8 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
     return snapshot_date_str
 
 
-@app.get("/api/market/most-active")
-async def market_most_active():
+@app.get("/api/market/most-active", response_model=MostActiveResponse, response_model_exclude_unset=True)
+def market_most_active():
     """Most-active tickers snapshot, with per-ticker snapshot sparklines.
 
     One SQL (CLAUDE.md Rule 0: batch, never per-ticker) pulls every row for
@@ -1227,6 +1611,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
                 df = query_to_dataframe(
                     """
+                    -- Framing must match get_available_dates; both are DATE(ts)
+                    -- pending the data normalisation described there.
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
@@ -1248,6 +1634,7 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                     SELECT ts, open, high, low, close, volume, data_source
                     FROM market_data_intraday
                     WHERE ticker = :ticker AND interval = '1min'
+                      -- Naive bounds, matching the DATE(ts) framing above.
                       AND ts >= :start AND ts < :end
                     ORDER BY ts
                     """,
@@ -1258,9 +1645,21 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
 
             if not df.empty:
                 df.index = pd.to_datetime(df["ts"])
-                # Normalize timezone based on data source:
-                # - alphavantage: ET stored as UTC → just strip tz label
-                # - yfinance: real UTC → convert to ET then strip
+                # Normalize timezone based on data source.
+                #
+                # REVERTED 2026-09-06 to this branch. It was replaced with an
+                # unconditional ET conversion on evidence from IWM aggregates,
+                # which hid that the table holds TWO conventions:
+                # gcp/fetchers/fetch_market_data.py:445 stores AV wall-clock ET
+                # naively BY DESIGN and labels it 'alphavantage' -- the same
+                # label the true-UTC rows carry. Converting every row shifts the
+                # ET-framed ones 4-5 hours early, and under EST moves 04:00 ET
+                # bars to the previous date where the caller's filter drops them.
+                #
+                # This branch is ALSO wrong: data_source cannot distinguish the
+                # two. But it is what production runs today, and a new wrong
+                # that corrupts premarket bars is worse than the existing one.
+                # Own PR: normalise the writer, migrate the ET-framed rows.
                 is_yfinance = (
                     "data_source" in df.columns
                     and not df["data_source"].isna().all()
@@ -1269,7 +1668,8 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
                 df = df.drop(columns=["ts", "data_source"], errors="ignore")
                 if df.index.tz is not None:
                     if is_yfinance:
-                        df.index = df.index.tz_convert("America/New_York").tz_localize(None)
+                        df.index = (df.index.tz_convert("America/New_York")
+                                            .tz_localize(None))
                     else:
                         df.index = df.index.tz_localize(None)
                 return df
@@ -1332,7 +1732,7 @@ if _dist.is_dir():
     _index_html = _dist / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    def serve_spa(full_path: str):
         """SPA fallback — serve index.html for any non-API, non-asset route."""
         candidate = _dist / full_path
         if full_path and candidate.is_file() and ".." not in full_path:

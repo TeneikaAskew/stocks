@@ -45,6 +45,9 @@ if str(PROJECT_ROOT) not in sys.path:
 # monkeypatch api.auth.AUTH_MODE and this router sees it — same convention as
 # routers/preferences.py.
 from api import auth
+from api.schemas import (
+    ProfileResponse,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -139,7 +142,7 @@ def _select_row(owner: str) -> Optional[dict]:
     return None if row is None else dict(row)
 
 
-@router.get("/api/me/profile")
+@router.get("/api/me/profile", response_model=ProfileResponse, response_model_exclude_unset=True)
 def get_profile(request: Request) -> dict:
     owner = _profile_owner(request)
     try:
@@ -156,7 +159,7 @@ def get_profile(request: Request) -> dict:
     return row
 
 
-@router.put("/api/me/profile")
+@router.put("/api/me/profile", response_model=ProfileResponse, response_model_exclude_unset=True)
 def put_profile(body: ProfileUpdate, request: Request) -> dict:
     """Upsert the provided subset of fields and return the full stored row.
 

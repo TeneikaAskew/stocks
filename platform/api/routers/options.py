@@ -55,8 +55,16 @@ import math
 import httpx
 import pandas as pd
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException, Response
+from api.threadsafe_cache import ThreadSafeCache
+from lib.single_flight import SingleFlight
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
+from api.schemas import (
+    GammaLevelsResponse,
+    GreeksResponse,
+    OptionsChainResponse,
+    OptionsDatesResponse,
+)
 
 # Project root so we can import gcp.database the same way the journal router does.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -64,7 +72,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
+                              query_to_dataframe_strict)
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception as _exc:  # pragma: no cover - import-time guard
     _HAS_CLOUD_SQL = False
@@ -77,16 +86,33 @@ VALID_TICKERS = {"SPY", "IWM", "QQQ", "SPX"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # (ticker, date_str) → response dict; 12h TTL (EOD rows are immutable).
-_CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
-# ticker → list[date_str]; 12h TTL. Dates list only changes once per day when
-# the scheduled AV fetcher runs, so long TTL avoids re-running the distinct
-# scan on cold caches (which is expensive on db-g1-small without the composite
-# (ticker, data_source, snapshot_date) index in place).
-_DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
+_CHAIN_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
+# (ticker, limit) → (probed snapshot_date, list[date_str]); 12h TTL. The dates
+# list only changes once per day when the scheduled AV fetcher runs, so a long
+# TTL avoids re-running the walk on cold caches. The composite
+# (ticker, data_source, snapshot_date) index DOES exist as
+# idx_etf_options_ticker_source_date — an older comment here claimed otherwise.
+#
+# The date is stored IN the entry. A separate ticker → latest-date map used to
+# drive a ticker-wide sweep, and it let a slow writer publish a stale list
+# under a fresh marker; see the read in `get_options_dates`. Freshness is still
+# ticker-wide in effect — every variant probes the same date and rejects itself
+# when it moves — but no entry can now disagree with its own version.
+_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
+# Coalesces cold or newly-invalidated misses. Threadpool dispatch is what makes
+# this reachable: concurrent requests all miss and each runs the recursive
+# walk, and at the default limit=1000 those duplicate index walks can hold
+# every one of the 5+2 pooled connections while unrelated handlers queue behind
+# the pool (Codex, PR #991). Keyed per (ticker, limit), because the two
+# variants are genuinely different queries and serialising them against each
+# other would trade one queue for another.
+_DATES_FLIGHT = SingleFlight()
+# The chain read is a per-(ticker, date) query; same shape, same reason.
+_CHAIN_FLIGHT = SingleFlight()
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
-_LIVE_CACHE: TTLCache = TTLCache(maxsize=128, ttl=300)
+_LIVE_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=300))
 
 # AlphaVantage proxy config — mirrors api.routers.live so the env-var
 # resolution + endpoint URL stay in lockstep.
@@ -260,88 +286,190 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 
-# Widening range schedule used by the dates endpoint. The first query tries a
-# 60-day window, then 1y, 3y, 10y, unlimited — stopping as soon as we have a
-# reasonable number of dates. This keeps the index scan bounded on large tables
-# (critical without the composite (ticker, data_source, snapshot_date) index)
-# while still returning the full history if the table is small.
-_DATES_WINDOW_DAYS = (60, 365, 1100, 3650, None)
-_DATES_MIN_RESULTS = 40  # ≈ 2 months of weekdays
+# The dates endpoint walks DISTINCT snapshot_date values with a LOOSE INDEX
+# SCAN (recursive CTE), not `SELECT DISTINCT`. The composite index
+# `idx_etf_options_ticker_source_date` on (ticker, data_source, snapshot_date)
+# exists, but `SELECT DISTINCT snapshot_date` still has to READ every matching
+# index row before deduping. Measured on prod 2026-09-06 for IWM/60d:
+#
+#   SELECT DISTINCT ...      10,373,012 rows read -> 43 returned   9,870 ms
+#   loose index scan            43 index descents -> 43 returned       5.5 ms
+#
+# The recursive form asks the index for "the next date strictly older than the
+# one I have" and costs one descent per date RETURNED, not one read per row
+# MATCHED. That makes the widening-window schedule unnecessary: cost scales
+# with `limit`, so a caller that wants one date pays for one date.
+_DATES_MAX_LIMIT = 1000
 
 
-@router.get("/api/options/dates/{ticker}")
-async def get_options_dates(ticker: str):
-    """Return up to 1000 most-recent snapshot dates that have AlphaVantage data
-    in Cloud SQL for the given ticker (newest first).
+@router.get("/api/options/dates/{ticker}", response_model=OptionsDatesResponse, response_model_exclude_unset=True)
+def get_options_dates(
+    ticker: str,
+    limit: int = Query(_DATES_MAX_LIMIT, ge=1, le=_DATES_MAX_LIMIT,
+                       description="How many snapshot dates to return, newest "
+                                   "first. Callers that only render the latest "
+                                   "snapshot should pass limit=1 — cost scales "
+                                   "with this value."),
+):
+    """Return the `limit` most-recent snapshot dates with AlphaVantage data.
 
-    Uses a widening-range scan: tries a 60-day window first, expanding to 1y,
-    3y, 10y, and then unbounded if fewer than 40 dates are found. This keeps
-    cold queries bounded when the covering index on (ticker, data_source,
-    snapshot_date) isn't yet in place.
+    Newest first. `limit=1` is the cheap path used by any view that renders
+    only the latest snapshot; the full list is for date pickers.
     """
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
 
-    cached = _DATES_CACHE.get(ticker_upper)
-    if cached is not None:
-        return {"ticker": ticker_upper, "dates": cached, "source": "cloud_sql", "cached": True}
+    # Freshness is ticker-wide, not per-limit. Keying the cache on
+    # (ticker, limit) alone lets sibling variants disagree: a caller that
+    # cached the default list before av-options-daily writes, and a caller
+    # that asks for limit=1 after, would see different "latest" dates from
+    # the same process for up to the TTL. So the newest snapshot_date is
+    # probed once and every variant for that ticker is dropped when it moves.
+    #
+    # The probe is the same single index descent as the limit=1 query
+    # (idx_etf_options_ticker_source_date, measured 2.5 ms on prod).
+    latest_date = None
+    probe = query_to_dataframe_strict(
+        """
+        SELECT snapshot_date
+        FROM   etf_options_snapshots
+        WHERE  ticker = :ticker AND data_source = 'alphavantage'
+        ORDER  BY snapshot_date DESC
+        LIMIT  1
+        """,
+        {"ticker": ticker_upper},
+    )
+    if not probe.empty:
+        latest_date = probe["snapshot_date"].iloc[0]
 
-    dates: list[str] = []
-    window_used: str | None = None
-    for days in _DATES_WINDOW_DAYS:
-        if days is None:
+    # The probed date is stored WITH the payload, not in a second map beside
+    # it. Keeping the version separately let a slow request publish a stale
+    # list under a fresh marker: request A probes date D1, runs its query, and
+    # is descheduled; request B probes D2, sweeps the cache, and stores the
+    # post-ingestion list; A resumes and overwrites that entry with its
+    # pre-ingestion list while the marker still reads D2, so every later probe
+    # compares equal and the stale list is served for the full 12h TTL
+    # (Codex, PR #991). This became reachable when the handler moved to the
+    # threadpool.
+    #
+    # Versioning the payload makes that unrepresentable rather than unlikely:
+    # a write carries the date its own query saw, and a read compares against
+    # it, so a late write can only publish an entry that the next read
+    # rejects. It also removes the sweep and the second map entirely — each
+    # key now invalidates itself on read — which is the shape
+    # /api/market/dates already uses.
+    cache_key = (ticker_upper, limit)
+    cached = _DATES_CACHE.get(cache_key)
+    if cached is not None and cached[0] == latest_date:
+        return {"ticker": ticker_upper, "dates": cached[1],
+                "source": "cloud_sql", "cached": True}
+
+    with _DATES_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it does not mean being first, and
+        # a request descheduled between the probe and the claim can take it
+        # moments after the previous claimant stored the answer.
+        cached = _DATES_CACHE.get(cache_key)
+        if cached is not None and cached[0] == latest_date:
+            return {"ticker": ticker_upper, "dates": cached[1],
+                    "source": "cloud_sql", "cached": True}
+        if not mine:
+            # Declines rather than running a second walk, and never waits:
+            # the same policy the other cold paths settled on, for the same
+            # reason -- a decliner reaches its timeout exactly when the
+            # connection pool is contended, which is the worst moment to add
+            # a duplicate scan to it.
+            if cached is not None:
+                # A stale list, labelled. The dates only grow, so it is a real
+                # answer missing at most the newest snapshot, and `source` is
+                # a free-form string in the contract (Rule 6).
+                return {"ticker": ticker_upper, "dates": cached[1],
+                        "source": "cloud_sql (stale, refresh in flight)",
+                        "cached": True}
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Snapshot dates for {ticker_upper} are being read "
+                        f"now; retry shortly."),
+                headers={"Retry-After": "2"},
+            )
+        if cached is not None:
+            # `pop(key, None)`, not `del`. Two requests can both observe the
+            # same moved date, and `del` on a key the other already removed
+            # raises KeyError out of a handler that was only invalidating.
+            _DATES_CACHE.pop(cache_key, None)
+
+        sql = None
+        if limit != 1:
+            # The depth counter `n` is load-bearing, not decoration. Bounding the
+            # recursion only in the OUTER query does not work: ORDER BY has to
+            # materialise the whole CTE before LIMIT can discard any of it, so the
+            # walk runs to the end of history regardless. Measured on prod for
+            # IWM ?limit=2 — unbounded recursion: 2,682 rows walked, 3,013 ms;
+            # bounded by `n < :limit`: 2 rows walked, 0.27 ms.
             sql = """
-                SELECT DISTINCT snapshot_date
-                FROM   etf_options_snapshots
-                WHERE  ticker = :ticker
-                  AND  data_source = 'alphavantage'
-                ORDER  BY snapshot_date DESC
-                LIMIT  1000
+                WITH RECURSIVE d AS (
+                    (SELECT snapshot_date, 1 AS n
+                       FROM etf_options_snapshots
+                      WHERE ticker = :ticker AND data_source = 'alphavantage'
+                      ORDER BY snapshot_date DESC
+                      LIMIT 1)
+                    UNION ALL
+                    SELECT (SELECT s.snapshot_date
+                              FROM etf_options_snapshots s
+                             WHERE s.ticker = :ticker
+                               AND s.data_source = 'alphavantage'
+                               AND s.snapshot_date < d.snapshot_date
+                             ORDER BY s.snapshot_date DESC
+                             LIMIT 1),
+                           d.n + 1
+                      FROM d
+                     WHERE d.snapshot_date IS NOT NULL
+                       AND d.n < :limit
+                )
+                SELECT snapshot_date
+                  FROM d
+                 WHERE snapshot_date IS NOT NULL
+                 ORDER BY snapshot_date DESC
             """
-            params = {"ticker": ticker_upper}
-            window_used = "unbounded"
+
+        # STRICT: a connection failure or missing relation must surface as a 5xx.
+        # The swallowing sibling would return an empty frame here, which this
+        # handler cannot tell apart from "ticker genuinely has no data" and would
+        # report as a 404 telling the operator to run the fetcher — a false
+        # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
+        if limit == 1:
+            # The freshness probe above IS this query, and it has already run.
+            # Re-issuing it would make the advertised single-descent path pay two
+            # descents plus a second pool checkout and pre-ping on every miss --
+            # exactly the requests the cache exists to make cheap.
+            df = probe
         else:
-            sql = """
-                SELECT DISTINCT snapshot_date
-                FROM   etf_options_snapshots
-                WHERE  ticker = :ticker
-                  AND  data_source = 'alphavantage'
-                  AND  snapshot_date >= CURRENT_DATE - make_interval(days => :days)
-                ORDER  BY snapshot_date DESC
-                LIMIT  1000
-            """
-            params = {"ticker": ticker_upper, "days": days}
-            window_used = f"{days}d"
+            df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
+                                                 "limit": limit})
 
-        df = query_to_dataframe(sql, params)
-        if not df.empty:
-            dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
-                     for d in df["snapshot_date"].tolist()]
-        if len(dates) >= _DATES_MIN_RESULTS or days is None:
-            break
+        dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+                 for d in df["snapshot_date"].tolist()] if not df.empty else []
 
-    if not dates:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No AlphaVantage options data ingested for {ticker_upper}. "
-                "Run `python -m gcp.fetchers.fetch_av_historical_options` or "
-                "trigger the 'Fetch Daily Alpha Vantage Options Data' workflow."
-            ),
-        )
+        if not dates:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No AlphaVantage options data ingested for {ticker_upper}. "
+                    "Run `python -m gcp.fetchers.fetch_av_historical_options` or "
+                    "trigger the 'Fetch Daily Alpha Vantage Options Data' workflow."
+                ),
+            )
 
-    _DATES_CACHE[ticker_upper] = dates
-    return {
-        "ticker": ticker_upper,
-        "dates": dates,
-        "source": "cloud_sql",
-        "window": window_used,
-        "cached": False,
-    }
+        _DATES_CACHE[cache_key] = (latest_date, dates)
+        return {
+            "ticker": ticker_upper,
+            "dates": dates,
+            "source": "cloud_sql",
+            "cached": False,
+        }
 
 
-@router.get("/api/options/{ticker}/{date_str}")
-async def get_options(ticker: str, date_str: str):
+@router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
+def get_options(ticker: str, date_str: str):
     """Return the AlphaVantage option chain for `ticker` on `date_str`
     (YYYY-MM-DD) from Cloud SQL.
     """
@@ -351,88 +479,105 @@ async def get_options(ticker: str, date_str: str):
 
     cache_key = (ticker_upper, date_str)
     cached = _CHAIN_CACHE.get(cache_key)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
     if cached is not None:
         return {**cached, "cached": True}
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _CHAIN_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _CHAIN_CACHE.get(cache_key)
+        if cached is not None:
+            return {**cached, "cached": True}
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The options chain is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
 
-    # etf_options_snapshots stores multiple intraday snapshots per day (one row
-    # per contract per snapshot_ts — ~80 for an active day). Restrict to the
-    # latest snapshot_ts so we return a single chain (~5K contracts) rather than
-    # every snapshot stacked (~430K rows). Loading all of them OOM-killed the
-    # 1 GiB container, took ~60 s, AND inflated GEX ~80x by summing open interest
-    # across duplicate snapshots. max(snapshot_ts) matches the existing "as of"
-    # marker computed below.
-    sql = """
-        SELECT contract_symbol, expiration, strike, option_type,
-               bid, ask, mark, last_price, volume, open_interest,
-               implied_volatility, delta, gamma, theta, vega, rho,
-               snapshot_ts
-        FROM   etf_options_snapshots
-        WHERE  ticker = :ticker
-          AND  snapshot_date = :snap_date
-          AND  data_source = 'alphavantage'
-          AND  snapshot_ts = (
-                 SELECT MAX(snapshot_ts)
-                 FROM   etf_options_snapshots
-                 WHERE  ticker = :ticker
-                   AND  snapshot_date = :snap_date
-                   AND  data_source = 'alphavantage'
-               )
-        ORDER  BY expiration, strike, option_type
-    """
-    df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
-
-    if df.empty:
-        # Look up the nearest available date for a helpful error message.
-        nearest_sql = """
-            SELECT MAX(snapshot_date) AS nearest
+        # etf_options_snapshots stores multiple intraday snapshots per day (one row
+        # per contract per snapshot_ts — ~80 for an active day). Restrict to the
+        # latest snapshot_ts so we return a single chain (~5K contracts) rather than
+        # every snapshot stacked (~430K rows). Loading all of them OOM-killed the
+        # 1 GiB container, took ~60 s, AND inflated GEX ~80x by summing open interest
+        # across duplicate snapshots. max(snapshot_ts) matches the existing "as of"
+        # marker computed below.
+        sql = """
+            SELECT contract_symbol, expiration, strike, option_type,
+                   bid, ask, mark, last_price, volume, open_interest,
+                   implied_volatility, delta, gamma, theta, vega, rho,
+                   snapshot_ts
             FROM   etf_options_snapshots
             WHERE  ticker = :ticker
+              AND  snapshot_date = :snap_date
               AND  data_source = 'alphavantage'
-              AND  snapshot_date <= :snap_date
+              AND  snapshot_ts = (
+                     SELECT MAX(snapshot_ts)
+                     FROM   etf_options_snapshots
+                     WHERE  ticker = :ticker
+                       AND  snapshot_date = :snap_date
+                       AND  data_source = 'alphavantage'
+                   )
+            ORDER  BY expiration, strike, option_type
         """
-        nearest_df = query_to_dataframe(
-            nearest_sql, {"ticker": ticker_upper, "snap_date": parsed_date}
-        )
-        nearest = None
-        if not nearest_df.empty and nearest_df.iloc[0]["nearest"] is not None:
-            n = nearest_df.iloc[0]["nearest"]
-            nearest = n.strftime("%Y-%m-%d") if hasattr(n, "strftime") else str(n)
+        df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
 
-        msg = (
-            f"No AlphaVantage options data for {ticker_upper} on {date_str}. "
-            + (f"Most recent available: {nearest}." if nearest
-               else "No earlier data ingested for this ticker.")
-        )
-        raise HTTPException(status_code=404, detail=msg)
+        if df.empty:
+            # Look up the nearest available date for a helpful error message.
+            nearest_sql = """
+                SELECT MAX(snapshot_date) AS nearest
+                FROM   etf_options_snapshots
+                WHERE  ticker = :ticker
+                  AND  data_source = 'alphavantage'
+                  AND  snapshot_date <= :snap_date
+            """
+            nearest_df = query_to_dataframe(
+                nearest_sql, {"ticker": ticker_upper, "snap_date": parsed_date}
+            )
+            nearest = None
+            if not nearest_df.empty and nearest_df.iloc[0]["nearest"] is not None:
+                n = nearest_df.iloc[0]["nearest"]
+                nearest = n.strftime("%Y-%m-%d") if hasattr(n, "strftime") else str(n)
 
-    contracts = _df_to_contracts(df)
+            msg = (
+                f"No AlphaVantage options data for {ticker_upper} on {date_str}. "
+                + (f"Most recent available: {nearest}." if nearest
+                   else "No earlier data ingested for this ticker.")
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
-    # Take the max snapshot_ts as the "as of" marker.
-    snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
-    if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
-        snapshot_timestamp = snapshot_ts_val.isoformat()
-    else:
-        snapshot_timestamp = date_str
+        contracts = _df_to_contracts(df)
 
-    response = {
-        "ticker": ticker_upper,
-        "date": date_str,
-        "options": contracts,
-        "snapshot_timestamp": snapshot_timestamp,
-        "metadata": {
-            "source": "cloud_sql",
-            "data_source": "alphavantage",
-            "row_count": len(contracts),
-        },
-    }
-    _CHAIN_CACHE[cache_key] = response
-    return {**response, "cached": False}
+        # Take the max snapshot_ts as the "as of" marker.
+        snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
+        if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
+            snapshot_timestamp = snapshot_ts_val.isoformat()
+        else:
+            snapshot_timestamp = date_str
+
+        response = {
+            "ticker": ticker_upper,
+            "date": date_str,
+            "options": contracts,
+            "snapshot_timestamp": snapshot_timestamp,
+            "metadata": {
+                "source": "cloud_sql",
+                "data_source": "alphavantage",
+                "row_count": len(contracts),
+            },
+        }
+        _CHAIN_CACHE[cache_key] = response
+        return {**response, "cached": False}
 
 
-# ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
+    # ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
 
 
-@router.get("/api/options/live/{ticker}/{date_str}")
+@router.get("/api/options/live/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
 async def get_options_live(ticker: str, date_str: str, response: Response):
     """Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same
     response shape as `/api/options/{ticker}/{date_str}`.
@@ -552,7 +697,7 @@ def _opts_to_dicts(options: list[_OptionRecord]) -> list[dict]:
     return [o.model_dump() for o in options]
 
 
-@router.post("/api/options/greeks")
+@router.post("/api/options/greeks", response_model=GreeksResponse, response_model_exclude_unset=True)
 def compute_options_greeks(req: _GreeksRequest) -> dict:
     """Single source of truth for GEX/VEX/max-pain/implied-move/nodes.
 
@@ -608,8 +753,8 @@ def compute_options_greeks(req: _GreeksRequest) -> dict:
     }
 
 
-@router.get("/api/options/{ticker}/{date_str}/levels")
-async def get_gamma_levels(
+@router.get("/api/options/{ticker}/{date_str}/levels", response_model=GammaLevelsResponse, response_model_exclude_unset=True)
+def get_gamma_levels(
     ticker: str,
     date_str: str,
     window_pct: float = 8.0,
@@ -632,7 +777,7 @@ async def get_gamma_levels(
     _require_cloud_sql()
 
     # Reuse the existing chain endpoint logic to load + normalize the chain.
-    chain_response = await get_options(ticker, date_str)
+    chain_response = get_options(ticker, date_str)
     options = chain_response.get("options", [])
 
     summary = gamma.build_summary(
