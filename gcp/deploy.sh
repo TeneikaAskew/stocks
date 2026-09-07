@@ -118,6 +118,25 @@ build_image() {
 # the job was deployed through this script (pinned right after deploy), and
 # the best available otherwise.
 
+# Split a gcloud `value(a,b,c)` row on TABS, preserving empty columns.
+# `IFS=$'\t' read` cannot do this: tab is IFS whitespace, so adjacent tabs
+# collapse and an empty middle field (a job that has never executed has no
+# latestCreatedExecution) shifts every later column left (Codex, PR #1004).
+# Usage: _split_tsv "<row>" var1 var2 var3
+_split_tsv() {
+    local row=$1; shift
+    local name
+    for name in "$@"; do
+        if [[ "${row}" == *$'\t'* ]]; then
+            printf -v "${name}" '%s' "${row%%$'\t'*}"
+            row=${row#*$'\t'}
+        else
+            printf -v "${name}" '%s' "${row}"
+            row=""
+        fi
+    done
+}
+
 # gcr.io/<project>/<pkg> -> us-docker.pkg.dev/<project>/gcr.io/<pkg>. Cloud
 # Run reports legacy images by their gcr.io host; the artifacts CLI only
 # accepts the pkg.dev form of the gcr.io-redirect repo.
@@ -132,11 +151,14 @@ _pkgdev_path() {
 
 # Per-run cache of `tags list` per repo image, so pinning ~80 targets does
 # not issue ~80 list calls. Keyed by repo image; value is "tag<TAB>version"
-# lines. Invalidated by _pin_tag after it writes a tag.
+# lines. Invalidated by _pin_tag after it writes a tag. _load_tags must be
+# called directly (never inside $(...)), otherwise the assignment lands in a
+# subshell and is lost (Codex, PR #1004); callers then read
+# ${_TAG_CACHE[<repo_image>]} themselves.
 declare -A _TAG_CACHE=()
 
-_tags_of() {
-    # _tags_of <repo_image>  -> prints "tag<TAB>image@digest" lines; nonzero on failure
+_load_tags() {
+    # _load_tags <repo_image>  -> fills _TAG_CACHE[<repo_image>]; nonzero on failure
     local repo_image=$1
     if [ -z "${_TAG_CACHE[${repo_image}]+x}" ]; then
         local out
@@ -145,7 +167,6 @@ _tags_of() {
             echo "  ERROR: cannot list tags on ${repo_image}" >&2; return 1; }
         _TAG_CACHE[${repo_image}]="${out}"
     fi
-    printf '%s\n' "${_TAG_CACHE[${repo_image}]}"
 }
 
 _pin_tag() {
@@ -154,9 +175,9 @@ _pin_tag() {
     local repo_image
     repo_image=$(_pkgdev_path "${ref%%@*}")
     ref="${repo_image}@${ref#*@}"
-    local tags existing
-    tags=$(_tags_of "${repo_image}") || return 1
-    existing=$(printf '%s\n' "${tags}" \
+    local existing
+    _load_tags "${repo_image}" || return 1
+    existing=$(printf '%s\n' "${_TAG_CACHE[${repo_image}]}" \
         | awk -F'\t' -v t="${tag}" '{n=split($1,p,"/"); if (p[n]==t) print $2}' \
         | sed 's/.*@//')
     if [ "${existing}" = "${ref#*@}" ]; then
@@ -198,12 +219,12 @@ _job_pinned_image() {
     out=$(gcloud run jobs describe "${job}" --region "${REGION}" \
         --format="value(metadata.generation,status.latestCreatedExecution.name,spec.template.spec.template.spec.containers[0].image)" 2>/dev/null) \
         || { echo "  ERROR: cannot describe job ${job}" >&2; return 1; }
-    IFS=$'\t' read -r gen exec_name ref <<<"${out}"
+    _split_tsv "${out}" gen exec_name ref
     if [ -n "${exec_name}" ]; then
         exec_out=$(gcloud run jobs executions describe "${exec_name}" --region "${REGION}" \
             --format="value(metadata.labels['run.googleapis.com/jobGeneration'],spec.template.spec.containers[0].image)" 2>/dev/null) \
             || { echo "  ERROR: cannot describe execution ${exec_name}" >&2; return 1; }
-        IFS=$'\t' read -r exec_gen img <<<"${exec_out}"
+        _split_tsv "${exec_out}" exec_gen img
         if [ "${exec_gen}" = "${gen}" ] && [[ "${img}" == *@sha256:* ]]; then
             echo "${img}"; return 0
         fi
@@ -283,7 +304,8 @@ pin_image_tags() {
     for repo_image in "${IMAGE}" \
             "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform" \
             "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/solyra-api"; do
-        tags=$(_tags_of "${repo_image}") || { failures=$((failures + 1)); continue; }
+        _load_tags "${repo_image}" || { failures=$((failures + 1)); continue; }
+        tags=${_TAG_CACHE[${repo_image}]}
         while IFS=$'\t' read -r tag _; do
             tag=${tag##*/}
             [[ "${tag}" == inuse-* ]] || continue
@@ -3518,6 +3540,28 @@ _schedule_args() {
 }
 
 
+# Delete a retired scheduler entry. Absent (NOT_FOUND) is the normal,
+# silent case; any other describe or delete failure is reported and returns
+# nonzero so deploy_schedulers can fail instead of leaving a legacy entry
+# firing alongside its replacement (Codex, PR #1004).
+_unschedule() {
+    local NAME=$1 err
+    if err=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+            --format="value(name)" 2>&1 >/dev/null); then
+        if gcloud scheduler jobs delete "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+            echo "  retired ${NAME}"
+        else
+            echo "  ERROR: could not delete scheduler ${NAME}" >&2
+            return 1
+        fi
+    elif [[ "${err}" == *NOT_FOUND* ]]; then
+        return 0
+    else
+        echo "  ERROR: cannot describe scheduler ${NAME}: ${err%%$'\n'*}" >&2
+        return 1
+    fi
+}
+
 # Create-or-update a plain ":run" scheduler and VERIFY it (schedule, target
 # and ENABLED state read back) before returning. Nonzero on any mismatch.
 # Used where a new entry replaces old ones: the old entries are only deleted
@@ -4150,8 +4194,8 @@ deploy_schedulers() {
     # every-30-min cadence, 4 from the per-hour entries consolidated
     # above) runs ONLY after the replacement is read back live and
     # ENABLED with the intended cron. Idempotent: `gcloud scheduler jobs
-    # delete` returns non-zero when the job is already gone, which we
-    # swallow with `|| true`. Safe to leave in forever.
+    # delete` (via _unschedule) treats NOT_FOUND as done and reports any
+    # other failure. Safe to leave in forever.
     if _schedule_verified "sec-filings-intraday"  "0 7,10,13,17 * * 1-5"  "fetch-sec-filings"; then
         for OBSOLETE in \
             sec-filings-0700 sec-filings-1000 sec-filings-1300 sec-filings-1700 \
@@ -4160,10 +4204,7 @@ deploy_schedulers() {
             sec-filings-1330 sec-filings-1400 sec-filings-1430 \
             sec-filings-1500 sec-filings-1530 sec-filings-1600 \
             sec-filings-2000 ; do
-            gcloud scheduler jobs delete "${OBSOLETE}" \
-                --location "${REGION}" --quiet 2>/dev/null \
-                && echo "  retired ${OBSOLETE}" \
-                || true
+            _unschedule "${OBSOLETE}" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
         done
     else
         echo "  sec-filings-intraday NOT verified; legacy sec-filings entries left in place." >&2
@@ -4219,10 +4260,7 @@ deploy_schedulers() {
     # are retired (same gate as sec-filings-intraday above).
     if _schedule_verified "news-sentiment-hourly"  "0 8-17 * * 1-5"  "fetch-news-sentiment"; then
         for h in 08 09 10 11 12 13 14 15 16 17; do
-            gcloud scheduler jobs delete "news-sentiment-${h}00" \
-                --location "${REGION}" --quiet 2>/dev/null \
-                && echo "  retired news-sentiment-${h}00" \
-                || true
+            _unschedule "news-sentiment-${h}00" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
         done
     else
         echo "  news-sentiment-hourly NOT verified; per-hour entries left in place." >&2
@@ -4230,10 +4268,7 @@ deploy_schedulers() {
     fi
     if _schedule_verified "news-topics-hourly"  "5 8-17 * * 1-5"  "fetch-news-sentiment-topics"; then
         for h in 08 09 10 11 12 13 14 15 16 17; do
-            gcloud scheduler jobs delete "news-topics-${h}05" \
-                --location "${REGION}" --quiet 2>/dev/null \
-                && echo "  retired news-topics-${h}05" \
-                || true
+            _unschedule "news-topics-${h}05" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
         done
     else
         echo "  news-topics-hourly NOT verified; per-hour entries left in place." >&2
@@ -4493,7 +4528,12 @@ case "${1:-help}" in
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
-
-if [ "${_PIN_AFTER}" -eq 1 ]; then
+# A failed AND-list inside a case arm (e.g. build_image failing before
+# deploy_x) does not trip errexit, so capture the arm's status here and
+# return it: post-pinning must never turn a failed deploy into exit 0
+# (Codex, PR #1004), and there is nothing new to pin after a failure.
+_DISPATCH_RC=$?
+if [ "${_DISPATCH_RC}" -eq 0 ] && [ "${_PIN_AFTER}" -eq 1 ]; then
     pin_image_tags
 fi
+exit "${_DISPATCH_RC}"
