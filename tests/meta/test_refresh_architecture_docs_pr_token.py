@@ -562,3 +562,54 @@ def test_a_generated_doc_in_the_wrong_directory_says_so():
     assert 'STRAY="$STRAY $F(wrong directory:' in restore, \
         "the scan does not label a generated doc written to the wrong directory"
     assert 'basename "$F"' in restore, "the scan does not compare basenames"
+
+
+def test_every_refresh_input_is_readable_by_the_model():
+    """Gemini's file tools respect .gitignore. The repo-wide `*.csv` rule hid
+    refresh-inputs/billing_by_sku.csv and billing_by_month.csv, the ONLY inputs
+    the cost prompt has, so run 16 produced no COST_ANALYSIS.md and its
+    transcript said "ignored by configured ignore patterns". (Run 16.)"""
+    import subprocess
+    gitignore = (REPO / ".gitignore").read_text()
+    assert "!refresh-inputs/**" in gitignore, "refresh-inputs is not re-included"
+    # prove it for the shapes the workflow actually writes, not just the rule
+    for name in ("billing_by_sku.csv", "billing_by_month.csv", "inventory.json",
+                 "jobs.txt", "live_vs_repo.md", "previous/README.md"):
+        rc = subprocess.run(["git", "check-ignore", "-q", f"refresh-inputs/{name}"],
+                            cwd=REPO).returncode
+        assert rc != 0, f"refresh-inputs/{name} is gitignored; the model would read it blind"
+    # and the broad rule still applies outside that directory
+    rc = subprocess.run(["git", "check-ignore", "-q", "some/other/data.csv"], cwd=REPO).returncode
+    assert rc == 0, "the repo-wide *.csv rule was weakened outside refresh-inputs/"
+
+
+def test_the_ignore_guards_use_the_exit_code_that_means_ignored():
+    """`git check-ignore -q` exits 0 only when the path IS ignored; the -v form
+    exits 0 on a NEGATION match too. Using -v as the condition reports "is
+    gitignored" for a path .gitignore explicitly re-includes, which is every
+    file under refresh-inputs/ after the fix above."""
+    dump = {s.get("name"): s.get("run") or "" for s in _steps()}["Dump asset inventory"]
+    assert 'if git check-ignore -q "$F"; then' in dump, \
+        "the guard still branches on `git check-ignore -v`, which is true for a negation"
+    digest = {s.get("name"): s.get("run") or "" for s in _steps()}["Digest inputs"]
+    assert "git ls-files --others --ignored --exclude-standard -- refresh-inputs/" in digest, \
+        "nothing checks the whole input tree after the digests are written"
+
+
+def test_a_failed_gate_uploads_the_documents_it_judged():
+    """A churn failure reports a percentage; the document that caused it dies
+    with the runner. Run 16 failed README.md at 66% and left no way to read
+    what changed."""
+    steps = _steps()
+    up = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert len(up) == 1, up
+    assert up[0].get("if") == "failure()", "the upload must run only on failure"
+    path = (up[0].get("with") or {}).get("path", "")
+    for doc in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md"):
+        assert doc in path, f"{doc} is not uploaded"
+    # never the snapshots: this repository is public and iam.json is in there
+    assert "refresh-inputs/iam.json" not in path and "refresh-inputs/inventory.json" not in path
+    assert "refresh-inputs/live.json" not in path
+    names = [s.get("name") for s in steps]
+    assert names.index("Upload the regenerated documents when a gate fails") > \
+        names.index("Verify regenerated docs"), "the upload must come after the gates"
