@@ -86,6 +86,10 @@ _CHAIN_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200)
 # index DOES exist as idx_etf_options_ticker_source_date — an older comment
 # here claimed otherwise.
 _DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
+# ticker -> newest snapshot_date last observed. Drives ticker-wide
+# invalidation so every `limit` variant is dropped together; without it the
+# variants are independent keys that can hold different "latest" dates.
+_DATES_CACHE_LATEST: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
@@ -274,7 +278,7 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
 #
 # The recursive form asks the index for "the next date strictly older than the
 # one I have" and costs one descent per date RETURNED, not one read per row
-# MATCHED. That makes the widening-window schedule unnecessary: cost now scales
+# MATCHED. That makes the widening-window schedule unnecessary: cost scales
 # with `limit`, so a caller that wants one date pays for one date.
 _DATES_MAX_LIMIT = 1000
 
@@ -296,23 +300,48 @@ def get_options_dates(
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
 
+    # Freshness is ticker-wide, not per-limit. Keying the cache on
+    # (ticker, limit) alone lets sibling variants disagree: a caller that
+    # cached the default list before av-options-daily writes, and a caller
+    # that asks for limit=1 after, would see different "latest" dates from
+    # the same process for up to the TTL. So the newest snapshot_date is
+    # probed once and every variant for that ticker is dropped when it moves.
+    #
+    # The probe is the same single index descent as the limit=1 query
+    # (idx_etf_options_ticker_source_date, measured 2.5 ms on prod).
+    latest_date = None
+    probe = query_to_dataframe_strict(
+        """
+        SELECT snapshot_date
+        FROM   etf_options_snapshots
+        WHERE  ticker = :ticker AND data_source = 'alphavantage'
+        ORDER  BY snapshot_date DESC
+        LIMIT  1
+        """,
+        {"ticker": ticker_upper},
+    )
+    if not probe.empty:
+        latest_date = probe["snapshot_date"].iloc[0]
+
+    # `pop(key, None)`, not `del`. This check-then-delete is three separate
+    # locked operations, so under threadpool dispatch two requests can both
+    # observe the same moved date and both try to drop the same keys — and
+    # `del` on a key the other thread already removed raises KeyError out of a
+    # handler that was only invalidating a cache. Dropping an entry twice is
+    # harmless; raising is not.
+    if _DATES_CACHE_LATEST.get(ticker_upper) != latest_date:
+        for key in [k for k in _DATES_CACHE if k[0] == ticker_upper]:
+            _DATES_CACHE.pop(key, None)
+        _DATES_CACHE_LATEST[ticker_upper] = latest_date
+
     cache_key = (ticker_upper, limit)
     cached = _DATES_CACHE.get(cache_key)
     if cached is not None:
         return {"ticker": ticker_upper, "dates": cached,
                 "source": "cloud_sql", "cached": True}
 
-    if limit == 1:
-        # Single index descent — no dedupe needed for one row.
-        sql = """
-            SELECT snapshot_date
-            FROM   etf_options_snapshots
-            WHERE  ticker = :ticker
-              AND  data_source = 'alphavantage'
-            ORDER  BY snapshot_date DESC
-            LIMIT  1
-        """
-    else:
+    sql = None
+    if limit != 1:
         # The depth counter `n` is load-bearing, not decoration. Bounding the
         # recursion only in the OUTER query does not work: ORDER BY has to
         # materialise the whole CTE before LIMIT can discard any of it, so the
@@ -350,10 +379,15 @@ def get_options_dates(
     # handler cannot tell apart from "ticker genuinely has no data" and would
     # report as a 404 telling the operator to run the fetcher — a false
     # diagnosis of a DB outage (CLAUDE.md Rule 3.7).
-    params = {"ticker": ticker_upper}
-    if limit != 1:
-        params["limit"] = limit
-    df = query_to_dataframe_strict(sql, params)
+    if limit == 1:
+        # The freshness probe above IS this query, and it has already run.
+        # Re-issuing it would make the advertised single-descent path pay two
+        # descents plus a second pool checkout and pre-ping on every miss --
+        # exactly the requests the cache exists to make cheap.
+        df = probe
+    else:
+        df = query_to_dataframe_strict(sql, {"ticker": ticker_upper,
+                                             "limit": limit})
 
     dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
              for d in df["snapshot_date"].tolist()] if not df.empty else []

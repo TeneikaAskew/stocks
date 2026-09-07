@@ -130,6 +130,39 @@ class ThreadSafeCache(MutableMapping):
         with self._lock:
             self._cache.clear()
 
+    def fresh(self) -> "ThreadSafeCache":
+        """An empty cache of the same shape, for test isolation.
+
+        `type(cache)()` is the usual way to do this and does not work on a
+        wrapper: the constructor takes the mapping being wrapped, so the
+        zero-argument form raises `TypeError`. `TTLCache` also carries
+        `maxsize`/`ttl` that a bare `type()` call would drop, so the wrapped
+        cache is asked to describe itself where it can.
+        """
+        inner = self._cache
+        try:
+            peer = type(inner)(maxsize=inner.maxsize, ttl=inner.ttl)
+        except (AttributeError, TypeError):
+            try:
+                peer = type(inner)(maxsize=inner.maxsize)
+            except (AttributeError, TypeError):
+                peer = type(inner)()
+        return ThreadSafeCache(peer)
+
+    def move_to_end(self, key: Any, last: bool = True) -> None:
+        """LRU touch. Only meaningful when wrapping an `OrderedDict`."""
+        with self._lock:
+            self._cache.move_to_end(key, last)
+
+    def popitem(self, *args: Any, **kwargs: Any) -> Any:
+        """Evict one entry. `last=False` gives the LRU end of an OrderedDict.
+
+        `cachetools` caches take no arguments here and `OrderedDict` takes
+        `last`, so the call is passed through rather than normalised.
+        """
+        with self._lock:
+            return self._cache.popitem(*args, **kwargs)
+
     @property
     def maxsize(self) -> int:
         return self._cache.maxsize
