@@ -62,11 +62,11 @@ git status
 git diff --stat
 ```
 
-Identify which files are GCP-related (anything in `gcp/`, `docs/GCP_*.md`, `lib/data_loader.py` GCP changes, `requirements.txt` GCP additions, `gcp/Dockerfile`, `.claude/commands/gcp-deploy.md`).
+Identify which files are GCP-related (anything in `gcp/`, `docs/product/infrastructure/05-*.md`, `lib/data_loader.py` GCP changes, `requirements.txt` GCP additions, `gcp/Dockerfile`, `.claude/commands/gcp-deploy.md`).
 
 ### Step 3 — Update Status Tracker
 
-Read `docs/GCP_IMPLEMENTATION_STATUS.md` and update it to reflect the current state:
+Read `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` and update it to reflect the current state:
 - Mark any newly completed items as `[x]`
 - Update the "Last Updated" date at the top to today's date
 - Update the Test Results table with the latest test run results (pass count, fail count, date)
@@ -74,7 +74,7 @@ Read `docs/GCP_IMPLEMENTATION_STATUS.md` and update it to reflect the current st
 
 ### Step 4 — Update Guide Last-Updated Date
 
-Update the "Last Updated" line in `docs/GCP_IMPLEMENTATION_GUIDE.md` to today's date.
+Update the "Last Updated" line in `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` to today's date.
 
 ### Step 5 — Stage and Commit
 

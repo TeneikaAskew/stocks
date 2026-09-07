@@ -1,3 +1,0 @@
-# GCP Architecture Deep-Dive (merged)
-
-> **Merged into [`ARCHITECTURE.md`](../ARCHITECTURE.md) on 2026-09-07.** Every section of this deep-dive (project facts, topology, services, Cloud SQL, schema catalog, jobs, services, scheduler timeline, integrations, data flows, failure handling, cost, runbook anchors, glossary) now lives there, verified against the repo and live GCP, with the inventory tables rendered by `scripts/maintenance/doc_inventory.py`. Kept as a stub so existing links don't break. See [`docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md`](audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md) for what was corrected in the merge.

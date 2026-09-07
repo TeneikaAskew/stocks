@@ -16,7 +16,7 @@ from scripts.maintenance import doc_inventory as inv
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SNAPSHOT = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
-DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md", "docs/API.md")
+DOCS = gate.DIFF_DOCS   # derived, so a relocation moves the fixtures with it
 
 
 def _copy(src, dst):
@@ -55,10 +55,10 @@ def test_editing_inside_a_marker_block_is_a_finding(live, repo, tmp_path):
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
-    text = (root / "ARCHITECTURE.md").read_text()
+    text = (root / gate.ARCH).read_text()
     s = inv.MARKER_START.format(name="jobs")
     text = text.replace(s, s + "\n| `hand-edited-row` | x | x | x | x | x |", 1)
-    (root / "ARCHITECTURE.md").write_text(text)
+    (root / gate.ARCH).write_text(text)
     assert any("marker block differs" in f for f in gate.gate_markers(root, repo, live))
 
 
@@ -66,11 +66,11 @@ def test_removing_both_markers_of_a_block_is_a_finding(live, repo, tmp_path):
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
-    text = (root / "DATA_DEPENDENCIES.md").read_text()
+    text = (root / gate.DEPS).read_text()
     s, e = inv.MARKER_START.format(name="orphans"), inv.MARKER_END.format(name="orphans")
     import re
     text = re.sub(re.escape(s) + r".*?" + re.escape(e), "", text, flags=re.S)
-    (root / "DATA_DEPENDENCIES.md").write_text(text)
+    (root / gate.DEPS).write_text(text)
     findings = gate.gate_markers(root, repo, live)
     assert any("inventory:orphans block is missing entirely" in f for f in findings), findings
 
@@ -87,10 +87,10 @@ def test_a_duplicated_block_is_a_finding(live, repo, tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
     import re
-    text = (root / "ARCHITECTURE.md").read_text()
+    text = (root / gate.ARCH).read_text()
     s, e = inv.MARKER_START.format(name="jobs"), inv.MARKER_END.format(name="jobs")
     block = re.search(re.escape(s) + r".*?" + re.escape(e), text, re.S).group(0)
-    (root / "ARCHITECTURE.md").write_text(text.replace(block, block + "\n\n" + block, 1))
+    (root / gate.ARCH).write_text(text.replace(block, block + "\n\n" + block, 1))
     findings = gate.gate_markers(root, repo, live)
     assert any("inventory:jobs appears 2 times" in f for f in findings), findings
 
@@ -106,16 +106,16 @@ def test_a_rewrite_that_keeps_its_length_is_a_finding(tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
         _copy(REPO / d, prev / d)
-    old = (prev / "ARCHITECTURE.md").read_text().splitlines()
+    old = (prev / gate.ARCH).read_text().splitlines()
     heads = [ln for ln in old if ln.startswith("#")]
     body = ["Every other line replaced with different prose." for _ in range(len(old) - len(heads))]
-    (root / "ARCHITECTURE.md").write_text("\n".join(heads + body) + "\n")
+    (root / gate.ARCH).write_text("\n".join(heads + body) + "\n")
     stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
-    assert stats["ARCHITECTURE.md"]["churn"] > 0.5
+    assert stats[gate.ARCH]["churn"] > 0.5
     findings = gate.gate_diff_budget(list(stats.values()))
-    assert any("ARCHITECTURE.md" in f and "rewrite" in f for f in findings), findings
+    assert any(gate.ARCH in f and "rewrite" in f for f in findings), findings
     # ...and a human reconstructing that one doc can say so, for that doc only
-    assert gate.gate_diff_budget(list(stats.values()), allow_rewrite=("ARCHITECTURE.md",)) == []
+    assert gate.gate_diff_budget(list(stats.values()), allow_rewrite=(gate.ARCH,)) == []
 
 
 def test_diff_stats_report_names_what_moved(tmp_path):
@@ -124,12 +124,12 @@ def test_diff_stats_report_names_what_moved(tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
         _copy(REPO / d, prev / d)
-    text = (root / "COST_ANALYSIS.md").read_text()
-    (root / "COST_ANALYSIS.md").write_text(text + "\n## A brand new section\n\nbody\n")
+    text = (root / gate.COST).read_text()
+    (root / gate.COST).write_text(text + "\n## A brand new section\n\nbody\n")
     stats = gate.diff_stats(root, prev)
     report = gate.render_report(stats)
     assert "A brand new section" in report and "+added" in report
-    cost = next(st for st in stats if st["doc"] == "COST_ANALYSIS.md")
+    cost = next(st for st in stats if st["doc"] == gate.COST)
     assert cost["added"] >= 3 and cost["removed"] == 0 and cost["churn"] == 0.0
 
 
@@ -145,25 +145,31 @@ def test_the_2026_09_02_regeneration_would_have_been_stopped(tmp_path):
     import subprocess
     root, prev = tmp_path, tmp_path / "previous"
     prev.mkdir()
-    four = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md")
-    for d in four:
+    # b3b5271/e50c759 predate the move into docs/product/infrastructure/, so
+    # the historical blobs are read at their old paths and laid down at the
+    # paths the gate reads today.
+    four = (("ARCHITECTURE.md", gate.ARCH),
+            ("DATA_DEPENDENCIES.md", gate.DEPS),
+            ("COST_ANALYSIS.md", gate.COST),
+            ("README.md", "README.md"))
+    for was, now in four:
         for rev, dest in (("b3b5271", prev), ("e50c759", root)):
-            out = subprocess.run(["git", "show", f"{rev}:{d}"], cwd=REPO,
+            out = subprocess.run(["git", "show", f"{rev}:{was}"], cwd=REPO,
                                  capture_output=True, text=True)
             if out.returncode:
-                pytest.skip(f"{d} not present at {rev} in this clone")
-            (dest / d).parent.mkdir(parents=True, exist_ok=True)
-            (dest / d).write_text(out.stdout)
+                pytest.skip(f"{was} not present at {rev} in this clone")
+            (dest / now).parent.mkdir(parents=True, exist_ok=True)
+            (dest / now).write_text(out.stdout)
 
     stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
-    assert stats["ARCHITECTURE.md"]["churn"] > 0.80, stats["ARCHITECTURE.md"]["churn"]
-    assert stats["DATA_DEPENDENCIES.md"]["churn"] > 0.80
+    assert stats[gate.ARCH]["churn"] > 0.80, stats[gate.ARCH]["churn"]
+    assert stats[gate.DEPS]["churn"] > 0.80
 
     caught = set()
     for f in gate.gate_diff_budget(list(stats.values())) + gate.gate_headings_and_size(root, prev):
         caught.add(f.split(":")[0])
-    for d in four:
-        assert d in caught, f"{d} would have shipped unnoticed; caught={caught}"
+    for _, now in four:
+        assert now in caught, f"{now} would have shipped unnoticed; caught={caught}"
 
 
 def test_lost_heading_and_shrink_are_findings(tmp_path):
@@ -173,9 +179,9 @@ def test_lost_heading_and_shrink_are_findings(tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
         _copy(REPO / d, prev / d)
-    text = (root / "ARCHITECTURE.md").read_text()
+    text = (root / gate.ARCH).read_text()
     cut = text.find("## 10. Data flows")
-    (root / "ARCHITECTURE.md").write_text(text[:cut] + "\n## 10. Data flows\n\n## 19. Glossary\n")
+    (root / gate.ARCH).write_text(text[:cut] + "\n## 10. Data flows\n\n## 19. Glossary\n")
     findings = gate.gate_headings_and_size(root, prev)
     assert any("heading lost" in f and "Failure handling" in f for f in findings)
     assert any("shrank" in f for f in findings)
@@ -214,11 +220,12 @@ def test_dropping_a_map_row_is_a_finding(tmp_path):
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
+    guide = f"{gate.INFRA}/05-i-GCP_IMPLEMENTATION_GUIDE.md"
     text = (root / "README.md").read_text()
-    assert "(docs/GCP_IMPLEMENTATION_GUIDE.md)" in text
-    (root / "README.md").write_text(text.replace("(docs/GCP_IMPLEMENTATION_GUIDE.md)", "(ARCHITECTURE.md)"))
+    assert f"({guide})" in text
+    (root / "README.md").write_text(text.replace(f"({guide})", f"({gate.ARCH})"))
     findings = gate.gate_readme(root)
-    assert any("docs/GCP_IMPLEMENTATION_GUIDE.md" in f for f in findings), findings
+    assert any(guide in f for f in findings), findings
 
 
 def test_dead_link_and_readme_mermaid_are_findings(tmp_path):
@@ -249,7 +256,7 @@ def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
     assert gate.gate_derived_numbers(root, repo, live) == []
-    a = root / "ARCHITECTURE.md"
+    a = root / gate.ARCH
     a.write_text(a.read_text().replace(
         "`--max-retries 0` for 41 of the 67 declared jobs, `1` for 25",
         "`--max-retries 0` for 56 jobs and `1` for 27"))
@@ -261,7 +268,7 @@ def test_the_runtime_relation_count_must_match_the_snapshot(live, repo, tmp_path
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
-    a = root / "ARCHITECTURE.md"
+    a = root / gate.ARCH
     a.write_text(a.read_text().replace("Live table drift (26 runtime relations)",
                                        "Live table drift (28 runtime relations)"))
     findings = gate.gate_derived_numbers(root, repo, live)
@@ -275,7 +282,7 @@ def test_the_retry_claim_is_caught_in_either_clause_order(live, repo, tmp_path):
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
-    a = root / "ARCHITECTURE.md"
+    a = root / gate.ARCH
     a.write_text("56 jobs use `--max-retries 0` today.\n" + a.read_text())
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 56 jobs at --max-retries 0" in f for f in findings), findings
@@ -311,7 +318,7 @@ def test_a_model_written_suppression_is_a_finding(tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d); _copy(REPO / d, prev / d)
     assert gate.gate_new_suppressions(root, prev) == []
-    a = root / "ARCHITECTURE.md"
+    a = root / gate.ARCH
     a.write_text("Live has 999 jobs. <!-- verify-docs-ok: the model says so -->\n" + a.read_text())
     findings = gate.gate_new_suppressions(root, prev)
     assert any("new verify-docs-ok exemption" in f for f in findings), findings
@@ -323,7 +330,7 @@ def test_a_spelled_out_retry_count_is_validated(live, repo, tmp_path):
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
-    a = root / "ARCHITECTURE.md"
+    a = root / gate.ARCH
     a.write_text(a.read_text().replace("`2` for one", "`2` for two"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 2 jobs at --max-retries 2" in f for f in findings), findings
@@ -338,7 +345,7 @@ def test_a_fixed_min_instances_for_a_windowed_service_is_a_finding(repo, tmp_pat
     for d in DOCS:
         _copy(REPO / d, root / d)
     assert gate.gate_scheduled_scaling(root, repo) == []
-    a = root / "ARCHITECTURE.md"
+    a = root / gate.ARCH
     a.write_text(a.read_text().replace(
         "`discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4)",
         "`discord-interactions` (min-instances 1)"))
@@ -352,9 +359,92 @@ def test_the_windowed_set_is_derived_not_hardcoded(tmp_path):
     root = tmp_path
     for d in DOCS:
         _copy(REPO / d, root / d)
-    (root / "ARCHITECTURE.md").write_text("The `solyra-api-prod` service runs min-instances 3.\n")
+    (root / gate.ARCH).write_text("The `solyra-api-prod` service runs min-instances 3.\n")
     plain = {"schedulers": [{"name": "x", "helper": "_schedule_min_instances",
                              "target_service": "solyra-api-prod"}]}
     assert any("solyra-api-prod" in f for f in gate.gate_scheduled_scaling(root, plain))
     none = {"schedulers": [{"name": "x", "helper": "_schedule_job", "target_service": ""}]}
     assert gate.gate_scheduled_scaling(root, none) == []
+
+
+def _cost_pair(tmp_path):
+    """The previous COST_ANALYSIS.md and a regeneration of it, in run 17's
+    shape: the five promised sections kept, every data-bearing subheading
+    changed, fewer lines but more bytes."""
+    root, prev = tmp_path / "r", tmp_path / "p"
+    (root / ".github/prompts").mkdir(parents=True); prev.mkdir()
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    for d in (gate.ARCH, gate.DEPS, "README.md"):
+        _copy(REPO / d, root / d); _copy(REPO / d, prev / d)
+    _copy(REPO / gate.COST, prev / gate.COST)
+    body = [
+        "# Cost Analysis", "", "Total 90-day spend is $222.71.", "",
+        "## 1. Total spend by month", "", "| Month | Spend | Notes |", "|---|---|---|", "",
+        "## 2. Top 10 cost line items by SKU", "", "| Rank | Service | SKU |", "|---|---|---|", "",
+        "## 3. Per-component cost estimate", "",
+        "### Cloud Run (Jobs & Services) — $101.44", "", "Allocation by runs-per-month.", "",
+        "### Cloud SQL (`trading-db`) — $68.10", "", "Tier db-g1-small.", "",
+        "## 4. Anomalies", "", "### A. Artifact Registry down 59% month over month", "", "Cause.", "",
+        "## 5. Cost-reduction recommendations", "",
+        "### #1 — Optimize expensive Cloud Run jobs (estimated saving: $5-10/mo)", "", "Change.", "",
+        "Generated 2026-09-07 by .github/workflows/refresh-architecture-docs.yml",
+    ]
+    while len(body) < 81:
+        body.append("A detail line carrying real content from the billing export.")
+    text = "\n".join(body) + "\n"
+    text += "x" * max(0, 8027 - len(text.encode()))
+    (root / gate.COST).write_text(text)
+    return root, prev
+
+
+def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path):
+    """Run 17 failed COST_ANALYSIS.md on twelve "lost" headings, every one of
+    which embeds that month's data — `Cloud Run (Jobs & Services) — $94.26`,
+    `2. Top 10 cost line items by SKU (Partial August data)`. Its prompt says
+    "Regenerate", not "update in place". Demanding those persist demands this
+    month's report keep last month's numbers."""
+    root, prev = _cost_pair(tmp_path)
+    findings = gate.gate_headings_and_size(root, prev)
+    assert [f for f in findings if gate.COST in f] == [], findings
+    # and the previous behaviour is what run 17 saw
+    saved = gate.REGENERATED
+    try:
+        gate.REGENERATED = ()
+        assert len([f for f in gate.gate_headings_and_size(root, prev)
+                    if gate.COST in f]) >= 12
+    finally:
+        gate.REGENERATED = saved
+
+
+def test_a_regenerated_doc_is_measured_in_bytes_not_lines(tmp_path):
+    """Run 17's regeneration lost 21 lines while gaining 1,884 bytes. Lines are
+    the wrong unit for a document rebuilt from data; mass is the measure."""
+    root, prev = _cost_pair(tmp_path)
+    assert gate.gate_headings_and_size(root, prev) == []
+    (root / gate.COST).write_text((root / gate.COST).read_text()[:3000])
+    findings = gate.gate_headings_and_size(root, prev)
+    assert any("bytes (< 80%)" in f and "not regenerated" in f for f in findings), findings
+
+
+def test_a_regenerated_doc_must_carry_every_section_its_prompt_promises(tmp_path):
+    """Dropping heading-persistence would leave the cost report unguarded, so
+    the sections are checked against the prompt instead — derived from it, so a
+    section added to the prompt moves the gate with it."""
+    root, prev = _cost_pair(tmp_path)
+    assert gate.gate_regenerated_structure(root) == []
+    assert [n for n, _ in gate._promised_sections(root, "cost-analysis.md")] == list("12345")
+    c = root / gate.COST
+    c.write_text(c.read_text().replace("## 4. Anomalies", "## Anomalies of note"))
+    findings = gate.gate_regenerated_structure(root)
+    assert any("missing the section its prompt promises: 4. 'Anomalies'" in f for f in findings), findings
+
+
+def test_the_other_documents_keep_heading_persistence(tmp_path):
+    """The exemption is for the one regenerated document, not a general
+    loosening: an in-place-updated doc that loses a heading still fails."""
+    root, prev = _cost_pair(tmp_path)
+    a = root / gate.ARCH
+    heads = [h for h in gate._headings(a.read_text())]
+    a.write_text(a.read_text().replace(f"## {heads[3]}", "## Something Else Entirely", 1))
+    findings = gate.gate_headings_and_size(root, prev)
+    assert any(f.startswith(f"{gate.ARCH}: heading lost") for f in findings), findings
