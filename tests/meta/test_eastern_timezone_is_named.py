@@ -17,7 +17,9 @@ symptom. It is still the wrong name to write:
   `ZoneInfo("US/Eastern")` raises there while `America/New_York` works;
 * Cloud Scheduler, Postgres `AT TIME ZONE`, and the Python code all had to
   agree on one spelling, and every scheduler entry uses `America/New_York`
-  (read live 2026-09-06: 84 of 84);
+  (read live 2026-09-07: 66 of 66 — an earlier draft of this line said 84 of
+  84 from a reading that does not reproduce, and 66 is the count `gcloud
+  scheduler jobs list --location=us-east1` returns today);
 * one site compared `str(ts.tz).upper() != 'US/EASTERN'` to skip a convert,
   which silently stopped matching the moment the zone was spelled the other
   way.
@@ -131,17 +133,24 @@ _TZ_CONTEXT = (
 # what catches Pine's POSITIONAL form, `time(timeframe.period, session,
 # "US/Eastern")`, where the zone is the third argument and no amount of
 # context-prefix matching would reach it.
+# IGNORECASE throughout. Postgres reads `AT TIME ZONE` case-insensitively and
+# SQL is conventionally written lowercase, so `ts at time zone \'EST\'` -- a
+# real way to install the frozen UTC-5 zone this guard exists to reject -- did
+# not match a case-sensitive context (Codex, PR #993). It is safe on the
+# names too: `US/Eastern` and its siblings mean nothing else in any casing,
+# and the ambiguous `EST`/`EDT` still need a timezone context before them and
+# a non-word character after, so `estimate` and `edtVersion` stay clean.
 NONPY_UNAMBIGUOUS = re.compile(
     r"""['"]?(?:""" + "|".join(UNAMBIGUOUS_LEGACY) + r""")['"]?"""
-    r"""(?![A-Za-z0-9_/-])"""
+    r"""(?![A-Za-z0-9_/-])""", re.I
 )
 NONPY_AMBIGUOUS = re.compile(
     r"(?:" + _TZ_CONTEXT + r")\s*"
     r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
-    r"""(?![A-Za-z0-9_/-])"""
+    r"""(?![A-Za-z0-9_/-])""", re.I
 )
 NONPY_FIXED_OFFSET = re.compile(
-    r"(?:" + _TZ_CONTEXT + r")\s*['\"]\s*-\s*0?[45]:?00\s*['\"]"
+    r"(?:" + _TZ_CONTEXT + r")\s*['\"]\s*-\s*0?[45]:?00\s*['\"]", re.I
 )
 
 # ── Python: parsed, not pattern-matched ────────────────────────────────────
@@ -154,9 +163,19 @@ NONPY_FIXED_OFFSET = re.compile(
 # calls. Python is parsed now. The remaining regex work is confined to files
 # that have no parser here, and that boundary is stated rather than implied.
 
+# `gettz` is dateutil's, and python-dateutil is a declared dependency here.
+# A whitelist of constructors is a list of the ones someone thought of, which
+# is why the unambiguous names are ALSO matched independently of it below.
 _TZ_CALLS = {"ZoneInfo", "timezone", "localize", "tz_localize", "tz_convert",
-             "astimezone", "now", "Timestamp"}
-_TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone", "key"}
+             "astimezone", "now", "Timestamp", "gettz"}
+# `key` is NOT here. It is the ZoneInfo constructor's parameter name and
+# nothing else's, so as a GLOBAL keyword it flags `cache.get(key="EST")` and
+# any other ordinary lookup -- a false CI failure on code that has no timezone
+# in it, which is how a guard gets skipped (Codex, PR #993). The call branch
+# below already reads every argument of a ZoneInfo call, keyword ones
+# included, so `ZoneInfo(key="US/Eastern")` is still caught where it means
+# something.
+_TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone"}
 _FIXED_OFFSET_STRINGS = re.compile(r"^-0?[45]:?00$")
 
 
@@ -188,6 +207,35 @@ def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
     return False
 
 
+def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
+    """`NAME = "..."` -> (value, node), for following an indirect zone.
+
+    `EASTERN = "US/Eastern"` then `ZoneInfo(EASTERN)` is a routine way to share
+    one timezone across a module, and it passes a check that only reads
+    constants at the call site because the argument is an `ast.Name` (Codex,
+    PR #993).
+
+    Last assignment wins. A guard does not need to model reassignment
+    correctly -- if a name is EVER bound to a legacy zone in this file, that
+    is the thing worth reporting.
+    """
+    out: dict[str, tuple[str, ast.AST]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            continue
+        v = node.value
+        if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
+            continue
+        for t in targets:
+            if isinstance(t, ast.Name):
+                out[t.id] = (v.value, v)
+    return out
+
+
 def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     """(legacy-name hits, fixed-offset hits) for one Python file."""
     try:
@@ -197,21 +245,62 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
 
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
+    bindings = _string_bindings(tree)
 
     def note(bucket, node, what):
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
 
+    reported: set[int] = set()
+
+    def follow(bucket_legacy, bucket_offsets, node, arg, where):
+        """Report `arg` when it is, or resolves to, a legacy zone or offset."""
+        reported.add(id(arg))
+        if isinstance(arg, ast.Constant) and arg.value in ALL_LEGACY:
+            note(bucket_legacy, arg, where(repr(arg.value)))
+            return True
+        if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                and _FIXED_OFFSET_STRINGS.match(arg.value)):
+            note(bucket_offsets, arg, where(repr(arg.value)))
+            return True
+        if _is_eastern_fixed_timedelta(arg):
+            note(bucket_offsets, arg, where("timedelta(hours=-4|-5, ...)"))
+            return True
+        if isinstance(arg, ast.Name) and arg.id in bindings:
+            value, _src = bindings[arg.id]
+            shown = f"{arg.id} (= {value!r})"
+            if value in ALL_LEGACY:
+                note(bucket_legacy, arg, where(shown))
+                return True
+            if _FIXED_OFFSET_STRINGS.match(value):
+                note(bucket_offsets, arg, where(shown))
+                return True
+        return False
+
     for node in ast.walk(tree):
+        # Every UNAMBIGUOUS legacy name, wherever it stands, with no call-name
+        # whitelist in front of it. A whitelist is a list of the constructors
+        # somebody thought of, and `dateutil.tz.gettz("US/Eastern")` was not
+        # on it (Codex, PR #993); nor is the assignment an indirect use reads
+        # from. These four words mean a timezone and nothing else, which is
+        # exactly the rule the non-Python scan already applies -- `EST`/`EDT`
+        # still need a context, because they are also ordinary tokens.
+        if (isinstance(node, ast.Constant)
+                and node.value in UNAMBIGUOUS_LEGACY
+                and id(node) not in reported):
+            note(legacy, node, repr(node.value))
+
+        # `{"tz": "EST"}` -- a config literal read back at some other site.
+        if isinstance(node, ast.Dict):
+            for k, v in zip(node.keys, node.values):
+                if (isinstance(k, ast.Constant) and k.value in _TZ_KEYWORDS
+                        and isinstance(v, ast.Constant)):
+                    follow(legacy, offsets, node, v,
+                           lambda shown, k=k: f"{k.value!r}: {shown}")
+
         # A legacy zone name as the value of a timezone-ish keyword, anywhere.
         if isinstance(node, ast.keyword) and node.arg in _TZ_KEYWORDS:
-            v = node.value
-            if isinstance(v, ast.Constant) and v.value in ALL_LEGACY:
-                note(legacy, v, f"{node.arg}={v.value!r}")
-            elif (isinstance(v, ast.Constant) and isinstance(v.value, str)
-                    and _FIXED_OFFSET_STRINGS.match(v.value)):
-                note(offsets, v, f"{node.arg}={v.value!r}")
-            elif _is_eastern_fixed_timedelta(v):
-                note(offsets, v, f"{node.arg}=timedelta(hours=-4|-5, ...)")
+            follow(legacy, offsets, node, node.value,
+                   lambda shown, a=node.arg: f"{a}={shown}")
 
         if not isinstance(node, ast.Call):
             continue
@@ -220,14 +309,13 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             continue
         # Positional and keyword arguments alike.
         for arg in list(node.args) + [k.value for k in node.keywords]:
-            if isinstance(arg, ast.Constant) and arg.value in ALL_LEGACY:
-                note(legacy, arg, f"{name}(... {arg.value!r} ...)")
-            elif (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-                    and _FIXED_OFFSET_STRINGS.match(arg.value)):
-                note(offsets, arg, f"{name}(... {arg.value!r} ...)")
-            elif _is_eastern_fixed_timedelta(arg):
-                note(offsets, arg, f"{name}(timedelta(hours=-4|-5, ...))")
-    return legacy, offsets
+            follow(legacy, offsets, node, arg,
+                   lambda shown, n=name: f"{n}(... {shown} ...)")
+
+    # `ast.walk` is breadth-first, so a call is visited before its own
+    # arguments: a constant already reported with the call that gives it
+    # meaning is not reported a second time as a bare literal.
+    return list(dict.fromkeys(legacy)), list(dict.fromkeys(offsets))
 
 
 def _scan() -> tuple[list[str], list[str]]:
@@ -372,6 +460,28 @@ def _arrays_carrying_timezone(func: str) -> set[str]:
     return {f"${{{n}[@]}}" for n in names} | {f"${n}" for n in names}
 
 
+_INVOCATION = re.compile(r"gcloud\s+scheduler\s+jobs\s+(?:create|update)\s+http")
+
+
+def _split_invocations(statement: str) -> list[str]:
+    """One continued shell statement -> one entry per gcloud invocation in it.
+
+    `deploy_notifier` writes a create/update fallback as a single statement:
+    every linking line ends in a backslash, so `create ... || update ...` is
+    one continuation and the create branch\'s `--time-zone` satisfied the
+    check for the update branch too. Dropping the update branch\'s own flag
+    then produced zero offenders while a redeploy of an existing scheduler
+    kept whatever zone it already had (Codex, PR #993).
+
+    Splitting on the invocation itself is what makes each branch answer for
+    its own flags. `||`, `&&` and `;` are deliberately not the delimiter: the
+    thing being counted is a declaration, not a shell operator, and a create
+    piped into anything at all is still a declaration that needs a zone.
+    """
+    parts = re.split(r"(?=" + _INVOCATION.pattern + r")", statement)
+    return [p for p in parts if _INVOCATION.search(p)]
+
+
 def _scheduler_commands(func: str) -> list[str]:
     """Each `gcloud scheduler jobs create/update http` command, whole.
 
@@ -389,7 +499,7 @@ def _scheduler_commands(func: str) -> list[str]:
             while cmd[-1].rstrip().endswith("\\") and i + 1 < len(lines):
                 i += 1
                 cmd.append(lines[i])
-            out.append("\n".join(cmd))
+            out.extend(_split_invocations("\n".join(cmd)))
         i += 1
     return out
 
