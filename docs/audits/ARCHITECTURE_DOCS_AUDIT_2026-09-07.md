@@ -324,3 +324,23 @@ it executed `gcloud asset search-all-resources` for real and deleted every
 backticked span from the text. Escaping the 30 backticks restores the original
 semantics. The test asserts there is no unescaped backtick in the body, which
 is the property rather than the symptom.
+
+Every step added in rounds 6 and 7 was then executed against the workflow's own
+shell in an isolated clone, with `RUNNER_TEMP` outside the workspace as it is on
+a runner, and the committed snapshot as `refresh-inputs/live.json`:
+
+| Case | Result |
+|---|---|
+| freeze | captured both diagrams, both deterministic docs, the inputs and a sha256 manifest — 8 files |
+| a model edit to `docs/API.md` | `::error::the model wrote outside the generated docs: docs/API.md` — refused, exit 1 |
+| a model edit to `Architecture.drawio` | refused by name, exit 1 |
+| a model edit to `ARCHITECTURE.md` prose | allowed; inputs restored and verified against the manifest, exit 0 |
+| a model TAMPERING with `refresh-inputs/live.json` | overwritten by the frozen copy; the restored file has its 76 jobs back |
+| a CORRUPTED frozen copy | `::error::restored gate inputs do not match the frozen copies` — refused rather than silently passing |
+| re-validate the diagrams after the model | `drawio check: 0 problem(s)`, exit 0 |
+| change detection, date-only move | classified timestamp-only and the file reverted |
+| change detection, date move PLUS a scheduler pause on the same line | classified meaningful and the file kept — the round-7 bug, now correct |
+
+That leaves the WIF auth action, the four Gemini steps and `gh pr create` as the
+only parts of this workflow never executed. All three require `refs/heads/main`,
+so the first dispatch after merge remains the one true end-to-end test.
