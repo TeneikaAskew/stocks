@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Serialize apply-schema-on-change builds: wait until every build of this
-# trigger that STARTED BEFORE this one has finished, then proceed.
+# Serialize every build that mutates the apply-schema-migrations job: wait
+# until every such build that STARTED BEFORE this one has finished, then
+# proceed. Two triggers mutate that job:
+#   apply-schema-on-change      (gcp/cloudbuild/apply-schema-cloudbuild.yaml)
+#   deploy-solyra-api-staging   (gcp/cloudbuild/deploy-solyra-api-staging-
+#                                cloudbuild.yaml, `migrate` step, so the API
+#                                revision cannot exist before its schema)
+# so this script scans both tags: whichever build started first applies
+# first, and for a push that fires both, the schema is applied before the
+# API deploys regardless of which trigger won the start.
 #
 # Two schema-changing pushes landing minutes apart start two builds that
 # cannot see each other by default. Both would `jobs update` the shared
@@ -24,7 +32,7 @@
 set -euo pipefail
 
 SELF="${1:-}"
-TAG="apply-schema-on-change"
+TAGS="apply-schema-on-change solyra-api-staging-deploy"
 POLL_SECONDS="${POLL_SECONDS:-20}"
 DEADLINE_SECONDS="${DEADLINE_SECONDS:-1500}"   # below the build's 1800 s timeout
 
@@ -45,20 +53,22 @@ fi
 
 waited=0
 while :; do
-  if ! ongoing=$(gcloud builds list --ongoing \
-                   --filter="tags='${TAG}' AND createTime<'${self_start}'" \
-                   --format='value(id)' 2>&1); then
-    echo "ERROR: cannot list builds tagged '${TAG}', so an earlier schema build" >&2
-    echo "       cannot be ruled out. Refusing rather than assuming none." >&2
-    echo "       ${ongoing}" >&2
-    exit 1
-  fi
   earlier=""
-  for id in ${ongoing}; do
-    [ "${id}" = "${SELF}" ] || earlier="${earlier} ${id}"
+  for tag in ${TAGS}; do
+    if ! ongoing=$(gcloud builds list --ongoing \
+                     --filter="tags='${tag}' AND createTime<'${self_start}'" \
+                     --format='value(id)' 2>&1); then
+      echo "ERROR: cannot list builds tagged '${tag}', so an earlier schema build" >&2
+      echo "       cannot be ruled out. Refusing rather than assuming none." >&2
+      echo "       ${ongoing}" >&2
+      exit 1
+    fi
+    for id in ${ongoing}; do
+      [ "${id}" = "${SELF}" ] || earlier="${earlier} ${id}"
+    done
   done
   if [ -z "${earlier}" ]; then
-    echo "no earlier apply-schema-on-change build in flight — proceeding"
+    echo "no earlier schema-mutating build in flight — proceeding"
     exit 0
   fi
   if [ "${waited}" -ge "${DEADLINE_SECONDS}" ]; then

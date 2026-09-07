@@ -53,6 +53,12 @@
 # `gcloud run revisions list` says which commit built it.
 #
 # Required IAM on the trigger SA (trading-runner@): see README.md in this dir.
+#
+# The live trigger holds its build config INLINE (read 2026-09-07: it starts
+# at the `build` step, without even the preflight interlock this file has).
+# After changing this file, re-import it:
+#   gcloud builds triggers update github deploy-solyra-api-staging \
+#     --region=global --inline-config=gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: preflight
@@ -79,9 +85,44 @@ steps:
     id: push
     waitFor: [build]
     args: [push, '${_IMAGE}:${SHORT_SHA}']
+  # SCHEMA BEFORE CODE. The image just built carries this revision's
+  # gcp/schema.sql and gcp/apply_schema.py (platform/Dockerfile copies gcp/
+  # and installs the Cloud SQL connector), so the apply-schema-migrations job
+  # is pointed at it and executed BEFORE the service is deployed. An API
+  # revision that reads a new column therefore cannot exist until that
+  # column does; if the apply fails, nothing deploys. This is the ordering
+  # the two triggers could not provide on their own (Codex on #1022): the
+  # apply-schema-on-change trigger fires on the same push but neither could
+  # see the other, so the API could serve against the old schema until the
+  # schema build finished, or indefinitely if it failed. The job keeps its
+  # own env and secrets; only its image moves. Job mutations are serialized
+  # across both triggers by wait_for_earlier_schema_builds.sh (start order).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: migrate
+    waitFor: [push]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"
+        DIGEST=$(gcloud container images describe "${_IMAGE}:${SHORT_SHA}" \
+                   --format='value(image_summary.fully_qualified_digest)')
+        if [ -z "$${DIGEST}" ]; then
+          echo "ERROR: could not resolve ${_IMAGE}:${SHORT_SHA} to a digest" >&2
+          exit 1
+        fi
+        echo ">> apply-schema-migrations -> $${DIGEST} (this revision's schema.sql)"
+        gcloud run jobs update apply-schema-migrations \
+          --image="$${DIGEST}" \
+          --region=us-east1 \
+          --quiet
+        gcloud run jobs execute apply-schema-migrations \
+          --region=us-east1 \
+          --wait
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: deploy
-    waitFor: [push]
+    waitFor: [migrate]
     entrypoint: bash
     args:
       - -c

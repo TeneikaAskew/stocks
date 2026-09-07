@@ -26,12 +26,13 @@
 #   gcloud builds triggers update github apply-schema-on-change \
 #     --region=global --inline-config=gcp/cloudbuild/apply-schema-cloudbuild.yaml
 #
-# Residual ordering note: this trigger and deploy-solyra-api-staging fire on
-# the same push and cannot see each other. For a PR that adds a column AND a
-# reader of it, apply the schema from the branch before merging
-# (`./gcp/deploy.sh apply-schema && gcloud run jobs execute
-# apply-schema-migrations --region us-east1 --wait`); every statement in
-# schema.sql is IF NOT EXISTS / OR REPLACE, so the post-merge run is a no-op.
+# Ordering against the API deploy: this trigger and deploy-solyra-api-staging
+# fire on the same push and cannot see each other, so the staging build
+# applies this revision's schema itself (its `migrate` step, from the API
+# image it just built) BEFORE it deploys the service. Both builds' job
+# mutations are serialized in start order by wait_for_earlier_schema_builds.sh;
+# every statement in schema.sql is IF NOT EXISTS / OR REPLACE, so the second
+# application of the same revision is a no-op.
 #
 # Required IAM on the trigger SA (trading-runner@): see README.md in this dir
 # (artifactregistry.writer for the push, run.developer for the job update and

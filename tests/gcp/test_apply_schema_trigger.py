@@ -68,7 +68,10 @@ def test_overlapping_schema_builds_apply_in_start_order():
     assert cfg.get("tags") == ["apply-schema-on-change"], "the tag is how builds see each other"
     assert "wait_for_earlier_schema_builds.sh" in _all_args(_step("serialize"))
     src = WAIT.read_text()
-    assert 'TAG="apply-schema-on-change"' in src
+    # Both triggers mutate the job, so both tags are scanned.
+    assert 'TAGS="apply-schema-on-change solyra-api-staging-deploy"' in src
+    staging = yaml.safe_load((REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml").read_text())
+    assert staging.get("tags") == ["solyra-api-staging-deploy"]
     assert "--ongoing" in src and "createTime<'${self_start}'" in src, \
         "must wait only on builds that started earlier (total order, no deadlock)"
     code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]

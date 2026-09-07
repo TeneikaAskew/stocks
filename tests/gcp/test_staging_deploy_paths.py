@@ -347,3 +347,24 @@ def test_the_staging_trigger_filter_gap_is_recorded():
     assert "includedFiles" in header
     assert "scripts/**" in header and "gcp/**" in header
     assert "gcloud builds triggers update github deploy-solyra-api-staging" in header
+
+
+def test_the_trigger_applies_this_revisions_schema_before_deploying():
+    """Codex on #1022: the schema trigger and this one fire on the same push
+    and cannot see each other, so an API revision reading a new column could
+    serve against the old schema. The staging build now points
+    apply-schema-migrations at the image it just built (which carries this
+    revision's gcp/schema.sql) and executes it BEFORE gcloud run deploy."""
+    steps = _steps(TRIGGER)
+    ids = [s["id"] for s in steps]
+    assert ids.index("migrate") < ids.index("deploy"), ids
+    migrate = next(s for s in steps if s["id"] == "migrate")
+    deploy = next(s for s in steps if s["id"] == "deploy")
+    assert deploy["waitFor"] == ["migrate"], "the deploy must wait for the schema apply"
+    args = _all_args(migrate)
+    assert "wait_for_earlier_schema_builds.sh" in args, "job mutations are serialized across triggers"
+    assert "fully_qualified_digest" in args
+    update = args.index("gcloud run jobs update apply-schema-migrations")
+    execute = args.index("gcloud run jobs execute apply-schema-migrations")
+    assert update < execute and "--wait" in args[execute:]
+    assert '--image="$${DIGEST}"' in args, "the job must run this revision's image"
