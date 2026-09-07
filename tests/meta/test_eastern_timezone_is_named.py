@@ -29,6 +29,7 @@ Hermetic: reads the repo's own source, no network and no database.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
 import re
 from datetime import datetime, timedelta
@@ -176,7 +177,21 @@ _TZ_CALLS = {"ZoneInfo", "timezone", "localize", "tz_localize", "tz_convert",
 # included, so `ZoneInfo(key="US/Eastern")` is still caught where it means
 # something.
 _TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone"}
-_FIXED_OFFSET_STRINGS = re.compile(r"^-0?[45]:?00$")
+# A fixed offset does not have to be spelled as a number. `Etc/GMT+5` is a
+# real IANA zone frozen at UTC-5 (POSIX inverts the sign), so it stands in for
+# Eastern through the winter and is wrong all summer -- exactly what this
+# guard rejects, in a spelling that looked like a named zone and so passed
+# (Codex, PR #993). Only +4 and +5: the others are not Eastern in any season.
+_FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05")
+_FIXED_OFFSET_STRINGS = re.compile(
+    r"^(?:-0?[45]:?00|Etc/GMT\+0?[45])$")
+
+# Matched with no context, like the unambiguous legacy names and for the same
+# reason: `Etc/GMT+5` means one thing.
+NONPY_FIXED_ZONE = re.compile(
+    r"""['"]?(?:""" + "|".join(re.escape(z) for z in _FIXED_OFFSET_ZONES)
+    + r""")['"]?(?![A-Za-z0-9_/-])""", re.I
+)
 
 
 def _call_name(node: ast.Call) -> str:
@@ -289,6 +304,14 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 and id(node) not in reported):
             note(legacy, node, repr(node.value))
 
+        # Same rule, different bucket: `Etc/GMT+5` is a named zone frozen at
+        # a fixed offset, so it belongs to the offset test rather than the
+        # backward-link one.
+        if (isinstance(node, ast.Constant)
+                and node.value in _FIXED_OFFSET_ZONES
+                and id(node) not in reported):
+            note(offsets, node, repr(node.value))
+
         # `{"tz": "EST"}` -- a config literal read back at some other site.
         if isinstance(node, ast.Dict):
             for k, v in zip(node.keys, node.values):
@@ -318,8 +341,15 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(legacy)), list(dict.fromkeys(offsets))
 
 
+@functools.lru_cache(maxsize=1)
 def _scan() -> tuple[list[str], list[str]]:
     """Repository-wide (legacy-name hits, fixed-offset hits).
+
+    Cached: the two tests below ask the same question of the same tree, and
+    the scan reads and parses 612 files. Uncached it ran twice at ~6.8 s each,
+    so the guard cost the suite seven seconds of duplicated work for one
+    answer (Codex, PR #993). Nothing in this module mutates the tree between
+    calls, and a test that needs a fresh read can call `_scan.cache_clear()`.
 
     Python is parsed; everything else is matched against whole file text --
     not line by line, because a formatter wrapping a call put the two halves
@@ -349,6 +379,7 @@ def _scan() -> tuple[list[str], list[str]]:
 
         for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
                                 (NONPY_AMBIGUOUS, legacy),
+                                (NONPY_FIXED_ZONE, offsets),
                                 (NONPY_FIXED_OFFSET, offsets)):
             for m in pattern.finditer(text):
                 report(bucket, m)
@@ -408,8 +439,14 @@ def test_every_scheduler_declaration_uses_the_named_zone():
     # while the per-declaration check below accepts a command merely for
     # containing `--time-zone` -- so an equals-form non-Eastern declaration
     # satisfied the second check and was invisible to the first.
+    # The value is captured up to the next quote or space, NOT restricted to
+    # the characters a zone name uses. The narrow class could not match
+    # `${SCHEDULER_TZ}`, so a dynamic value contributed nothing to this set,
+    # left it as {America/New_York}, and satisfied the per-declaration check
+    # below merely by containing the flag (Codex, PR #993). A value this guard
+    # cannot read is a value it cannot vouch for, so it has to fail here.
     zones = set(re.findall(
-        r"--time-zone[=\s]+[\"']?([A-Za-z_/+\-0-9]+)[\"']?", body))
+        r"--time-zone[=\s]+[\"']?([^\s\"']+)[\"']?", body))
     assert zones, "no --time-zone flags found -- has deploy.sh moved?"
     assert zones == {EASTERN}, f"non-Eastern scheduler timezones in deploy.sh: {sorted(zones - {EASTERN})}"
 
@@ -455,7 +492,11 @@ def _arrays_carrying_timezone(func: str) -> set[str]:
             elif func[i] == ")":
                 depth -= 1
             i += 1
-        if "--time-zone" in func[start:i]:
+        # The LITERAL zone, not merely the flag. An array holding
+        # `--time-zone "${SCHEDULER_TZ}"` satisfied every command that expanded
+        # it while saying nothing about the zone those schedulers would run in.
+        if re.search(r"--time-zone[=\s]+[\"']?" + re.escape(EASTERN)
+                     + r"[\"']?", func[start:i]):
             names.add(m.group(1))
     return {f"${{{n}[@]}}" for n in names} | {f"${n}" for n in names}
 
@@ -502,6 +543,34 @@ def _scheduler_commands(func: str) -> list[str]:
             out.extend(_split_invocations("\n".join(cmd)))
         i += 1
     return out
+
+
+def test_a_named_fixed_offset_zone_is_rejected():
+    """`Etc/GMT+5` is a zone name AND a fixed offset.
+
+    POSIX inverts the sign, so it is frozen at UTC-5: right for Eastern in
+    winter, wrong all summer. It looked like a named zone and so passed a
+    check that only recognised numeric offsets (Codex, PR #993).
+    """
+    assert _FIXED_OFFSET_STRINGS.match("Etc/GMT+5")
+    assert _FIXED_OFFSET_STRINGS.match("Etc/GMT+05")
+    assert _FIXED_OFFSET_STRINGS.match("-05:00")
+    # UTC+5 is not Eastern in any season, and neither is UTC.
+    assert not _FIXED_OFFSET_STRINGS.match("Etc/GMT-5")
+    assert not _FIXED_OFFSET_STRINGS.match("Etc/GMT+9")
+    assert NONPY_FIXED_ZONE.search("tz = 'Etc/GMT+5'")
+    assert not NONPY_FIXED_ZONE.search("tz = 'Etc/GMT+9'")
+
+
+def test_the_repository_scan_is_read_once():
+    """Two tests, one question, one read of 600-odd files.
+
+    Uncached the scan ran twice at ~6.8 s each, so this guard cost the suite
+    seven seconds to answer the same question twice (Codex, PR #993).
+    """
+    assert hasattr(_scan, "cache_info"), "_scan must be memoised"
+    first = _scan()
+    assert _scan() is first, "the second call re-read the tree"
 
 
 @pytest.mark.parametrize("instant,expected_offset,label", [
