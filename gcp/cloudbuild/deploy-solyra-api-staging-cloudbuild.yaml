@@ -32,11 +32,20 @@
 # 100% of production traffic. Two separate services replace it: the environment
 # a deploy lands in is now the service name, not a traffic percentage.
 #
-# Deploys the IMAGE ONLY. Env vars, secrets, Cloud SQL, memory and the service
-# account live on the Cloud Run service and are deliberately NOT set here:
-# --set-env-vars replaces the entire set on every deploy, which is why flags like
-# MOVEMENT_STATEMENT_ENABLED previously had to "ride along" in the deploy script
-# or be silently dropped.
+# Deploys the IMAGE, plus ONE flag in MERGE mode. Env vars, secrets, Cloud SQL,
+# memory and the service account live on the Cloud Run service and are
+# deliberately NOT set here: --set-env-vars replaces the entire set on every
+# deploy, which is why flags like MOVEMENT_STATEMENT_ENABLED previously had to
+# "ride along" in the deploy script or be silently dropped.
+#
+# The exception is --update-env-vars=MOVEMENT_STATEMENT_ENABLED=true (#1030).
+# --update-env-vars MERGES: it touches only that key and leaves every other
+# var, secret and setting on the service alone, so it cannot drop anything.
+# It is here because the routine rollout is the only path most merges take,
+# and a product flag whose repo default is "on" must not depend on an operator
+# remembering a manual `gcloud run services update` after the image lands
+# (Codex P1 on #1030). Keep this list to flags the repo owns the default of;
+# anything environment-specific stays on the service.
 #
 # IMMUTABLE TAG, DEPLOY BY DIGEST. This used to build, push and deploy the bare
 # `${_IMAGE}` -- i.e. `:latest`, a mutable pointer that the OTHER staging deploy
@@ -171,7 +180,8 @@ steps:
         gcloud run deploy solyra-api-staging \
           --image="$${DIGEST}" \
           --region=us-east1 \
-          --platform=managed
+          --platform=managed \
+          --update-env-vars=MOVEMENT_STATEMENT_ENABLED=true
   # PIN what is now serving, so the cleanup policy cannot delete it.
   #
   # Every qualifying push leaves a `${_IMAGE}:${SHORT_SHA}` tag and nothing

@@ -368,3 +368,15 @@ def test_the_trigger_applies_this_revisions_schema_before_deploying():
     execute = args.index("gcloud run jobs execute apply-schema-migrations")
     assert update < execute and "--wait" in args[execute:]
     assert '--image="$${DIGEST}"' in args, "the job must run this revision's image"
+
+
+def test_both_routine_rollouts_carry_the_movement_flag_in_merge_mode():
+    """The routine cloudbuild paths deploy the image and leave the service env
+    alone, so a repo-owned product flag would never reach the service unless
+    an operator remembered a manual update (Codex P1 on #1030). Both now pass
+    the flag with --update-env-vars, which MERGES that one key; --set-env-vars
+    would replace the whole set and must never appear here."""
+    for name in ("deploy-solyra-api-staging-cloudbuild.yaml", "deploy-solyra-api-prod-cloudbuild.yaml"):
+        src = (REPO / "gcp" / "cloudbuild" / name).read_text()
+        assert "--update-env-vars=MOVEMENT_STATEMENT_ENABLED=true" in src, name
+        assert "--set-env-vars" not in src.split("gcloud run deploy", 1)[1].split("\n\n", 1)[0], name

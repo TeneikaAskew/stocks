@@ -739,7 +739,7 @@ Mark trades in /charts → Auto-save to journal store
   - API routes always take priority over the static file catch-all
   - Enables production workflow: `npm run build && uvicorn api.main:app --host 0.0.0.0 --port 8000`
 - [x] `gcp/schema.sql` — `journal_entries` table added (UUID PK, Cloud SQL journal backend)
-- [x] `docs/GCP_IMPLEMENTATION_STATUS.md` — Platform section added
+- [x] `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` — Platform section added
 
 **Architecture summary (production-grade)**:
 

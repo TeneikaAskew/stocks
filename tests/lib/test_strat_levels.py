@@ -647,6 +647,69 @@ class TestIdentifyTriggers:
         triggers = identify_triggers(263.00, self._levels())
         assert triggers['calls']['reasoning'] == ''
 
+    def test_targets_are_distinct_prices_beyond_the_trigger(self):
+        """Two lines on one number consume one slot, and a line at the
+        trigger's own price is never a target (it was T1 == trigger on
+        13-17% of persisted IWM/SPY/QQQ rows, and the outcome resolver then
+        marked T1 hit on the trigger bar itself)."""
+        levels = {
+            'PDH': StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
+            'PWH': StratLevel('PWH', 265.00, 'week', 'high', '2U', False, ''),   # == trigger
+            'PDO': StratLevel('PDO', 266.50, 'day', 'open', '', False, ''),
+            'PWC': StratLevel('PWC', 266.504, 'week', 'close', '', False, ''),  # == PDO
+            'PMH': StratLevel('PMH', 268.00, 'month', 'high', '2U', False, ''),
+            'PQH': StratLevel('PQH', 270.00, 'quarter', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
+        }
+        triggers = identify_triggers(263.00, levels)
+        calls = triggers['calls']
+        assert calls['trigger_level'] == 265.00
+        assert [t['price'] for t in calls['targets']] == [266.50, 268.00, 270.00]
+
+    def test_room_is_measured_to_the_first_distinct_target(self):
+        """A line on the trigger's own cent is skipped as a target, so the
+        advertised room must be to the target actually persisted, not ~0%
+        to the skipped duplicate (Codex P2 on #1030, round 5)."""
+        levels = {
+            'PDH': StratLevel('PDH', 100.004, 'day', 'high', '2U', False, ''),
+            'PWC': StratLevel('PWC', 100.0049, 'week', 'close', '', False, ''),  # same cent
+            'PMH': StratLevel('PMH', 101.00, 'month', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 98.00, 'day', 'low', '2D', False, ''),
+        }
+        calls = identify_triggers(99.5, levels)['calls']
+        assert [t['price'] for t in calls['targets']] == [101.00]
+        assert calls['room_to_first_target'] == pytest.approx((101.0 - 100.004) / 100.004 * 100, abs=1e-3)
+
+    def test_a_line_on_the_anchors_cent_is_not_a_trigger(self):
+        """100.0041 against a 100.004 anchor is the same cent; the trigger is
+        the first line a full cent beyond, the same rule select_nearest_levels
+        applies to the ladder (Codex P2 on #1030, round 7)."""
+        levels = {
+            'PDO': StratLevel('PDO', 100.0041, 'day', 'open', '', False, ''),
+            'PDH': StratLevel('PDH', 101.00, 'day', 'high', '2U', False, ''),
+            'PWH': StratLevel('PWH', 102.00, 'week', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 99.9961, 'day', 'low', '2D', False, ''),  # same cent, below
+            'PWL': StratLevel('PWL', 98.00, 'week', 'low', '2D', False, ''),
+        }
+        triggers = identify_triggers(100.004, levels)
+        assert triggers['calls']['trigger_name'] == 'PDH'
+        assert triggers['calls']['trigger_level'] == 101.00
+        assert triggers['puts']['trigger_name'] == 'PWL'
+        assert triggers['calls']['stop_name'] == 'PWL'
+
+    def test_targets_one_cent_apart_are_distinct_despite_float_error(self):
+        """240.01 - 240.00 < 0.01 in binary; integer cents keep them apart."""
+        levels = {
+            'PDH': StratLevel('PDH', 240.00, 'day', 'high', '2U', False, ''),
+            'PWH': StratLevel('PWH', 240.01, 'week', 'high', '2U', False, ''),
+            'PMH': StratLevel('PMH', 241.00, 'month', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 235.00, 'day', 'low', '2D', False, ''),
+        }
+        calls = identify_triggers(238.00, levels)['calls']
+        assert calls['trigger_level'] == 240.00
+        assert [t['price'] for t in calls['targets']] == [240.01, 241.00]
+        assert all(t['price'] > calls['trigger_level'] for t in calls['targets'])
+
 
 # ─── build_level_map ──────────────────────────────────────────────────────
 
@@ -901,6 +964,32 @@ class TestSelectNearestLevels:
         assert out['puts'][0]['price'] == 248.00
         assert out['puts'][1]['price'] == 245.00
 
+    def test_emitted_price_uses_the_shared_cents_rule(self):
+        """292.705 renders as 292.71 (half-up, matching Postgres numeric), not
+        the 292.70 Python's round() gives; and two lines on the same cent
+        collapse to one rung."""
+        levels = {
+            'PWH': StratLevel('PWH', 292.705, timeframe='week', level_type='high'),
+            'PDH': StratLevel('PDH', 292.714, timeframe='day', level_type='high'),  # same cent
+            'PMH': StratLevel('PMH', 294.0, timeframe='month', level_type='high'),
+        }
+        out = select_nearest_levels(290.0, levels, atr=5.0, n=2)
+        assert [lv['price'] for lv in out['calls']] == [292.71, 294.0]
+
+    def test_levels_on_the_anchors_cent_are_neither_call_nor_put(self):
+        """current_price 100.004 with lines at 100.0041 and 100.0039 must not
+        become a call rung AND a put rung both displayed as 100.00: sides are
+        partitioned on the shared cents rule (Codex P2 on #1030, round 5)."""
+        levels = {
+            'PDH': StratLevel('PDH', 100.0041, timeframe='day', level_type='high'),
+            'PDL': StratLevel('PDL', 100.0039, timeframe='day', level_type='low'),
+            'PWH': StratLevel('PWH', 101.0, timeframe='week', level_type='high'),
+            'PWL': StratLevel('PWL', 99.0, timeframe='week', level_type='low'),
+        }
+        out = select_nearest_levels(100.004, levels, atr=5.0, n=2)
+        assert [lv['price'] for lv in out['calls']] == [101.0]
+        assert [lv['price'] for lv in out['puts']] == [99.0]
+
     def test_direction_is_positional_not_by_high_low(self):
         # a prior-month HIGH below price is a PUT (bearish) level
         out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
@@ -939,3 +1028,49 @@ class TestSelectNearestLevels:
             assert lv['price'] > price
         for lv in lm.put_levels:
             assert lv['price'] < price
+
+
+# ─── daily_data_freshness (shared with the premarket brief) ──────────────
+
+
+class TestDailyDataFreshness:
+    """One rule for the brief's playbook row and the movement-statement
+    ladder matched against it (Codex P2 on #1030, round 6)."""
+
+    def test_same_or_next_day_is_fresh(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 10), date(2026, 9, 11)) == (False, 1, 'fresh')
+
+    def test_monday_reading_friday_is_fresh(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 11), date(2026, 9, 14)) == (False, 3, 'fresh')
+
+    def test_monday_reading_thursday_is_stale(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        stale, gap, status = daily_data_freshness(date(2026, 9, 10), date(2026, 9, 14))
+        assert (stale, gap, status) == (True, 4, 'STALE_DAILY_DATA')
+
+    def test_tuesday_reading_friday_is_stale_by_design(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 11), date(2026, 9, 15))[0] is True
+
+    def test_sunday_weekly_reading_friday_is_fresh(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(2026, 9, 11), date(2026, 9, 13)) == (False, 2, 'fresh')
+
+    def test_none_is_unknown(self):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(None, date(2026, 9, 14)) == (False, -1, 'unknown')
+
+    def test_brief_entry_point_delegates_here(self):
+        from datetime import date
+        from gcp.premarket_brief import _resolve_data_freshness
+        from lib.strat_levels import daily_data_freshness
+        for last, ad in ((date(2026, 9, 10), date(2026, 9, 14)), (date(2026, 9, 11), date(2026, 9, 14)), (None, date(2026, 9, 14))):
+            assert _resolve_data_freshness(last, ad) == daily_data_freshness(last, ad)

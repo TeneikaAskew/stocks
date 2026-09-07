@@ -16,10 +16,13 @@ What it assembles (and where each piece comes from):
 
   levels
       lib.strat_levels.build_level_map — the levels-to-go ladder (the next
-      structural lines price has to clear each way). Each tier is annotated
-      with its POPULATION historical reach-rate AND the sample size N from
-      the resolved `premarket_analysis` outcomes. A reach-rate is a
-      population statistic for that tier, NOT a per-instance prediction.
+      structural lines price has to clear each way). A rung is annotated
+      with the POPULATION historical reach-rate AND the sample size N of the
+      premarket-playbook slot (trigger / t1 / t2 / t3) whose tracked price
+      it matches, from the resolved `premarket_analysis` outcomes; a rung
+      the playbook did not track carries an explicit UNAVAILABLE envelope.
+      A reach-rate is a population statistic for that slot, NOT a
+      per-instance prediction.
 
   expected_move  (CONTEXT / SIZING ONLY — never the headline)
       magnitude_per_bar_predictions — the magnitude-engine bucket
@@ -50,7 +53,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date as date_type
+from datetime import datetime as datetime_type
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
@@ -211,43 +214,130 @@ def _build_continuation(engine, ticker: str, tf: str, as_of) -> dict:
     )
 
 
-# ── Piece 2: levels ladder + population reach-rates per tier ───────────────
+# ── Piece 2: levels ladder + population reach-rates per slot ───────────────
+#
+# The ladder (`level_map.call_levels` / `put_levels`, from
+# lib.strat_levels.select_nearest_levels) and the outcome columns in
+# `premarket_analysis` (trigger / t1 / t2 / t3, from identify_triggers) are
+# built from DIFFERENT level sets: the ladder keeps highs and lows only, the
+# playbook's slots include opens and closes. Measured on 2026-09-07 (#1024),
+# 49.7% of persisted call triggers were opens/closes the ladder never shows,
+# so annotating ladder position i with slot i+1 pinned a statistic about one
+# line onto a different line, one rung off even when the sets agreed. A
+# ladder rung therefore carries a reach-rate ONLY when its price matches a
+# slot the playbook actually tracked for this ticker; otherwise it carries an
+# explicit UNAVAILABLE envelope (Rule 3.7 — never a borrowed rate).
+
+# Slot order in the playbook: the trigger is the nearest fresh structural
+# line, t1..t3 the next three beyond it (lib.strat_levels.identify_triggers).
+_REACH_SLOTS = ("trigger", "t1", "t2", "t3")
+# Two lines are "the same price" when they land on the same cent under the ONE
+# rule lib.strat_levels.price_cents defines for the ladder, target de-dupe and
+# this match alike (Codex P2 on #1030, twice: a float threshold misreads
+# 240.01 - 240.00, and a second rounding rule misreads 292.705).
+_LEVEL_PRICE_TOL = 0.01
+
+
+def _cents(x) -> int:
+    from lib.strat_levels import price_cents  # noqa: PLC0415 — keeps import light
+
+    return price_cents(x)
+
+
+def market_today():
+    """Today's trading date in market time (Rule 3.9: Eastern, named zone).
+
+    The API serves requests at any hour; a UTC date is already tomorrow after
+    20:00 ET and would push the ladder and its playbook row one session forward.
+    """
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    return datetime_type.now(ZoneInfo("America/New_York")).date()
+
+
+def _finite(col: str) -> str:
+    """SQL predicate: column is a real number (not NULL, not NaN).
+
+    `premarket_analysis` carries a handful of literal NaN prices (3-11 rows per
+    ticker on 2026-09-07). Postgres orders NaN ABOVE every real number, so a
+    bare `t1 > trigger` would count a NaN target as "beyond the trigger" and
+    admit it to a denominator.
+    """
+    return f"({col} IS NOT NULL AND {col} <> 'NaN'::float8)"
+
+
+def _reach_rate_sql(side: str) -> str:
+    """Per-slot UNCONDITIONAL population reach-rates for one side.
+
+    For each slot the denominator is the resolved rows where that slot AND
+    every slot before it, the trigger included (measured against the row's
+    own `price` anchor), had a real price at least one cent beyond its
+    predecessor on the trade's side, and the numerator is those rows where the
+    slot's hit timestamp is set. Two things this deliberately does NOT do:
+
+    * condition on the trigger having been hit. The rung is read as "how
+      often does price get here", so every resolved row is in the population;
+      the old `WHERE trigger_hit_ts IS NOT NULL` made row 0's own number
+      conditional on row 0 already being touched.
+    * count a zero-distance target. Before identify_triggers de-duplicated
+      targets by price, t1 sat AT the trigger price on 13-17% of rows and the
+      resolver marked it hit on the trigger bar. Requiring t1 to sit at least
+      one cent beyond the trigger (above for calls, below for puts) drops
+      those rows from BOTH sides of the ratio, so the historical series stays
+      honest without a rewrite.
+    """
+    price = {k: f"{side}_{k}_price" for k in _REACH_SLOTS}
+    hit = {k: f"{side}_{k}_hit_ts" for k in _REACH_SLOTS}
+    parts = []
+    # Seed with the row's own anchor: identify_triggers now refuses a trigger
+    # on the anchor's cent, so a legacy row whose persisted trigger rounds to
+    # the same cent as its `price` would have promoted its t1 to trigger under
+    # the current builder. Such rows are out of every population rather than
+    # counted with shifted ordinals (Codex P2 on #1030, round 8).
+    a0, b0 = (price["trigger"], "price") if side == "calls" else ("price", price["trigger"])
+    cond = (
+        f"{_finite('price')} AND {_finite(price['trigger'])} AND "
+        f"round({a0}::numeric, 2) - round({b0}::numeric, 2) >= {_LEVEL_PRICE_TOL}"
+    )
+    for k in _REACH_SLOTS:
+        this = _finite(price[k])
+        if k != "trigger":
+            # "Beyond" by at least one cent, and CUMULATIVE: slot k is in its
+            # population only if every earlier slot on the row was a distinct
+            # line too. A legacy row trigger=100, t1=100, t2=101 would
+            # otherwise keep t2 while dropping t1, and under the de-duplicated
+            # builder 101 IS the first target — the ordinals would be mixed
+            # (Codex P1 on #1030). Compared on prices rounded to the cent in
+            # numeric so 240.01 - 240.00 is exactly 0.01, not the 0.00999…
+            # that float8 subtraction gives.
+            prev = _REACH_SLOTS[_REACH_SLOTS.index(k) - 1]
+            a, b = (price[k], price[prev]) if side == "calls" else (price[prev], price[k])
+            gap = f"round({a}::numeric, 2) - round({b}::numeric, 2) >= {_LEVEL_PRICE_TOL}"
+            cond = f"{cond} AND {this} AND {gap}"
+        parts.append(f"COUNT(*) FILTER (WHERE {cond}) AS {k}_n")
+        parts.append(f"COUNT(*) FILTER (WHERE {cond} AND {hit[k]} IS NOT NULL) AS {k}_hits")
+    return (
+        "SELECT " + ", ".join(parts) + " "
+        "FROM premarket_analysis "
+        "WHERE ticker = :ticker AND outcome_resolved_at IS NOT NULL"
+    )
 
 
 def _fetch_reach_rates(ticker: str, side: str, query_fn) -> dict:
-    """Population reach-rates per tier (T1/T2/T3) from `premarket_analysis`.
+    """Population reach-rates per playbook slot from `premarket_analysis`.
 
-    The reach-rate for a tier is computed over the rows where the trigger was
-    actually hit (so the denominator is "trades that triggered", which is the
-    population the tier statistic is about). Returns one dict per tier with
-    the rate, the numerator/denominator, and a `low_sample` flag.
-
-    Rule 3.7: when there are NO resolved+triggered rows, every tier is an
+    Returns `_ok(side=..., slots={slot: envelope}, ...)` where every slot is
+    its own OK / UNAVAILABLE envelope with the rate, numerator, denominator and
+    a `low_sample` flag. Rule 3.7: a slot with an empty population is an
     explicit UNAVAILABLE envelope — we do NOT emit a 0.0 reach-rate (which
-    would read as "never reaches T1" rather than "no data").
+    would read as "never reaches" rather than "no data").
     """
     side = side.lower()
     if side not in ("calls", "puts"):
         return _unavailable(f"unknown side {side!r}")
 
-    trig = f"{side}_trigger_hit_ts"
-    t1 = f"{side}_t1_hit_ts"
-    t2 = f"{side}_t2_hit_ts"
-    t3 = f"{side}_t3_hit_ts"
-
-    sql = (
-        f"SELECT "
-        f"  COUNT(*) FILTER (WHERE {trig} IS NOT NULL) AS triggered_n, "
-        f"  COUNT(*) FILTER (WHERE {t1} IS NOT NULL) AS t1_hits, "
-        f"  COUNT(*) FILTER (WHERE {t2} IS NOT NULL) AS t2_hits, "
-        f"  COUNT(*) FILTER (WHERE {t3} IS NOT NULL) AS t3_hits "
-        f"FROM premarket_analysis "
-        f"WHERE ticker = :ticker "
-        f"  AND outcome_resolved_at IS NOT NULL "
-        f"  AND {trig} IS NOT NULL"
-    )
     try:
-        df = query_fn(sql, {"ticker": ticker.upper()})
+        df = query_fn(_reach_rate_sql(side), {"ticker": ticker.upper()})
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
         log.warning("reach-rate query failed for %s %s: %s", ticker, side, e)
         return _unavailable(f"reach-rate query failed: {e}")
@@ -256,93 +346,186 @@ def _fetch_reach_rates(ticker: str, side: str, query_fn) -> dict:
         return _unavailable("no resolved premarket_analysis outcomes")
 
     row = df.iloc[0].to_dict()
-    # Postgres COUNT(*) FILTER never returns NULL — it returns 0 for an empty
-    # match. So a None here means the column is genuinely absent (schema
-    # drift), which is a real bug we want to surface, not a "0 trades" case.
-    # Treat absent as denom=0 → UNAVAILABLE below (never a fabricated rate).
-    triggered_n = row.get("triggered_n")
-    denom = int(triggered_n) if triggered_n is not None else 0
-    if denom <= 0:
-        return _unavailable(
-            "no triggered+resolved premarket_analysis rows for this side"
-        )
 
-    def _tier(hits_key: str) -> dict:
-        # hits=0 is a VALID population statistic ("never reached this tier"),
-        # not a missing-data sentinel — the denom>0 guard above guarantees
-        # the rate is meaningful. None (absent column) → 0 surfaces via the
-        # rate, paired with the honest sample_n / low_sample flags.
-        raw_hits = row.get(hits_key)
-        hits = int(raw_hits) if raw_hits is not None else 0
-        rate = hits / denom
+    def _slot(k: str) -> dict:
+        # Postgres COUNT(*) FILTER never returns NULL — it returns 0 for an
+        # empty match. A None here means the column is genuinely absent
+        # (schema drift): treat as an empty population → UNAVAILABLE, never a
+        # fabricated rate.
+        n_raw = row.get(f"{k}_n")
+        denom = int(n_raw) if n_raw is not None else 0
+        if denom <= 0:
+            return _unavailable(f"no resolved rows with a {k} level for this side")
+        # hits=0 is a VALID population statistic ("never reached"), not a
+        # missing-data sentinel — the denom>0 guard guarantees it is meaningful.
+        h_raw = row.get(f"{k}_hits")
+        hits = int(h_raw) if h_raw is not None else 0
         return _ok(
-            reach_rate=round(rate, 4),
+            reach_rate=round(hits / denom, 4),
             hits=hits,
             sample_n=denom,
             low_sample=denom < LOW_SAMPLE_THRESHOLD,
         )
 
+    slots = {k: _slot(k) for k in _REACH_SLOTS}
+    if all(v.get("status") != "OK" for v in slots.values()):
+        return _unavailable("no resolved premarket_analysis rows with levels for this side")
+    return _ok(side=side, slots=slots)
+
+
+def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
+    """The slot prices the playbook tracked for the ladder's OWN session.
+
+    This is what a ladder rung is matched against: a rung earns a reach-rate
+    only when its price is one of these. The row must be the premarket row for
+    `session_date` — the same date the level map was anchored to — never an
+    earlier one. A persistent line changes ordinal between sessions (Friday's
+    PWH is t1 on Friday's row and the trigger on Monday's), so matching its
+    unchanged price against a stale row would pin the wrong slot's rate on it
+    (Codex P2 on #1030). Overnight, on weekends, and before the brief has run,
+    there is no row for today and every rung reports that honestly.
+    """
+    sql = (
+        "SELECT analysis_date, price, "
+        + ", ".join(f"{s}_{k}_price" for s in ("calls", "puts") for k in _REACH_SLOTS)
+        + " FROM premarket_analysis WHERE ticker = :ticker AND analysis_date = :d LIMIT 1"
+    )
+    params: dict = {"ticker": ticker.upper(), "d": session_date}
+    try:
+        df = query_fn(sql, params)
+    except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
+        log.warning("tracked-levels query failed for %s: %s", ticker, e)
+        return _unavailable(f"tracked-levels query failed: {e}")
+    if df is None or getattr(df, "empty", True):
+        return _unavailable(
+            f"no premarket playbook row for {ticker.upper()} on {session_date}; "
+            "reach-rates apply once the brief has run for this session"
+        )
+    row = df.iloc[0].to_dict()
+
+    def _side(side: str) -> list:
+        # Re-derive the ordinals the de-duplicated builder would have produced:
+        # keep a persisted slot only when it is a real number at least one cent
+        # beyond the last KEPT slot on this side, and name kept slots by their
+        # kept order. A legacy row trigger=100 / t1=100 / t2=101 therefore
+        # tracks 101 as t1, which is the population the cumulative SQL counts
+        # it in, rather than as the persisted "t2" (Codex P2 on #1030, round
+        # 5). New rows are already distinct (identify_triggers); this only
+        # changes what a legacy session row matches.
+        beyond = (lambda a, b: a > b) if side == "calls" else (lambda a, b: a < b)
+        out: list = []
+        # Seed with the row's own anchor when it is a real number, so a legacy
+        # trigger on the anchor's cent is skipped and its t1 promoted, as the
+        # current identify_triggers would have built the row (round 8).
+        anchor = row.get("price")
+        last_c = _cents(anchor) if anchor is not None and anchor == anchor else None
+        for k in _REACH_SLOTS:
+            v = row.get(f"{side}_{k}_price")
+            # NaN-safe without pandas: NaN != NaN.
+            if v is None or v != v:
+                continue
+            c = _cents(v)
+            if last_c is not None and not beyond(c, last_c):
+                continue
+            out.append({"slot": _REACH_SLOTS[len(out)], "price": float(v), "persisted_as": k})
+            last_c = c
+        return out
+
+    ad = row.get("analysis_date")
     return _ok(
-        side=side,
-        t1=_tier("t1_hits"),
-        t2=_tier("t2_hits"),
-        t3=_tier("t3_hits"),
-        sample_n=denom,
-        low_sample=denom < LOW_SAMPLE_THRESHOLD,
+        analysis_date=ad.isoformat() if hasattr(ad, "isoformat") else (str(ad) if ad is not None else None),
+        calls=_side("calls"),
+        puts=_side("puts"),
     )
 
 
-def _annotate_tier(level_entry: dict, tier_rate: Optional[dict]) -> dict:
-    """Attach the matching tier reach-rate envelope to a levels-to-go entry."""
+def _match_slot(price, tracked_side: list) -> Optional[dict]:
+    """The tracked slot whose price is the rung's price, or None."""
+    if price is None:
+        return None
+    c = _cents(price)
+    for t in tracked_side:
+        # Same cent = same line under the shared rule; a full cent apart is
+        # distinct. The ladder emitted `price` through the same rule and the
+        # slot price is the raw persisted float, so 292.705 and 292.71 meet.
+        if _cents(t["price"]) == c:
+            return t
+    return None
+
+
+def _annotate_rung(level_entry: dict, rate: dict) -> dict:
+    """Attach a reach-rate envelope to a levels-to-go rung."""
     out = dict(level_entry)
-    if tier_rate is None:
-        out["reach_rate"] = _unavailable("no reach-rate computed for this tier")
-    else:
-        out["reach_rate"] = tier_rate
+    out["reach_rate"] = rate
     return out
 
 
-def _build_levels(level_map, reach_calls: dict, reach_puts: dict) -> dict:
-    """Assemble the levels-to-go ladder with per-tier reach-rate annotations.
+def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict) -> dict:
+    """Assemble the levels-to-go ladder, each rung annotated by PRICE MATCH.
 
     `level_map.call_levels` / `put_levels` are the nearest structural lines
-    each way (nearest-first). We annotate position i (0,1,2) with the T(i+1)
-    population reach-rate. When a tier reach-rate is unavailable, that entry
-    carries an explicit UNAVAILABLE reach_rate (Rule 3.7).
+    each way (nearest-first). A rung gets the population reach-rate of the
+    playbook slot whose tracked price it IS; a rung that is not one of the
+    tracked lines, or a side/slot whose population is unavailable, carries an
+    explicit UNAVAILABLE envelope with the reason (Rule 3.7).
     """
     if level_map is None:
         return _unavailable("level map unavailable")
 
-    def _side(entries: list, reach: dict) -> list:
-        tier_keys = ("t1", "t2", "t3")
-        annotated = []
+    tracked_ok = isinstance(tracked, dict) and tracked.get("status") == "OK"
+    analysis_date = tracked.get("analysis_date") if tracked_ok else None
+
+    def _side(entries: list, reach: dict, side: str) -> list:
         reach_ok = isinstance(reach, dict) and reach.get("status") == "OK"
-        # When the whole side's reach-rate is UNAVAILABLE (no resolved rows,
-        # query error, etc.), propagate that SAME reason onto every tier
-        # rather than a generic "no reach-rate" — so the underlying cause
-        # (e.g. a DB error) is visible per-tier (Rule 3.7: surface, don't
-        # mask the real failure).
-        side_unavail = None
-        if not reach_ok and isinstance(reach, dict):
-            side_unavail = _unavailable(
-                reach.get("reason") or "side reach-rate unavailable"
-            )
-        for i, entry in enumerate(entries[:3]):
-            tier_rate = side_unavail
-            if reach_ok and i < len(tier_keys):
-                tier_rate = reach.get(tier_keys[i])
-            annotated.append(_annotate_tier(entry, tier_rate))
+        tracked_side = tracked.get(side) or [] if tracked_ok else []
+        annotated = []
+        for entry in entries:
+            if not tracked_ok:
+                rate = _unavailable(
+                    (tracked or {}).get("reason") or "tracked levels unavailable"
+                )
+            else:
+                hit = _match_slot(entry.get("price"), tracked_side)
+                if hit is None:
+                    rate = _unavailable(
+                        "not a level the premarket playbook tracked on "
+                        f"{analysis_date}; no reach-rate applies to this line",
+                        analysis_date=analysis_date,
+                    )
+                elif not reach_ok:
+                    # Propagate the side's own reason (a DB error, no resolved
+                    # rows) rather than a generic "no reach-rate", so the real
+                    # cause is visible per rung.
+                    rate = _unavailable(
+                        (reach or {}).get("reason") or "side reach-rate unavailable",
+                        slot=hit["slot"],
+                        analysis_date=analysis_date,
+                    )
+                else:
+                    slot_rate = (reach.get("slots") or {}).get(hit["slot"])
+                    if not isinstance(slot_rate, dict):
+                        rate = _unavailable(
+                            f"no reach-rate computed for slot {hit['slot']}",
+                            slot=hit["slot"],
+                            analysis_date=analysis_date,
+                        )
+                    else:
+                        rate = dict(slot_rate)
+                        rate["slot"] = hit["slot"]
+                        rate["analysis_date"] = analysis_date
+            annotated.append(_annotate_rung(entry, rate))
         return annotated
 
     return _ok(
-        calls=_side(level_map.call_levels or [], reach_calls),
-        puts=_side(level_map.put_levels or [], reach_puts),
+        calls=_side(level_map.call_levels or [], reach_calls, "calls"),
+        puts=_side(level_map.put_levels or [], reach_puts, "puts"),
         current_price=level_map.current_price,
         reach_rate_note=(
-            "Reach-rates are POPULATION statistics per tier (fraction of "
-            "triggered+resolved instances that reached the tier), not "
-            "per-instance predictions. low_sample=True flags n<"
-            f"{LOW_SAMPLE_THRESHOLD}."
+            "Reach-rates are POPULATION statistics for the playbook slot this "
+            "line occupies (fraction of resolved premarket sessions in which "
+            "price reached that slot during RTH), not per-instance predictions. "
+            "A line the playbook did not track carries no rate. "
+            f"low_sample=True flags n<{LOW_SAMPLE_THRESHOLD}."
         ),
     )
 
@@ -579,6 +762,33 @@ def _build_regime(ticker: str, as_of, gamma_fn) -> dict:
     )
 
 
+def _as_of_market_date(as_of):
+    """The market-calendar date an `as_of` cutoff belongs to (Rule 3.9).
+
+    Playbook rows (`premarket_analysis.analysis_date`) and gamma snapshots are
+    keyed by Eastern trading date, so a replay cutoff must be converted to
+    America/New_York BEFORE taking its date: `2026-06-23T01:00:00Z` is still
+    21:00 ET on June 22, and reading it as June 23 would let the tracked-level
+    and regime queries see the next session's playbook (Codex P2 on #1030).
+
+    * tz-aware datetime / pd.Timestamp → converted to Eastern, then `.date()`
+    * naive datetime → treated as Eastern wall-clock, `.date()`
+    * date → unchanged; None → None
+
+    A datetime / pd.Timestamp IS a `date` subclass, so the datetime test
+    comes first.
+    """
+    if as_of is None:
+        return None
+    if isinstance(as_of, datetime_type):
+        if as_of.tzinfo is not None:
+            from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+            as_of = as_of.astimezone(ZoneInfo("America/New_York"))
+        return as_of.date()
+    return as_of
+
+
 # ── Top-level assembler ────────────────────────────────────────────────────
 
 
@@ -591,6 +801,7 @@ def assemble_movement_statement(
     level_map=None,
     query_fn=None,
     gamma_fn=None,
+    session_date=None,
 ) -> Optional[dict]:
     """Assemble ONE movement_statement object for `ticker`.
 
@@ -613,6 +824,11 @@ def assemble_movement_statement(
                  lib.agents.summarizers._query wrapper. Injectable for tests.
       gamma_fn:  (ticker, as_of=) -> dict, defaults to
                  lib.agents.summarizers.summarize_gamma_levels. Injectable.
+      session_date: the Eastern trading date the caller anchored `level_map`
+                 to (the router passes the analysis_date it built the ladder
+                 with). The levels block matches rungs ONLY against the
+                 premarket playbook row for this date. Defaults to the
+                 market date of `as_of`, else today in America/New_York.
 
     CONFIDENCE RULE: only the continuation block drives `headline.probability`.
     `expected_move` and `regime` populate `confidence_modifiers` and never
@@ -669,14 +885,12 @@ def assemble_movement_statement(
         engine = get_engine()
 
     as_of_arg = as_of
-    # summarize_gamma_levels takes a date; normalize a datetime/Timestamp.
-    gamma_as_of = as_of
-    if (
-        gamma_as_of is not None
-        and hasattr(gamma_as_of, "date")
-        and not isinstance(gamma_as_of, date_type)
-    ):
-        gamma_as_of = gamma_as_of.date()
+    # The gamma summary is keyed by Eastern trading date; convert the cutoff
+    # to market time before taking its date.
+    gamma_as_of = _as_of_market_date(as_of)
+    # The ladder's own session: what the playbook row must be dated.
+    if session_date is None:
+        session_date = gamma_as_of if gamma_as_of is not None else market_today()
 
     # ── Piece 1: continuation (HEADLINE source) ────────────────────────────
     continuation = _build_continuation(engine, ticker, tf, as_of_arg)
@@ -684,7 +898,8 @@ def assemble_movement_statement(
     # ── Piece 2: levels + reach-rates ──────────────────────────────────────
     reach_calls = _fetch_reach_rates(ticker, "calls", query_fn)
     reach_puts = _fetch_reach_rates(ticker, "puts", query_fn)
-    levels = _build_levels(level_map, reach_calls, reach_puts)
+    tracked = _fetch_tracked_levels(ticker, query_fn, session_date)
+    levels = _build_levels(level_map, reach_calls, reach_puts, tracked)
 
     # ── Piece 3 + 4: CONTEXT modifiers (never touch the headline) ──────────
     # Rule 3.6 — point-in-time consistency: in REPLAY (as_of set), bound the

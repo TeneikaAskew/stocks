@@ -387,7 +387,7 @@ The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89
 
 ### 6.3 Cloud SQL schema
 
-31 tables total. PostgreSQL 15 on Cloud SQL `db-g1-small` (1.7 GB cache; tier upgrade deferred — see `INFRASTRUCTURE_NOTES.md` at repo root).
+31 tables total. PostgreSQL 15 on Cloud SQL `db-g1-small` (1.7 GB cache; tier upgrade deferred — see `docs/product/infrastructure/05-l-INFRASTRUCTURE_NOTES.md`).
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
@@ -494,7 +494,7 @@ GCP project: `adept-mountain-474619-d4`. Region: `us-east1`.
 | `weekend-review` | Weekly market review aggregation | Cloud Scheduler — weekly |
 | `apply-schema-migrations` | One-shot idempotent `gcp/schema.sql` runner via `gcp/apply_schema.py` (PR #84). Lets schema rollouts happen without a Codespace | Manual |
 | `compute-spx-greeks-backfill` | SPX historical Greeks via `scripts/maintenance/compute_spx_greeks.py` (PR #89). Idempotent (skips rows with `gamma_computed IS NOT NULL`) | Manual / on-demand |
-| `failure-notifier` | Cloud Logging Sink → Pub/Sub → Cloud Run Service `gcp/failure_notifier.py` (PR #82). Discord embed + GitHub issue with dedup. See `docs/FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub push |
+| `failure-notifier` | Cloud Logging Sink → Pub/Sub → Cloud Run Service `gcp/failure_notifier.py` (PR #82). Discord embed + GitHub issue with dedup. See `docs/product/infrastructure/05-k-FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub push |
 
 The original `fetch-earnings-options` job was removed (commit `5abfc89`) and `fetch-etf-options` (intraday yahooquery) was removed in PR #95; both flowed through `fetch-av-historical-options` which is the sole options writer now.
 
@@ -1041,7 +1041,7 @@ Seventeen named plans live in `~/.claude/plans/`. All have been validated agains
 
 **Problem:** SPX had a 4-month gap (2025-12-18 → 2026-04-13). No comprehensive watchdog for staleness across tickers/tables.
 **Approach:** Phase 1 SPX backfill via put-call parity (~78 rows, `data_source='derived_put_call_parity'`). Phase 2 add SPX detection to `fetch_market_data.py`. Phase 3 fail-fast guards in `signal_monitor.py`. Phase 4 hourly+nightly freshness watchdog GH workflow.
-**Files shipped:** `scripts/backfill_spx_from_options.py`, `gcp/fetchers/fetch_market_data.py` (SPX branch), `gcp/signal_monitor.py`, `scripts/audit_data_freshness.py`, `.github/workflows/freshness-watchdog.yml`, `docs/DATA_PIPELINE.md`.
+**Files shipped:** `scripts/backfill_spx_from_options.py`, `gcp/fetchers/fetch_market_data.py` (SPX branch), `gcp/signal_monitor.py`, `scripts/audit_data_freshness.py`, `.github/workflows/freshness-watchdog.yml`, `docs/product/infrastructure/05-g-DATA_PIPELINE.md`.
 
 #### 8. `humming-dreaming-cascade` — Daily Bias Un-Stale ✅
 
@@ -1159,7 +1159,7 @@ After PR #80 merged into main, 14 follow-on PRs landed in the same morning:
 - **Schema migrations job** (#84) — `gcp/apply_schema.py` + `apply-schema-migrations` Cloud Run Job. Schema rollouts no longer need a Codespace.
 - **Pipeline freshness widget + watchdog** (#85) — `scripts/audit_data_freshness.py` (575 lines), `platform/api/routers/health.py`, `.github/workflows/freshness-watchdog.yml` (121 lines), Dashboard `DataPipelineStatus.tsx` widget.
 - **`lib/options_greeks.py` BSM module** (#86) — 470 lines, `py_vollib_vectorized` IV solver, sidecar columns, `enrich_av_chain_with_greeks()` orchestrator.
-- **Data pipeline + codespaces auth + April incident docs** (#87) — `docs/DATA_PIPELINE.md` (435 lines), `docs/claude-code-codespaces-auth.md` (70 lines), `docs/incidents/2026-04-14-market-data-daily-gap.md` (76 lines, first postmortem).
+- **Data pipeline + codespaces auth + April incident docs** (#87) — `docs/product/infrastructure/05-g-DATA_PIPELINE.md` (435 lines), `docs/claude-code-codespaces-auth.md` (70 lines), `docs/incidents/2026-04-14-market-data-daily-gap.md` (76 lines, first postmortem).
 - **E2E smoke specs** (#88) — `navigation.spec.ts`, `data-pipeline-status.spec.ts`, `api-smoke.spec.ts`.
 - **SPX Greeks backfill scripts** (#89) — `scripts/maintenance/compute_spx_greeks.py` (277 lines), `scripts/backfill_spx_from_options.py` (209 lines, put-call-parity SPX OHLC backfill).
 - **Makefile convenience** (#90) — `make setup-notifier`, `make notifier`.
@@ -1444,16 +1444,16 @@ Per CLAUDE.md and memory:
 | `README.md` (repo root) | Quickstart, backtest mechanics, lib/scripts overview |
 | `QUICK_REFERENCE.md` (repo root) | Strat candles, FTFC weights, signal scoring, position sizing, gamma quick-reference |
 | `BACKTEST_RESULTS.md` (repo root) | Full 10-year backtest table |
-| `INFRASTRUCTURE_NOTES.md` (repo root) | Cloud SQL tier decisions, query performance, scaling triggers |
+| `docs/product/infrastructure/05-l-INFRASTRUCTURE_NOTES.md` | Cloud SQL tier decisions, query performance, scaling triggers |
 | `CLAUDE.md` (repo root) | Project rules, automation, GH workflow patterns |
-| `docs/GCP_IMPLEMENTATION_GUIDE.md` | GCP architecture deep-dive, schema, costs |
-| `docs/GCP_IMPLEMENTATION_STATUS.md` | Phase-by-phase migration tracker |
+| `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` | GCP architecture deep-dive, schema, costs |
+| `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` | Phase-by-phase migration tracker |
 | `docs/INVESTMENT_MODELS_SUMMARY.md` | 5-model system, 195 features breakdown |
 | `docs/MODEL_SUMMARY.md` | Concise model overview |
 | [`docs/DESIGN_SYSTEM.md`](https://github.com/TeneikaAskew/solyra/blob/main/docs/DESIGN_SYSTEM.md) | "The Obsidian Analyst" theme, color tokens, typography — now in the solyra repo |
-| `docs/API.md` | FastAPI router/endpoint catalog (PR #92) |
-| `docs/DATA_PIPELINE.md` | Per-table freshness plan, canonical writers, watchdog (PR #87) |
-| `docs/FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub failure-notifier deployment + smoke test (PR #82) |
+| `docs/product/infrastructure/05-e-API.md` | FastAPI router/endpoint catalog (PR #92) |
+| `docs/product/infrastructure/05-g-DATA_PIPELINE.md` | Per-table freshness plan, canonical writers, watchdog (PR #87) |
+| `docs/product/infrastructure/05-k-FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub failure-notifier deployment + smoke test (PR #82) |
 | `docs/HARDCODED_VALUES_REMEDIATION.md` | Plan #4 closure log, server-side math architecture (PR #81) |
 | `docs/gamma_levels.md` | King/Gate/Spot/Flip canonical reference, sign convention, spot estimation (PR #81) |
 | `docs/claude-code-codespaces-auth.md` | Codespaces + Claude Code OAuth setup (PR #87) |

@@ -941,6 +941,53 @@ def _within_staleness_window(
     return pct_ok and atr_ok
 
 
+def price_cents(x) -> int:
+    """A price as integer cents, under ONE rounding rule shared by everything
+    that decides whether two lines are "the same price": the ladder's emitted
+    prices (select_nearest_levels), target de-duplication (_distinct_targets),
+    the movement-statement slot match, and the reach-rate SQL's
+    `round(price::numeric, 2)`.
+
+    Decimal on the float's shortest repr, half-up, because three other rules
+    disagree on real data (Codex P2 on #1030): for 292.705, Python
+    `round(x, 2)` gives 292.70 (binary 292.705 is a hair below), 
+    `int(round(x * 100))` gives 29270, and Postgres `round(::numeric, 2)`
+    gives 292.71. This helper gives 29271, matching Postgres, so a level
+    persisted raw in `premarket_analysis` and the same level rendered on the
+    ladder land on the same cent.
+    """
+    from decimal import Decimal, ROUND_HALF_UP  # noqa: PLC0415
+
+    return int(Decimal(str(float(x))).quantize(Decimal("0.01"), ROUND_HALF_UP) * 100)
+
+
+def _distinct_targets(candidates, trigger_price: float, n: int = 3) -> list:
+    """The next ``n`` fresh levels beyond ``trigger_price`` at DISTINCT prices.
+
+    Two structural lines routinely sit on the same number (PDH == PWH on a
+    week whose high printed yesterday; PDO == PWC after a flat open). Before
+    this filter ``targets`` was a plain positional slice, so a coincident line
+    became a target at the trigger's own price: T1 == trigger on 13-17% of
+    IWM/SPY/QQQ premarket rows, and the outcome resolver then marked T1 hit on
+    the trigger bar itself. A target at zero distance is not a target; skip
+    anything within a cent of the trigger or of a target already taken, the
+    same tolerance ``select_nearest_levels`` uses.
+    """
+    # Integer cents under the shared rule (price_cents), not a float
+    # threshold: 240.01 - 240.00 is 0.00999… in binary and a `< 0.01` test
+    # would call them the same line.
+    out, taken = [], {price_cents(trigger_price)}
+    for lv in candidates:
+        c = price_cents(lv.price)
+        if c in taken:
+            continue
+        taken.add(c)
+        out.append(lv)
+        if len(out) >= n:
+            break
+    return out
+
+
 def identify_triggers(
     current_price: float,
     levels: Dict[str, StratLevel],
@@ -963,8 +1010,15 @@ def identify_triggers(
       and the same level would be used as a 41% stop on the CALL side.
     """
     all_levels = sorted(levels.values(), key=lambda lv: lv.price)
-    above_all = [lv for lv in all_levels if lv.price > current_price]
-    below_all = [lv for lv in all_levels if lv.price < current_price]
+    # Partition on the shared cents rule, as select_nearest_levels does: a
+    # line on the anchor's own cent cannot be "broken above" or "below" at
+    # the card's precision, so it is neither a trigger nor a stop. Without
+    # this a raw 100.0041 against a 100.004 anchor was persisted as the
+    # trigger, the ladder omitted it, and every visible rung's slot shifted
+    # by one (Codex P2 on #1030, round 7).
+    anchor_c = price_cents(current_price)
+    above_all = [lv for lv in all_levels if price_cents(lv.price) > anchor_c]
+    below_all = [lv for lv in all_levels if price_cents(lv.price) < anchor_c]
     below_all.reverse()
 
     above_fresh = [
@@ -988,8 +1042,11 @@ def identify_triggers(
 
     if above_fresh:
         trigger = above_fresh[0]
-        targets_above = above_fresh[1:4]
-        room = compute_room_to_run(trigger.price, all_levels, 'CALL')
+        targets_above = _distinct_targets(above_fresh[1:], trigger.price)
+        # Room to the FIRST DISTINCT target, the one persisted and displayed —
+        # over all_levels a line on the trigger's own cent reported ~0% room
+        # while T1 sat a full percent away (Codex P2 on #1030, round 5).
+        room = compute_room_to_run(trigger.price, targets_above, 'CALL')
 
         # Stop on the OPPOSITE side must also be fresh — using a stale
         # year-low as the stop on a CALL trade gives a meaningless
@@ -1013,8 +1070,8 @@ def identify_triggers(
 
     if below_fresh:
         trigger = below_fresh[0]
-        targets_below = below_fresh[1:4]
-        room = compute_room_to_run(trigger.price, all_levels, 'PUT')
+        targets_below = _distinct_targets(below_fresh[1:], trigger.price)
+        room = compute_room_to_run(trigger.price, targets_below, 'PUT')
         stop_lv = above_fresh[0] if above_fresh else None
 
         result['puts'] = {
@@ -1109,9 +1166,14 @@ def select_nearest_levels(
     """
     candidates = [lv for lv in levels.values()
                   if not level_types or lv.level_type in level_types]
-    above = sorted((lv for lv in candidates if lv.price > current_price),
+    # Partition on the shared cents rule: a level on the anchor's own cent is
+    # neither a call nor a put line at the card's precision, and two raw
+    # prices a hair either side of the anchor must not become a call rung and
+    # a put rung at the same displayed price (Codex P2 on #1030, round 5).
+    anchor_c = price_cents(current_price)
+    above = sorted((lv for lv in candidates if price_cents(lv.price) > anchor_c),
                    key=lambda lv: lv.price)
-    below = sorted((lv for lv in candidates if lv.price < current_price),
+    below = sorted((lv for lv in candidates if price_cents(lv.price) < anchor_c),
                    key=lambda lv: -lv.price)
     above = [lv for lv in above
              if _within_staleness_window(lv.price, current_price, atr)]
@@ -1119,17 +1181,20 @@ def select_nearest_levels(
              if _within_staleness_window(lv.price, current_price, atr)]
 
     def _take(seq):
-        out, seen = [], []
+        # De-duplicate and emit on the shared cents rule (price_cents), so the
+        # price a consumer sees is the same cent every other comparison uses.
+        out, seen = [], set()
         for lv in seq:
-            if any(abs(lv.price - p) < 0.01 for p in seen):
+            c = price_cents(lv.price)
+            if c in seen:
                 continue
-            seen.append(lv.price)
+            seen.add(c)
             out.append({
-                'price': round(float(lv.price), 2),
+                'price': c / 100.0,
                 'name': lv.name,
                 'period': lv.timeframe,
                 'level_type': lv.level_type,
-                'distance_pct': round((lv.price - current_price) / current_price * 100, 2),
+                'distance_pct': round((c / 100.0 - current_price) / current_price * 100, 2),
             })
             if len(out) >= n:
                 break
@@ -1599,6 +1664,41 @@ class StaleSourceDataError(RuntimeError):
     bug or edge case lets stale data through, persist_level_map
     refuses to write rather than poison the level cache.
     """
+
+
+def daily_data_freshness(
+    last_bar_date: Optional[date_type], analysis_date: date_type,
+) -> tuple[bool, int, str]:
+    """Is a daily frame whose last bar is `last_bar_date` fresh for a session
+    dated `analysis_date`? ONE rule for the premarket brief and the
+    movement-statement endpoint, so the playbook row and the ladder matched
+    against it are withheld on the same days (Codex P2 on #1030, round 6).
+
+    Returns (is_stale, gap_days, status). gap_days is the calendar-day gap;
+    None input maps to -1 / 'unknown'. Fresh when the gap is <= 1 day, or on
+    the two weekend bridges where Friday's bar IS the market's most recent
+    close: a Monday session reading Friday (gap 3) and a Sunday weekly brief
+    reading Friday (gap 2). Anything else, including a Monday reading
+    Thursday (gap 4) and a Tuesday after a Monday holiday (gap 4), is
+    'STALE_DAILY_DATA': the deliberate bias is toward over-flagging on
+    holiday weeks, because under-flagging republished a frozen 2026-04-27 bar
+    four mornings running (Track B audit G.P0.4). Pure; no calendar library,
+    so it behaves identically in the API image, which does not ship
+    pandas-market-calendars.
+    """
+    if last_bar_date is None:
+        return False, -1, 'unknown'
+    gap = (analysis_date - last_bar_date).days
+    if gap <= 1:
+        return False, gap, 'fresh'
+    weekday = analysis_date.weekday()
+    weekend_exempt = (
+        (weekday == 0 and gap == 3)     # Monday → Friday
+        or (weekday == 6 and gap == 2)  # Sunday weekly brief → Friday
+    )
+    if weekend_exempt:
+        return False, gap, 'fresh'
+    return True, gap, 'STALE_DAILY_DATA'
 
 
 def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
