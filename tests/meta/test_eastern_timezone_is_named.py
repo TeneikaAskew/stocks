@@ -230,9 +230,14 @@ def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
     constants at the call site because the argument is an `ast.Name` (Codex,
     PR #993).
 
-    Last assignment wins. A guard does not need to model reassignment
-    correctly -- if a name is EVER bound to a legacy zone in this file, that
-    is the thing worth reporting.
+    A LEGACY binding wins, not the last one. "Last assignment wins" was the
+    first rule here and it says the opposite of what this file claims: with
+    `TZ = "EST"; ZoneInfo(TZ); TZ = "UTC"` the later value overwrote the
+    earlier one and the call resolved to `UTC`, so the violation between them
+    disappeared (Codex, PR #993). A guard does not need to model reassignment
+    correctly, but it must not model it in the direction that hides the thing
+    it looks for: if a name is EVER bound to a legacy zone or a fixed offset
+    in this file, that binding is what the guard keeps.
     """
     out: dict[str, tuple[str, ast.AST]] = {}
     for node in ast.walk(tree):
@@ -245,9 +250,18 @@ def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
         v = node.value
         if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
             continue
+        interesting = (v.value in ALL_LEGACY
+                       or bool(_FIXED_OFFSET_STRINGS.match(v.value)))
         for t in targets:
-            if isinstance(t, ast.Name):
-                out[t.id] = (v.value, v)
+            if not isinstance(t, ast.Name):
+                continue
+            held = out.get(t.id)
+            if held is not None and not interesting:
+                held_value = held[0]
+                if (held_value in ALL_LEGACY
+                        or _FIXED_OFFSET_STRINGS.match(held_value)):
+                    continue      # do not overwrite a violation with a value
+            out[t.id] = (v.value, v)
     return out
 
 
@@ -405,7 +419,7 @@ def test_no_fixed_offset_standing_in_for_eastern():
 def test_every_scheduler_declaration_uses_the_named_zone():
     """`gcp/deploy.sh` creates every Cloud Scheduler entry; all must be ET.
 
-    Read live 2026-09-07, all 64 entries are `America/New_York` (64 in
+    Read live 2026-09-07, all 66 entries are `America/New_York` (66 in
     us-east1, 0 in every other Cloud Scheduler location). This keeps a
     new entry from being added without a timezone -- Cloud Scheduler defaults
     to **UTC** when `--time-zone` is omitted, which would silently move a
@@ -560,6 +574,21 @@ def test_a_named_fixed_offset_zone_is_rejected():
     assert not _FIXED_OFFSET_STRINGS.match("Etc/GMT+9")
     assert NONPY_FIXED_ZONE.search("tz = 'Etc/GMT+5'")
     assert not NONPY_FIXED_ZONE.search("tz = 'Etc/GMT+9'")
+
+
+def test_a_legacy_binding_survives_a_later_reassignment():
+    """`TZ = "EST"; ZoneInfo(TZ); TZ = "UTC"` must still be a violation.
+
+    Last-assignment-wins resolved the call to the LATER value, so the
+    violation between the two disappeared -- the opposite of what the
+    docstring claimed the rule was (Codex, PR #993).
+    """
+    tree = ast.parse('TZ = "EST"\nZoneInfo(TZ)\nTZ = "UTC"\n')
+    assert _string_bindings(tree)["TZ"][0] == "EST"
+
+    # A name never bound to anything interesting still takes its last value.
+    tree = ast.parse('TZ = "UTC"\nTZ = "America/New_York"\n')
+    assert _string_bindings(tree)["TZ"][0] == "America/New_York"
 
 
 def test_the_repository_scan_is_read_once():
