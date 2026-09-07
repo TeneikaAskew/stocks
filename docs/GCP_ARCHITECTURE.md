@@ -326,7 +326,7 @@ There are **no formal foreign keys** between domain tables — only the `insight
 
 ## 7. Cloud Run Services catalog
 
-Three long-lived HTTP services, all with `min-instances=0` so they cost nothing at idle.
+Five long-lived HTTP services: three deployed from this repo (`trading-platform`, `discord-interactions`, `failure-notifier`, all with `min-instances=0` so they cost nothing at idle) plus the two Solyra API services (§7.1.1), which are deployed from the stocks-repo Cloud Build triggers rather than `gcp/deploy.sh`.
 
 ### 7.1 `trading-platform` — the dashboard
 
