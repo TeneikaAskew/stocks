@@ -26,8 +26,7 @@ All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`.
 
 | ET cron | UTC | Job | What it writes |
 |---|---|---|---|
-| Mon–Fri 07:00 | 11:00 | `economic-events`, `sec-filings-intraday` | `economic_events`, `sec_filings` |
-| **Mon–Fri 07:15** | **11:15** | **`earnings-calendar-daily`** | `earnings_calendar` (AV + EW + Yahoo + UW; ±7d window from today) |
+| Mon–Fri 07:00 | 11:00 | `economic-events-daily`, `sec-filings-intraday` | `economic_events`, `sec_filings` |
 | Mon–Fri 08:10 | 12:10 | `auto-refresh-top-n` | Discord top-N watchlist refresh |
 | Mon–Fri 08:20 | 12:20 | `premarket-refresh-daily` | `market_data_daily.gap_pct`, `pre_high`, `pre_low`, `pre_vwap` |
 | **Mon–Fri 08:30** | **12:30** | **`premarket-brief-daily`** | Discord multi-embed (THE report traders see) |
@@ -145,7 +144,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
   ┌───────────────────┐  ┌─────────────────┐  ┌───────────────────────┐
   │ fetch-earnings-   │  │ fetch-market-   │  │ premarket-refresh     │
   │ history (weekly)  │  │ data (daily)    │  │ (daily 08:20 ET)      │
-  │ Sun 06:00 ET      │  │ Mon–Fri 23:00   │  │                       │
+  │ Sun 19:15 ET      │  │ Mon–Fri 23:00   │  │                       │
   │ filter: 14d +     │  │ filter: 7d +    │  │ pulls intraday for    │
   │ has_options       │  │ has_options     │  │ earnings + watchlist  │
   └─────────┬─────────┘  └────────┬────────┘  └───────────┬───────────┘
@@ -157,7 +156,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
                  ▼                               ▼
    ┌──────────────────────────────┐   ┌────────────────────────┐
    │ compute-earnings-reactions   │   │ analyze-market-data    │
-   │ daily Mon–Fri 23:00 ET       │   │ daily (strat / FTFC)   │
+   │ daily Mon–Fri 19:30 ET       │   │ daily (strat / FTFC)   │
    │ joins eh × market_data_daily │   │                        │
    │ writes ATR around earnings   │   └────────────────────────┘
    └──────────────┬───────────────┘
@@ -168,7 +167,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
    ┌──────────────────────────────┐
    │ premarket-brief              │
    │ daily Mon–Fri 08:30 ET       │  ← THE REPORT TRADERS SEE
-   │ (Sunday 09:00 for week-ahead)│
+   │ (Sunday 21:00 for week-ahead)│
    └──────────────────────────────┘
 ```
 
@@ -281,6 +280,6 @@ gcloud run jobs execute backfill-ticker \
 ## Related docs
 
 - [`DATA_PIPELINE.md`](DATA_PIPELINE.md) — per-table freshness contract
-- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — infrastructure overview
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — infrastructure overview (`docs/GCP_ARCHITECTURE.md` is a redirect to it)
 - [`CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) — sandbox patterns for ad-hoc DB queries
 - [`gamma_levels.md`](gamma_levels.md) — gamma analytics (independent pipeline)

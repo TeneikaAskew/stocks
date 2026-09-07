@@ -625,7 +625,7 @@
                 <mxCell id="p4_browser" value="solyra React UI&#10;(separate repo)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="80" y="150" width="200" height="70" as="geometry" />
                 </mxCell>
-                <mxCell id="p4_tp" value="solyra-api-prod&#10;Cloud Run Service&#10;FastAPI API (IAP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p4_tp" value="solyra-api-staging / -prod&#10;Cloud Run Services&#10;FastAPI only; the browser reaches staging (Firebase), prod is IAP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="340" y="150" width="220" height="90" as="geometry" />
                 </mxCell>
                 <mxCell id="p4_router" value="platform/api/routers/insights.py&#10;POST /api/insights/report/{ticker}/refresh" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">

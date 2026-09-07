@@ -70,8 +70,14 @@ LIVE = {
             "schedule": "0 7,10,13,17 * * 1-5", "timeZone": "America/New_York",
             "state": "ENABLED", "target_job": "fetch-sec-filings",
         },
+        # Monthly: same clock and weekday set as a wrong day-of-month claim.
+        "av-options-monthly": {
+            "schedule": "0 5 1 * *", "timeZone": "America/New_York",
+            "state": "ENABLED", "target_job": "fetch-av-options-monthly",
+        },
     },
     "run_jobs": ["fetch-market-data", "fetch-top-movers", "fetch-av-options-realtime"],
+    # A monthly entry, for the calendar-field comparison.
     "services": ["solyra-api-prod", "solyra-api-staging"],
     "secrets": ["av-api-key"],
     "queues": ["insight-pipeline-queue"],
@@ -151,6 +157,108 @@ def test_count_claim_is_compared(tmp_path):
     out = _check(tmp_path, "The system has 34 Cloud Run Jobs.")
     assert [f.check for f in out] == ["count-drift"]
     assert "live count is 3" in out[0].detail
+
+
+def test_markdown_wrapped_live_count_is_read(tmp_path):
+    """`**...jobs** (~50 live)` is a count claim; the emphasis is not a boundary.
+
+    GCP_DATA_DICTIONARY.md writes the noun in bold, so `\\s*\\(` never reached
+    the parenthesis and the file could contradict its own live snapshot under
+    a clean run (Codex, PR #990).
+    """
+    out = _check(tmp_path, "| **Cloud Run — jobs** (~50 live) | ingestion |")
+    assert [f.check for f in out] == ["count-drift"]
+    assert "50" in out[0].detail and "3" in out[0].detail
+
+
+def test_diagram_cell_joins_a_split_name_with_its_clock(tmp_path):
+    """A box wraps its own contents; neither line alone carries the claim."""
+    out = _check(tmp_path, "\n".join([
+        "  ┌───────────────────┐",
+        "  │ premarket-        │",
+        "  │ brief (weekly)    │",
+        "  │ Sun 06:00 ET      │",
+        "  └───────────────────┘",
+    ]))
+    assert [f.check for f in out] == ["clock-drift"]
+    assert "premarket-brief" in out[0].detail and "06:00" in out[0].detail
+
+
+def test_diagram_cells_are_not_spliced_across_boxes(tmp_path):
+    """Side-by-side boxes must not lend each other names and times.
+
+    Joining whole lines would read `fetch-market-data` against the RIGHT box's
+    07:15 and report a drift that is not there, which is worse than the miss
+    this scan fixes.
+    """
+    out = _check(tmp_path, "\n".join([
+        "  ┌───────────────────┐  ┌───────────────────┐",
+        "  │ fetch-market-     │  │ fetch-top-        │",
+        "  │ data (daily)      │  │ movers (daily)    │",
+        "  │ Mon–Fri 23:00 ET  │  │ Mon–Fri 07:15 ET  │",
+        "  └───────────────────┘  └───────────────────┘",
+    ]))
+    assert [f.check for f in out] == ["clock-drift"]
+    assert "fetch-top-movers" in out[0].detail
+    assert "fetch-market-data" not in out[0].detail
+
+
+def test_a_one_line_cell_is_not_reported_twice(tmp_path):
+    """Both passes see it; the reader should not read it twice."""
+    out = _check(tmp_path, "\n".join([
+        "  ┌────────────────────────────────────┐",
+        "  │ `fetch-top-movers` weekdays 07:15  │",
+        "  │ writes top_movers_daily            │",
+        "  └────────────────────────────────────┘",
+    ]))
+    assert [f.check for f in out] == ["clock-drift"]
+
+
+def test_a_noun_first_job_count_is_read(tmp_path):
+    """`Cloud Run Jobs (27 jobs)` is a count claim too.
+
+    Every pattern required the number BEFORE the noun, which is not how
+    RUNBOOK.md's recovery tables are written, so a whole table of stale
+    inventories was unreachable in a file the verifier explicitly scans
+    (Codex, PR #990).
+    """
+    out = _check(tmp_path, "| **Cloud Run Jobs (27 jobs) + Schedulers (40+)** | 60-90 min |")
+    assert "count-drift" in [f.check for f in out]
+    assert "27" in " ".join(f.detail for f in out)
+
+
+def test_a_secret_count_is_compared_at_all(tmp_path):
+    """`read_live` collected the secrets and nothing ever checked them."""
+    out = _check(tmp_path, "| **Secret Manager (19 secrets)** | 1-4 hours |")
+    assert [f.check for f in out] == ["count-drift"]
+    assert "19" in out[0].detail and "1" in out[0].detail
+
+
+def test_a_subset_of_secrets_is_not_a_fleet_count(tmp_path):
+    """"Just two secrets" for one workflow is not a claim about the project.
+
+    A bare `N secrets` is more often a subset than a fleet count, and a
+    checker that flags those is one people stop reading -- the same reason
+    the services pattern is qualified.
+    """
+    out = _check(tmp_path, "Just two secrets: one for the DB and one for the API key.")
+    assert out == [], [f.detail for f in out]
+
+
+def test_the_calendar_fields_of_a_cron_are_compared(tmp_path):
+    """`0 5 1 * *` and `0 5 2 * *` are not the same schedule.
+
+    Firings are reduced to weekday and clock, which is what makes an
+    equivalent respelling compare equal -- and it discarded day-of-month and
+    month entirely, so a monthly job could be documented on the wrong day
+    (Codex, PR #990).
+    """
+    out = _check(tmp_path, "| `fetch-av-options-monthly` | `0 5 2 * *` |")
+    assert [f.check for f in out] == ["schedule-drift"]
+    assert "day-of-month" in out[0].detail
+
+    # The live spelling itself must stay clean.
+    assert _check(tmp_path, "| `fetch-av-options-monthly` | `0 5 1 * *` |") == []
 
 
 def test_secret_named_as_infrastructure_is_known(tmp_path):
@@ -387,7 +495,13 @@ def test_cadence_words_are_not_day_qualifiers():
     "**60 cron triggers** drive the Jobs above.",
     "SCH[60 Cloud Scheduler entries] --> JOBS",
     "returns **60 scheduler entries**.",
+    # The declared/live pair, in BOTH orders. The first version of this check
+    # required the live number to come first inside the parens, so
+    # "Scheduler (58 declared / 84 live)" stopped at `58 declared` and never
+    # looked at the live half -- leaving a contradiction under a clean run
+    # (Codex, PR #990).
     "| Cloud Scheduler (60 live / 58 declared) |",
+    "| Scheduler (58 declared / 60 live) / manual |",
     "driven by 60 Cloud Scheduler entries",
     "# Create 60 Cloud Scheduler triggers",
 ])
@@ -424,3 +538,18 @@ def test_the_free_tier_quota_is_still_not_a_fleet_count(tmp_path):
     n = len(LIVE["schedulers"])
     out = _check(tmp_path, f"| Cloud Scheduler ({n} jobs, 3 free) | **$0.30** |")
     assert out == []
+
+
+def test_the_declared_half_of_a_declared_live_pair_is_not_checked(tmp_path):
+    """`58 declared` describes gcp/deploy.sh, which is a different
+    measurement from the live fleet — flagging it would be a false positive
+    on a row that is telling the truth about both."""
+    n = len(LIVE["schedulers"])
+    out = _check(tmp_path, f"| Scheduler (58 declared / {n} live) / manual |")
+    assert out == [], out
+
+
+def test_a_declared_live_pair_reports_once_not_twice(tmp_path):
+    """Two patterns can match the same claim; only one finding should result."""
+    out = _check(tmp_path, "| Cloud Scheduler (60 live / 58 declared) |")
+    assert len(out) == 1, [str(f) for f in out]

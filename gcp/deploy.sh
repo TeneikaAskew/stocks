@@ -440,20 +440,29 @@ setup_registry_cleanup() {
 ]
 EOF
     # `gcr.io` (multi-region us) is the legacy gcr.io-redirect repo holding
-    # the API service images. Its DELETE rule is scoped to the retired
-    # trading-platform* packages: solyra-api is built by platform/deploy.sh
-    # (which now pins first) AND by the Cloud Build trigger from #990, which
-    # cannot run pin-images, so a prod revision's digest could lose its
-    # only tag on a later staging build. Widen the prefix once that trigger
-    # pins (Codex, PR #1004).
+    # the API service images.
+    #
+    # `keep-tagged` is gone, and it has to be: every push to main that touches
+    # platform/ leaves a `solyra-api:<short sha>` tag, so a blanket keep-tagged
+    # rule meant the repository grew forever -- the unbounded growth this
+    # cleanup machinery exists to prevent, reintroduced by the immutable tag
+    # scheme #990 added (Codex, PR #990). Build tags older than 30 days are
+    # deleted now.
+    #
+    # That is only safe because the digests actually in use are TAGGED
+    # `inuse-*`, which the first Keep rule preserves. #1004 left this scoped
+    # to the retired trading-platform* packages precisely because the
+    # deploy-solyra-api-staging trigger did not pin; it does now (a `pin`
+    # step after its deploy), and so does the prod promote config, which is
+    # the condition that note said to widen on.
     local gcr_policy
     gcr_policy=$(mktemp)
     cat > "${gcr_policy}" <<'EOF'
 [
   {
-    "name": "keep-tagged",
+    "name": "keep-in-use-and-latest",
     "action": {"type": "Keep"},
-    "condition": {"tagState": "TAGGED"}
+    "condition": {"tagPrefixes": ["inuse-", "latest"]}
   },
   {
     "name": "keep-10-most-recent",
@@ -467,6 +476,14 @@ EOF
       "tagState": "UNTAGGED",
       "olderThan": "1209600s",
       "packageNamePrefixes": ["trading-platform"]
+    }
+  },
+  {
+    "name": "delete-old-solyra-api-build-tags",
+    "action": {"type": "Delete"},
+    "condition": {
+      "olderThan": "2592000s",
+      "packageNamePrefixes": ["solyra-api"]
     }
   }
 ]

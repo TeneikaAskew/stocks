@@ -30,11 +30,22 @@ set -euo pipefail
 SELF="${1:-}"          # this build's BUILD_ID, excluded from the scan
 TAGS="solyra-api-staging-deploy solyra-api-image-build"
 
+# FAIL CLOSED. This used to end in `|| true`, which turned a revoked
+# `cloudbuild.builds.list`, an expired credential or a transient API error
+# into an empty result -- so in exactly the environment where the interlock
+# CANNOT see peer builds, it announced that there were none and let both
+# paths deploy (Codex, PR #990). A guard that cannot check must stop, not
+# reassure.
 others=""
 for tag in ${TAGS}; do
-  ongoing=$(gcloud builds list --ongoing \
-              --filter="tags='${tag}'" \
-              --format='value(id)' 2>/dev/null || true)
+  if ! ongoing=$(gcloud builds list --ongoing \
+                   --filter="tags='${tag}'" \
+                   --format='value(id)' 2>&1); then
+    echo "ERROR: cannot list builds tagged '${tag}', so a concurrent deploy" >&2
+    echo "       cannot be ruled out. Refusing rather than assuming none." >&2
+    echo "       ${ongoing}" >&2
+    exit 1
+  fi
   for id in ${ongoing}; do
     [ "${id}" = "${SELF}" ] || others="${others} ${id}"
   done

@@ -193,24 +193,77 @@ gcloud config set project "${PROJECT_ID}" >/dev/null
 # unvalidated image one click from production.
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)}"
 
-# Neither GitHub's `concurrency: deploy-staging` group nor a Cloud Build
-# trigger can see the other path, so both check for each other here.
-# STAGING_SERVICE, not STAGING: the former deploys solyra-api-staging (what the
-# trigger also deploys); the latter is the legacy revision-tag mode on prod.
+# A FAST-FAIL courtesy check, not the interlock.
+#
+# The authoritative check is the first step of platform/cloudbuild.yaml, which
+# runs INSIDE the submitted build. This one only exists so an operator finds
+# out before uploading a source tarball; it cannot be the guard, because at
+# this point the build does not exist and carries no tag, so a trigger
+# starting in the window between here and `gcloud builds submit` would see
+# nothing and proceed (Codex, PR #990).
+#
+# STAGING_SERVICE, not STAGING: the former deploys solyra-api-staging (what
+# the trigger also deploys); the latter is the legacy revision-tag mode on
+# prod. Non-fatal here -- the in-build check is what decides.
 if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
-  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
+  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh" \
+    || { echo ">> a concurrent deploy was detected before submitting; aborting early"; exit 1; }
 fi
 
-# 0. Pin every image digest a Cloud Run job or service still runs. This
-#    build moves ${IMAGE}:latest, and the Artifact Registry cleanup policy
-#    (gcp/deploy.sh setup_registry_cleanup) deletes untagged versions older
-#    than 14 days, so the digest the current revisions run must carry its
-#    inuse-* tag before the tag moves. Fails closed: no pin, no build.
+# 0. Pin every image digest a Cloud Run job or service still runs, so the
+#    Artifact Registry cleanup policy (gcp/deploy.sh setup_registry_cleanup)
+#    cannot delete a digest something is serving: it removes untagged
+#    versions older than 14 days, and a digest whose only tag moves away
+#    becomes untagged. Fails closed: no pin, no build.
+#
+#    #1004 added this because THIS script moved ${IMAGE}:latest. It no longer
+#    does -- the build above pushes an immutable ${IMAGE}:${IMAGE_TAG} and the
+#    deploy below resolves it to a digest -- so this path is not itself the
+#    tag mover any more. The step stays because the repository is shared: the
+#    deploy-solyra-api-staging trigger and gcp/deploy.sh both still move tags
+#    in it, and the revision this run replaces is exactly the digest that
+#    needs to already carry its inuse-* tag when they do.
+#
 #    --no-sweep: the deploy-solyra-api-staging Cloud Build trigger runs this
 #    as trading-runner@, whose roles/artifactregistry.writer can create and
 #    move tags but not delete them; releasing stale pins is done by the
 #    interactive gcp/deploy.sh path instead (see gcp/cloudbuild/README.md).
 ./gcp/deploy.sh pin-images --no-sweep
+
+# The revision this run is about to replace, read BEFORE the build so it can be
+# compared with the revision serving when the deploy is finally issued. See the
+# compare-and-swap in step 3. A service that does not exist yet has nothing to
+# race with, so an empty baseline is not an error here.
+#
+# FAILS CLOSED. `2>/dev/null` plus a bare `else` treated EVERY nonzero exit as
+# "the service does not exist": a transient API error, an expired credential
+# or a missing role all left the baseline empty, which silently skips the
+# compare-and-swap below and re-opens the window it exists to close. Only an
+# explicit not-found is the create case; anything else stops the deploy
+# (Codex, PR #990).
+DEPLOY_BASELINE_REVISION=""
+_describe_err="$(mktemp)"
+if gcloud run services describe "${SERVICE}" --region "${REGION}" \
+     --format=json >/tmp/solyra-deploy-baseline.json 2>"${_describe_err}"; then
+  # A nonzero exit from serving_revision.py -- nothing serving, or traffic
+  # split across revisions -- aborts here under `set -e`, and should: a
+  # compare-and-swap has no baseline to compare against in either case, and
+  # deploying over an ambiguous service is what this guard is for.
+  DEPLOY_BASELINE_REVISION="$(python3 gcp/cloudbuild/serving_revision.py \
+                                < /tmp/solyra-deploy-baseline.json)"
+  echo ">> ${SERVICE} is currently serving ${DEPLOY_BASELINE_REVISION}"
+elif grep -qiE 'NOT_FOUND|could not be found|does not exist' "${_describe_err}"; then
+  echo ">> ${SERVICE} does not exist yet; this run creates it"
+else
+  echo ">> ERROR: could not read ${SERVICE} to establish a deploy baseline." >&2
+  echo "          Not treating an unreadable service as an absent one: that" >&2
+  echo "          would skip the compare-and-swap and let a concurrent deploy" >&2
+  echo "          be overwritten silently." >&2
+  cat "${_describe_err}" >&2
+  rm -f "${_describe_err}"
+  exit 1
+fi
+rm -f "${_describe_err}"
 
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}:${IMAGE_TAG}"
@@ -238,6 +291,40 @@ IMAGE_DIGEST=$(gcloud container images describe "${IMAGE}:${IMAGE_TAG}" \
 if [[ -z "${IMAGE_DIGEST}" ]]; then
   echo ">> ERROR: could not resolve ${IMAGE}:${IMAGE_TAG} to a digest" >&2
   exit 1
+fi
+
+# The interlock, AGAIN, and a compare-and-swap on the service.
+#
+# Moving the interlock inside platform/cloudbuild.yaml made the IMAGE BUILD
+# visible to a concurrent trigger. It did not cover this deploy, which happens
+# after that build has finished and is therefore no longer ongoing: a trigger
+# starting in the gap sees nothing, builds, deploys -- and then this older
+# invocation deploys last and wins, which is the exact ordering failure the
+# interlock exists to prevent (Codex, PR #990). Two checks close it from both
+# sides. The build scan catches a peer that is still running; the revision
+# comparison catches one that already finished and deployed, because the
+# service is then serving a revision this run never saw.
+#
+# The remaining window is between this comparison and `gcloud run deploy`
+# returning -- seconds, against the minutes a build takes. Cloud Run has no
+# conditional-deploy primitive to close it completely; this narrows it to the
+# point where the losing path is the one that started second, not the one that
+# started first.
+if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
+fi
+
+if [[ -n "${DEPLOY_BASELINE_REVISION}" ]]; then
+  SERVING_NOW="$(gcloud run services describe "${SERVICE}" --region "${REGION}" \
+                   --format=json | python3 gcp/cloudbuild/serving_revision.py)"
+  if [[ "${SERVING_NOW}" != "${DEPLOY_BASELINE_REVISION}" ]]; then
+    echo ">> ERROR: ${SERVICE} moved while this build ran." >&2
+    echo "          was serving ${DEPLOY_BASELINE_REVISION}, now ${SERVING_NOW}." >&2
+    echo "          Another deploy path landed in the gap; deploying now would" >&2
+    echo "          put this older build's image over it. Re-run this deploy on" >&2
+    echo "          top of the new revision instead." >&2
+    exit 1
+  fi
 fi
 
 echo ">> deploying to Cloud Run: ${IMAGE_DIGEST}"

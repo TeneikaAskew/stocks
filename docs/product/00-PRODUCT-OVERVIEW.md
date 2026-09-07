@@ -6,7 +6,7 @@
 
 A single-repository market-intelligence platform: a public landing site, an authenticated React
 decision-support UI (15 routes), a FastAPI read/write layer (92 platform endpoints), a PostgreSQL
-analytical store (66 relations), 76 scheduled Cloud Run jobs driven by 66 Cloud Scheduler
+analytical store (64 relations), 76 scheduled Cloud Run jobs driven by 66 Cloud Scheduler
 entries, deterministic market-structure and strategy logic in `lib/`, experimental predictive
 models, a 14-node LLM insight pipeline, replay and backtesting engines, a per-user trade journal,
 and Discord delivery.

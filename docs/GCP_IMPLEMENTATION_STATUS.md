@@ -226,6 +226,7 @@
   - `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest`
 - **Note:** `gcp/deploy.sh build` updated to use a minimal temp build context (86 files / ~1.3 MB) instead of the full repo (4 GB). Copies only `lib/`, `gcp/`, `scripts/`, `alert_config.json`, `requirements-gcp.txt`.
 
+<!-- verify-docs-ok: a dated Phase 4 record of what was deployed on 2026-02-23, not a claim about the live fleet; the live count is stated in the superseded-record note above -->
 ### Cloud Run Jobs (8 jobs) ✅ 2026-02-23 (updated 2026-04-12)
 - [x] `fetch-market-data` — deployed
 - [x] `fetch-etf-options` — deployed
@@ -240,7 +241,7 @@
 ### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
 
 > **Historical record — superseded.** This is what was provisioned in Feb–Apr
-> 2026. Read live 2026-09-07 there are **64** scheduler entries. Three of the
+> 2026. Read live 2026-09-07 there are **66** scheduler entries. Three of the
 > lines below are no longer true of the live system: `fetch-market-data-daily`
 > now runs `0 23 * * 1-5` (not `0 17`), the 9 `etf-options-*` triggers were
 > removed with their job on 2026-04-26, and the 6 `earnings-opts-*` triggers

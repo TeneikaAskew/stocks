@@ -9,7 +9,21 @@
 # overlapping runs could push over each other between one run's push and its
 # deploy. See the header of gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml.
 steps:
+  # The interlock runs HERE, inside the submitted build, not before it.
+  #
+  # platform/deploy.sh used to run it before `gcloud builds submit`, so this
+  # build did not exist yet and carried no tag: a trigger starting in that
+  # window saw only itself, proceeded, and both paths deployed (Codex,
+  # PR #990). Running it as the first step means the build is already
+  # registered and tagged when the scan happens, so the two paths can
+  # actually see each other. If both are registered before either scans,
+  # both abort -- an operator re-runs one, which is the safe direction.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: no-concurrent-deploy
+    entrypoint: bash
+    args: ['gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh', '$BUILD_ID']
   - name: gcr.io/cloud-builders/docker
+    waitFor: [no-concurrent-deploy]
     args:
       - build
       - --file

@@ -13,9 +13,9 @@ These are derived from the actual backup config — `gcloud sql instances descri
 |---|---|---|---|
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
-| **Cloud Run Jobs (27 jobs) + Schedulers (40+)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
+| **Cloud Run Jobs (76 jobs) + Schedulers (66)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
 | **Cloud Run Services (4: solyra-api-prod, solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | Same `deploy.sh` redeploys. `solyra-api-staging` is NOT optional in a rebuild: `stocks.insightscollective.org` maps to it and it is the API the frontend actually calls (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
-| **Secret Manager (19 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
+| **Secret Manager (22 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
 
 **Bottom line:** the only piece with a real DR posture is Cloud SQL. Everything else is "redeploy from git + Secret Manager." If you lose **both** Cloud SQL **and** Secret Manager simultaneously, you're rebuilding from external API key reissuance — that's the long pole.
@@ -365,10 +365,10 @@ gcloud builds cancel <BUILD_ID>
 | **Cloud SQL `trading-db`** | Daily automated backups @ 03:00 UTC, 7-backup retention; transaction log retention 7d enables PITR | ❌ Never tested | ⚠️ **Backups exist but no rehearsed restore.** Worth a one-time `gcloud sql backups restore` to a `-test` instance to validate. |
 | **GCS `adept-mountain-474619-d4-trading-data`** | None — versioning OFF; 730-day delete lifecycle on `raw/` | n/a | 🔴 **No backup.** Risk-low (Cloud SQL is canonical), but if a fetcher ever writes corrupted parquet on top of good parquet, the good copy is gone. **Recommend: enable versioning.** |
 | **GCS `adept-mountain-474619-d4_cloudbuild`** | Auto-managed by Cloud Build (24h source retention) | n/a | 🟢 OK — the source tarballs aren't worth backing up; Cloud Build auto-prunes anyway. |
-| **Secret Manager (19 secrets)** | None at the Secret Manager level | n/a | ⚠️ **No automated backup.** Internal secrets (DB pass, admin token) can be re-generated. External secrets (AV, FRED, Anthropic, Discord webhook, GitHub PAT, EW user/pass, Benzinga, sec-user-agent) **must be re-issued from each provider** — this is the long pole on whole-project rebuild. **Recommend: print or 1Password-archive the values you can't easily re-issue.** |
+| **Secret Manager (22 secrets)** | None at the Secret Manager level | n/a | ⚠️ **No automated backup.** Internal secrets (DB pass, admin token) can be re-generated. External secrets (AV, FRED, Anthropic, Discord webhook, GitHub PAT, EW user/pass, Benzinga, sec-user-agent) **must be re-issued from each provider** — this is the long pole on whole-project rebuild. **Recommend: print or 1Password-archive the values you can't easily re-issue.** |
 | **Container images (Artifact Registry)** | None — no retention policy on `trading/trading-system` | n/a | 🟢 OK — `./gcp/deploy.sh build` rebuilds from current source in ~3 min. Old images aren't load-bearing for DR. |
-| **Cloud Run Jobs (29) / Services (3)** | Config in `gcp/deploy.sh` (git) | ✅ Implicitly tested every time we deploy | 🟢 OK — `deploy.sh all` recreates everything from scratch. |
-| **Cloud Scheduler (40+ jobs)** | Config in `gcp/deploy.sh::deploy_schedulers` (git) | ✅ Implicitly tested | 🟢 OK — `deploy.sh schedulers` recreates from scratch. Last-tested 2026-05-01 when premarket-brief schedulers were recreated. |
+| **Cloud Run Jobs (76) / Services (4)** | Config in `gcp/deploy.sh` (git) | ✅ Implicitly tested every time we deploy | 🟢 OK — `deploy.sh all` recreates everything from scratch. |
+| **Cloud Scheduler (66 jobs)** | Config in `gcp/deploy.sh::deploy_schedulers` (git) | ✅ Implicitly tested | 🟢 OK — `deploy.sh schedulers` recreates from scratch. Last-tested 2026-05-01 when premarket-brief schedulers were recreated. |
 | **Pub/Sub (`gcp-job-failures` + DLQ)** | Topics auto-recreated by `deploy.sh` (no message retention beyond default 7d) | n/a | 🟢 OK — topics are config; messages are ephemeral. |
 | **Log sink (`gcp-job-failures-sink`)** | Created by `setup_notifier_secrets` in deploy.sh | ✅ | 🟢 OK |
 | **Code (this repo)** | GitHub | ✅ Tested with every clone | 🟢 OK |
@@ -509,7 +509,11 @@ Things that could fail silently today because nothing watches them. Ranked by si
    Cloud Run Jobs against 76 live. Doc rot is a silent failure like any other.
    - **Fix (done 2026-09-06):** `scripts/verify_docs_against_live.py` compares
      every schedule, wall-clock, count and service-name claim in the operational
-     docs against `gcloud`, and exits non-zero on a mismatch:
+     docs against `gcloud`, and exits non-zero on a mismatch. It runs on a
+     schedule in `.github/workflows/verify-docs-against-live.yml` (09:00 ET
+     weekdays, WIF-authenticated) — a script nothing invokes is not a monitor,
+     and until that workflow existed this section described one that only ran
+     when somebody remembered (Codex, PR #990). Run it by hand with:
 
      ```bash
      python scripts/verify_docs_against_live.py            # reads live via gcloud

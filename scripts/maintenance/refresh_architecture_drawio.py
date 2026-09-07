@@ -37,6 +37,8 @@ ICONS = REPO / "Architecture-icons.drawio"
 
 # Exact-substring replacements applied to every cell label on every page.
 REPLACEMENTS: list[tuple[str, str]] = [
+    ("solyra-api-prod\nCloud Run Service\nFastAPI API (IAP)",
+     "solyra-api-staging / -prod\nCloud Run Services\nFastAPI only; the browser reaches staging (Firebase), prod is IAP"),
     ("Browser\n(internal team React UI)", "solyra React UI\n(Lovable-published, separate repo)"),
     ("Browser\nReact dashboard", "solyra React UI\n(separate repo)"),
     ("React dashboard", "solyra React UI"),
