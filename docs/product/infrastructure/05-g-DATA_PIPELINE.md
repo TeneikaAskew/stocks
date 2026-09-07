@@ -8,7 +8,7 @@ This doc is the single source of truth for:
 - Whether we actually need to persist it or can fetch live
 - The scheduled job(s) that populate it, and how we verify freshness
 
-Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) and [`/api/health/freshness`](../platform/api/routers/health.py) to diagnose any gap.
+Use it alongside [audit_data_freshness.py](../../../scripts/audit_data_freshness.py) and [`/api/health/freshness`](../../../platform/api/routers/health.py) to diagnose any gap.
 
 ---
 
@@ -30,21 +30,21 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 
 **Feeds into**
 - [DashboardPage.tsx](../platform/src/routes/DashboardPage.tsx) — `/api/dashboard/brief/{ticker}` → the 4 KPI cards at the top, the Daily Bias card, the RSI value, and the "vs 5d avg" subtitles
-- [premarket_brief.py](../gcp/premarket_brief.py) — Discord morning brief
-- [lib/data_loader.py](../lib/data_loader.py) — backtest dataloaders
+- [premarket_brief.py](../../../gcp/premarket_brief.py) — Discord morning brief
+- [lib/data_loader.py](../../../lib/data_loader.py) — backtest dataloaders
 - `/api/market/reference/{ticker}/{date}` — prev-day lookups + week range computation
 
 **Alternatives considered** — AlphaVantage `TIME_SERIES_DAILY` is always fresh, but we need the historical series (~11 years back) for backtests and indicator context (250-bar lookback for SMA200). **Persisting is the right call.**
 
 **ML value** — High. Any future swing/daily model trains from this table. Indicator columns are pre-computed so we don't recompute them every training run.
 
-**Canonical writer** — [`gcp/fetchers/fetch_market_data.py`](../gcp/fetchers/fetch_market_data.py) invoked by Cloud Run job `fetch-market-data`
-**Schedule** — Cloud Scheduler `fetch-market-data-daily` at **23:00 ET Mon–Fri / 11:00 PM ET** (`0 23 * * 1-5 America/New_York`). Originally `0 17` (5 PM) but moved 6 hours later because AV's `TIME_SERIES_INTRADAY` publishes the closing-day's 1-min bars with several hours of lag — see comment in [`gcp/deploy.sh`](../gcp/deploy.sh).
+**Canonical writer** — [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) invoked by Cloud Run job `fetch-market-data`
+**Schedule** — Cloud Scheduler `fetch-market-data-daily` at **23:00 ET Mon–Fri / 11:00 PM ET** (`0 23 * * 1-5 America/New_York`). Originally `0 17` (5 PM) but moved 6 hours later because AV's `TIME_SERIES_INTRADAY` publishes the closing-day's 1-min bars with several hours of lag — see comment in [`gcp/deploy.sh`](../../../gcp/deploy.sh).
 **Writes** — Daily row per ticker to `market_data_daily` **AND** full 1-min session to `market_data_intraday` (shared writer)
 **Freshness budget** — max 30h after market close (`expected_lag_hours: 30` in audit)
 
 **Reliability improvements from the April 14 incident**
-- ✅ Fail-fast guard added: script now exits non-zero when `ALPHA_VANTAGE_API_KEY` or Cloud SQL env vars are missing. See [docs/incidents/2026-04-14-market-data-daily-gap.md](incidents/2026-04-14-market-data-daily-gap.md).
+- ✅ Fail-fast guard added: script now exits non-zero when `ALPHA_VANTAGE_API_KEY` or Cloud SQL env vars are missing. See [docs/incidents/2026-04-14-market-data-daily-gap.md](../../incidents/2026-04-14-market-data-daily-gap.md).
 - 🟡 **TODO**: add a Cloud Monitoring alert on `fetch-market-data` execution failures (email or Discord webhook)
 - 🟡 **TODO**: add a watchdog GitHub Actions workflow that runs at 23:30 UTC daily — queries `SELECT MAX(date) FROM market_data_daily WHERE ticker='IWM'` and, if the result is < today, re-invokes the Cloud Run job. The fail-fast guard + watchdog means the next incident takes hours to detect instead of days.
 
@@ -66,11 +66,11 @@ is needed. SPX *option chains* remain fully covered in
 **Purpose** — 1-min OHLCV bars for IWM, SPY, QQQ (SPX has no intraday from AV). Partitioned by ticker. ~11 years of history, ~1.88M rows per ticker.
 
 **Feeds into**
-- [ChartsPage.tsx](../platform/src/routes/ChartsPage.tsx) — `/api/market/data/{ticker}/{date}?timeframe=N` — the candlestick + volume chart. Timeframes 5/15/30/60 are aggregated server-side from 1-min bars via `_aggregate_timeframe()` in [main.py](../platform/api/main.py).
+- [ChartsPage.tsx](../platform/src/routes/ChartsPage.tsx) — `/api/market/data/{ticker}/{date}?timeframe=N` — the candlestick + volume chart. Timeframes 5/15/30/60 are aggregated server-side from 1-min bars via `_aggregate_timeframe()` in [main.py](../../../platform/api/main.py).
 - [DashboardPage.tsx](../platform/src/routes/DashboardPage.tsx) — same endpoint for the PriceAreaChart (hourly bars for the last 2 trading days)
 - [LiveMarketPage.tsx](../platform/src/routes/LiveMarketPage.tsx) — review mode (pre-market backfill)
-- [signal_monitor.py](../gcp/signal_monitor.py) — rolling 100-bar window for real-time condition evaluation
-- [lib/data_loader.py](../lib/data_loader.py) — backtest dataloaders
+- [signal_monitor.py](../../../gcp/signal_monitor.py) — rolling 100-bar window for real-time condition evaluation
+- [lib/data_loader.py](../../../lib/data_loader.py) — backtest dataloaders
 
 **Alternatives considered** — AV `TIME_SERIES_INTRADAY` is live for today's bars, but backtests need multi-year intraday history. We **cannot** drop this table.
 
@@ -95,8 +95,8 @@ is needed. SPX *option chains* remain fully covered in
 
 **Feeds into**
 - [OptionsFlowPage.tsx](../platform/src/routes/OptionsFlowPage.tsx) — `/api/options/dates/{ticker}` + `/api/options/{ticker}/{date}` — full chain display, Greeks, GEX/VEX heatmap
-- [lib/options_greeks.py](../lib/options_greeks.py) — reads historical rows, recomputes BSM Greeks for SPX family, writes `*_computed` columns
-- [scripts/maintenance/compute_spx_greeks.py](../scripts/maintenance/compute_spx_greeks.py) — batch Greeks recomputation
+- [lib/options_greeks.py](../../../lib/options_greeks.py) — reads historical rows, recomputes BSM Greeks for SPX family, writes `*_computed` columns
+- [scripts/maintenance/compute_spx_greeks.py](../../../scripts/maintenance/compute_spx_greeks.py) — batch Greeks recomputation
 - Potential future consumer: ML models for options flow analysis
 
 **Alternatives considered** — Your question was whether we can **drop the snapshot history now that AV has daily options** and just fetch live. The answer is **no, we still need the table**:
@@ -111,7 +111,7 @@ is needed. SPX *option chains* remain fully covered in
 
 **Current writer — single canonical path**
 
-- Script: [`gcp/fetchers/fetch_av_historical_options.py`](../gcp/fetchers/fetch_av_historical_options.py)
+- Script: [`gcp/fetchers/fetch_av_historical_options.py`](../../../gcp/fetchers/fetch_av_historical_options.py)
 - Cloud Run job: `fetch-av-options-backfill`
 - Source: AlphaVantage `HISTORICAL_OPTIONS` endpoint
 - Schedule: GitHub Actions `fetch-alphavantage-options-daily.yml` at `0 1 * * 1-5` (01:00 UTC = 21:00 ET)
@@ -154,14 +154,14 @@ is needed. SPX *option chains* remain fully covered in
 
 **Feeds into**
 - [`fetch_earnings_options.py`](../gcp/fetchers/fetch_earnings_options.py) — resolves the 7-day ticker universe
-- [`premarket_brief.py`](../gcp/premarket_brief.py) — morning Discord brief ("5 tickers have earnings this week")
+- [`premarket_brief.py`](../../../gcp/premarket_brief.py) — morning Discord brief ("5 tickers have earnings this week")
 - Future: Earnings page ticker dropdown (P1 = EW+AV+UW, P2 = AV+UW)
 
 **Alternatives considered** — Earnings dates are published weeks in advance and rarely change mid-week. Weekly refresh is the right cadence. **Do not promote to daily** — it would waste API calls without adding value.
 
 **ML value** — Medium. Future models might use "days until earnings" as a feature; the calendar enables that.
 
-**Canonical writer** — [`scripts/fetch_earnings_calendar.py`](../scripts/fetch_earnings_calendar.py) invoked by Cloud Run job `fetch-earnings-calendar`
+**Canonical writer** — [`scripts/fetch_earnings_calendar.py`](../../../scripts/fetch_earnings_calendar.py) invoked by Cloud Run job `fetch-earnings-calendar`
 **Schedule** — Cloud Scheduler `daily-earnings-refresh-calendar` (`0 19 * * 1-5`, `America/New_York`) — 7:00 PM ET Mon–Fri
 plus `weekly-earnings-refresh-calendar` (`0 19 * * 0`) — 7:00 PM ET Sunday.
 Read live 2026-09-06; the scheduler this section used to name,
@@ -197,13 +197,13 @@ Read live 2026-09-06; the scheduler this section used to name,
 **Purpose** — FOMC meetings, CPI releases, NFP, etc. Forward-looking calendar for news-avoidance.
 
 **Feeds into**
-- [`premarket_brief.py`](../gcp/premarket_brief.py) — "this week's macro events" in the Discord brief
+- [`premarket_brief.py`](../../../gcp/premarket_brief.py) — "this week's macro events" in the Discord brief
 
 **Alternatives considered** — Every consumer only reads **future** events. No ML model trains on historical macro releases (the outcomes are not in the table — only scheduled events). **This is the one table in the whole pipeline that could genuinely be replaced with a live fetch.**
 
 **ML value** — Low. Scheduled events without outcomes aren't useful for training. Historical "actual vs forecast" from FRED would be more valuable and is a different data source.
 
-**Canonical writer** — [`gcp/fetchers/fetch_economic_events.py`](../gcp/fetchers/fetch_economic_events.py) invoked by Cloud Run job `fetch-economic-events`. The legacy `scripts/market_events_tracker.py` and `scripts/fetch_economic_calendar.py` (and their host workflow `update_economic_events_calendar.yml`) were removed 2026-05-01 — they ran weekly in GitHub Actions but the platform standardized on Cloud Run + Cloud Scheduler.
+**Canonical writer** — [`gcp/fetchers/fetch_economic_events.py`](../../../gcp/fetchers/fetch_economic_events.py) invoked by Cloud Run job `fetch-economic-events`. The legacy `scripts/market_events_tracker.py` and `scripts/fetch_economic_calendar.py` (and their host workflow `update_economic_events_calendar.yml`) were removed 2026-05-01 — they ran weekly in GitHub Actions but the platform standardized on Cloud Run + Cloud Scheduler.
 **Schedule** — Cloud Scheduler `economic-events-daily` at **7:00 AM ET Mon–Fri** (`0 7 * * 1-5 America/New_York`)
 **Freshness budget** — 192h
 
@@ -220,13 +220,13 @@ Read live 2026-09-06; the scheduler this section used to name,
 
 **Feeds into**
 - [DashboardPage.tsx](../platform/src/routes/DashboardPage.tsx) — `/api/dashboard/brief/{ticker}` (the brief endpoint surfaces premarket_analysis rows)
-- [premarket_brief.py](../gcp/premarket_brief.py) — Discord brief generator (both writer and reader)
+- [premarket_brief.py](../../../gcp/premarket_brief.py) — Discord brief generator (both writer and reader)
 
 **Alternatives considered** — Computed from `market_data_daily` so we COULD recompute on demand. But the analysis is deterministic given the inputs, and caching saves CPU on every Dashboard load. **Keep persisted.**
 
 **ML value** — Low-medium. The fields are all derived from market_data_daily so a model would just read the source directly.
 
-**Canonical writer** — [`gcp/premarket_brief.py`](../gcp/premarket_brief.py)
+**Canonical writer** — [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py)
 **Cloud Run job** — `premarket-brief`
 **Schedule** — Cloud Scheduler at 08:30 ET Mon–Fri (before market open)
 **Freshness budget** — 30h
@@ -250,7 +250,7 @@ Read live 2026-09-06; the scheduler this section used to name,
 
 **ML value** — High if we keep populating it — historical signal firings + their outcomes (which trades fired them, whether those trades won) are the raw material for signal-quality ML models.
 
-**Canonical writer** — [`gcp/signal_monitor.py`](../gcp/signal_monitor.py)
+**Canonical writer** — [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py)
 **Cloud Run job** — `signal-monitor`
 **Schedule** — Cloud Scheduler `signal-monitor-daily` at 09:25 ET Mon–Fri. Polls for ~6.5 hours during market hours.
 **Freshness budget** — 30h
@@ -276,7 +276,7 @@ Read live 2026-09-06; the scheduler this section used to name,
 
 **ML value** — Very high. Trade outcomes are the supervised labels for any trading strategy ML model.
 
-**Canonical writer** — [`gcp/trade_logger.py`](../gcp/trade_logger.py) (invoked by `signal_monitor.py`)
+**Canonical writer** — [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) (invoked by `signal_monitor.py`)
 **Schedule** — Continuous during market hours (tied to signal_monitor lifecycle)
 **Freshness budget** — Depends on market activity; can be 0 rows on a quiet day
 
@@ -307,9 +307,9 @@ Read live 2026-09-06; the scheduler this section used to name,
 **Purpose (planned)** — Risk-free rate (3-month US Treasury, `DGS3MO`) + S&P 500 dividend yield, from FRED. Used by the Black-Scholes Greeks computer for options where AV doesn't supply Greeks (SPX, SPXW, NDX, RUT, XSP).
 
 **Feeds into**
-- [`lib/options_greeks.py`](../lib/options_greeks.py) — reads rate as of a specific date when recomputing historical BSM Greeks
-- [`gcp/fetchers/fetch_fred_rates.py`](../gcp/fetchers/fetch_fred_rates.py) — the intended writer
-- [`scripts/audit_data_freshness.py`](../scripts/audit_data_freshness.py) — detects the missing table
+- [`lib/options_greeks.py`](../../../lib/options_greeks.py) — reads rate as of a specific date when recomputing historical BSM Greeks
+- [`gcp/fetchers/fetch_fred_rates.py`](../../../gcp/fetchers/fetch_fred_rates.py) — the intended writer
+- [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — detects the missing table
 
 **Current status** — The fetcher script exists but the **table has never been created in `gcp/schema.sql`**. All Greeks recomputation currently falls back to a hardcoded risk-free rate (probably 5% or whatever the default is in `options_greeks.py`), which is slightly inaccurate but not catastrophic.
 
@@ -320,7 +320,7 @@ Read live 2026-09-06; the scheduler this section used to name,
 > below are done. Item 5 (`options_greeks.py` reading the table instead of a
 > hardcoded rate) is the only one still worth checking.
 
-**Canonical writer** — [`gcp/fetchers/fetch_fred_rates.py`](../gcp/fetchers/fetch_fred_rates.py)
+**Canonical writer** — [`gcp/fetchers/fetch_fred_rates.py`](../../../gcp/fetchers/fetch_fred_rates.py)
 **Cloud Run job** — `fetch-fred-rates`
 **Schedule** — `fred-rates-daily`, `30 6 * * *` `America/New_York` (06:30 ET
 daily). The 18:00 ET slot below was the *proposal*; the deployed job runs in the
@@ -328,7 +328,7 @@ morning and picks up the prior session's FRED publication.
 **Freshness budget** — 72h (FRED has a 1-2 day publishing lag)
 
 **Proposed changes** (status as of 2026-09-06)
-1. ✅ **Add the `daily_rates` table definition** to [gcp/schema.sql](../gcp/schema.sql):
+1. ✅ **Add the `daily_rates` table definition** to [gcp/schema.sql](../../../gcp/schema.sql):
    ```sql
    CREATE TABLE IF NOT EXISTS daily_rates (
      date             DATE PRIMARY KEY,
@@ -411,7 +411,7 @@ python3 scripts/audit_data_freshness.py --strict
 make stop && make dev
 ```
 
-See also [docs/incidents/2026-04-14-market-data-daily-gap.md](incidents/2026-04-14-market-data-daily-gap.md) for the post-mortem that motivated this plan.
+See also [docs/incidents/2026-04-14-market-data-daily-gap.md](../../incidents/2026-04-14-market-data-daily-gap.md) for the post-mortem that motivated this plan.
 
 ---
 

@@ -1,17 +1,17 @@
-# Prompt: update DATA_DEPENDENCIES.md in place
+# Prompt: update docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md in place
 
-You are an automated documentation agent. Bring the prose of `DATA_DEPENDENCIES.md` up to date **without regenerating the file and without deleting content**.
+You are an automated documentation agent. Bring the prose of `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md` up to date **without regenerating the file and without deleting content**.
 
-**Output discipline (read this twice).** The file is `DATA_DEPENDENCIES.md` at the **repository root**: `file_path: "DATA_DEPENDENCIES.md"`, never `docs/DATA_DEPENDENCIES.md` or any other directory. Edit that path with the **`replace`** tool (or `write_file` with the complete body). Do not create a second copy anywhere. A file written outside the four generated documents fails the run by name and nothing is published — run 15 died exactly that way, having written `docs/DATA_DEPENDENCIES.md`. No stdout output, no preamble, no summary. The workflow gates the file on disk.
+**Output discipline (read this twice).** The file is `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md`, given from the repository root: `file_path: "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"`, never a bare `DATA_DEPENDENCIES.md` at the root and never any other directory. Edit that path with the **`replace`** tool (or `write_file` with the complete body). Do not create a second copy anywhere. A file written outside the four generated documents fails the run by name and nothing is published — run 15 died exactly that way, having written `docs/DATA_DEPENDENCIES.md`. No stdout output, no preamble, no summary. The workflow gates the file on disk.
 
 ## Inputs (under `refresh-inputs/`)
 
 - `repo_inventory.json` — includes `table_refs` (every table's writers, readers and mentions with `file:line`), `tables`, `materialized_views`, `views`, `jobs`, `modules`.
 - `live.json` — includes `db_tables` (live relations with row estimates and sizes).
-- `previous/DATA_DEPENDENCIES.md` — the committed version before this run.
-- The fresh `ARCHITECTURE.md` (updated earlier in this run).
+- `previous/docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md` — the committed version before this run, under the same relative path.
+- The fresh `docs/product/infrastructure/05-a-ARCHITECTURE.md` (updated earlier in this run).
 
-## What DATA_DEPENDENCIES.md is
+## What docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md is
 
 §1 table inventory (declared) and §1b live relations; §2 write graph; §3 read graph; §4 multi-writer tables; §5 orphan tables; §6 blast radius per Cloud Run Job; §7 Mermaid graph; §8 notes for follow-up work; §9 removed since last refresh. Sections 1, 1b, 2, 3, 4, 5 and 6 are **rendered by the workflow inside `<!-- inventory:<name>:start/end -->` markers** (tables, dbtables, writes, reads, multiwriter, orphans, blast) and are already correct. **Do not edit inside a marker block.**
 
