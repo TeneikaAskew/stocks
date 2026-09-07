@@ -101,18 +101,36 @@ body:
       description: "Git forensics with dates and commits, via -G --no-renames (not -S). A surface dropped by an unrelated rewrite reads differently from one retired on purpose."
       render: shell
       placeholder: |
+        # FIRST: is this clone shallow? If so every answer below is truncated at the
+        # graft and there is NO warning — an empty result means "not in the window",
+        # which is indistinguishable from "never had a consumer", the exact conclusion
+        # this field exists to support. Measured: an unknown symbol returns empty with
+        # rc=0, and the walk simply stops at the graft commit.
+        $ git rev-parse --is-shallow-repository     # must print false
+        $ git fetch --unshallow                     # if it printed true
+        #
         # -G --no-renames --full-history, NOT -S. Measured: -S counts per blob, so a
         # rewritten import line inside ONE file leaves the count equal and -S skips
         # that commit; a pure rename is invisible to BOTH until --no-renames; and
         # default history simplification prunes side branches, so an importer that
         # lived only on a merged-and-deleted branch returns NOTHING until
         # --full-history (reproduced on git 2.43).
-        $ git log --oneline --full-history -G "DataPipelineStatus" --no-renames -- src platform/src
-        911ec69 (Apr 26) added it and wired it into DashboardPage
-        8829f0b (Jun 5) rebuilt the Dashboard as briefing-first, silently dropping the mount
+        #
+        # The pathspec is THIS repo's source, and `--all` is not optional. `-- src
+        # platform/src` is what this example was written against before the split and
+        # it now covers nothing here: there is no src/, and platform/src left at #957.
+        # Measured — under that pathspec `refresh-earnings-views`, `replay_signal_monitor`,
+        # `_emergency_ceiling_block` and `db_query_cr` ALL return 0 commits, so the search
+        # answers "never had a consumer" for every surface in the repo.
+        $ git log --oneline --all --full-history -G "<symbol>" --no-renames \
+            -- lib gcp platform scripts .github tests
+        <sha> (date) added it and wired it into <the caller>
+        <sha> (date) rewrote that caller, silently dropping the mount
 
-        The Jun 5 commit enumerates the new page's contents and states "all other pages are
-        untouched"; the widget's removal is never mentioned. Accidental rewrite debris.
+        The shape of a conclusive answer: the second commit enumerates the new code's
+        contents and never mentions the removal. That reads as accidental rewrite debris
+        rather than a deliberate retirement. Run it on YOUR surface — an example's shas
+        are not evidence about the surface in your issue.
 
   - type: textarea
     id: options
