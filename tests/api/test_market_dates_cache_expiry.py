@@ -18,12 +18,26 @@ doc:
     fetch-market-data-daily  0 23 * * 1-5   America/New_York
     av-intraday-monthly      0 21 1 * *     America/New_York
 
-So the cache no longer models the schedule at all. It probes MAX(ts) — one
-index descent, 10.8 ms against the 1,716 ms scan — and rebuilds only when the
-newest bar has advanced. That is correct for any number of writers on any
-schedule, including ad-hoc backfills no schedule describes.
+So the cache no longer models the schedule at all. Freshness is TWO
+mechanisms, and the tests below cover both because neither is sufficient
+alone:
+
+  * the probe — MAX(ts), one index descent, 10.8 ms against the 1,716 ms
+    scan — rebuilds the list the moment the newest bar advances, for any
+    number of writers on any schedule.
+  * a 1h TTL — the backstop for every write the probe CANNOT see. MAX(ts)
+    only moves forward, so a backfill that fills a gap OLDER than the newest
+    bar leaves it unchanged, and the probe reports fresh. That is a supported
+    production path: av-intraday-nightly refetches the previous month as well
+    as the current one. Without the TTL a Saturday repair would stay hidden
+    until Monday's session landed, and for a ticker receiving no newer bars,
+    indefinitely.
+
+MAX(inserted_at) would catch both in one probe, but there is no index on it
+(measured: Parallel Seq Scan, 977 ms), so it cannot go on the request path.
 """
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -106,3 +120,95 @@ def test_eviction_drops_one_entry_not_the_whole_cache(client, probe_backed):
     assert len(cache) == cap, f"expected {cap} entries, found {len(cache)}"
     assert "T0" not in cache, "the least-recently-used entry should be evicted"
     assert f"T{cap}" in cache, "the newest entry should be resident"
+
+
+def test_a_backfilled_older_date_is_caught_by_the_TTL(client, probe_backed,
+                                                      monkeypatch):
+    """The probe's blind spot, and the backstop that covers it.
+
+    A backfill that fills a gap OLDER than the newest bar does not move
+    MAX(ts), so the probe reports fresh and the stale list keeps being served.
+    Only the TTL rescues it. Delete `_MARKET_DATES_TTL` or drop `within_ttl`
+    from the freshness test and this fails; every other test in this file
+    stays green, which is why it exists.
+    """
+    assert client.get("/api/market/dates/IWM").json()["dates"] == [
+        "20260904", "20260903"]
+    assert probe_backed["scans"] == 1
+
+    # av-intraday-nightly refetches the previous month and repairs a gap.
+    # The newest bar is untouched, so MAX(ts) does not move.
+    probe_backed["dates"] = probe_backed["dates"] + [pd.Timestamp("2026-08-29").date()]
+
+    body = client.get("/api/market/dates/IWM").json()
+    assert probe_backed["scans"] == 1, (
+        "the probe should still report fresh — MAX(ts) did not advance")
+    assert "20260829" not in body["dates"], (
+        "documenting the blind spot: the probe cannot see a historical insert")
+
+    # Age the entry past the TTL. Backdating `cached_at` exercises the exact
+    # comparison the request path makes, without a clock shim that would also
+    # have to fool the write side.
+    cached_ts, cached_at, payload = main_module._MARKET_DATES_CACHE["IWM"]
+    main_module._MARKET_DATES_CACHE["IWM"] = (
+        cached_ts,
+        cached_at - main_module._MARKET_DATES_TTL - timedelta(seconds=1),
+        payload,
+    )
+
+    body = client.get("/api/market/dates/IWM").json()
+    assert probe_backed["scans"] == 2, (
+        "the TTL backstop did not expire the entry, so a historical repair "
+        "stays invisible indefinitely for a ticker receiving no newer bars")
+    assert "20260829" in body["dates"], "backfilled date still missing after expiry"
+
+
+def test_a_fresh_entry_inside_the_TTL_is_not_rescanned(client, probe_backed):
+    """The other half of the contract: the TTL must not be so short that it
+    defeats the probe. One second under the limit is still a cache hit."""
+    client.get("/api/market/dates/IWM")
+    cached_ts, cached_at, payload = main_module._MARKET_DATES_CACHE["IWM"]
+    main_module._MARKET_DATES_CACHE["IWM"] = (
+        cached_ts,
+        cached_at - main_module._MARKET_DATES_TTL + timedelta(seconds=1),
+        payload,
+    )
+    client.get("/api/market/dates/IWM")
+    assert probe_backed["scans"] == 1, "expired one second early"
+
+
+def test_configured_but_empty_never_falls_through_to_GCS(client, probe_backed,
+                                                         monkeypatch):
+    """A successful empty result is an answer, not a failure.
+
+    The `except` below the Cloud SQL query raises 503 rather than serving the
+    GCS staging parquets, because those are a different and possibly staler
+    dataset. But a query that SUCCEEDS with zero rows raises nothing: the
+    `if not df.empty` block was skipped, the try/except fell off its end, and
+    execution continued into the GCS branch — reaching the same cross-source
+    fallback by the one path that never raises.
+
+    The GCS stub here returns blobs, so the two paths are distinguishable by
+    their output rather than by inspection.
+    """
+    from api import gcs_reader
+
+    def fake_blobs(prefix, pattern):
+        if "/minute/" in prefix:
+            return ["data/zzzz/minute/zzzz_minute_20190102.parquet"]
+        return ["data/zzzz/intraday/zzzz_av_1min_201901.parquet"]
+
+    monkeypatch.setattr(gcs_reader, "list_matching_blobs", fake_blobs)
+    probe_backed["max_ts"] = None
+    probe_backed["dates"] = []
+
+    body = client.get("/api/market/dates/ZZZZ").json()
+    assert body["source"] == "cloud_sql", (
+        f"empty Cloud SQL result fell through to {body['source']}: a ticker "
+        f"absent from the system of record was answered from staging files")
+    assert body["dates"] == [], f"GCS dates leaked into the response: {body['dates']}"
+    assert body["months"] == [], f"GCS months leaked into the response: {body['months']}"
+    assert "ZZZZ" not in main_module._MARKET_DATES_CACHE, (
+        "an empty result must not be cached — MAX(ts) is NULL over zero rows, "
+        "so the entry could never be judged fresh and would be re-deleted "
+        "every request")

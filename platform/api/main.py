@@ -647,6 +647,33 @@ async def get_available_dates(ticker: str):
                 _MARKET_DATES_CACHE[ticker_upper] = (
                     latest_ts, datetime.now(timezone.utc), payload)
                 return payload
+            # Configured, and the query SUCCEEDED returning no rows. The
+            # system of record says this ticker has no 1-minute bars; that is
+            # an ANSWER, not a failure, and it must be returned as one.
+            #
+            # Without this return the block fell off its end and execution
+            # continued into the GCS branch below -- the branch whose own
+            # comment says it runs only when Cloud SQL is unconfigured. So a
+            # ticker absent from market_data_intraday but still holding
+            # staging parquets answered from GCS, with `source: "gcs"` that
+            # no frontend reads: exactly the cross-source silent fallback the
+            # `except` above raises 503 to prevent, reached by the one path
+            # that raises nothing.
+            #
+            # Deliberately NOT cached. MAX(ts) over zero rows is NULL, so
+            # `latest_ts` is None and the freshness check (`latest_ts is not
+            # None and cached_ts == latest_ts`) can never call such an entry
+            # fresh -- it would be stored, rejected, and deleted on every
+            # request. Both queries are index-bounded and return nothing for
+            # an unknown ticker, and skipping the cache means the first bar
+            # ingested for it shows up on the next request rather than after
+            # a TTL.
+            return {
+                "ticker": ticker_upper,
+                "source": "cloud_sql",
+                "dates": [],
+                "months": [],
+            }
         except Exception as e:
             # Cloud SQL is the system of record; GCS holds the ingestion
             # staging parquets, which are a DIFFERENT and possibly staler
