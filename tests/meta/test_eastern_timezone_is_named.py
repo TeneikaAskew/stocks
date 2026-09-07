@@ -299,6 +299,17 @@ _TZ_CONTEXT = (
     + _B + r"set_config\s*\(\s*[\"']timezone[\"']\s*,\s*"
 )
 
+# The SQL STATEMENT forms, split out of `_TZ_CONTEXT` so a string carrying
+# Python source can be told from one carrying a query. `_TZ_CONTEXT`'s other
+# alternatives (`tz=`, `timezone:`, a constructor call) appear in ordinary
+# prose and in Python that another branch already reads properly, so they are
+# not evidence that a string is SQL.
+_SQL_STATEMENT = re.compile(
+    r"(?:" + _B + r"SET\s+(?:LOCAL\s+|SESSION\s+)?TIME[ _]?ZONE"
+    r"|" + _B + r"AT TIME ZONE"
+    r"|" + _B + r"set_config\s*\(\s*[\"']timezone[\"']\s*,)", re.I)
+
+
 # Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
 # unambiguous names are matched with no context requirement at all -- which is
 # what catches Pine's POSITIONAL form, `time(timeframe.period, session,
@@ -311,8 +322,15 @@ _TZ_CONTEXT = (
 # names too: `US/Eastern` and its siblings mean nothing else in any casing,
 # and the ambiguous `EST`/`EDT` still need a timezone context before them and
 # a non-word character after, so `estimate` and `edtVersion` stay clean.
+# A boundary on BOTH sides. Only the right-hand one was guarded, so the
+# case-insensitive `US/Eastern` alternative matched the tail of an ordinary
+# path -- `/api/status/eastern` contains `us/eastern` -- and `BUS/Eastern`
+# matched for the same reason. A URL or an identifier is not a timezone, and
+# a guard that fails on one is a false CI failure (Codex, PR #993).
+_LB = r"(?<![A-Za-z0-9_/-])"
 NONPY_UNAMBIGUOUS = re.compile(
-    r"""['"]?(?:""" + "|".join(re.escape(z) for z in UNAMBIGUOUS_LEGACY)
+    _LB + r"""['"]?""" + _LB
+    + r"""(?:""" + "|".join(re.escape(z) for z in UNAMBIGUOUS_LEGACY)
     + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
@@ -723,7 +741,7 @@ def _const_number(node: ast.AST, env=None, seen=None):
     return None
 
 
-def _const_string(node: ast.AST, env=None, seen=None):
+def _const_string(node: ast.AST, env=None, seen=None, consumed=None):
     """The value of a constant string expression, or None.
 
     Concatenation is folded, for the same reason `_const_number` folds
@@ -733,10 +751,12 @@ def _const_string(node: ast.AST, env=None, seen=None):
     constant strings, so nothing executes or guesses.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if consumed is not None:
+            consumed.append(node)
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _const_string(node.left, env, seen)
-        right = _const_string(node.right, env, seen)
+        left = _const_string(node.left, env, seen, consumed)
+        right = _const_string(node.right, env, seen, consumed)
         if left is None or right is None:
             return None
         return left + right
@@ -752,7 +772,7 @@ def _const_string(node: ast.AST, env=None, seen=None):
             if isinstance(value, ast.FormattedValue):
                 if value.format_spec is not None or value.conversion not in (-1, 115):
                     return None
-                inner = _const_string(value.value, env, seen)
+                inner = _const_string(value.value, env, seen, consumed)
                 if inner is None:
                     number = _const_number(value.value, env)
                     if number is None:
@@ -760,7 +780,7 @@ def _const_string(node: ast.AST, env=None, seen=None):
                     inner = f"{number:g}"
                 parts.append(inner)
                 continue
-            piece = _const_string(value, env, seen)
+            piece = _const_string(value, env, seen, consumed)
             if piece is None:
                 return None
             parts.append(piece)
@@ -771,7 +791,7 @@ def _const_string(node: ast.AST, env=None, seen=None):
             return None
         bound = env.bindings.get(node.id)
         if bound is not None:
-            return _const_string(bound, env, seen | {node.id})
+            return _const_string(bound, env, seen | {node.id}, consumed)
     return None
 
 
@@ -826,7 +846,15 @@ def _is_eastern_fixed_timedelta(node: ast.AST, env=None) -> bool:
         if v is None:
             return False
         total += v * units[kw.arg]
-    return int(round(total * sign)) in _EASTERN_OFFSET_SECONDS
+    # Rounded, but only where rounding is honest: `timedelta` scales by
+    # 1e-6 for microseconds, so an exact comparison would lose a legitimate
+    # spelling to floating-point error. A total that is not within a
+    # microsecond of a whole second is not one of these offsets and must not
+    # be truncated into one (Codex, PR #993).
+    total_signed = total * sign
+    if abs(total_signed - round(total_signed)) > 1e-6:
+        return False
+    return int(round(total_signed)) in _EASTERN_OFFSET_SECONDS
 
 
 # A new lexical scope. `ast.walk` does not know about these, which is how the
@@ -1523,17 +1551,30 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # since round 15 for exactly this reason (Codex, PR #993). The
         # ORIGINAL node stays the one marked reported, so the dedupe and the
         # line number still point at what was written.
-        # NO `env` here, deliberately. Following a name inside the fold made
-        # `follow` resolve an indirection itself instead of recursing through
-        # the branch that exists for it -- so the finding was attributed to
-        # the NAME, the constant at the assignment was never marked reported,
-        # and the module-settings pass reported the same value a second time.
-        # Four scoping tests caught it. Indirection is the recursion's job;
-        # this only folds an expression written in place, and the recursion
-        # reaches it again at the leaf.
-        folded = _const_string(arg)
+        # WITH `env`, and every constant the fold consumed is marked
+        # reported. Dropping `env` was how the previous round stopped the
+        # module-settings pass double-reporting a value the fold had resolved
+        # through a name -- but it also lost `PREFIX = "E"; ZoneInfo(PREFIX +
+        # "ST")`, where the binding and the literal are only forbidden
+        # together (Codex, PR #993). Both properties hold by marking the
+        # LEAVES rather than the expression: the constant at the assignment is
+        # exactly the node the settings pass would report next, so recording
+        # it here is what makes one finding one finding.
+        # Only a COMPOSITE expression is folded here. A bare name or
+        # attribute is left to the indirection branch below, which resolves
+        # it and labels the finding `EASTERN (= 'US/Eastern')` -- folding it
+        # here instead resolved the value correctly and threw the provenance
+        # away, which two scoping tests caught. The recursion reaches this
+        # fold again at the leaf, so a name bound to a concatenation still
+        # works and still names the binding.
+        consumed: list = []
+        folded = (_const_string(arg, env, None, consumed)
+                  if isinstance(arg, (ast.BinOp, ast.JoinedStr)) else None)
         if folded is not None and not isinstance(arg, ast.Constant):
             reported_values.add(id(arg))
+            for leaf in consumed:
+                reported_values.add(id(leaf))
+                reported.add(id(leaf))
             arg = ast.copy_location(ast.Constant(value=folded), arg)
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
             folded = {z.lower() for z in legacy_here}
@@ -1770,6 +1811,20 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             # correct. The `.sql` files got this a round earlier; the embedded
             # copies did not (Codex, PR #993).
             text = _strip_sql_comments(node.value)
+            # ...and only when the string really is a SQL STATEMENT. This
+            # branch exists because Python source carries SQL, and it was
+            # feeding EVERY string constant to the non-Python matchers -- so
+            # `logger.info("The old setting was US/Eastern; it has been
+            # migrated")` and `print("To reproduce, set TZ=EST")` failed the
+            # guard, on text that constructs and configures nothing. The
+            # shell path already blanks its diagnostics; this is the Python
+            # side of the same rule (Codex, PR #993).
+            #
+            # A zone name reaching a timezone API is caught by the call and
+            # constant branches above, which is where it means something; a
+            # zone name inside prose is prose.
+            if not _SQL_STATEMENT.search(text):
+                continue
             for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
                                     (NONPY_AMBIGUOUS, legacy),
                                     (NONPY_FIXED_ZONE, offsets),
@@ -1901,8 +1956,9 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 continue
             for k, v in zip(mapping.keys, mapping.values):
                 seconds = _const_number(v, env)
+                # Exact, for the reason the constructor branch above gives.
                 if (seconds is not None
-                        and int(seconds) in _EASTERN_OFFSET_SECONDS):
+                        and seconds in _EASTERN_OFFSET_SECONDS):
                     reported.add(id(v))
                     reported_values.add(id(v))
                     label = (repr(k.value)
@@ -1975,7 +2031,13 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                      if candidate is not None else None)
             wanted = (_EASTERN_OFFSET_SECONDS if seconds
                       else _EASTERN_OFFSET_MINUTES)
-            if value is not None and int(value) in wanted:
+            # `value in wanted`, NOT `int(value) in wanted`. Truncation made
+            # `FixedOffset(-300.5)` -- which is UTC-05:00:30, neither Eastern
+            # offset -- report as forbidden Eastern time, so a valid
+            # non-Eastern zone failed CI (Codex, PR #993). A float that is
+            # exactly the integer still compares equal, so the ordinary
+            # spellings are unaffected.
+            if value is not None and value in wanted:
                 reported.add(id(candidate))
                 note(offsets, node,
                      f"{name}({value:g}) {'seconds' if seconds else 'minutes'}")
@@ -2031,7 +2093,12 @@ def _reads_as_shell(p: pathlib.Path) -> bool:
     with each round that found another file type this repository executes; a
     predicate is where the next one goes.
     """
-    return (p.suffix in (".sh", ".yml", ".yaml")
+    # `.mk` is collected by `_source_files` as an included Make fragment and
+    # was not classified here, so a commented `# export TZ := EST` in
+    # `rules.mk` failed while the identical line in `Makefile` did not --
+    # a difference with no reason behind it, and one this branch created when
+    # it taught the context matcher Make's `:=` (Codex, PR #993).
+    return (p.suffix in (".sh", ".yml", ".yaml", ".mk")
             or p.suffix == _ENV_TEMPLATE_SUFFIX
             or p.name.startswith(("Dockerfile", "Makefile")))
 
@@ -2477,7 +2544,13 @@ def _strip_shell_comments(text: str) -> str:
                     quote = None
             elif ch in "\"'":
                 quote = ch
-            elif ch == "#":
+            elif ch == "#" and (i == 0 or line[i - 1] in " \t;|&("):
+                # Only at a word start, which is the rule bash actually uses.
+                # Cutting at every unquoted `#` ate the parameter expansion in
+                # `trimmed=${path#*/}` and everything after it on the line --
+                # including a real `export TZ=EST` following a `;` -- so the
+                # scanner deleted the assignment it exists to find, and would
+                # equally mangle any `foo#bar` word (Codex, PR #993).
                 cut = i
                 break
         out.append(line[:cut].rstrip())
@@ -5560,3 +5633,183 @@ def test_a_yaml_env_entry_survives_an_intervening_comment():
     assert _yaml_env_pair_hits(
         "        - name: OK\n          value: America/New_York\n"
         "        - name: TZ\n          value: EST\n")
+
+
+# ── Round 20 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# FIVE of the eight are FALSE findings, and two of those were created by the
+# two rounds immediately before this one. That is the point at which adding
+# spellings stops paying: the guard is now wrong more often than it is
+# incomplete, and each fix widens the surface for the next mistake. The two
+# genuine gaps this round found are recorded on issue #1019 rather than fixed
+# here -- see the comment at the end of this section.
+
+
+def test_a_python_string_is_only_scanned_as_sql():
+    """`logger.info("...US/Eastern...")` documents; it does not configure.
+
+    This branch exists because Python source carries SQL, and it was feeding
+    EVERY string constant to the non-Python matchers -- so a migration note
+    and a reproduction hint failed the guard on text that constructs nothing.
+    The shell path already blanks its diagnostics; this is the Python side of
+    the same rule (Codex, PR #993).
+    """
+    legacy, _ = _hits(
+        'logger.info("The old setting was US/Eastern; it has been migrated")\n')
+    assert not legacy, legacy
+
+    legacy, _ = _hits('print("To reproduce, set TZ=EST")\n')
+    assert not legacy, legacy
+
+    legacy, _ = _hits('def f():\n    """Was US/Eastern before the migration."""\n')
+    assert not legacy, legacy
+
+    # A real embedded STATEMENT is still read, which is what the branch is
+    # for -- in all three of its SQL spellings.
+    legacy, _ = _hits('Q = "SELECT ts AT TIME ZONE \'US/Eastern\' FROM t"\n')
+    assert legacy, legacy
+    legacy, _ = _hits('Q = "SET TIME ZONE \'EST\'"\n')
+    assert legacy, legacy
+    _legacy, offsets = _hits('Q = "SELECT ts AT TIME ZONE \'-05:00\'"\n')
+    assert offsets, offsets
+
+    # And a zone reaching a timezone API, or standing alone as a constant, is
+    # caught by the branches that exist for those -- narrowing this one does
+    # not open a hole.
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\nET = ZoneInfo("US/Eastern")\n')
+    assert legacy, legacy
+    legacy, _ = _hits('ZONES = ["US/Eastern"]\n')
+    assert legacy, legacy
+
+
+def test_a_fractional_offset_is_not_truncated_into_eastern():
+    """`FixedOffset(-300.5)` is UTC-05:00:30, which is not Eastern.
+
+    `int(-300.5)` is `-300`, so a valid non-Eastern zone was reported as
+    forbidden -- the guard failing CI on correct code (Codex, PR #993).
+    """
+    _legacy, offsets = _hits('import pytz\nTZ = pytz.FixedOffset(-300.5)\n')
+    assert not offsets, offsets
+
+    _legacy, offsets = _hits(
+        'from dateutil.tz import tzoffset\nTZ = tzoffset(None, -18000.5)\n')
+    assert not offsets, offsets
+
+    _legacy, offsets = _hits(
+        'from dateutil.parser import parse\n'
+        'd = parse("x", tzinfos={"EST": -18000.5})\n')
+    assert not offsets, offsets
+
+    _legacy, offsets = _hits(
+        'from datetime import timedelta, timezone\n'
+        'TZ = timezone(timedelta(seconds=-18000, microseconds=-500000))\n')
+    assert not offsets, offsets
+
+    # A float that IS the integer still reports, so this did not turn the
+    # check off -- and `timedelta`'s microsecond scaling still rounds, which
+    # is why that one keeps a tolerance rather than comparing exactly.
+    _legacy, offsets = _hits('import pytz\nET = pytz.FixedOffset(-300.0)\n')
+    assert offsets, offsets
+    _legacy, offsets = _hits('from datetime import timedelta, timezone\n'
+                             'ET = timezone(timedelta(hours=-5))\n')
+    assert offsets, offsets
+
+
+def test_an_included_make_fragment_is_preprocessed():
+    """`# export TZ := EST` in `rules.mk` is a comment, as it is in a Makefile.
+
+    `_source_files` collects `*.mk` and `_reads_as_shell` did not classify it,
+    so the identical line failed in one file and passed in the other -- a
+    difference with no reason behind it, created by teaching the context
+    matcher Make's `:=` one round earlier (Codex, PR #993).
+    """
+    assert _reads_as_shell(pathlib.Path("rules.mk"))
+    assert _reads_as_shell(pathlib.Path("Makefile"))
+    assert not _reads_as_shell(pathlib.Path("notes.md"))
+
+    assert not NONPY_AMBIGUOUS.search(
+        _strip_shell_comments("# export TZ := EST"))
+    assert NONPY_AMBIGUOUS.search(
+        _strip_shell_comments("export TZ := EST"))
+
+
+def test_a_hash_inside_a_word_is_not_a_comment():
+    """`${path#*/}` uses `#` as an operator, and the line keeps running.
+
+    Cutting at every unquoted `#` deleted the parameter expansion and
+    everything after it -- including a real `export TZ=EST` following a `;` --
+    so the scanner removed the assignment it exists to find (Codex, PR #993).
+    """
+    kept = _strip_shell_comments('trimmed=${path#*/}; export TZ=EST')
+    assert "export TZ=EST" in kept, kept
+    assert NONPY_AMBIGUOUS.search(kept)
+
+    # A `#` that really does start a word still starts a comment, inline and
+    # on a line of its own.
+    assert _strip_shell_comments("export TZ=EST # why") == "export TZ=EST"
+    assert _strip_shell_comments("# export TZ=EST").strip() == ""
+    assert _strip_shell_comments("run;# note") == "run;"
+    # And a `#` inside a quoted string is still data.
+    assert _strip_shell_comments('msg="#tag"') == 'msg="#tag"'
+
+
+def test_an_unambiguous_zone_needs_a_left_boundary_too():
+    """`/api/status/eastern` is a URL, not `US/Eastern`.
+
+    Only the right-hand boundary was guarded, so the case-insensitive
+    alternative matched the tail of an ordinary path (Codex, PR #993).
+    """
+    assert not NONPY_UNAMBIGUOUS.search("/api/status/eastern")
+    assert not NONPY_UNAMBIGUOUS.search("BUS/Eastern")
+    assert not NONPY_UNAMBIGUOUS.search("https://x/plus/eastern")
+
+    # Every spelling that really is the zone still matches.
+    assert NONPY_UNAMBIGUOUS.search("US/Eastern")
+    assert NONPY_UNAMBIGUOUS.search("tz = 'US/Eastern'")
+    assert NONPY_UNAMBIGUOUS.search("export TZ=US/Eastern")
+    assert NONPY_UNAMBIGUOUS.search('{"tz": "US/Eastern"}')
+
+
+def test_the_string_fold_resolves_names_without_double_reporting():
+    """`PREFIX = "E"; ZoneInfo(PREFIX + "ST")` -- both halves at once.
+
+    Round 19 dropped the environment from the fold to stop the
+    module-settings pass reporting a resolved value twice, and that lost the
+    binding-plus-literal composition. Both properties hold now: only a
+    COMPOSITE expression is folded here (a bare name is left to the
+    indirection branch, which labels the finding with its provenance), and
+    every constant the fold consumed is marked reported so the settings pass
+    does not see it again (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'PREFIX = "E"\n'
+                      'ET = ZoneInfo(PREFIX + "ST")\n')
+    assert legacy, legacy
+
+    # One finding, not two -- the property round 19 was protecting.
+    legacy, offsets = _hits_all('from zoneinfo import ZoneInfo\n'
+                                'TIME_ZONE = "EST"\n'
+                                'ET = ZoneInfo(TIME_ZONE)\n')
+    assert len(legacy + offsets) == 1, legacy + offsets
+
+    # And the provenance label survives: a bare name is still resolved by the
+    # branch that names it, not folded anonymously.
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'Z = "US/" + "Eastern"\n'
+                      'ET = ZoneInfo(Z)\n')
+    assert legacy and "Z (=" in legacy[0], legacy
+
+
+# Two findings from this round are NOT fixed here, and the reason is the
+# round's own arithmetic rather than a judgement about the findings:
+#
+#   * a tuple-destructuring binding -- `TZ, fallback = ("EST", "UTC")`
+#   * a constant subscript into a known mapping -- `ZONES["primary"]`
+#
+# Both are real, both are more ways to reach a value this file already
+# understands, and both would add another resolver to compose with the eleven
+# already here. Rounds 18-20 added nine such resolvers and produced nine false
+# findings, five of them in this round alone; the marginal spelling is now
+# costing more than it catches. They are recorded on issue #1019, with the
+# runtime assertion that would settle the whole class by construction instead
+# of by enumeration.
