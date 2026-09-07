@@ -201,6 +201,24 @@ class TestReprice:
             )
 
 
+
+# ── Hermetic rate/yield ──────────────────────────────────────────────────────
+#
+# These tests have no Cloud SQL, so `get_rate_and_yield` cannot read
+# `daily_rates`. It used to answer that with a silent 2024-era constant, which
+# is why the suite ran green without noticing (fallback-audit C-03). It now
+# raises, so the rate a test computes with has to be stated by the test.
+#
+# 0.045 / 0.013 are the same numbers the old silent default used, so nothing
+# these tests assert about gamma or repricing changes -- the difference is that
+# the rate is now visible in the test rather than substituted underneath it.
+@pytest.fixture(autouse=True)
+def _fixed_rate_and_yield(monkeypatch):
+    from lib import options_greeks as _og
+    monkeypatch.setattr(_og, "get_rate_and_yield", lambda d, **kw: (0.045, 0.013))
+
+
+
 class TestRepriceStructure:
 
     def test_long_straddle_combines_call_and_put(self):
