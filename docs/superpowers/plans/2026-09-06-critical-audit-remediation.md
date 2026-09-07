@@ -153,6 +153,20 @@ production data work · **L** multi-day, or a policy/research decision.
 | #814 T3 same-bar fills, zero costs | `lib/backtest.py:804` entries at signal-bar close, exits at `close_price`; no cost symbol in the file. Gates #815, #908, #882. |
 | #816 T5 risk controls | #933 mechanism is a proven no-op by default; `daily_pnl` still realized-only (`:1059` vs `:1911`). **S sub-task now:** point the daily-loss check at `mtm_pnl` (`:1563`); delete dead `daily_profit_target`. Lowering any ceiling is gated on #940. Shadow data lands mid-September. |
 
+### Wave 1 status (2026-09-07, all on PR #1005)
+
+| Issue | Commit | What landed | Operator step after merge |
+|---|---|---|---|
+| #825 + #826 | `fix(grid)` | unavailable envelope instead of $100; `lib.gamma` aggregation + coverage gate; median-strike spot labelled | none (no caller yet) |
+| #819 | `fix(signal-monitor)` | `_times_to_et` helper; `check_orb` reads the window in ET | none |
+| #822 | `fix(summarizers)` | `inclusive_today` on the backtest summarizer, both queries, forwarded from the bundle | re-run an `INSIGHT_AS_OF` replay to confirm `pattern_today.date` is D-1 |
+| #830 | `fix(deploy)` | bot token via `--set-secrets`; value never read into the shell | `./gcp/deploy.sh discord` → reset token in Dev Portal → new secret version → redeploy |
+| #835 | `fix(infra-drift)` | tag resolution + configured-tag check in the detector | `./gcp/deploy.sh fred-rates` |
+| #833 | `fix(infra-drift)` | hourly rolling run retired in deploy.sh (evidence in the comment); `check_scheduler_state` | `gcloud scheduler jobs delete signal-quality-report-hourly --location us-east1` |
+
+Each fix was preceded by a failing test committed on its own
+(`test: reproduce the Wave 1 critical audit findings before fixing them`).
+
 ## 4. Order of work
 
 1. **#861** (this branch) — code pushed, job run, scheduler created, issue updated.
