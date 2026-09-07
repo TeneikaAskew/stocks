@@ -778,6 +778,25 @@ def test_a_name_in_neither_the_repo_nor_live_is_still_flagged(tmp_path):
 def test_declared_names_are_read_from_deploy_sh_not_swallowed():
     """The first version caught ImportError and returned an empty set, so the
     acceptance silently did nothing (CLAUDE.md 3.7)."""
-    names = vd._declared_names()
+    here = str(pathlib.Path(vd.__file__).resolve().parent.parent)
+    names = vd._declared_names(here)
     assert "options-exec-backtest" in names
     assert len(names) > 100, "deploy.sh declares 67 jobs and 65 schedulers"
+
+
+def test_declared_names_are_read_from_the_root_being_checked(tmp_path, monkeypatch):
+    """`--root` points the document scan at another checkout; reading
+    deploy.sh from THIS one would report that tree's new names as unknown and
+    accept names it has deleted. (Codex, PR #1009.)"""
+    seen = []
+    monkeypatch.setattr(vd, "_declared_names", lambda root: seen.append(root) or frozenset())
+    p = tmp_path / "ARCHITECTURE.md"
+    p.write_text("The `fetch-market-data` Cloud Run Job runs nightly.\n")
+    vd.check_known_names(p, "ARCHITECTURE.md", LIVE, [], tmp_path)
+    assert seen == [str(tmp_path)], seen
+
+
+def test_the_declared_names_cache_is_keyed_on_the_root():
+    """One cached answer for every root would defeat --root just as thoroughly
+    as ignoring it."""
+    assert vd._declared_names.cache_info().maxsize > 1

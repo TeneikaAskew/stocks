@@ -801,21 +801,27 @@ def check_timezone_headers(path: pathlib.Path, rel: str, live: dict, out: list[F
                            f"{'/'.join(sorted(zones))}: {m.group(0).strip()[:120]}"))
 
 
-@functools.lru_cache(maxsize=1)
-def _declared_names() -> frozenset[str]:
-    """Job and scheduler names declared in gcp/deploy.sh."""
+@functools.lru_cache(maxsize=4)
+def _declared_names(root: str) -> frozenset[str]:
+    """Job and scheduler names declared in `root`'s gcp/deploy.sh.
+
+    Keyed on the root: `--root` points the document scan at another checkout,
+    and reading deploy.sh from THIS one instead would report that tree's new
+    names as unknown and accept names it has deleted. (Codex, PR #1009.)
+    """
     # Run as a script, the repo root is not on sys.path -- and swallowing that
     # import error would be the silent fallback CLAUDE.md 3.7 forbids: the
     # check would quietly report every declared-not-live name again.
-    root = str(pathlib.Path(__file__).resolve().parent.parent)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    here = str(pathlib.Path(__file__).resolve().parent.parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
     from scripts.maintenance import doc_inventory as inv
-    repo = inv.repo_inventory()
+    repo = inv.repo_inventory(pathlib.Path(root))
     return frozenset({j["name"] for j in repo["jobs"]} | {s["name"] for s in repo["schedulers"]})
 
 
-def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
+def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding],
+                      root: pathlib.Path | None = None) -> None:
     """A backticked name introduced as GCP infrastructure must exist live."""
     known = (set(live["run_jobs"]) | set(live["schedulers"]) | set(live["services"])
              | set(live.get("secrets", ())) | set(live.get("queues", ()))
@@ -826,7 +832,7 @@ def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Findin
              # is reported, with the reason. Flagging it here would report the
              # same fact twice and in the more confusing place. A name in
              # NEITHER the repo nor live is still flagged.
-             | _declared_names())
+             | _declared_names(str(root or pathlib.Path(__file__).resolve().parent.parent)))
     # A retired service is not an unknown name: `check_retired_services` already
     # reports it, and with a message that says WHY the name is wrong. Reporting
     # the same line twice for one fact is the noise that teaches people to skim
@@ -1021,7 +1027,7 @@ def main() -> int:
         check_retired_services(p, rel, findings)
         check_schedules(p, rel, live, findings)
         check_timezone_headers(p, rel, live, findings)
-        check_known_names(p, rel, live, findings)
+        check_known_names(p, rel, live, findings, root)
         check_counts(p, rel, live, findings)
         check_domain_mappings(p, rel, live, findings)
 

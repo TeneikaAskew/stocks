@@ -344,3 +344,33 @@ a runner, and the committed snapshot as `refresh-inputs/live.json`:
 That leaves the WIF auth action, the four Gemini steps and `gh pr create` as the
 only parts of this workflow never executed. All three require `refs/heads/main`,
 so the first dispatch after merge remains the one true end-to-end test.
+
+Codex's eighth pass (head `e6fe67e`) found four, and two of them were numbers I
+had already reported fixed:
+
+| Finding | What was actually true | Fix |
+|---|---|---|
+| §6 still said retries are `0` for **56** jobs and `1` for **27** — a total of 83 against 67 declared — while §9 said 41/25/1 | I corrected §9's sentence in round 3, reported the finding closed, and left §6's | both corrected, and the number is now DERIVED and gated |
+| §15 still said **28** runtime relations while §5 and §17 said 26 | same shape: I corrected three of the four places | corrected and gated |
+| `schedulers_target_drift` required two non-empty `target_job` fields, so the two service-targeting schedulers (`discord-warm-open` / `-close`) were skipped entirely, and a job-to-service conversion also passed | confirmed against the snapshot: both carry `target_service`, not `target_job` | targets compare as a normalised `job:`/`service:`/`uri:` value; a templated `${service_url}/reconcile` compares by path, since the repo cannot know the host |
+| `_declared_names()` ignored `--root`, reading this checkout's `deploy.sh` while the documents came from another | the lookup took no argument at all | root is threaded through and is the cache key |
+
+The two repeats matter more than the two new ones. The mechanism was the same
+both times and is worth naming: I corrected the instances I found **by
+reading** and reported the finding closed, rather than grepping for every
+occurrence of the wrong number. Reading finds the instance you are looking at.
+
+So the fix is not the two corrections. It is `gate_derived_numbers()`, which
+recomputes both figures from the parsed inventory and the live snapshot and
+fails when any prose claim disagrees — the retry split from `deploy.sh`, the
+runtime-relation count as live minus declared. Both regressions reproduce
+against it:
+
+```
+ARCHITECTURE.md: claims 56 jobs at --max-retries 0; gcp/deploy.sh declares 41
+ARCHITECTURE.md: claims 28 runtime relations; 95 live minus 69 declared is 26
+```
+
+A number a human has to keep in sync across four sections will drift; a number
+the gate derives cannot. That is the general lesson of rounds 4, 6 and 8, which
+each contained at least one finding of exactly this shape.

@@ -338,3 +338,41 @@ def test_the_committed_fleets_have_no_target_or_timezone_drift():
     rec = inv.reconcile(inv.repo_inventory(REPO), live)
     assert rec["schedulers_target_drift"] == []
     assert rec["schedulers_tz_drift"] == []
+
+
+def test_a_service_targeting_scheduler_is_compared_by_its_service():
+    """Requiring two non-empty target_job fields skipped service schedulers.
+
+    `discord-warm-open` / `-close` target the discord-interactions SERVICE, so
+    redirecting one to another service produced no drift at all.
+    (Codex, PR #1009.)
+    """
+    live = json.loads(FIXTURE.read_text())
+    repo = inv.repo_inventory(REPO)
+    name = "discord-warm-open"
+    assert inv._sched_target(live["schedulers"][name]).startswith("service:")
+    live["schedulers"][name] = dict(live["schedulers"][name], target_service="failure-notifier")
+    rec = inv.reconcile(repo, live)
+    assert any(n.startswith(f"{name}:") for n in rec["schedulers_target_drift"]), rec["schedulers_target_drift"]
+
+
+def test_converting_a_job_scheduler_into_a_service_request_is_drift():
+    live = json.loads(FIXTURE.read_text())
+    repo = inv.repo_inventory(REPO)
+    name = next(s["name"] for s in repo["schedulers"]
+                if s.get("target_job") and s["name"] in live["schedulers"])
+    live["schedulers"][name] = {k: v for k, v in live["schedulers"][name].items() if k != "target_job"}
+    live["schedulers"][name]["target_service"] = "discord-interactions"
+    rec = inv.reconcile(repo, live)
+    assert any(n.startswith(f"{name}:") for n in rec["schedulers_target_drift"]), rec["schedulers_target_drift"]
+
+
+def test_a_templated_uri_target_is_not_reported_as_drift():
+    """The repo can only know the host as a deploy-time variable, so comparing
+    the raw string made `${service_url}/reconcile` differ from the live URL on
+    every run."""
+    repo = inv.repo_inventory(REPO)
+    templated = next((s for s in repo["schedulers"] if s.get("target_uri") and "${" in s["target_uri"]), None)
+    assert templated is not None, "fixture assumption: a templated URI target exists"
+    live_form = dict(templated, target_uri="https://failure-notifier-5sjtb3yl7a-ue.a.run.app/reconcile")
+    assert inv._sched_target(templated) == inv._sched_target(live_form)

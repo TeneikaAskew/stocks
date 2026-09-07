@@ -237,3 +237,32 @@ def test_truncated_transcript_is_a_finding(tmp_path):
     assert gate.gate_transcripts(t)
     (t / "architecture.log").write_text("all good\n")
     assert gate.gate_transcripts(t) == []
+
+
+def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
+    """Three rounds each corrected ONE instance of this number and left
+    another standing, because the corrections were made by reading rather than
+    by deriving: §9 said 41/25/1 while §6 still said 56/27, a total of 83
+    against 67 declared jobs. (Codex, PR #1009.)
+    """
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / "ARCHITECTURE.md"
+    a.write_text(a.read_text().replace(
+        "`--max-retries 0` for 41 of the 67 declared jobs, `1` for 25",
+        "`--max-retries 0` for 56 jobs and `1` for 27"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 56 jobs at --max-retries 0" in f for f in findings), findings
+
+
+def test_the_runtime_relation_count_must_match_the_snapshot(live, repo, tmp_path):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / "ARCHITECTURE.md"
+    a.write_text(a.read_text().replace("Live table drift (26 runtime relations)",
+                                       "Live table drift (28 runtime relations)"))
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any("claims 28 runtime relations" in f and "is 26" in f for f in findings), findings

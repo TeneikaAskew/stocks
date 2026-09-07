@@ -1061,6 +1061,23 @@ def _now_iso() -> str:
 # reconcile
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _sched_target(s: dict[str, Any]) -> str:
+    """A scheduler's target as `kind:name`, so a job and a service of the same
+    name are different targets and a conversion between the two is drift."""
+    if s.get("target_job"):
+        return f"job:{s['target_job']}"
+    if s.get("target_service"):
+        return f"service:{s['target_service']}"
+    if s.get("target_uri"):
+        # The repo can only know the host as a deploy-time variable
+        # (`${service_url}/reconcile`), so compare the PATH, which is the part
+        # both sides state and the part that selects the endpoint.
+        uri = s["target_uri"]
+        path = uri.split("}", 1)[-1] if "${" in uri else re.sub(r"^https?://[^/]+", "", uri)
+        return f"uri:{path or '/'}"
+    return ""
+
+
 def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
     repo_jobs = {j["name"] for j in repo["jobs"]}
     live_jobs = set(live["jobs"])
@@ -1073,9 +1090,9 @@ def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
         "schedulers_repo_only": sorted(set(repo_sched) - set(live_sched)),
         "schedulers_paused": sorted(n for n, s in live_sched.items() if s["state"] != "ENABLED"),
         "schedulers_targeting_missing_job": sorted(
-            n for n, s in live_sched.items() if s["target_job"] and s["target_job"] not in live_jobs),
+            n for n, s in live_sched.items() if s.get("target_job") and s["target_job"] not in live_jobs),
         "schedulers_repo_target_not_in_deploy": sorted(
-            n for n, s in repo_sched.items() if s["target_job"] and s["target_job"] not in repo_jobs),
+            n for n, s in repo_sched.items() if s.get("target_job") and s["target_job"] not in repo_jobs),
         "schedulers_cron_drift": sorted(
             f"{n}: repo `{repo_sched[n]['cron']}` live `{live_sched[n]['cron']}`"
             for n in set(repo_sched) & set(live_sched)
@@ -1086,11 +1103,16 @@ def reconcile(repo: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
         # production fired the wrong job, or the right one at the wrong
         # wall-clock time, under a reconciliation that read clean.
         # (Codex, PR #1009.)
+        # Compared as a normalised job-or-service target, not two job names:
+        # `discord-warm-open` / `-close` target the discord-interactions
+        # SERVICE, so requiring both target_job fields to be non-empty skipped
+        # them entirely -- and a job scheduler converted into a service request
+        # (or the reverse) also passed. (Codex, PR #1009.)
         "schedulers_target_drift": sorted(
-            f"{n}: repo `{repo_sched[n]['target_job']}` live `{live_sched[n]['target_job']}`"
+            f"{n}: repo `{_sched_target(repo_sched[n])}` live `{_sched_target(live_sched[n])}`"
             for n in set(repo_sched) & set(live_sched)
-            if repo_sched[n].get("target_job") and live_sched[n].get("target_job")
-            and repo_sched[n]["target_job"] != live_sched[n]["target_job"]),
+            if _sched_target(repo_sched[n]) and _sched_target(live_sched[n])
+            and _sched_target(repo_sched[n]) != _sched_target(live_sched[n])),
         "schedulers_tz_drift": sorted(
             f"{n}: repo `{repo_sched[n].get('time_zone')}` live `{live_sched[n].get('time_zone')}`"
             for n in set(repo_sched) & set(live_sched)

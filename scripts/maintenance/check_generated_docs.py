@@ -314,6 +314,44 @@ def render_report(stats: list[dict]) -> str:
     return "\n".join(body) + "\n"
 
 
+def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
+    """Prose figures that are DERIVED from the inventory must match it.
+
+    Three review rounds each corrected one instance of the same wrong number
+    and left another standing, because the corrections were made by reading
+    rather than by deriving: §9 said 41/25/1 retries while §6 still said 56/27
+    (a total of 83 against 67 declared jobs), and §5 and §17 said 26 runtime
+    relations while §15 still said 28. Both are computable, so neither should
+    ever have been a prose claim a human had to keep in sync. (Codex, #1009.)
+    """
+    import collections
+    out = []
+    text = (root / "ARCHITECTURE.md").read_text()
+
+    counts = collections.Counter(j.get("max_retries") for j in repo["jobs"])
+    # every "`--max-retries N` ... for M jobs" claim, whatever the wording
+    for m in re.finditer(r"`--max-retries (\d)`[^.\n]{0,40}?for (\d+)", text):
+        want = counts.get(m.group(1), 0)
+        if int(m.group(2)) != want:
+            out.append(f"ARCHITECTURE.md: claims {m.group(2)} jobs at --max-retries {m.group(1)}; "
+                       f"gcp/deploy.sh declares {want}")
+    for m in re.finditer(r"`--max-retries 0` is the norm \((\d+) of", text):
+        if int(m.group(1)) != counts.get("0", 0):
+            out.append(f"ARCHITECTURE.md: claims {m.group(1)} jobs at --max-retries 0; "
+                       f"gcp/deploy.sh declares {counts.get('0', 0)}")
+
+    if live and live.get("db_tables"):
+        declared = (len(repo["tables"]) + len(repo["materialized_views"]) + len(repo["views"]))
+        runtime = len(live["db_tables"]) - declared
+        for doc in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md"):
+            body = (root / doc).read_text()
+            for m in re.finditer(r"(\d+) runtime[- ](?:created )?relations", body):
+                if int(m.group(1)) != runtime:
+                    out.append(f"{doc}: claims {m.group(1)} runtime relations; "
+                               f"{len(live['db_tables'])} live minus {declared} declared is {runtime}")
+    return out
+
+
 def gate_stale(root: pathlib.Path) -> list[str]:
     out = []
     for doc in DOCS:
@@ -372,6 +410,7 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_markers(root, repo, live)
     findings += gate_diff_budget(diff_stats(root, previous_dir), allow_rewrite)
     findings += gate_headings_and_size(root, previous_dir)
+    findings += gate_derived_numbers(root, repo, live)
     findings += gate_stale(root)
     findings += gate_links(root)
     findings += gate_readme(root)
