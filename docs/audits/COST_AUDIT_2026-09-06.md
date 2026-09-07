@@ -38,7 +38,7 @@ dashboard is Firebase's label for the Vertex AI Gemini API.
 | Cloud Run | 3.71 | 111 | `discord-interactions` always warm ($51/mo); jobs ($44/mo, §5) |
 | Cloud SQL | 2.35 | 70 | `trading-db` db-g1-small always on (~$25), 191 GB SSD (~$32), 7 snapshots + PITR |
 | Artifact Registry | 0.99 | 30 | 448 + 175 untagged image versions, never deleted (§3) |
-| Cloud Scheduler | 0.27 | 8 | 84 entries at $0.10 past the first 3 (§4); 64 after this audit, 66 once §6 lands |
+| Cloud Scheduler | 0.27 | 8 | 84 entries at $0.10 past the first 3 (§4); 66 after this audit |
 | Cloud Storage | 0.08 | 2.4 | 89 GiB trading-data, 23 GiB `_cloudbuild` sources |
 | Secret Manager | 0.05 | 1.6 | 22 secrets |
 | Vertex AI | 0.02–0.03 | ~1 | Gemini 3.1 Flash Lite; one Gemini 2.5 Pro batch on Sep 1 ($0.34) |
@@ -117,8 +117,8 @@ no body) became 3, same cadence:
 | `sec-filings-0700/1000/1300/1700` (4) | `sec-filings-intraday` `0 7,10,13,17 * * 1-5` |
 
 Applied via `./gcp/deploy.sh schedulers` on 2026-09-06; the retirement
-loop deleted the 24. 84 → 64 entries (66 once the two Discord warm-window
-entries from §6 are created). Saves ~$2/month. The `top-movers-intraday-hourly` /
+loop deleted the 24. 84 → 64 entries, 66 with the two Discord warm-window
+entries from §6. Saves ~$2/month. The `top-movers-intraday-hourly` /
 `-close` pair stays: `30 9-15` and `5 16` cannot share one cron.
 
 Each replacement entry is created-or-updated and read back (schedule,
@@ -202,42 +202,47 @@ always-on, which is the $51/month observed.
 | 09:00–16:30 | ~160 | 11 | 40 |
 | never (min 0) | 0 | ~1 (request-based) | 50 |
 
-**Chosen window: 09:00–16:30 ET weekdays. Wired in `deploy_schedulers`,
-blocked on one IAM grant.** Two Cloud Scheduler entries
-(`discord-warm-open` `0 9 * * 1-5`, `discord-warm-close` `30 16 * * 1-5`,
-$0.20/month) POST to the Cloud Run v2 service with
-`X-HTTP-Method-Override: PATCH` and
+**Applied 2026-09-07 00:41 UTC, window 09:00–16:30 ET weekdays.** Two
+Cloud Scheduler entries (`discord-warm-open` `0 9 * * 1-5`,
+`discord-warm-close` `30 16 * * 1-5`, $0.20/month) POST to the Cloud Run
+v2 service with `X-HTTP-Method-Override: PATCH` and
 `updateMask=template.scaling.minInstanceCount` (1 at open, 0 at close)
-under `trading-runner@`'s OAuth token. Verified before wiring it: the
-PATCH produced a revision differing from its predecessor only in
-`minScale` (env, secrets, command, CPU allocation and startup boost all
-unchanged), and the override header reaches Cloud Run as `UpdateService`
-with that mask.
+under `trading-runner@`'s OAuth token.
 
-What stopped it on 2026-09-06: Cloud Run requires the caller to hold
-`iam.serviceAccounts.actAs` on the revision's runtime service account,
-which is `trading-runner@` itself, and it does not have that self-binding.
-The sandbox deploy identity (`claude-web@`, `roles/editor`) cannot grant
-it, since `setIamPolicy` on a service account is owner-only. The helper
-therefore refuses to create the schedulers (a scheduler that 403s twice a
-day is a slow leak) and prints the grant. A project owner runs once:
+Two things had to be true first, and both were verified rather than
+assumed:
 
-```bash
-gcloud iam service-accounts add-iam-policy-binding \
-  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \
-  --member=serviceAccount:trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \
-  --role=roles/iam.serviceAccountUser
-./gcp/deploy.sh schedulers
-```
+- The PATCH produces a revision that differs from its predecessor only in
+  `minScale` (env, secrets, command, CPU allocation and startup boost all
+  unchanged), and the override header reaches Cloud Run as
+  `UpdateService` with that mask.
+- Cloud Run requires the caller to hold `iam.serviceAccounts.actAs` on
+  the revision's runtime service account, which is `trading-runner@`
+  itself. It did not have that self-binding, and the sandbox deploy
+  identity (`claude-web@`, `roles/editor`) cannot grant it, since
+  `setIamPolicy` on a service account is owner-only. The helper refuses
+  to create the schedulers without it (a scheduler that 403s twice a day
+  is a slow leak) and prints the grant; the owner ran it on 2026-09-07:
 
-Until then the service stays at min-instances=1 (re-warmed 2026-09-06
-after the test), so nothing changes for the Monday open; it just keeps
-costing the 24×7 rate. `deploy_discord_interactions` already picks the
-value the schedule would have in force at deploy time, so a redeploy
-cannot silently re-warm the service once the schedule is live. Outside
-the window the service behaves as the min-0 case above. The
-Sunday-evening `premarket-brief-sunday` run posts via webhook, so it is
-unaffected.
+  ```bash
+  gcloud iam service-accounts add-iam-policy-binding \
+    trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \
+    --member=serviceAccount:trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com \
+    --role=roles/iam.serviceAccountUser
+  ```
+
+End-to-end check after the grant: `gcloud scheduler jobs run
+discord-warm-close` returned HTTP 200, the Cloud Run audit log shows
+`UpdateService` by `trading-runner@` with no error, and the service moved
+from revision `00034` (minScale 1) to `00035` (minScale 0) with an
+identical container spec and 100% traffic. The first scheduled open is
+Monday 2026-09-07 09:00 ET.
+
+`deploy_discord_interactions` picks the value the schedule would have in
+force at deploy time, so a redeploy cannot silently re-warm the service
+until the next boundary. Outside the window the service behaves as the
+min-0 case above. The Sunday-evening `premarket-brief-sunday` run posts
+via webhook, so it is unaffected.
 
 ## 7. Cloud SQL — the disk, in plain terms
 
