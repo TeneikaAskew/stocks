@@ -242,6 +242,13 @@ ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 # YAML, which is precisely what the ambiguous names are kept context-gated to
 # avoid (Codex, PR #993).
 _B = r"(?<![A-Za-z0-9_])"
+# The assignment-shaped contexts additionally refuse a shell REFERENCE. In
+# `if [ "$TZ" = EST ]` the quote-tolerant `_Q` consumed the closing quote and
+# `TZ" = EST` read as an assignment, so a script that only compares a
+# variable it never sets failed CI (Codex, PR #993 final review). `$TZ` is a
+# read in every language this scan collects and never a target; `${TZ:=EST}`
+# still assigns, and is untouched because the brace sits between.
+_BV = _B + r"(?<!\$)"
 # Every operator that BINDS a value to a key in the file types this scans.
 # A bare `[:=]` covered shell, YAML and `.env`, and stopped one character
 # short of Make: GNU Make writes `TZ := EST` (simple), `TZ ?= EST` (default)
@@ -259,15 +266,15 @@ _Q = r"[\"']?\s*"
 _TZ_CONTEXT = (
     # `TZ = EST` with spaces around the `=` is make's ordinary spelling, and
     # the quote-tolerant `_Q` did not allow bare whitespace (Codex, PR #993).
-    _B + r"tz" + _Q + r"\s*" + _ASSIGN + r"|"
-    + _B + r"tzinfo" + _Q + r"\s*" + _ASSIGN + r"|"
+    _BV + r"tz" + _Q + r"\s*" + _ASSIGN + r"|"
+    + _BV + r"tzinfo" + _Q + r"\s*" + _ASSIGN + r"|"
     # libpq's own variable, for the shell and manifest side of the same
     # finding: `PGTZ` is not matched by the `tz` alternative above because
     # that one is anchored at an identifier boundary, and `PGTZ=EST` in a
     # Dockerfile or a compose file installs the frozen session zone just as
     # `os.environ["PGTZ"]` does (Codex, PR #993).
-    + _B + r"pgtz" + _Q + r"\s*" + _ASSIGN + r"|"
-    + _B + r"time_?zone" + _Q + r"\s*" + _ASSIGN + r"|"
+    + _BV + r"pgtz" + _Q + r"\s*" + _ASSIGN + r"|"
+    + _BV + r"time_?zone" + _Q + r"\s*" + _ASSIGN + r"|"
     + _B + r"time-zone(?:" + _ASSIGN + r"| )|" + _B + r"ZoneInfo\s*\(|"
     + _B + r"pytz\.timezone\s*\(|" + _B + r"tz_convert\s*\(|"
     + _B + r"tz_localize\s*\(|" + _B + r"AT TIME ZONE\s*|"
@@ -386,7 +393,16 @@ NONPY_AMBIGUOUS = re.compile(
 # `-05:00` prefix and fail CI on it (Codex, PR #993). Same shape as the
 # `FixedOffset(-300.5)` finding two rounds ago -- a near-miss offset
 # truncated into a violation -- in the text matcher rather than the AST one.
-_FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00(?::00)?|EST5|EDT4)"
+# POSIX writes the offset as `[+]h[h][:mm[:ss]]`, so `EST05`, `EST+5` and
+# `EST05:00` are the same frozen UTC-5 as `EST5`, and only the shortest
+# spelling was known: `TZ=EST05` passed the text path and the AST path both,
+# while the ambiguous-name matcher rightly refuses `EST` followed by a digit
+# (Codex, PR #993 final review). The lookahead on every user of this pattern
+# still refuses `EST5EDT` and `EST05EDT`, which carry a DST rule.
+# The POSIX fixed forms in one place, so the text matchers that need them
+# with a context and the one that needs them without agree on the spelling.
+_POSIX_EASTERN_FIXED = r"EST\+?0?5(?::00(?::00)?)?|EDT\+?0?4(?::00(?::00)?)?"
+_FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00(?::00)?|" + _POSIX_EASTERN_FIXED + r")"
 # Quotes optional, like the legacy-name pattern above and for the same reason:
 # `timezone=-05:00` in a shell or YAML file is the ordinary spelling, and
 # requiring both quotes exempted it (Codex, PR #993). The lookahead keeps the
@@ -564,7 +580,7 @@ _SQL_EXECUTE_CALLS = {"execute", "executemany"}
 # knew the `Etc/GMT` spellings, so `tzstr("EST5")` had nothing to compare
 # against (Codex, PR #993).
 _FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05",
-                       "EST5", "EDT4")
+                       "EST5", "EDT4", "EST05", "EDT04")
 # IGNORECASE, like the non-Python detector has been since round 9: dateutil
 # reads `est5` and `EST5` as the same frozen zone, so lowering the case walked
 # past the Python path entirely (Codex, PR #993). Upper-casing the VALUE
@@ -594,10 +610,18 @@ _FIXED_OFFSET_STRINGS_PY = re.compile(
 # sibling did not, so `IMAGE_TAG=latest5` and `echo LATEST5` matched the `EST5`
 # alternative and failed the offset guard on text with no timezone in it
 # (Codex, PR #993).
+# The POSIX forms come from `_POSIX_EASTERN_FIXED` rather than the literal
+# list, and `:` joins the lookahead: as literals, `EST5` claimed the prefix of
+# `EST5:30`, which is UTC-5:30 and not Eastern in either season -- the same
+# near-miss-truncated-into-a-violation shape as `-05:00:30`, found by this
+# fix's own control (Codex, PR #993 final review). `EST5:00` is consumed whole
+# and still matches.
 NONPY_FIXED_ZONE = re.compile(
     _LB + r"""['"]?""" + _LB
-    + r"""(?:""" + "|".join(re.escape(z) for z in _FIXED_OFFSET_ZONES)
-    + r""")['"]?(?![A-Za-z0-9_/-])""", re.I
+    + r"""(?:""" + "|".join(re.escape(z) for z in _FIXED_OFFSET_ZONES
+                            if z.startswith("Etc/"))
+    + r"|" + _POSIX_EASTERN_FIXED
+    + r""")['"]?(?![A-Za-z0-9_/:-])""", re.I
 )
 
 
@@ -886,17 +910,55 @@ def _is_eastern_fixed_timedelta(node: ast.AST, env=None) -> bool:
     and a `timedelta` with a non-constant argument is simply not decidable
     here and is left alone rather than guessed at.
     """
-    # `timezone(-timedelta(hours=5))` is the same frozen zone written with the
-    # sign outside the call, and it read as a non-constant argument and was
-    # left alone (Codex, PR #993). The negation is part of the constant.
-    env = env if env is not None else _EMPTY_ENV
-    sign = 1
-    while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        if isinstance(node.op, ast.USub):
-            sign = -sign
-        node = node.operand
-    if not isinstance(node, ast.Call):
+    total = _timedelta_seconds(node, env if env is not None else _EMPTY_ENV)
+    if total is None:
         return False
+    # Rounded, but only where rounding is honest: `timedelta` scales by
+    # 1e-6 for microseconds, so an exact comparison would lose a legitimate
+    # spelling to floating-point error. A total that is not within a
+    # microsecond of a whole second is not one of these offsets and must not
+    # be truncated into one (Codex, PR #993).
+    if abs(total - round(total)) > 1e-6:
+        return False
+    return int(round(total)) in _EASTERN_OFFSET_SECONDS
+
+
+def _timedelta_seconds(node: ast.AST, env, seen=None):
+    """The constant duration `node` evaluates to, in seconds, or None.
+
+    A `timedelta(...)` call with statically known arguments; a negation of
+    one -- `timezone(-timedelta(hours=5))` is the same frozen zone written
+    with the sign outside the call, and it once read as a non-constant
+    argument (Codex, PR #993); a NAME bound to one, through the environment
+    like every other named constant here; and a SUM or DIFFERENCE of any of
+    those. `timezone(timedelta(hours=-6) + timedelta(hours=1))` is UTC-5, and
+    the outer `BinOp` was rejected before either operand was totalled, so
+    neither inner call matched an Eastern offset on its own and the frozen
+    zone passed (Codex, PR #993 final review). Python does this arithmetic at
+    import; this does the same arithmetic on the same constants, and gives up
+    on anything it cannot see rather than guessing.
+    """
+    seen = seen or set()
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        inner = _timedelta_seconds(node.operand, env, seen)
+        if inner is None:
+            return None
+        return -inner if isinstance(node.op, ast.USub) else inner
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+        left = _timedelta_seconds(node.left, env, seen)
+        right = _timedelta_seconds(node.right, env, seen)
+        if left is None or right is None:
+            return None
+        return left + right if isinstance(node.op, ast.Add) else left - right
+    if isinstance(node, ast.Name):
+        if node.id in seen:
+            return None
+        bound = env.bindings.get(node.id)
+        if bound is None:
+            return None
+        return _timedelta_seconds(bound, env, seen | {node.id})
+    if not isinstance(node, ast.Call):
+        return None
     # Resolved through the alias map, not by literal name. `from datetime
     # import timedelta as TD` made `timezone(TD(hours=-5))` walk past the
     # offset check while the environment already recorded the alias -- the
@@ -909,32 +971,24 @@ def _is_eastern_fixed_timedelta(node: ast.AST, env=None) -> bool:
     # still walked past (Codex, PR #993).
     if called != "timedelta" and env.aliases.get(called) != "timedelta":
         if _resolve_callable(called, env)[0] != "timedelta":
-            return False
+            return None
     total = 0.0
     # `env`, so a unit named once resolves: `HOURS = -5` then
     # `timedelta(hours=HOURS)` is the same frozen zone as the inline spelling.
     for arg, (_, scale) in zip(node.args, _TIMEDELTA_UNITS):
         v = _const_number(arg, env)
         if v is None:
-            return False
+            return None
         total += v * scale
     units = dict(_TIMEDELTA_UNITS)
     for kw in node.keywords:
         if kw.arg not in units:
-            return False          # **kwargs, or a unit we do not model
+            return None          # **kwargs, or a unit we do not model
         v = _const_number(kw.value, env)
         if v is None:
-            return False
+            return None
         total += v * units[kw.arg]
-    # Rounded, but only where rounding is honest: `timedelta` scales by
-    # 1e-6 for microseconds, so an exact comparison would lose a legitimate
-    # spelling to floating-point error. A total that is not within a
-    # microsecond of a whole second is not one of these offsets and must not
-    # be truncated into one (Codex, PR #993).
-    total_signed = total * sign
-    if abs(total_signed - round(total_signed)) > 1e-6:
-        return False
-    return int(round(total_signed)) in _EASTERN_OFFSET_SECONDS
+    return total
 
 
 # A new lexical scope. `ast.walk` does not know about these, which is how the
@@ -1044,8 +1098,8 @@ def _bound_names(scope: ast.AST, nodes=None) -> set[str]:
     return out
 
 
-def _replaces_the_module_binding(tree: ast.AST, name: str) -> bool:
-    """True when an inner scope can REPLACE the module's own value for `name`.
+def _replaces_the_module_binding(tree: ast.AST, name: str, assignment=None) -> bool:
+    """True when a nested scope REPLACES the module's own value for `name`.
 
     Only `global NAME` plus an assignment does that. An ordinary local, a
     parameter or a comprehension target of the same name shadows it inside one
@@ -1055,14 +1109,41 @@ def _replaces_the_module_binding(tree: ast.AST, name: str) -> bool:
     all, which suppressed a real exported setting behind an unrelated helper
     that happened to use the same variable name (Codex, PR #993). That was too
     broad in the direction that hides findings, which is the worse direction.
+
+    And only when that scope RUNS at import. A class body does; a function
+    body does not until something calls it, so a module exporting
+    `TIME_ZONE = "EST"` beside an uncalled `def reset(): global TIME_ZONE;
+    TIME_ZONE = "UTC"` hands every importer the frozen zone -- and this check
+    suppressed the finding because the helper *could* replace it (Codex,
+    PR #993 final review). A function counts when a statement at module level
+    invokes it by name -- or invokes a function it is nested in -- after the
+    assignment in question; a method is never invoked that way, and a call
+    that runs BEFORE the assignment is overwritten by it.
     """
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    after = assignment.lineno if assignment is not None else -1
+    invoked = {n.func.id for n in _scope_nodes(tree)
+               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.lineno > after}
     for node in ast.walk(tree):
         if node is tree or not isinstance(node, _SCOPES):
             continue
         declared = {n for st in _scope_nodes(node)
                     if isinstance(st, ast.Global) for n in st.names}
-        if name in declared and name in _bound_names(node):
-            return True
+        if name not in declared or name not in _bound_names(node):
+            continue
+        if isinstance(node, ast.ClassDef):
+            return True         # a class body runs when the class is defined
+        scope = node
+        while scope is not None and scope is not tree:
+            if (isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and not isinstance(parents.get(id(scope)), ast.ClassDef)
+                    and scope.name in invoked):
+                return True
+            scope = parents.get(id(scope))
     return False
 
 
@@ -1584,11 +1665,12 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
             # #993). A literal sequence of the same length, no starred
             # target: anything else is not statically known and stays
             # unresolved rather than guessed at.
-            elif (isinstance(t, (ast.Tuple, ast.List))
-                    and isinstance(v, (ast.Tuple, ast.List))
-                    and len(t.elts) == len(v.elts)
-                    and not any(isinstance(e, ast.Starred) for e in t.elts)):
-                for elt, val in zip(t.elts, v.elts):
+            elif isinstance(t, (ast.Tuple, ast.List)):
+                # Through `_paired`, the same pairing the assignment loop
+                # uses, so a single starred target resolves here too and the
+                # call site reports it rather than the export check (Codex,
+                # PR #993 final review).
+                for elt, val in _paired(t, v):
                     if isinstance(elt, ast.Name):
                         _keep(out, elt.id, val)
     return out
@@ -1665,6 +1747,77 @@ def _embedded_sql_hit(text: str):
     return None
 
 
+def _destructured(targets, value: ast.AST):
+    """`(target, value)` pairs, descending through tuple and list unpacking.
+
+    `os.environ["TZ"], other = "EST", value` installs the frozen zone exactly
+    as the one-target form does, but the assignment loop examined each
+    top-level target only: the tuple is neither a `Subscript` nor an
+    `Attribute`, so the timezone target inside it was never paired with its
+    value, and the ambiguous literal is ignored everywhere else (Codex, PR #993
+    final review). Paired positionally, recursively, when both sides are
+    literal sequences; one starred target takes the head and tail around it,
+    as Python does. Anything else -- a name bound to a tuple, a length
+    mismatch -- is not statically known and is handed back whole, where the
+    existing target checks find nothing to read.
+    """
+    for tgt in targets:
+        yield from _paired(tgt, value)
+
+
+def _paired(tgt: ast.AST, value: ast.AST):
+    seq = (ast.Tuple, ast.List)
+    if not (isinstance(tgt, seq) and isinstance(value, seq)):
+        yield tgt, value
+        return
+    if any(isinstance(v, ast.Starred) for v in value.elts):
+        yield tgt, value
+        return
+    stars = [i for i, t in enumerate(tgt.elts) if isinstance(t, ast.Starred)]
+    if not stars and len(tgt.elts) == len(value.elts):
+        for t, v in zip(tgt.elts, value.elts):
+            yield from _paired(t, v)
+        return
+    if len(stars) == 1 and len(value.elts) >= len(tgt.elts) - 1:
+        head, tail = tgt.elts[:stars[0]], tgt.elts[stars[0] + 1:]
+        for t, v in zip(head, value.elts[:len(head)]):
+            yield from _paired(t, v)
+        for t, v in zip(tail, value.elts[len(value.elts) - len(tail):]):
+            yield from _paired(t, v)
+        return
+    yield tgt, value
+
+
+# Calls whose arguments are OUTPUT rather than configuration -- the Python
+# side of `_SHELL_OUTPUT_CMD`. A method name alone, whatever the receiver:
+# `logger.info`, `log.warning`, `logging.error`, `warnings.warn`, `click.echo`.
+_DIAGNOSTIC_CALLS = frozenset({"print", "pprint"})
+_DIAGNOSTIC_METHODS = frozenset({"debug", "info", "warning", "warn", "error",
+                                 "critical", "exception", "log", "fatal",
+                                 "echo", "secho"})
+
+
+def _is_diagnostic_argument(node: ast.AST, parents: dict) -> bool:
+    """Is `node` a direct argument of a print or logging call?
+
+    `logger.info("SET TIME ZONE 'EST' was rejected")` carries the statement
+    shape and reaches no executor, and it failed CI on a line that configures
+    nothing -- the same false positive the shell path already blanks for
+    `echo` (Codex, PR #993 final review). Direct means through an f-string or
+    a concatenation only: the same text bound to a name, or nested inside
+    `execute(...)` inside the log call, is still read.
+    """
+    child, parent = node, parents.get(id(node))
+    while isinstance(parent, (ast.JoinedStr, ast.FormattedValue, ast.BinOp)):
+        child, parent = parent, parents.get(id(parent))
+    if not isinstance(parent, ast.Call) or child is parent.func:
+        return False
+    f = parent.func
+    if isinstance(f, ast.Name):
+        return f.id in _DIAGNOSTIC_CALLS
+    return isinstance(f, ast.Attribute) and f.attr in _DIAGNOSTIC_METHODS
+
+
 def _python_hits(path: pathlib.Path, text: str):
     """(legacy-name hits, fixed-offset hits) for one Python file.
 
@@ -1685,6 +1838,11 @@ def _python_hits(path: pathlib.Path, text: str):
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
     envs = _scoped_envs(tree)
+    # Who contains what, for the one check that has to look UP the tree.
+    parents: dict[int, ast.AST] = {}
+    for _parent in ast.walk(tree):
+        for _child in ast.iter_child_nodes(_parent):
+            parents[id(_child)] = _parent
     # Statement ids at module scope, and every name this module ever reads --
     # both for the configuration-export check below.
     _module_level = {id(n) for n in tree.body}
@@ -1958,7 +2116,7 @@ def _python_hits(path: pathlib.Path, text: str):
         # violation (Codex, PR #993).
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for tgt in targets:
+            for tgt, value in _destructured(targets, node.value):
                 key = tgt.slice if isinstance(tgt, ast.Subscript) else None
                 # Through the environment, so `KEY = "TZ"; os.environ[KEY] =
                 # "EST"` reads its key the way every other named constant here
@@ -1967,7 +2125,7 @@ def _python_hits(path: pathlib.Path, text: str):
                 # PR #993).
                 key_text = _const_string(key, env) if key is not None else None
                 if key_text is not None and key_text.lower() in _TZ_KEYWORDS:
-                    follow(legacy, offsets, node, node.value, env,
+                    follow(legacy, offsets, node, value, env,
                            lambda shown, k=key_text: f"[{k!r}] = {shown}")
                 # `settings.timezone = "EST"` -- an attribute target binds no
                 # NAME either, so the same argument applies to it as to the
@@ -1975,7 +2133,7 @@ def _python_hits(path: pathlib.Path, text: str):
                 # (Codex, PR #993).
                 if (isinstance(tgt, ast.Attribute)
                         and tgt.attr.lower() in _TZ_KEYWORDS):
-                    follow(legacy, offsets, node, node.value, env,
+                    follow(legacy, offsets, node, value, env,
                            lambda shown, a=tgt.attr: f".{a} = {shown}")
                 # `TIME_ZONE = "EST"` in a settings module. No constructor is
                 # called here because something else consumes the setting --
@@ -2000,7 +2158,7 @@ def _python_hits(path: pathlib.Path, text: str):
                 if (isinstance(tgt, ast.Name)
                         and tgt.id.lower() in _TZ_KEYWORDS
                         and id(node) in _module_level):
-                    settings_exports.append((node, tgt, env))
+                    settings_exports.append((node, tgt, value, env))
 
         # Every UNAMBIGUOUS legacy name, wherever it stands, with no call-name
         # whitelist in front of it. A whitelist is a list of the constructors
@@ -2033,6 +2191,14 @@ def _python_hits(path: pathlib.Path, text: str):
         # spelling is not permitted in one place and banned in the other.
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)
                 and id(node) not in reported):
+            # Diagnostic text is not a statement. `logger.info("SET TIME ZONE
+            # 'EST' was rejected")` carries the statement shape and reaches no
+            # executor, and the shape alone failed CI on a line that configures
+            # nothing (Codex, PR #993 final review). Only a DIRECT argument of
+            # an output call is exempt; the same text bound to a name, or
+            # handed to `execute`, is still read below.
+            if _is_diagnostic_argument(node, parents):
+                continue
             # Comment-stripped first. This branch exists because Python
             # source carries SQL, and SQL carried in a string carries its
             # comments with it: a migration written as
@@ -2364,10 +2530,10 @@ def _python_hits(path: pathlib.Path, text: str):
     # This replaces "the name is never READ in this module", which any read at
     # all defeated -- so `TIME_ZONE = "EST"; assert TIME_ZONE` exported a
     # frozen zone with both guards green (Codex, PR #993).
-    for node, tgt, env in settings_exports:
-        if _replaces_the_module_binding(tree, tgt.id):
+    for node, tgt, value, env in settings_exports:
+        if _replaces_the_module_binding(tree, tgt.id, node):
             continue
-        follow(legacy, offsets, node, node.value, env,
+        follow(legacy, offsets, node, value, env,
                lambda shown, n=tgt.id: f"module setting {n} = {shown}")
 
     # `ast.walk` is breadth-first, so a call is visited before its own
@@ -3447,6 +3613,54 @@ def _expand_make_vars(text: str) -> str:
     return _MAKE_TZ_VAR.sub(one, text)
 
 
+# Bash's ANSI-C quoting: `$'...'`, with backslash escapes decoded.
+_ANSI_C_QUOTE = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.S)
+_ANSI_C_ESCAPE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})"
+    r"|([0-7]{1,3})|(.))", re.S)
+_ANSI_C_NAMED = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f",
+                 "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\",
+                 "'": "'", '"': '"', "?": "?"}
+
+
+def _decode_ansi_c(body: str) -> str:
+    def one(m):
+        if m.group(1):
+            return chr(int(m.group(1), 16))
+        if m.group(2):
+            return chr(int(m.group(2), 16))
+        if m.group(3):
+            return chr(int(m.group(3), 16))
+        if m.group(4):
+            return chr(int(m.group(4), 8))
+        return _ANSI_C_NAMED.get(m.group(5), "\\" + m.group(5))
+    return _ANSI_C_ESCAPE.sub(one, body)
+
+
+def _normalize_ansi_c_quotes(text: str) -> str:
+    """Rewrite each `$'...'` as the ordinary `'...'` literal it denotes.
+
+    `export TZ=$'EST'` and `export TZ=$'-05:00'` install the same frozen zones
+    as the plainly quoted forms, and both passed: the context matchers stopped
+    at the `$`, and the scalar collector refused a value containing one
+    (Codex, PR #993 final review). Decoded in place and padded on the RIGHT
+    to the original width, so every offset after it still means what it says
+    -- the rule every shell pass here keeps -- and the literal stays against
+    the `=` it follows, which the scalar collector requires (padding on the
+    left turned `LEGACY=$'EST'` into `LEGACY= 'EST'`, which is a command, not
+    an assignment; caught by this fix's own test). A literal that decodes to
+    something a plain single-quoted string cannot hold (a quote, a newline)
+    is left as written rather than rewritten into a different shape.
+    """
+    def one(m):
+        decoded = _decode_ansi_c(m.group(1))
+        if "'" in decoded or "\n" in decoded:
+            return m.group(0)
+        literal = "'" + decoded + "'"
+        return literal + " " * (len(m.group(0)) - len(literal))
+    return _ANSI_C_QUOTE.sub(one, text)
+
+
 def _expand_shell_defaults(text: str, make: bool = False) -> str:
     """Expose a TIMEZONE parameter default; blank every other one.
 
@@ -3457,6 +3671,9 @@ def _expand_shell_defaults(text: str, make: bool = False) -> str:
     variable and reading it as shell is how `echo ${MESSAGE:-TZ=EST}` came to
     be reported as a process-timezone assignment.
     """
+    # ANSI-C quoting first of all, so `$'EST'` reads as `'EST'` to every pass
+    # below, the output blanking included.
+    text = _normalize_ansi_c_quotes(text)
     # Output arguments go first, so a usage message quoting `${TZ:-EST}` is
     # emptied before the expansion pass can promote its default.
     text = _blank_shell_output(text)
@@ -3625,7 +3842,7 @@ def _blank_comments(text: str, line_token: str, escape_strings: bool,
 _SHELL_SCALAR = re.compile(
     r"(?:^|[;&|][ \t]*)[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
-    r"(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))[ \t]*(?=$|[;&|])",
+    r"(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))[ \t]*(?=$|[;&|])",
     re.M)
 
 
@@ -3633,9 +3850,28 @@ _SHELL_SCALAR = re.compile(
 _SHELL_DECL_MULTI = re.compile(
     r"(?:^|[;&|][ \t]*)[ \t]*(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*((?:[A-Za-z_][A-Za-z0-9_]*="
-    r"(?:\"[^\"$`\\\n]*\"|'[^'\n]*'|[^\s\"'$`;|&\n]+)[ \t]*)+)", re.M)
+    r"(?:\"[^\"`\\\n]*\"|'[^'\n]*'|[^\s\"'`;|&\n]+)[ \t]*)+)", re.M)
 _SHELL_DECL_OPERAND = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))")
+    r"([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"`\\\n]*)\"|'([^'\n]*)'|([^\s\"'`;|&\n]+))")
+
+
+# A simple reference inside a value: `$NAME` or `${NAME}`. Anything more --
+# a default, a substitution, arithmetic -- is not statically known here.
+_SHELL_REF = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _resolve_shell_value(value: str, scalars: dict, at: int, spans) -> str | None:
+    """`value` with every simple reference folded to the scalar in force, or None."""
+    def one(m):
+        v = _scalar_in_force(scalars, m.group(1) or m.group(2), at, spans)
+        if v is None:
+            raise LookupError
+        return v
+    try:
+        folded = _SHELL_REF.sub(one, value)
+    except LookupError:
+        return None
+    return None if "$" in folded else folded
 
 
 def _shell_scalars(text: str) -> dict:
@@ -3655,7 +3891,7 @@ def _shell_scalars(text: str) -> dict:
     round earlier, and the same ordering mistake `_arrays_carrying_timezone`
     already records for scheduler flag arrays.
     """
-    out: dict[str, list] = {}
+    raw: list[tuple[int, str, str, bool, bool]] = []
     for m in _SHELL_SCALAR.finditer(text):
         value = next(g for g in m.groups()[2:] if g is not None)
         # `local`, and `declare`/`typeset` inside a function, bind in the
@@ -3665,7 +3901,7 @@ def _shell_scalars(text: str) -> dict:
         local = m.group(1) in ("local", "declare", "typeset")
         # The NAME's offset, not the match's: the match may begin at the
         # separator that ended the previous command.
-        out.setdefault(m.group(2), []).append((m.start(2), value, local))
+        raw.append((m.start(2), m.group(2), value, local, m.group(4) is not None))
     # A declaring builtin takes SEVERAL operands: `local X=x LEGACY=EST`. The
     # anchored pattern above reads only the first, because the second begins
     # after whitespace rather than at a command boundary, so `LEGACY` was
@@ -3675,11 +3911,28 @@ def _shell_scalars(text: str) -> dict:
         for o in _SHELL_DECL_OPERAND.finditer(m.group(2)):
             value = next(g for g in o.groups()[1:] if g is not None)
             at = m.start(2) + o.start(1)
-            entries = out.setdefault(o.group(1), [])
-            if not any(e[0] == at for e in entries):
-                entries.append((at, value, local))
-    for entries in out.values():
-        entries.sort(key=lambda e: e[0])
+            if not any(r[0] == at for r in raw):
+                raw.append((at, o.group(1), value, local, o.group(3) is not None))
+    # CHAINS: `A=EST`, `B="$A"`, `export TZ="$B"`. The shell resolves `B` to
+    # `EST` at ITS assignment, so each value is folded against the scalars in
+    # force at its own offset, in source order -- exactly as `_expand_make_vars`
+    # folds `$(NAME)`. Discarding every value that mentioned `$` left `B`
+    # unbound and the export unresolved, and the bare `EST` binding has no
+    # timezone context of its own, so the chain passed both guards (Codex,
+    # PR #993 final review). A single-quoted value is literal text and is kept
+    # as written; a reference to something not statically known stays
+    # unresolved rather than guessed at.
+    raw.sort(key=lambda r: r[0])
+    out: dict[str, list] = {}
+    spans = None
+    for at, name, value, local, single in raw:
+        if "$" in value and not single:
+            if spans is None:
+                spans = _function_spans(text)
+            value = _resolve_shell_value(value, out, at, spans)
+            if value is None:
+                continue
+        out.setdefault(name, []).append((at, value, local))
     return out
 
 
@@ -5555,12 +5808,20 @@ def test_an_unrelated_inner_binding_does_not_hide_a_module_setting():
     assert any("EST" in h for h in legacy), (
         f"an unrelated local named TIME_ZONE hid the exported setting: {legacy}")
 
-    legacy, _ = _hits_all('TIME_ZONE = "EST"\n\n'
-                      'def setup():\n'
-                      '    global TIME_ZONE\n'
-                      '    TIME_ZONE = "America/New_York"\n')
+    # A global rebinding CAN replace the module value -- once its function
+    # runs. Defining `setup` runs nothing, so importers still read `EST`;
+    # this case used to assert the suppression, which was the miss the final
+    # review found (Codex, PR #993 final review).
+    writer = ('TIME_ZONE = "EST"\n\n'
+              'def setup():\n'
+              '    global TIME_ZONE\n'
+              '    TIME_ZONE = "America/New_York"\n')
+    legacy, _ = _hits_all(writer)
+    assert any("EST" in h for h in legacy), (
+        f"an uncalled global writer hid the exported setting: {legacy}")
+    legacy, _ = _hits_all(writer + "\nsetup()\n")
     assert not legacy, (
-        f"a global rebinding really can replace the module value: {legacy}")
+        f"a global rebinding that runs at import replaces the module value: {legacy}")
 
 
 def test_a_notebook_cell_is_read_by_the_python_analyzer():
@@ -8091,11 +8352,18 @@ def test_a_destructuring_assignment_binds_each_name():
     assert legacy
     legacy, _ = _probe_py(head + '[TZ, fallback] = ["EST", "UTC"]\nZ = ZoneInfo(TZ)\n')
     assert legacy, "the list form too"
-    # The other element is the other name, and a starred or ragged unpack
-    # is not statically known.
+    # The other element is the other name.
     legacy, _ = _probe_py(head + 'TZ, fallback = ("America/New_York", "EST")\nZ = ZoneInfo(TZ)\n')
     assert not legacy
+    # A single starred target takes the head and tail around it, as Python
+    # does, so `TZ` here is `"EST"` and is reported AT THE CALL; this used to
+    # be "not statically known" (Codex, PR #993 final review). A ragged
+    # unpack, or a value that is not a literal sequence, still is not.
     legacy, _ = _probe_py(head + 'TZ, *rest = ("EST", "UTC")\nZ = ZoneInfo(TZ)\n')
+    assert legacy and "ZoneInfo" in legacy[0], legacy
+    legacy, _ = _probe_py(head + '*rest, TZ = ("UTC", "EST")\nZ = ZoneInfo(TZ)\n')
+    assert legacy
+    legacy, _ = _probe_py(head + 'TZ, fallback = pair\nZ = ZoneInfo(TZ)\n')
     assert not legacy
 # -- Audit: the seven remaining spellings, each with its negative control --------
 
@@ -8613,3 +8881,173 @@ def test_setattr_of_a_timezone_attribute_is_an_assignment(tmp_path):
     assert not _python_finds(tmp_path, "setattr(settings, 'timezone', 'America/New_York')\n")
     assert not _python_finds(tmp_path, "setattr(settings, 'region', 'EST')\n")
     assert not _python_finds(tmp_path, "setattr(settings, name, 'EST')\n")
+
+
+def test_arithmetic_between_timedeltas_is_folded(tmp_path):
+    """`timezone(timedelta(hours=-6) + timedelta(hours=1))` is UTC-5.
+
+    The outer `BinOp` was rejected before either operand was totalled, and
+    neither inner call is Eastern on its own (Codex, PR #993 final review).
+    """
+    src = "from datetime import timezone, timedelta\n"
+    assert _python_finds(tmp_path, src + "Z = timezone(timedelta(hours=-6) + timedelta(hours=1))\n")
+    assert _python_finds(tmp_path, src + "Z = timezone(timedelta(hours=-4) - timedelta(hours=1))\n")
+    assert _python_finds(tmp_path, src + "Z = timezone(-(timedelta(hours=6) - timedelta(hours=2)))\n")
+    assert _python_finds(tmp_path, src + "BASE = timedelta(hours=-6)\nZ = timezone(BASE + timedelta(hours=2))\n")
+    # Not Eastern, or not decidable: left alone rather than guessed at.
+    assert not _python_finds(tmp_path, src + "Z = timezone(timedelta(hours=-6) + timedelta(hours=3))\n")
+    assert not _python_finds(tmp_path, src + "Z = timezone(timedelta(hours=-6) + step)\n")
+    assert not _python_finds(tmp_path, src + "Z = timezone(timedelta(hours=-6) + timedelta(seconds=3599.5))\n")
+
+
+def test_a_shell_scalar_chain_resolves_through_each_link():
+    """`A=EST; B="$A"; export TZ="$B"` exports the frozen zone.
+
+    The value pattern excluded `$`, so `B` was discarded and the export stayed
+    unresolved, and the bare `EST` has no context of its own (Codex, PR #993
+    final review). Folded in source order, like the Make chain.
+    """
+    assert _scanned_shell('A=EST; B="$A"; export TZ="$B"\n')
+    assert _scanned_shell('A=EST\nB="$A"\nexport TZ="$B"\n')
+    assert _scanned_shell('A=EST\nB=${A}\nC=$B\nexport TZ="$C"\n')
+    assert _scanned_shell('A=-05:00\nB="$A"\nexport TZ="$B"\n')
+    assert not _scanned_shell('A=America/New_York\nB="$A"\nexport TZ="$B"\n')
+    # Single quotes do not expand; an unknown or computed link breaks the chain.
+    assert not _scanned_shell("A=EST\nB='$A'\nexport TZ=\"$B\"\n")
+    assert not _scanned_shell('B="$UNKNOWN"\nexport TZ="$B"\n')
+    assert not _scanned_shell('A=EST\nB="${A:-UTC}"\nexport TZ="$B"\n')
+    assert not _scanned_shell('A=EST\nB="$(printf x)"\nexport TZ="$B"\n')
+    # Position still decides: a later rebinding does not reach an earlier link.
+    assert not _scanned_shell('A=UTC\nB="$A"\nexport TZ="$B"\nA=EST\n')
+    assert _shell_scalars('A=EST\nB="$A"\n')["B"] == [(6, "EST", False)]
+
+
+def test_a_dormant_global_writer_does_not_hide_a_module_setting(tmp_path):
+    """Defining `def reset(): global TIME_ZONE; TIME_ZONE = "UTC"` runs nothing.
+
+    Importers still receive the frozen `EST`, and the export check skipped it
+    because the helper could replace it (Codex, PR #993 final review). A
+    function counts only when a module-level statement invokes it after the
+    assignment; a class body runs at import and still counts.
+    """
+    writer = 'def reset():\n    global TIME_ZONE\n    TIME_ZONE = "UTC"\n'
+    assert _python_finds(tmp_path, 'TIME_ZONE = "EST"\n' + writer)
+    assert not _python_finds(tmp_path, 'TIME_ZONE = "EST"\n' + writer + "reset()\n")
+    assert not _python_finds(tmp_path, 'TIME_ZONE = "EST"\n' + writer + "if True:\n    reset()\n")
+    # Called BEFORE the assignment, the assignment wins.
+    assert _python_finds(tmp_path, writer + 'reset()\nTIME_ZONE = "EST"\n')
+    # A class body runs when the class is defined; a method does not.
+    assert not _python_finds(tmp_path, 'TIME_ZONE = "EST"\nclass _Init:\n    global TIME_ZONE\n    TIME_ZONE = "UTC"\n')
+    assert _python_finds(tmp_path, 'TIME_ZONE = "EST"\nclass Svc:\n    def reset(self):\n        global TIME_ZONE\n        TIME_ZONE = "UTC"\n')
+    # A writer nested in a function that IS called at import runs with it.
+    assert not _python_finds(tmp_path, 'TIME_ZONE = "EST"\ndef init():\n    def inner():\n        global TIME_ZONE\n        TIME_ZONE = "UTC"\n    inner()\ninit()\n')
+
+
+def test_zero_padded_posix_offsets_are_fixed_zones(tmp_path):
+    """`TZ=EST05` is `TZ=EST5`: POSIX pads the offset as it likes.
+
+    Only the shortest spelling was known, and the ambiguous-name matcher
+    rightly refuses `EST` followed by a digit, so the padded forms passed both
+    paths (Codex, PR #993 final review).
+    """
+    for value in ("EST05", "EDT04", "EST+5", "EST+05", "EST05:00", "EST5:00",
+                  "EDT04:00", "est05"):
+        assert _scanned_shell(f"export TZ={value}\n"), value
+        assert _python_finds(tmp_path, f'import os\nos.environ["TZ"] = "{value}"\n'), value
+    assert _python_finds(tmp_path, 'from dateutil.tz import tzstr\nz = tzstr("EST05")\n')
+    assert NONPY_FIXED_ZONE.search("tzstr EST05")
+    assert NONPY_FIXED_ZONE.search("tzstr EST5:00")
+    # `EST5:30` is UTC-5:30: as a literal, `EST5` claimed its prefix.
+    assert not NONPY_FIXED_ZONE.search("tzstr EST5:30")
+    # A DST rule is not a fixed offset in either padding; `EST5EDT` is still
+    # reported, by the backward-link matcher, as the legacy name it is.
+    for value in ("EST5EDT", "EST05EDT"):
+        assert not NONPY_FIXED_OFFSET.search(f"export TZ={value}"), value
+    assert NONPY_UNAMBIGUOUS.search("export TZ=EST5EDT")
+    # An offset that is not Eastern, or an invalid padding: clean.
+    for value in ("EST03", "EST050", "EST5:30"):
+        assert not _scanned_shell(f"export TZ={value}\n"), value
+        assert not NONPY_FIXED_OFFSET.search(f"export TZ={value}"), value
+
+
+def test_a_shell_comparison_is_not_an_assignment():
+    """`if [ "$TZ" = EST ]` compares a variable it never sets.
+
+    `_Q` consumed the closing quote and `TZ" = EST` read as an assignment, so
+    the predicate failed CI (Codex, PR #993 final review). `$TZ` is a read.
+    """
+    for text in ('if [ "$TZ" = EST ]; then echo x; fi\n',
+                 'if [ "$TZ" = "EST" ]; then :; fi\n',
+                 'test "$TZ" = EST && echo x\n',
+                 '[[ "$TZ" == EST ]] && echo x\n',
+                 '[ "$PGTZ" = EST ] && echo x\n',
+                 '[ "$TZ" = -05:00 ] && echo x\n'):
+        assert not _scanned_shell(text), text
+    # A real assignment beside the comparison, and the parameter forms that
+    # assign, still report.
+    assert _scanned_shell('if [ "$TZ" = EST ]; then export TZ=EST; fi\n')
+    assert _scanned_shell(': "${TZ:=EST}"\n')
+    assert _scanned_shell('export TZ="${TZ:-EST}"\n')
+    assert _scanned_shell('export TZ=EST\n')
+
+
+def test_ansi_c_quoted_values_are_read_as_their_literal():
+    """`export TZ=$'EST'` is `export TZ='EST'` once bash decodes it.
+
+    The context matchers stopped at the `$` and the scalar collector refused
+    a `$` in a value, so both spellings passed (Codex, PR #993 final review).
+    """
+    assert _scanned_shell("export TZ=$'EST'\n")
+    assert _scanned_shell("export TZ=$'-05:00'\n")
+    assert _scanned_shell("export TZ=$'\\x45ST'\n")           # \x45 is E
+    assert _scanned_shell("LEGACY=$'EST'\nexport TZ=\"$LEGACY\"\n")
+    assert not _scanned_shell("export TZ=$'America/New_York'\n")
+    assert not _scanned_shell("echo $'set TZ=EST to reproduce'\n")
+    # Width-preserving, so every later offset still means what it says.
+    text = "export TZ=$'\\x45ST'\nexport LEGACY=EST\n"
+    out = _normalize_ansi_c_quotes(text)
+    assert len(out) == len(text) and out.index("LEGACY") == text.index("LEGACY")
+    assert out.startswith("export TZ='EST'    \n")
+    # A literal a plain single-quoted string cannot hold is left as written.
+    assert _normalize_ansi_c_quotes("x=$'it\\'s'") == "x=$'it\\'s'"
+
+
+def test_destructured_configuration_targets_are_paired_with_their_values(tmp_path):
+    """`os.environ["TZ"], other = "EST", value` installs the frozen zone.
+
+    The loop examined each top-level target only, and a tuple is neither a
+    `Subscript` nor an `Attribute` (Codex, PR #993 final review).
+    """
+    assert _python_finds(tmp_path, 'import os\nos.environ["TZ"], other = "EST", 1\n')
+    assert _python_finds(tmp_path, 'other, settings.timezone = 1, "-05:00"\n')
+    assert _python_finds(tmp_path, '(os.environ["TZ"], a), b = ("EST", 1), 2\n')
+    assert _python_finds(tmp_path, '[os.environ["TZ"], a] = ["EST", 1]\n')
+    assert _python_finds(tmp_path, 'os.environ["TZ"], *rest = "EST", 1, 2\n')
+    assert _python_finds(tmp_path, '*head, os.environ["TZ"] = 1, 2, "EST"\n')
+    # A module setting written through a tuple is still an export.
+    assert _python_finds(tmp_path, 'TIME_ZONE, other = "EST", 1\n')
+    # Positions matter, and a value that is not a literal sequence is not guessed.
+    assert not _python_finds(tmp_path, 'os.environ["TZ"], other = "America/New_York", "EST"\n')
+    assert not _python_finds(tmp_path, 'os.environ["TZ"], other = pair\n')
+    assert not _python_finds(tmp_path, 'os.environ["TZ"], other = "EST"\n')
+
+
+def test_sql_text_in_a_diagnostic_is_not_a_statement(tmp_path):
+    """`logger.info("SET TIME ZONE 'EST' was rejected")` executes nothing.
+
+    The statement shape alone classified the string as SQL and failed CI
+    (Codex, PR #993 final review). Only a DIRECT argument of an output call is
+    exempt; the same text bound to a name, or handed to an executor, is read.
+    """
+    assert not _python_finds(tmp_path, "import logging\nlog = logging.getLogger(__name__)\nlog.info(\"SET TIME ZONE 'EST' was rejected\")\n")
+    assert not _python_finds(tmp_path, "print(\"SET TIME ZONE 'EST' failed\")\n")
+    assert not _python_finds(tmp_path, "logging.warning(\"retrying after: SET TIME ZONE 'EST'\")\n")
+    assert not _python_finds(tmp_path, "logger.error(f\"rejected: SET TIME ZONE 'EST' for {user}\")\n")
+    assert not _python_finds(tmp_path, "logger.error(\"rejected: \" + \"SET TIME ZONE 'EST'\")\n")
+    assert not _python_finds(tmp_path, "warnings.warn(\"-c timezone=EST is no longer honoured\")\n")
+    # Still read: an executor, a binding logged and then executed, an
+    # executor nested inside the log call.
+    assert _python_finds(tmp_path, "cur.execute(\"SET TIME ZONE 'EST'\")\n")
+    assert _python_finds(tmp_path, "SQL = \"SET TIME ZONE 'EST'\"\nlog.info(SQL)\ncur.execute(SQL)\n")
+    assert _python_finds(tmp_path, "log.info(cur.execute(\"SET TIME ZONE 'EST'\"))\n")
+    assert _python_finds(tmp_path, "log.info(\"x\", \"SET TIME ZONE 'EST'\") if False else cur.execute(\"SET TIME ZONE 'EST'\")\n")
