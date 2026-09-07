@@ -140,7 +140,7 @@ def _fetch_live_events(date_from, date_to, tickers=None, calendar_types=None):
 
 
 @router.get("/api/catalysts/events")
-async def get_catalyst_events(
+def get_catalyst_events(
     date_from: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
     tickers: Optional[str] = Query(None, description="Comma-separated tickers"),
@@ -459,7 +459,7 @@ def _db_catalyst_events(
 
 
 @router.get("/api/catalysts/ticker/{ticker}")
-async def get_catalysts_for_ticker(
+def get_catalysts_for_ticker(
     ticker: str,
     days_back: int = Query(7, description="Days back from today"),
     days_ahead: int = Query(30, description="Days ahead from today"),
@@ -497,7 +497,7 @@ async def get_catalysts_for_ticker(
 
 @router.get("/api/catalysts/asof/{ticker}")
 @router.get("/api/catalysts/snapshot/{ticker}", include_in_schema=False)
-async def get_catalyst_snapshot(
+def get_catalyst_snapshot(
     ticker: str,
     as_of: Optional[str] = Query(
         None, description="Point-in-time view date YYYY-MM-DD (default: today)"
@@ -657,7 +657,7 @@ async def get_catalyst_snapshot(
 
 
 @router.get("/api/catalysts/types")
-async def get_catalyst_types():
+def get_catalyst_types():
     """Return available catalyst types and WSH upgrade info."""
     return {
         "benzinga_types": BENZINGA_TYPES,

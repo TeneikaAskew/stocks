@@ -28,7 +28,7 @@ router = APIRouter()
 
 
 @router.get("/api/glossary/gamma")
-async def get_gamma_glossary(response: Response):
+def get_gamma_glossary(response: Response):
     """Return the UI-safe gamma term dictionary.
 
     Shape:

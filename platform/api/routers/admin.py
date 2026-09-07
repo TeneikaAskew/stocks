@@ -126,14 +126,14 @@ def _model_to_row(m: AvailableModel) -> AvailableModelRow:
 
 
 @router.get("/routes", response_model=RouteListResponse)
-async def admin_list_routes(request: Request):
+def admin_list_routes(request: Request):
     _require_admin(request)
     rows = [_route_to_row(r) for r in list_routes()]
     return RouteListResponse(routes=rows)
 
 
 @router.put("/routes/{role}", response_model=RouteRow)
-async def admin_update_route(
+def admin_update_route(
     role: str,
     body: RouteUpdateRequest,
     request: Request,
@@ -153,7 +153,7 @@ async def admin_update_route(
 
 
 @router.get("/models", response_model=AvailableModelsResponse)
-async def admin_list_models(request: Request):
+def admin_list_models(request: Request):
     _require_admin(request)
     return AvailableModelsResponse(
         models=[_model_to_row(m) for m in list_available_models()]
@@ -287,7 +287,7 @@ def _build_brief_cell(ticker: str, tf: str, snap: Optional[dict]) -> StructureBr
 
 
 @router.get("/structure-brief", response_model=StructureBriefResponse)
-async def admin_structure_brief(
+def admin_structure_brief(
     request: Request
 ):
     """Dev-only readout of the strat-engine type model's structure predictions.
@@ -479,7 +479,7 @@ def _strat_engine_state_cells() -> list[StratEngineCellState]:
 
 
 @router.get("/strat-engine/state", response_model=StratEngineStateResponse)
-async def admin_strat_engine_state(
+def admin_strat_engine_state(
     request: Request
 ):
     """Operator snapshot of the on-shelf strat-engine model state.
@@ -499,7 +499,7 @@ async def admin_strat_engine_state(
     "/strat-engine/predict",
     response_model=StratEnginePredictResponse,
 )
-async def admin_strat_engine_predict(
+def admin_strat_engine_predict(
     body: StratEnginePredictRequest,
     request: Request,
 ):
@@ -607,7 +607,7 @@ class StructureContinuationResponse(BaseModel):
     "/strat-engine/structure-continuation",
     response_model=StructureContinuationResponse,
 )
-async def admin_structure_continuation(
+def admin_structure_continuation(
     body: StructureContinuationRequest,
     request: Request,
 ):

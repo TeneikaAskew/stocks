@@ -49,6 +49,7 @@ from datetime import date as date_cls, datetime, timezone
 from pathlib import Path
 
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from google.api_core import exceptions as gapi_exc
@@ -80,9 +81,16 @@ PLAYBOOK_WRITER_JOB = "phase6-playbook"
 # (one cheap query; the freshness check is re-applied on every hit, so a
 # set that crosses MAX_PLAYBOOK_AGE_DAYS while cached is still refused).
 # Report markdown changes rarely, so 24h is generous there.
-_PLAYBOOK_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)       # /api/playbook responses
-_LIST_CACHE: TTLCache = TTLCache(maxsize=16, ttl=86400)          # list-reports response
-_REPORT_TEXT_CACHE: TTLCache = TTLCache(maxsize=64, ttl=86400)   # raw markdown text
+#
+# ThreadSafeCache, not a bare TTLCache: #991 dispatches these handlers to
+# the threadpool, and cachetools makes no concurrency guarantee -- two
+# threads through one TTLCache can corrupt its link list.
+_PLAYBOOK_CACHE: ThreadSafeCache = ThreadSafeCache(
+    TTLCache(maxsize=32, ttl=3600))                             # /api/playbook responses
+_LIST_CACHE: ThreadSafeCache = ThreadSafeCache(
+    TTLCache(maxsize=16, ttl=86400))                            # list-reports response
+_REPORT_TEXT_CACHE: ThreadSafeCache = ThreadSafeCache(
+    TTLCache(maxsize=64, ttl=86400))                            # raw markdown text
 
 # Phases that may exist for any given ticker
 VALID_PHASES = {
@@ -286,7 +294,7 @@ def _raise_if_stale(ticker_upper: str, analysis_date: date_cls,
 
 
 @router.get("/api/playbook/{ticker}")
-async def get_playbook(ticker: str, date: str | None = None):
+def get_playbook(ticker: str, date: str | None = None):
     """Return structured setup cards for a ticker from ``playbook_cards``.
 
     ``?date=YYYY-MM-DD`` (historical "view as of" mode) returns the latest
@@ -347,13 +355,14 @@ async def get_playbook(ticker: str, date: str | None = None):
 
 
 @router.get("/api/reports/list/{ticker}")
-async def list_reports(ticker: str):
+def list_reports(ticker: str):
     """List available phase report files for a given ticker (from GCS)."""
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _LIST_CACHE:
-        return _LIST_CACHE[ticker_upper]
+    cached = _LIST_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
     # 1) ticker-specific reports: phase*_{ticker_lower}.md
     ticker_specific = gcs_reader.list_matching_blobs(
@@ -403,15 +412,16 @@ async def list_reports(ticker: str):
 
 
 @router.get("/api/reports/{ticker}/{phase}", response_class=PlainTextResponse)
-async def get_report(ticker: str, phase: str):
+def get_report(ticker: str, phase: str):
     """Return the raw markdown text of a specific phase report for a ticker from GCS."""
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
     phase_lower = phase.lower()
 
     cache_key = (ticker_upper, phase_lower)
-    if cache_key in _REPORT_TEXT_CACHE:
-        return _REPORT_TEXT_CACHE[cache_key]
+    cached = _REPORT_TEXT_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     # Try ticker-specific file first
     candidates = gcs_reader.list_matching_blobs(

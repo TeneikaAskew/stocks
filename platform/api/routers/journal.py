@@ -12,6 +12,8 @@ Endpoints:
   POST   /api/journal/import/preview     — parse+FIFO-pair an uploaded broker CSV (no writes)
   POST   /api/journal/import/commit      — insert caller-selected paired trades from a preview
 """
+import tempfile
+import threading
 import csv
 import json
 import logging
@@ -20,6 +22,7 @@ import os
 import re
 import sys
 import uuid
+from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +30,7 @@ from typing import Literal, Optional
 
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,7 +72,8 @@ _ALLOWED_BROKERS = {"robinhood", "webull", "generic"}
 
 # ── Cloud SQL availability check ─────────────────────────────────────────────
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe, execute_sql
+    from gcp.database import (is_cloud_sql_configured, query_to_dataframe,
+                              execute_sql, execute_returning_scalar)
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception:
     _HAS_CLOUD_SQL = False
@@ -106,6 +110,16 @@ def _journal_exec(sql: str, params: Optional[dict] = None) -> int:
     return execute_sql(sql, params)
 
 
+def _journal_insert_returning_id(sql: str, params: Optional[dict] = None,
+                                 allow_no_row: bool = False):
+    """Forwards to `execute_returning_scalar` — one statement, one id.
+
+    Same indirection rationale as `_journal_exec`: tests can patch either
+    this wrapper or the underlying name.
+    """
+    return execute_returning_scalar(sql, params, allow_no_row=allow_no_row)
+
+
 def _seed_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     """Seed-layer query — RAISES on failure (unlike `_journal_query`).
 
@@ -133,6 +147,13 @@ def _journal_owner(request: Request) -> str:
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class JournalTradeCreate(BaseModel):
+    # A price of inf/-inf/NaN is not a trade. Pydantic accepts JSON `1e309`
+    # as `inf` by default, which then reached `_dedupe_key` and crashed the
+    # Decimal quantization (Codex, PR #991). Rejecting at the boundary gives
+    # the client a 422 naming the field, rather than a 500 or a row whose
+    # dedupe key can never match anything.
+    model_config = ConfigDict(allow_inf_nan=False)
+
     ticker: str
     direction: str          # CALL | PUT
     entry_date: str         # YYYY-MM-DD
@@ -206,6 +227,8 @@ class ImportCommitTrade(BaseModel):
     `_derive_status` — never trusted verbatim — so a client can't fabricate
     "win"/"loss" independent of the numbers.
     """
+    model_config = ConfigDict(allow_inf_nan=False)
+
     ticker: str
     direction: str                       # CALL | PUT
     entry_ts: str                        # "YYYY-MM-DD HH:MM"
@@ -445,18 +468,71 @@ def _local_path(ticker: str) -> Path:
     return LOCAL_JOURNAL_DIR / f"{ticker.lower()}_journal.json"
 
 
+# Serialises the local-journal read-modify-write. These handlers used to be
+# serialised by the event loop; under threadpool dispatch two POSTs could both
+# _load_local the same list, append their own trade and _save_local, so the
+# last writer silently dropped the other's entry. Re-entrant because a couple
+# of call sites load and save inside one guarded block.
+_LOCAL_JOURNAL_LOCK = threading.RLock()
+
+
 def _load_local(ticker: str) -> list[dict]:
+    """Read one ticker's local journal file.
+
+    A file that does not exist is genuinely empty -> ``[]``. A file that
+    exists but cannot be read or parsed is a FAILURE, and returning ``[]``
+    for it was worse than losing the read: `_save_local` writes the list
+    straight back, so the next trade the user logged would overwrite a
+    recoverable file with a one-entry list and destroy every trade in it.
+    Rule 3.7's distinction exactly -- missing input vs failed input.
+    """
     p = _local_path(ticker)
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text())
-    except Exception:
-        return []
+        entries = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("journal: %s is unreadable (%s) -- refusing to report an "
+                     "empty journal, which would be overwritten on the next save",
+                     p, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(f"The local journal file for {ticker.upper()} could not be "
+                    f"read. It has NOT been overwritten. Fix or move {p.name} "
+                    f"and retry."),
+        ) from exc
+    if not isinstance(entries, list):
+        raise HTTPException(
+            status_code=500,
+            detail=(f"The local journal file for {ticker.upper()} does not "
+                    f"contain a list. It has NOT been overwritten."),
+        )
+    return entries
 
 
 def _save_local(ticker: str, entries: list[dict]) -> None:
-    _local_path(ticker).write_text(json.dumps(entries, indent=2, default=str))
+    """Write the journal atomically.
+
+    write_text truncates in place, so a concurrent reader can observe a
+    half-written file. Rendering to a temp file in the same directory and
+    os.replace()-ing it means a reader sees either the old file or the new
+    one, never a torn one.
+    """
+    path = _local_path(ticker)
+    payload = json.dumps(entries, indent=2, default=str)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _insert_cloud_sql_trade(
@@ -465,17 +541,36 @@ def _insert_cloud_sql_trade(
     notes: str, owner: str, stop_loss: Optional[float],
     tp1: Optional[float], tp2: Optional[float], tp3: Optional[float],
     status: str, source: str, session_id: Optional[str],
-) -> str:
+    on_conflict_skip: bool = False,
+) -> Optional[str]:
     """Shared Cloud SQL insert path for one `journal_entries` row.
 
     Used by BOTH `POST /api/journal/trades` (manual entry) and
     `POST /api/journal/import/commit` (broker import) so the two write
     surfaces can never drift on columns or validation — exactly the same
-    INSERT + id-lookup SQL either way. Raises on failure; the caller decides
-    503 vs. local fallback (same convention as every other Cloud SQL branch
-    in this router).
+    INSERT either way. Raises on failure; the caller decides 503 vs. local
+    fallback (same convention as every other Cloud SQL branch in this router).
+
+    The id comes back from ``RETURNING`` in the insert statement itself. It
+    used to come from a follow-up
+    ``SELECT ... ORDER BY created_at DESC LIMIT 1``, which is not atomic:
+    a concurrent create for the same (ticker, entry_ts, user_email) could
+    land between the two statements and the SELECT would then return THAT
+    row's id. The response would hand the user an identifier belonging to
+    someone else's trade, and a later close or delete would act on it. Worse,
+    the miss case returned ``str(uuid.uuid4())`` — an id matching no row at
+    all, so a close or delete against it silently no-ops (Rule 3.7: a
+    fabricated value presented as real).
+
+    ``on_conflict_skip`` adds ``ON CONFLICT DO NOTHING`` and returns ``None``
+    when the row was already there. Only the broker import passes it: the
+    partial unique index `uq_journal_entries_import_dedupe` is what makes
+    that endpoint's idempotency atomic rather than a read-then-write, and
+    `None` is the caller's signal to count a skip. Every other caller leaves
+    it False and gets the raise, because for them "the insert produced no
+    row" is a failure, not an outcome.
     """
-    _journal_exec(
+    new_id = _journal_insert_returning_id(
         """
         INSERT INTO journal_entries
             (ticker, direction, entry_ts, exit_ts,
@@ -485,7 +580,9 @@ def _insert_cloud_sql_trade(
             (:ticker, :direction, :entry_ts, :exit_ts,
              :entry_price, :exit_price, :return_pct, :notes, :user_email,
              :stop_loss, :tp1, :tp2, :tp3, :status, :source, :session_id)
-        """,
+        """
+        + ("ON CONFLICT DO NOTHING\n" if on_conflict_skip else "")
+        + "RETURNING id::text",
         {
             "ticker": ticker,
             "direction": direction,
@@ -504,16 +601,9 @@ def _insert_cloud_sql_trade(
             "source": source,
             "session_id": session_id,
         },
+        allow_no_row=on_conflict_skip,
     )
-    df = _journal_query(
-        """
-        SELECT id::text FROM journal_entries
-        WHERE ticker = :ticker AND entry_ts = :entry_ts AND user_email = :user_email
-        ORDER BY created_at DESC LIMIT 1
-        """,
-        {"ticker": ticker, "entry_ts": entry_ts, "user_email": owner},
-    )
-    return str(df["id"].iloc[0]) if not df.empty else str(uuid.uuid4())
+    return None if new_id is None else str(new_id)
 
 
 _TS_NO_SECONDS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$")
@@ -563,6 +653,43 @@ def _build_local_entry(
     }
 
 
+def _round_half_up_4dp(value: float) -> float:
+    """Round to 4dp the way PostgreSQL does, not the way Python does.
+
+    `round()` uses banker's rounding (ties-to-even) and
+    `round(numeric, 4)` in Postgres rounds ties away from zero. They agree
+    everywhere except an exact halfway fifth decimal, and there they differ:
+
+        round(1.03125, 4)            -> 1.0312   (Python)
+        round(1.03125::numeric, 4)   -> 1.0313   (PostgreSQL, read live)
+
+    That matters because `uq_journal_entries_import_dedupe` indexes the
+    Postgres expression while this function decides what the endpoint calls a
+    duplicate. Disagreeing at the tie means concurrent imports of a price like
+    1.03125 pass the index and insert twice, while a sequential import skips
+    the second -- the same defect the normalized index was added to close,
+    one decimal place further down.
+
+    `Decimal(repr(x))` reproduces the float exactly as Postgres's
+    `double precision -> numeric` cast does (both take the shortest
+    representation that round-trips), so the two sides quantize the same
+    input. The result returns to `float` so the key's type is unchanged.
+
+    Raises ValueError for a non-finite input. `Decimal(repr(inf)).quantize()`
+    raises `decimal.InvalidOperation`, which derives from ArithmeticError and
+    so slipped past `_dedupe_key`'s `except (TypeError, ValueError)` --
+    turning a malformed import row into an unhandled 500, where the previous
+    `round(float(x), 4)` had simply returned `inf` (Codex, PR #991). The
+    request boundary now rejects such a price with a 422
+    (`allow_inf_nan=False` on the models); raising here keeps the helper total
+    so no other caller can be crashed by one either.
+    """
+    if not math.isfinite(value):
+        raise ValueError(f"price must be finite, got {value!r}")
+    return float(Decimal(repr(value)).quantize(Decimal("0.0001"),
+                                               rounding=ROUND_HALF_UP))
+
+
 def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:
     """Duplicate-detection key per the brief: (ticker, entry_ts, entry_price,
     direction). `entry_ts` is normalized to 'YYYY-MM-DD HH:MM' (drop
@@ -574,7 +701,7 @@ def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:
     """
     ts_norm = str(entry_ts).replace("T", " ")[:16]
     try:
-        price_norm = round(float(entry_price), 4)
+        price_norm = _round_half_up_4dp(float(entry_price))
     except (TypeError, ValueError):
         price_norm = None
     return (str(ticker).strip().upper(), str(direction).strip().upper(), ts_norm, price_norm)
@@ -622,7 +749,7 @@ def _existing_entry_keys(owner: str, tickers: list[str]) -> set[tuple]:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/journal/trades/{ticker}")
-async def get_trades(ticker: str, request: Request):
+def get_trades(ticker: str, request: Request):
     """Return the signed-in user's journal entries for the ticker, newest first."""
     ticker_upper = ticker.upper()
 
@@ -662,7 +789,7 @@ async def get_trades(ticker: str, request: Request):
 
 
 @router.get("/api/journal/examples/{ticker}")
-async def get_examples(ticker: str):
+def get_examples(ticker: str):
     """Read-only teaching "Examples" — the UNION of the admin's own journal
     trades AND every automated-pipeline `trades` row for a ticker
     (task-examples-union, 2026-07-11 user decision).
@@ -821,7 +948,7 @@ async def get_examples(ticker: str):
 
 
 @router.post("/api/journal/trades")
-async def create_trade(trade: JournalTradeCreate, request: Request):
+def create_trade(trade: JournalTradeCreate, request: Request):
     """Insert a journal entry for the signed-in user. Returns it with its id.
 
     exit_date/exit_time/exit_price are optional — an omitted exit creates an
@@ -861,16 +988,19 @@ async def create_trade(trade: JournalTradeCreate, request: Request):
             if owner != "local":
                 raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
-    # Local fallback
-    entries = _load_local(ticker_upper)
-    entry = _build_local_entry(
-        ticker_upper, direction, entry_ts, exit_ts, trade.entry_price,
-        trade.exit_price if has_exit else None, ret_pct_rounded, trade.notes or "",
-        trade.stop_loss, take_profits, status, trade.source, trade.session_id,
-    )
-    new_id = entry["id"]
-    entries.insert(0, entry)
-    _save_local(ticker_upper, entries)
+    # Local fallback. Load, mutate and save under one lock: two concurrent
+    # POSTs would otherwise read the same list and the second save would drop
+    # the first trade.
+    with _LOCAL_JOURNAL_LOCK:
+        entries = _load_local(ticker_upper)
+        entry = _build_local_entry(
+            ticker_upper, direction, entry_ts, exit_ts, trade.entry_price,
+            trade.exit_price if has_exit else None, ret_pct_rounded, trade.notes or "",
+            trade.stop_loss, take_profits, status, trade.source, trade.session_id,
+        )
+        new_id = entry["id"]
+        entries.insert(0, entry)
+        _save_local(ticker_upper, entries)
     return {"source": "local", "id": new_id, "return_pct": ret_pct_rounded, "status": status}
 
 
@@ -895,7 +1025,7 @@ def _find_local_entry(trade_id: str) -> tuple[Optional[str], Optional[list[dict]
 
 
 @router.patch("/api/journal/trades/{trade_id}")
-async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
+def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
     """Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct
     (percent, via the existing `_return_pct`) and status win/loss/breakeven.
 
@@ -957,27 +1087,31 @@ async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
             if owner != "local":
                 raise HTTPException(status_code=503, detail="journal temporarily unavailable")
 
-    # Local fallback: PATCH updates the JSON row directly.
-    ticker, entries, entry = _find_local_entry(trade_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="trade not found")
-    if entry.get("status") != "active":
-        raise HTTPException(status_code=409, detail="trade already closed")
+    # Local fallback: PATCH updates the JSON row directly. _find_local_entry
+    # reads the file and _save_local writes it back, so the whole find →
+    # check-status → mutate → save sequence is one transaction. Without the
+    # lock two concurrent closes could both pass the "still active" check.
+    with _LOCAL_JOURNAL_LOCK:
+        ticker, entries, entry = _find_local_entry(trade_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="trade not found")
+        if entry.get("status") != "active":
+            raise HTTPException(status_code=409, detail="trade already closed")
 
-    ret_pct = _return_pct(entry["direction"], float(entry["entry_price"]), body.exit_price)
-    new_status = _derive_status(True, ret_pct)
-    ret_pct_out = ret_pct
+        ret_pct = _return_pct(entry["direction"], float(entry["entry_price"]), body.exit_price)
+        new_status = _derive_status(True, ret_pct)
+        ret_pct_out = ret_pct
 
-    entry["exit_ts"] = exit_ts
-    entry["exit_price"] = body.exit_price
-    entry["return_pct"] = ret_pct_out
-    entry["status"] = new_status
-    _save_local(ticker, entries)
+        entry["exit_ts"] = exit_ts
+        entry["exit_price"] = body.exit_price
+        entry["return_pct"] = ret_pct_out
+        entry["status"] = new_status
+        _save_local(ticker, entries)
     return {"source": "local", "id": trade_id, "return_pct": ret_pct_out, "status": new_status}
 
 
 @router.delete("/api/journal/trades/{trade_id}")
-async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
+def delete_trade(trade_id: str, request: Request, ticker: str = ""):
     """Delete one of the signed-in user's journal entries by UUID."""
     if _HAS_CLOUD_SQL:
         owner = _journal_owner(request)
@@ -994,25 +1128,45 @@ async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
 
     # Local fallback
     if ticker:
-        entries = _load_local(ticker.upper())
-        updated = [e for e in entries if e.get("id") != trade_id]
-        _save_local(ticker.upper(), updated)
+        with _LOCAL_JOURNAL_LOCK:
+            entries = _load_local(ticker.upper())
+            updated = [e for e in entries if e.get("id") != trade_id]
+            _save_local(ticker.upper(), updated)
     else:
-        LOCAL_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
-        for p in LOCAL_JOURNAL_DIR.glob("*_journal.json"):
-            try:
-                entries = json.loads(p.read_text())
-                updated = [e for e in entries if e.get("id") != trade_id]
+        # Same lock as every other local mutation, and go through
+        # _save_local so the write is atomic rather than a truncating
+        # write_text a concurrent reader can catch mid-flight.
+        with _LOCAL_JOURNAL_LOCK:
+            LOCAL_JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+            for p in LOCAL_JOURNAL_DIR.glob("*_journal.json"):
+                try:
+                    entries = json.loads(p.read_text())
+                    if not isinstance(entries, list):
+                        raise ValueError(
+                            f"expected a list, got {type(entries).__name__}")
+                    updated = [e for e in entries
+                               if not isinstance(e, dict)
+                               or e.get("id") != trade_id]
+                except Exception as e:
+                    # An unreadable journal is not an empty one; skipping it
+                    # keeps the file intact instead of rewriting it away.
+                    #
+                    # The shape check and the row walk are INSIDE the boundary
+                    # deliberately. A file holding valid JSON of the wrong
+                    # shape parses fine and then raises on `.get`, and with
+                    # that raise outside the try it aborted the whole scan --
+                    # so one malformed file could block deleting a trade that
+                    # lives in a later healthy one.
+                    logger.warning("skipping unreadable local journal %s: %s", p.name, e)
+                    continue
                 if len(updated) != len(entries):
-                    p.write_text(json.dumps(updated, indent=2, default=str))
+                    _save_local(p.name.removesuffix("_journal.json"), updated)
                     break
-            except Exception:
-                continue
     return {"source": "local", "deleted": trade_id}
 
 
 @router.get("/api/journal/seed/{ticker}")
-async def seed_trades(ticker: str, date: str):
+def seed_trades(ticker: str, date: str):
     """Read-only admin seed pull from the automated pipeline `trades` table.
 
     Lets a user pre-populate the manual journal from what the signal engine
@@ -1078,7 +1232,7 @@ async def seed_trades(ticker: str, date: str):
 
 
 @router.post("/api/journal/export/{ticker}")
-async def export_trades(ticker: str, request: ExportRequest):
+def export_trades(ticker: str, request: ExportRequest):
     """Write journal trades to {ticker}_trade_tracker.csv in data/signals/."""
     ticker_lower = ticker.lower()
     SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1096,10 +1250,32 @@ async def export_trades(ticker: str, request: ExportRequest):
             "Runner_Time": "",
         })
 
-    with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    # Two exports of the same ticker write the SAME path. Under threadpool
+    # dispatch their truncation, buffered writes and closes interleave, so
+    # the file can end up holding a mix of both — and both requests report
+    # success. The event loop used to serialise these by accident.
+    #
+    # Same treatment as `_save_local`: one writer at a time, and publish by
+    # rename so a concurrent reader sees a whole file rather than a partial
+    # one. The lock is per-process, so the atomic rename is what covers a
+    # second Cloud Run instance.
+    with _LOCAL_JOURNAL_LOCK:
+        fd, tmp = tempfile.mkstemp(dir=str(output_path.parent),
+                                   prefix=f".{output_path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, output_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     return {
         "success": True,
@@ -1200,7 +1376,7 @@ async def import_preview(
 
 
 @router.post("/api/journal/import/commit")
-async def import_commit(body: ImportCommitRequest, request: Request):
+def import_commit(body: ImportCommitRequest, request: Request):
     """Insert the caller-selected `PairedTrade`s from a preview.
 
     Re-checks duplicates server-side (idempotent: committing the exact same
@@ -1276,15 +1452,25 @@ async def import_commit(body: ImportCommitRequest, request: Request):
 
         if _HAS_CLOUD_SQL:
             try:
-                _insert_cloud_sql_trade(
+                new_id = _insert_cloud_sql_trade(
                     ticker=ticker_upper, direction=direction,
                     entry_ts=t.entry_ts, exit_ts=exit_ts,
                     entry_price=t.entry_price, exit_price=exit_price,
                     return_pct=ret_pct, notes="", owner=owner,
                     stop_loss=None, tp1=None, tp2=None, tp3=None,
                     status=status, source=source, session_id=None,
+                    # `uq_journal_entries_import_dedupe` is the authority.
+                    # `existing_keys` above is a read-then-write and cannot
+                    # see a row a CONCURRENT commit of the same CSV inserted
+                    # between the two statements; the index can. A conflict
+                    # here is the endpoint's documented idempotency working,
+                    # not an error, so it counts as a skip.
+                    on_conflict_skip=True,
                 )
-                imported += 1
+                if new_id is None:
+                    skipped_duplicates += 1
+                else:
+                    imported += 1
                 # Guard against duplicate rows WITHIN this same commit batch
                 # (e.g. a caller re-submitting the same trade twice) without
                 # a second round-trip to the DB.
@@ -1298,15 +1484,31 @@ async def import_commit(body: ImportCommitRequest, request: Request):
                     raise HTTPException(status_code=503, detail="journal temporarily unavailable")
                 # owner == "local": fall through to the local-file write below.
 
-        entries = _load_local(ticker_upper)
-        entry = _build_local_entry(
-            ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
-            t.entry_price, exit_price,
-            ret_pct, notes="", stop_loss=None, take_profits=[],
-            status=status, source=source, session_id=None,
-        )
-        entries.insert(0, entry)
-        _save_local(ticker_upper, entries)
+        with _LOCAL_JOURNAL_LOCK:
+            entries = _load_local(ticker_upper)
+            # RE-CHECK inside the lock. `existing_keys` was computed once,
+            # before the loop, from a snapshot taken before any writer ran, so
+            # two concurrent commits of the same preview both see the trade as
+            # absent. Serialising the writes alone does not help: each still
+            # inserts, because neither consults the file the other just wrote.
+            #
+            # Cloud SQL gets this from `uq_journal_entries_import_dedupe`;
+            # local mode has no constraint to lean on, so the check has to be
+            # inside the same critical section as the write.
+            if any(_dedupe_key(e.get("ticker", ticker_upper), e.get("direction", ""),
+                               e.get("entry_ts", ""), e.get("entry_price", 0)) == key
+                   for e in entries):
+                skipped_duplicates += 1
+                existing_keys.add(key)
+                continue
+            entry = _build_local_entry(
+                ticker_upper, direction, _with_seconds(t.entry_ts), _with_seconds(exit_ts),
+                t.entry_price, exit_price,
+                ret_pct, notes="", stop_loss=None, take_profits=[],
+                status=status, source=source, session_id=None,
+            )
+            entries.insert(0, entry)
+            _save_local(ticker_upper, entries)
         imported += 1
         existing_keys.add(key)
 

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -20,11 +21,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# Add project root to path so we can import lib/
+# Add project root to path so we can import lib/.
+#
+# EVERY `lib.*` import must stay BELOW this line. `make api` and
+# scripts/dev_server.sh both `cd platform` before launching uvicorn, so the
+# repository root is not on sys.path until the insert above runs -- an eager
+# `from lib...` above it raises ModuleNotFoundError before the server starts.
+# The test suite cannot see that: pytest runs from the repository root, where
+# `lib` is importable via the cwd, so the whole suite passes while `make api`
+# is broken. tests/api/test_dev_server_import.py runs the real launch layout.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
+from lib.single_flight import SingleFlight
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import (
     AUTH_MODE,
@@ -221,7 +231,7 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
 
 
 @app.get("/api/health")
-async def health_check():
+def health_check():
     return {
         "status": "ok",
         "project_root": str(PROJECT_ROOT),
@@ -232,7 +242,7 @@ async def health_check():
 
 
 @app.get("/api/me")
-async def get_current_user(request: Request):
+def get_current_user(request: Request):
     """Return the authenticated identity + role flags.
 
     `email` is the server-VERIFIED identity: the Firebase token's email in
@@ -383,7 +393,7 @@ def _strat_engine_state() -> list[dict]:
 
 
 @app.get("/dev", include_in_schema=False)
-async def dev_info(request: Request):
+def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
 
     email = _iap_user_email(request)
@@ -492,11 +502,47 @@ only working path right now; curl/CI flows return 401.</p>
 
 
 @app.get("/api/market/dates/{ticker}")
-async def get_available_dates(ticker: str):
+def get_available_dates(ticker: str):
     """List available trading dates for a ticker (Cloud SQL → local fallback)."""
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
 
+    cached = _MARKET_DATES_CACHE.get(ticker_upper)
+    if cached is not None:
+        return cached
+
+    # Coalesce cold misses. The query below is a Parallel Seq Scan of the whole
+    # per-ticker partition — 2,003,580 rows in 1,716 ms, measured — and with
+    # this handler threadpooled a burst of Charts/Journal mounts on one ticker
+    # runs one copy per request, filling the 5+2 connection pool with identical
+    # work and queueing everything else behind it.
+    #
+    # `wait`, not `claim`-and-decline, because the honest fallback here is
+    # different from the grid's. There, a decliner has a typed `unavailable`
+    # envelope to return; here it has nothing but the answer the claimant is
+    # about to produce. So a decliner waits a BOUNDED moment and then re-reads
+    # the cache — the claimant normally finishes first, turning a duplicate
+    # scan into a hit — and if the wait times out it does the work itself
+    # rather than failing. That caps how long a worker can be held; it does not
+    # hand a worker over indefinitely, which is what a plain lock would do.
+    with _MARKET_DATES_FLIGHT.claim(ticker_upper) as mine:
+        if not mine:
+            _MARKET_DATES_FLIGHT.wait(ticker_upper, _MARKET_DATES_WAIT_S)
+        # Re-read whichever branch we came from. A decliner re-reads because
+        # the claimant it waited for has usually just stored the answer; a
+        # CLAIMANT re-reads because winning the claim does not mean being
+        # first -- the cache check above happened before the claim, so a
+        # request descheduled between the two can take the claim moments
+        # after the previous claimant populated the cache, and would
+        # otherwise repeat a 1,716 ms scan whose result is already in hand.
+        cached = _MARKET_DATES_CACHE.get(ticker_upper)
+        if cached is not None:
+            return cached
+        return _load_available_dates(ticker_upper, ticker_lower)
+
+
+def _load_available_dates(ticker_upper: str, ticker_lower: str) -> dict:
+    """Query Cloud SQL for a ticker's trading dates, else fall back to GCS."""
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
         try:
@@ -513,12 +559,14 @@ async def get_available_dates(ticker: str):
                 dates = [d.strftime("%Y%m%d") for d in df["trade_date"]]
                 # Derive months from the dates for month-level navigation
                 months = sorted(set(d[:6] for d in dates), reverse=True)
-                return {
+                payload = {
                     "ticker": ticker_upper,
                     "source": "cloud_sql",
                     "dates": dates,
                     "months": months,
                 }
+                _MARKET_DATES_CACHE[ticker_upper] = payload
+                return payload
         except Exception as e:
             logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
 
@@ -528,7 +576,7 @@ async def get_available_dates(ticker: str):
     months: list[str] = []
     try:
         # Daily minute parquets
-        minute_blobs = gcs_reader.list_matching_blobs(
+        minute_blobs = gcs_reader.list_matching_blobs_strict(
             f"data/{ticker_lower}/minute/",
             rf"^{ticker_lower}_minute_(\d{{8}})\.parquet$",
         )
@@ -538,7 +586,7 @@ async def get_available_dates(ticker: str):
             if len(date_part) == 8 and date_part.isdigit():
                 dates.append(date_part)
         # Monthly intraday parquets
-        intraday_blobs = gcs_reader.list_matching_blobs(
+        intraday_blobs = gcs_reader.list_matching_blobs_strict(
             f"data/{ticker_lower}/intraday/",
             rf"^{ticker_lower}_av_1min_(\d{{6}})\.parquet$",
         )
@@ -548,18 +596,38 @@ async def get_available_dates(ticker: str):
             if len(month_part) == 6 and month_part.isdigit():
                 months.append(month_part)
     except Exception as e:
-        logger.warning("GCS dates list failed for %s: %s", ticker_upper, e)
+        # Rule 3.7: returning [] here is indistinguishable from "this ticker has
+        # no data", and the caller renders an empty date picker as if that were
+        # the truth. Cloud SQL already failed to reach this branch, so both
+        # sources are down — say so.
+        logger.error("GCS dates list failed for %s: %s", ticker_upper, e)
+        raise HTTPException(
+            status_code=503,
+            detail=(f"Could not list trading dates for {ticker_upper}: Cloud SQL "
+                    f"unavailable and the GCS fallback failed ({e})."),
+        )
 
-    return {
+    payload = {
         "ticker": ticker_upper,
         "source": "gcs",
         "dates": sorted(set(dates), reverse=True),
         "months": sorted(set(months), reverse=True),
     }
+    # Cache the GCS answer ONLY when Cloud SQL is unconfigured, i.e. when GCS
+    # is the intended source rather than a consolation prize.
+    #
+    # When Cloud SQL IS configured and merely failed, caching this under the
+    # same 12h key pins a transient outage: every request after the database
+    # recovers keeps serving the potentially incomplete GCS date set, and
+    # nothing retries Cloud SQL until the TTL expires. A failure-driven answer
+    # must not outlive the failure.
+    if payload["dates"] and not _CLOUD_SQL:
+        _MARKET_DATES_CACHE[ticker_upper] = payload
+    return payload
 
 
 @app.get("/api/market/data/{ticker}/{date}")
-async def get_market_data(
+def get_market_data(
     ticker: str,
     date: str,
     timeframe: int = Query(default=1, description="Timeframe in minutes: 1, 5, 15, 30, 60"),
@@ -715,7 +783,7 @@ def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
 
 
 @app.get("/api/market/reference/{ticker}/{date}")
-async def get_reference_levels(ticker: str, date: str):
+def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
     Strategy:
@@ -885,7 +953,7 @@ def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
 
 
 @app.get("/api/market/coverage")
-async def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
+def market_coverage(symbols: str = Query(..., description="Comma-separated tickers")):
     """Data coverage per symbol — drives the type-ahead's full/daily/new badges.
 
     Issues exactly two batched queries regardless of symbol count (CLAUDE.md
@@ -938,7 +1006,35 @@ SECTOR_NAMES = {
     "XLC": "Communication",
 }
 
-_SECTORS_CACHE: TTLCache = TTLCache(maxsize=1, ttl=600)  # 10m — sector closes update once/day
+_SECTORS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=1, ttl=600))  # 10m — sector closes update once/day
+
+# Trading dates for a ticker change once a day, and the query behind
+# /api/market/dates is a Parallel Seq Scan of the whole per-ticker partition
+# (measured 2026-09-06: 2,003,580 rows scanned to return 3,278 dates, 1,716 ms).
+# Uncached, every ChartsPage and JournalPage mount paid that.
+#
+# **One hour, not twelve.** A 12h entry filled in the evening spans the nightly
+# ingestion (`av-intraday-nightly` 21:00 ET, `fetch-market-data-daily` 23:00
+# ET), so the new session stayed missing from the Charts and Journal date
+# pickers until the following morning — a wrong answer that looks completely
+# normal. One hour cannot span a writer, and bounds the worst case at an hour
+# rather than a night.
+#
+# This is the proportionate fix for THIS branch, not the final one. **#992
+# replaces the TTL model entirely** with a `MAX(ts)` freshness probe (one index
+# descent, 10.8 ms) that invalidates on the next request after any writer,
+# scheduled or ad-hoc, backed by a 1h TTL for the historical-backfill case the
+# probe cannot see. That endpoint is rewritten there; duplicating its ~90 lines
+# here would be a second implementation of one endpoint across two open PRs.
+# On merge, take #992's version of the endpoint plus this branch's
+# `list_matching_blobs_strict`, which #992 does not carry.
+_MARKET_DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=3600))
+
+# Coalesces cold misses per ticker. Bounded at slightly over the measured
+# 1,716 ms query so a decliner normally wakes to a populated cache, and gives
+# up rather than holding a worker if the claimant is slower than that.
+_MARKET_DATES_FLIGHT = SingleFlight()
+_MARKET_DATES_WAIT_S = 2.5
 
 
 def _sectors_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -1024,7 +1120,7 @@ def _sector_rotation_from_df(df: pd.DataFrame) -> tuple:
 
 
 @app.get("/api/market/sectors")
-async def market_sectors():
+def market_sectors():
     """Sector rotation snapshot computed from SPDR sector ETF daily closes.
 
     One batched query (CLAUDE.md Rule 0: batch by grouping key, never
@@ -1033,8 +1129,9 @@ async def market_sectors():
     days per ticker in the common case. Cached 10 minutes since sector
     closes only update once per trading day.
     """
-    if "sectors" in _SECTORS_CACHE:
-        return _SECTORS_CACHE["sectors"]
+    cached = _SECTORS_CACHE.get("sectors", MISS)
+    if cached is not MISS:
+        return cached
 
     # no _CLOUD_SQL gate needed: get_engine() raises RuntimeError, caught below -> 503
     try:
@@ -1132,7 +1229,7 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
 
 
 @app.get("/api/market/most-active")
-async def market_most_active():
+def market_most_active():
     """Most-active tickers snapshot, with per-ticker snapshot sparklines.
 
     One SQL (CLAUDE.md Rule 0: batch, never per-ticker) pulls every row for
@@ -1332,7 +1429,7 @@ if _dist.is_dir():
     _index_html = _dist / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
+    def serve_spa(full_path: str):
         """SPA fallback — serve index.html for any non-API, non-asset route."""
         candidate = _dist / full_path
         if full_path and candidate.is_file() and ".." not in full_path:

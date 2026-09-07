@@ -49,6 +49,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -104,9 +105,9 @@ def _equity_pattern(ticker_upper: str, run: str | None = None) -> str:
     return rf"^equity_{re.escape(ticker_upper)}_\d{{8}}_\d{{6}}\.csv$"
 
 # ── Caches ──────────────────────────────────────────────────────────────────
-_RESULTS_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)   # 1h
-_EQUITY_CACHE: TTLCache = TTLCache(maxsize=32, ttl=3600)    # 1h
-_ALL_RUNS_CACHE: TTLCache = TTLCache(maxsize=16, ttl=600)   # 10m
+_RESULTS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))   # 1h
+_EQUITY_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))    # 1h
+_ALL_RUNS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=600))   # 10m
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -167,15 +168,16 @@ def _validate_run(run: str | None) -> None:
 
 
 @router.get("/api/backtest/results/{ticker}")
-async def get_backtest_results(ticker: str, run: str | None = None):
+def get_backtest_results(ticker: str, run: str | None = None):
     """Return trades from the most recent backtest CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
     _validate_run(run)
     cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if cache_key in _RESULTS_CACHE:
-        return _RESULTS_CACHE[cache_key]
+    cached = _RESULTS_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
     if not blobs:
@@ -217,15 +219,16 @@ async def get_backtest_results(ticker: str, run: str | None = None):
 
 
 @router.get("/api/backtest/equity/{ticker}")
-async def get_equity_curve(ticker: str, run: str | None = None):
+def get_equity_curve(ticker: str, run: str | None = None):
     """Return equity curve from the most recent equity CSV for the given ticker,
     or from a specific run if `run=YYYYMMDD_HHMMSS` is provided."""
     ticker_upper = ticker.upper()
     _validate_run(run)
     cache_key = f"{ticker_upper}:{run or 'latest'}"
 
-    if cache_key in _EQUITY_CACHE:
-        return _EQUITY_CACHE[cache_key]
+    cached = _EQUITY_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
     if not blobs:
@@ -296,12 +299,13 @@ async def get_equity_curve(ticker: str, run: str | None = None):
 
 
 @router.get("/api/backtest/all/{ticker}")
-async def list_all_backtests(ticker: str):
+def list_all_backtests(ticker: str):
     """List all backtest runs for a ticker, sorted by timestamp descending."""
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _ALL_RUNS_CACHE:
-        return _ALL_RUNS_CACHE[ticker_upper]
+    cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
     backtest_blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper))
     if not backtest_blobs:
@@ -417,7 +421,7 @@ def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @router.post("/api/backtest/replay-trades")
-async def replay_trades(body: ReplayTradesRequest, request: Request):
+def replay_trades(body: ReplayTradesRequest, request: Request):
     """Score the signed-in user's labeled journal trades against actual bars
     and benchmark them against the system (Task 3.2). 422 if neither
     `trade_ids` nor `session_id` is given; 404 if nothing matches; strict
@@ -595,7 +599,7 @@ def _walk_forward_metrics_to_percent(agg: dict) -> dict:
 
 
 @router.post("/api/style/mine-and-validate")
-async def mine_and_validate(body: MineAndValidateRequest, request: Request):
+def mine_and_validate(body: MineAndValidateRequest, request: Request):
     """Mine the caller's closed journal trades into a condition profile,
     walk-forward validate the top one, and stage the result (Task 4.3).
 

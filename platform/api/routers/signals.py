@@ -23,6 +23,7 @@ from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -44,7 +45,7 @@ _CLOUD_SQL = bool(
 
 # ── Legacy parquet fallback (kept for local-dev without Cloud SQL) ─────────
 GCS_PREFIX = "data/signals/"
-_DF_CACHE: TTLCache = TTLCache(maxsize=8, ttl=3600)
+_DF_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=8, ttl=3600))
 
 
 def _pattern(ticker_lower: str) -> str:
@@ -53,8 +54,9 @@ def _pattern(ticker_lower: str) -> str:
 
 def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
     """Legacy path: load from GCS parquet. Used only when Cloud SQL is off."""
-    if ticker_upper in _DF_CACHE:
-        return _DF_CACHE[ticker_upper]
+    cached = _DF_CACHE.get(ticker_upper, MISS)
+    if cached is not MISS:
+        return cached
 
     ticker_lower = ticker_upper.lower()
     blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _pattern(ticker_lower))
@@ -153,7 +155,7 @@ def _query_signals_sql(
 
 
 @router.get("/api/signals/{ticker}")
-async def get_signals(
+def get_signals(
     ticker: str,
     limit: int = Query(default=5000, le=50000),
     direction: str = Query(default="", description="CALL or PUT filter"),
@@ -255,7 +257,7 @@ async def get_signals(
 # 404 rather than degrading silently.
 
 @router.get("/api/signals/{ticker}/similar")
-async def get_similar_signals(
+def get_similar_signals(
     ticker: str,
     direction: str = Query(..., description="CALL or PUT — the direction we're scouting"),
     rsi: float = Query(..., description="RSI value of the bar we're matching"),

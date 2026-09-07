@@ -1208,6 +1208,67 @@ ALTER TABLE journal_entries ALTER COLUMN exit_price DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_journal_entries_user_source
     ON journal_entries (user_email, source, entry_ts DESC);
 
+-- Broker-import idempotency, enforced by the database rather than by a
+-- read-then-write in the application.
+--
+-- `POST /api/journal/import/commit` reads the existing dedupe keys, then
+-- inserts the ones it did not find. Those are two statements, so two
+-- concurrent commits of the same CSV both read "absent" and both insert:
+-- duplicate financial records, from an endpoint whose contract says
+-- committing the same preview twice imports zero rows the second time.
+--
+-- Partial on `source LIKE 'import:%'` deliberately. A unique key over ALL
+-- rows would also reject a MANUAL entry that happens to match an existing
+-- one, and a user re-entering the same trade twice by hand is their
+-- decision, not a bug. This closes import-vs-import; import-vs-manual is
+-- still the application's pre-check, which is honest about being advisory.
+--
+-- The expressions match `_dedupe_key()` in the journal router, and that
+-- matters more than it looks. A first version indexed the RAW columns, so the
+-- database enforced a stricter notion of "same trade" than the endpoint's
+-- own: `_dedupe_key` truncates the timestamp to the minute and rounds the
+-- price to 4dp precisely because an imported row carries no seconds while the
+-- stored row does, and float rendering differs by a few ulps. Two concurrent
+-- commits of one fill therefore passed the raw index and inserted twice --
+-- creating exactly the duplicate a sequential commit would have skipped, and
+-- leaving the index looking like it worked.
+--
+-- `AT TIME ZONE 'UTC'` is load-bearing, not decoration: `date_trunc` is
+-- STABLE on `timestamptz` and IMMUTABLE on `timestamp`, so without the cast
+-- Postgres refuses to build the index at all. Read from the server rather
+-- than assumed:
+--
+--   proname     args                                 provolatile
+--   date_trunc  text, timestamp without time zone    i   (immutable)
+--   date_trunc  text, timestamp with time zone       s   (stable)
+--   round       numeric, integer                     i   (immutable)
+--
+-- Safe to add: the same GROUP BY over the NORMALIZED expressions returned 0
+-- colliding groups on prod 2026-09-06, so no existing row violates it.
+--
+-- DROP first so a deployment carrying the raw-column version converges on the
+-- normalized one; `IF NOT EXISTS` alone would silently keep the old
+-- definition under the same name.
+--
+-- ATOMIC because `apply_schema.run_unit()` commits statements separately, so
+-- an ungrouped pair leaves the table with NO import constraint between the
+-- two: concurrent imports could insert duplicates in that window and then
+-- make the CREATE fail, and a cancellation after the DROP would leave
+-- production unconstrained indefinitely. Grouped, the old index stays visible
+-- unless the replacement commits.
+-- ATOMIC-BEGIN journal import dedupe: drop + recreate as one txn
+DROP INDEX IF EXISTS uq_journal_entries_import_dedupe;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_import_dedupe
+    ON journal_entries (
+        user_email,
+        ticker,
+        direction,
+        date_trunc('minute', entry_ts AT TIME ZONE 'UTC'),
+        round(entry_price::numeric, 4)
+    )
+    WHERE source LIKE 'import:%';
+-- ATOMIC-END journal import dedupe
+
 
 -- ─────────────────────────────────────────────────────────
 -- ANALYSIS OUTPUTS

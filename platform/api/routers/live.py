@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 import pandas as pd
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from zoneinfo import ZoneInfo
 
@@ -160,7 +161,7 @@ def _next_open_et(now_et: datetime) -> str | None:
 
 
 @router.get("/api/live/status")
-async def get_market_status():
+def get_market_status():
     """Return current market open/closed status based on Eastern Time."""
     now_et = datetime.now(ET_TZ)
     is_open, session = _is_market_open(now_et)
@@ -326,7 +327,15 @@ async def get_avg_volume(ticker: str):
     # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL and query_to_dataframe is not None:
         try:
-            df = query_to_dataframe(
+            # `get_avg_volume` stays `async def` for its AlphaVantage
+            # fallback (a real `await` on httpx), so the Cloud SQL branch has
+            # to be threadpooled explicitly rather than by declaring the
+            # handler `def`. Without this the handler can return from the
+            # Cloud SQL path having never reached the await, holding the loop
+            # for the whole query -- the mixed-handler case the dispatch
+            # guard was too weak to see.
+            df = await run_in_threadpool(
+                query_to_dataframe,
                 """
                 SELECT date, volume
                 FROM market_data_daily

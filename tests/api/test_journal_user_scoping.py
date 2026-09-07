@@ -9,6 +9,7 @@ rather than falling back to the shared local file (which would leak trades).
 Hermetic: the DB layer is mocked and the recorded SQL + params are asserted —
 no network, no real Postgres.
 """
+import inspect
 import sys
 from pathlib import Path
 
@@ -23,17 +24,24 @@ import api.routers.journal as journal  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
-def _run(coro):
-    """Drive a no-await coroutine to completion without an event loop.
+def _run(result):
+    """Return an endpoint's result, whether it is sync or a no-await coroutine.
 
-    The journal endpoints are ``async def`` but contain no ``await`` (the DB
-    layer is synchronous), so a single ``.send(None)`` runs the whole body and
-    StopIteration carries the return value. This avoids ``asyncio.run()``, which
-    raises "cannot be called from a running event loop" under the repo's test
-    session.
+    The journal endpoints are plain ``def`` now. They were ``async def`` with no
+    ``await`` in the body, which is the worst of both worlds: the synchronous DB
+    layer ran ON the event loop and serialised every concurrent request behind
+    it. As ``def``, FastAPI dispatches them to its threadpool and they return
+    their value directly.
+
+    The coroutine branch stays so this helper remains correct if an endpoint
+    legitimately becomes ``async`` later. It drives a no-await coroutine with a
+    single ``.send(None)`` rather than ``asyncio.run()``, which would raise
+    "cannot be called from a running event loop" under this test session.
     """
+    if not inspect.iscoroutine(result):
+        return result
     try:
-        coro.send(None)
+        result.send(None)
     except StopIteration as e:
         return e.value
     raise AssertionError("journal endpoint unexpectedly awaited")
@@ -56,9 +64,20 @@ def scoped(monkeypatch):
     def fake_x(sql, params=None):
         calls["x"].append((sql, params or {}))
 
+    def fake_returning(sql, params=None, allow_no_row=False):
+        """The trade INSERT path — `RETURNING id`, one statement.
+
+        Recorded in the same bucket as `execute_sql` so the scoping
+        assertions below read the INSERT's params wherever it ran.
+        """
+        calls["x"].append((sql, params or {}))
+        return "generated-id"
+
     monkeypatch.setattr(journal, "_HAS_CLOUD_SQL", True, raising=False)
     monkeypatch.setattr(journal, "query_to_dataframe", fake_q, raising=False)
     monkeypatch.setattr(journal, "execute_sql", fake_x, raising=False)
+    monkeypatch.setattr(journal, "execute_returning_scalar", fake_returning,
+                        raising=False)
     return journal, calls
 
 
@@ -91,9 +110,27 @@ def test_post_stamps_owner(scoped, monkeypatch):
     insert_sql, insert_params = calls["x"][-1]
     assert "user_email" in insert_sql
     assert insert_params["user_email"] == "alice@x.com"
-    # the read-back is also scoped so it can't surface another user's row
-    _, select_params = calls["q"][-1]
-    assert select_params["user_email"] == "alice@x.com"
+
+
+def test_post_has_no_readback_to_leak_another_users_row(scoped, monkeypatch):
+    """The id comes from `RETURNING`, so there is no follow-up SELECT.
+
+    This used to assert that the read-back was *scoped* to the owner. The
+    read-back is gone: it was a
+    `SELECT ... ORDER BY created_at DESC LIMIT 1` matching on
+    (ticker, entry_ts, user_email), which a concurrent create by the SAME
+    owner could win, returning that trade's id instead. Scoping made it safe
+    across users and never made it correct within one. Not issuing the query
+    is strictly stronger than scoping it.
+    """
+    j, calls = scoped
+    _as(monkeypatch, "alice@x.com")
+    _run(j.create_trade(_trade(), object()))
+    insert_sql, _ = calls["x"][-1]
+    assert "RETURNING" in insert_sql.upper()
+    assert not any("SELECT id" in sql for sql, _ in calls["q"]), (
+        "the insert path issued a read-back SELECT; the id must come from "
+        "RETURNING in the insert statement itself")
 
 
 def test_delete_is_scoped_to_owner(scoped, monkeypatch):

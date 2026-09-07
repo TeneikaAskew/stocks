@@ -54,6 +54,7 @@ Per-IP rate limit (B2):
 """
 from __future__ import annotations
 
+import threading
 import logging
 import os
 from datetime import date as date_type, datetime, timezone
@@ -64,6 +65,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from cachetools import TTLCache
+from lib.single_flight import SingleFlight
+from api.threadsafe_cache import ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 # Project root → so `from lib import gamma` resolves (matches other routers)
@@ -89,10 +92,10 @@ router = APIRouter()
 #            caching longer than the underlying data refreshes).
 # Historical grid: 12 h TTL — EOD rows are immutable once written.
 
-_LIVE_GRID_CACHE: TTLCache = TTLCache(maxsize=64, ttl=60)
-_HIST_GRID_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
-_NODES_CACHE: TTLCache = TTLCache(maxsize=128, ttl=60)
-_HIST_NODES_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
+_LIVE_GRID_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=60))
+_HIST_GRID_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
+_NODES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=60))
+_HIST_NODES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -366,7 +369,26 @@ _AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_
 # 60s TTL on each entry (the whole set evicts after 60s of idleness).
 _ONDEMAND_RATE_LIMIT_TTL = 60
 _ONDEMAND_MAX_TICKERS_PER_WINDOW = 10
-_ONDEMAND_RATE_CACHE: TTLCache = TTLCache(maxsize=4096, ttl=_ONDEMAND_RATE_LIMIT_TTL)
+_ONDEMAND_RATE_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=4096, ttl=_ONDEMAND_RATE_LIMIT_TTL))
+
+
+# Guards the read-modify-write below. Handlers used to be serialised by the
+# event loop; under threadpool dispatch two requests from the same IP can both
+# find no entry, install separate sets and clobber each other, so tickers go
+# uncounted and a burst slips past the ceiling into shared AlphaVantage quota.
+_ONDEMAND_RATE_LOCK = threading.Lock()
+
+# Per-ticker single-flight for the on-demand AlphaVantage dispatch.
+#
+# The rate limiter bounds DISTINCT tickers per IP and deliberately does not
+# count a repeat of the same one, so it cannot stop two concurrent requests
+# for the SAME off-list ticker from both reaching the vendor. Both would spend
+# an AV call and both would persist a full-chain snapshot.
+#
+# Decline rather than wait: see `lib/single_flight.py` for why blocking here
+# would trade one starvation for another. The decliner has an honest answer —
+# the typed `unavailable` envelope the UI already renders and re-polls.
+_ONDEMAND_FLIGHT = SingleFlight()
 
 
 def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
@@ -379,23 +401,26 @@ def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
     window: once an IP goes idle for 60s, its set evicts and the
     counter resets.
     """
-    seen = _ONDEMAND_RATE_CACHE.get(client_ip)
-    if seen is None:
-        seen = set()
-        _ONDEMAND_RATE_CACHE[client_ip] = seen
-    if ticker in seen:
-        return  # already counted; further reads are free
-    if len(seen) >= _ONDEMAND_MAX_TICKERS_PER_WINDOW:
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                f"On-demand ticker rate limit: {_ONDEMAND_MAX_TICKERS_PER_WINDOW} "
-                f"unique tickers per 60s per IP. Try again in 60s, or stick to "
-                f"the scheduled-realtime list ({sorted(_SCHEDULED_REALTIME_TICKERS)})."
-            ),
-            headers={"Retry-After": "60"},
-        )
-    seen.add(ticker)
+    # get / create / check / add must be one atomic step, or the check races
+    # the add and the ceiling stops being a ceiling.
+    with _ONDEMAND_RATE_LOCK:
+        seen = _ONDEMAND_RATE_CACHE.get(client_ip)
+        if seen is None:
+            seen = set()
+            _ONDEMAND_RATE_CACHE[client_ip] = seen
+        if ticker in seen:
+            return  # already counted; further reads are free
+        if len(seen) >= _ONDEMAND_MAX_TICKERS_PER_WINDOW:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"On-demand ticker rate limit: {_ONDEMAND_MAX_TICKERS_PER_WINDOW} "
+                    f"unique tickers per 60s per IP. Try again in 60s, or stick to "
+                    f"the scheduled-realtime list ({sorted(_SCHEDULED_REALTIME_TICKERS)})."
+                ),
+                headers={"Retry-After": "60"},
+            )
+        seen.add(ticker)
 
 
 def _fetch_on_demand(
@@ -527,7 +552,7 @@ def _fetch_on_demand(
 
 
 @router.get("/api/options/{ticker}/grid")
-async def get_grid_live(
+def get_grid_live(
     ticker: str,
     request: Request,
     response: Response,
@@ -576,10 +601,23 @@ async def get_grid_live(
             and ticker_upper not in _SCHEDULED_REALTIME_TICKERS):
         try:
             client_ip = request.client.host if request.client else "unknown"
-            contracts, ts_iso, snapshot_date = _fetch_on_demand(
-                ticker_upper, client_ip,
-            )
-            data_source = "realtime" if contracts else "unavailable"
+            # Single-flight without waiting. The claimant fetches; a
+            # concurrent request for the same ticker re-reads Cloud SQL (the
+            # claimant may already have persisted) and otherwise falls through
+            # to the `unavailable` envelope rather than parking a worker.
+            with _ONDEMAND_FLIGHT.claim(ticker_upper) as is_claimant:
+                (contracts, ts_iso, snapshot_date,
+                 data_source, _days) = _load_chain_for_live(ticker_upper)
+                if data_source == "unavailable" and is_claimant:
+                    contracts, ts_iso, snapshot_date = _fetch_on_demand(
+                        ticker_upper, client_ip,
+                    )
+                    data_source = "realtime" if contracts else "unavailable"
+                elif data_source == "unavailable":
+                    logger.info(
+                        "on-demand fetch for %s already in flight; returning "
+                        "unavailable rather than queueing a worker behind it",
+                        ticker_upper)
         except HTTPException:
             raise   # propagate 429 / 503 — typed signals the UI can render
         except Exception as exc:
@@ -616,7 +654,7 @@ async def get_grid_live(
 
 
 @router.get("/api/options/{ticker}/{date_str}/grid")
-async def get_grid_historical(
+def get_grid_historical(
     ticker: str,
     date_str: str,
     response: Response,
@@ -792,7 +830,7 @@ def _build_nodes_payload(
 
 
 @router.get("/api/options/{ticker}/nodes")
-async def get_nodes_live(
+def get_nodes_live(
     ticker: str,
     response: Response,
     strike_window_pct: float = Query(8.0, ge=0.5, le=50.0),
@@ -842,7 +880,7 @@ async def get_nodes_live(
 
 
 @router.get("/api/options/{ticker}/{date_str}/nodes")
-async def get_nodes_historical(
+def get_nodes_historical(
     ticker: str,
     date_str: str,
     response: Response,
@@ -897,11 +935,11 @@ async def get_nodes_historical(
 # ─── /grid/timeseries endpoint (Phase B2 — realtime only) ──────────────────
 
 
-_TIMESERIES_CACHE: TTLCache = TTLCache(maxsize=128, ttl=60)
+_TIMESERIES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=60))
 
 
 @router.get("/api/options/{ticker}/grid/timeseries")
-async def get_grid_timeseries(
+def get_grid_timeseries(
     ticker: str,
     response: Response,
     strikes: Optional[str] = Query(

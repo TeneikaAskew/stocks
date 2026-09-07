@@ -23,11 +23,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import threading
 import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from lib.single_flight import SingleFlight
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +126,132 @@ def _safe_bigint(val) -> Optional[int]:
 # Local JSON fallback
 # ---------------------------------------------------------------------------
 
+# Serialises the load / modify / save sequence on the shared cache file.
+# `get_ticker_info` and `get_peers` each read the whole file, change their own
+# key, and write the whole file back. Under threadpool dispatch two requests
+# for DIFFERENT tickers do that concurrently and the later write discards the
+# earlier one's new entry.
+#
+# Per-process, so it does not coordinate across Cloud Run instances — which is
+# why `_save_local_cache` also publishes atomically below. The lock stops the
+# lost update; the atomic rename stops the torn read.
+_LOCAL_CACHE_LOCK = threading.RLock()
+
+
 def _load_local_cache() -> dict:
-    if _LOCAL_CACHE_PATH.exists():
-        try:
-            return json.loads(_LOCAL_CACHE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            logger.warning("ticker_info local cache corrupt, starting fresh")
-    return {}
+    with _LOCAL_CACHE_LOCK:
+        if _LOCAL_CACHE_PATH.exists():
+            try:
+                return json.loads(_LOCAL_CACHE_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("ticker_info local cache corrupt, starting fresh")
+        return {}
 
 
 def _save_local_cache(cache: dict) -> None:
-    _LOCAL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _LOCAL_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+    """Publish the cache atomically.
+
+    `write_text` truncates in place, so a concurrent reader could catch the
+    file empty or half-written, hit the `except` above, and "start fresh" —
+    then save its own single entry over everything. Rendering to a temp file
+    in the same directory and `os.replace`-ing it means a reader sees either
+    the whole old file or the whole new one, never a partial one.
+    """
+    with _LOCAL_CACHE_LOCK:
+        _LOCAL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _LOCAL_CACHE_PATH.with_suffix(
+            _LOCAL_CACHE_PATH.suffix + f".{os.getpid()}.tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(cache, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, _LOCAL_CACHE_PATH)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+
+
+def _merge_into_local_cache(ticker: str, updates: dict, *, replace: bool,
+                            preserve: "tuple[str, ...]" = ()) -> None:
+    """Atomically fold `updates` into one ticker's entry.
+
+    The callers previously did load -> fetch from the network -> modify -> save,
+    and the lock lived INSIDE `_load_local_cache` / `_save_local_cache`, so it
+    was released for the whole middle. Two concurrent misses for different
+    tickers therefore both read the same file and the later save still
+    discarded the earlier entry: the lock was in the wrong place, and the test
+    that "proved" otherwise passed only because the test itself wrapped the
+    sequence.
+
+    Holding the lock across the AlphaVantage fetch is not the fix either -- it
+    would serialise every vendor call in the process. So the fetch stays
+    outside, and the cache is RE-READ under the lock here, immediately before
+    the write. Whatever another thread stored in the meantime is preserved.
+
+    `replace=True` overwrites the ticker's entry (a fresh overview);
+    `replace=False` merges keys into whatever is there (peers, which must not
+    drop an overview stored concurrently).
+
+    `preserve` names keys a `replace=True` write must carry forward from the
+    entry it is replacing, when `updates` does not supply them. That has to
+    happen HERE rather than at the call site: the first fix for the peers
+    overwrite read the existing value before calling this, and a `get_peers()`
+    store landing between that read and this locked re-read was still erased
+    (Codex, PR #991). Reading it inside the lock, from the same `cache` the
+    replace is about to overwrite, closes the window -- there is no longer a
+    gap for a concurrent write to fall into.
+    """
+    with _LOCAL_CACHE_LOCK:
+        cache = _load_local_cache()          # RLock: re-entrant by design
+        if replace:
+            entry = dict(updates)
+            existing = cache.get(ticker) or {}
+            for key in preserve:
+                # `key not in entry`: a future overview that starts returning
+                # the key itself must win, not be overwritten by the old value.
+                if key not in entry and key in existing:
+                    entry[key] = existing[key]
+            cache[ticker] = entry
+        else:
+            cache.setdefault(ticker, {}).update(updates)
+        _save_local_cache(cache)
+
+
+# Coalesces concurrent vendor lookups per ticker. Threadpool dispatch is what
+# made this reachable: while every API handler ran on the event loop, two
+# requests for the same cold ticker could not overlap, so the vendor was called
+# once no matter how many arrived. Now they can, and both pass the Cloud SQL
+# and local-cache checks before either persists — spending two AlphaVantage
+# calls, or two FinViz scrapes, on one answer.
+#
+# `_merge_into_local_cache` does not help here: it makes the WRITE atomic,
+# which is a different problem. The circuit breaker does not either; it counts
+# failures, and these are successes.
+#
+# **Nobody waits.** A first version had a decliner wait up to 20 s for the
+# claimant, reasoning that it had nothing honest to return. That reasoning
+# only considers the waiter and ignores its cost: these are called from
+# threadpooled request handlers, so each waiter holds a FastAPI worker, and a
+# burst on one ticker can fill the pool and starve `/api/health` and
+# `/api/me`. That is the same trade this whole migration exists to remove,
+# and the same argument I had already lost once on the freshness audit. The
+# bound did not even hold -- 20 s expires before `fetch_with_retry`'s three
+# 15 s attempts plus backoff, so waiters would time out and duplicate the
+# call anyway, having parked a worker for 20 s to achieve nothing.
+#
+# So a decliner serves what the cache has and never blocks. What it does NOT
+# do is fabricate an answer: with nothing cached at all it falls through and
+# fetches, because a transient 404 on a valid ticker would be a made-up
+# "no info for IWM" (Rule 3.7) and a duplicate vendor call is the cheaper
+# wrong thing.
+#
+# Which means the coalescing bites exactly where it is worth having: a
+# STALE-but-present entry, the common case at a 30-day freshness window,
+# where one caller refreshes and the rest are served immediately. A
+# stone-cold ticker under concurrency still duplicates, deliberately.
+_INFO_FLIGHT = SingleFlight()
+_PEERS_FLIGHT = SingleFlight()
 
 
 # ---------------------------------------------------------------------------
@@ -196,27 +313,63 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
     use_cloud = _cloud_sql_available()
 
     # 1. Try Cloud SQL
+    #
+    # Kept in its OWN name. It used to be assigned to `entry` and then
+    # overwritten by the local lookup below, so a STALE Cloud SQL row was
+    # discarded -- and on a freshly started instance, which has no local JSON
+    # yet, that is the only copy there is. Every decliner then found nothing
+    # to serve and called AlphaVantage, spending one vendor call per
+    # concurrent request on exactly the burst the flight exists to coalesce
+    # (Codex, PR #991).
+    cloud_entry = None
     if use_cloud:
-        entry = _read_from_cloud_sql(ticker)
-        if entry and _is_fresh(entry, max_age_days):
-            return entry
+        cloud_entry = _read_from_cloud_sql(ticker)
+        if cloud_entry and _is_fresh(cloud_entry, max_age_days):
+            return cloud_entry
 
     # 2. Try local cache
     local_cache = _load_local_cache()
-    entry = local_cache.get(ticker)
+    entry = local_cache.get(ticker) or cloud_entry
     if entry and _is_fresh(entry, max_age_days):
         return entry
 
-    # 3. Fetch from AV
-    info = fetch_ticker_overview(ticker)
-    if info:
-        info["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
-        # Persist to both stores
-        if use_cloud:
-            _upsert_to_cloud_sql(ticker, info)
-        local_cache[ticker] = info
-        _save_local_cache(local_cache)
-        return info
+    # 3. Fetch from AV, once per ticker where the cache can serve the rest.
+    with _INFO_FLIGHT.claim(ticker) as mine:
+        # Re-read on both branches. A decliner re-reads because a claimant may
+        # already have stored the answer; a CLAIMANT re-reads because the cache
+        # checks above happened before the claim, so it may have taken the
+        # claim moments after a previous claimant finished.
+        # Local first (a claimant may have just written it), then the Cloud
+        # SQL row read before the claim. Local-only here was the gap: a cold
+        # instance has no local entry, so the check answered None for every
+        # decliner even with a perfectly serveable stale row in the database.
+        cached = _load_local_cache().get(ticker) or cloud_entry
+        if cached and _is_fresh(cached, max_age_days):
+            return cached
+        if not mine and cached:
+            return cached          # stale, but real, and immediate
+        # Either we own the fetch, or we own nothing and have nothing to
+        # serve. Both fetch; see the note above _INFO_FLIGHT.
+
+        info = fetch_ticker_overview(ticker)
+        if info:
+            info["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
+            # Persist to both stores
+            if use_cloud:
+                _upsert_to_cloud_sql(ticker, info)
+            # `replace=True` drops everything else under the ticker, and
+            # `_peers` is stored independently by `get_peers()` under its own
+            # flight -- so an overview refresh racing a peers refresh could
+            # discard peers that had just been scraped, and `get_peers` does
+            # not read them back from the Cloud SQL relationships column, so
+            # the next request scrapes FinViz again.
+            #
+            # Carried across INSIDE the locked merge. Reading `_peers` here and
+            # folding it into `info` first looks equivalent and is not: a peers
+            # store landing between that read and the merge's own locked
+            # re-read was still erased.
+            _merge_into_local_cache(ticker, info, replace=True, preserve=("_peers",))
+            return info
 
     # Return stale data rather than nothing
     return entry
@@ -365,19 +518,27 @@ def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
     if cached_peers is not None and _is_fresh(entry, max_age_days):
         return cached_peers
 
-    peers = _fetch_finviz_peers(ticker)
+    with _PEERS_FLIGHT.claim(ticker) as mine:
+        # Re-read on both branches, for the same reasons as get_ticker_info.
+        cached = _load_local_cache().get(ticker, {})
+        cached_peers = cached.get("_peers")
+        if cached_peers is not None and _is_fresh(cached, max_age_days):
+            return cached_peers
+        if not mine and cached_peers is not None:
+            return cached_peers    # stale, but real, and immediate
 
-    # Persist to cache
-    if peers is not None:
-        if ticker not in local_cache:
-            local_cache[ticker] = {}
-        local_cache[ticker]["_peers"] = peers
-        local_cache[ticker]["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
-        _save_local_cache(local_cache)
+        peers = _fetch_finviz_peers(ticker)
 
-        # Also persist to Cloud SQL relationships column
-        if _cloud_sql_available():
-            _upsert_peers_to_cloud_sql(ticker, peers)
+        # Persist to cache
+        if peers is not None:
+            _merge_into_local_cache(ticker, {
+                "_peers": peers,
+                "_fetched_utc": datetime.now(timezone.utc).isoformat(),
+            }, replace=False)
+
+            # Also persist to Cloud SQL relationships column
+            if _cloud_sql_available():
+                _upsert_peers_to_cloud_sql(ticker, peers)
 
     return peers or []
 

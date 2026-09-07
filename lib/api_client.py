@@ -11,6 +11,7 @@ Usage:
 """
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -34,17 +35,33 @@ _RETRYABLE = (
 
 
 class _CircuitBreaker:
-    """Simple circuit breaker that backs off after consecutive failures."""
+    """Circuit breaker that backs off after consecutive failures.
+
+    Every method holds `self._lock`, and the failure counter in particular
+    needs it. `record_failure` was a get / increment / set, which is not
+    atomic: during a vendor outage several threads read the same count and
+    write back the same incremented value, so N simultaneous failures raise
+    the counter by 1 instead of N. The breaker could then never reach its
+    threshold and every worker would keep hammering a vendor that is already
+    down — the failure mode the breaker exists to prevent, arriving only
+    under the load that makes it matter.
+
+    This was unreachable while every API handler ran on the event loop and
+    was serialised by it. Threadpool dispatch is what makes it real, so it
+    is fixed alongside that change rather than after it.
+    """
 
     def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 60.0):
         self._threshold = failure_threshold
         self._cooldown = cooldown_seconds
         self._consecutive_failures: dict[str, int] = {}
         self._open_until: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def check(self, endpoint: str) -> None:
         """Raise if circuit is open for this endpoint."""
-        until = self._open_until.get(endpoint, 0)
+        with self._lock:
+            until = self._open_until.get(endpoint, 0)
         if time.time() < until:
             remaining = until - time.time()
             raise RuntimeError(
@@ -53,14 +70,18 @@ class _CircuitBreaker:
             )
 
     def record_success(self, endpoint: str) -> None:
-        self._consecutive_failures.pop(endpoint, None)
-        self._open_until.pop(endpoint, None)
+        with self._lock:
+            self._consecutive_failures.pop(endpoint, None)
+            self._open_until.pop(endpoint, None)
 
     def record_failure(self, endpoint: str) -> None:
-        count = self._consecutive_failures.get(endpoint, 0) + 1
-        self._consecutive_failures[endpoint] = count
-        if count >= self._threshold:
-            self._open_until[endpoint] = time.time() + self._cooldown
+        with self._lock:
+            count = self._consecutive_failures.get(endpoint, 0) + 1
+            self._consecutive_failures[endpoint] = count
+            opened = count >= self._threshold
+            if opened:
+                self._open_until[endpoint] = time.time() + self._cooldown
+        if opened:
             log.warning(
                 "Circuit breaker OPEN for %s after %d failures (cooldown %ds)",
                 endpoint, count, self._cooldown,

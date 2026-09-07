@@ -26,10 +26,12 @@ Usage:
 import io
 import logging
 import re
+import threading
 from typing import Optional
 
 import pandas as pd
 from cachetools import TTLCache
+from api.threadsafe_cache import MISS, ThreadSafeCache
 
 log = logging.getLogger(__name__)
 
@@ -40,18 +42,34 @@ BASE_PREFIX = "raw/"  # All app data lives under gs://BUCKET/raw/*
 _client = None
 
 
+_CLIENT_LOCK = threading.Lock()
+
+
 def _get_client():
+    """Return the process-wide storage client, building it at most once.
+
+    Double-checked locking, the same shape as `gcp.database.get_engine()` and
+    `model_routing._get_connector()` — the third instance of one bug. The
+    unlocked `if _client is None` was safe only because every handler ran on
+    the event loop and could not interleave. Under threadpool dispatch several
+    cold requests can each construct a `storage.Client` with its own HTTP
+    session, and all but one are overwritten without being closed, so their
+    sessions leak for the life of the instance.
+    """
     global _client
-    if _client is None:
-        from google.cloud import storage as gcs
-        _client = gcs.Client()
+    if _client is not None:          # fast path, no lock
+        return _client
+    with _CLIENT_LOCK:
+        if _client is None:          # re-check under the lock
+            from google.cloud import storage as gcs
+            _client = gcs.Client()
     return _client
 
 
 # ── Blob listing ────────────────────────────────────────────────────────────
 # Cache blob listings for 10 minutes so router-level result caches don't
 # hammer the GCS LIST API. New backtest runs etc. become visible within 10m.
-_LIST_CACHE: TTLCache = TTLCache(maxsize=64, ttl=600)
+_LIST_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=64, ttl=600))
 
 
 def list_matching_blobs(prefix: str, pattern: str) -> list[str]:
@@ -64,8 +82,9 @@ def list_matching_blobs(prefix: str, pattern: str) -> list[str]:
         phase6_playbook_iwm.md
     """
     cache_key = (prefix, pattern)
-    if cache_key in _LIST_CACHE:
-        return _LIST_CACHE[cache_key]
+    cached = _LIST_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
 
     full_prefix = BASE_PREFIX + prefix
     try:
@@ -74,6 +93,38 @@ def list_matching_blobs(prefix: str, pattern: str) -> list[str]:
     except Exception as e:
         log.warning("GCS list failed (%s): %s", full_prefix, e)
         return []
+
+    regex = re.compile(pattern)
+    matching = sorted(
+        [n for n in names if regex.search(n.rsplit("/", 1)[-1])],
+        reverse=True,
+    )
+    _LIST_CACHE[cache_key] = matching
+    return matching
+
+
+def list_matching_blobs_strict(prefix: str, pattern: str) -> list[str]:
+    """`list_matching_blobs`, but a storage failure RAISES.
+
+    The swallowing sibling returns `[]` for a rejected or timed-out listing,
+    which the caller cannot tell from "this prefix genuinely holds nothing".
+    That made a 503 in `get_available_dates` unreachable: with Cloud SQL down
+    AND GCS failing, both listings returned `[]`, execution fell through to
+    the empty payload, and the endpoint answered 200 as if the ticker simply
+    had no data.
+
+    Same relationship as `gcp.database.query_to_dataframe` and its `_strict`
+    sibling: use this wherever "the listing failed" must be distinguishable
+    from "the listing was empty".
+    """
+    cache_key = (prefix, pattern)
+    cached = _LIST_CACHE.get(cache_key, MISS)
+    if cached is not MISS:
+        return cached
+
+    full_prefix = BASE_PREFIX + prefix
+    blobs = _get_client().list_blobs(BUCKET, prefix=full_prefix)
+    names = [b.name for b in blobs]
 
     regex = re.compile(pattern)
     matching = sorted(
