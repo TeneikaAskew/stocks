@@ -102,7 +102,13 @@ api "$JOBS_URL" --jq '.jobs[] | select(.conclusion == "failure") | .id' > "$WORK
 while read -r JOB_ID; do
   [ -n "$JOB_ID" ] || continue
   api "repos/${REPO}/actions/jobs/${JOB_ID}" --jq "$FAILED_STEP_JQ" > "$WORK/windows.txt"
-  api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" > "$WORK/job.log"
+  # --allow-escape-sequences: the raw log carries the runner's ANSI colour
+  # codes on every `##[group]Run` echo, and gh refuses to print a body with
+  # escape sequences without it ("pass --allow-escape-sequences to output it
+  # anyway", exit 1). The first production run of this classifier died there:
+  # exit 2 on every real log, so it could never have re-run anything. The test
+  # stub now refuses exactly as gh does. (Run 24, 2026-09-07.)
+  api "repos/${REPO}/actions/jobs/${JOB_ID}/logs" --allow-escape-sequences > "$WORK/job.log"
   # Keep only the lines the runner stamped inside a failed step of THIS job.
   # Compared on YYYY-MM-DDTHH:MM:SS: the log carries sub-second precision and
   # the API does not, and a naive string compare would then drop every line in
@@ -123,7 +129,10 @@ fi
 # a pipe buffer of output followed the record: grep exits on its first match,
 # printf takes SIGPIPE, the pipeline is non-zero, and an `if` condition does
 # not reach the ERR trap. (Codex, PR #1032, round 12.)
-sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' "$WORK/failed_steps.log" > "$WORK/section.log"
+# ANSI sequences stripped before the timestamp: a coloured line starts with
+# the runner's timestamp and then the colour code, and the record anchor is
+# start-of-line.
+sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' "$WORK/failed_steps.log" > "$WORK/section.log"
 
 if grep -qE "${RECORD}${TRANSPORT}" "$WORK/section.log"; then
   CAUSE=$(grep -oE "${RECORD}${TRANSPORT}" "$WORK/section.log" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')

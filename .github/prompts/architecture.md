@@ -16,7 +16,7 @@ You are an automated documentation agent inside the GitHub repo `TeneikaAskew/st
 - Cloud Scheduler jobs: **{{LIVE_SCHEDULERS}}** live, **{{DECLARED_SCHEDULERS}}** declared
 - Cloud Run Services: **{{LIVE_SERVICES}}**
 - Secret Manager secrets: **{{LIVE_SECRETS}}**
-- Cloud SQL relations: **{{LIVE_DB_TABLES}}** live, **{{DECLARED_TABLES}}** declared in `gcp/schema.sql`
+- Cloud SQL relations: **{{LIVE_DB_TABLES}}** live, **{{DECLARED_RELATIONS}}** declared in `gcp/schema.sql` (tables, views and materialized views together), **{{RUNTIME_RELATIONS}}** runtime-created (live minus declared, as a set difference)
 
 These numbers were read from `live.json` and `repo_inventory.json` and written
 into this prompt by `scripts/maintenance/render_doc_prompts.py` before you were

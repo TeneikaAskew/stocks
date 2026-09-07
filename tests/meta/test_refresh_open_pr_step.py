@@ -219,3 +219,27 @@ def test_a_missing_drift_report_is_named_not_blanked(tmp_path):
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert "_no docs-vs-live report produced_" in (out / "edit.txt").read_text()
+
+
+# ── model-edited marker blocks are restored, named, before the gates ────────
+
+def test_marker_blocks_are_restored_from_the_frozen_snapshot_before_the_gates():
+    """Run 24: the model edited inside a block in 05-c and the refresh went
+    red for it. The restore runs in the step that has just put the frozen
+    inputs back (so the render is from the pre-model snapshot), names each
+    block it rewrote as a warning, and precedes the verify step."""
+    names = [s.get("name") for s in STEPS]
+    restore_i = names.index("Restore gate inputs and refuse model edits outside the docs")
+    verify_i = names.index("Verify regenerated docs")
+    assert restore_i < verify_i
+    run = STEPS[restore_i]["run"]
+    code = "\n".join(ln.split("#", 1)[0] for ln in run.splitlines())
+    assert "--snapshot refresh-inputs/live.json" in code and "--restore" in code
+    for doc in ("docs/product/infrastructure/05-a-ARCHITECTURE.md",
+                "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"):
+        assert doc in code.split("--restore", 1)[1].split("\n", 2)[0] + code.split("--restore", 1)[1].split("\n", 2)[1]
+    # After the frozen-input restore and its manifest check, never before:
+    # a restore rendered from a snapshot the model could have edited would
+    # write the model's numbers back with the workflow's signature on them.
+    assert code.index("sha256sum -c") < code.index("--restore")
+    assert "::warning::" in run and "model edited a rendered block" in run

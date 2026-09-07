@@ -41,11 +41,18 @@ PROMPTS = ("architecture", "data-dependencies", "cost-analysis", "readme")
 
 # Distinct from every count in the committed fixture and from every number
 # written into the prompt prose.
+# db_tables is keyed by relation name, as doc_inventory writes it; 855 live,
+# of which the 700 declared below plus 155 runtime-created.
 LIVE = {
     "counts": {"jobs": 811, "schedulers": 822, "services": 833, "secrets": 844},
-    "db_tables": [{"name": f"t{i}"} for i in range(855)],
+    "db_tables": {f"t{i}": {} for i in range(855)},
 }
-REPO_INVENTORY = {"repo": {"counts": {"jobs": 866, "schedulers": 877, "tables": 888}}}
+REPO_INVENTORY = {"repo": {
+    "counts": {"jobs": 866, "schedulers": 877, "tables": 690},
+    "tables": [{"name": f"t{i}"} for i in range(690)],
+    "views": [{"name": f"t{i}"} for i in range(690, 695)],
+    "materialized_views": [{"name": f"t{i}"} for i in range(695, 700)],
+}}
 # What `verify_docs_against_live.py --write-snapshot` writes: the populations
 # it counts, from its own gcloud calls. It must agree with live.json, and the
 # renderer refuses rather than hoping.
@@ -72,6 +79,9 @@ def test_the_cost_prompt_states_the_scheduler_count_as_a_substituted_value(value
     assert "Cloud Scheduler jobs: **822**" in out
     assert "(822 entries, 3 free)" in out
     assert "all 811 jobs" in out
+    # Declared is tables + views + materialized views (700), runtime is the
+    # set difference (155): the gate's arithmetic, not the model's.
+    assert "**855** live, **700** declared, **155** runtime-created" in out
 
 
 def test_every_prompt_carries_the_authoritative_block(values):
@@ -98,9 +108,9 @@ def test_a_malformed_placeholder_never_reaches_the_model(values):
 
 @pytest.mark.parametrize("broken", [
     {"counts": {"jobs": 0, "schedulers": 822, "services": 833, "secrets": 844},
-     "db_tables": [1]},
+     "db_tables": {"x": {}}},
     {"counts": {"jobs": 811, "schedulers": 822, "services": 833, "secrets": 844},
-     "db_tables": []},
+     "db_tables": {}},
 ])
 def test_an_empty_snapshot_refuses_to_render(broken):
     """Rule 3.7: a zero count is a broken dump, not a fact to hand the model."""
@@ -111,7 +121,7 @@ def test_an_empty_snapshot_refuses_to_render(broken):
 def test_a_missing_count_raises_rather_than_defaulting():
     with pytest.raises(KeyError):
         rp.counts({"counts": {"jobs": 1, "schedulers": 2, "services": 3},
-                   "db_tables": [1]}, REPO_INVENTORY, VERIFY_LIVE)
+                   "db_tables": {"x": {}}}, REPO_INVENTORY, VERIFY_LIVE)
 
 
 def test_the_cli_writes_one_rendered_prompt_per_template(tmp_path):
@@ -233,3 +243,17 @@ def test_no_prompt_carries_a_fleet_count_of_its_own():
         for pattern, _key, label in vd.COUNT_CLAIMS:
             m = pattern.search(text)
             assert m is None, f"{name}.md carries a literal count claim: {m.group(0)!r} ({label})"
+
+
+def test_the_runtime_relation_count_is_the_gates_own_arithmetic():
+    """Run 24: three "runtime relations" findings, 26/28/30 against 27. The
+    number now comes from check_generated_docs.relation_counts, which is the
+    function that will judge it, and a zero is a legitimate value."""
+    import scripts.maintenance.check_generated_docs as gate
+    declared, runtime = gate.relation_counts(REPO_INVENTORY["repo"], LIVE)
+    vals = rp.counts(LIVE, REPO_INVENTORY, VERIFY_LIVE)
+    assert (vals["DECLARED_RELATIONS"], vals["RUNTIME_RELATIONS"]) == (str(declared), str(runtime)) == ("700", "155")
+    nothing_extra = dict(LIVE, db_tables={f"t{i}": {} for i in range(700)})
+    assert rp.counts(nothing_extra, REPO_INVENTORY, VERIFY_LIVE)["RUNTIME_RELATIONS"] == "0"
+    for name in PROMPTS:
+        assert "{{RUNTIME_RELATIONS}}" in (PROMPT_DIR / f"{name}.md").read_text(), name
