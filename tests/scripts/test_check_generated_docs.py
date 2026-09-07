@@ -251,7 +251,7 @@ def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
     assert gate.gate_derived_numbers(root, repo, live) == []
     a = root / "ARCHITECTURE.md"
     a.write_text(a.read_text().replace(
-        "`--max-retries 0` for 41 of the 67 declared jobs, `1` for 25",
+        "`--max-retries 0` for 42 of the 68 declared jobs, `1` for 25",
         "`--max-retries 0` for 56 jobs and `1` for 27"))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any("claims 56 jobs at --max-retries 0" in f for f in findings), findings

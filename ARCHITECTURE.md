@@ -107,7 +107,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
 | Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations (69 declared in `gcp/schema.sql` — 66 tables, 2 materialized views, 1 view — and 26 created at runtime by research and analytics jobs; §5) |
-| Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 67 declared in [`gcp/deploy.sh`](gcp/deploy.sh) |
+| Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 68 declared in [`gcp/deploy.sh`](gcp/deploy.sh) |
 | Cloud Run Services | 4 long-lived HTTP services | `solyra-api-prod`, `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
 | Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`signal-quality-report-hourly` deleted 2026-09-07) |
 | Cloud Build | image builds and the API deploy triggers | triggers `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) |
@@ -333,79 +333,79 @@ There are **no foreign keys between domain tables** other than `insight_runs.rep
 
 ## 6. Cloud Run Jobs
 
-76 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](gcp/deploy.sh). 65 names appear on both sides, so 11 of the live jobs have no `deploy_*` function and 2 declared jobs are not deployed. Those 11 were created by hand with `gcloud run jobs create` in May 2026 and are not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-build-gamma-levels`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; 11 names, of which `p2-build-gamma-levels` is scheduled nightly by `gamma-levels-daily` and runs green). Two declared jobs are not deployed (`compute-spx-greeks-backfill`, `options-exec-backtest`). Retry policy is **`--max-retries 0` for 41 of the 67 declared jobs, `1` for 25 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
+76 jobs exist live; 68 are declared by a `deploy_*` function in [`gcp/deploy.sh`](gcp/deploy.sh). 66 names appear on both sides, so 10 of the live jobs have no `deploy_*` function and 2 declared jobs are not deployed. Those 10 were created by hand with `gcloud run jobs create` in May 2026 and are not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; 10 names, none of them scheduled). `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Two declared jobs are not deployed (`compute-spx-greeks-backfill`, `options-exec-backtest`). Retry policy is **`--max-retries 0` for 42 of the 68 declared jobs, `1` for 25 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
 
 <!-- inventory:jobs:start -->
 | Job | Declared | Entrypoint | Memory / CPU / timeout / retries | Image | Last execution (live 2026-09-07) |
 |---|---|---|---|---|---|
-| `apply-schema-migrations` | [`gcp/deploy.sh:3065`](gcp/deploy.sh#L3065) | python -m gcp.apply_schema | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-07 ok |
-| `audit-brief-bias` | [`gcp/deploy.sh:2400`](gcp/deploy.sh#L2400) | python -m gcp.audit_job_runner | 1Gi / 1 CPU / 1800s / retries 0 | main | 2026-09-06 ok |
-| `audit-infra-drift` | [`gcp/deploy.sh:2282`](gcp/deploy.sh#L2282) | python -m gcp.audit_infra_drift | 512Mi / 1 CPU / 300s / retries 0 | main | 2026-09-06 ok |
-| `audit-magnitude-drift` | [`gcp/deploy.sh:2320`](gcp/deploy.sh#L2320) | python -m gcp.audit_magnitude_drift | 512Mi / 1 CPU / 180s / retries 0 | main | 2026-09-04 ok |
-| `audit-walkforward` | [`gcp/deploy.sh:2362`](gcp/deploy.sh#L2362) | python -m gcp.audit_job_runner | 1Gi / 1 CPU / 1800s / retries 0 | main | 2026-09-05 ok |
+| `apply-schema-migrations` | [`gcp/deploy.sh:3106`](gcp/deploy.sh#L3106) | python -m gcp.apply_schema | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-07 ok |
+| `audit-brief-bias` | [`gcp/deploy.sh:2441`](gcp/deploy.sh#L2441) | python -m gcp.audit_job_runner | 1Gi / 1 CPU / 1800s / retries 0 | main | 2026-09-06 ok |
+| `audit-infra-drift` | [`gcp/deploy.sh:2323`](gcp/deploy.sh#L2323) | python -m gcp.audit_infra_drift | 512Mi / 1 CPU / 300s / retries 0 | main | 2026-09-06 ok |
+| `audit-magnitude-drift` | [`gcp/deploy.sh:2361`](gcp/deploy.sh#L2361) | python -m gcp.audit_magnitude_drift | 512Mi / 1 CPU / 180s / retries 0 | main | 2026-09-04 ok |
+| `audit-walkforward` | [`gcp/deploy.sh:2403`](gcp/deploy.sh#L2403) | python -m gcp.audit_job_runner | 1Gi / 1 CPU / 1800s / retries 0 | main | 2026-09-05 ok |
 | `auto-refresh-top-n` | [`gcp/deploy.sh:800`](gcp/deploy.sh#L800) | python -m gcp.auto_refresh_top_n | 1Gi / 1 CPU / 600s / retries 1 | main | 2026-09-04 ok |
-| `backfill-daily-indicators` | [`gcp/deploy.sh:1880`](gcp/deploy.sh#L1880) | python -m gcp.fetchers.backfill_daily_indicators | 2Gi / 2 CPU / 36000s / retries 0 | main | 2026-09-06 ok |
+| `backfill-daily-indicators` | [`gcp/deploy.sh:1921`](gcp/deploy.sh#L1921) | python -m gcp.fetchers.backfill_daily_indicators | 2Gi / 2 CPU / 36000s / retries 0 | main | 2026-09-06 ok |
 | `backfill-ticker` | [`gcp/deploy.sh:1057`](gcp/deploy.sh#L1057) | python -m gcp.backfill_ticker | 1Gi / 1 CPU / 600s / retries 1 | main | 2026-05-04 ok |
 | `backtest` | [`gcp/deploy.sh:1109`](gcp/deploy.sh#L1109) | python -m gcp.backtest_job | 2Gi / 1 CPU / 900s / retries 1 | main | 2026-04-29 ok |
-| `backtest-pipeline` | [`gcp/deploy.sh:2782`](gcp/deploy.sh#L2782) | python -m scripts.run_pipeline | 8Gi / 2 CPU / 28800s / retries 0 | main | 2026-08-27 ok |
+| `backtest-pipeline` | [`gcp/deploy.sh:2823`](gcp/deploy.sh#L2823) | python -m scripts.run_pipeline | 8Gi / 2 CPU / 28800s / retries 0 | main | 2026-08-27 ok |
 | `backtest-playability` | **not in deploy.sh** (hand-created) | python -m scripts.backtest_playability | 1Gi / 1 CPU / 1800s / retries 0 | trading-system@sha256:51f7b8b2b5bee7d24d38939321cc79e472a9c969dcb83d26b840791dd14924ea | 2026-05-14 ok |
-| `build-options-daily-features` | [`gcp/deploy.sh:1551`](gcp/deploy.sh#L1551) | python -m gcp.fetchers.build_options_daily_features --incremental --days=7 | 4Gi / 2 CPU / 3600s / retries 0 | research | 2026-09-05 ok |
-| `build-options-greeks` | [`gcp/deploy.sh:1514`](gcp/deploy.sh#L1514) | python -m gcp.build_options_daily_greeks --incremental --days=7 | 4Gi / 2 CPU / 3600s / retries 0 | research | 2026-09-05 ok |
-| `build-realtime-gex` | [`gcp/deploy.sh:1581`](gcp/deploy.sh#L1581) | python -m gcp.build_realtime_gex --incremental --days=3 | 4Gi / 2 CPU / 1800s / retries 1 | research | 2026-09-04 ok |
-| `calibrate-thresholds` | [`gcp/deploy.sh:3141`](gcp/deploy.sh#L3141) | python -m scripts.calibrate_thresholds | 1Gi / 1 CPU / 600s / retries 1 | main | 2026-07-01 ok |
-| `cloud-sql-weekly-export` | [`gcp/deploy.sh:2978`](gcp/deploy.sh#L2978) | python -m gcp.sql_export_to_gcs | 512Mi / 1 CPU / 21600s / retries 0 | main | 2026-09-06 ok |
+| `build-options-daily-features` | [`gcp/deploy.sh:1592`](gcp/deploy.sh#L1592) | python -m gcp.fetchers.build_options_daily_features --incremental --days=7 | 4Gi / 2 CPU / 3600s / retries 0 | research | 2026-09-05 ok |
+| `build-options-greeks` | [`gcp/deploy.sh:1555`](gcp/deploy.sh#L1555) | python -m gcp.build_options_daily_greeks --incremental --days=7 | 4Gi / 2 CPU / 3600s / retries 0 | research | 2026-09-05 ok |
+| `build-realtime-gex` | [`gcp/deploy.sh:1622`](gcp/deploy.sh#L1622) | python -m gcp.build_realtime_gex --incremental --days=3 | 4Gi / 2 CPU / 1800s / retries 1 | research | 2026-09-04 ok |
+| `calibrate-thresholds` | [`gcp/deploy.sh:3182`](gcp/deploy.sh#L3182) | python -m scripts.calibrate_thresholds | 1Gi / 1 CPU / 600s / retries 1 | main | 2026-07-01 ok |
+| `cloud-sql-weekly-export` | [`gcp/deploy.sh:3019`](gcp/deploy.sh#L3019) | python -m gcp.sql_export_to_gcs | 512Mi / 1 CPU / 21600s / retries 0 | main | 2026-09-06 ok |
 | `compare-tier-fires` | **not in deploy.sh** (hand-created) | python -m scripts.compare_tier_fires | 2Gi / 2 CPU / 1800s / retries 0 | trading-system:latest | 2026-05-04 ok |
-| `compute-earnings-reactions` | [`gcp/deploy.sh:2691`](gcp/deploy.sh#L2691) | python -m gcp.fetchers.compute_earnings_reactions | 1Gi / 1 CPU / 1800s / retries 1 | main | 2026-09-06 ok |
-| `compute-spx-greeks-backfill` | [`gcp/deploy.sh:3088`](gcp/deploy.sh#L3088) | python -m scripts.maintenance.compute_spx_greeks --ticker SPX | 2Gi / 1 CPU / 43200s / retries 0 | main | **not deployed** |
-| `db-query` | [`gcp/deploy.sh:2188`](gcp/deploy.sh#L2188) | python -m gcp.db_query_job | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-07 ok |
-| `direction-baseline` | [`gcp/deploy.sh:1665`](gcp/deploy.sh#L1665) | python -m gcp.research.direction_program.baseline_runner --tf=5m | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-08 ok |
-| `direction-importance` | [`gcp/deploy.sh:1700`](gcp/deploy.sh#L1700) | python -m gcp.research.direction_program.feature_importance --tf=5m | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-08 ok |
-| `direction-phase2` | [`gcp/deploy.sh:1748`](gcp/deploy.sh#L1748) | python -m gcp.research.direction_program.phase2_ablation | 8Gi / 4 CPU / 10800s / retries 0 / tasks ${n} | research | 2026-07-11 ok |
-| `direction-probe` | [`gcp/deploy.sh:1480`](gcp/deploy.sh#L1480) | python -m gcp.research.strat_engine.strat_dir_probes --experiment=e1_horizon --ticker=IWM --tf=15m --horizon=15 | 8Gi / 4 CPU / 5400s / retries 0 | research | 2026-06-21 ok |
+| `compute-earnings-reactions` | [`gcp/deploy.sh:2732`](gcp/deploy.sh#L2732) | python -m gcp.fetchers.compute_earnings_reactions | 1Gi / 1 CPU / 1800s / retries 1 | main | 2026-09-06 ok |
+| `compute-spx-greeks-backfill` | [`gcp/deploy.sh:3129`](gcp/deploy.sh#L3129) | python -m scripts.maintenance.compute_spx_greeks --ticker SPX | 2Gi / 1 CPU / 43200s / retries 0 | main | **not deployed** |
+| `db-query` | [`gcp/deploy.sh:2229`](gcp/deploy.sh#L2229) | python -m gcp.db_query_job | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-07 ok |
+| `direction-baseline` | [`gcp/deploy.sh:1706`](gcp/deploy.sh#L1706) | python -m gcp.research.direction_program.baseline_runner --tf=5m | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-08 ok |
+| `direction-importance` | [`gcp/deploy.sh:1741`](gcp/deploy.sh#L1741) | python -m gcp.research.direction_program.feature_importance --tf=5m | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-08 ok |
+| `direction-phase2` | [`gcp/deploy.sh:1789`](gcp/deploy.sh#L1789) | python -m gcp.research.direction_program.phase2_ablation | 8Gi / 4 CPU / 10800s / retries 0 / tasks ${n} | research | 2026-07-11 ok |
+| `direction-probe` | [`gcp/deploy.sh:1521`](gcp/deploy.sh#L1521) | python -m gcp.research.strat_engine.strat_dir_probes --experiment=e1_horizon --ticker=IWM --tf=15m --horizon=15 | 8Gi / 4 CPU / 5400s / retries 0 | research | 2026-06-21 ok |
 | `earnings-long-watchlist` | [`gcp/deploy.sh:1205`](gcp/deploy.sh#L1205) | python -m gcp.earnings_long_watchlist | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-06 ok |
-| `earnings-options-backfill` | [`gcp/deploy.sh:3337`](gcp/deploy.sh#L3337) | python -m gcp.fetchers.fetch_av_earnings_options_backfill | 1Gi / 1 CPU / 32400s / retries 0 | main | 2026-05-22 ok |
+| `earnings-options-backfill` | [`gcp/deploy.sh:3378`](gcp/deploy.sh#L3378) | python -m gcp.fetchers.fetch_av_earnings_options_backfill | 1Gi / 1 CPU / 32400s / retries 0 | main | 2026-05-22 ok |
 | `earnings-reactions-brief` | [`gcp/deploy.sh:1172`](gcp/deploy.sh#L1172) | python -m gcp.earnings_reactions_brief | 1Gi / 1 CPU / 600s / retries 0 | main | 2026-09-04 ok |
-| `earnings-sweep` | [`gcp/deploy.sh:3207`](gcp/deploy.sh#L3207) | python -m scripts.calibrate_earnings | 4Gi / 2 CPU / 1800s / retries 0 | main | 2026-05-22 ok |
-| `etf-options-retention` | [`gcp/deploy.sh:2076`](gcp/deploy.sh#L2076) | python -m gcp.options_retention_job | 512Mi / 1 CPU / 3600s / retries 0 | main | 2026-09-06 ok |
-| `evaluate-ew-strikes` | [`gcp/deploy.sh:2519`](gcp/deploy.sh#L2519) | python -m gcp.fetchers.evaluate_ew_strikes | 512Mi / 1 CPU / 600s / retries 1 | main | 2026-09-05 ok |
+| `earnings-sweep` | [`gcp/deploy.sh:3248`](gcp/deploy.sh#L3248) | python -m scripts.calibrate_earnings | 4Gi / 2 CPU / 1800s / retries 0 | main | 2026-05-22 ok |
+| `etf-options-retention` | [`gcp/deploy.sh:2117`](gcp/deploy.sh#L2117) | python -m gcp.options_retention_job | 512Mi / 1 CPU / 3600s / retries 0 | main | 2026-09-06 ok |
+| `evaluate-ew-strikes` | [`gcp/deploy.sh:2560`](gcp/deploy.sh#L2560) | python -m gcp.fetchers.evaluate_ew_strikes | 512Mi / 1 CPU / 600s / retries 1 | main | 2026-09-05 ok |
 | `exec-backtest` | **not in deploy.sh** (hand-created) | python -m lib.exec_backtest.cli --mode=base | 8Gi / 4 CPU / 5400s / retries 0 | trading-system:research-exec-backtest | 2026-05-27 ok |
-| `fetch-alphavantage-intraday` | [`gcp/deploy.sh:1904`](gcp/deploy.sh#L1904) | python -m gcp.fetchers.fetch_alphavantage_intraday | 2Gi / 1 CPU / 3600s / retries 1 | main | 2026-09-06 ok |
-| `fetch-av-options-backfill` | [`gcp/deploy.sh:1985`](gcp/deploy.sh#L1985) | python -m gcp.fetchers.fetch_av_historical_options --tickers SPY IWM QQQ SPX --from-latest | 2Gi / 1 CPU / 43200s / retries 0 | main | 2026-09-05 ok |
-| `fetch-av-options-realtime` | [`gcp/deploy.sh:2032`](gcp/deploy.sh#L2032) | python -m gcp.fetchers.fetch_av_realtime_options --tickers SPY IWM QQQ | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-04 ok |
-| `fetch-earnings-calendar` | [`gcp/deploy.sh:2464`](gcp/deploy.sh#L2464) | python scripts/fetch_earnings_calendar.py --source all --days 30 | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-06 ok |
-| `fetch-earnings-history` | [`gcp/deploy.sh:2666`](gcp/deploy.sh#L2666) | python -m gcp.fetchers.fetch_earnings_history | 1Gi / 1 CPU / 28800s / retries 1 | main | 2026-09-07 ok |
-| `fetch-economic-events` | [`gcp/deploy.sh:2436`](gcp/deploy.sh#L2436) | python -m gcp.fetchers.fetch_economic_events --source all | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
-| `fetch-fred-rates` | [`gcp/deploy.sh:2411`](gcp/deploy.sh#L2411) | python -m gcp.fetchers.fetch_fred_rates | 512Mi / 1 CPU / 600s / retries 1 | main | 2026-09-06 ok |
-| `fetch-insider-transactions` | [`gcp/deploy.sh:2549`](gcp/deploy.sh#L2549) | python -m gcp.fetchers.fetch_insider_transactions | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
-| `fetch-market-data` | [`gcp/deploy.sh:1846`](gcp/deploy.sh#L1846) | python -m gcp.fetchers.fetch_market_data | 1Gi / 1 CPU / 5400s / retries 2 | main | 2026-09-05 ok |
-| `fetch-news-sentiment` | [`gcp/deploy.sh:2810`](gcp/deploy.sh#L2810) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
-| `fetch-news-sentiment-earnings` | [`gcp/deploy.sh:2837`](gcp/deploy.sh#L2837) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
-| `fetch-news-sentiment-topics` | [`gcp/deploy.sh:2868`](gcp/deploy.sh#L2868) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
-| `fetch-premarket-refresh` | [`gcp/deploy.sh:2492`](gcp/deploy.sh#L2492) | python -m gcp.fetchers.fetch_premarket_refresh | 512Mi / 1 CPU / 300s / retries 1 | main | 2026-09-04 ok |
-| `fetch-sec-filings` | [`gcp/deploy.sh:2615`](gcp/deploy.sh#L2615) | python -m gcp.fetchers.fetch_sec_filings | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
-| `fetch-top-movers` | [`gcp/deploy.sh:2587`](gcp/deploy.sh#L2587) | python -m gcp.fetchers.fetch_top_movers | 512Mi / 1 CPU / 300s / retries 0 | main | 2026-09-04 ok |
-| `freshness-watchdog` | [`gcp/deploy.sh:2242`](gcp/deploy.sh#L2242) | python scripts/audit_data_freshness.py --strict | 512Mi / 1 CPU / 3600s / retries 0 | main | 2026-09-06 ok |
+| `fetch-alphavantage-intraday` | [`gcp/deploy.sh:1945`](gcp/deploy.sh#L1945) | python -m gcp.fetchers.fetch_alphavantage_intraday | 2Gi / 1 CPU / 3600s / retries 1 | main | 2026-09-06 ok |
+| `fetch-av-options-backfill` | [`gcp/deploy.sh:2026`](gcp/deploy.sh#L2026) | python -m gcp.fetchers.fetch_av_historical_options --tickers SPY IWM QQQ SPX --from-latest | 2Gi / 1 CPU / 43200s / retries 0 | main | 2026-09-05 ok |
+| `fetch-av-options-realtime` | [`gcp/deploy.sh:2073`](gcp/deploy.sh#L2073) | python -m gcp.fetchers.fetch_av_realtime_options --tickers SPY IWM QQQ | 512Mi / 1 CPU / 600s / retries 0 | main | 2026-09-04 ok |
+| `fetch-earnings-calendar` | [`gcp/deploy.sh:2505`](gcp/deploy.sh#L2505) | python scripts/fetch_earnings_calendar.py --source all --days 30 | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-06 ok |
+| `fetch-earnings-history` | [`gcp/deploy.sh:2707`](gcp/deploy.sh#L2707) | python -m gcp.fetchers.fetch_earnings_history | 1Gi / 1 CPU / 28800s / retries 1 | main | 2026-09-07 ok |
+| `fetch-economic-events` | [`gcp/deploy.sh:2477`](gcp/deploy.sh#L2477) | python -m gcp.fetchers.fetch_economic_events --source all | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
+| `fetch-fred-rates` | [`gcp/deploy.sh:2452`](gcp/deploy.sh#L2452) | python -m gcp.fetchers.fetch_fred_rates | 512Mi / 1 CPU / 600s / retries 1 | main | 2026-09-06 ok |
+| `fetch-insider-transactions` | [`gcp/deploy.sh:2590`](gcp/deploy.sh#L2590) | python -m gcp.fetchers.fetch_insider_transactions | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
+| `fetch-market-data` | [`gcp/deploy.sh:1887`](gcp/deploy.sh#L1887) | python -m gcp.fetchers.fetch_market_data | 1Gi / 1 CPU / 5400s / retries 2 | main | 2026-09-05 ok |
+| `fetch-news-sentiment` | [`gcp/deploy.sh:2851`](gcp/deploy.sh#L2851) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
+| `fetch-news-sentiment-earnings` | [`gcp/deploy.sh:2878`](gcp/deploy.sh#L2878) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
+| `fetch-news-sentiment-topics` | [`gcp/deploy.sh:2909`](gcp/deploy.sh#L2909) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
+| `fetch-premarket-refresh` | [`gcp/deploy.sh:2533`](gcp/deploy.sh#L2533) | python -m gcp.fetchers.fetch_premarket_refresh | 512Mi / 1 CPU / 300s / retries 1 | main | 2026-09-04 ok |
+| `fetch-sec-filings` | [`gcp/deploy.sh:2656`](gcp/deploy.sh#L2656) | python -m gcp.fetchers.fetch_sec_filings | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
+| `fetch-top-movers` | [`gcp/deploy.sh:2628`](gcp/deploy.sh#L2628) | python -m gcp.fetchers.fetch_top_movers | 512Mi / 1 CPU / 300s / retries 0 | main | 2026-09-04 ok |
+| `freshness-watchdog` | [`gcp/deploy.sh:2283`](gcp/deploy.sh#L2283) | python scripts/audit_data_freshness.py --strict | 512Mi / 1 CPU / 3600s / retries 0 | main | 2026-09-06 ok |
 | `historical-signals-watchlist` | [`gcp/deploy.sh:571`](gcp/deploy.sh#L571) | python -m scripts.run_historical_signals --from-watchlist | 2Gi / 1 CPU / 1800s / retries 1 | main | 2026-09-05 ok |
 | `indicator-correlation` | [`gcp/deploy.sh:705`](gcp/deploy.sh#L705) | python -m gcp.indicator_correlation_job | 1Gi / 1 CPU / 1800s / retries 1 | research | 2026-05-31 ok |
 | `insight-discord-push` | [`gcp/deploy.sh:536`](gcp/deploy.sh#L536) | python -m gcp.insight_discord_push | 512Mi / 1 CPU / 120s / retries 1 | main | 2026-09-04 ok |
 | `insight-pipeline` | [`gcp/deploy.sh:512`](gcp/deploy.sh#L512) | python -m gcp.insight_pipeline_job | 2Gi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
-| `intraday-bulk-backfill` | [`gcp/deploy.sh:3307`](gcp/deploy.sh#L3307) | python -m gcp.fetchers.fetch_alphavantage_intraday --symbols-file /app/gcp/fetchers/symbol_lists/earnings_universe.txt --start-date 2024-01-01 | 1Gi / 1 CPU / 86400s / retries 0 / tasks 4 | main | 2026-05-23 failed |
-| `magnitude-engine` | [`gcp/deploy.sh:1624`](gcp/deploy.sh#L1624) | python -m gcp.research.magnitude_engine.mag_walk_forward | 8Gi / 4 CPU / 5400s / retries 0 / tasks ${plan_size} | research | 2026-08-27 ok |
-| `magnitude-inference` | [`gcp/deploy.sh:1786`](gcp/deploy.sh#L1786) | python -m gcp.research.magnitude_engine.mag_inference | 1Gi / 1 CPU / 300s / retries 0 | research | 2026-09-04 ok |
-| `magnitude-recal` | [`gcp/deploy.sh:1741`](gcp/deploy.sh#L1741) | python -m gcp.research.magnitude_engine.mag_walk_forward --phase=phase0 --all-cells --calibration=isotonic | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-12 ok |
-| `options-exec-backtest` | [`gcp/deploy.sh:2143`](gcp/deploy.sh#L2143) | python -m lib.options_exec_backtest.cli --mode=base | 8Gi / 2 CPU / 14400s / retries 0 | research | **not deployed** |
-| `p2-build-gamma-levels` | **not in deploy.sh** (hand-created) | python -m gcp.research.p2_build_gamma_levels | 2Gi / 2 CPU / 5400s / retries 0 | trading-system:research | 2026-09-05 ok |
+| `intraday-bulk-backfill` | [`gcp/deploy.sh:3348`](gcp/deploy.sh#L3348) | python -m gcp.fetchers.fetch_alphavantage_intraday --symbols-file /app/gcp/fetchers/symbol_lists/earnings_universe.txt --start-date 2024-01-01 | 1Gi / 1 CPU / 86400s / retries 0 / tasks 4 | main | 2026-05-23 failed |
+| `magnitude-engine` | [`gcp/deploy.sh:1665`](gcp/deploy.sh#L1665) | python -m gcp.research.magnitude_engine.mag_walk_forward | 8Gi / 4 CPU / 5400s / retries 0 / tasks ${plan_size} | research | 2026-08-27 ok |
+| `magnitude-inference` | [`gcp/deploy.sh:1827`](gcp/deploy.sh#L1827) | python -m gcp.research.magnitude_engine.mag_inference | 1Gi / 1 CPU / 300s / retries 0 | research | 2026-09-04 ok |
+| `magnitude-recal` | [`gcp/deploy.sh:1782`](gcp/deploy.sh#L1782) | python -m gcp.research.magnitude_engine.mag_walk_forward --phase=phase0 --all-cells --calibration=isotonic | 8Gi / 4 CPU / 10800s / retries 0 | research | 2026-07-12 ok |
+| `options-exec-backtest` | [`gcp/deploy.sh:2184`](gcp/deploy.sh#L2184) | python -m lib.options_exec_backtest.cli --mode=base | 8Gi / 2 CPU / 14400s / retries 0 | research | **not deployed** |
+| `p2-build-gamma-levels` | [`gcp/deploy.sh:1389`](gcp/deploy.sh#L1389) | python -m gcp.research.p2_build_gamma_levels | 2Gi / 2 CPU / 5400s / retries 0 | research | 2026-09-05 ok |
 | `p2-outcomes-grid` | **not in deploy.sh** (hand-created) | python -m gcp.research.p2_outcomes_grid | 4Gi / 2 CPU / 7200s / retries 0 | trading-system:research-p2 | 2026-05-23 ok |
 | `p45-deep-ds` | **not in deploy.sh** (hand-created) | python -m gcp.research.p45_deep_ds_job | 16Gi / 4 CPU / 1800s / retries 0 | trading-system:research | 2026-05-24 ok |
 | `p7-analyze-tf` | **not in deploy.sh** (hand-created) | python -m gcp.research.p7_analyze_tf --tf=5m | 32Gi / 8 CPU / 3600s / retries 0 | trading-system:research | 2026-05-25 ok |
 | `p7-build-multi-tf-features` | **not in deploy.sh** (hand-created) | python -m gcp.research.p7_build_multi_tf_features | 16Gi / 4 CPU / 5400s / retries 0 | trading-system:research | 2026-05-25 ok |
 | `p7a-iwm-30m-pipeline` | **not in deploy.sh** (hand-created) | python -m gcp.research.p7a_iwm_30m_pipeline --mode=all | 4Gi / 4 CPU / 1200s / retries 0 | trading-system:research | 2026-05-25 ok |
 | `p7b-next-candle-classifier` | **not in deploy.sh** (hand-created) | python -m gcp.research.p7b_next_candle_classifier --mode=evaluate | 8Gi / 4 CPU / 5400s / retries 0 | trading-system:research | 2026-05-26 ok |
-| `param-sweep` | [`gcp/deploy.sh:3174`](gcp/deploy.sh#L3174) | python -m scripts.run_param_sweep | 4Gi / 1 CPU / 21600s / retries 0 / tasks 3 | main | 2026-05-20 ok |
+| `param-sweep` | [`gcp/deploy.sh:3215`](gcp/deploy.sh#L3215) | python -m scripts.run_param_sweep | 4Gi / 1 CPU / 21600s / retries 0 / tasks 3 | main | 2026-05-20 ok |
 | `phase6-playbook` | [`gcp/deploy.sh:1346`](gcp/deploy.sh#L1346) | python -m scripts.analysis.phase6_playbook --write-db | 16Gi / 4 CPU / 3600s / retries 0 / tasks 3 | main | 2026-09-06 ok |
 | `premarket-brief` | [`gcp/deploy.sh:1142`](gcp/deploy.sh#L1142) | python -m gcp.premarket_brief | 1Gi / 1 CPU / 1800s / retries 0 | main | 2026-09-07 ok |
 | `premarket-playbook-resolver` | [`gcp/deploy.sh:1294`](gcp/deploy.sh#L1294) | python -m gcp.premarket_playbook_resolver | 1Gi / 1 CPU / 3600s / retries 0 | main | 2026-09-05 ok |
-| `refresh-earnings-views` | [`gcp/deploy.sh:2725`](gcp/deploy.sh#L2725) | python -m gcp.refresh_earnings_views --mode=weekly | 1Gi / 1 CPU / 1200s / retries 0 | main | 2026-09-07 ok |
+| `refresh-earnings-views` | [`gcp/deploy.sh:2766`](gcp/deploy.sh#L2766) | python -m gcp.refresh_earnings_views --mode=weekly | 1Gi / 1 CPU / 1200s / retries 0 | main | 2026-09-07 ok |
 | `regime-combo` | [`gcp/deploy.sh:742`](gcp/deploy.sh#L742) | python -m gcp.regime_combo_job | 2Gi / 2 CPU / 3600s / retries 1 | research | 2026-09-06 ok |
 | `signal-monitor` | [`gcp/deploy.sh:1227`](gcp/deploy.sh#L1227) | python -m gcp.signal_monitor | 2Gi / 1 CPU / 28800s / retries 0 | main | 2026-09-04 ok |
 | `signal-monitor-eod-resolver` | [`gcp/deploy.sh:1261`](gcp/deploy.sh#L1261) | python -m gcp.signal_monitor_eod_resolver | 1Gi / 1 CPU / 3600s / retries 0 | main | 2026-09-04 ok |
@@ -413,9 +413,9 @@ There are **no foreign keys between domain tables** other than `insight_runs.rep
 | `signal-quality-report` | [`gcp/deploy.sh:624`](gcp/deploy.sh#L624) | python -m scripts.signal_quality_report --mode=rolling | 1Gi / 1 CPU / 3600s / retries 0 | main | 2026-09-05 ok |
 | `signal-replay` | [`gcp/deploy.sh:771`](gcp/deploy.sh#L771) | python -m gcp.signal_replay | 512Mi / 1 CPU / 900s / retries 0 | main | 2026-05-17 ok |
 | `strat-dir-features` | **not in deploy.sh** (hand-created) | python -m gcp.research.strat_engine.strat_dir_walk_forward_extended --ticker=IWM --tf=15m --family=baseline | 32Gi / 8 CPU / 3600s / retries 0 | trading-system:research-dir-features | 2026-05-27 cancelled |
-| `strat-engine` | [`gcp/deploy.sh:1441`](gcp/deploy.sh#L1441) | python -m gcp.research.strat_engine.strat_data_builder | 8Gi / 4 CPU / 5400s / retries 0 | research | 2026-09-05 ok |
+| `strat-engine` | [`gcp/deploy.sh:1482`](gcp/deploy.sh#L1482) | python -m gcp.research.strat_engine.strat_data_builder | 8Gi / 4 CPU / 5400s / retries 0 | research | 2026-09-05 ok |
 | `validate-brief` | [`gcp/deploy.sh:1083`](gcp/deploy.sh#L1083) | python -m gcp.validate_brief_job | 1Gi / 1 CPU / 300s / retries 1 | main | 2026-04-29 ok |
-| `weekend-review` | [`gcp/deploy.sh:1818`](gcp/deploy.sh#L1818) | python -m gcp.weekend_review | 1Gi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-05 ok |
+| `weekend-review` | [`gcp/deploy.sh:1859`](gcp/deploy.sh#L1859) | python -m gcp.weekend_review | 1Gi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-05 ok |
 <!-- inventory:jobs:end -->
 
 Groups, for orientation: **ingest** (`fetch-*`, `backfill-*`, `intraday-bulk-backfill`), **options analytics** (`fetch-av-options-*`, `build-options-*`, `build-realtime-gex`, `etf-options-retention`), **daily analysis and delivery** (`premarket-brief`, `earnings-reactions-brief`, `earnings-long-watchlist`, `auto-refresh-top-n`, `insight-pipeline`, `insight-discord-push`, `signal-monitor`, `signal-monitor-eod-resolver`, `premarket-playbook-resolver`, `phase6-playbook`, `weekend-review`, `evaluate-ew-strikes`, `compute-earnings-reactions`, `refresh-earnings-views`), **quality and audits** (`signal-quality-report`, `signal-quality-alarm`, `freshness-watchdog`, `audit-*`), **research image** (`strat-engine`, `direction-*`, `magnitude-*`, `regime-combo`, `indicator-correlation`, `param-sweep`, `earnings-sweep`, `backtest-pipeline`, `backtest`), **ops** (`apply-schema-migrations`, `db-query`, `cloud-sql-weekly-export`, `calibrate-thresholds`, `backfill-ticker`, `validate-brief`, `signal-replay`).
@@ -796,7 +796,7 @@ Job logs `severity>=ERROR` → sink `gcp-job-failures-sink` (filter excludes `fa
 
 ## 11. Failure handling
 
-1. **Per-job retries**: `--max-retries 0` is the norm (41 of the 67 declared jobs); the 25 `--max-retries 1` jobs are idempotent fetchers whose transient upstream failures are worth one retry. Long-running `signal-monitor` never retries (a restart would drop its window).
+1. **Per-job retries**: `--max-retries 0` is the norm (42 of the 68 declared jobs); the 25 `--max-retries 1` jobs are idempotent fetchers whose transient upstream failures are worth one retry. Long-running `signal-monitor` never retries (a restart would drop its window).
 2. **Notification**: the pipeline in §10.10, ~60 s from exit to Discord; GitHub Actions failures use the separate `handle-workflow-failure.yml` reusable workflow.
 3. **Idempotent writes**: every fetcher upserts with `ON CONFLICT` keys, so re-running a failed job is safe. `apply_schema.py` is re-runnable but drops and recreates the two earnings materialized views, which is why `deploy-staging.yml` follows an apply with `refresh-earnings-views`.
 4. **Fail loud, no silent fallbacks**: data-access code raises rather than returning empty frames (CLAUDE.md Rule 3.7; [`docs/audits/FALLBACK_AUDIT_2026-05-13.md`](docs/audits/FALLBACK_AUDIT_2026-05-13.md)).
@@ -861,15 +861,15 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 ## 15. Live-vs-repo reconciliation
 
 <!-- inventory:reconcile:start -->
-Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 65 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
+Live read 2026-09-07T04:35:16Z. Repo declares 68 jobs / 65 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
 
-**Jobs live but not in deploy.sh** (11): `backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-build-gamma-levels`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`
+**Jobs live but not in deploy.sh** (10): `backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`
 **Jobs in deploy.sh but not live** (2): `compute-spx-greeks-backfill`, `options-exec-backtest`
 **Schedulers live but not in deploy.sh** (0): none
 **Schedulers in deploy.sh but not live** (0): none
 **Schedulers paused** (0): none
 **Live schedulers targeting a missing job** (0): none
-**deploy.sh schedulers targeting a job deploy.sh never creates** (1): `gamma-levels-daily`
+**deploy.sh schedulers targeting a job deploy.sh never creates** (0): none
 **Cron drift (same name, different cron)** (0): none
 **Target drift (same name, different job)** (0): none
 **Time-zone drift (same name, different zone)** (0): none
@@ -955,7 +955,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/research/magnitude_engine/mag_leakage_audit.py`](gcp/research/magnitude_engine/mag_leakage_audit.py) | Magnitude Engine — leakage audit. | — |
 | [`gcp/research/magnitude_engine/mag_pred_train.py`](gcp/research/magnitude_engine/mag_pred_train.py) | Magnitude Engine — model + featurize + ECE. | — |
 | [`gcp/research/magnitude_engine/mag_walk_forward.py`](gcp/research/magnitude_engine/mag_walk_forward.py) | Magnitude Engine — anchored walk-forward. | `magnitude-engine`, `magnitude-recal` |
-| [`gcp/research/p2_build_gamma_levels.py`](gcp/research/p2_build_gamma_levels.py) | Phase 2 Step 1: Build per-(ticker, date) gamma levels table from EOD chains. | — |
+| [`gcp/research/p2_build_gamma_levels.py`](gcp/research/p2_build_gamma_levels.py) | Phase 2 Step 1: Build per-(ticker, date) gamma levels table from EOD chains. | `p2-build-gamma-levels` |
 | [`gcp/research/p2_outcomes_grid.py`](gcp/research/p2_outcomes_grid.py) | Phase 2 Step 2: Walk 10 years of 1-min RTH bars, fire gamma alerts via | — |
 | [`gcp/research/p45_deep_ds_job.py`](gcp/research/p45_deep_ds_job.py) | Phase 4.5 — Deep-data-science predictability audit (Cloud Run Job version). | — |
 | [`gcp/research/p7_build_multi_tf_features.py`](gcp/research/p7_build_multi_tf_features.py) | Phase 7 — Multi-Timeframe Strat-Sequence Dataset Builder (Cloud Run Job). | — |

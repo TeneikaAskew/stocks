@@ -394,7 +394,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_sec_filings.py`](gcp/fetchers/fetch_sec_filings.py) — line [581](gcp/fetchers/fetch_sec_filings.py#L581), [582](gcp/fetchers/fetch_sec_filings.py#L582), [583](gcp/fetchers/fetch_sec_filings.py#L583)
 
 ### `signal_alerts`
-- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [1598](gcp/signal_monitor.py#L1598), [1599](gcp/signal_monitor.py#L1599), [1601](gcp/signal_monitor.py#L1601), [2179](gcp/signal_monitor.py#L2179), [2182](gcp/signal_monitor.py#L2182), [2204](gcp/signal_monitor.py#L2204)
+- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [1661](gcp/signal_monitor.py#L1661), [1662](gcp/signal_monitor.py#L1662), [1664](gcp/signal_monitor.py#L1664), [2242](gcp/signal_monitor.py#L2242), [2245](gcp/signal_monitor.py#L2245), [2267](gcp/signal_monitor.py#L2267)
 - [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — line [379](gcp/signal_monitor_eod_resolver.py#L379), [380](gcp/signal_monitor_eod_resolver.py#L380), [382](gcp/signal_monitor_eod_resolver.py#L382), [400](gcp/signal_monitor_eod_resolver.py#L400)
 - [`scripts/backfill_signals.py`](scripts/backfill_signals.py) — line [227](scripts/backfill_signals.py#L227), [228](scripts/backfill_signals.py#L228)
 - [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [10](scripts/replay_signal_monitor.py#L10), [283](scripts/replay_signal_monitor.py#L283)
@@ -422,7 +422,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `trades`
 - [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) — line [705](gcp/migrate_to_gcp.py#L705), [707](gcp/migrate_to_gcp.py#L707), [716](gcp/migrate_to_gcp.py#L716), [735](gcp/migrate_to_gcp.py#L735)
-- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [2179](gcp/signal_monitor.py#L2179), [2181](gcp/signal_monitor.py#L2181), [2184](gcp/signal_monitor.py#L2184), [2187](gcp/signal_monitor.py#L2187), [2218](gcp/signal_monitor.py#L2218)
+- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [2242](gcp/signal_monitor.py#L2242), [2244](gcp/signal_monitor.py#L2244), [2247](gcp/signal_monitor.py#L2247), [2250](gcp/signal_monitor.py#L2250), [2281](gcp/signal_monitor.py#L2281)
 - [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — line [379](gcp/signal_monitor_eod_resolver.py#L379), [383](gcp/signal_monitor_eod_resolver.py#L383), [387](gcp/signal_monitor_eod_resolver.py#L387), [390](gcp/signal_monitor_eod_resolver.py#L390), [393](gcp/signal_monitor_eod_resolver.py#L393), [413](gcp/signal_monitor_eod_resolver.py#L413)
 - [`gcp/trade_logger.py`](gcp/trade_logger.py) — line [68](gcp/trade_logger.py#L68), [71](gcp/trade_logger.py#L71)
 - [`scripts/analysis/phase7_feedback_loop.py`](scripts/analysis/phase7_feedback_loop.py) — line [276](scripts/analysis/phase7_feedback_loop.py#L276)
@@ -715,7 +715,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [20](gcp/premarket_playbook_resolver.py#L20), [362](gcp/premarket_playbook_resolver.py#L362), [524](gcp/premarket_playbook_resolver.py#L524)
 - [`gcp/regime_combo_job.py`](gcp/regime_combo_job.py) — line [4](gcp/regime_combo_job.py#L4)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [339](gcp/research/strat_engine/breakout_meta_walk_forward.py#L339)
-- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [375](gcp/signal_monitor.py#L375), [405](gcp/signal_monitor.py#L405), [1745](gcp/signal_monitor.py#L1745)
+- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [375](gcp/signal_monitor.py#L375), [405](gcp/signal_monitor.py#L405), [1808](gcp/signal_monitor.py#L1808)
 - [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — line [18](gcp/signal_monitor_eod_resolver.py#L18)
 - [`lib/data_loader.py`](lib/data_loader.py) — line [172](lib/data_loader.py#L172), [288](lib/data_loader.py#L288), [301](lib/data_loader.py#L301)
 - [`lib/features/intraday_flow.py`](lib/features/intraday_flow.py) — line [124](lib/features/intraday_flow.py#L124)
@@ -808,7 +808,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `signal_alerts`
 - [`gcp/indicator_correlation_job.py`](gcp/indicator_correlation_job.py) — line [506](gcp/indicator_correlation_job.py#L506)
-- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [889](gcp/signal_monitor.py#L889)
+- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [952](gcp/signal_monitor.py#L952)
 - [`gcp/signal_monitor_eod_resolver.py`](gcp/signal_monitor_eod_resolver.py) — line [141](gcp/signal_monitor_eod_resolver.py#L141)
 - [`gcp/signal_quality_alarm.py`](gcp/signal_quality_alarm.py) — line [197](gcp/signal_quality_alarm.py#L197)
 - [`gcp/signal_replay.py`](gcp/signal_replay.py) — line [8](gcp/signal_replay.py#L8), [109](gcp/signal_replay.py#L109), [117](gcp/signal_replay.py#L117)
@@ -854,7 +854,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/db_query_job.py`](gcp/db_query_job.py) — line [18](gcp/db_query_job.py#L18)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [5](gcp/research/strat_engine/breakout_meta_walk_forward.py#L5)
 - [`gcp/research/strat_engine/strat_walk_forward.py`](gcp/research/strat_engine/strat_walk_forward.py) — line [513](gcp/research/strat_engine/strat_walk_forward.py#L513)
-- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [2183](gcp/signal_monitor.py#L2183)
+- [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [2246](gcp/signal_monitor.py#L2246)
 - [`gcp/trade_logger.py`](gcp/trade_logger.py) — line [94](gcp/trade_logger.py#L94), [109](gcp/trade_logger.py#L109), [117](gcp/trade_logger.py#L117), [143](gcp/trade_logger.py#L143)
 - [`gcp/weekend_review.py`](gcp/weekend_review.py) — line [26](gcp/weekend_review.py#L26)
 - [`lib/backtest.py`](lib/backtest.py) — line [11](lib/backtest.py#L11), [326](lib/backtest.py#L326), [357](lib/backtest.py#L357), [358](lib/backtest.py#L358)
@@ -1031,6 +1031,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `magnitude-inference` | `gcp/research/magnitude_engine/mag_inference.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `magnitude-recal` | `gcp/research/magnitude_engine/mag_walk_forward.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `options-exec-backtest` | `lib/options_exec_backtest/cli.py` | — (Discord / GCS / no Cloud SQL write found) | — |
+| `p2-build-gamma-levels` | `gcp/research/p2_build_gamma_levels.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `param-sweep` | `scripts/run_param_sweep.py` | `exit_config_overrides`, `walk_forward_results` | `lib/strategies/exit_config_overrides.py` |
 | `phase6-playbook` | `scripts/analysis/phase6_playbook.py` | `playbook_cards` | `platform/api/routers/playbook.py`, `scripts/audit_data_freshness.py` |
 | `premarket-brief` | `gcp/premarket_brief.py` | `market_data_daily`, `premarket_analysis`, `premarket_analysis_history`, `strat_levels`, `watchlists` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_fred_rates.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/insight_pipeline_job.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py` (+27) |
