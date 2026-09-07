@@ -49,6 +49,7 @@
 # samples from this project:
 #
 #   ...gemini-client-error-<id>.json TypeError: terminated    <- transport
+#   ...gemini-client-error-<id>.json RetryableQuotaError: ... <- vendor 429, retried out
 #   ...gemini-client-error-<id>.json Error: Couldn't ...      <- internal
 #
 # This is a TEXTUAL shape in a stream that merges the model's stdout with the
@@ -82,7 +83,12 @@ ATTEMPT="${2:-}"
 REPO="${REPO:?REPO required}"
 
 RECORD='^Error when talking to Gemini API Full report available at: /tmp/gemini-client-error-[^ ]+ '
-TRANSPORT='(TypeError: terminated|ECONNRESET|socket hang up|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)'
+# RetryableQuotaError is the CLI's own name for a 429 RESOURCE_EXHAUSTED it
+# already retried ten times with backoff before giving up. Run 25 died on one
+# after six minutes, the vendor's page says "try again later", and one bounded
+# re-run ~15 minutes on (the time attempt 2 takes to reach the same call) is
+# the same remedy as for a stalled body. (Run 25, 2026-09-07.)
+TRANSPORT='(TypeError: terminated|ECONNRESET|socket hang up|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|RetryableQuotaError)'
 FAILED_STEP_JQ='.steps[]? | select(.conclusion == "failure") | select(.started_at and .completed_at) | "\(.started_at)\t\(.completed_at)"'
 
 if [ -n "$ATTEMPT" ]; then

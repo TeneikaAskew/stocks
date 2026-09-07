@@ -634,3 +634,35 @@ def test_a_real_log_with_ansi_sequences_is_read_not_refused():
     # And a record wrapped in colour is still anchored at start of line.
     coloured = REAL_STALL.replace("Z Error when talking", "Z \x1b[31mError when talking", 1)
     assert _classify_rc(ANSI_STEP_HEADER + coloured) == 0
+
+
+# Run 25's real failure (34169070513, 2026-09-07 23:25:58Z): Vertex answered
+# 429 RESOURCE_EXHAUSTED ten times over six minutes, the CLI's own backoff gave
+# up, and it emitted the same attributable record with a different cause. The
+# classifier read the log (the #1039 fix held) and correctly, by its rules at
+# the time, left the run red: a quota exhaustion the vendor tells you to retry
+# is as transient as a stalled body and costs the same unattended refresh.
+REAL_QUOTA = """\
+2026-09-07T23:25:58.8115932Z Attempt 10 failed: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.. Max attempts reached
+2026-09-07T23:25:58.8209197Z Error when talking to Gemini API Full report available at: /tmp/gemini-client-error-Turn.run-sendMessageStream-2026-09-07T23-25-58-812Z.json RetryableQuotaError: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.
+2026-09-07T23:25:58.8210989Z     at classifyGoogleError (file:///opt/hostedtoolcache/node/20.20.2/x64/lib/node_modules/@google/gemini-cli/bundle/chunk-UN6XCVMJ.js:269736:14)
+2026-09-07T23:25:58.8221543Z   cause: {
+2026-09-07T23:25:58.8221768Z     code: 429,
+2026-09-07T23:25:58.8228116Z An unexpected critical error occurred:[object Object]
+2026-09-07T23:25:58.8368595Z ##[error]Process completed with exit code 1.
+"""
+
+
+def test_run_25s_quota_exhaustion_is_transient():
+    assert _classify_rc(ANSI_STEP_HEADER + REAL_QUOTA) == 0
+
+
+def test_a_quota_word_outside_the_cli_record_is_not_enough():
+    """The cause must sit on the CLI's own record line. The model can write
+    "RetryableQuotaError" into its stdout as easily as any other token."""
+    echoed = (
+        "2026-09-07T23:20:00.0Z I see RetryableQuotaError in the docs as a retry signal.\n"
+        "2026-09-07T23:20:01.0Z The input file could not be read. Stopping.\n"
+        "2026-09-07T23:20:02.0Z ##[error]Process completed with exit code 1.\n"
+    )
+    assert _classify_rc(echoed) == 1
