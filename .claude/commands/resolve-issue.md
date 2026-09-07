@@ -116,6 +116,16 @@ verification remains, **do not branch at all** — resume at Phase 8 step 8,
 deploy, verify, and close. Check the issue's linked PRs for a merged one
 rather than trusting `is:open` to have told you everything.
 
+**And deployment is not the only thing that can be outstanding.** A widening
+or narrowing under Rule 6 ends with a solyra sync PR that lands after this
+repo has merged and deployed (the Rule 6 bullet in Phase 5 says the issue does
+not close before it). An issue in that state has no open stocks PR either, so
+the same `is:open` blind spot sends the run into CASE B and it branches here
+to re-implement work that shipped. Read the status comment for what it names
+as remaining — a deploy, a promotion, or a cross-repo sync — and resume THAT,
+in the repo it belongs to. Branching in this repo is correct only when the
+remaining work is a code change in this repo.
+
 **Branch before touching any file** (CLAUDE.md Rule 2), and the two cases are
 exclusive. Check out the existing head, or create a branch, never both:
 
@@ -309,8 +319,8 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | `! grep -rq "<symbol>" lib/ gcp/ platform/ scripts/ tests/` and the same in a solyra checkout — **negated**, so it FAILS while a consumer survives and PASSES once none does. "Hits before, silent after" describes the OUTPUT and inverts the STATUS: `grep` exits 0 on a hit, so unnegated it passes before the deletion and fails after. Plus `make test` clean |
-| A scheduler or job is retired | `! gcloud scheduler jobs list --location=us-east1 --format='value(name)' \| grep -qx "<job>"` — negated for the same reason; a bare `list` exits 0 whether or not the job is there, so it observes without asserting |
+| A module or job is deleted | `grep -rq "<symbol>" lib/ gcp/ platform/ scripts/ tests/; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
+| A scheduler or job is retired | `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name)') && ! grep -qx "<job>" <<<"$LIST"` — the listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
 
@@ -547,10 +557,17 @@ evaluations:
 ```bash
 set -o pipefail          # else the pipeline reports tee's status, not python's
 env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor \
-    --date <D> --tickers SPY,IWM,QQQ 2>&1 | tee /tmp/replay.log
-echo "exit=$?"                                     # must be 0
-grep -c "evaluate_ticker raised" /tmp/replay.log   # must be 0
+    --date <D> --tickers SPY,IWM,QQQ 2>&1 | tee /tmp/replay.log; rc=$?
+test $rc -eq 0 || { echo "replay exited $rc"; false; }
+n=$(grep -c "evaluate_ticker raised" /tmp/replay.log)
+test "$n" -eq 0 || { echo "$n tickers raised"; false; }
 ```
+
+Both are `test`s rather than an `echo` and a bare `grep -c`, because reading a
+number off the screen is not a check and `grep -c` has its status **inverted**
+against what is wanted here: measured, on a clean log it prints `0` and exits
+**1**, and on a log with one warning it prints `1` and exits **0**. The count
+is the answer; the exit status is about matching, and they disagree.
 
 **And know what this replay is NOT exercising.** `filter_to_rth` runs only
 under `persist_mode` (`scripts/replay_signal_monitor.py:505-512`), so the
@@ -696,7 +713,19 @@ git status --short               # confirm the candidate is actually here
 git add <the files this issue's fix touches>   # never `git add -A` blindly
 git commit -F <message file>     # the body described above
 git log --oneline -1             # confirm the commit exists before pushing
+test -z "$(git status --porcelain)" \
+  || { git status --porcelain; echo "^ NOT in the commit — see below"; false; }
 ```
+
+That last check is the price of the file-scoped `git add`. Naming files is
+right — `git add -A` is how a stray artefact reaches the production image, per
+Phase 8 — but an omitted one is invisible: `git commit` and `git log` both
+succeed, and the tests you ran passed against the working tree, which is the
+commit PLUS what you left out. The PR then carries a candidate that was never
+the thing you verified, and Phase 8's pristine worktree carries even less.
+
+A leftover may be legitimate — a scratch file, an unrelated edit. Then say so
+explicitly, per file, rather than letting the check stay silent about it.
 
 Then push the branch you are actually on. Do not reconstruct a `fix/` prefix
 here: Phase 0 may have created a `feature/`, `chore/`, `docs/` or `test/`
@@ -821,10 +850,19 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    needs its reply and its resolve, and a review that added nothing still has
    to be looked at rather than assumed empty. Then CI green on the current
    head, and no merge conflict.
-7. **Merge it.** Steps 0-6 are the gate, not the destination; stopping here
-   leaves the fix on a branch while Phase 9 describes the issue as landed.
-   Merge once every step above passes, and record the merge commit in the
-   Phase 9 status comment.
+7. **Merge it, bound to the SHA that passed.** Steps 0-6 are the gate, not
+   the destination; stopping here leaves the fix on a branch while Phase 9
+   describes the issue as landed. Merge once every step above passes, and
+   record the merge commit in the Phase 9 status comment.
+
+   **Pass the reviewed head SHA to the merge.** Steps 1-6 established that a
+   review and a green CI run exist for one specific commit; a push landing
+   between step 6 and here — another session, the author, a bot — moves the
+   head, and an unqualified merge takes whatever is there now. Re-read the PR
+   immediately before merging and give `merge_pull_request` its
+   `expectedHeadSha`, so a head that moved is a rejected merge rather than an
+   unreviewed one. If it has moved, that is not an obstacle to work around:
+   go back to step 1 for the new head.
 
    Two cases where you stop instead of merging, and say which: the PR is one
    this session did not open and was not asked to drive, so the merge is its
@@ -884,39 +922,58 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      someone else's unverified work under this issue's name. Resolve it by
      asserting the relationship and taking the tip only when it contains you:
 
+     **Write it as a function, not as a run of statements.** A guard in the
+     middle of a plain block does not stop what follows it: `false` inside a
+     `|| { ...; false; }` sets the status and execution continues to the next
+     line — measured, `false || { echo fired; false; }; echo STILL RUNNING`
+     prints both. So an ancestry check written that way reports the problem
+     and then deploys anyway. `return` in a function does stop, and every
+     guard below is one:
+
      ```bash
-     git fetch origin main
-     MERGE_SHA=<the merge commit the PR reports>
-     git merge-base --is-ancestor "$MERGE_SHA" origin/main \
-       || { echo "$MERGE_SHA is not on main — do not deploy"; false; }
-     if [ "$(git rev-parse origin/main)" = "$MERGE_SHA" ]; then
-       SRC="$MERGE_SHA"                    # nothing merged since; exact SHA
-     else
-       SRC=$(git rev-parse origin/main)    # main advanced: MERGE_SHA would revert it
-       echo "main advanced past $MERGE_SHA — deploying $SRC, which contains it"
-       # Deploying the tip means shipping those commits too. Confirm CI is
-       # green on $SRC itself, not only on your PR, before continuing.
-     fi
-     git worktree add /tmp/deploy-src "$SRC"
-     cd /tmp/deploy-src
-     git rev-parse HEAD                    # must equal $SRC
-     test -z "$(git status --porcelain)"   # must be silent
-     # Does this target run on the RESEARCH image? Derive it, do not trust a
-     # list — 14 deploy functions select ${IMAGE}:research and only 4
-     # dispatcher entries build it, and the inline annotations are incomplete
-     # (indicator-correlation selects :research while its entry builds the MAIN
-     # image). Check the function your target dispatches to:
-     #   grep -n 'research_image="${IMAGE}:research"' gcp/deploy.sh
-     #   grep -n '^    <target>)' gcp/deploy.sh      # does the entry build it?
-     # If it selects :research and the entry does not run build_research_image,
-     # CHAIN the build — a failed research build leaves the previous :research
-     # tag in place, and the deploy then succeeds while pointing the job at
-     # code without the fix. Its own status cannot see that:
-     { ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target>; }; rc=$?
-     # (no research image: just `./gcp/deploy.sh <target>; rc=$?`)
-     cd - && git worktree remove /tmp/deploy-src
-     test $rc -eq 0 || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; false; }
+     deploy_candidate() {                  # <target> and MERGE_SHA are yours to fill
+       local MERGE_SHA="<the merge commit the PR reports>" SRC rc
+       git fetch origin main || return 1
+       git merge-base --is-ancestor "$MERGE_SHA" origin/main \
+         || { echo "$MERGE_SHA is not on main — not deploying"; return 1; }
+       if [ "$(git rev-parse origin/main)" = "$MERGE_SHA" ]; then
+         SRC="$MERGE_SHA"                  # nothing merged since; exact SHA
+       else
+         SRC=$(git rev-parse origin/main)  # main advanced: MERGE_SHA would revert it
+         echo "main advanced past $MERGE_SHA — deploying $SRC, which contains it"
+         # Deploying the tip ships those commits too. Confirm CI is green on
+         # $SRC itself, not only on your PR, before continuing.
+       fi
+       git worktree add /tmp/deploy-src "$SRC" || return 1
+       (
+         cd /tmp/deploy-src || exit 1
+         [ "$(git rev-parse HEAD)" = "$SRC" ] || { echo "worktree HEAD != $SRC"; exit 1; }
+         [ -z "$(git status --porcelain)" ] || { git status --porcelain; exit 1; }
+         # Does this target run on the RESEARCH image? Derive it, do not trust
+         # a list — 14 deploy functions select ${IMAGE}:research and only 4
+         # dispatcher entries build it, and the inline annotations are
+         # incomplete (indicator-correlation selects :research while its entry
+         # builds the MAIN image). Check the function your target dispatches to:
+         #   grep -n 'research_image="${IMAGE}:research"' gcp/deploy.sh
+         #   grep -n '^    <target>)' gcp/deploy.sh    # does the entry build it?
+         # If it selects :research and the entry does not run
+         # build_research_image, CHAIN the build — a failed research build
+         # leaves the previous :research tag in place, so the deploy then
+         # SUCCEEDS while pointing the job at code without the fix:
+         ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target>
+         # (no research image: just `./gcp/deploy.sh <target>`)
+       )
+       rc=$?                               # capture BEFORE cleanup
+       git worktree remove /tmp/deploy-src
+       test $rc -eq 0 \
+         || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; return 1; }
+     }
+     deploy_candidate || echo "STOPPED — nothing was deployed"
      ```
+
+     The subshell around the build carries the `cd`, so there is no `cd -` to
+     get wrong, and `rc` is the subshell's status — which is the deploy's, or
+     the first guard inside it that failed.
 
      `rc` is captured rather than trusting the block's exit status, because
      `git worktree remove` succeeds whether or not the deploy did, and it runs
@@ -932,9 +989,27 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      case for any fix under `scripts/**` or most of `gcp/**`:
 
      ```bash
-     gcloud builds triggers run deploy-solyra-api-staging --branch=main
-     gcloud builds list --limit=1 --format='value(id,status)'   # watch it
+     BUILD_ID=$(gcloud builds triggers run deploy-solyra-api-staging \
+                  --branch=main --format='value(metadata.build.id)') \
+       || { echo "trigger did not run"; false; }
+     test -n "$BUILD_ID" || { echo "no build id — do not proceed"; false; }
+     gcloud builds log --stream "$BUILD_ID"          # blocks until it finishes
+     test "$(gcloud builds describe "$BUILD_ID" --format='value(status)')" = SUCCESS \
+       || { echo "build $BUILD_ID did not succeed"; false; }
      ```
+
+     Bind to **that** build id. `gcloud builds list --limit=1` is a query
+     about the project, not about your invocation: if the trigger call fails
+     on IAM, on its concurrency preflight, or on trigger config, the `list`
+     still succeeds and hands you someone else's build, or the previous one —
+     which you then watch go green and promote, shipping the revision staging
+     was already serving.
+
+     I have not verified the `metadata.build.id` field path in this session:
+     checking it means firing a real staging build. It is the documented shape
+     of the operation the trigger returns, and the `test -n` is there because
+     an empty capture is what a wrong format string produces — so a wrong
+     guess stops the run rather than falling through to the unbound `list`.
 
      Then validate against staging and read its serving revision, as below.
      Promoting without this promotes whatever staging was already serving,
