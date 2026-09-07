@@ -13,7 +13,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [02 Feature Catalog](02-FEATURE-CATALOG.md) | What capabilities exist and what is their trust state? |
 | [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md) | What does each of the 15 screens do? |
 | [04 Backend Api](04-BACKEND-API.md) | Which of the 92 platform endpoints support it, and how is each authenticated? |
-| [05 Infrastructure](05-INFRASTRUCTURE.md) | What runs and deploys it — 67 jobs, 58 schedulers? |
+| [05 Infrastructure](05-INFRASTRUCTURE.md) | What runs and deploys it — 76 jobs, 66 schedulers? |
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
 | [08 Ai Agent Architecture](08-AI-AGENT-ARCHITECTURE.md) | What are the 14 LLM nodes actually wired today? |
@@ -30,11 +30,11 @@ The maintained index from product intent through implementation, evidence, risk 
 
 | Environment | URL | Auth |
 |---|---|---|
-| Production | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
-| Staging | `UNKNOWN` (service `trading-platform-staging`) | **public + Firebase** |
+| Production | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
+| Staging | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app`, also `api.stocks.insightscollective.org` | **public edge + Firebase**, `AUTH_OPEN_SIGNUP=1` — see [09](09-SECURITY-AUTH.md) |
 | Local dev | `http://localhost:5173` (API `http://localhost:8000`) | none (`AUTH_MODE` defaults to `open`) |
 
-No custom domain is committed in the repo despite the **Solyra** branding on the landing page.
+A custom domain exists: `api.stocks.insightscollective.org` maps to `solyra-api-staging`. The mapping lives in Cloud Run, not in source, so `gcloud beta run domain-mappings list --region=us-east1` is the source of truth. Read [09](09-SECURITY-AUTH.md) before assuming what it exposes.
 Per-screen URLs: [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#live-urls). Full inventory and the command to resolve the
 unknowns: [05](05-INFRASTRUCTURE.md#environments-and-urls).
 
@@ -117,7 +117,7 @@ for that row — the previous revision emitted one identical document-level link
 | [FEAT-HELP-001](02-FEATURE-CATALOG.md#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | — | `platform/src/routes/HelpPage.tsx` | `help.spec.ts` | — | UNKNOWN | Production | P3 |
 | [FEAT-SETTINGS-001](02-FEATURE-CATALOG.md#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | — | `platform/src/routes/SettingsPage.tsx` | **none** | — | UNKNOWN | Incomplete | P3 |
 | [FEAT-DATA-001](02-FEATURE-CATALOG.md#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | — | `gcp/fetchers/` | `tests/test_data_loader*.py` | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#205](https://github.com/TeneikaAskew/stocks/pull/205) [#518](https://github.com/TeneikaAskew/stocks/pull/518) [#760](https://github.com/TeneikaAskew/stocks/pull/760) | Production but needs remediation | P0 |
-| [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | Infrastructure / deploy | 67 jobs, 58 schedulers, Cloud Run | — | — | — | — | `gcp/deploy.sh` | static checks only | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) | [#507](https://github.com/TeneikaAskew/stocks/pull/507) | Production but needs remediation | P1 |
+| [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 66 schedulers, Cloud Run | — | — | — | — | `gcp/deploy.sh` | static checks only | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) | [#507](https://github.com/TeneikaAskew/stocks/pull/507) | Production but needs remediation | P1 |
 | [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | — | `gcp/freshness_watchdog.py` | deleted in #957 — see [#971](https://github.com/TeneikaAskew/stocks/issues/971) | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) [#944](https://github.com/TeneikaAskew/stocks/issues/944) | [#189](https://github.com/TeneikaAskew/stocks/pull/189) [#235](https://github.com/TeneikaAskew/stocks/pull/235) [#494](https://github.com/TeneikaAskew/stocks/pull/494) [#771](https://github.com/TeneikaAskew/stocks/pull/771) | Incomplete | P1 |
 | [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | — | `.github/workflows/` | 230 python tests | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) | [#364](https://github.com/TeneikaAskew/stocks/pull/364) [#378](https://github.com/TeneikaAskew/stocks/pull/378) | Production but needs remediation | P1 |
 | [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | — | [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx) | [solyra `tests/navigation.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/navigation.spec.ts) | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) | [#546](https://github.com/TeneikaAskew/stocks/pull/546) [#611](https://github.com/TeneikaAskew/stocks/pull/611) [#703](https://github.com/TeneikaAskew/stocks/pull/703) [#715](https://github.com/TeneikaAskew/stocks/pull/715) | Production but needs remediation | P2 |

@@ -30,7 +30,7 @@ live signals, and a live-signal change never silently alters a backtest.
 ```
 RAW 1-min OHLCV  ──►  Cloud SQL: market_data_intraday  (SPY / IWM / QQQ)
    fetched by:
-     • fetch-market-data-daily     23:00 UTC, Mon–Fri   (daily increment)
+     • fetch-market-data-daily     23:00 ET,  Mon–Fri   (daily increment)
      • av-intraday-monthly          1st of month         (bulk AV 1-min backfill)
 ```
 
@@ -191,7 +191,7 @@ moves and/or the next Strat candle across IWM/SPY/QQQ.
 | `regime-combo` | Research A | Sun 05:00 ET weekly | `gcp/regime_combo_job.py` | `regime_combo_results` |
 | `strat-engine` (incl. Stage 3b) | Research B | manual | `…strat_orchestrator` | `strat_features_*`, GCS JSON |
 | `indicator-correlation` | Research (research image) | manual/weekly | `gcp/indicator_correlation_job.py` | `indicator_correlation` (target-modular: forward_return / regime / strat / signal) |
-| `fetch-market-data` | Foundation | 23:00 UTC daily | fetcher | `market_data_intraday` |
+| `fetch-market-data` | Foundation | 23:00 **ET** weekdays (`0 23 * * 1-5`, `America/New_York`) | fetcher | `market_data_intraday` |
 | `av-intraday-monthly` | Foundation | 1st monthly | fetcher | `market_data_intraday` |
 
 ## Folder conventions (prod vs research)
