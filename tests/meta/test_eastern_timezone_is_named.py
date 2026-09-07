@@ -2117,6 +2117,17 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
 _ENV_TEMPLATE_SUFFIX = ".example"
 
 
+def _reads_as_pine(p: pathlib.Path) -> bool:
+    """Is this one of the extensionless TradingView sources?
+
+    Kept next to the other two predicates, and derived from the same constant
+    `_source_files` collects them by, so a directory added there is read with
+    Pine's comment syntax rather than silently with none.
+    """
+    return (p.suffix in ("", ".pine")
+            and any(d in p.parts for d in EXTENSIONLESS_SOURCE_DIRS))
+
+
 def _reads_as_make(p: pathlib.Path) -> bool:
     """Is this file read by make rather than by a shell?
 
@@ -2463,6 +2474,8 @@ def _scan() -> tuple[list[str], list[str]]:
         if _reads_as_shell(p):
             text = _expand_shell_defaults(
                 _strip_shell_comments(text, make=_reads_as_make(p)))
+        elif _reads_as_pine(p):
+            text = _strip_pine_comments(text)
         elif p.suffix == ".sql":
             # SQL has its own comment syntax and none of the shell expansion
             # forms, so it gets the one preprocessing step that applies to it
@@ -2689,10 +2702,24 @@ def _expand_shell_vars(text: str) -> str:
     scalars = _shell_scalars(text)
 
     def one(m):
-        value = _scalar_in_force(scalars, m.group(2), m.start())
+        if _single_quoted(m.group(1)):
+            return m.group(0)
+        value = _scalar_in_force(scalars, m.group(2), m.start(),
+                                 spans=_function_spans(text))
         return m.group(1) + value if value is not None else m.group(0)
 
     return _SHELL_TZ_VAR.sub(one, text)
+
+
+def _single_quoted(prefix: str) -> bool:
+    """Did the context prefix open a SINGLE-quoted string?
+
+    The shell does not expand inside single quotes, so
+    `export TZ='$LEGACY'` sets the literal text `$LEGACY` -- and rewriting it
+    to `TZ='EST'` failed CI on a line that installs no zone at all
+    (Codex, PR #993). Double quotes DO expand, so only `'` suppresses this.
+    """
+    return prefix.rstrip().endswith("'")
 
 
 # Commands whose arguments are OUTPUT rather than configuration. A usage
@@ -2770,16 +2797,27 @@ def _blank_shell_output(text: str) -> str:
     """
     out = []
     for line in text.splitlines():
-        m = _SHELL_OUTPUT_CMD.search(line)
-        if m:
+        # EVERY diagnostic on the line. Bounding the blanking to the current
+        # command -- the fix one round earlier -- also stopped it at the first
+        # one, so `echo "ok"; echo "never set TZ=EST"` blanked only the first
+        # argument and the second was reported. The bound was right and
+        # applying it once was not (Codex, PR #993).
+        pos = 0
+        while True:
+            m = _SHELL_OUTPUT_CMD.search(line, pos)
+            if not m:
+                break
             cut = _command_end(line, m.end())
-            rest, tail = line[m.end():cut], line[cut:]
+            rest = line[m.end():cut]
             if not _redirects_outside_quotes(rest):
                 rest = _SHELL_QUOTED.sub(
                     lambda q: (q.group(0)[0] + " " * (len(q.group(0)) - 2)
                                + q.group(0)[-1]),
                     rest)
-            line = line[:m.end()] + rest + tail
+            line = line[:m.end()] + rest + line[cut:]
+            # Widths are preserved by the blanking, so `cut` still points at
+            # the separator and the next search starts after it.
+            pos = cut
         out.append(line)
     return "\n".join(out)
 
@@ -2826,7 +2864,9 @@ def _expand_shell_defaults(text: str) -> str:
     # Output arguments go first, so a usage message quoting `${TZ:-EST}` is
     # emptied before the expansion pass can promote its default.
     text = _blank_shell_output(text)
-    text = _SHELL_DEFAULT.sub(lambda m: m.group(1) + m.group(2), text)
+    text = _SHELL_DEFAULT.sub(
+        lambda m: (m.group(0) if _single_quoted(m.group(1))
+                   else m.group(1) + m.group(2)), text)
     text = _SHELL_OTHER_DEFAULT.sub(lambda m: " " * len(m.group(0)), text)
     # Plain `$VAR` last, so a `${VAR:-default}` is read as its default rather
     # than as a reference to VAR.
@@ -2842,6 +2882,22 @@ def _opens_escape_string(text: str, i: int) -> bool:
     if text[i - 1:i] not in ("E", "e") or i == 0:
         return False
     return i < 2 or not re.match(r"[A-Za-z0-9_]", text[i - 2])
+
+
+def _strip_pine_comments(text: str) -> str:
+    """Blank Pine's `//` line comments and `/* ... */` blocks.
+
+    The extensionless Pine sources are collected deliberately, and they
+    reached the regex pass with their comments intact -- they match neither
+    `_reads_as_shell` nor `.sql`, so no preprocessing branch claimed them. A
+    migration note as ordinary as `// old: timezone = "EST"` therefore failed
+    CI on text TradingView never executes: the same false positive the SQL
+    branch was given comment stripping for two rounds ago, in the one
+    collected language that still had none (Codex, PR #993).
+
+    Pine has no escape-string literal, so backslash escapes are off.
+    """
+    return _blank_comments(text, "//", escape_strings=False)
 
 
 def _strip_sql_comments(text: str) -> str:
@@ -2873,6 +2929,17 @@ def _strip_sql_comments(text: str) -> str:
     Only `E'...'` honours backslashes at PostgreSQL's default
     `standard_conforming_strings = on`, so an ordinary literal is unchanged.
     """
+    return _blank_comments(text, "--", escape_strings=True)
+
+
+def _blank_comments(text: str, line_token: str, escape_strings: bool) -> str:
+    """Blank line and `/* */` comments, honouring quotes.
+
+    Shared by the SQL and Pine strippers: they differ only in the line-comment
+    token and in whether the language has backslash escape strings. Blanked in
+    spaces of the same width, keeping newlines, so every line and column still
+    means what it says.
+    """
     out = []
     quote = None
     escapes = False
@@ -2900,10 +2967,11 @@ def _strip_sql_comments(text: str) -> str:
             continue
         if ch in "\"'":
             quote = ch
-            escapes = ch == "'" and _opens_escape_string(text, i)
+            escapes = (escape_strings and ch == "'"
+                       and _opens_escape_string(text, i))
             out.append(ch); i += 1
             continue
-        if ch == "-" and nxt == "-":
+        if text.startswith(line_token, i):
             while i < len(text) and text[i] != "\n":
                 out.append(" "); i += 1
             continue
@@ -2926,14 +2994,14 @@ def _strip_sql_comments(text: str) -> str:
 # guards. A helper-scoped variable is the ordinary way to write this, so the
 # gap was on the commoner spelling (Codex, PR #993).
 _SHELL_SCALAR = re.compile(
-    r"^[ \t]*(?:(?:export|local|declare|typeset|readonly)[ \t]+"
+    r"^[ \t]*(?:(export|local|declare|typeset|readonly)[ \t]+"
     r"(?:-[A-Za-z]+[ \t]+)*)?([A-Za-z_][A-Za-z0-9_]*)="
     r"(?:\"([^\"$`\\\n]*)\"|'([^'\n]*)'|([^\s\"'$`;|&\n]+))[ \t]*$",
     re.M)
 
 
 def _shell_scalars(text: str) -> dict:
-    """`{NAME: [(offset, value), ...]}`, in source order.
+    """`{NAME: [(offset, value, function-scoped), ...]}`, in source order.
 
     By POSITION, not a single final value, because a shell script runs in
     order. The first version of this kept only the last assignment and both
@@ -2951,20 +3019,77 @@ def _shell_scalars(text: str) -> dict:
     """
     out: dict[str, list] = {}
     for m in _SHELL_SCALAR.finditer(text):
-        value = next(g for g in m.groups()[1:] if g is not None)
-        out.setdefault(m.group(1), []).append((m.start(), value))
+        value = next(g for g in m.groups()[2:] if g is not None)
+        # `local`, and `declare`/`typeset` inside a function, bind in the
+        # function's scope only. `export`, `readonly` and a bare assignment
+        # bind globally. `_scalar_in_force` decides what a given reference can
+        # see; this only records which kind it is.
+        local = m.group(1) in ("local", "declare", "typeset")
+        out.setdefault(m.group(2), []).append((m.start(), value, local))
     return out
 
 
-def _scalar_in_force(scalars: dict, name: str, at: int):
-    """The value bound to `name` at offset `at`, or None if it is unbound."""
+def _scalar_in_force(scalars: dict, name: str, at: int, spans=None):
+    """The value bound to `name` at offset `at`, or None if it is unbound.
+
+    A FUNCTION-LOCAL assignment is visible only to references inside that
+    same function. Defining a function does not run its body, so
+    `LEGACY=EST` then `helper() { local LEGACY=America/New_York; }` then
+    `export TZ="$LEGACY"` exports EST -- but by textual position alone the
+    `local` was the assignment in force and the real finding disappeared.
+    That regression arrived with the fix one commit earlier that taught this
+    collector to read `local` at all: before it, the declaration was
+    invisible and the top-level value won by accident (Codex, PR #993).
+    """
     latest = None
-    for offset, value in scalars.get(name, ()):
-        if offset < at:
-            latest = value
-        else:
+    for entry in scalars.get(name, ()):
+        offset, value, local = entry
+        if offset >= at:
             break
+        if local and not _within_a_span(spans, offset, at):
+            continue        # declared in a function body this reference is
+        latest = value      # not inside, so it never runs before it
     return latest
+
+
+def _within_a_span(spans, offset: int, at: int) -> bool:
+    """Are `offset` and `at` inside the same function body?"""
+    for start, end in (spans or ()):
+        if start <= offset < end:
+            return start <= at < end
+    return True             # not in any body after all -- treat as file scope
+
+
+def _function_spans(text: str) -> list[tuple[int, int]]:
+    """Character span of each shell function BODY, outermost only.
+
+    Same brace accounting as `_shell_functions`, which segments the text; this
+    reports offsets, because the scalar collector records assignments by
+    position and has to compare them against a reference's position.
+    """
+    spans = []
+    header = re.compile(
+        r"^\s*(?:function\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\)\s*)?"
+        r"|[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*)\{")
+    at = 0
+    depth = 0
+    start = None
+    for line in text.splitlines(keepends=True):
+        if depth == 0 and header.match(line):
+            start = at
+            depth = _brace_delta(line)
+            if depth <= 0:                      # a one-line function body
+                spans.append((start, at + len(line)))
+                depth, start = 0, None
+        elif depth:
+            depth += _brace_delta(line)
+            if depth <= 0:
+                spans.append((start, at + len(line)))
+                depth, start = 0, None
+        at += len(line)
+    if start is not None:                       # unterminated, to end of file
+        spans.append((start, at))
+    return spans
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
@@ -5816,7 +5941,7 @@ def test_a_shell_scalar_resolves_to_the_value_in_force():
     assert not scanned('export TZ="$LEGACY"\nLEGACY=EST\n')
 
     scalars = _shell_scalars('A=one\nA=two\n')
-    assert [v for _, v in scalars["A"]] == ["one", "two"], scalars
+    assert [v for _, v, _ in scalars["A"]] == ["one", "two"], scalars
     assert _scalar_in_force(scalars, "A", 0) is None
     assert _scalar_in_force(scalars, "A", 6) == "one"
     assert _scalar_in_force(scalars, "A", 99) == "two"
@@ -6789,3 +6914,154 @@ def test_make_comments_are_read_with_makes_rule():
 # open since round 20 -- a value named once, where each half already works and
 # only the composition does not -- and closing it means resolving inside a
 # pass that is still building the environment it would resolve against.
+# -- Round 27 (Codex, PR #993) ----------------------------------------------
+#
+# Five findings, four fixed. THREE of the four are false positives and TWO of
+# those are regressions from the two commits immediately before this one,
+# which is the fastest this file has produced them.
+
+
+def test_every_diagnostic_on_a_line_is_blanked():
+    """`echo "ok"; echo "never set TZ=EST"` prints, it does not configure.
+
+    Bounding the blanking to the current command -- the fix one round earlier
+    -- also stopped it at the FIRST command, so a second diagnostic on the
+    same line kept its argument and was reported. The bound was right;
+    applying it once was not (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert not scanned('echo "ok"; echo "never set TZ=EST"')
+    assert not scanned('echo "ok"; echo "a"; echo "set TZ=EST"')
+
+    # The round-24 property holds: a real assignment after a diagnostic is
+    # still a finding, and it is what the bound exists for.
+    assert scanned('echo "ok"; export TZ="EST"')
+    # As does round 22's: text written somewhere is configuration.
+    assert scanned("echo 'a'; echo 'TZ=EST' > /tmp/app.env")
+
+
+def test_a_function_local_does_not_bind_the_file_scope():
+    """Defining a function does not run its body.
+
+    `LEGACY=EST`, then a helper whose body declares `local
+    LEGACY=America/New_York`, then a top-level `export TZ="$LEGACY"` exports
+    EST -- but by textual position alone the `local` was the assignment in
+    force, and the real finding disappeared.
+
+    The regression arrived with the commit immediately before this one, which
+    taught `_shell_scalars` to read `local` at all. Before it the declaration
+    was invisible and the file-scope value won by accident; reading it made
+    the accident into a wrong answer (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    masked = ("LEGACY=EST\n"
+              "helper() {\n"
+              "  local LEGACY=America/New_York\n"
+              "}\n"
+              'export TZ="$LEGACY"\n')
+    assert scanned(masked), "the file-scope EST is what the shell exports"
+
+    # And the local IS what a reference inside the same function sees.
+    inside = ("LEGACY=America/New_York\n"
+              "helper() {\n"
+              "  local LEGACY=EST\n"
+              '  export TZ="$LEGACY"\n'
+              "}\n")
+    assert scanned(inside)
+
+    # A `local` at top level is not in any function body, so it binds there.
+    assert scanned('local LEGACY=EST\nexport TZ="$LEGACY"\n')
+
+    # Round 21's ordering property, unchanged in both directions.
+    assert scanned('LEGACY=EST\nexport TZ="$LEGACY"\n'
+                   "LEGACY=America/New_York\n")
+    assert not scanned('LEGACY=America/New_York\nexport TZ="$LEGACY"\n')
+
+    spans = _function_spans(masked)
+    assert len(spans) == 1
+    start, end = spans[0]
+    assert "local LEGACY" in masked[start:end]
+    assert "export TZ" not in masked[start:end]
+
+
+def test_a_single_quoted_reference_is_not_expanded():
+    """`export TZ='$LEGACY'` sets the literal text, not the zone.
+
+    The shell does not expand inside single quotes, so this line installs no
+    timezone at all -- and rewriting it to `TZ='EST'` failed CI on it
+    (Codex, PR #993). Double quotes do expand, which is why the substitution
+    exists.
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert not scanned("LEGACY=EST\nexport TZ='$LEGACY'\n")
+    assert scanned('LEGACY=EST\nexport TZ="$LEGACY"\n')
+
+    # The parameter-default rewrite is literal inside single quotes for the
+    # same reason, and still expands outside them (round 19's property).
+    assert not scanned("export TZ='${TZ:-EST}'")
+    assert scanned('export TZ="${TZ:-EST}"')
+
+    assert _single_quoted("export TZ='")
+    assert not _single_quoted('export TZ="')
+    assert not _single_quoted("export TZ=")
+
+
+def test_pine_sources_are_read_without_their_comments():
+    """`// old: timezone = "EST"` is a note, not a setting.
+
+    The extensionless TradingView sources are collected deliberately and
+    matched neither preprocessing branch, so they reached the regex pass with
+    their comments intact and an ordinary migration note failed CI. The same
+    false positive the SQL branch was given comment stripping for two rounds
+    ago, in the one collected language that still had none
+    (Codex, PR #993).
+    """
+    def hit(text: str) -> bool:
+        out = _strip_pine_comments(text)
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    assert not hit('// old: timezone = "EST"')
+    assert not hit('/* old: timezone = "-05:00" */')
+    assert not hit('timezone = "America/New_York"')
+
+    # A real setting still reports, with or without a trailing note.
+    assert hit('timezone = "EST"')
+    assert hit('timezone = "EST"  // migrated')
+
+    # `//` inside a string is data, not a comment.
+    assert _strip_pine_comments('msg = "https://x.test"').rstrip() == (
+        'msg = "https://x.test"')
+
+    assert _reads_as_pine(REPO / "tradingview-pine-scripts" / "orb-30")
+    assert not _reads_as_pine(REPO / "gcp" / "deploy.sh")
+
+    # The SQL stripper shares the implementation and is unchanged.
+    assert _strip_sql_comments("-- SET TIME ZONE 'EST'").strip() == ""
+    assert "SET TIME ZONE 'EST'" in _strip_sql_comments(
+        r"SELECT E'foo\' -- still data'; SET TIME ZONE 'EST';")
+    # ...and its token stays `--`: `//` is not a SQL comment and is kept.
+    assert _strip_sql_comments("SELECT 1 // kept").rstrip() == "SELECT 1 // kept"
+
+
+# Recorded on #1019 rather than fixed:
+#
+#   * `class Config: TIME_ZONE = "EST"`.
+#
+# The export check asks whether the assignment is at MODULE level, so a class
+# namespace -- which is also consumed externally, as `Config.TIME_ZONE` --
+# falls outside it while an ordinary function local correctly does too.
+# Separating those two is a change to the scope model rather than another
+# matcher, which is why it belongs in the follow-up.
