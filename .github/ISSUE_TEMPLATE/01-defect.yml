@@ -17,6 +17,12 @@ body:
         justification for a cache boundary, produced a wrong fix, and had to be
         corrected too.
 
+        **The sample outputs in the placeholders are dated measurements, not
+        current facts.** #861 was filed at 77 days stale and was 85 by the time
+        work started — the drift was itself evidence about the writer. Re-run
+        every command; a number copied out of a placeholder is a guess wearing
+        a shell prompt.
+
         "I have not measured this" is a complete and acceptable answer. Write it
         where it applies rather than filling a section with a guess.
 

@@ -88,6 +88,12 @@ git fetch origin
 git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
 # and: mcp__github__search_pull_requests
 #        q="repo:TeneikaAskew/stocks is:open <issue-number>"
+# This is a KEYWORD search, not a link lookup: a bare number matches any
+# PR whose text happens to mention it, and misses one linked only through
+# the issue's development sidebar. So a hit is a candidate, not an answer.
+# Confirm the relationship before treating any result as this issue's PR —
+# a closing keyword in its body, or the issue's own linked-PR entry — and
+# read the issue timeline when the search comes back empty.
 # `is:open` matters: without it the search returns closed and merged PRs
 # too, and CASE A below would check out a dead PR's retained branch and
 # push commits that can never reach the merge gate. Confirm the state of
@@ -121,7 +127,11 @@ git fetch origin
 # point, silently discarding unpushed commits from an earlier run.
 if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
   git checkout "<headRefName>"        # already local: keep what it carries
-  git merge --ff-only "origin/<headRefName>" || echo "diverged — reconcile before working"
+  # `|| echo` would swallow the failure: a diverged branch would then be
+  # implemented and tested against a head missing remote commits, and only
+  # fail at push. A non-fast-forward here is a STOP.
+  git merge --ff-only "origin/<headRefName>" \
+    || { echo "DIVERGED from origin/<headRefName> — reconcile before any edit"; false; }
 else
   git checkout -b "<headRefName>" --track "origin/<headRefName>"
 fi

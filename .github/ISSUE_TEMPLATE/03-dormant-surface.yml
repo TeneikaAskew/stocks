@@ -20,6 +20,11 @@ body:
         Cloud Scheduler entry at all. Reading the code would not have found
         that; `gcloud scheduler jobs list` did.
 
+        **The sample outputs in the placeholders are dated measurements, not
+        current facts.** They show the shape of a conclusive answer. Re-run
+        every one against the live system — the staleness figure in particular
+        moves every day the writer stays broken.
+
   - type: input
     id: surface
     attributes:
