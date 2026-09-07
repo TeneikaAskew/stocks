@@ -98,10 +98,13 @@ body:
     id: forensics
     attributes:
       label: How it got here
-      description: Git forensics with dates and commits. Use the pickaxe; a surface dropped by an unrelated rewrite reads differently from one retired on purpose.
+      description: "Git forensics with dates and commits, via -G --no-renames (not -S). A surface dropped by an unrelated rewrite reads differently from one retired on purpose."
       render: shell
       placeholder: |
-        $ git log --oneline -S "DataPipelineStatus" -- src platform/src
+        # -G --no-renames, NOT -S. Measured: -S counts occurrences per blob, so a
+        # rewritten import line inside ONE file leaves the count equal and -S skips
+        # that commit; and a pure rename is invisible to BOTH until --no-renames.
+        $ git log --oneline -G "DataPipelineStatus" --no-renames -- src platform/src
         911ec69 (Apr 26) added it and wired it into DashboardPage
         8829f0b (Jun 5) rebuilt the Dashboard as briefing-first, silently dropping the mount
 
