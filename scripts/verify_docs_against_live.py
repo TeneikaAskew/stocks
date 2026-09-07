@@ -27,6 +27,7 @@ Exit code is 1 when any finding is reported, so it can gate CI.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import pathlib
 import re
@@ -34,6 +35,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+PROJECT = "adept-mountain-474619-d4"
 REGION = "us-east1"
 
 # Docs that describe the CURRENT system. Everything else under docs/ is a
@@ -63,6 +65,7 @@ LIVE_STATE_DOCS = [
     "docs/storage_overview.md",
     "docs/FAILURE_NOTIFIER_DEPLOYMENT.md",
     "platform/GCP_DATA_DICTIONARY.md",
+    ".github/workflows/README.md",
 ]
 LIVE_STATE_GLOBS = ["docs/product/*.md", "gcp/cloudbuild/*.md"]
 
@@ -352,8 +355,11 @@ def _gcloud(*args: str) -> str:
     No fallback to a cached snapshot: reading a stale cache and calling it
     "live" is the exact failure this script exists to prevent.
     """
+    # Always name the project: an operator whose active gcloud project is
+    # something else would otherwise "verify" the docs against the wrong
+    # fleet and get a convincing answer (Codex, #1009).
     proc = subprocess.run(
-        ("gcloud",) + args, capture_output=True, text=True, timeout=180
+        ("gcloud",) + args + (f"--project={PROJECT}",), capture_output=True, text=True, timeout=180
     )
     if proc.returncode != 0:
         raise RuntimeError(f"gcloud {' '.join(args)} failed: {proc.stderr.strip()[:400]}")
@@ -774,11 +780,59 @@ def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
                     f"maps to `{actual}`"))
 
 
-def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
+# A markdown table header labels the whole column: `| Scheduler | Cron (UTC) |`
+# says every cron below it is UTC. The per-line UTC guard only ever looked at
+# the line carrying the job name, so scheduler tables asserted UTC over an
+# all-Eastern fleet and the file read clean (Codex, PR #1009). Flagging the
+# header rather than each row puts the finding where the one-word fix goes.
+TZ_HEADER = re.compile(r"^\|[^\n]*?\b(?:cron|schedule)\b[^|\n]*?\bUTC\b", re.I | re.M)
+
+
+def check_timezone_headers(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
+    zones = {m.get("timeZone", "") for m in live.get("schedulers", {}).values()}
+    zones.discard("")
+    if not zones or zones == {"UTC"}:
+        return
+    text = path.read_text(errors="replace")
+    for m in TZ_HEADER.finditer(text):
+        line_no = text[:m.start()].count("\n") + 1
+        out.append(Finding("utc-claim", rel, line_no,
+                           f"table column header states UTC over schedules that all run in "
+                           f"{'/'.join(sorted(zones))}: {m.group(0).strip()[:120]}"))
+
+
+@functools.lru_cache(maxsize=4)
+def _declared_names(root: str) -> frozenset[str]:
+    """Job and scheduler names declared in `root`'s gcp/deploy.sh.
+
+    Keyed on the root: `--root` points the document scan at another checkout,
+    and reading deploy.sh from THIS one instead would report that tree's new
+    names as unknown and accept names it has deleted. (Codex, PR #1009.)
+    """
+    # Run as a script, the repo root is not on sys.path -- and swallowing that
+    # import error would be the silent fallback CLAUDE.md 3.7 forbids: the
+    # check would quietly report every declared-not-live name again.
+    here = str(pathlib.Path(__file__).resolve().parent.parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from scripts.maintenance import doc_inventory as inv
+    repo = inv.repo_inventory(pathlib.Path(root))
+    return frozenset({j["name"] for j in repo["jobs"]} | {s["name"] for s in repo["schedulers"]})
+
+
+def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding],
+                      root: pathlib.Path | None = None) -> None:
     """A backticked name introduced as GCP infrastructure must exist live."""
     known = (set(live["run_jobs"]) | set(live["schedulers"]) | set(live["services"])
              | set(live.get("secrets", ())) | set(live.get("queues", ()))
-             | {"trading-system"})  # Artifact Registry package, not a CR resource
+             | {"trading-system"}  # Artifact Registry package, not a CR resource
+             # A job DECLARED in gcp/deploy.sh but not deployed is a repo fact,
+             # not a stale claim: ARCHITECTURE.md §16 names the declared job an
+             # entrypoint belongs to, and §15 is where the declared-vs-live gap
+             # is reported, with the reason. Flagging it here would report the
+             # same fact twice and in the more confusing place. A name in
+             # NEITHER the repo nor live is still flagged.
+             | _declared_names(str(root or pathlib.Path(__file__).resolve().parent.parent)))
     # A retired service is not an unknown name: `check_retired_services` already
     # reports it, and with a message that says WHY the name is wrong. Reporting
     # the same line twice for one fact is the noise that teaches people to skim
@@ -897,6 +951,19 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
      "secrets", "Secret Manager secrets"),
     (re.compile(rf"\bAll\s+{_NUM}\s+secrets\b", re.I),
      "secrets", "Secret Manager secrets"),
+    # MARKDOWN TABLE COLUMNS: `| Cloud Run Jobs | 7 jobs |`. Every pattern
+    # above wants the count adjacent to the noun or parenthesized, so a
+    # component-summary table that puts the resource in one column and its
+    # count in the next was invisible. Fixing that by requiring the resource
+    # in the FIRST cell then missed `| Scheduled Jobs | Cloud Run Jobs | 7
+    # jobs |`, where it is in the second -- so the resource and the count are
+    # now matched anywhere in the same ROW. (Codex, PR #1009.)
+    (re.compile(rf"^\|[^\n]*?Cloud\s+Run\s+Jobs?[^\n]*?\b{_NUM}\s+(?:Cloud\s+Run\s+)?jobs?\b", re.I | re.M),
+     "run_jobs", "Cloud Run Jobs"),
+    (re.compile(rf"^\|[^\n]*?Cloud\s+Scheduler[^\n]*?\b{_NUM}\s+(?:cron\s+)?(?:triggers?|jobs?|entries|schedulers?)\b", re.I | re.M),
+     "schedulers", "Cloud Scheduler jobs"),
+    (re.compile(rf"^\|[^\n]*?Cloud\s+Run\s+Services?[^\n]*?\b{_NUM}\s+services?\b", re.I | re.M),
+     "services", "Cloud Run services"),
 )
 
 
@@ -915,10 +982,17 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
     raw = text.splitlines()
     skip = {i for i, line in enumerate(raw, 1) if SUPPRESS.search(line)}
     skip |= {i + 1 for i in skip}
+    # One fact, one finding. The noun-first and table-row patterns both match
+    # `| **Cloud Scheduler (66 jobs)** | ... |`, and reporting a line twice is
+    # the noise that teaches people to skim the output -- the same argument
+    # `check_retired_services` already makes. (Codex, PR #1009.)
+    seen: set[tuple[int, str]] = set()
     for pattern, key, label in COUNT_CLAIMS:
         n_live = len(live[key])
         for m in pattern.finditer(text):
             i = text.count("\n", 0, m.start()) + 1
+            if (i, key) in seen:
+                continue
             # RETIRED_OK is deliberately NOT consulted here. It exempts a
             # line for naming a retired SERVICE, and its vocabulary is
             # ordinary past tense -- `was`, `were`, `deleted`, `old`. A count
@@ -935,6 +1009,7 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
             if n is None:
                 n = int(claimed)
             if n != n_live:
+                seen.add((i, key))
                 out.append(Finding("count-drift", rel, i,
                                    f"claims {claimed} {label}; live count is {n_live}"))
 
@@ -960,7 +1035,8 @@ def main() -> int:
         rel = str(p.relative_to(root))
         check_retired_services(p, rel, findings)
         check_schedules(p, rel, live, findings)
-        check_known_names(p, rel, live, findings)
+        check_timezone_headers(p, rel, live, findings)
+        check_known_names(p, rel, live, findings, root)
         check_counts(p, rel, live, findings)
         check_domain_mappings(p, rel, live, findings)
 

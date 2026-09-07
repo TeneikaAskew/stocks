@@ -1,30 +1,51 @@
 name: Monthly architecture doc refresh
 
-# Regenerates ARCHITECTURE.md, DATA_DEPENDENCIES.md, COST_ANALYSIS.md, and
+# Refreshes ARCHITECTURE.md, DATA_DEPENDENCIES.md, COST_ANALYSIS.md and
 # README.md from live GCP state on the first day of every month.
 #
-# How it works:
-#   1. Authenticates to GCP via Workload Identity Federation
-#   2. Snapshots inventory + IAM + 90-day billing rollup to local JSON files
-#   3. Invokes Gemini CLI in non-interactive mode for each doc using the
-#      prompts versioned under .github/prompts/. Auth is via Vertex AI
-#      (GOOGLE_GENAI_USE_VERTEXAI=true) reusing the same WIF credentials —
-#      no separate GEMINI_API_KEY secret is required.
-#   4. Diffs the regenerated docs against committed versions, ignoring
-#      the trailing "Generated YYYY-MM-DD" line so timestamp-only churn
-#      doesn't open noisy PRs
-#   5. Opens a PR titled "Monthly architecture doc refresh: YYYY-MM"
-#      if any doc changed in a meaningful way; exits clean otherwise
+# How it works (rebuilt 2026-09-07 after the 2026-09-02 run replaced a
+# 394-line hand-maintained ARCHITECTURE.md with a 158-line regeneration that
+# named 4 of 67 declared jobs — see docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md):
+#   1. Authenticates to GCP via Workload Identity Federation.
+#   2. Snapshots live state: asset inventory + IAM + 90-day billing rollup
+#      (as before) PLUS run jobs/executions/services, schedulers, Cloud Build
+#      triggers, domain mappings, Cloud SQL config/backups/dumps, secrets,
+#      Pub/Sub, sinks, Cloud Tasks, service accounts, image tags and the
+#      live table statistics, all through scripts/maintenance/doc_inventory.py.
+#   3. Digests those snapshots into small per-resource files under
+#      refresh-inputs/ (Gemini's read_file truncates large JSON; the 2026-09
+#      run said so and still went green) and reconciles them with what
+#      gcp/deploy.sh, gcp/schema.sql and platform/api declare.
+#   4. Renders the <!-- inventory:*:start/end --> blocks in ARCHITECTURE.md
+#      and DATA_DEPENDENCIES.md DETERMINISTICALLY from that data. Counting
+#      is not a language-model task.
+#   5. Invokes Gemini CLI (Vertex AI, WIF ADC — no GEMINI_API_KEY) with the
+#      prompts under .github/prompts/ to UPDATE THE PROSE IN PLACE around the
+#      blocks. The prompts forbid regenerating from scratch and forbid
+#      touching marker blocks.
+#   6. Gates the result: today's stamp, every declared and live job / table /
+#      route / scheduler present, one §2 and §3 subsection per table, marker
+#      blocks byte-identical to a fresh render, no heading lost since the
+#      previous version (or listed under "Removed since last refresh"), size
+#      floor, no stale strings, no dead links, docs-vs-live drift clean
+#      (scripts/verify_docs_against_live.py), no "truncated" in the Gemini
+#      transcripts.
+#   7. Opens a PR titled "Monthly architecture doc refresh: YYYY-MM" if any
+#      doc changed beyond its "Generated" line; exits clean otherwise.
 #
 # Required GitHub secrets (one-time setup, see SETUP.md):
-#   - GCP_WIF_PROVIDER       full resource name of the Workload Identity Provider
-#   - GCP_WIF_SA_EMAIL       email of the service account this workflow impersonates
+#   - GCP_WIF_PROVIDER, GCP_WIF_SA_EMAIL      Workload Identity Federation
+#   - CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME   live table stats
+#   - PR_WORKFLOW_TOKEN                        gh pr create
 #
 # Service account roles (see SETUP.md for grant commands):
-#   - roles/cloudasset.viewer       (asset inventory)
-#   - roles/iam.securityReviewer    (IAM policy read)
-#   - roles/bigquery.dataViewer + roles/bigquery.jobUser  (billing rollup)
-#   - roles/aiplatform.user         (Vertex AI Gemini call)
+#   - roles/cloudasset.viewer, roles/iam.securityReviewer          (as before)
+#   - roles/bigquery.dataViewer + roles/bigquery.jobUser           (billing)
+#   - roles/aiplatform.user                                        (Gemini)
+#   - roles/run.viewer, roles/cloudscheduler.viewer, roles/cloudbuild.builds.viewer,
+#     roles/cloudsql.viewer + roles/cloudsql.client, roles/secretmanager.viewer,
+#     roles/pubsub.viewer, roles/logging.viewer, roles/cloudtasks.viewer,
+#     roles/artifactregistry.reader, roles/storage.objectViewer     (live snapshot)
 
 on:
   schedule:
@@ -80,7 +101,9 @@ jobs:
           node-version: '20'
 
       - name: Install Python deps
-        run: pip install --quiet google-cloud-bigquery
+        # bigquery for the billing rollup; sqlalchemy/pg8000/connector for the
+        # live table statistics (same set the calibration step below needs).
+        run: pip install --quiet google-cloud-bigquery sqlalchemy pg8000 pandas cloud-sql-python-connector
 
       - name: Install Gemini CLI
         # Pinned: --allowed-tools was deprecated and YOLO behaviour changed
@@ -139,6 +162,17 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT }}
+          # The runner's gcloud ships GA surfaces only. doc_inventory reads
+          # domain mappings, and `gcloud run domain-mappings list` does NOT
+          # accept --region on GA -- only alpha and beta do -- so the beta
+          # component is required, not a convenience. Without it the live
+          # snapshot died on run 14 with "You do not currently have this
+          # command group installed", after WIF auth, the asset dump, IAM and
+          # billing had all passed. A sandbox has beta installed, so this could
+          # only ever surface on a runner. tests/meta derives the component
+          # list from doc_inventory, so adding an alpha or beta call without
+          # installing its component fails the test rather than the run.
+          install_components: beta
 
       # ── Snapshot live GCP state ───────────────────────────────────────────
       # Snapshots land in refresh-inputs/, NOT at the repo root. The root
@@ -254,6 +288,162 @@ jobs:
           print(f"wrote refresh-inputs/billing.json with {len(rows)} rows")
           PY
 
+      # ── Snapshot the live GCP state the docs describe ─────────────────────
+      # Everything the inventory module reads is listed in ARCHITECTURE.md §1
+      # and the SETUP.md role table. A failed read RAISES (Rule 3.7); there is
+      # no cached fallback, because a doc "verified" against stale state is
+      # worse than a red run.
+      - name: Snapshot live Cloud Run / Scheduler / SQL / Build state
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          python -m scripts.maintenance.doc_inventory --write-snapshot refresh-inputs/live.json --db-live
+          # The verifier exits 1 when the CURRENT docs have drifted -- which is
+          # the condition this job exists to repair, so it must not abort the
+          # run here. Exit 0/1 are both fine; anything else is a crash, and a
+          # missing snapshot file is a crash whatever the status said.
+          set +e
+          python scripts/verify_docs_against_live.py --write-snapshot refresh-inputs/verify_live.json
+          VRC=$?
+          set -e
+          if [ "$VRC" -ne 0 ] && [ "$VRC" -ne 1 ]; then
+            echo "::error::verify_docs_against_live.py crashed (exit $VRC) while taking the snapshot"
+            exit 1
+          fi
+          test -s refresh-inputs/verify_live.json
+          python - <<'PY'
+          import json
+          live = json.load(open("refresh-inputs/live.json"))
+          for key in ("jobs", "services", "schedulers", "secrets", "db_tables"):
+              if not live.get(key):
+                  raise SystemExit(f"live snapshot has no {key} — refusing to generate docs from it")
+          print("live:", live["counts"], "db_tables:", len(live["db_tables"]))
+          PY
+
+      # ── Digest the snapshots into files a language model can read whole ───
+      # refresh-inputs/inventory.json runs to thousands of lines and Gemini's
+      # read_file truncates it (the 2026-09-02 ARCHITECTURE.md said "the
+      # inventory.json file was truncated" and the run went green). The
+      # per-resource files below are each a few KB.
+      - name: Digest inputs
+        run: |
+          set -e
+          jq -r '.[] | select(.assetType=="run.googleapis.com/Job") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/jobs.txt
+          jq -r '.[] | select(.assetType=="run.googleapis.com/Service") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/services.txt
+          jq -r '.[] | select(.assetType=="secretmanager.googleapis.com/Secret") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/secrets.txt
+          jq -r '.[] | select(.assetType=="iam.googleapis.com/ServiceAccount") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/service_accounts.txt
+          jq -r '.[] | select(.assetType=="storage.googleapis.com/Bucket") | .name | split("/")[-1]' refresh-inputs/inventory.json | sort > refresh-inputs/buckets.txt
+          for F in jobs services secrets service_accounts buckets; do
+            N=$(wc -l < "refresh-inputs/${F}.txt"); echo "${F}: ${N}"
+            if [ "${N}" -eq 0 ]; then echo "::error::refresh-inputs/${F}.txt is empty — the asset inventory is missing that asset type"; exit 1; fi
+          done
+          python - <<'PY'
+          import csv, json, collections
+          rows = json.load(open("refresh-inputs/billing.json"))
+          by_sku = collections.defaultdict(float); by_month = collections.defaultdict(float)
+          for r in rows:
+              by_sku[(r["service"], r["sku"])] += float(r["cost_usd"]); by_month[r["month"][:7]] += float(r["cost_usd"])
+          with open("refresh-inputs/billing_by_sku.csv", "w", newline="") as f:
+              w = csv.writer(f); w.writerow(["service", "sku", "cost_usd_90d"])
+              for (svc, sku), c in sorted(by_sku.items(), key=lambda x: -x[1]): w.writerow([svc, sku, round(c, 2)])
+          with open("refresh-inputs/billing_by_month.csv", "w", newline="") as f:
+              w = csv.writer(f); w.writerow(["month", "cost_usd"])
+              for m, c in sorted(by_month.items()): w.writerow([m, round(c, 2)])
+          if not by_sku:
+              raise SystemExit("billing digest is empty")
+          PY
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --json > refresh-inputs/repo_inventory.json
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown reconcile > refresh-inputs/live_vs_repo.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown services > refresh-inputs/services.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown schedulers > refresh-inputs/schedulers.md
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --markdown jobs > refresh-inputs/jobs.md
+          ls -la refresh-inputs/
+
+      # ── Keep the previous versions for the loss gates ─────────────────────
+      - name: Save previous doc versions
+        run: |
+          mkdir -p refresh-inputs/previous
+          # docs/API.md too, under the same relative path: diff_stats() skips a
+          # document whose previous version is absent, so without this its 90%
+          # churn ceiling never fires and it is missing from the accounting
+          # (Codex, #1009).
+          mkdir -p refresh-inputs/previous/docs
+          cp ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md refresh-inputs/previous/
+          cp docs/API.md refresh-inputs/previous/docs/API.md
+
+      # ── Render the inventory blocks deterministically, BEFORE Gemini ──────
+      # Jobs, schedulers, tables, routes, services, modules, write/read graph,
+      # multi-writer, orphans, blast radius, live table stats and the
+      # live-vs-repo reconciliation are rendered from the snapshot into the
+      # <!-- inventory:*:start/end --> markers. The model updates the prose
+      # around them and must not touch them (a gate below re-renders and
+      # diffs).
+      - name: Render inventory blocks
+        run: |
+          python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --insert ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md
+          # The drawio companions are regenerated from the same snapshot:
+          # counts, scheduler labels, the add-on job grid and the icon page.
+          jq '[.repo.jobs[].name]' refresh-inputs/repo_inventory.json > refresh-inputs/repo_jobs.json
+          python scripts/maintenance/refresh_architecture_drawio.py --snapshot refresh-inputs/live.json --repo-jobs refresh-inputs/repo_jobs.json
+          git --no-pager diff --stat -- ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md Architecture.drawio Architecture-icons.drawio
+
+      # A. Gemini gets write_file/replace on the whole checkout. Everything
+      # the gates run on is copied aside here and put back, unchanged, right
+      # before verification, so a malformed or prompt-injected regeneration
+      # cannot edit the gate scripts, the live snapshot or the saved
+      # previous versions it is about to be judged against (Codex, #1009).
+      - name: Freeze gate inputs
+        run: |
+          set -e
+          # rm -rf first: `cp -r src dst` NESTS into dst when dst already
+          # exists, so a re-run in a dirty RUNNER_TEMP silently produced
+          # frozen/refresh-inputs/refresh-inputs/ and the restore below then
+          # had nothing to copy back -- and said nothing.
+          rm -rf "$RUNNER_TEMP/frozen"
+          mkdir -p "$RUNNER_TEMP/frozen"
+          cp -r refresh-inputs "$RUNNER_TEMP/frozen/refresh-inputs"
+          # The diagrams are RENDERED, not written by the model, but the four
+          # Gemini runs keep write_file/replace over the whole checkout and the
+          # drawio validation ran only in the render step above -- so an edit
+          # made after it was staged and published unchecked (Codex, #1009).
+          # Freeze them here; restore and re-validate after the model runs.
+          cp Architecture.drawio Architecture-icons.drawio "$RUNNER_TEMP/frozen/"
+          # docs/API.md and docs/INVESTMENT_MODELS_SUMMARY.md are deterministic
+          # too: NO prompt writes either (the README prompt only links API.md),
+          # one is rendered marker blocks plus a hand-written header and the
+          # other is refreshed by scripts/refresh_calibration_table.py AFTER
+          # the restore. Allowlisting them meant a model edit to their prose
+          # was staged as legitimate. (Codex, PR #1009.)
+          mkdir -p "$RUNNER_TEMP/frozen/docs"
+          cp docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md "$RUNNER_TEMP/frozen/docs/"
+          git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
+          # Everything already sitting untracked in the workspace BEFORE the
+          # model ran. The stray-write scan below attributes an untracked file
+          # to the model; anything in this list was put there by a step, not by
+          # Gemini. gha-creds-*.json (google-github-actions/auth) was the first
+          # such file and failed every run; recording the set means the next
+          # tool that drops something in the workspace is not a new outage.
+          # Name-only is enough: the only untracked files the gates READ are
+          # under refresh-inputs/, which is frozen with a sha256 manifest.
+          git ls-files --others --exclude-standard | sort > "$RUNNER_TEMP/frozen/untracked.before"
+          echo "untracked before the model ran: $(wc -l < "$RUNNER_TEMP/frozen/untracked.before")"
+          # Prove the freeze actually captured the inputs the gates depend on.
+          test -f "$RUNNER_TEMP/frozen/Architecture.drawio"
+          test -f "$RUNNER_TEMP/frozen/Architecture-icons.drawio"
+          test -f "$RUNNER_TEMP/frozen/docs/API.md"
+          test -f "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md"
+          test -f "$RUNNER_TEMP/frozen/untracked.before"
+          for F in live.json verify_live.json previous; do
+            test -e "$RUNNER_TEMP/frozen/refresh-inputs/$F" || {
+              echo "::error::freeze did not capture refresh-inputs/$F"; exit 1; }
+          done
+          ( cd "$RUNNER_TEMP/frozen/refresh-inputs" && find . -type f -exec sha256sum {} + | sort -k2 ) \
+            > "$RUNNER_TEMP/frozen/manifest.sha256"
+          echo "frozen $(wc -l < "$RUNNER_TEMP/frozen/manifest.sha256") files"
+
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
       # Tool restriction is enforced by the policy file written above
       # (~/.gemini/policies/refresh-docs.toml), NOT by --allowed-tools or
@@ -269,8 +459,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/architecture.md)"
+            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/architecture.log"
 
       - name: Regenerate DATA_DEPENDENCIES.md
         env:
@@ -278,8 +470,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/data-dependencies.md)"
+            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/data-dependencies.log"
 
       - name: Regenerate COST_ANALYSIS.md
         env:
@@ -287,8 +481,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/cost-analysis.md)"
+            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/cost-analysis.log"
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
@@ -298,14 +494,97 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
           gemini --model "${GEMINI_MODEL}" \
-            --prompt "$(cat .github/prompts/readme.md)"
+            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/readme.log"
 
       # ── Verify the regenerations actually happened and are complete ──────
       # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
       # 35-of-62-table DATA_DEPENDENCIES.md, and silently reverted an
       # ARCHITECTURE.md the model had refused to write — all with a green
       # run. These deterministic gates make each of those a red run instead.
+      - name: Restore gate inputs and refuse model edits outside the docs
+        run: |
+          set -e
+          # The diagrams are deliberately NOT here: they are rendered from the
+          # snapshot before Gemini runs, so a model edit to one is a stray
+          # write, not an update. (Codex, PR #1009.)
+          # Only the four documents a prompt actually writes. The diagrams and
+          # the two deterministic docs are rendered before the model runs, so
+          # an edit to any of them is a stray write. (Codex, PR #1009.)
+          ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md"
+          # Rendered BEFORE the model ran, and frozen at that point. Their diff
+          # against HEAD is the RENDER's work -- a new route or job -- which is
+          # the whole reason this workflow exists, so it must not be mistaken
+          # for a model write. Excluding them from ALLOWED alone did exactly
+          # that and would have failed every month that changed an inventory.
+          # What must not happen is a difference from the FROZEN copy, which
+          # only the model could produce. (Codex, PR #1009.)
+          DETERMINISTIC="Architecture.drawio Architecture-icons.drawio docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md"
+          # google-github-actions/auth@v2 writes gha-creds-*.json into
+          # $GITHUB_WORKSPACE on every run (create_credentials_file defaults to
+          # true, and the ADC path gcloud, BigQuery and the Gemini CLI all use
+          # points at it, so it cannot be turned off). Untracked and unignored,
+          # it landed in the scan below and failed EVERY run here, before
+          # verification and before the PR. .gitignore carries the pattern the
+          # action's docs recommend; assert it still does, so a future
+          # .gitignore edit says so plainly instead of resurfacing as "the model
+          # wrote outside the generated docs". (Codex, PR #1009.)
+          # A missing list would make every untracked path look like a model
+          # write, so say which file is missing rather than printing a stray
+          # list that blames Gemini for the freeze not having run.
+          test -f "$RUNNER_TEMP/frozen/untracked.before" || {
+            echo "::error::the freeze did not record the pre-model untracked set — refusing to attribute untracked files to the model"; exit 1; }
+          if ! git check-ignore -q gha-creds-probe.json; then
+            echo "::error::gha-creds-*.json is not gitignored — the WIF credentials file google-github-actions/auth writes into the workspace will be scanned as a stray model write. Restore the pattern in .gitignore."
+            exit 1
+          fi
+          STRAY=""
+          for F in $(git diff --name-only; git ls-files --others --exclude-standard | grep -v '^refresh-inputs/' || true); do
+            case " $ALLOWED " in *" $F "*) continue;; esac
+            case " $DETERMINISTIC " in
+              *" $F "*)
+                if ! cmp -s "$F" "$RUNNER_TEMP/frozen/$F"; then
+                  STRAY="$STRAY $F(model edited a rendered file)"
+                fi
+                continue;;
+            esac
+            # Present before the model ran, so a step put it there, not Gemini.
+            if grep -qxF "$F" "$RUNNER_TEMP/frozen/untracked.before"; then continue; fi
+            STRAY="$STRAY $F"
+          done
+          if [ -n "$STRAY" ]; then
+            echo "::error::the model wrote outside the generated docs:$STRAY — refusing to verify or publish"
+            exit 1
+          fi
+          # The gates must read the inputs captured BEFORE the model ran, so
+          # restore them and then PROVE the restore happened: a cp that
+          # silently copies nothing leaves the model's version in place and
+          # the gates judge tampered inputs while reporting success.
+          test -f "$RUNNER_TEMP/frozen/manifest.sha256" || {
+            echo "::error::no frozen gate inputs to restore — refusing to verify"; exit 1; }
+          cp -r "$RUNNER_TEMP/frozen/refresh-inputs/." refresh-inputs/
+          ( cd refresh-inputs && sha256sum -c --quiet --status \
+              <(sed 's|  \./|  |' "$RUNNER_TEMP/frozen/manifest.sha256") ) || {
+            echo "::error::restored gate inputs do not match the frozen copies"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/frozen/head.sha")"
+          cp "$RUNNER_TEMP/frozen/Architecture.drawio" Architecture.drawio
+          cp "$RUNNER_TEMP/frozen/Architecture-icons.drawio" Architecture-icons.drawio
+          cp "$RUNNER_TEMP/frozen/docs/API.md" docs/API.md
+          cp "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md" docs/INVESTMENT_MODELS_SUMMARY.md
+          echo "gate inputs restored and verified against the pre-Gemini manifest"
+
+      # Re-run the drawio validation against what will actually be committed:
+      # the render step validated the diagrams BEFORE the model could reach
+      # them, and nothing looked again afterwards. (Codex, PR #1009.)
+      - name: Re-validate the diagrams after the model ran
+        run: |
+          set -e
+          python scripts/maintenance/refresh_architecture_drawio.py \
+            --snapshot refresh-inputs/live.json \
+            --repo-jobs refresh-inputs/repo_jobs.json --check
+
       - name: Verify regenerated docs
         run: |
           set -e
@@ -314,18 +593,15 @@ jobs:
 
           # 1. Every doc must carry TODAY's Generated stamp. All four prompts
           #    require the stamp, so a stale one means the model never wrote
-          #    the file this run (the ARCHITECTURE.md failure mode: it
-          #    reported "unable to regenerate" and the old detect step
-          #    misread the untouched file as "no meaningful changes").
+          #    the file this run.
           for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md; do
             if ! grep -qE "Generated(\*\*)? ${TODAY}" "$FILE"; then
-              echo "::error::${FILE} does not carry today's 'Generated ${TODAY}' stamp — the model did not complete a regeneration of it. Its transcript is in the step above."
+              echo "::error::${FILE} does not carry today's 'Generated ${TODAY}' stamp — the model did not complete an update of it. Its transcript is in the step above."
               FAIL=1
             fi
           done
 
-          # 2. DATA_DEPENDENCIES.md must mention every table schema.sql
-          #    creates — the doc's own contract ("cover every table").
+          # 2. DATA_DEPENDENCIES.md must mention every table schema.sql creates.
           MISSING=""
           for TABLE in $(grep -oE '^CREATE TABLE( IF NOT EXISTS)? [a-zA-Z0-9_]+' gcp/schema.sql | awk '{print $NF}' | sort -u); do
             grep -q "$TABLE" DATA_DEPENDENCIES.md || MISSING="${MISSING} ${TABLE}"
@@ -335,10 +611,7 @@ jobs:
             FAIL=1
           fi
 
-          # 3. COST_ANALYSIS.md must contain at least one dollar figure and
-          #    no self-described placeholder — an honest cost doc always has
-          #    numbers, because the billing step above fails loud when the
-          #    rollup is empty.
+          # 3. COST_ANALYSIS.md must contain a dollar figure and no placeholder.
           if ! grep -qE '\$[0-9]' COST_ANALYSIS.md; then
             echo "::error::COST_ANALYSIS.md contains no dollar figure — it was not generated from billing data"
             FAIL=1
@@ -346,6 +619,72 @@ jobs:
           if grep -qiE 'placeholder' COST_ANALYSIS.md; then
             echo "::error::COST_ANALYSIS.md describes itself as a placeholder"
             FAIL=1
+          fi
+
+          # 4..12: the structural gates live in one script so they can be run
+          #    locally (`python scripts/maintenance/check_generated_docs.py`)
+          #    and unit-tested.
+          # --report writes the added/removed accounting for this run: per doc,
+          # lines and bytes before/after, added, removed, churn, and which
+          # headings and inventory blocks appeared or vanished. The churn
+          # ceiling in that script fails a run that REPLACED a document
+          # instead of updating it, which is what every earlier gate missed.
+          # --allow-rewrite is deliberately not passed: the bot cannot exempt
+          # itself.
+          python scripts/maintenance/check_generated_docs.py \
+            --snapshot refresh-inputs/live.json \
+            --previous-dir refresh-inputs/previous \
+            --transcripts-dir "$RUNNER_TEMP/transcripts" \
+            --report refresh-inputs/diff_report.md || FAIL=1
+          if [ -s refresh-inputs/diff_report.md ]; then
+            cat refresh-inputs/diff_report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # 13. Docs vs live drift (schedules, names, counts, retired services).
+          #     The verifier scans ~40 operational docs; only the four this
+          #     workflow regenerates can be fixed by re-running it, so drift
+          #     there is a failure and drift anywhere else is a warning the
+          #     PR body carries (a stale count in docs/product/ must not block
+          #     the monthly refresh forever).
+          set +e
+          python scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json \
+            > refresh-inputs/verify_findings.txt 2>&1
+          VRC=$?
+          set -e
+          cat refresh-inputs/verify_findings.txt
+          # exit 0 = clean, 1 = findings; anything else, or no completion
+          # summary, means the verifier crashed and the gate never ran.
+          if ! grep -qE '^checked [0-9]+ operational docs' refresh-inputs/verify_findings.txt || { [ "$VRC" -ne 0 ] && [ "$VRC" -ne 1 ]; }; then
+            echo "::error::verify_docs_against_live.py did not complete (exit $VRC); the docs-vs-live gate did not run"
+            FAIL=1
+          fi
+          if grep -qE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' refresh-inputs/verify_findings.txt; then
+            echo "::error::verify_docs_against_live.py found drift in a regenerated doc (see above)"
+            FAIL=1
+          fi
+          # Drift outside the four regenerated docs is a warning, not a
+          # failure -- but it has to REACH a reviewer. It was only ever
+          # printed to the Actions log and converted to warnings, while the
+          # comment above claimed the PR body carried it. (Codex, PR #1009.)
+          grep -E '^\[[a-z-]+\] ' refresh-inputs/verify_findings.txt \
+            | grep -vE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' \
+            > refresh-inputs/verify_other.txt || true
+          sed 's/^/::warning::docs-vs-live drift outside the regenerated docs: /' \
+            refresh-inputs/verify_other.txt || true
+          if [ -s refresh-inputs/verify_other.txt ]; then
+            {
+              echo
+              echo "### Docs-vs-live drift outside the regenerated docs"
+              echo
+              echo "Not fixed by this refresh (it does not generate these files) and not"
+              echo "blocking. Each line is a claim in an operational doc that no longer"
+              echo "matches live GCP."
+              echo
+              echo '```'
+              cat refresh-inputs/verify_other.txt
+              echo '```'
+            } > refresh-inputs/verify_other.md
+            cat refresh-inputs/verify_other.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
           exit $FAIL
@@ -378,7 +717,7 @@ jobs:
         run: |
           set +e
           MEANINGFUL=0
-          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md; do
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio; do
             if [ ! -f "$FILE" ]; then continue; fi
             # Mangle slashes so files in subdirs (e.g. docs/X.md) don't
             # try to redirect into /tmp/docs/ which doesn't exist. Without
@@ -386,11 +725,35 @@ jobs:
             # diff file is absent, the -s check is false, and we revert
             # the file we just regenerated. (Caught by Codex on PR #254.)
             DIFF_NAME="${FILE//\//_}"
-            git diff --no-color "$FILE" \
-              | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-              | grep -vE '^[-+]\*\*Generated\*\* 20[0-9]{2}' \
-              | grep -E '^[-+][^-+]' \
-              > "/tmp/${DIFF_NAME}.diff"
+            # Normalise the timestamp, do NOT drop the line. Dropping any line
+            # containing a date threw away real state changes that share a line
+            # with one: the drawio sched_group cell is a single XML line
+            # carrying both "read YYYY-MM-DD" and the paused-scheduler list, so
+            # a scheduler becoming paused was classified timestamp-only and the
+            # file reverted -- with the diagram already validated, so nothing
+            # looked again. (Codex, PR #1009.)
+            #
+            # A file is timestamp-only when its removed and added lines are
+            # identical once dates are masked, which is a comparison rather
+            # than a filter and cannot silently discard content.
+            git diff --no-color "$FILE" | grep -E '^[-+][^-+]' > "/tmp/${DIFF_NAME}.raw" || true
+            sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}/<DATE>/g; s/(\*\*)?Generated(\*\*)? 20[0-9]{2}/Generated <DATE>/g' \
+              "/tmp/${DIFF_NAME}.raw" > "/tmp/${DIFF_NAME}.norm"
+            sed -n 's/^-//p' "/tmp/${DIFF_NAME}.norm" > "/tmp/${DIFF_NAME}.old"
+            sed -n 's/^+//p' "/tmp/${DIFF_NAME}.norm" > "/tmp/${DIFF_NAME}.new"
+            sed -n 's/^-//p' "/tmp/${DIFF_NAME}.raw"  > "/tmp/${DIFF_NAME}.rold"
+            sed -n 's/^+//p' "/tmp/${DIFF_NAME}.raw"  > "/tmp/${DIFF_NAME}.rnew"
+            # A file is timestamp-only when masking the dates makes the two
+            # sides identical AND the unmasked sides differ -- i.e. a date is
+            # what changed. A pure line MOVE also has identical masked sides,
+            # but its unmasked sides are identical too, so it is a real edit
+            # and must survive; sorting the sides hid that distinction, and
+            # ordering alone does not recover it. (Codex, PR #1009.)
+            : > "/tmp/${DIFF_NAME}.diff"
+            if ! diff -q "/tmp/${DIFF_NAME}.old" "/tmp/${DIFF_NAME}.new" >/dev/null \
+               || diff -q "/tmp/${DIFF_NAME}.rold" "/tmp/${DIFF_NAME}.rnew" >/dev/null; then
+              cp "/tmp/${DIFF_NAME}.raw" "/tmp/${DIFF_NAME}.diff"
+            fi
             if [ -s "/tmp/${DIFF_NAME}.diff" ]; then
               CHANGED_LINES=$(wc -l < "/tmp/${DIFF_NAME}.diff")
               echo "::notice::$FILE has meaningful changes ($CHANGED_LINES lines)"
@@ -425,9 +788,9 @@ jobs:
           git config user.email "noreply@github.com"
           git checkout -b "$BRANCH"
 
-          # Stage only the regenerated docs. JSON dumps are gitignored
-          # (see .gitignore: gcp_inventory.json / gcp_iam.json / billing_90d.json).
-          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md
+          # Stage only the regenerated docs. refresh-inputs/ is untracked and
+          # never staged.
+          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio
 
           if git diff --cached --quiet; then
             echo "nothing staged — exit clean"
@@ -446,22 +809,22 @@ jobs:
           # force-push ban is scoped to main).
           git push --force -u origin "$BRANCH"
 
-          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md)
+          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio)
+          # The added/removed accounting the gate step produced, so a reviewer
+          # sees what moved without reading the whole diff.
+          DIFF_REPORT=$(cat refresh-inputs/diff_report.md 2>/dev/null || echo "_no accounting produced_")
+          DRIFT=$(cat refresh-inputs/verify_other.md 2>/dev/null || true)
 
           # A PR may already be open for this branch from an earlier run this
           # month. `gh pr create` errors loudly in that case even though the
           # force-push above already updated it with fresh content — that's
           # not a failure, just nothing further to do.
-          EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
-          if [ -n "$EXISTING_PR" ]; then
-            echo "::notice::PR #$EXISTING_PR already open for $BRANCH — force-pushed fresh content, no new PR needed"
-            exit 0
-          fi
-
-          gh pr create \
-            --base main --head "$BRANCH" \
-            --title "Monthly architecture doc refresh: ${MONTH}" \
-            --body "## Summary
+          # The body is built once and used by BOTH paths. A second run in the
+          # same month force-pushes fresh content; leaving the body alone left
+          # its diff accounting and docs-vs-live findings describing the
+          # PREVIOUS run's documents. (Codex, PR #1009.)
+          BODY=$(cat <<EOF   # escaped backticks: an unquoted heredoc would RUN them
+          ## Summary
 
           Automated monthly refresh of architecture / cost / dependency docs from live GCP state.
 
@@ -471,20 +834,40 @@ jobs:
           ${STAT}
           \`\`\`
 
+          ${DIFF_REPORT}
+          ${DRIFT}
+
           ## What ran
 
-          1. \`gcloud asset search-all-resources\` → \`gcp_inventory.json\`
-          2. \`gcloud projects get-iam-policy\` → \`gcp_iam.json\`
-          3. BigQuery 90-day billing rollup → \`billing_90d.json\`
-          4. Gemini ${GEMINI_MODEL} (Vertex AI) regenerated each doc using prompts in \`.github/prompts/\`
+          1. \`gcloud asset search-all-resources\` + \`get-iam-policy\` + BigQuery billing rollup → \`refresh-inputs/\`
+          2. \`scripts/maintenance/doc_inventory.py --write-snapshot --db-live\` → live jobs, executions, services, schedulers, Cloud Build triggers, domain mappings, Cloud SQL, secrets, Pub/Sub, sinks, Cloud Tasks, images, table stats
+          3. Inventory blocks in \`ARCHITECTURE.md\` / \`DATA_DEPENDENCIES.md\` re-rendered deterministically
+          4. Gemini ${GEMINI_MODEL} (Vertex AI) updated the prose in place using prompts in \`.github/prompts/\`
+          5. Both drawio companions regenerated from the same snapshot
+          6. Gates: stamp, table/job/route/scheduler coverage, marker integrity, no lost headings, size floor, **churn ceiling** (a document replaced rather than updated fails the run), stale strings, dead links, \`verify_docs_against_live.py\`
 
           ## Reviewer checklist
 
-          - Spot-check the Cloud Run Job inventory in \`ARCHITECTURE.md\` against \`gcloud run jobs list\`
+          - Read \`ARCHITECTURE.md\` §15 (live-vs-repo reconciliation) and §18 (removed since last refresh) — those are the deltas that need a human decision
           - Confirm \`COST_ANALYSIS.md\` headline numbers match Cloud Console → Billing → Reports
-          - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` is real before acting on it
+          - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` §5 is real before acting on it
+          - Scan the added/removed table above: a document with high churn or a lost heading is the failure mode this refresh has hit before
 
-          Generated by \`.github/workflows/refresh-architecture-docs.yml\`"
+          Generated by \`.github/workflows/refresh-architecture-docs.yml\`
+          EOF
+          )
+
+          EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --body "$BODY"
+            echo "::notice::PR #$EXISTING_PR already open for $BRANCH — force-pushed fresh content and updated its body"
+            exit 0
+          fi
+
+          gh pr create \
+            --base main --head "$BRANCH" \
+            --title "Monthly architecture doc refresh: ${MONTH}" \
+            --body "$BODY"
 
       - name: No-op summary
         if: steps.detect.outputs.meaningful != '1'

@@ -373,6 +373,25 @@ def _parse_webull(text: str) -> list[NormalizedOrder]:
 _GENERIC_REQUIRED_KEYS = ("ticker", "direction", "action", "ts", "price", "quantity")
 
 
+# The one definition of an acceptable import timestamp, shared with the API's
+# commit-side validator (`platform/api/routers/journal.py`) so preview and
+# commit cannot disagree about a row.
+#
+# Naive wall clock only. `journal_entries.entry_ts` stores a naive-ET literal,
+# and the dedupe key normalises with `str(ts)[:16]`, which truncates a UTC
+# offset away -- so `10:00+00` and `10:00-04` collapse to one application key
+# while the TIMESTAMPTZ index resolves them to different instants and keeps
+# both. There is no correct instant to normalise an offset TO for a column
+# that does not store one, so the row is skipped with a reason rather than
+# reinterpreted (Rule 3.7).
+_NAIVE_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
+
+
+def is_naive_wall_clock(value: str | None) -> bool:
+    """True for `YYYY-MM-DD HH:MM`, with an optional `T` and optional seconds."""
+    return bool(value is not None and _NAIVE_TS_RE.match(str(value).strip()))
+
+
 def _parse_generic(text: str, mapping: dict) -> list[NormalizedOrder]:
     missing_keys = [k for k in _GENERIC_REQUIRED_KEYS if k not in mapping]
     if missing_keys:
@@ -411,6 +430,17 @@ def _parse_generic(text: str, mapping: dict) -> list[NormalizedOrder]:
             continue
         if not ts:
             orders.append(_make_skip(i, "missing ts"))
+            continue
+        # A generic mapping points at whatever column the caller names, so
+        # unlike the two broker parsers -- which build the timestamp
+        # themselves -- this one can carry a UTC offset or a zone straight
+        # from the CSV. Skipped here rather than at commit: preview must not
+        # offer a row the commit model refuses, and because that model
+        # validates the whole trade list, one such row would 422 the entire
+        # batch and block every other selected trade (Codex, PR #1016).
+        if not is_naive_wall_clock(ts):
+            orders.append(_make_skip(
+                i, f"ts is not naive wall clock 'YYYY-MM-DD HH:MM': {ts!r}"))
             continue
 
         price = _parse_money(row[col_price])

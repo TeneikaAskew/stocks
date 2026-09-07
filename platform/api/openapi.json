@@ -97,6 +97,28 @@
             },
             "title": "Sources",
             "type": "array"
+          },
+          "stale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale"
+          },
+          "stale_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Age Seconds"
           }
         },
         "required": [
@@ -2143,6 +2165,28 @@
           "overall_status": {
             "title": "Overall Status",
             "type": "string"
+          },
+          "stale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale"
+          },
+          "stale_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Age Seconds"
           },
           "tables": {
             "items": {
@@ -11182,7 +11226,7 @@
     },
     "/api/earnings/health/ping": {
       "get": {
-        "description": "Lightweight warm-up endpoint hit by the keep-warm Cloud Scheduler.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
+        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\"): solyra-api-prod sits behind IAP, so an\nunauthenticated GET is rejected at IAP and never reaches the app. The\nendpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
         "operationId": "health_ping_api_earnings_health_ping_get",
         "responses": {
           "200": {
@@ -11541,6 +11585,7 @@
     },
     "/api/health": {
       "get": {
+        "description": "Liveness probe: reports the service version and its configured backends.",
         "operationId": "health_check_api_health_get",
         "responses": {
           "200": {

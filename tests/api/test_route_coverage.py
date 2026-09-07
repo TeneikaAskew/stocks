@@ -432,10 +432,15 @@ def _clear_process_caches() -> None:
                     cache.clear()
                 except Exception:            # pragma: no cover - defensive
                     pass
+    # `health` keeps its audit in ONE tuple rebinding (`_cache`), not a
+    # value/expiry pair -- deliberately, so a reader cannot observe a fresh
+    # deadline over a stale payload. Setting the old `_cache_value` /
+    # `_cache_expires_at` names here would create two attributes nothing
+    # reads and leave the real cache holding a previous file's audit, which
+    # is the silent version of not clearing at all.
     import api.routers.health as health
 
-    health._cache_value = None
-    health._cache_expires_at = 0.0
+    health._cache = None
 
 
 @pytest.fixture(scope="module")

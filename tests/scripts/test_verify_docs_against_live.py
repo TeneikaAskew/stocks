@@ -155,6 +155,38 @@ def test_service_account_is_not_the_deleted_service(tmp_path):
     assert out == []
 
 
+def test_count_claim_in_adjacent_table_columns_is_compared(tmp_path):
+    """`| Cloud Run Jobs | 7 jobs |` -- resource in one column, count in the
+    next. Every other pattern wants them adjacent or parenthesized, so a whole
+    component-summary table read as clean (Codex, PR #1009)."""
+    doc = tmp_path / "d.md"
+    doc.write_text("| Component | Detail |\n|---|---|\n| Cloud Run Jobs | 7 jobs x 50 runs |\n"
+                   "| Cloud Scheduler | 21 triggers |\n")
+    out = []
+    live = dict(LIVE)
+    live["run_jobs"] = {f"j{i}": {} for i in range(76)}
+    live["schedulers"] = {f"s{i}": {} for i in range(65)}
+    vd.check_counts(doc, "d.md", live, out)
+    blob = " ".join(f"{f.detail}" for f in out)
+    assert "76" in blob and "65" in blob, blob
+
+
+def test_utc_column_header_over_eastern_schedules_is_caught(tmp_path):
+    """`| Scheduler | Cron (UTC) |` labels every row beneath it. The per-line
+    guard only read the line carrying the job name, so tables asserted UTC
+    over an all-Eastern fleet and read clean (Codex, PR #1009)."""
+    doc = tmp_path / "d.md"
+    doc.write_text("| Scheduler | Cron (UTC) | Job |\n|---|---|---|\n"
+                   "| fetch-market-data-daily | 0 23 * * 1-5 | fetch-market-data |\n")
+    out = []
+    vd.check_timezone_headers(doc, "d.md", LIVE, out)
+    assert len(out) == 1 and out[0].check == "utc-claim", out
+    doc.write_text("| Scheduler | Cron (America/New_York) | Job |\n")
+    out = []
+    vd.check_timezone_headers(doc, "d.md", LIVE, out)
+    assert out == []
+
+
 def test_count_claim_is_compared(tmp_path):
     out = _check(tmp_path, "The system has 34 Cloud Run Jobs.")
     assert [f.check for f in out] == ["count-drift"]
@@ -705,3 +737,82 @@ def test_a_history_word_does_not_suppress_a_count_claim(tmp_path):
     assert [f.check for f in _check(
         tmp_path, "`trading-platform` was deleted on 2026-09-06.",
         name="RUNBOOK.md")] == []
+
+
+def _names(tmp_path, text, live):
+    """check_known_names alone, against a caller-supplied live set."""
+    p = tmp_path / "ARCHITECTURE.md"
+    p.write_text(text)
+    out: list[vd.Finding] = []
+    vd.check_known_names(p, "ARCHITECTURE.md", live, out)
+    return out
+
+
+# The prefix heuristic only fires when a live name shares the candidate's
+# first segment, so the base LIVE above (no `options-*` job) cannot exercise
+# this at all -- the first version of these tests passed against the unfixed
+# code for that reason.
+_LIVE_OPTIONS = dict(LIVE, run_jobs=LIVE["run_jobs"] + ["options-retention"])
+
+
+def test_a_declared_but_undeployed_job_is_not_an_unknown_name(tmp_path):
+    """`options-exec-backtest` is in gcp/deploy.sh and not deployed.
+
+    ARCHITECTURE.md §16 names the declared job each entrypoint belongs to, and
+    §15 is where the declared-vs-live gap is reported with its reason. Flagging
+    it here reported one fact twice, in the more confusing of the two places.
+    (Surfaced by the recursive module walk, Codex PR #1009.)
+    """
+    out = _names(tmp_path, "The `options-exec-backtest` Cloud Run Job runs the simulator.",
+                 _LIVE_OPTIONS)
+    assert out == [], out
+
+
+def test_a_name_in_neither_the_repo_nor_live_is_still_flagged(tmp_path):
+    """Accepting declared names must not blind the check to a real stale claim."""
+    out = _names(tmp_path, "The `options-exec-backtestt` Cloud Run Job runs the simulator.",
+                 _LIVE_OPTIONS)
+    assert [f.check for f in out] == ["unknown-name"], out
+
+
+def test_declared_names_are_read_from_deploy_sh_not_swallowed():
+    """The first version caught ImportError and returned an empty set, so the
+    acceptance silently did nothing (CLAUDE.md 3.7)."""
+    here = str(pathlib.Path(vd.__file__).resolve().parent.parent)
+    names = vd._declared_names(here)
+    assert "options-exec-backtest" in names
+    assert len(names) > 100, "deploy.sh declares 67 jobs and 65 schedulers"
+
+
+def test_declared_names_are_read_from_the_root_being_checked(tmp_path, monkeypatch):
+    """`--root` points the document scan at another checkout; reading
+    deploy.sh from THIS one would report that tree's new names as unknown and
+    accept names it has deleted. (Codex, PR #1009.)"""
+    seen = []
+    monkeypatch.setattr(vd, "_declared_names", lambda root: seen.append(root) or frozenset())
+    p = tmp_path / "ARCHITECTURE.md"
+    p.write_text("The `fetch-market-data` Cloud Run Job runs nightly.\n")
+    vd.check_known_names(p, "ARCHITECTURE.md", LIVE, [], tmp_path)
+    assert seen == [str(tmp_path)], seen
+
+
+def test_the_declared_names_cache_is_keyed_on_the_root():
+    """One cached answer for every root would defeat --root just as thoroughly
+    as ignoring it."""
+    assert vd._declared_names.cache_info().maxsize > 1
+
+
+def test_a_count_claim_is_matched_anywhere_in_its_row(tmp_path):
+    """Requiring the resource in the FIRST cell missed the real rows.
+
+    `| Scheduled Jobs | Cloud Run Jobs | 7 jobs |` puts the resource in the
+    second cell, so a stale 7 against a live 76 passed in a file the verifier
+    explicitly scans -- and I had reported this one corrected when only the
+    cost table on the same page had been. (Codex, PR #1009.)
+    """
+    out = _check(tmp_path, "| Scheduled Jobs | Cloud Run Jobs | 7 jobs | notes |\n")
+    assert [f.check for f in out] == ["count-drift"], out
+    out = _check(tmp_path, "| Cron Triggers | Cloud Scheduler | 21 triggers | notes |\n")
+    assert [f.check for f in out] == ["count-drift"], out
+    # the correct counts pass
+    assert _check(tmp_path, "| Scheduled Jobs | Cloud Run Jobs | 3 jobs | notes |\n") == []

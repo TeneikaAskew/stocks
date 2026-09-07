@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional, Union
 from uuid import UUID, uuid4
 
-from typing import AsyncGenerator
+from typing import Generator
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
@@ -489,7 +489,7 @@ class WatchlistAddResponse(BaseModel):
 
 
 @router.get("/api/insights/ticker/search", response_model=TickerSearchResponse, response_model_exclude_unset=True)
-async def search_tickers(keywords: str, limit: int = 10):
+def search_tickers(keywords: str, limit: int = 10):
     """Search for tickers by keyword (company name, symbol, etc).
 
     Proxies to Alpha Vantage SYMBOL_SEARCH. Used by the watchlist
@@ -504,7 +504,7 @@ async def search_tickers(keywords: str, limit: int = 10):
 
 
 @router.get("/api/insights/ticker/{ticker}/info")
-async def get_ticker_info(ticker: str):
+def get_ticker_info(ticker: str):
     """Return cached ticker details (AV OVERVIEW), fetching if needed."""
     from lib.ticker_info import get_ticker_info as av_info
 
@@ -524,7 +524,7 @@ async def get_ticker_info(ticker: str):
 
 
 @router.get("/api/insights/ticker/{ticker}/quote")
-async def get_ticker_quote(ticker: str):
+def get_ticker_quote(ticker: str):
     """Return latest price/volume from AV GLOBAL_QUOTE."""
     from lib.ticker_info import get_quote as av_quote
 
@@ -535,7 +535,7 @@ async def get_ticker_quote(ticker: str):
 
 
 @router.get("/api/insights/ticker/{ticker}/peers")
-async def get_ticker_peers(ticker: str):
+def get_ticker_peers(ticker: str):
     """Return peer tickers from FinViz (cached)."""
     from lib.ticker_info import get_peers
 
@@ -544,7 +544,7 @@ async def get_ticker_peers(ticker: str):
 
 
 @router.post("/api/insights/watchlist/add", response_model=WatchlistAddResponse, response_model_exclude_unset=True)
-async def add_to_watchlist(body: WatchlistAddRequest, request: Request):
+def add_to_watchlist(body: WatchlistAddRequest, request: Request):
     """Add a ticker to the watchlist and return its info + quote.
 
     Persists to the `watchlists` Cloud SQL table (durable, per-user)
@@ -621,7 +621,7 @@ async def add_to_watchlist(body: WatchlistAddRequest, request: Request):
 
 
 @router.delete("/api/insights/watchlist/{ticker}", response_model=WatchlistRemoveResponse, response_model_exclude_unset=True)
-async def remove_from_watchlist(ticker: str, request: Request):
+def remove_from_watchlist(ticker: str, request: Request):
     """Soft-delete a ticker from the watchlist (sets removed_at=NOW()).
 
     Persists to the `watchlists` Cloud SQL table; the alert_config.json
@@ -654,7 +654,7 @@ async def remove_from_watchlist(ticker: str, request: Request):
 
 
 @router.get("/api/insights/watchlist", response_model=WatchlistResponse, response_model_exclude_unset=True)
-async def get_watchlist(
+def get_watchlist(
     request: Request,
     catalyst: Optional[str] = None,
     limit: int = 10,
@@ -709,7 +709,7 @@ async def get_watchlist(
 
 
 @router.get("/api/insights/report/{ticker}", response_model=ReportEnvelope)
-async def get_insight_report(ticker: str, as_of: Optional[str] = None):
+def get_insight_report(ticker: str, as_of: Optional[str] = None):
     """Return the most recent InsightReport for the ticker.
 
     With ``?as_of=YYYY-MM-DD`` returns the latest report dated on or before
@@ -738,7 +738,7 @@ async def get_insight_report(ticker: str, as_of: Optional[str] = None):
 
 
 @router.get("/api/insights/report/{ticker}/history", response_model=InsightHistoryResponse, response_model_exclude_unset=True)
-async def get_insight_history(ticker: str, limit: int = 20):
+def get_insight_history(ticker: str, limit: int = 20):
     """Return a scannable list of recent reports for the ticker."""
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
@@ -748,7 +748,7 @@ async def get_insight_history(ticker: str, limit: int = 20):
 
 
 @router.get("/api/insights/reports/{report_id}", response_model=ReportEnvelope)
-async def get_insight_report_by_id(report_id: str):
+def get_insight_report_by_id(report_id: str):
     """Return a single insight report by row id.
 
     Used by the frontend History tab to open a past report in the
@@ -773,11 +773,23 @@ async def get_insight_report_by_id(report_id: str):
     )
 
 
+# Plain `def` on purpose. Scheduling a `BackgroundTask` does not make the
+# REQUEST path asynchronous, and this one is not: `_insert_run` opens and
+# commits a Cloud SQL connection, and in production `_enqueue_cloud_task`
+# makes a synchronous Cloud Tasks call — both before the response is built. As
+# `async def` those ran on the event loop, so a slow database or a slow Cloud
+# Tasks round trip stalled every other request. FastAPI injects
+# `BackgroundTasks` into a plain `def` handler exactly the same way, so
+# nothing else changes.
+#
+# A comment rather than docstring text: #1013 made docstrings the public
+# OpenAPI `description`, and why a handler is threadpooled is not something an
+# API consumer should be reading.
 @router.post(
     "/api/insights/report/{ticker}/refresh",
     response_model=RefreshResponse,
 )
-async def refresh_insight_report(
+def refresh_insight_report(
     ticker: str,
     background_tasks: BackgroundTasks,
     as_of: Optional[str] = None,
@@ -898,7 +910,7 @@ def _sync_run(
 
 
 @router.get("/api/insights/runs/{run_id}", response_model=RunStatus)
-async def get_run_status(run_id: str):
+def get_run_status(run_id: str):
     """Poll the status of a refresh run."""
     try:
         UUID(run_id)
@@ -989,8 +1001,25 @@ def _get_gemini_client():
     )
 
 
-async def _stream_gemini(request: ChatRequest) -> AsyncGenerator[str, None]:
-    """Stream response from Vertex AI Gemini."""
+def _stream_gemini(request: ChatRequest) -> Generator[str, None, None]:
+    """Stream a response from Vertex AI Gemini.
+
+    Deliberately a PLAIN generator, not an ``async`` one. Starlette iterates
+    an async generator on the event loop, and the body below drives
+    ``client.models.generate_content_stream(...)`` — the SDK's SYNCHRONOUS
+    iterator. So while Gemini was producing tokens, every other request on
+    the instance was stalled behind it, for as long as the model took to
+    answer. The `StreamingResponse` exemption in
+    `tests/test_api_handler_dispatch.py` did not save it: streaming is only
+    non-blocking if what is being streamed is.
+
+    Starlette wraps a synchronous iterator in ``iterate_in_threadpool``, so
+    as a plain generator the SDK's blocking reads happen on a worker thread
+    and the loop stays free. This is the smaller of the two available fixes
+    — the other is the SDK's async streaming API with ``async for`` — and it
+    is preferred here because it keeps one code path rather than making the
+    handler's correctness depend on which SDK entry point was used.
+    """
     try:
         from google.genai import types
 
@@ -1030,7 +1059,7 @@ async def _stream_gemini(request: ChatRequest) -> AsyncGenerator[str, None]:
 
 
 @router.post("/api/insights/chat")
-async def insights_chat(request: ChatRequest):
+def insights_chat(request: ChatRequest):
     """Stream a Gemini response for the given mode and message."""
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")

@@ -126,7 +126,7 @@ def _model_to_row(m: AvailableModel) -> AvailableModelRow:
 
 
 @router.get("/routes", response_model=RouteListResponse)
-async def admin_list_routes(request: Request):
+def admin_list_routes(request: Request):
     _require_admin(request)
     try:
         rows = [_route_to_row(r) for r in list_routes()]
@@ -145,7 +145,7 @@ async def admin_list_routes(request: Request):
 
 
 @router.put("/routes/{role}", response_model=RouteRow)
-async def admin_update_route(
+def admin_update_route(
     role: str,
     body: RouteUpdateRequest,
     request: Request,
@@ -187,7 +187,7 @@ async def admin_update_route(
 
 
 @router.get("/models", response_model=AvailableModelsResponse)
-async def admin_list_models(request: Request):
+def admin_list_models(request: Request):
     _require_admin(request)
     return AvailableModelsResponse(
         models=[_model_to_row(m) for m in list_available_models()]
@@ -321,7 +321,7 @@ def _build_brief_cell(ticker: str, tf: str, snap: Optional[dict]) -> StructureBr
 
 
 @router.get("/structure-brief", response_model=StructureBriefResponse)
-async def admin_structure_brief(
+def admin_structure_brief(
     request: Request
 ):
     """Dev-only readout of the strat-engine type model's structure predictions.
@@ -547,7 +547,7 @@ def _strat_engine_state_cells() -> list[StratEngineCellState]:
 
 
 @router.get("/strat-engine/state", response_model=StratEngineStateResponse)
-async def admin_strat_engine_state(
+def admin_strat_engine_state(
     request: Request
 ):
     """Operator snapshot of the on-shelf strat-engine model state.
@@ -567,7 +567,7 @@ async def admin_strat_engine_state(
     "/strat-engine/predict",
     response_model=StratEnginePredictResponse,
 )
-async def admin_strat_engine_predict(
+def admin_strat_engine_predict(
     body: StratEnginePredictRequest,
     request: Request,
 ):
@@ -690,7 +690,7 @@ class StructureContinuationResponse(BaseModel):
     "/strat-engine/structure-continuation",
     response_model=StructureContinuationResponse,
 )
-async def admin_structure_continuation(
+def admin_structure_continuation(
     body: StructureContinuationRequest,
     request: Request,
 ):
@@ -1169,6 +1169,14 @@ class AdminDataSourceRow(BaseModel):
 
 class AdminDataSourcesResponse(BaseModel):
     sources: list[AdminDataSourceRow]
+    # Mirrors `FreshnessResponse`: this view is a regrouping of that report,
+    # so when the report is a stale one served during a refresh, this view is
+    # stale too. Deriving the displayed statuses from the `tables` rows alone
+    # meant an expired report whose last status was "ok" was presented here as
+    # current and healthy -- a stale value shown as live, which is the shape
+    # Rule 3.7 forbids (Codex, PR #991).
+    stale: Optional[bool] = None
+    stale_age_seconds: Optional[int] = None
 
 
 class DataSourceRefreshResponse(BaseModel):
@@ -1344,7 +1352,14 @@ def admin_list_data_sources(request: Request):
             sources.append(
                 _aggregate_source(table, {"label": table, "category": "other", "job": None}, rows)
             )
-    return AdminDataSourcesResponse(sources=sources)
+    return AdminDataSourcesResponse(
+        sources=sources,
+        # Carried through rather than recomputed: the audit decides whether
+        # what it handed back is current, and this endpoint has no way to know
+        # otherwise. Absent when the report is fresh.
+        stale=report.get("stale"),
+        stale_age_seconds=report.get("stale_age_seconds"),
+    )
 
 
 # One dispatch per job per cooldown window — a double-clicked button must
