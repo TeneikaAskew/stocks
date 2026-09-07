@@ -368,15 +368,26 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
             # folding it into `info` first looks equivalent and is not: a peers
             # store landing between that read and the merge's own locked
             # re-read was still erased.
-            _merge_into_local_cache(ticker, info, replace=True, preserve=("_peers",))
+            _merge_into_local_cache(ticker, info, replace=True,
+                                    preserve=("_peers", "_peers_fetched_utc"))
             return info
 
     # Return stale data rather than nothing
     return entry
 
 
-def _is_fresh(entry: dict, max_age_days: int) -> bool:
-    fetched = entry.get("_fetched_utc", "")
+def _is_fresh(entry: dict, max_age_days: int,
+              stamp: str = "_fetched_utc") -> bool:
+    """Age one FIELD, not the whole entry.
+
+    `_peers` and the overview are fetched independently and preserved across
+    each other's refreshes, so a single shared `_fetched_utc` ages the wrong
+    one: an overview refresh carried `_peers` forward and stamped the entry
+    as fetched now, which made a stale peer list look fresh — indefinitely,
+    if an overview refresh landed inside every 30-day window
+    (Codex, PR #991).
+    """
+    fetched = entry.get(stamp, "")
     if not fetched:
         return False
     try:
@@ -515,14 +526,16 @@ def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
     local_cache = _load_local_cache()
     entry = local_cache.get(ticker, {})
     cached_peers = entry.get("_peers")
-    if cached_peers is not None and _is_fresh(entry, max_age_days):
+    if cached_peers is not None and _is_fresh(entry, max_age_days,
+                                              "_peers_fetched_utc"):
         return cached_peers
 
     with _PEERS_FLIGHT.claim(ticker) as mine:
         # Re-read on both branches, for the same reasons as get_ticker_info.
         cached = _load_local_cache().get(ticker, {})
         cached_peers = cached.get("_peers")
-        if cached_peers is not None and _is_fresh(cached, max_age_days):
+        if cached_peers is not None and _is_fresh(cached, max_age_days,
+                                                  "_peers_fetched_utc"):
             return cached_peers
         if not mine and cached_peers is not None:
             return cached_peers    # stale, but real, and immediate
@@ -531,9 +544,12 @@ def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
 
         # Persist to cache
         if peers is not None:
+            # `_peers_fetched_utc`, not the shared `_fetched_utc`: an
+            # overview refresh preserves `_peers` and rewrites the shared
+            # stamp, so peers aged by it are reported fresh forever.
             _merge_into_local_cache(ticker, {
                 "_peers": peers,
-                "_fetched_utc": datetime.now(timezone.utc).isoformat(),
+                "_peers_fetched_utc": datetime.now(timezone.utc).isoformat(),
             }, replace=False)
 
             # Also persist to Cloud SQL relationships column

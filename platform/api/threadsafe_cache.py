@@ -149,6 +149,28 @@ class ThreadSafeCache(MutableMapping):
                 peer = type(inner)()
         return ThreadSafeCache(peer)
 
+    def get_and_touch(self, key: Any, default: Any = None) -> Any:
+        """Read an entry and mark it most-recently-used, in ONE locked step.
+
+        `get` then `move_to_end` is two locked operations with a window
+        between them, and on a full cache a concurrent miss for another key
+        can evict this very entry in that window -- so `move_to_end` raises
+        `KeyError` out of a handler that had just seen a valid hit
+        (Codex, PR #991). This is the same read-then-write hazard the class
+        docstring warns about for `in` followed by `[]`, one method along.
+
+        The touch is skipped when the wrapped cache has no `move_to_end`, so
+        this is usable over a `TTLCache` too.
+        """
+        with self._lock:
+            if key not in self._cache:
+                return default
+            value = self._cache[key]
+            touch = getattr(self._cache, "move_to_end", None)
+            if touch is not None:
+                touch(key)
+            return value
+
     def move_to_end(self, key: Any, last: bool = True) -> None:
         """LRU touch. Only meaningful when wrapping an `OrderedDict`."""
         with self._lock:

@@ -981,3 +981,78 @@ def test_a_cold_instance_serves_decliners_from_a_stale_cloud_sql_row():
         f"take the stale row")
     assert any(r["Name"] == "From Cloud SQL" for r in results), (
         "no decliner was served the stale Cloud SQL row")
+
+
+def test_the_lru_touch_happens_under_the_same_lock_as_the_read():
+    """`get` then `move_to_end` is two locked steps with a gap between them.
+
+    On a full cache a concurrent miss for another key can evict this entry in
+    that gap, so the touch raises `KeyError` out of a handler that had just
+    seen a valid hit (Codex, PR #991).
+
+    Asserted structurally rather than by racing two threads. The window is
+    inside the wrapper, between one locked call returning and the next being
+    made, and there is no hook at that instant to schedule an evictor into --
+    a first attempt at a threaded version passed against the broken code for
+    exactly that reason, which makes it worse than no test. What is checkable
+    is that one lock acquisition spans both operations.
+    """
+    import inspect
+    import sys
+    from collections import OrderedDict
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "platform"))
+    from api.threadsafe_cache import ThreadSafeCache
+
+    src = inspect.getsource(ThreadSafeCache.get_and_touch)
+    body = src[src.index("with self._lock:"):]
+    assert src.count("with self._lock:") == 1, (
+        "more than one acquisition means more than one window")
+    assert "move_to_end" in body, (
+        "the touch must happen inside the lock the read took, not after it")
+    assert "self.get(" not in src and "self.move_to_end(" not in src, (
+        "calling the wrapper's own locked methods re-opens the gap: each one "
+        "takes and releases the lock on its own")
+
+    # And it behaves: touches, reads, and defaults on a miss.
+    cache = ThreadSafeCache(OrderedDict())
+    cache["A"] = 1
+    cache["B"] = 2
+    assert cache.get_and_touch("A") == 1
+    assert list(cache) == ["B", "A"], "the hit was not moved to the LRU end"
+    assert cache.get_and_touch("ZZZ", "missing") == "missing"
+
+
+def test_the_market_dates_handler_reads_and_touches_in_one_step():
+    """The endpoint must not reintroduce the two-step form."""
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / "main.py").read_text()
+    assert "_MARKET_DATES_CACHE.get_and_touch(" in src
+    assert not re.search(r"_MARKET_DATES_CACHE\.move_to_end\(", src), (
+        "a separate LRU touch is the gap this replaced")
+
+
+def test_peers_age_on_their_own_timestamp():
+    """An overview refresh must not make a stale peer list look fresh.
+
+    `_peers` is preserved across an overview refresh while the shared
+    `_fetched_utc` is rewritten to now, so aging peers by it reported them
+    fresh indefinitely as long as an overview refresh landed inside each
+    window (Codex, PR #991).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from lib import ticker_info
+
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "_peers": ["AAA", "BBB"],
+        "_peers_fetched_utc": old,     # scraped two months ago
+        "_fetched_utc": now,           # overview refreshed just now
+    }
+    assert ticker_info._is_fresh(entry, 30), "the overview really is fresh"
+    assert not ticker_info._is_fresh(entry, 30, "_peers_fetched_utc"), (
+        "60-day-old peers were reported fresh because the overview was")

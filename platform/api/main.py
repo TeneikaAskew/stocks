@@ -647,13 +647,16 @@ def get_available_dates(ticker: str):
         # re-reads because winning the claim does not mean being first — a
         # request descheduled between the probe and the claim can take it
         # moments after the previous claimant populated the cache.
-        entry = _MARKET_DATES_CACHE.get(ticker_upper)
+        # One locked read-and-touch. Reading and then touching is two locked
+        # operations, and on a full cache a concurrent miss for another ticker
+        # can evict this entry in the window between them, so the touch raised
+        # KeyError out of what was a valid hit (Codex, PR #991).
+        entry = _MARKET_DATES_CACHE.get_and_touch(ticker_upper)
         if entry is not None:
             cached_ts, cached_at, payload = entry
             fresh = latest_ts is not None and cached_ts == latest_ts
             within_ttl = datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL
             if fresh and within_ttl:
-                _MARKET_DATES_CACHE.move_to_end(ticker_upper)   # LRU touch
                 return payload
             # `pop`, not `del`. The claim above does not give exclusive access:
             # a decliner whose wait times out proceeds and runs alongside the
