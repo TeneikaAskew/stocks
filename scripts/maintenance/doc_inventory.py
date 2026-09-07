@@ -1407,7 +1407,7 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
 
     Returns True when the file changed. Idempotent: rendering the same inputs
     twice yields the same bytes. Links inside the blocks are rebased to the
-    document's directory (docs/API.md links to ../platform/...).
+    document's directory (docs/product/infrastructure/05-e-API.md links to ../../../platform/...).
     """
     text = doc_path.read_text()
     new = text
@@ -1464,7 +1464,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.markdown:
         print(render_markdown(args.markdown, repo, live))
     if args.insert is not None:
-        for doc in (args.insert or ["ARCHITECTURE.md", "DATA_DEPENDENCIES.md"]):
+        default_docs = ["docs/product/infrastructure/05-a-ARCHITECTURE.md",
+                        "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"]
+        for doc in (args.insert or default_docs):
             changed = insert_blocks(root / doc, repo, live)
             print(f"{doc}: {'updated' if changed else 'unchanged'}", file=sys.stderr)
     if args.json:

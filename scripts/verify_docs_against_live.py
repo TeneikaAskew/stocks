@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-`docs/PIPELINE.md` said the market-data ingest ran at "23:00 UTC". The live
+`docs/product/infrastructure/05-f-PIPELINE.md` said the market-data ingest ran at "23:00 UTC". The live
 scheduler is `0 23 * * 1-5` in `America/New_York`. A timezone fix was then
 designed off that doc and was wrong end-to-end, because a doc is a *claim*,
 not evidence (CLAUDE.md §3.11).
@@ -42,32 +42,26 @@ REGION = "us-east1"
 # dated record (audits, incidents, changelogs, research write-ups) whose
 # whole purpose is to state what was true on its date -- rewriting those
 # would destroy the record, so they are deliberately out of scope.
+INFRA = "docs/product/infrastructure"
+
 LIVE_STATE_DOCS = [
     "README.md",
-    "ARCHITECTURE.md",
     "RUNBOOK.md",
     "QUICK_REFERENCE.md",
-    "INFRASTRUCTURE_NOTES.md",
     "SETUP.md",
-    "DATA_DEPENDENCIES.md",
-    "COST_ANALYSIS.md",
     "CLAUDE.md",
-    "docs/PIPELINE.md",
-    "docs/DATA_PIPELINE.md",
     "docs/EARNINGS_PIPELINE.md",
-    "docs/GCP_ARCHITECTURE.md",
-    "docs/GCP_IMPLEMENTATION_GUIDE.md",
-    "docs/GCP_IMPLEMENTATION_STATUS.md",
-    "docs/API.md",
-    "docs/DATA_DICTIONARY.md",
     "docs/RUNBOOK_BACKFILL.md",
     "docs/STRAT_ENGINE_OPERATIONS.md",
     "docs/storage_overview.md",
-    "docs/FAILURE_NOTIFIER_DEPLOYMENT.md",
     "platform/GCP_DATA_DICTIONARY.md",
     ".github/workflows/README.md",
 ]
-LIVE_STATE_GLOBS = ["docs/product/*.md", "gcp/cloudbuild/*.md"]
+# The infrastructure documents moved under docs/product/infrastructure/ and are
+# picked up by the glob below, so they are not listed individually. Adding one
+# to that directory enrols it automatically; docs/GCP_ARCHITECTURE.md was a
+# redirect stub and is gone.
+LIVE_STATE_GLOBS = ["docs/product/*.md", f"{INFRA}/*.md", "gcp/cloudbuild/*.md"]
 
 # Cloud Run services deleted in the staging/prod split (2026-09-06). A
 # live-state doc naming one is describing a service that no longer exists.

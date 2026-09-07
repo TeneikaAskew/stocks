@@ -19,6 +19,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.maintenance import check_generated_docs as gate
+
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO / ".github/workflows/refresh-architecture-docs.yml"
 RAW = WORKFLOW_PATH.read_text()
@@ -145,7 +147,7 @@ def test_digest_and_render_precede_the_first_gemini_step():
     assert _index("Save previous doc versions") < first_gemini
     assert _index("Render inventory blocks") < first_gemini
     render = _steps()[_index("Render inventory blocks")]["run"]
-    assert "--insert ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md" in render
+    assert f"--insert {gate.ARCH} {gate.DEPS} {gate.API}" in render
 
 
 def test_digest_step_writes_the_small_files_the_prompts_read():
@@ -189,16 +191,16 @@ def test_prompts_update_in_place_and_never_touch_marker_blocks():
 def test_marker_names_agree_between_module_docs_and_gate():
     from scripts.maintenance import doc_inventory as inv
     from scripts.maintenance import check_generated_docs as gate
-    arch = (REPO / "ARCHITECTURE.md").read_text()
-    deps = (REPO / "DATA_DEPENDENCIES.md").read_text()
+    arch = (REPO / gate.ARCH).read_text()
+    deps = (REPO / gate.DEPS).read_text()
     for name in ("jobs", "schedulers", "tables", "routes", "services", "reconcile", "modules", "dbtables"):
         assert inv.MARKER_START.format(name=name) in arch, name
     for name in ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"):
         assert inv.MARKER_START.format(name=name) in deps, name
-    api = (REPO / "docs/API.md").read_text()
+    api = (REPO / gate.API).read_text()
     for name in ("routers", "routes"):
         assert inv.MARKER_START.format(name=name) in api, name
-    assert set(gate.MARKER_DOCS) == {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md"}
+    assert set(gate.MARKER_DOCS) == {gate.ARCH, gate.DEPS, gate.API}
 
 
 def test_gcp_reads_and_rendering_all_precede_gemini():
@@ -277,7 +279,7 @@ def test_previous_tree_carries_every_doc_the_churn_gate_scores():
     """diff_stats() skips a document with no previous version, so a doc left
     out of this copy silently bypasses its churn ceiling."""
     run = _steps()[_index("Save previous doc versions")]["run"]
-    for d in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md", "docs/API.md"):
+    for d in gate.DIFF_DOCS:
         assert d in run, f"{d} must be saved for the loss and churn gates"
 
 
@@ -328,6 +330,42 @@ def test_verifier_drift_outside_the_regenerated_docs_reaches_the_pr_body():
     assert "${DRIFT}" in pr
 
 
+def test_the_regenerated_doc_filter_is_derived_not_retyped():
+    """The blocking/non-blocking split of the verifier's findings was a
+    hand-typed `(README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\\.md`
+    alternation. When those files moved under `docs/product/infrastructure/`
+    it matched nothing, so drift in a regenerated doc would have been
+    downgraded to a warning and the run would have gone green. A gate that
+    matches nothing passes. Derive the pattern from the gate module instead,
+    and prove here that no literal doc-name alternation is left.
+    """
+    import re as _re
+    import subprocess
+
+    steps = {s.get("name"): s.get("run") or "" for s in _steps()}
+    verify = steps["Verify regenerated docs"]
+    assert "REGEN_RE=$(python -c" in verify, \
+        "the regenerated-doc pattern is not computed from the gate module"
+    assert 'check_generated_docs as g' in verify
+    assert '"|".join(re.escape(d) for d in g.DOCS)' in verify
+    # Both uses -- the blocking test and the "everything else" inversion --
+    # must consume the variable, and neither may re-list the names.
+    uses = _re.findall(r'grep -[qv]E "\^\\\[\[a-z-\]\+\\\] \(\$\{REGEN_RE\}\):"', verify)
+    assert len(uses) == 2, f"expected both greps to use $REGEN_RE, found {uses}"
+    for name in ("ARCHITECTURE|DATA_DEPENDENCIES", "DATA_DEPENDENCIES|COST_ANALYSIS"):
+        assert name not in verify, f"a literal doc-name alternation survives: {name}"
+
+    # The command really produces an ERE that matches a finding on each of the
+    # four docs and none on a doc outside the set.
+    cmd = _re.search(r"REGEN_RE=\$\(python -c '([^']+)'\)", verify).group(1)
+    pattern = subprocess.run(["python", "-c", cmd], cwd=REPO,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    findings = [f"[schedule] {d}:1: x" for d in gate.DOCS]
+    findings.append("[count] docs/product/10-OPERATIONS-RELIABILITY.md:5: y")
+    blocking = _re.compile(rf"^\[[a-z-]+\] ({pattern}):")
+    assert [bool(blocking.match(f)) for f in findings] == [True] * len(gate.DOCS) + [False]
+
+
 def test_a_second_run_in_the_same_month_updates_the_existing_pr_body():
     """A force-push replaced the branch content and left the body describing
     the previous run's documents. (Codex, PR #1009.)"""
@@ -358,14 +396,14 @@ def test_the_deterministic_docs_are_frozen_not_allowlisted():
     """No prompt writes docs/API.md or docs/INVESTMENT_MODELS_SUMMARY.md, so a
     model edit to either is a stray write. (Codex, PR #1009.)"""
     prompts = (WORKFLOW_PATH.parent.parent / "prompts")
-    written = {"ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md"}
+    written = set(gate.DOCS)
     steps = {s.get("name"): s.get("run") or "" for s in _steps()}
     restore = next(v for k, v in steps.items() if k and k.startswith("Restore gate inputs"))
     allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
     assert allowed == written, f"allowlist must be exactly the prompt-written docs, got {allowed}"
 
     freeze = next(v for k, v in steps.items() if k and k.startswith("Freeze gate inputs"))
-    for f in ("docs/API.md", "docs/INVESTMENT_MODELS_SUMMARY.md"):
+    for f in (gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md"):
         assert f in freeze, f"{f} is not frozen"
         assert f'cp "$RUNNER_TEMP/frozen/{f}" {f}' in restore, f"{f} is not restored"
     # the calibration renderer is the legitimate writer of the summary, and it
@@ -403,7 +441,7 @@ def test_a_legitimate_render_change_is_not_a_stray_write():
     assert "DETERMINISTIC=" in restore
     det = set(re.search(r'DETERMINISTIC="([^"]+)"', restore).group(1).split())
     assert det == {"Architecture.drawio", "Architecture-icons.drawio",
-                   "docs/API.md", "docs/INVESTMENT_MODELS_SUMMARY.md"}, det
+                   gate.API, "docs/INVESTMENT_MODELS_SUMMARY.md"}, det
     # each is judged against the frozen copy, not against HEAD
     assert 'cmp -s "$F" "$RUNNER_TEMP/frozen/$F"' in restore
     # and they are still not simply allowed
@@ -534,7 +572,13 @@ def test_every_prompt_pins_its_output_to_the_repository_root():
     assert set(targets) == {p.name for p in prompts}, \
         f"prompt without an explicit file_path: {sorted({p.name for p in prompts} - set(targets))}"
     for name, target in targets.items():
-        assert "/" not in target, f"{name} points at {target}, which is not the repository root"
+        # The documents moved under docs/product/infrastructure/, so the target
+        # is no longer a bare filename. What must hold is that it is given from
+        # the repository root and resolves to a file that exists -- a target
+        # relative to anything else is how run 15 produced docs/DATA_DEPENDENCIES.md.
+        assert not target.startswith(("/", "./", "../")), \
+            f"{name} points at {target}, which is not given from the repository root"
+        assert (REPO / target).exists(), f"{name} points at {target}, which does not exist"
         assert "repository root" in (REPO / ".github/prompts" / name).read_text(), \
             f"{name} does not say its path is repo-root-relative"
 
@@ -553,15 +597,47 @@ def test_the_prompt_targets_are_exactly_the_documents_the_workflow_stages():
 
 def test_a_generated_doc_in_the_wrong_directory_says_so():
     """`docs/DATA_DEPENDENCIES.md` as a bare name does not tell a reader whether
-    the model invented a file or misplaced a real one. (Run 15, 2026-09-07.)"""
+    the model invented a file or misplaced a real one. (Run 15, 2026-09-07.)
+
+    Asserting the message text is not enough -- the earlier version of this
+    test did that and passed while the comparison behind it (`basename` against
+    an ALLOWED list that had become full paths) matched nothing. So RUN the
+    matcher: extract ALLOWED, `_docname` and the WANT loop out of the step and
+    execute them under bash against paths a misfiring model actually produces.
+    """
+    import re as _re
+    import subprocess
+
     restore = {s.get("name"): s.get("run") or "" for s in _steps()}[
         "Restore gate inputs and refuse model edits outside the docs"]
-    # Assert the EMITTED string, not the word anywhere in the step: the
-    # explanatory comment above the code also contains "wrong directory", so a
-    # bare substring check passed with the behaviour removed.
     assert 'STRAY="$STRAY $F(wrong directory:' in restore, \
         "the scan does not label a generated doc written to the wrong directory"
-    assert 'basename "$F"' in restore, "the scan does not compare basenames"
+
+    allowed = _re.search(r'^\s*(ALLOWED="[^"]*")', restore, _re.M).group(1)
+    docname = _re.search(r'^\s*(_docname\(\) \{.*\})', restore, _re.M).group(1)
+    want = _re.search(r'(WANT=""\n(?:.*\n)*?\s*fi\n)', restore).group(1)
+    # Every generated doc must be reachable as a target of the matcher.
+    for d in gate.DOCS:
+        assert d in allowed, f"{d} is not in the ALLOWED list the matcher searches"
+
+    def stray_for(path):
+        script = "\n".join([
+            "set -e", allowed, docname, f'F="{path}"', 'STRAY=""',
+            want.replace("continue", ":"), 'echo "$STRAY"',
+        ])
+        return subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, check=True).stdout.strip()
+
+    # The run-15 shape: the right document, the wrong directory, and now also
+    # the wrong-directory-with-the-right-prefix shape the rename introduces.
+    assert stray_for("docs/DATA_DEPENDENCIES.md") == \
+        f"docs/DATA_DEPENDENCIES.md(wrong directory: it belongs at {gate.DEPS})"
+    assert stray_for("05-c-DATA_DEPENDENCIES.md") == \
+        f"05-c-DATA_DEPENDENCIES.md(wrong directory: it belongs at {gate.DEPS})"
+    assert stray_for("docs/ARCHITECTURE.md") == \
+        f"docs/ARCHITECTURE.md(wrong directory: it belongs at {gate.ARCH})"
+    # An unrelated file is not mislabelled as a misplaced document.
+    assert stray_for("scripts/whatever.py") == ""
 
 
 def test_every_refresh_input_is_readable_by_the_model():
@@ -605,7 +681,7 @@ def test_a_failed_gate_uploads_the_documents_it_judged():
     assert len(up) == 1, up
     assert up[0].get("if") == "failure()", "the upload must run only on failure"
     path = (up[0].get("with") or {}).get("path", "")
-    for doc in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md"):
+    for doc in gate.DOCS:
         assert doc in path, f"{doc} is not uploaded"
     # never the snapshots: this repository is public and iam.json is in there
     assert "refresh-inputs/iam.json" not in path and "refresh-inputs/inventory.json" not in path

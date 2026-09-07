@@ -134,7 +134,7 @@ for f in sorted(glob.glob('.github/workflows/*.yml')):
 PY
 ```
 
-Compare printed cron values against the documented schedule in `docs/GCP_IMPLEMENTATION_GUIDE.md` §15. Flag any mismatch.
+Compare printed cron values against the documented schedule in `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §15. Flag any mismatch.
 
 ## Output format
 

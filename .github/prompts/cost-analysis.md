@@ -1,8 +1,8 @@
-# Prompt: regenerate COST_ANALYSIS.md
+# Prompt: regenerate docs/product/infrastructure/05-d-COST_ANALYSIS.md
 
-You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from the billing digests.
+You are an automated documentation agent. Regenerate `docs/product/infrastructure/05-d-COST_ANALYSIS.md` from the billing digests.
 
-**Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "COST_ANALYSIS.md"` at the **repository root**, full markdown body). Never `docs/COST_ANALYSIS.md` or any other directory, and never a second copy. No stdout output, no preamble, no summary.
+**Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "docs/product/infrastructure/05-d-COST_ANALYSIS.md"`, given from the repository root, full markdown body). Never a bare `COST_ANALYSIS.md` at the root, never any other directory, and never a second copy. No stdout output, no preamble, no summary.
 
 ## Inputs (under `refresh-inputs/`)
 
@@ -11,8 +11,8 @@ You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from the
 - `billing.json` — the raw `[{service, sku, cost_usd, month}]` rows, only if you need a per-month split for one SKU. Read it with `offset`/`limit`; **never conclude a month or SKU is absent because a read was truncated** — the CSVs above are complete.
 - `live.json` — `counts.jobs`, `counts.schedulers`, `counts.services`, `sql` (tier, disk), `image_tags`; use these for the per-component allocation.
 - `repo_inventory.json` → `schedulers` (cron per job) for runs-per-month estimates.
-- The fresh `ARCHITECTURE.md` §3/§6 for the component map.
-- The previous `COST_ANALYSIS.md` (style reference only).
+- The fresh `docs/product/infrastructure/05-a-ARCHITECTURE.md` §3/§6 for the component map.
+- The previous `docs/product/infrastructure/05-d-COST_ANALYSIS.md` (style reference only).
 
 ## What to produce
 
@@ -20,7 +20,7 @@ You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from the
 Table from `billing_by_month.csv`: Month | Spend (USD) | Notes. Flag partial months (the oldest month in a 90-day window, and the current month).
 
 ### 2. Top 10 cost line items by SKU
-From `billing_by_sku.csv`: Rank | Service | SKU | 90-day cost | Maps to (ARCHITECTURE.md component). If a SKU cannot be mapped, write "not attributable from billing export alone".
+From `billing_by_sku.csv`: Rank | Service | SKU | 90-day cost | Maps to (05-a-ARCHITECTURE.md component). If a SKU cannot be mapped, write "not attributable from billing export alone".
 
 ### 3. Per-component cost estimate
 Cloud SQL, Cloud Run Jobs (one SKU across all N jobs — allocate best-effort by runs-per-month × typical duration, from the schedulers), Cloud Run Services (per service where the SKU permits), Cloud Scheduler (N entries, 3 free), Artifact Registry, GCS, Vertex AI, Secret Manager, Pub/Sub, Logging, Cloud Build. State the allocation method. Include "Not attributable from billing export alone".
@@ -40,7 +40,7 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
   and stops believing the rest of the document.
 - **Check what is already applied before recommending it.** The same dry run
   proposed adding an Artifact Registry cleanup policy that #1004 had already
-  deployed. Before writing a recommendation, look for it in `ARCHITECTURE.md`
+  deployed. Before writing a recommendation, look for it in `docs/product/infrastructure/05-a-ARCHITECTURE.md`
   §3 (GCP services in use), `docs/audits/COST_AUDIT_2026-09-06.md` and
   `live.json`; if the mitigation exists, say so and quantify what it has
   already saved instead of proposing it again.

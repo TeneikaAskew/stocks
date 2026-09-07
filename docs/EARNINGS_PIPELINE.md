@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-05-04 — companion to PR on `claude/add-mck-earnings-atr-c6q9e` that fixed three silent-truncation gaps and added ATR-around-earnings to the reaction profile.
 
-This doc traces every step from "an earnings event is announced" to "a trader sees it in the Discord brief," names the cron that fires each step, and lists the assumptions each step makes about its upstream inputs. Use it together with [`DATA_PIPELINE.md`](DATA_PIPELINE.md) (per-table semantics) and [`docs/CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) (sandbox patterns).
+This doc traces every step from "an earnings event is announced" to "a trader sees it in the Discord brief," names the cron that fires each step, and lists the assumptions each step makes about its upstream inputs. Use it together with [`DATA_PIPELINE.md`](product/infrastructure/05-g-DATA_PIPELINE.md) (per-table semantics) and [`docs/CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) (sandbox patterns).
 
 ---
 
@@ -279,7 +279,7 @@ gcloud run jobs execute backfill-ticker \
 
 ## Related docs
 
-- [`DATA_PIPELINE.md`](DATA_PIPELINE.md) — per-table freshness contract
-- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — infrastructure overview (`docs/GCP_ARCHITECTURE.md` is a redirect to it)
+- [`DATA_PIPELINE.md`](product/infrastructure/05-g-DATA_PIPELINE.md) — per-table freshness contract
+- [`05-a-ARCHITECTURE.md`](product/infrastructure/05-a-ARCHITECTURE.md) — infrastructure overview (`docs/GCP_ARCHITECTURE.md` is a redirect to it)
 - [`CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) — sandbox patterns for ad-hoc DB queries
 - [`gamma_levels.md`](gamma_levels.md) — gamma analytics (independent pipeline)

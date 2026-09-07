@@ -35,6 +35,28 @@ these comparisons.
 > A naive parse also reported 18 jobs missing `--task-timeout`; function-scoped resolution gives
 > **5**, which matches [#851](https://github.com/TeneikaAskew/stocks/issues/851) independently.
 
+## Reference documents
+
+The long-form infrastructure references live in `infrastructure/` beside this
+plan. The first four are regenerated on the 1st of each month by
+[`refresh-architecture-docs.yml`](../../.github/workflows/refresh-architecture-docs.yml);
+the rest are hand-edited.
+
+| Document | Question answered | Maintenance |
+|---|---|---|
+| [05-a Architecture](infrastructure/05-a-ARCHITECTURE.md) | What is deployed, how does it fit together, and what runs when? | generated monthly (prose updated in place) |
+| [05-b ERD](infrastructure/05-b-ERD.md) | How do the Cloud SQL relations relate to each other? | hand-edited |
+| [05-c Data Dependencies](infrastructure/05-c-DATA_DEPENDENCIES.md) | If this job or table breaks, what else breaks with it? | generated monthly (prose updated in place) |
+| [05-d Cost Analysis](infrastructure/05-d-COST_ANALYSIS.md) | Where does the GCP spend go, and what would reduce it? | regenerated monthly from the billing digests |
+| [05-e API](infrastructure/05-e-API.md) | Which HTTP routes exist, on which router, behind which auth? | rendered from the router files |
+| [05-f Pipeline](infrastructure/05-f-PIPELINE.md) | What is the end-to-end data pipeline and its schedule? | hand-edited |
+| [05-g Data Pipeline](infrastructure/05-g-DATA_PIPELINE.md) | How does a fetched row reach a rendered screen? | hand-edited |
+| [05-h Data Dictionary](infrastructure/05-h-DATA_DICTIONARY.md) | What does each column in each table mean? | hand-edited |
+| [05-i GCP Implementation Guide](infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md) | How is each subsystem implemented on GCP? | hand-edited |
+| [05-j GCP Implementation Status](infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md) | What is built, what is in flight, what is not started? | hand-edited |
+| [05-k Failure Notifier Deployment](infrastructure/05-k-FAILURE_NOTIFIER_DEPLOYMENT.md) | How is the Cloud Run job failure notifier deployed? | hand-edited |
+| [05-l Infrastructure Notes](infrastructure/05-l-INFRASTRUCTURE_NOTES.md) | What operational details did not fit anywhere else? | hand-edited |
+
 ## Platform components
 
 | Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |

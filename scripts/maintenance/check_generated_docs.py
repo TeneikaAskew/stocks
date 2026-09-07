@@ -48,8 +48,17 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from scripts.maintenance import doc_inventory as inv  # noqa: E402
 
-DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md")
-MARKER_DOCS = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "docs/API.md")
+# The infrastructure documents live under docs/product/infrastructure/ and are
+# named to slot under the numbered product series (05-INFRASTRUCTURE.md). Named
+# once here so a future move is one edit rather than forty.
+INFRA = "docs/product/infrastructure"
+ARCH = f"{INFRA}/05-a-ARCHITECTURE.md"
+DEPS = f"{INFRA}/05-c-DATA_DEPENDENCIES.md"
+COST = f"{INFRA}/05-d-COST_ANALYSIS.md"
+API = f"{INFRA}/05-e-API.md"
+
+DOCS = (ARCH, DEPS, COST, "README.md")
+MARKER_DOCS = (ARCH, DEPS, API)
 # Every block each document must carry. A balanced-pairs check alone lets a
 # block vanish when both its markers are deleted together (Codex, PR #1009).
 # Spelled-out counts appear in the generated prose ("`2` for one"), so the
@@ -59,9 +68,9 @@ WORD_NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                 "eleven": 11, "twelve": 12}
 
 EXPECTED_MARKERS = {
-    "ARCHITECTURE.md": ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
-    "DATA_DEPENDENCIES.md": ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"),
-    "docs/API.md": ("routers", "routes"),
+    ARCH: ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
+    DEPS: ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"),
+    API: ("routers", "routes"),
 }
 SIZE_FLOOR = 0.80
 # README.md is a pointer map by design (2026-09-07); its length is not a
@@ -79,7 +88,7 @@ SIZE_FLOOR_EXEMPT = ("README.md",)
 # not. What replaces them is stricter about the thing that matters: every
 # numbered section the prompt promises must be present, and the byte mass may
 # not collapse. (Run 17, 2026-09-07.)
-REGENERATED = ("COST_ANALYSIS.md",)
+REGENERATED = (COST,)
 BYTE_FLOOR = 0.80
 
 # An update that rewrites most of a document is a regeneration wearing an
@@ -102,8 +111,8 @@ CHURN_CEILING = 0.50
 # COST_ANALYSIS.md, and it catches the degradation that matters. In the
 # 2026-09-02 incident it fell 163 -> 103 lines (63% of its previous size,
 # under the 80% floor) and would have been stopped on that alone.
-CHURN_CEILING_RENDERED = {"docs/API.md": 0.90, "COST_ANALYSIS.md": 0.85}
-DIFF_DOCS = DOCS + ("docs/API.md",)
+CHURN_CEILING_RENDERED = {API: 0.90, COST: 0.85}
+DIFF_DOCS = DOCS + (API,)
 REMOVED_HEADING = "Removed since last refresh"
 
 # Names and phrases that describe a surface this repo no longer has. A line
@@ -134,9 +143,9 @@ HISTORY_OK = re.compile(
 # exempt from the size floor, so a shortened map passed every gate.
 # (Codex, PR #1009.) The solyra repo row is an external URL, not a path.
 README_REQUIRED_LINKS = (
-    "ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "RUNBOOK.md",
-    "ERD.md", "docs/PIPELINE.md", "docs/DATA_PIPELINE.md", "docs/API.md",
-    "docs/GCP_IMPLEMENTATION_GUIDE.md", "docs/product/README.md", "docs/audits/",
+    ARCH, DEPS, COST, "RUNBOOK.md",
+    f"{INFRA}/05-b-ERD.md", f"{INFRA}/05-f-PIPELINE.md", f"{INFRA}/05-g-DATA_PIPELINE.md", API,
+    f"{INFRA}/05-i-GCP_IMPLEMENTATION_GUIDE.md", "docs/product/README.md", "docs/audits/",
     "gcp/cloudbuild/README.md", "CLAUDE.md", "SETUP.md",
 )
 LINK = re.compile(r"\]\(([^)#\s]+)(#[^)]*)?\)")
@@ -151,43 +160,43 @@ def _headings(text: str) -> list[str]:
 
 
 def gate_coverage(root: pathlib.Path, repo: dict, live: dict | None) -> list[str]:
-    arch = (root / "ARCHITECTURE.md").read_text()
-    deps = (root / "DATA_DEPENDENCIES.md").read_text()
+    arch = (root / ARCH).read_text()
+    deps = (root / DEPS).read_text()
     out = []
     names = {j["name"] for j in repo["jobs"]} | set((live or {}).get("jobs", {}))
     miss = sorted(n for n in names if f"`{n}`" not in arch)
     if miss:
-        out.append(f"ARCHITECTURE.md does not name these jobs: {' '.join(miss)}")
+        out.append(f"{ARCH} does not name these jobs: {' '.join(miss)}")
     miss = sorted(t["name"] for t in repo["tables"] if f"`{t['name']}`" not in arch)
     if miss:
-        out.append(f"ARCHITECTURE.md does not name these tables: {' '.join(miss)}")
+        out.append(f"{ARCH} does not name these tables: {' '.join(miss)}")
     miss = sorted(r for r in repo["routers"] if f"routers/{r}.py" not in arch)
     if miss:
-        out.append(f"ARCHITECTURE.md does not name these routers: {' '.join(miss)}")
+        out.append(f"{ARCH} does not name these routers: {' '.join(miss)}")
     sched = {s["name"] for s in repo["schedulers"]} | set((live or {}).get("schedulers", {}))
     miss = sorted(n for n in sched if f"`{n}`" not in arch)
     if miss:
-        out.append(f"ARCHITECTURE.md does not name these schedulers: {' '.join(miss)}")
+        out.append(f"{ARCH} does not name these schedulers: {' '.join(miss)}")
     svc = set((live or {}).get("services", {}))
     miss = sorted(n for n in svc if f"`{n}`" not in arch)
     if miss:
-        out.append(f"ARCHITECTURE.md does not name these services: {' '.join(miss)}")
+        out.append(f"{ARCH} does not name these services: {' '.join(miss)}")
     blast_start = deps.find("inventory:blast:start")
     blast = deps[blast_start:] if blast_start >= 0 else ""
     miss = sorted(j["name"] for j in repo["jobs"] if f"| `{j['name']}` |" not in blast)
     if miss:
-        out.append(f"DATA_DEPENDENCIES.md blast-radius block lacks rows for: {' '.join(miss)}")
+        out.append(f"{DEPS} blast-radius block lacks rows for: {' '.join(miss)}")
     return out
 
 
 def gate_subsections(root: pathlib.Path, repo: dict) -> list[str]:
-    deps = (root / "DATA_DEPENDENCIES.md").read_text()
+    deps = (root / DEPS).read_text()
     out = []
     names = [t["name"] for t in repo["tables"]] + [v["name"] for v in repo["materialized_views"]] + [v["name"] for v in repo["views"]]
     for t in names:
         n = len(re.findall(rf"^### `{re.escape(t)}`\s*$", deps, re.M))
         if n < 2:
-            out.append(f"DATA_DEPENDENCIES.md has {n} `### `{t}`` subsection(s); needs one in §2 and one in §3")
+            out.append(f"{DEPS} has {n} `### `{t}`` subsection(s); needs one in §2 and one in §3")
     return out
 
 
@@ -273,7 +282,7 @@ def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
     are matched without any data suffix -- "(Partial August data)" is this
     month's caveat, not part of the section's identity."""
     out = []
-    for doc, prompt in (("COST_ANALYSIS.md", "cost-analysis.md"),):
+    for doc, prompt in ((COST, "cost-analysis.md"),):
         promised = _promised_sections(root, prompt)
         if not promised:
             out.append(f"{prompt}: no numbered sections found; the structure gate for {doc} is not running")
@@ -420,7 +429,7 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     """
     import collections
     out = []
-    text = (root / "ARCHITECTURE.md").read_text()
+    text = (root / ARCH).read_text()
 
     counts = collections.Counter(j.get("max_retries") for j in repo["jobs"])
     # Both clause orders. The first version required the flag to precede the
@@ -448,7 +457,7 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
     for flag, claimed in claims:
         want = counts.get(flag, 0)
         if int(claimed) != want:
-            out.append(f"ARCHITECTURE.md: claims {claimed} jobs at --max-retries {flag}; "
+            out.append(f"{ARCH}: claims {claimed} jobs at --max-retries {flag}; "
                        f"gcp/deploy.sh declares {want}")
 
     if live and live.get("db_tables"):
@@ -461,7 +470,7 @@ def gate_derived_numbers(root: pathlib.Path, repo: dict, live: dict | None) -> l
                           | {v["name"] for v in repo["views"]})
         declared = len(declared_names)
         runtime = len(set(live["db_tables"]) - declared_names)
-        for doc in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md"):
+        for doc in (ARCH, DEPS):
             body = (root / doc).read_text()
             for m in re.finditer(r"(\d+) runtime[- ](?:created )?relations", body):
                 if int(m.group(1)) != runtime:
@@ -531,7 +540,7 @@ def gate_readme(root: pathlib.Path) -> list[str]:
         if f"({req})" not in text:
             out.append(f"README.md documentation map does not link {req}")
     if "```mermaid" in text:
-        out.append("README.md embeds a mermaid block; it is a pointer map, the diagram lives in ARCHITECTURE.md")
+        out.append("README.md embeds a mermaid block; it is a pointer map, the diagram lives in docs/product/infrastructure/05-a-ARCHITECTURE.md")
     return out
 
 

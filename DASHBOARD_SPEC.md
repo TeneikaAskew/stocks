@@ -2,7 +2,7 @@
 
 **Generated 2026-05-02.** Closing the visibility gap on the central operator question: *"Is my signal quality good and stable?"*
 
-This is a **spec, not an implementation plan**. Every proposed query is grounded in a table that already exists per [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md). The work is sequenced so each panel ships independently — no rip-and-replace.
+This is a **spec, not an implementation plan**. Every proposed query is grounded in a table that already exists per [DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md). The work is sequenced so each panel ships independently — no rip-and-replace.
 
 ---
 
@@ -45,7 +45,7 @@ Five questions about signal performance the operator cannot currently answer fro
 
 | # | Question | Data needed | Where it already lives |
 |---|---|---|---|
-| **G1** | "Is my clean-rate trending up, flat, or regressing over the last 90 days?" | Daily roll-up of `cls_60m == 'CLEAN_HIT'` rate | [`signal_metrics`](DATA_DEPENDENCIES.md#signal_metrics) — `cls_60m` column, indexed on `(ticker, entry_time)` |
+| **G1** | "Is my clean-rate trending up, flat, or regressing over the last 90 days?" | Daily roll-up of `cls_60m == 'CLEAN_HIT'` rate | [`signal_metrics`](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md#signal_metrics) — `cls_60m` column, indexed on `(ticker, entry_time)` |
 | **G2** | "Which of my strategies has the best edge right now?" | Per-strategy clean-rate + sample size + mean return | `signal_metrics.strategy` + `cls_60m` + `return_60m` |
 | **G3** | "How does my signal's edge decay across timeframes (does 60m work but 240m doesn't)?" | Per-timeframe clean-rate aggregate | `signal_metrics.cls_5m..cls_240m` + `return_5m..return_240m` |
 | **G4** | "When does my signal work — high-RSI vs low-RSI, CALL vs PUT?" | Win-rate split by RSI bucket × direction | `historical_signals.entry_rsi` + `trade_type` + `return_pct` |
@@ -295,10 +295,10 @@ Each step adds one endpoint + one panel + one nav addition. Steps 2-5 can ship i
 
 ## Tables referenced
 
-Per [DATA_DEPENDENCIES.md](DATA_DEPENDENCIES.md):
+Per [DATA_DEPENDENCIES.md](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md):
 
 | Table | Read by this spec | Writer | Status |
 |---|---|---|---|
-| [`signal_metrics`](DATA_DEPENDENCIES.md#signal_metrics) | Panels 1, 2, 3 | `scripts/signal_quality_report.py` (Cloud Run Job `signal-quality-report`) | ✅ Live |
-| [`historical_signals`](DATA_DEPENDENCIES.md#historical_signals) | Panels 4, 5 | `gcp/historical_signals.py` (replay harness, also written by `backfill_ticker` for `/replay`) | ✅ Live |
-| [`trades`](DATA_DEPENDENCIES.md#trades) | Already covered by existing `/api/analytics/summary/{ticker}` (no new panels for this) | `gcp/trade_logger.py` | ✅ Live |
+| [`signal_metrics`](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md#signal_metrics) | Panels 1, 2, 3 | `scripts/signal_quality_report.py` (Cloud Run Job `signal-quality-report`) | ✅ Live |
+| [`historical_signals`](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md#historical_signals) | Panels 4, 5 | `gcp/historical_signals.py` (replay harness, also written by `backfill_ticker` for `/replay`) | ✅ Live |
+| [`trades`](docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md#trades) | Already covered by existing `/api/analytics/summary/{ticker}` (no new panels for this) | `gcp/trade_logger.py` | ✅ Live |

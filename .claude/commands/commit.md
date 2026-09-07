@@ -28,39 +28,39 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 
 | Code Area | Primary Doc | Update When |
 |-----------|-------------|-------------|
-| `lib/indicators.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §4 Indicator Engine | New indicators, changed periods, new output columns |
-| `lib/signals.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §5 Signal Generation | Condition logic changes, new scoring |
-| `lib/strat.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §6 Strat Classification | Candle types, combo patterns, FTFC formula |
-| `lib/backtest.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §7 Backtesting Engine | Trade dataclass, exit rules, engine logic |
-| `lib/data_loader.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §8 Data Layer | New methods, changed priority order, new sources |
-| `lib/config.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §3 Configuration | New params, changed defaults, new sections |
-| `alert_config.json` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §3 Configuration | Parameter value changes, new fields |
-| `gcp/database.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §9 Cloud Infrastructure | Connection changes, new utilities |
-| `gcp/trade_logger.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 Cloud Run Jobs | Dual-write logic, new methods |
-| `gcp/premarket_brief.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Premarket Brief flow) | Workflow steps, new analysis |
-| `gcp/signal_monitor.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Signal Monitor flow) | Poll logic, alert format |
-| `gcp/weekend_review.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Weekend Review flow) | Aggregation changes |
-| `gcp/fetchers/fetch_market_data.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 Data Flow | Fetch logic, new tickers |
-| `gcp/fetchers/fetch_etf_options.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (ETF Options flow) | Session times, Greeks calc |
-| `gcp/fetchers/fetch_alphavantage_intraday.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (AlphaVantage flow) | Rate limiting, key rotation |
-| `gcp/schema.sql` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §11 Cloud SQL Schema | New tables, columns, indexes |
-| `gcp/migrate_to_gcp.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §12 Data Migration | New migration scope, column maps |
-| `gcp/deploy.sh` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §13 Deployment | New commands, changed specs |
-| `gcp/setup_cloud_sql.sh` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §13 Deployment | Infrastructure changes |
-| `gcp/Dockerfile` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §9 (Container Image) | New deps, changed base image |
-| `requirements.txt` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §9 Key Technologies table | New packages, removed packages |
-| `.github/workflows/` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §15 GitHub Actions Cutover | Workflow disabled/enabled/added |
+| `lib/indicators.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §4 Indicator Engine | New indicators, changed periods, new output columns |
+| `lib/signals.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §5 Signal Generation | Condition logic changes, new scoring |
+| `lib/strat.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §6 Strat Classification | Candle types, combo patterns, FTFC formula |
+| `lib/backtest.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §7 Backtesting Engine | Trade dataclass, exit rules, engine logic |
+| `lib/data_loader.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §8 Data Layer | New methods, changed priority order, new sources |
+| `lib/config.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §3 Configuration | New params, changed defaults, new sections |
+| `alert_config.json` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §3 Configuration | Parameter value changes, new fields |
+| `gcp/database.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §9 Cloud Infrastructure | Connection changes, new utilities |
+| `gcp/trade_logger.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 Cloud Run Jobs | Dual-write logic, new methods |
+| `gcp/premarket_brief.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 (Premarket Brief flow) | Workflow steps, new analysis |
+| `gcp/signal_monitor.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 (Signal Monitor flow) | Poll logic, alert format |
+| `gcp/weekend_review.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 (Weekend Review flow) | Aggregation changes |
+| `gcp/fetchers/fetch_market_data.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 Data Flow | Fetch logic, new tickers |
+| `gcp/fetchers/fetch_etf_options.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 (ETF Options flow) | Session times, Greeks calc |
+| `gcp/fetchers/fetch_alphavantage_intraday.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 (AlphaVantage flow) | Rate limiting, key rotation |
+| `gcp/schema.sql` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §11 Cloud SQL Schema | New tables, columns, indexes |
+| `gcp/migrate_to_gcp.py` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §12 Data Migration | New migration scope, column maps |
+| `gcp/deploy.sh` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §13 Deployment | New commands, changed specs |
+| `gcp/setup_cloud_sql.sh` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §13 Deployment | Infrastructure changes |
+| `gcp/Dockerfile` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §9 (Container Image) | New deps, changed base image |
+| `requirements.txt` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §9 Key Technologies table | New packages, removed packages |
+| `.github/workflows/` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §15 GitHub Actions Cutover | Workflow disabled/enabled/added |
 | `scripts/run_backtest.py` | `BACKTEST_RESULTS.md` | CLI changes, new flags |
 | `scripts/analysis/` | `reports/` (phase reports) | New analysis phases, changed methodology |
 | `scripts/generate_backtest_report.py` | `BACKTEST_RESULTS.md` | Report format changes |
 | `website/` or `options-heatseeker/` or `success-report-site/` | `google-apps-script/WEB_APP_ISSUES_ANALYSIS.md` | UI/UX changes, new features |
 | `google-apps-script/` | `google-apps-script/CODE_STRUCTURE.md` | New scripts, API changes |
-| `platform/api/` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Platform API) | New routers, endpoint changes, response shape changes |
+| `platform/api/` | `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` §10 (Platform API) | New routers, endpoint changes, response shape changes |
 | `platform/src/` | (no primary doc) | N/A |
 | `tradingview-pine-scripts/` | `tradingview-pine-scripts/README.md` | New indicators, version upgrades, parameter changes |
 | `.claude/agents/` or `.claude/commands/` | (no primary doc) | N/A |
-| `tests/` | `docs/GCP_IMPLEMENTATION_STATUS.md` (Test Results table) | After every test run |
-| **Any commit** | `docs/GCP_IMPLEMENTATION_STATUS.md` | Every commit — update Last Updated date + add one-line entry to a running change log |
+| `tests/` | `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` (Test Results table) | After every test run |
+| **Any commit** | `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` | Every commit — update Last Updated date + add one-line entry to a running change log |
 
 3. **Staleness check**: Read the relevant doc section for each changed file. If the doc no longer matches the code, write the updated text now using these templates:
 
@@ -79,7 +79,7 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 
    | Group | What belongs |
    |-------|-------------|
-   | `feat(lib)` | `lib/` changes + corresponding `docs/GCP_IMPLEMENTATION_GUIDE.md` section updates |
+   | `feat(lib)` | `lib/` changes + corresponding `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` section updates |
    | `feat(gcp)` | `gcp/` changes + docs updates |
    | `feat(fetchers)` | `gcp/fetchers/` changes + docs updates |
    | `feat(backtest)` | `lib/backtest.py`, `lib/walk_forward.py`, `scripts/run_backtest.py`, `BACKTEST_RESULTS.md` |
@@ -102,7 +102,7 @@ List every modified, added, and deleted file. Do not proceed until you have a co
    - NEVER mix unrelated feature changes in one commit
    - NEVER use `git add -A` or `git add .`; always `git add <specific files>`
    - Doc updates for a feature go in the SAME commit as that feature
-   - `docs/GCP_IMPLEMENTATION_STATUS.md` (Last Updated + change log) goes in EVERY commit
+   - `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` (Last Updated + change log) goes in EVERY commit
    - If a file touches multiple groups, put it with the group that owns its primary purpose
 
 7. **Commit message format**:
@@ -149,7 +149,7 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 
 ## Phase 4: Status Tracker Update
 
-9. After all commits are done, read `docs/GCP_IMPLEMENTATION_STATUS.md` and:
+9. After all commits are done, read `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` and:
    - Update the **Last Updated** date at the top to today
    - Update the **Test Results** table row with current pass/fail counts and date (run `make test` if you don't have a recent result)
    - Add a one-line entry to the Change Log section:
