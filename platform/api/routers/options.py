@@ -57,6 +57,12 @@ import pandas as pd
 from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
+from api.schemas import (
+    GammaLevelsResponse,
+    GreeksResponse,
+    OptionsChainResponse,
+    OptionsDatesResponse,
+)
 
 # Project root so we can import gcp.database the same way the journal router does.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -282,7 +288,7 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
 _DATES_MAX_LIMIT = 1000
 
 
-@router.get("/api/options/dates/{ticker}")
+@router.get("/api/options/dates/{ticker}", response_model=OptionsDatesResponse, response_model_exclude_unset=True)
 async def get_options_dates(
     ticker: str,
     limit: int = Query(_DATES_MAX_LIMIT, ge=1, le=_DATES_MAX_LIMIT,
@@ -404,7 +410,7 @@ async def get_options_dates(
     }
 
 
-@router.get("/api/options/{ticker}/{date_str}")
+@router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
 async def get_options(ticker: str, date_str: str):
     """Return the AlphaVantage option chain for `ticker` on `date_str`
     (YYYY-MM-DD) from Cloud SQL.
@@ -496,7 +502,7 @@ async def get_options(ticker: str, date_str: str):
 # ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
 
 
-@router.get("/api/options/live/{ticker}/{date_str}")
+@router.get("/api/options/live/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
 async def get_options_live(ticker: str, date_str: str, response: Response):
     """Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same
     response shape as `/api/options/{ticker}/{date_str}`.
@@ -616,7 +622,7 @@ def _opts_to_dicts(options: list[_OptionRecord]) -> list[dict]:
     return [o.model_dump() for o in options]
 
 
-@router.post("/api/options/greeks")
+@router.post("/api/options/greeks", response_model=GreeksResponse, response_model_exclude_unset=True)
 def compute_options_greeks(req: _GreeksRequest) -> dict:
     """Single source of truth for GEX/VEX/max-pain/implied-move/nodes.
 
@@ -672,7 +678,7 @@ def compute_options_greeks(req: _GreeksRequest) -> dict:
     }
 
 
-@router.get("/api/options/{ticker}/{date_str}/levels")
+@router.get("/api/options/{ticker}/{date_str}/levels", response_model=GammaLevelsResponse, response_model_exclude_unset=True)
 async def get_gamma_levels(
     ticker: str,
     date_str: str,

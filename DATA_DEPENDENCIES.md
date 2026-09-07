@@ -270,7 +270,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_av_realtime_options.py`](gcp/fetchers/fetch_av_realtime_options.py) — line [256](gcp/fetchers/fetch_av_realtime_options.py#L256)
 - [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) — line [379](gcp/migrate_to_gcp.py#L379), [438](gcp/migrate_to_gcp.py#L438), [450](gcp/migrate_to_gcp.py#L450), [461](gcp/migrate_to_gcp.py#L461), [491](gcp/migrate_to_gcp.py#L491)
 - [`gcp/options_retention_job.py`](gcp/options_retention_job.py) — line [79](gcp/options_retention_job.py#L79)
-- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [505](platform/api/routers/grid.py#L505)
+- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [510](platform/api/routers/grid.py#L510)
 - [`scripts/maintenance/compute_spx_greeks.py`](scripts/maintenance/compute_spx_greeks.py) — line [149](scripts/maintenance/compute_spx_greeks.py#L149)
 - [`scripts/validate_track2_live.py`](scripts/validate_track2_live.py) — line [80](scripts/validate_track2_live.py#L80), [112](scripts/validate_track2_live.py#L112)
 
@@ -291,7 +291,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `insight_reports`
 - [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) — line [285](gcp/insight_pipeline_job.py#L285), [302](gcp/insight_pipeline_job.py#L302), [333](gcp/insight_pipeline_job.py#L333)
-- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [343](platform/api/routers/insights.py#L343)
+- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [349](platform/api/routers/insights.py#L349)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [142](scripts/backfill_history_tables.py#L142)
 - [`scripts/generate_historical_report.py`](scripts/generate_historical_report.py) — line [8](scripts/generate_historical_report.py#L8), [67](scripts/generate_historical_report.py#L67)
 
@@ -303,7 +303,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/auto_refresh_top_n.py`](gcp/auto_refresh_top_n.py) — line [98](gcp/auto_refresh_top_n.py#L98)
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [377](gcp/discord_interactions/main.py#L377)
 - [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) — line [177](gcp/insight_pipeline_job.py#L177), [200](gcp/insight_pipeline_job.py#L200), [206](gcp/insight_pipeline_job.py#L206), [215](gcp/insight_pipeline_job.py#L215)
-- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [256](platform/api/routers/insights.py#L256), [309](platform/api/routers/insights.py#L309), [315](platform/api/routers/insights.py#L315), [324](platform/api/routers/insights.py#L324)
+- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [262](platform/api/routers/insights.py#L262), [315](platform/api/routers/insights.py#L315), [321](platform/api/routers/insights.py#L321), [330](platform/api/routers/insights.py#L330)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [144](scripts/backfill_history_tables.py#L144)
 
 ### `intraday_flow_15m`
@@ -316,7 +316,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/database.py`](gcp/database.py) — line [847](gcp/database.py#L847)
 
 ### `journal_entries`
-- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [480](platform/api/routers/journal.py#L480), [936](platform/api/routers/journal.py#L936), [986](platform/api/routers/journal.py#L986)
+- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [498](platform/api/routers/journal.py#L498), [954](platform/api/routers/journal.py#L954), [1004](platform/api/routers/journal.py#L1004)
 - [`scripts/backfill_journal_embeddings.py`](scripts/backfill_journal_embeddings.py) — line [79](scripts/backfill_journal_embeddings.py#L79)
 
 ### `market_data_daily`
@@ -369,7 +369,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/analysis/phase6_playbook.py`](scripts/analysis/phase6_playbook.py) — line [943](scripts/analysis/phase6_playbook.py#L943), [990](scripts/analysis/phase6_playbook.py#L990), [993](scripts/analysis/phase6_playbook.py#L993), [1027](scripts/analysis/phase6_playbook.py#L1027), [1097](scripts/analysis/phase6_playbook.py#L1097)
 
 ### `playbook_cards_staging`
-- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [782](platform/api/routers/backtest.py#L782)
+- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [789](platform/api/routers/backtest.py#L789)
 
 ### `premarket_analysis`
 - [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3289](gcp/premarket_brief.py#L3289), [3290](gcp/premarket_brief.py#L3290), [3305](gcp/premarket_brief.py#L3305), [3307](gcp/premarket_brief.py#L3307)
@@ -430,22 +430,22 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/strat_struct_backtest.py`](scripts/strat_struct_backtest.py) — line [154](scripts/strat_struct_backtest.py#L154)
 
 ### `user_preferences`
-- [`platform/api/routers/preferences.py`](platform/api/routers/preferences.py) — line [172](platform/api/routers/preferences.py#L172)
+- [`platform/api/routers/preferences.py`](platform/api/routers/preferences.py) — line [175](platform/api/routers/preferences.py#L175)
 
 ### `user_profile`
-- [`platform/api/routers/profile.py`](platform/api/routers/profile.py) — line [184](platform/api/routers/profile.py#L184)
+- [`platform/api/routers/profile.py`](platform/api/routers/profile.py) — line [187](platform/api/routers/profile.py#L187)
 
 ### `user_roles`
 - [`platform/api/routers/admin.py`](platform/api/routers/admin.py) — line [932](platform/api/routers/admin.py#L932), [945](platform/api/routers/admin.py#L945)
 
 ### `user_style_results`
-- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [752](platform/api/routers/backtest.py#L752)
+- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [759](platform/api/routers/backtest.py#L759)
 
 ### `v_etf_options_node`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `waitlist_signups`
-- [`platform/api/routers/waitlist.py`](platform/api/routers/waitlist.py) — line [108](platform/api/routers/waitlist.py#L108)
+- [`platform/api/routers/waitlist.py`](platform/api/routers/waitlist.py) — line [111](platform/api/routers/waitlist.py#L111)
 
 ### `walk_forward_results`
 - [`scripts/run_param_sweep.py`](scripts/run_param_sweep.py) — line [108](scripts/run_param_sweep.py#L108)
@@ -517,7 +517,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [1262](lib/agents/summarizers.py#L1262)
 - [`lib/earnings_reactions.py`](lib/earnings_reactions.py) — line [338](lib/earnings_reactions.py#L338)
 - [`lib/strategies/catalyst_proximity.py`](lib/strategies/catalyst_proximity.py) — line [235](lib/strategies/catalyst_proximity.py#L235)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [332](platform/api/routers/catalysts.py#L332), [339](platform/api/routers/catalysts.py#L339), [519](platform/api/routers/catalysts.py#L519), [602](platform/api/routers/catalysts.py#L602)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [336](platform/api/routers/catalysts.py#L336), [343](platform/api/routers/catalysts.py#L343), [523](platform/api/routers/catalysts.py#L523), [606](platform/api/routers/catalysts.py#L606)
 - [`scripts/analysis/earnings_reaction_walkforward.py`](scripts/analysis/earnings_reaction_walkforward.py) — line [18](scripts/analysis/earnings_reaction_walkforward.py#L18)
 - [`scripts/fetch_earnings_calendar.py`](scripts/fetch_earnings_calendar.py) — line [153](scripts/fetch_earnings_calendar.py#L153), [329](scripts/fetch_earnings_calendar.py#L329), [357](scripts/fetch_earnings_calendar.py#L357), [1208](scripts/fetch_earnings_calendar.py#L1208), [1209](scripts/fetch_earnings_calendar.py#L1209)
 
@@ -535,7 +535,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_earnings_history.py`](gcp/fetchers/fetch_earnings_history.py) — line [330](gcp/fetchers/fetch_earnings_history.py#L330), [372](gcp/fetchers/fetch_earnings_history.py#L372), [374](gcp/fetchers/fetch_earnings_history.py#L374)
 - [`gcp/fetchers/fetch_market_data.py`](gcp/fetchers/fetch_market_data.py) — line [715](gcp/fetchers/fetch_market_data.py#L715), [741](gcp/fetchers/fetch_market_data.py#L741)
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [356](lib/agents/ranker/signals.py#L356)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [519](platform/api/routers/catalysts.py#L519), [616](platform/api/routers/catalysts.py#L616)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [523](platform/api/routers/catalysts.py#L523), [620](platform/api/routers/catalysts.py#L620)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [141](scripts/backfill_watchlist_data.py#L141)
 
 ### `earnings_options_snapshots`
@@ -571,8 +571,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [1253](lib/agents/summarizers.py#L1253)
 - [`lib/gamma_glossary.py`](lib/gamma_glossary.py) — line [260](lib/gamma_glossary.py#L260)
 - [`lib/strategies/catalyst_proximity.py`](lib/strategies/catalyst_proximity.py) — line [195](lib/strategies/catalyst_proximity.py#L195)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [302](platform/api/routers/catalysts.py#L302), [310](platform/api/routers/catalysts.py#L310)
-- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [787](platform/api/routers/grid.py#L787)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [306](platform/api/routers/catalysts.py#L306), [314](platform/api/routers/catalysts.py#L314)
+- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [792](platform/api/routers/grid.py#L792)
 - [`scripts/check_event_window_concentration.py`](scripts/check_event_window_concentration.py) — line [60](scripts/check_event_window_concentration.py#L60)
 
 ### `etf_options_daily_greeks`
@@ -598,8 +598,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/options_exec_backtest/__init__.py`](lib/options_exec_backtest/__init__.py) — line [12](lib/options_exec_backtest/__init__.py#L12)
 - [`lib/options_exec_backtest/iv_lookup.py`](lib/options_exec_backtest/iv_lookup.py) — line [11](lib/options_exec_backtest/iv_lookup.py#L11), [127](lib/options_exec_backtest/iv_lookup.py#L127)
 - [`lib/options_intraday.py`](lib/options_intraday.py) — line [165](lib/options_intraday.py#L165)
-- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [14](platform/api/routers/grid.py#L14), [233](platform/api/routers/grid.py#L233), [239](platform/api/routers/grid.py#L239), [263](platform/api/routers/grid.py#L263), [269](platform/api/routers/grid.py#L269), [310](platform/api/routers/grid.py#L310), [316](platform/api/routers/grid.py#L316), [630](platform/api/routers/grid.py#L630) (+1 more)
-- [`platform/api/routers/options.py`](platform/api/routers/options.py) — line [315](platform/api/routers/options.py#L315), [347](platform/api/routers/options.py#L347), [353](platform/api/routers/options.py#L353), [433](platform/api/routers/options.py#L433), [439](platform/api/routers/options.py#L439), [452](platform/api/routers/options.py#L452), [684](platform/api/routers/options.py#L684)
+- [`platform/api/routers/grid.py`](platform/api/routers/grid.py) — line [14](platform/api/routers/grid.py#L14), [238](platform/api/routers/grid.py#L238), [244](platform/api/routers/grid.py#L244), [268](platform/api/routers/grid.py#L268), [274](platform/api/routers/grid.py#L274), [315](platform/api/routers/grid.py#L315), [321](platform/api/routers/grid.py#L321), [635](platform/api/routers/grid.py#L635) (+1 more)
+- [`platform/api/routers/options.py`](platform/api/routers/options.py) — line [321](platform/api/routers/options.py#L321), [353](platform/api/routers/options.py#L353), [359](platform/api/routers/options.py#L359), [439](platform/api/routers/options.py#L439), [445](platform/api/routers/options.py#L445), [458](platform/api/routers/options.py#L458), [690](platform/api/routers/options.py#L690)
 - [`scripts/analysis/calibrate_intraday_theta.py`](scripts/analysis/calibrate_intraday_theta.py) — line [13](scripts/analysis/calibrate_intraday_theta.py#L13), [52](scripts/analysis/calibrate_intraday_theta.py#L52)
 - [`scripts/analysis/options_pnl_translation.py`](scripts/analysis/options_pnl_translation.py) — line [258](scripts/analysis/options_pnl_translation.py#L258), [359](scripts/analysis/options_pnl_translation.py#L359)
 - [`scripts/audit_data_freshness.py`](scripts/audit_data_freshness.py) — line [979](scripts/audit_data_freshness.py#L979)
@@ -613,7 +613,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `historical_signals`
 - [`gcp/historical_signals.py`](gcp/historical_signals.py) — line [95](gcp/historical_signals.py#L95), [98](gcp/historical_signals.py#L98)
-- [`platform/api/routers/signals.py`](platform/api/routers/signals.py) — line [1](platform/api/routers/signals.py#L1), [115](platform/api/routers/signals.py#L115), [138](platform/api/routers/signals.py#L138), [166](platform/api/routers/signals.py#L166), [318](platform/api/routers/signals.py#L318), [360](platform/api/routers/signals.py#L360)
+- [`platform/api/routers/signals.py`](platform/api/routers/signals.py) — line [1](platform/api/routers/signals.py#L1), [119](platform/api/routers/signals.py#L119), [142](platform/api/routers/signals.py#L142), [170](platform/api/routers/signals.py#L170), [322](platform/api/routers/signals.py#L322), [364](platform/api/routers/signals.py#L364)
 - [`scripts/analyze_timeframe_heuristic.py`](scripts/analyze_timeframe_heuristic.py) — line [316](scripts/analyze_timeframe_heuristic.py#L316), [476](scripts/analyze_timeframe_heuristic.py#L476)
 - [`scripts/backfill_timeframe_tags.py`](scripts/backfill_timeframe_tags.py) — line [73](scripts/backfill_timeframe_tags.py#L73), [126](scripts/backfill_timeframe_tags.py#L126)
 - [`scripts/replay_signal_monitor.py`](scripts/replay_signal_monitor.py) — line [107](scripts/replay_signal_monitor.py#L107)
@@ -626,7 +626,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/earnings_reactions_brief.py`](gcp/earnings_reactions_brief.py) — line [396](gcp/earnings_reactions_brief.py#L396)
 - [`lib/agents/ranker/candidates.py`](lib/agents/ranker/candidates.py) — line [144](lib/agents/ranker/candidates.py#L144)
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [422](lib/agents/ranker/signals.py#L422)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [374](platform/api/routers/catalysts.py#L374), [383](platform/api/routers/catalysts.py#L383), [518](platform/api/routers/catalysts.py#L518), [589](platform/api/routers/catalysts.py#L589)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [378](platform/api/routers/catalysts.py#L378), [387](platform/api/routers/catalysts.py#L387), [522](platform/api/routers/catalysts.py#L522), [593](platform/api/routers/catalysts.py#L593)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [148](scripts/backfill_watchlist_data.py#L148)
 
 ### `insight_reports`
@@ -635,7 +635,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/insight_discord_push.py`](gcp/insight_discord_push.py) — line [86](gcp/insight_discord_push.py#L86), [97](gcp/insight_discord_push.py#L97), [241](gcp/insight_discord_push.py#L241), [415](gcp/insight_discord_push.py#L415), [663](gcp/insight_discord_push.py#L663)
 - [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) — line [357](gcp/insight_pipeline_job.py#L357)
 - [`lib/strategies/insight_cache.py`](lib/strategies/insight_cache.py) — line [274](lib/strategies/insight_cache.py#L274)
-- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [157](platform/api/routers/insights.py#L157), [169](platform/api/routers/insights.py#L169), [190](platform/api/routers/insights.py#L190), [226](platform/api/routers/insights.py#L226)
+- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [163](platform/api/routers/insights.py#L163), [175](platform/api/routers/insights.py#L175), [196](platform/api/routers/insights.py#L196), [232](platform/api/routers/insights.py#L232)
 - [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [549](scripts/backfill_and_replay.py#L549)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [3](scripts/backfill_history_tables.py#L3), [154](scripts/backfill_history_tables.py#L154), [156](scripts/backfill_history_tables.py#L156), [188](scripts/backfill_history_tables.py#L188), [189](scripts/backfill_history_tables.py#L189)
 - [`scripts/validation/validate_brief_accuracy.py`](scripts/validation/validate_brief_accuracy.py) — line [365](scripts/validation/validate_brief_accuracy.py#L365)
@@ -646,7 +646,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `insight_runs`
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [400](gcp/discord_interactions/main.py#L400)
 - [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) — line [156](gcp/insight_pipeline_job.py#L156)
-- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [275](platform/api/routers/insights.py#L275)
+- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [281](platform/api/routers/insights.py#L281)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [174](scripts/backfill_history_tables.py#L174)
 
 ### `intraday_flow_15m`
@@ -664,8 +664,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `journal_entries`
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [1541](lib/agents/summarizers.py#L1541)
-- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [452](platform/api/routers/backtest.py#L452), [624](platform/api/routers/backtest.py#L624)
-- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [329](platform/api/routers/journal.py#L329), [510](platform/api/routers/journal.py#L510), [604](platform/api/routers/journal.py#L604), [641](platform/api/routers/journal.py#L641), [733](platform/api/routers/journal.py#L733), [913](platform/api/routers/journal.py#L913)
+- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [459](platform/api/routers/backtest.py#L459), [631](platform/api/routers/backtest.py#L631)
+- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [347](platform/api/routers/journal.py#L347), [528](platform/api/routers/journal.py#L528), [622](platform/api/routers/journal.py#L622), [659](platform/api/routers/journal.py#L659), [751](platform/api/routers/journal.py#L751), [931](platform/api/routers/journal.py#L931)
 - [`scripts/backfill_journal_embeddings.py`](scripts/backfill_journal_embeddings.py) — line [59](scripts/backfill_journal_embeddings.py#L59)
 
 ### `market_data_daily`
@@ -696,10 +696,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/experimental/vol_regime.py`](lib/features/experimental/vol_regime.py) — line [52](lib/features/experimental/vol_regime.py#L52)
 - [`lib/options_greeks.py`](lib/options_greeks.py) — line [533](lib/options_greeks.py#L533)
 - [`lib/strategies/gamma_proximity.py`](lib/strategies/gamma_proximity.py) — line [42](lib/strategies/gamma_proximity.py#L42)
-- [`platform/api/main.py`](platform/api/main.py) — line [864](platform/api/main.py#L864), [939](platform/api/main.py#L939), [1083](platform/api/main.py#L1083), [1212](platform/api/main.py#L1212), [1224](platform/api/main.py#L1224), [1226](platform/api/main.py#L1226)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [519](platform/api/routers/catalysts.py#L519), [629](platform/api/routers/catalysts.py#L629)
-- [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [83](platform/api/routers/dashboard.py#L83), [142](platform/api/routers/dashboard.py#L142), [260](platform/api/routers/dashboard.py#L260)
-- [`platform/api/routers/live.py`](platform/api/routers/live.py) — line [332](platform/api/routers/live.py#L332)
+- [`platform/api/main.py`](platform/api/main.py) — line [874](platform/api/main.py#L874), [949](platform/api/main.py#L949), [1093](platform/api/main.py#L1093), [1222](platform/api/main.py#L1222), [1234](platform/api/main.py#L1234), [1236](platform/api/main.py#L1236)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [523](platform/api/routers/catalysts.py#L523), [633](platform/api/routers/catalysts.py#L633)
+- [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [87](platform/api/routers/dashboard.py#L87), [146](platform/api/routers/dashboard.py#L146), [264](platform/api/routers/dashboard.py#L264)
+- [`platform/api/routers/live.py`](platform/api/routers/live.py) — line [340](platform/api/routers/live.py#L340)
 - [`scripts/audit_data_freshness.py`](scripts/audit_data_freshness.py) — line [964](scripts/audit_data_freshness.py#L964), [971](scripts/audit_data_freshness.py#L971), [1095](scripts/audit_data_freshness.py#L1095), [1103](scripts/audit_data_freshness.py#L1103)
 - [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [370](scripts/backfill_and_replay.py#L370), [542](scripts/backfill_and_replay.py#L542)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [109](scripts/backfill_watchlist_data.py#L109)
@@ -723,7 +723,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/intraday_flow.py`](lib/features/intraday_flow.py) — line [124](lib/features/intraday_flow.py#L124)
 - [`lib/options_intraday.py`](lib/options_intraday.py) — line [253](lib/options_intraday.py#L253), [574](lib/options_intraday.py#L574), [585](lib/options_intraday.py#L585)
 - [`lib/strat_levels.py`](lib/strat_levels.py) — line [622](lib/strat_levels.py#L622)
-- [`platform/api/main.py`](platform/api/main.py) — line [559](platform/api/main.py#L559), [625](platform/api/main.py#L625), [1087](platform/api/main.py#L1087), [1412](platform/api/main.py#L1412), [1430](platform/api/main.py#L1430)
+- [`platform/api/main.py`](platform/api/main.py) — line [569](platform/api/main.py#L569), [635](platform/api/main.py#L635), [1097](platform/api/main.py#L1097), [1422](platform/api/main.py#L1422), [1440](platform/api/main.py#L1440)
 - [`scripts/analysis/momentum_eligibility.py`](scripts/analysis/momentum_eligibility.py) — line [12](scripts/analysis/momentum_eligibility.py#L12)
 - [`scripts/analysis/per_ticker_calibration.py`](scripts/analysis/per_ticker_calibration.py) — line [208](scripts/analysis/per_ticker_calibration.py#L208)
 - [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [459](scripts/backfill_and_replay.py#L459)
@@ -762,7 +762,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [194](lib/agents/ranker/signals.py#L194), [268](lib/agents/ranker/signals.py#L268)
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [1276](lib/agents/summarizers.py#L1276), [1425](lib/agents/summarizers.py#L1425), [1437](lib/agents/summarizers.py#L1437), [1454](lib/agents/summarizers.py#L1454)
 - [`lib/features/experimental/news_sentiment.py`](lib/features/experimental/news_sentiment.py) — line [83](lib/features/experimental/news_sentiment.py#L83)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [98](platform/api/routers/catalysts.py#L98), [518](platform/api/routers/catalysts.py#L518), [563](platform/api/routers/catalysts.py#L563)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [102](platform/api/routers/catalysts.py#L102), [522](platform/api/routers/catalysts.py#L522), [567](platform/api/routers/catalysts.py#L567)
 - [`scripts/backfill_news_sentiment.py`](scripts/backfill_news_sentiment.py) — line [2](scripts/backfill_news_sentiment.py#L2)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [133](scripts/backfill_watchlist_data.py#L133)
 
@@ -770,7 +770,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/experimental/options_derived.py`](lib/features/experimental/options_derived.py) — line [355](lib/features/experimental/options_derived.py#L355), [462](lib/features/experimental/options_derived.py#L462)
 
 ### `playbook_cards`
-- [`platform/api/routers/playbook.py`](platform/api/routers/playbook.py) — line [7](platform/api/routers/playbook.py#L7), [119](platform/api/routers/playbook.py#L119), [138](platform/api/routers/playbook.py#L138), [143](platform/api/routers/playbook.py#L143), [150](platform/api/routers/playbook.py#L150), [290](platform/api/routers/playbook.py#L290)
+- [`platform/api/routers/playbook.py`](platform/api/routers/playbook.py) — line [7](platform/api/routers/playbook.py#L7), [124](platform/api/routers/playbook.py#L124), [143](platform/api/routers/playbook.py#L143), [148](platform/api/routers/playbook.py#L148), [155](platform/api/routers/playbook.py#L155), [295](platform/api/routers/playbook.py#L295)
 - [`scripts/analysis/phase6_playbook.py`](scripts/analysis/phase6_playbook.py) — line [281](scripts/analysis/phase6_playbook.py#L281)
 - [`scripts/audit_data_freshness.py`](scripts/audit_data_freshness.py) — line [218](scripts/audit_data_freshness.py#L218)
 
@@ -783,7 +783,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [320](gcp/premarket_playbook_resolver.py#L320), [326](gcp/premarket_playbook_resolver.py#L326), [503](gcp/premarket_playbook_resolver.py#L503), [586](gcp/premarket_playbook_resolver.py#L586)
 - [`lib/movement_statement.py`](lib/movement_statement.py) — line [21](lib/movement_statement.py#L21), [218](lib/movement_statement.py#L218), [244](lib/movement_statement.py#L244)
 - [`lib/strategies/brief_bias.py`](lib/strategies/brief_bias.py) — line [83](lib/strategies/brief_bias.py#L83), [156](lib/strategies/brief_bias.py#L156)
-- [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [83](platform/api/routers/dashboard.py#L83), [102](platform/api/routers/dashboard.py#L102), [109](platform/api/routers/dashboard.py#L109)
+- [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [87](platform/api/routers/dashboard.py#L87), [106](platform/api/routers/dashboard.py#L106), [113](platform/api/routers/dashboard.py#L113)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [3](scripts/backfill_history_tables.py#L3), [104](scripts/backfill_history_tables.py#L104), [106](scripts/backfill_history_tables.py#L106), [127](scripts/backfill_history_tables.py#L127), [128](scripts/backfill_history_tables.py#L128)
 - [`scripts/validation/validate_brief_accuracy.py`](scripts/validation/validate_brief_accuracy.py) — line [336](scripts/validation/validate_brief_accuracy.py#L336)
 
@@ -805,7 +805,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [542](lib/agents/ranker/signals.py#L542)
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [1291](lib/agents/summarizers.py#L1291)
 - [`lib/strategies/catalyst_proximity.py`](lib/strategies/catalyst_proximity.py) — line [277](lib/strategies/catalyst_proximity.py#L277)
-- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [415](platform/api/routers/catalysts.py#L415), [424](platform/api/routers/catalysts.py#L424), [518](platform/api/routers/catalysts.py#L518), [573](platform/api/routers/catalysts.py#L573), [576](platform/api/routers/catalysts.py#L576)
+- [`platform/api/routers/catalysts.py`](platform/api/routers/catalysts.py) — line [419](platform/api/routers/catalysts.py#L419), [428](platform/api/routers/catalysts.py#L428), [522](platform/api/routers/catalysts.py#L522), [577](platform/api/routers/catalysts.py#L577), [580](platform/api/routers/catalysts.py#L580)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [155](scripts/backfill_watchlist_data.py#L155)
 
 ### `signal_alerts`
@@ -815,7 +815,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/signal_quality_alarm.py`](gcp/signal_quality_alarm.py) — line [197](gcp/signal_quality_alarm.py#L197)
 - [`gcp/signal_replay.py`](gcp/signal_replay.py) — line [8](gcp/signal_replay.py#L8), [109](gcp/signal_replay.py#L109), [117](gcp/signal_replay.py#L117)
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [812](lib/agents/summarizers.py#L812), [829](lib/agents/summarizers.py#L829)
-- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [365](platform/api/routers/journal.py#L365), [681](platform/api/routers/journal.py#L681), [786](platform/api/routers/journal.py#L786)
+- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [383](platform/api/routers/journal.py#L383), [699](platform/api/routers/journal.py#L699), [804](platform/api/routers/journal.py#L804)
 - [`scripts/analysis/per_factor_walkforward.py`](scripts/analysis/per_factor_walkforward.py) — line [13](scripts/analysis/per_factor_walkforward.py#L13), [254](scripts/analysis/per_factor_walkforward.py#L254)
 - [`scripts/analysis/per_ticker_calibration.py`](scripts/analysis/per_ticker_calibration.py) — line [6](scripts/analysis/per_ticker_calibration.py#L6), [93](scripts/analysis/per_ticker_calibration.py#L93), [196](scripts/analysis/per_ticker_calibration.py#L196), [893](scripts/analysis/per_ticker_calibration.py#L893)
 - [`scripts/analysis/verify_brief_bias.py`](scripts/analysis/verify_brief_bias.py) — line [53](scripts/analysis/verify_brief_bias.py#L53), [153](scripts/analysis/verify_brief_bias.py#L153)
@@ -850,7 +850,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [496](lib/agents/ranker/signals.py#L496)
 
 ### `top_movers_intraday`
-- [`platform/api/main.py`](platform/api/main.py) — line [1318](platform/api/main.py#L1318), [1336](platform/api/main.py#L1336), [1337](platform/api/main.py#L1337)
+- [`platform/api/main.py`](platform/api/main.py) — line [1328](platform/api/main.py#L1328), [1346](platform/api/main.py#L1346), [1347](platform/api/main.py#L1347)
 
 ### `trades`
 - [`gcp/db_query_job.py`](gcp/db_query_job.py) — line [18](gcp/db_query_job.py#L18)
@@ -865,8 +865,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/movement_statement.py`](lib/movement_statement.py) — line [221](lib/movement_statement.py#L221)
 - [`lib/style_miner.py`](lib/style_miner.py) — line [80](lib/style_miner.py#L80)
 - [`platform/api/routers/analytics.py`](platform/api/routers/analytics.py) — line [128](platform/api/routers/analytics.py#L128), [138](platform/api/routers/analytics.py#L138), [143](platform/api/routers/analytics.py#L143)
-- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [7](platform/api/routers/backtest.py#L7), [171](platform/api/routers/backtest.py#L171)
-- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [10](platform/api/routers/journal.py#L10), [13](platform/api/routers/journal.py#L13), [330](platform/api/routers/journal.py#L330), [331](platform/api/routers/journal.py#L331), [338](platform/api/routers/journal.py#L338), [365](platform/api/routers/journal.py#L365), [368](platform/api/routers/journal.py#L368), [677](platform/api/routers/journal.py#L677) (+3 more)
+- [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [7](platform/api/routers/backtest.py#L7), [178](platform/api/routers/backtest.py#L178)
+- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [10](platform/api/routers/journal.py#L10), [13](platform/api/routers/journal.py#L13), [348](platform/api/routers/journal.py#L348), [349](platform/api/routers/journal.py#L349), [356](platform/api/routers/journal.py#L356), [383](platform/api/routers/journal.py#L383), [386](platform/api/routers/journal.py#L386), [695](platform/api/routers/journal.py#L695) (+3 more)
 - [`scripts/analysis/per_factor_walkforward.py`](scripts/analysis/per_factor_walkforward.py) — line [15](scripts/analysis/per_factor_walkforward.py#L15)
 - [`scripts/analysis/phase4_setup_discovery.py`](scripts/analysis/phase4_setup_discovery.py) — line [270](scripts/analysis/phase4_setup_discovery.py#L270)
 - [`scripts/backfill_signals.py`](scripts/backfill_signals.py) — line [2](scripts/backfill_signals.py#L2)
@@ -874,10 +874,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/run_pipeline.py`](scripts/run_pipeline.py) — line [71](scripts/run_pipeline.py#L71), [87](scripts/run_pipeline.py#L87)
 
 ### `user_preferences`
-- [`platform/api/routers/preferences.py`](platform/api/routers/preferences.py) — line [120](platform/api/routers/preferences.py#L120)
+- [`platform/api/routers/preferences.py`](platform/api/routers/preferences.py) — line [123](platform/api/routers/preferences.py#L123)
 
 ### `user_profile`
-- [`platform/api/routers/profile.py`](platform/api/routers/profile.py) — line [133](platform/api/routers/profile.py#L133)
+- [`platform/api/routers/profile.py`](platform/api/routers/profile.py) — line [136](platform/api/routers/profile.py#L136)
 
 ### `user_roles`
 - [`platform/api/auth.py`](platform/api/auth.py) — line [209](platform/api/auth.py#L209), [254](platform/api/auth.py#L254)
@@ -902,7 +902,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) — line [478](gcp/insight_pipeline_job.py#L478)
 - [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [959](gcp/premarket_brief.py#L959)
 - [`lib/agents/ranker/candidates.py`](lib/agents/ranker/candidates.py) — line [236](lib/agents/ranker/candidates.py#L236)
-- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [588](platform/api/routers/insights.py#L588)
+- [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [594](platform/api/routers/insights.py#L594)
 - [`scripts/analysis/per_ticker_calibration.py`](scripts/analysis/per_ticker_calibration.py) — line [223](scripts/analysis/per_ticker_calibration.py#L223), [227](scripts/analysis/per_ticker_calibration.py#L227), [890](scripts/analysis/per_ticker_calibration.py#L890), [908](scripts/analysis/per_ticker_calibration.py#L908)
 - [`scripts/run_historical_signals.py`](scripts/run_historical_signals.py) — line [94](scripts/run_historical_signals.py#L94), [130](scripts/run_historical_signals.py#L130)
 <!-- inventory:reads:end -->

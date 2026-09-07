@@ -1244,6 +1244,32 @@ class TestReportMarkdownAPI:
 # Hermetic: every test monkeypatches `lib.agents.ranker.rank_tickers`, so the
 # endpoint's deterministic SQL+Python ranker is never actually invoked against
 # Cloud SQL. Runs in the no-DB CI `Run Tests` job.
+def _watchlist_payload(ranked=()):
+    """A minimal payload in the shape lib.agents.ranker.rank_tickers really
+    returns (run_id/ranked/weights_used/...). The earlier stubs answered an
+    {as_of, count, tickers} shape the ranker never produced; the response
+    model added on 2026-09-07 rejects it, which is the point of the model."""
+    return {
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "as_of": "2026-04-25T20:00:00+00:00",
+        "candidate_count": len(ranked),
+        "excluded_count": 0,
+        "ranked": [
+            {
+                "ticker": t,
+                "score": score,
+                "pct_of_max": 1.0,
+                "catalyst_types": [],
+                "catalyst_metadata": {},
+                "score_breakdown": [],
+            }
+            for t, score in ranked
+        ],
+        "weights_used": {},
+        "duration_ms": 0,
+    }
+
+
 class TestInsightsWatchlistAPI:
     """`GET /api/insights/watchlist` — wraps `lib.agents.ranker.rank_tickers`.
 
@@ -1258,14 +1284,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {
-                "as_of": "2026-04-25",
-                "count": 2,
-                "tickers": [
-                    {"ticker": "AAPL", "score": 0.81, "breakdown": {}},
-                    {"ticker": "MSFT", "score": 0.74, "breakdown": {}},
-                ],
-            }
+            return _watchlist_payload([("AAPL", 0.81), ("MSFT", 0.74)])
 
         # Patch the late-imported reference in the route
         monkeypatch.setattr(
@@ -1275,8 +1294,8 @@ class TestInsightsWatchlistAPI:
         r = client.get("/api/insights/watchlist?limit=2")
         assert r.status_code == 200
         data = r.json()
-        assert data["count"] == 2
-        assert [t["ticker"] for t in data["tickers"]] == ["AAPL", "MSFT"]
+        assert data["candidate_count"] == 2
+        assert [t["ticker"] for t in data["ranked"]] == ["AAPL", "MSFT"]
         # The route clamps limit into [1, 50]
         assert called_with["limit"] == 2
 
@@ -1285,7 +1304,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "2026-04-25", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         r = client.get("/api/insights/watchlist?limit=999")
@@ -1297,7 +1316,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         r = client.get(
@@ -1313,7 +1332,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         r = client.get("/api/insights/watchlist?extras=avgo,nvda,tsla")
@@ -1329,7 +1348,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         client.get("/api/insights/watchlist")
@@ -1344,7 +1363,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         client.get("/api/insights/watchlist")
@@ -1359,7 +1378,7 @@ class TestInsightsWatchlistAPI:
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
-            return {"as_of": "x", "count": 0, "tickers": []}
+            return _watchlist_payload()
 
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
         monkeypatch.setattr(

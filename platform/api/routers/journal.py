@@ -81,6 +81,15 @@ from lib.broker_import import detect_broker, pair_orders, parse_csv  # noqa: E40
 
 # Server-verified identity for per-user scoping.
 from api.auth import current_user_email
+from api.schemas import (
+    ImportCommitResponse,
+    ImportPreviewResponse,
+    JournalDeleteResponse,
+    JournalExportResponse,
+    JournalMutationResponse,
+    JournalTradesResponse,
+    SeedTradesResponse,
+)
 
 # Admin identity for the read-only "Examples" teaching layer (GET /api/journal/
 # examples/{ticker}) — same env var / default the admin gate uses elsewhere
@@ -284,6 +293,15 @@ def _derive_status(has_exit: bool, return_pct: Optional[float]) -> str:
     if return_pct < 0:
         return "loss"
     return "breakeven"
+
+
+def _text_or_none(v) -> Optional[str]:
+    """A pandas cell as text, or None for NULL/NaN — an all-NULL text column
+    comes back float64, and a NaN would fail the response model (and, before
+    it, JSON encoding) rather than serialise as null."""
+    if v is None or _is_nan(v):
+        return None
+    return str(v)
 
 
 def _is_nan(v) -> bool:
@@ -621,7 +639,7 @@ def _existing_entry_keys(owner: str, tickers: list[str]) -> set[tuple]:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/api/journal/trades/{ticker}")
+@router.get("/api/journal/trades/{ticker}", response_model=JournalTradesResponse, response_model_exclude_unset=True)
 async def get_trades(ticker: str, request: Request):
     """Return the signed-in user's journal entries for the ticker, newest first."""
     ticker_upper = ticker.upper()
@@ -661,7 +679,7 @@ async def get_trades(ticker: str, request: Request):
     return {"ticker": ticker_upper, "source": "local", "count": len(entries), "trades": entries}
 
 
-@router.get("/api/journal/examples/{ticker}")
+@router.get("/api/journal/examples/{ticker}", response_model=JournalTradesResponse, response_model_exclude_unset=True)
 async def get_examples(ticker: str):
     """Read-only teaching "Examples" — the UNION of the admin's own journal
     trades AND every automated-pipeline `trades` row for a ticker
@@ -820,7 +838,7 @@ async def get_examples(ticker: str):
     return {"ticker": ticker_upper, "source": "cloud_sql", "count": len(trades), "trades": trades}
 
 
-@router.post("/api/journal/trades")
+@router.post("/api/journal/trades", response_model=JournalMutationResponse, response_model_exclude_unset=True)
 async def create_trade(trade: JournalTradeCreate, request: Request):
     """Insert a journal entry for the signed-in user. Returns it with its id.
 
@@ -894,7 +912,7 @@ def _find_local_entry(trade_id: str) -> tuple[Optional[str], Optional[list[dict]
     return None, None, None
 
 
-@router.patch("/api/journal/trades/{trade_id}")
+@router.patch("/api/journal/trades/{trade_id}", response_model=JournalMutationResponse, response_model_exclude_unset=True)
 async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
     """Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct
     (percent, via the existing `_return_pct`) and status win/loss/breakeven.
@@ -976,7 +994,7 @@ async def close_trade(trade_id: str, body: JournalTradeClose, request: Request):
     return {"source": "local", "id": trade_id, "return_pct": ret_pct_out, "status": new_status}
 
 
-@router.delete("/api/journal/trades/{trade_id}")
+@router.delete("/api/journal/trades/{trade_id}", response_model=JournalDeleteResponse, response_model_exclude_unset=True)
 async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
     """Delete one of the signed-in user's journal entries by UUID."""
     if _HAS_CLOUD_SQL:
@@ -1011,7 +1029,7 @@ async def delete_trade(trade_id: str, request: Request, ticker: str = ""):
     return {"source": "local", "deleted": trade_id}
 
 
-@router.get("/api/journal/seed/{ticker}")
+@router.get("/api/journal/seed/{ticker}", response_model=SeedTradesResponse, response_model_exclude_unset=True)
 async def seed_trades(ticker: str, date: str):
     """Read-only admin seed pull from the automated pipeline `trades` table.
 
@@ -1059,7 +1077,7 @@ async def seed_trades(ticker: str, date: str):
             raw_return = row.get("return_pct")
             trades.append({
                 "id": str(row["id"]),
-                "direction": row.get("direction"),
+                "direction": _text_or_none(row.get("direction")),
                 "entry_time": None if pd.isna(row.get("entry_time")) else str(row.get("entry_time")),
                 "entry_price": None if pd.isna(row.get("entry_price")) else float(row.get("entry_price")),
                 "exit_time": None if pd.isna(row.get("exit_time")) else str(row.get("exit_time")),
@@ -1070,14 +1088,14 @@ async def seed_trades(ticker: str, date: str):
                 # the seed response in the same units as the rest of the
                 # journal endpoints.
                 "return_pct": None if pd.isna(raw_return) else float(raw_return) * 100,
-                "strat_combo": row.get("strat_combo"),
-                "exit_reason": row.get("exit_reason"),
+                "strat_combo": _text_or_none(row.get("strat_combo")),
+                "exit_reason": _text_or_none(row.get("exit_reason")),
             })
 
     return {"ticker": ticker_upper, "date": date, "count": len(trades), "trades": trades}
 
 
-@router.post("/api/journal/export/{ticker}")
+@router.post("/api/journal/export/{ticker}", response_model=JournalExportResponse, response_model_exclude_unset=True)
 async def export_trades(ticker: str, request: ExportRequest):
     """Write journal trades to {ticker}_trade_tracker.csv in data/signals/."""
     ticker_lower = ticker.lower()
@@ -1109,7 +1127,7 @@ async def export_trades(ticker: str, request: ExportRequest):
     }
 
 
-@router.post("/api/journal/import/preview")
+@router.post("/api/journal/import/preview", response_model=ImportPreviewResponse, response_model_exclude_unset=True)
 async def import_preview(
     request: Request,
     file: UploadFile = File(...),
@@ -1199,7 +1217,7 @@ async def import_preview(
     return {"broker": resolved_broker, "trades": trades_out, "skipped": preview.skipped}
 
 
-@router.post("/api/journal/import/commit")
+@router.post("/api/journal/import/commit", response_model=ImportCommitResponse, response_model_exclude_unset=True)
 async def import_commit(body: ImportCommitRequest, request: Request):
     """Insert the caller-selected `PairedTrade`s from a preview.
 
