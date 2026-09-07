@@ -136,7 +136,10 @@ body:
         # on git 2.43.0 (solyra#63): without it the search returned only the commit
         # that REMOVED the importer; with it, the merge that added it appears too.
         # "Added by nobody, removed by someone" is the tell.
-        $ git log --oneline --all --full-history --diff-merges=separate \
+        # --no-patch as well, or this dumps a full diff against every merge
+        # parent: measured on this repo, 12,981 lines for one symbol versus 9
+        # with it. -G selection and the parent-qualified summaries are kept.
+        $ git log --oneline --all --full-history --diff-merges=separate --no-patch \
             -G "<symbol>" --no-renames \
             -- lib gcp platform scripts .github tests
         <sha> (date) added it and wired it into <the caller>

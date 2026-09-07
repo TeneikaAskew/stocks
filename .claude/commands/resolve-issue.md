@@ -303,17 +303,22 @@ new_tree() {                       # $1 = variable name to set, $2 = commit-ish
 
 # In a function, called BARE, for the same reason every other stop in this file
 # is: `return` outside a function is an error, and `|| echo` would exit 0.
-make_baselines() {
+# EVERYTHING in the function, including the measurements and the cleanup.
+# `make_baselines` on its own line, with the measurements after it, is the same
+# defect as two bare calls: the call returns non-zero, nothing stops, and the
+# next statement's status replaces it — here with `$MAIN_TREE` unset, so
+# `git worktree remove ""` errors and the block still ends 0.
+baselines() {
   new_tree MAIN_TREE origin/main || return 1      # validity: is it still real?
   new_tree BASE_TREE "$(git merge-base origin/main <headRefName>)" || return 1
+
+  # ...measure in each, and say WHICH tree produced which number. The
+  # failing-before test in Phase 4 runs in the merge-base one.
+
+  git worktree remove "$MAIN_TREE"   # each, when its half is captured
+  git worktree remove "$BASE_TREE"
 }
-make_baselines
-
-# ...measure in each, and say WHICH tree produced which number. The
-# failing-before test in Phase 4 runs in the merge-base one.
-
-git worktree remove "$MAIN_TREE"   # each, when its half is captured
-git worktree remove "$BASE_TREE"
+baselines                # BARE, and now nothing follows it to overwrite $?
 ```
 
 **Remove it when you are done, and use a fresh path.** A registered worktree
@@ -1376,13 +1381,29 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      1. **Do not run this concurrently with another deploy.** Check before
         starting — `gcloud builds list --ongoing` — and say in the status
         comment that you did.
-     2. **Verify the digest rather than the exit code.** `deploy.sh` already
-        has `_resolve_image_ref <image[:tag]> -> image@sha256:…`
-        (`gcp/deploy.sh:217`) and records a job's deployed digest from its
-        latest execution (`:112-119`). Capture the digest immediately after
-        the build, and after the job update confirm the job is on THAT digest.
-        If they differ, someone else's image is in production under your
-        change's name — say so and redeploy; do not report the fix as shipped.
+     2. **Compare the job's digest against the tag — and know what that does
+        NOT prove.** `deploy.sh` records a job's deployed digest from its
+        latest execution (`gcp/deploy.sh:112-119`), and `_resolve_image_ref`
+        (`:217`) turns a reference into `image@sha256:…`. Comparing them
+        catches a job left on an older digest.
+
+        It does **not** bind the deployment to YOUR build, and this is the
+        trap: `_resolve_image_ref` resolves `${base}:${tag}` at the moment it
+        is called (`:229`), so if another build moved the tag between your
+        build finishing and your capture, you capture *their* digest, the job
+        update resolves the same tag to the same wrong digest, and the equality
+        check passes. It is a self-consistency check wearing the clothes of a
+        provenance check. `gcloud builds list --ongoing` beforehand is a
+        snapshot, not a lock, and narrows the window without closing it.
+
+        Binding it properly means taking the digest from the build invocation
+        itself rather than from the tag afterwards. **This repo cannot do that
+        today**: `gcloud builds submit` is called bare at `gcp/deploy.sh:72`
+        and `:1399`, capturing no build id, and nothing anywhere reads a
+        build's `results.images[].digest`. So it belongs to the same follow-up
+        PR as the digest-pinning below, not to a resolution that happens to
+        deploy. Until then, treat a matching digest as "nothing obviously
+        drifted", not as "production runs my code".
 
      The actual fix is to pin `--image` to a digest resolved from the
      validated source instead of a moving tag. That is a change to
