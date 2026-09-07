@@ -531,20 +531,26 @@
         <mxCell id="ic_tp" value="trading-platform" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontStyle=1;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
           <mxGeometry x="1240" y="872" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="tp_txt" value="FastAPI (13 routers) + React SPA&#10;stocks.insightscollective.org&#10;IAP-gated · managed TLS · --no-cpu-throttling (PR #507) · min-instances=1" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
-          <mxGeometry x="1300" y="866" width="380" height="100" as="geometry" />
+        <mxCell id="tp_txt" value="FastAPI (13 routers) + React SPA&#10;no custom domain: generated run.app URL only&#10;(stocks.* hostname left this service 2026-09-05)&#10;IAP-gated · managed TLS · --no-cpu-throttling (PR #507) · min-instances=1" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
+          <mxGeometry x="1300" y="866" width="220" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="ic_solyra" value="solyra-api-staging / -prod" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontStyle=1;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
+          <mxGeometry x="1530" y="872" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="solyra_txt" value="Solyra API (FastAPI) for the Solyra SPA (hosted off Cloud Run)&#10;api.stocks.insightscollective.org → solyra-api-staging (managed TLS, 2026-09-06)&#10;stocks.insightscollective.org = Firebase auth-email domain / reserved for the SPA&#10;staging AUTH_MODE=firebase · prod behind IAP" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
+          <mxGeometry x="1590" y="866" width="240" height="120" as="geometry" />
         </mxCell>
         <mxCell id="ic_di" value="discord-interactions" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
-          <mxGeometry x="1700" y="872" width="48" height="48" as="geometry" />
+          <mxGeometry x="1840" y="872" width="48" height="48" as="geometry" />
         </mxCell>
         <mxCell id="di_txt" value="slash-cmd HTTP :8080&#10;verifies discord-public-key&#10;→ triggers Jobs · 3 channels" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
-          <mxGeometry x="1760" y="866" width="280" height="100" as="geometry" />
+          <mxGeometry x="1900" y="866" width="190" height="120" as="geometry" />
         </mxCell>
         <mxCell id="ic_fn" value="failure-notifier" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
-          <mxGeometry x="2060" y="872" width="48" height="48" as="geometry" />
+          <mxGeometry x="2100" y="872" width="48" height="48" as="geometry" />
         </mxCell>
         <mxCell id="fn_txt" value="Pub/Sub-driven&#10;GitHub-issue creator&#10;close-on-success (PR #493)" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
-          <mxGeometry x="2120" y="866" width="220" height="100" as="geometry" />
+          <mxGeometry x="2160" y="866" width="160" height="120" as="geometry" />
         </mxCell>
         <mxCell id="g_cicd" value="GitHub Actions  (19 workflows: backups · audits · deploy)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#f0f0f2;strokeColor=#8a90a0;dashed=0;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#1f2933;spacingTop=6;spacingLeft=10;" parent="1" vertex="1">
           <mxGeometry x="40" y="1030" width="2320" height="90" as="geometry" />
