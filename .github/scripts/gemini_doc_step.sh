@@ -71,10 +71,28 @@ MAX_ATTEMPTS="${GEMINI_MAX_ATTEMPTS:-2}"
 # worth pausing on rather than reconnecting into instantly.
 RETRY_SLEEP="${GEMINI_RETRY_SLEEP:-20}"
 
-# Signatures of the Gemini CLI's undici HTTP client giving up on the Vertex
-# connection. Every one is a transport failure with no response body, which
-# is why none of them can be confused with a model that answered badly.
-TRANSIENT='UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|TypeError: terminated|ECONNRESET|socket hang up|Error when talking to Gemini API'
+# A transport failure is recognised as a STRUCTURED CLI ERROR RECORD, not as a
+# string anywhere in the transcript. The transcript is mixed stdout/stderr and
+# the model can echo anything into it -- including, since it can read the
+# checkout, the signature list in this very file. A whole-transcript grep let a
+# model quote a code and then fail for an internal reason, and the run would
+# blame Vertex and retry. (Codex, PR #1032.)
+#
+# Two things must both hold, and only in the tail, because the CLI emits its
+# fatal record last and then exits:
+#   FATAL     the CLI's own error emitter, line-anchored
+#   TRANSPORT the undici cause underneath it
+FATAL='^(Error when talking to Gemini API|An unexpected critical error occurred)'
+TRANSPORT="UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|TypeError: terminated|ECONNRESET|socket hang up"
+TAIL_LINES="${GEMINI_TAIL_LINES:-40}"
+
+# Did this attempt die of a vendor transport failure? Reads only the tail.
+is_transport_failure() {
+  local tail_txt
+  tail_txt=$(tail -n "$TAIL_LINES" "$LOG")
+  printf '%s\n' "$tail_txt" | grep -qE "$FATAL" \
+    && printf '%s\n' "$tail_txt" | grep -qE "$TRANSPORT"
+}
 
 test -f "$PROMPT_FILE" || { echo "::error::no prompt at ${PROMPT_FILE}"; exit 1; }
 test -s "$WRITABLE_LIST" || {
@@ -97,12 +115,28 @@ for D in "${WRITABLE[@]}"; do
   fi
   cp "$D" "${SNAP_DIR}/$(printf '%s' "$D" | tr '/' '_')"
 done
+# The shape of the whole working tree before the model ran. A retry starts a
+# FRESH CLI process, which re-reads project configuration from the workspace --
+# and .gemini/settings.json can define command-backed MCP servers, which the
+# new process would spawn with this job's GCP and GitHub credentials, before
+# the post-model stray-write scan ever runs. Rather than enumerate that one
+# path, nothing outside the writable documents may differ at all. (Codex, PR
+# #1032.)
+git status --porcelain | sort > "${SNAP_DIR}/status.before"
 
 for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
   if [ "$ATTEMPT" -gt 1 ]; then
     # The inputs the next attempt will read must be the ones the freeze took.
     if [ ! -d "$FROZEN_INPUTS" ]; then
       echo "::error::no frozen refresh-inputs at ${FROZEN_INPUTS}; refusing to retry ${PROMPT} without a way to check the inputs the next attempt would read"
+      exit 1
+    fi
+    git status --porcelain | sort > "${SNAP_DIR}/status.after"
+    if ! diff <(grep -vF -f "$WRITABLE_LIST" "${SNAP_DIR}/status.before" || true) \
+              <(grep -vF -f "$WRITABLE_LIST" "${SNAP_DIR}/status.after" || true) \
+              > "${SNAP_DIR}/status.diff" 2>&1; then
+      echo "::error::the failed ${PROMPT} attempt changed the working tree outside the generated documents. A retry starts a fresh Gemini process that re-reads workspace configuration, so this is not something to restore past. Not a transport failure; refusing."
+      cat "${SNAP_DIR}/status.diff"
       exit 1
     fi
     if ! diff -r -q "$FROZEN_INPUTS" refresh-inputs > "${SNAP_DIR}/inputs.diff" 2>&1; then
@@ -143,11 +177,11 @@ for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
     exit 0
   fi
 
-  if ! grep -qE "$TRANSIENT" "$LOG"; then
-    echo "::error::gemini ${PROMPT} failed (exit ${RC}) and its transcript carries no vendor-transport signature, so this is not a retryable failure. The transcript is above and is uploaded with the run."
+  if ! is_transport_failure; then
+    echo "::error::gemini ${PROMPT} failed (exit ${RC}) without a CLI transport-error record in the last ${TAIL_LINES} lines, so this is not a retryable failure. The transcript is above and is uploaded with the run."
     exit "$RC"
   fi
-  echo "::warning::gemini ${PROMPT} hit a vendor transport failure on attempt ${ATTEMPT}/${MAX_ATTEMPTS} (exit ${RC}): $(grep -oE "$TRANSIENT" "$LOG" | sort -u | tr '\n' ' ')"
+  echo "::warning::gemini ${PROMPT} hit a vendor transport failure on attempt ${ATTEMPT}/${MAX_ATTEMPTS} (exit ${RC}): $(tail -n "$TAIL_LINES" "$LOG" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')"
 done
 
 echo "::error::gemini ${PROMPT} failed ${MAX_ATTEMPTS} times, every time with a vendor transport failure. Vertex in ${GOOGLE_CLOUD_LOCATION:-?} is not answering; this is not a repo problem and re-running later is the fix."

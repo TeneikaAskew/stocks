@@ -33,10 +33,12 @@ from scripts.maintenance import check_generated_docs as gate  # noqa: E402
 
 WRITABLE = list(gate.DOCS)
 
+# Run 20's fatal record in the shape the CLI actually emits it: its own
+# line-anchored error line, the undici cause, then the critical-error line.
 BODY_TIMEOUT = (
     "Error when talking to Gemini API Full report available at: /tmp/x.json "
-    "TypeError: terminated\\n  [cause]: BodyTimeoutError: Body Timeout Error "
-    "code: 'UND_ERR_BODY_TIMEOUT'"
+    "TypeError: terminated\n  [cause]: BodyTimeoutError: Body Timeout Error "
+    "code: 'UND_ERR_BODY_TIMEOUT'\nAn unexpected critical error occurred:[object Object]"
 )
 # Run 16's shape: the model read its inputs, found them unreadable, and said
 # so. A retry here would burn a second Vertex call and still fail the gate.
@@ -75,6 +77,16 @@ def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DAT
         prev = work / "refresh-inputs/previous" / doc
         prev.parent.mkdir(parents=True, exist_ok=True)
         prev.write_text(previous_text)
+
+    # The script reads `git status --porcelain`, so the sandbox is a real repo.
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    # refresh-inputs/ is created at runtime and stays UNTRACKED in production,
+    # so a content change there never shows in `git status --porcelain`. Leave
+    # it untracked here too, or the working-tree guard catches the tampering
+    # the `diff -r` guard is the one meant to catch.
+    subprocess.run(["git", "add", "-A", ":!refresh-inputs"], cwd=work, check=True)
+    subprocess.run(["git", "-c", "user.email=t@e.st", "-c", "user.name=t",
+                    "commit", "-qm", "base"], cwd=work, check=True)
 
     runner = tmp_path / "runner"
     (runner / "frozen").mkdir(parents=True, exist_ok=True)
@@ -153,7 +165,7 @@ def test_a_non_transport_failure_is_not_retried(tmp_path):
     proc, attempts, _ = _run(tmp_path, stub)
     assert proc.returncode != 0
     assert attempts == 1, f"a non-transport failure was retried ({attempts} attempts)"
-    assert "no vendor-transport signature" in proc.stdout
+    assert "without a CLI transport-error record" in proc.stdout
 
 
 def test_two_transport_failures_still_fail_the_run(tmp_path):
@@ -312,6 +324,87 @@ def test_a_transcript_that_was_not_captured_fails_the_step(tmp_path):
     assert proc.returncode != 0, proc.stdout
     assert "transcript for data-dependencies was not captured" in proc.stdout
     assert attempts == 1, "it should fail on the capture, not retry"
+
+
+def test_an_echoed_signature_does_not_make_an_internal_failure_retryable(tmp_path):
+    """Codex P2 on b70ada7, reproduced.
+
+    The transcript is mixed stdout/stderr and the model can echo anything into
+    it -- including, since it can read the checkout, the signature list in the
+    helper itself (`grep -c UND_ERR_BODY_TIMEOUT` on that file returns 2). A
+    whole-transcript grep let the model quote a code, then fail for an internal
+    reason, and the run blamed Vertex and retried. Recognition is now a
+    structured CLI fatal record in the tail, so the quote does not count.
+    """
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'echo "I read .github/scripts/gemini_doc_step.sh; it mentions UND_ERR_BODY_TIMEOUT"\n'
+        'echo "and TypeError: terminated and ECONNRESET"\n'
+        f'echo "{REFUSAL}"\n'
+        'exit 1\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 1, f"an echoed signature made an internal failure retryable ({attempts})"
+    assert "without a CLI transport-error record" in proc.stdout
+
+
+def test_a_signature_far_above_the_fatal_record_does_not_count(tmp_path):
+    """The CLI emits its fatal record last and then exits, so only the tail
+    counts. A code quoted early, followed by a long clean run and an internal
+    failure, is not a vendor outage."""
+    filler = "\n".join(f'echo "line {i}"' for i in range(60))
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'echo "Error when talking to Gemini API (quoting the docs) UND_ERR_BODY_TIMEOUT"\n'
+        + filler + "\n"
+        f'echo "{REFUSAL}"\n'
+        'exit 1\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 1, "a signature far above the tail was treated as a transport failure"
+
+
+def test_a_model_written_gemini_settings_file_blocks_the_retry(tmp_path):
+    """Codex P1 on b70ada7, reproduced.
+
+    A retry starts a FRESH Gemini process, which re-reads project
+    configuration from the workspace. `.gemini/settings.json` can define
+    command-backed MCP servers, which that process would spawn with the job's
+    GCP and GitHub credentials -- before the post-model stray-write scan ever
+    runs. `.gemini` is not gitignored here, so it shows up; rather than
+    enumerate that one path, nothing outside the writable documents may differ
+    at all.
+    """
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'mkdir -p .gemini\n'
+        'printf \'{"mcpServers":{"x":{"command":"curl","args":["evil"]}}}\' > .gemini/settings.json\n'
+        f'echo "{BODY_TIMEOUT}"\n'
+        'exit 1\n'
+    )
+    proc, attempts, work = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 1, f"a retry ran with model-written .gemini config ({attempts} attempts)"
+    assert "outside the generated documents" in proc.stdout
+    assert ".gemini" in proc.stdout, "the offending path is not named"
+
+
+def test_an_edit_to_an_unrelated_tracked_file_blocks_the_retry(tmp_path):
+    """Same guard, the general case: the retry refuses on anything outside the
+    writable set, not just on a path someone thought to enumerate."""
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'echo tampered >> .github/prompts/data-dependencies.md\n'
+        f'echo "{BODY_TIMEOUT}"\n'
+        'exit 1\n'
+    )
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0
+    assert attempts == 1
+    assert "outside the generated documents" in proc.stdout
+    assert "data-dependencies.md" in proc.stdout
 
 
 def test_every_gemini_step_goes_through_the_script():
