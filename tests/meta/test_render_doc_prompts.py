@@ -44,11 +44,16 @@ LIVE = {
     "db_tables": [{"name": f"t{i}"} for i in range(855)],
 }
 REPO_INVENTORY = {"repo": {"counts": {"jobs": 866, "schedulers": 877, "tables": 888}}}
+# What `verify_docs_against_live.py --write-snapshot` writes: the populations
+# it counts, from its own gcloud calls. It must agree with live.json, and the
+# renderer refuses rather than hoping.
+VERIFY_LIVE = {"run_jobs": ["j"] * 811, "schedulers": {f"s{i}": {} for i in range(822)},
+               "services": ["v"] * 833, "secrets": ["k"] * 844}
 
 
 @pytest.fixture
 def values() -> dict[str, str]:
-    return rp.counts(LIVE, REPO_INVENTORY)
+    return rp.counts(LIVE, REPO_INVENTORY, VERIFY_LIVE)
 
 
 def test_every_placeholder_in_every_committed_prompt_resolves(values):
@@ -98,13 +103,13 @@ def test_a_malformed_placeholder_never_reaches_the_model(values):
 def test_an_empty_snapshot_refuses_to_render(broken):
     """Rule 3.7: a zero count is a broken dump, not a fact to hand the model."""
     with pytest.raises(SystemExit):
-        rp.counts(broken, REPO_INVENTORY)
+        rp.counts(broken, REPO_INVENTORY, VERIFY_LIVE)
 
 
 def test_a_missing_count_raises_rather_than_defaulting():
     with pytest.raises(KeyError):
         rp.counts({"counts": {"jobs": 1, "schedulers": 2, "services": 3},
-                   "db_tables": [1]}, REPO_INVENTORY)
+                   "db_tables": [1]}, REPO_INVENTORY, VERIFY_LIVE)
 
 
 def test_the_cli_writes_one_rendered_prompt_per_template(tmp_path):
@@ -112,10 +117,13 @@ def test_the_cli_writes_one_rendered_prompt_per_template(tmp_path):
     live.write_text(json.dumps(LIVE))
     inv = tmp_path / "repo_inventory.json"
     inv.write_text(json.dumps(REPO_INVENTORY))
+    ver = tmp_path / "verify_live.json"
+    ver.write_text(json.dumps(VERIFY_LIVE))
     out = tmp_path / "prompts"
     rc = subprocess.run(
         [sys.executable, "-m", "scripts.maintenance.render_doc_prompts",
          "--live", str(live), "--repo-inventory", str(inv),
+         "--verify-live", str(ver),
          "--prompts", str(PROMPT_DIR), "--out", str(out)],
         cwd=REPO, capture_output=True, text=True)
     assert rc.returncode == 0, rc.stderr
@@ -167,3 +175,31 @@ def test_every_prompt_template_is_invoked_by_the_workflow():
     invoked = set(re.findall(r'\$RUNNER_TEMP/prompts/([a-z-]+)\.md', runs))
     assert on_disk == set(PROMPTS)
     assert on_disk <= invoked, on_disk - invoked
+
+
+@pytest.mark.parametrize("key,label", [("run_jobs", "LIVE_JOBS"),
+                                       ("schedulers", "LIVE_SCHEDULERS"),
+                                       ("services", "LIVE_SERVICES"),
+                                       ("secrets", "LIVE_SECRETS")])
+def test_the_two_live_snapshots_must_agree(key, label):
+    """`live.json` and `verify_live.json` are taken by different scripts from
+    separate gcloud calls. Handing the model a number out of one that the
+    other will then reject would fail a gate on a value the pipeline itself
+    supplied, and the message would blame the document."""
+    short = dict(VERIFY_LIVE)
+    short[key] = (list(VERIFY_LIVE[key])[:-1] if not isinstance(VERIFY_LIVE[key], dict)
+                  else dict(list(VERIFY_LIVE[key].items())[:-1]))
+    with pytest.raises(SystemExit) as e:
+        rp.counts(LIVE, REPO_INVENTORY, short)
+    assert label in str(e.value) and "disagree" in str(e.value)
+
+
+def test_the_verified_counts_are_the_ones_the_verifier_can_flag():
+    """If verify_docs_against_live.py learns to check another population, the
+    cross-check must learn it too, or that count goes back to being a guess."""
+    import re as _re
+    src = (REPO / "scripts/verify_docs_against_live.py").read_text()
+    block = src[src.index("COUNT_CLAIMS"):src.index("def check_counts")]
+    checked = set(_re.findall(r'^\s*"(run_jobs|services|schedulers|secrets|queues)"',
+                              block, _re.M))
+    assert checked == {k for _, k in rp.VERIFIED}, checked

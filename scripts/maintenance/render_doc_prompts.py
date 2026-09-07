@@ -32,8 +32,18 @@ import sys
 PLACEHOLDER = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
 
 
-def counts(live: dict, repo_inventory: dict) -> dict[str, str]:
-    """The values a prompt may reference, from the two rendered inputs.
+# The three counts `scripts/verify_docs_against_live.py` can report drift on,
+# mapped to the key its own snapshot holds them under. That snapshot is taken
+# by a different script from a separate set of gcloud calls, so a number handed
+# to the model out of doc_inventory's snapshot could be one the verifier then
+# rejects -- a doc failing a gate for a number the pipeline itself supplied.
+# Cross-checked rather than assumed equal.
+VERIFIED = (("LIVE_JOBS", "run_jobs"), ("LIVE_SCHEDULERS", "schedulers"),
+            ("LIVE_SERVICES", "services"), ("LIVE_SECRETS", "secrets"))
+
+
+def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str]:
+    """The values a prompt may reference, from the three rendered inputs.
 
     Every lookup is direct: a missing key raises rather than defaulting, so a
     broken snapshot fails here instead of reaching the model as a plausible
@@ -56,6 +66,13 @@ def counts(live: dict, repo_inventory: dict) -> dict[str, str]:
             raise SystemExit(f"{name} is {value!r}, not an int — the inputs are broken")
         if value <= 0:
             raise SystemExit(f"{name} is {value} — refusing to render a prompt from an empty snapshot")
+    for name, key in VERIFIED:
+        n = len(verify_live[key])
+        if n != raw[name]:
+            raise SystemExit(
+                f"{name} is {raw[name]} in live.json but the verifier's snapshot has "
+                f"{n} {key}. Handing the model either number would fail a gate; "
+                "the two snapshots disagree and that is the bug to fix.")
     return {name: str(value) for name, value in raw.items()}
 
 
@@ -77,13 +94,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--live", required=True, help="refresh-inputs/live.json")
     ap.add_argument("--repo-inventory", required=True, help="refresh-inputs/repo_inventory.json")
+    ap.add_argument("--verify-live", required=True, help="refresh-inputs/verify_live.json")
     ap.add_argument("--prompts", default=".github/prompts", help="directory of prompt templates")
     ap.add_argument("--out", required=True, help="directory to write the rendered prompts into")
     args = ap.parse_args(argv)
 
     live = json.loads(pathlib.Path(args.live).read_text())
     repo_inventory = json.loads(pathlib.Path(args.repo_inventory).read_text())
-    values = counts(live, repo_inventory)
+    verify_live = json.loads(pathlib.Path(args.verify_live).read_text())
+    values = counts(live, repo_inventory, verify_live)
 
     src = pathlib.Path(args.prompts)
     templates = sorted(src.glob("*.md"))

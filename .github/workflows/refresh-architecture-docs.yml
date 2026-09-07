@@ -397,6 +397,7 @@ jobs:
           python -m scripts.maintenance.render_doc_prompts \
             --live refresh-inputs/live.json \
             --repo-inventory refresh-inputs/repo_inventory.json \
+            --verify-live refresh-inputs/verify_live.json \
             --out "$RUNNER_TEMP/prompts"
           for P in architecture data-dependencies cost-analysis readme; do
             test -s "$RUNNER_TEMP/prompts/${P}.md" || {
@@ -930,6 +931,7 @@ jobs:
           \`\`\`
 
           ${DIFF_REPORT}
+
           ${DRIFT}
 
           ## What ran
