@@ -200,6 +200,11 @@ which one you used:
 ```bash
 BASE_TREE=$(mktemp -d -t base-tree-XXXXXX) && rmdir "$BASE_TREE"
 git worktree add "$BASE_TREE" origin/main          # validity: is it still real?
+# A worktree carries TRACKED files only. Nothing gitignored and repo-local
+# comes with it, so check before running a suite there — solyra hit this
+# with node_modules, where `npm test` exits 127 and `npx` silently fetches a
+# different version. This repo has no committed venv, so its tests take the
+# ambient interpreter; confirm that is what you want rather than assuming.
 # ...and for the PR's own before/after, the base it forked from:
 #   git worktree add "$BASE_TREE" "$(git merge-base origin/main <headRefName>)"
 # Two questions, two baselines: an old merge base can still reproduce a defect
