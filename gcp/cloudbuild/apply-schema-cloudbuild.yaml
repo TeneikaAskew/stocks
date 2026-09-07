@@ -60,9 +60,18 @@ steps:
     id: push
     waitFor: [build]
     args: [push, '${_IMAGE}:${SHORT_SHA}']
+  # Builds of this trigger apply in START order. Two schema pushes minutes
+  # apart would otherwise race on the shared job and the later-finishing
+  # (possibly older) build would win (Codex on #1022). The image builds
+  # above run concurrently; only the job mutation is serialized.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: serialize
+    waitFor: [push]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"']
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: apply
-    waitFor: [push]
+    waitFor: [serialize]
     entrypoint: bash
     args:
       - -c
@@ -92,6 +101,9 @@ steps:
     args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
 substitutions:
   _IMAGE: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system
+# Read by wait_for_earlier_schema_builds.sh: the tag is how one build of this
+# trigger sees another.
+tags: [apply-schema-on-change]
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s

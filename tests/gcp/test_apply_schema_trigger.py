@@ -48,10 +48,34 @@ def test_the_job_is_moved_to_the_new_digest_before_it_runs():
     assert '--image="$${DIGEST}"' in apply, "the job must be pinned to the resolved digest"
 
 
-def test_the_pipeline_order_is_preflight_build_push_apply_pin():
+def test_the_pipeline_order_is_preflight_build_push_serialize_apply_pin():
     ids = [s["id"] for s in _steps()]
-    assert ids == ["preflight", "build", "push", "apply", "pin"], ids
+    assert ids == ["preflight", "build", "push", "serialize", "apply", "pin"], ids
     assert "SHORT_SHA" in _all_args(_step("preflight")), "refuse a nameless tag"
+    assert _step("apply")["waitFor"] == ["serialize"], "the job mutation must wait for the serializer"
+
+
+WAIT = REPO / "gcp/cloudbuild/wait_for_earlier_schema_builds.sh"
+
+
+def test_overlapping_schema_builds_apply_in_start_order():
+    """Codex on #1022: two schema pushes minutes apart would race on the
+    shared apply-schema-migrations job; completion order, not commit order,
+    would decide which digest ran last. The serializer waits for every
+    EARLIER-started build of this trigger, fails closed when it cannot look,
+    and is bounded below the build timeout."""
+    cfg = yaml.safe_load(CFG.read_text())
+    assert cfg.get("tags") == ["apply-schema-on-change"], "the tag is how builds see each other"
+    assert "wait_for_earlier_schema_builds.sh" in _all_args(_step("serialize"))
+    src = WAIT.read_text()
+    assert 'TAG="apply-schema-on-change"' in src
+    assert "--ongoing" in src and "createTime<'${self_start}'" in src, \
+        "must wait only on builds that started earlier (total order, no deadlock)"
+    code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("|| true" in ln for ln in code), "the guard must fail closed"
+    assert src.count("exit 1") >= 3, "cannot-describe, cannot-list and deadline all fail"
+    deadline = int(src.split('DEADLINE_SECONDS:-')[1].split('}')[0])
+    assert deadline < int(str(cfg["timeout"]).rstrip("s")), "the wait must end before the build times out"
 
 
 def test_the_image_is_the_trading_system_repo_not_the_api_image():
