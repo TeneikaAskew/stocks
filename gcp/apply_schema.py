@@ -157,9 +157,20 @@ def run_unit(unit: list[str]) -> None:
 # time (gcp/cloudbuild/wait_for_earlier_schema_builds.sh) is not enough on
 # its own: the older build could still apply last and roll every CREATE OR
 # REPLACE view/function back (Codex on #1022). The applier therefore records
-# the source revision it applied, and refuses a revision whose commit time is
-# older than the newest successfully applied one. Main is linear (squash
-# merges, committer time set by GitHub at merge), so commit time orders it.
+# the source revision it applied and orders the incoming one against the
+# newest successfully applied one:
+#
+#   1. ancestry first: the build passes `git rev-list` of its revision; if
+#      the newest applied SHA is in it, this revision descends from it and
+#      is newer whatever the clocks say;
+#   2. otherwise committer time (main is squash-merged, GitHub stamps the
+#      merge time);
+#   3. an EQUAL committer time with a different SHA that ancestry cannot
+#      order is refused. Equal seconds are real: measured 2026-09-07, main
+#      had 38 adjacent commit pairs sharing a committer second (Codex on
+#      #1022). The trigger checkout is a single-revision fetch, so the
+#      build step deepens it before reading the ancestry; if that fails
+#      the tie is refused rather than guessed.
 REVISION_TABLE = "schema_apply_history"
 _REVISION_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {REVISION_TABLE} (
@@ -170,16 +181,39 @@ CREATE TABLE IF NOT EXISTS {REVISION_TABLE} (
 )"""
 
 
-def revision_is_stale(latest_applied_time: int | None, this_time: int) -> bool:
-    """True when ``this_time`` is older than the newest applied revision.
-    Equal times (same-second merges) are allowed."""
-    return latest_applied_time is not None and this_time < latest_applied_time
+def classify_revision(newest_sha: str | None, newest_time: int | None,
+                      commit_sha: str, commit_time: int,
+                      ancestors: frozenset[str]) -> str:
+    """Order ``commit_sha`` against the newest applied revision.
+
+    Returns one of ``first`` (nothing applied yet), ``same``, ``descendant``
+    (the newest applied SHA is an ancestor of this one, proven by the
+    checkout), ``newer`` / ``older`` (by committer time, when ancestry cannot
+    decide) or ``tie`` (equal committer time, different SHA, no ancestry
+    proof). Only ``older`` and ``tie`` are refused.
+    """
+    if newest_sha is None:
+        return "first"
+    if newest_sha == commit_sha:
+        return "same"
+    if newest_sha in ancestors:
+        return "descendant"
+    assert newest_time is not None
+    if commit_time > newest_time:
+        return "newer"
+    if commit_time < newest_time:
+        return "older"
+    return "tie"
 
 
-def guard_revision(engine, commit_sha: str, commit_time: int) -> tuple[bool, str | None]:
+_REFUSED = {"older", "tie"}
+
+
+def guard_revision(engine, commit_sha: str, commit_time: int,
+                   ancestors: frozenset[str] = frozenset()) -> tuple[bool, str | None]:
     """Return (ok, newest_applied_sha). ``ok`` is False when this revision is
-    older than the newest successfully applied one; the caller must then
-    refuse to apply."""
+    older than, or cannot be ordered against, the newest successfully applied
+    one; the caller must then refuse to apply. The reason is logged here."""
     import sqlalchemy  # noqa: PLC0415
 
     with engine.begin() as conn:
@@ -191,7 +225,21 @@ def guard_revision(engine, commit_sha: str, commit_time: int) -> tuple[bool, str
     if row is None:
         return True, None
     newest_sha, newest_time = row[0], int(row[1])
-    if revision_is_stale(newest_time, commit_time) and newest_sha != commit_sha:
+    verdict = classify_revision(newest_sha, newest_time, commit_sha, commit_time, ancestors)
+    log.info("Revision %s (commit time %d) vs newest applied %s (commit time %d): %s",
+             commit_sha, commit_time, newest_sha, newest_time, verdict)
+    if verdict in _REFUSED:
+        if verdict == "tie":
+            log.error("Refusing to apply revision %s: it shares committer time %d with "
+                      "the newest applied revision %s and the checkout's ancestry "
+                      "(%d SHAs) does not contain it, so the order is unknown. Deepen "
+                      "the checkout (git fetch --deepen) and re-run.",
+                      commit_sha, commit_time, newest_sha, len(ancestors))
+        else:
+            log.error("Refusing to apply revision %s (commit time %d): a newer revision "
+                      "%s (commit time %d) has already been applied. Out-of-order "
+                      "applies roll CREATE OR REPLACE objects back.",
+                      commit_sha, commit_time, newest_sha, newest_time)
         return False, newest_sha
     return True, newest_sha
 
@@ -251,9 +299,14 @@ def main() -> int:
                          "newest successfully applied one and records this apply.")
     ap.add_argument("--revision-time", type=int, default=None,
                     help="Committer time (unix epoch) of --revision.")
+    ap.add_argument("--revision-ancestors", default="",
+                    help="Whitespace-separated `git rev-list` of --revision, as far "
+                         "as the build checkout can see. Orders a revision whose "
+                         "committer time equals the newest applied one.")
     args = ap.parse_args()
     if (args.revision is None) != (args.revision_time is None):
         ap.error("--revision and --revision-time must be given together")
+    ancestors = frozenset(args.revision_ancestors.split())
 
     if not is_cloud_sql_configured():
         log.error("Cloud SQL not configured")
@@ -284,13 +337,9 @@ def main() -> int:
     engine = get_engine()
 
     if args.revision is not None:
-        ok, newest = guard_revision(engine, args.revision, args.revision_time)
+        ok, _newest = guard_revision(engine, args.revision, args.revision_time, ancestors)
         if not ok:
-            log.error("Refusing to apply revision %s (commit time %d): a newer "
-                      "revision %s has already been applied. Out-of-order "
-                      "applies roll CREATE OR REPLACE objects back.",
-                      args.revision, args.revision_time, newest)
-            return 3
+            return 3          # reason already logged by guard_revision
 
     failed = 0
     for i, unit in enumerate(units, 1):

@@ -117,6 +117,18 @@ steps:
         # one, so an out-of-order build cannot roll the schema back (Codex on
         # #1022). Main is linear (squash merges), so committer time orders it.
         # Fail closed if the checkout cannot answer.
+        # Ancestry for the guard's tie-break: main carries adjacent commits
+        # with the same committer second (38 pairs measured 2026-09-07), so
+        # an equal time is ordered only by the newest applied revision being
+        # an ancestor of this one (Codex on #1022). The trigger checkout is
+        # a single-revision fetch (FETCHSOURCE: `* branch <sha> -> FETCH_HEAD`),
+        # so deepen it first. A checkout that cannot be deepened is reported
+        # here, and the applier then refuses a tie rather than guessing.
+        if ! git fetch --deepen=100 origin "$COMMIT_SHA"; then
+          echo "WARNING: could not deepen the checkout; the applier will refuse a" >&2
+          echo "         same-second revision tie instead of ordering it." >&2
+        fi
+        ANCESTORS=$(git rev-list --max-count=100 "$COMMIT_SHA" | tr '\n' ' ')
         if ! COMMIT_TIME=$(git log -1 --format=%ct "$COMMIT_SHA" 2>&1); then
           echo "ERROR: cannot read the committer time of $COMMIT_SHA: $${COMMIT_TIME}" >&2
           exit 1
@@ -128,7 +140,7 @@ steps:
           --quiet
         gcloud run jobs execute apply-schema-migrations \
           --region=us-east1 \
-          --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME}" \
+          --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME},--revision-ancestors=$${ANCESTORS}" \
           --wait
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: deploy

@@ -391,10 +391,10 @@ def test_run_unit_group_failure_propagates():
 from contextlib import contextmanager  # noqa: E402
 
 from gcp.apply_schema import (  # noqa: E402
+    classify_revision,
     guard_revision,
     record_revision,
     refresh_unpopulated_matviews,
-    revision_is_stale,
 )
 
 
@@ -421,11 +421,26 @@ class _FakeEngine:
         yield _Conn()
 
 
-def test_revision_is_stale_only_when_strictly_older():
-    assert revision_is_stale(None, 100) is False
-    assert revision_is_stale(100, 100) is False
-    assert revision_is_stale(100, 101) is False
-    assert revision_is_stale(100, 99) is True
+def test_classify_orders_by_time_when_ancestry_cannot_decide():
+    assert classify_revision(None, None, "a", 100, frozenset()) == "first"
+    assert classify_revision("a", 100, "a", 100, frozenset()) == "same"
+    assert classify_revision("a", 100, "b", 101, frozenset()) == "newer"
+    assert classify_revision("a", 100, "b", 99, frozenset()) == "older"
+
+
+def test_equal_commit_times_are_a_tie_unless_ancestry_proves_the_order():
+    """Codex on #1022: main has 38 adjacent commit pairs sharing a committer
+    second (measured 2026-09-07 over 1384 commits), so equal times cannot be
+    treated as safe. A tie is resolved only by the newest applied revision
+    being an ancestor of this one; otherwise it is refused."""
+    assert classify_revision("a", 100, "b", 100, frozenset()) == "tie"
+    assert classify_revision("a", 100, "b", 100, frozenset({"b", "a", "z"})) == "descendant"
+
+
+def test_ancestry_beats_commit_time():
+    """A revision whose checkout proves the newest applied one is its ancestor
+    is newer whatever the clocks say."""
+    assert classify_revision("a", 200, "b", 100, frozenset({"b", "a"})) == "descendant"
 
 
 def test_guard_allows_first_apply_and_newer_revisions():
@@ -447,6 +462,13 @@ def test_guard_lets_the_same_revision_reapply():
     """Both triggers apply the same push; the second is a no-op, not a refusal."""
     eng = _FakeEngine([[("same", 200)]])
     assert guard_revision(eng, "same", 200) == (True, "same")
+
+
+def test_guard_refuses_an_equal_time_tie_it_cannot_order():
+    eng = _FakeEngine([[("newer", 200)]])
+    assert guard_revision(eng, "other", 200) == (False, "newer")
+    eng = _FakeEngine([[("newer", 200)]])
+    assert guard_revision(eng, "other", 200, ancestors=frozenset({"other", "newer"})) == (True, "newer")
 
 
 def test_record_revision_inserts_sha_and_time():
