@@ -125,9 +125,21 @@ def test_every_checkbox_option_is_required(path: Path):
     `required: true` can be left unticked and the issue still submits, which
     turns the attestation into decoration.
     """
-    for el in _load(path)["body"]:
-        if el.get("type") != "checkboxes":
-            continue
+    body = _load(path)["body"]
+
+    # Guard the guard, the same way test_there_are_forms_to_check does for the
+    # glob. The loop below is a no-op for a form with no checkboxes element at
+    # all, so removing a form's whole attestation used to pass CI: the
+    # body-budget test stayed green because the body only got SHORTER.
+    # Measured on 04-follow-up.yml with the element deleted — 14 passed.
+    boxes = [el for el in body if el.get("type") == "checkboxes"]
+    assert boxes, (
+        f"{path.name}: no checkboxes element. Every form ends in an evidence "
+        "attestation; a form without one collects no claim about how the "
+        "evidence was produced."
+    )
+
+    for el in boxes:
         options = (el.get("attributes") or {}).get("options") or []
         assert options, f"{path.name}: checkboxes `{el.get('id')}` has no options"
         for opt in options:

@@ -93,7 +93,12 @@ body:
         surface dead. Paste what you ran.
       render: shell
       placeholder: |
-        $ grep -rEn "playbook_cards" lib/ gcp/ platform/ scripts/ tests/ | wc -l
+        # Repo-wide over TRACKED files, not the five source directories: CI is
+        # where jobs are dispatched, and .github/ is outside them. Measured —
+        # .github/workflows/deploy-staging.yml:299 runs
+        # `gcloud run jobs execute refresh-earnings-views`, and the five-dir
+        # search cannot see it.
+        $ git grep -En "playbook_cards" -- . ':!docs/' | wc -l
         11
         Live consumers in solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
     validations:

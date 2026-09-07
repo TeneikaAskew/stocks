@@ -86,7 +86,11 @@ body:
         build.
       render: shell
       placeholder: |
-        $ grep -rEn "playbook_cards|/api/playbook" lib/ gcp/ platform/ scripts/ tests/
+        # Repo-wide over TRACKED files, not the five source directories — a job's
+        # only caller is often a workflow. Measured:
+        # .github/workflows/deploy-staging.yml:299 dispatches
+        # refresh-earnings-views and the five-dir search misses it entirely.
+        $ git grep -En "playbook_cards|/api/playbook" -- . ':!docs/'
         (11 hits: router, writer, tests)
 
         solyra: DashboardPage top setup tile (incl. review mode ?date=), PlaybookPage.
