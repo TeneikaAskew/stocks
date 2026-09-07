@@ -4,7 +4,30 @@
 
 **VERIFIED — CODE.** Parsed from `gcp/deploy.sh` at `d335f2f` by resolving each
 `deploy_*()` function body, so flags built into a `common_flags=( ... )` bash array are
-captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler entries**.
+captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-declared count, not the live one; the live count is stated immediately below -->
+**67 Cloud Run jobs** and **58 Cloud Scheduler entries** are *declared in the repo*.
+
+**VERIFIED — LIVE, 2026-09-07.** `gcloud run jobs list --region=us-east1` returns
+**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **66 scheduler
+entries** — and 0 in every other Cloud Scheduler location, so 66 is the whole fleet.
+This previously read 84, dated 2026-09-06, and that figure does not reproduce; only
+the reading above is vouched for here. The dated audit under
+`docs/audits/2026-08-27-claude-codebase-review/` also records 84 and is left as
+written, being a record of what was measured on its own date.
+
+<!-- verify-docs-ok: the 58-declared figure two paragraphs up is a parse of gcp/deploy.sh at a named commit, a different measurement that has not been redone; a naive count of _schedule* call sites is not a usable corroboration either: it counted a loop body as one entry when those loops existed, and #1004 has since replaced them with single hourly triggers, so the two numbers were never measuring the same thing --> The two numbers answer different questions and both belong here: the code
+count is what a fresh `deploy.sh` run would produce, the live count is what is actually
+billing and firing. The gap is undeclared infrastructure —
+
+| Direction | Count | Names |
+|---|---|---|
+| Live but not in `deploy.sh` | 8 | `backtest-playability`, `compare-tier-fires`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `strat-dir-features` |
+| In `deploy.sh` but not live | 2 | `compute-spx-greeks-backfill`, `options-exec-backtest` |
+
+Every live scheduler entry runs in `America/New_York` — zero entries in any other
+timezone (verified 2026-09-06), so every cron field in this document is a NY
+wall-clock time and shifts with DST. `scripts/verify_docs_against_live.py` re-runs
+these comparisons.
 
 > **Parser discipline.** An earlier revision reported 68 jobs. The 68th, `leaves`, was a word
 > captured from the prose comment `gcloud run jobs update leaves omitted flags untouched`
@@ -16,8 +39,8 @@ captured alongside inline flags. **67 Cloud Run jobs** and **58 Cloud Scheduler 
 
 | Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |
 |---|---|---|---|---|---|
-| React web + FastAPI service | SPA + API on one Cloud Run service | `platform/Dockerfile`, `platform/cloudbuild.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` default; `firebase` in staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
-| Cloud Run jobs (67) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (58) / manual | see per-job table |
+| FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
+| Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (66 live) / manual | 8 jobs exist only by hand — see the table above |
 | Cloud Scheduler (58) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers | OIDC | cron (UTC) | one entry targets a nonexistent job |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
 | GCS | model/report/query artifacts | job writers, `db_query_cr.sh` | SA IAM | — | retention/provenance |
@@ -48,22 +71,45 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 
 | Environment | Service | URL | Auth | Evidence |
 |---|---|---|---|---|
-| **Production** | `trading-platform` (us-east1) | `https://trading-platform-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
-| **Staging** | `trading-platform-staging` | `UNKNOWN` — Cloud Run assigns it; not committed anywhere | **public ingress + Firebase** (`PUBLIC=1`, `AUTH_MODE=firebase`) | `platform/deploy.sh:52-56` |
-| **Discord interactions** | `discord-interactions` | `UNKNOWN` — docs carry a redacted placeholder | Discord signature verification | `docs/*` show `https://discord-interactions-XXXXXXXXXX-ue.a.run.app/discord/interactions` |
-| **Failure notifier** | notifier service | `UNKNOWN` — redacted placeholder | internal | `https://failure-notifier-XXXXXXXXXX-ue.a.run.app` |
+| **Production** | `solyra-api-prod` (us-east1) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
+| **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `api.stocks.insightscollective.org` | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
+| **Discord interactions** | `discord-interactions` | `https://discord-interactions-5sjtb3yl7a-ue.a.run.app` | `--allow-unauthenticated` (Discord cannot IAM-auth); Ed25519 signature verification at the app layer | live read 2026-09-05 |
+| **Failure notifier** | `failure-notifier` | `https://failure-notifier-5sjtb3yl7a-ue.a.run.app` | internal | live read 2026-09-05 |
 | **Local dev (frontend)** | Vite — in the solyra repo since the #957 split | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | solyra `vite.config.ts`; `platform/` here holds only the API |
 | **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; solyra's Vite proxies `/api` → `:8000` |
 
-**No custom domain is committed anywhere in the repository.** The landing components brand the
+**A custom domain now exists.** `api.stocks.insightscollective.org` maps to
+`solyra-api-staging` (moved off the prod service 2026-09-05; the CNAME to
+`ghs.googlehosted.com` is service-independent so the move needed no DNS change).
+It is committed nowhere in source — Cloud Run holds the mapping — so treat
+`gcloud beta run domain-mappings list --region=us-east1` as the source of truth.
+Read [09](09-SECURITY-AUTH.md) before assuming what that hostname exposes: it
+fronts open Firebase self-signup over the production database.
+
+Historically: The landing components brand the
 product **Solyra** (solyra `src/components/landing/*` since the #957 split, and [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27)
 "Rename internal Heatseeker/Flowseeker tabs before Solyra public launch", formerly #685), but no `solyra.*`
 hostname appears in any config, deploy script, or DNS reference. Whether a public domain exists
 is **PRODUCT DECISION REQUIRED** / unknown — see [15](15-OPEN-DECISIONS.md).
 
-### Resolving the UNKNOWN URLs
+### On the `XXXXXXXXXX` redactions
 
-Cloud Run assigns service URLs, so they are not in source. To fill them in:
+Those placeholders hid the project's Cloud Run host suffix, `5sjtb3yl7a-ue`.
+The redaction bought nothing: the same suffix is committed in plaintext in
+solyra's `src/lib/apiTargets.ts` and `playwright.config.ts`, and in the
+production row of the table above. It is one value shared by every service in
+the project, so masking it in two rows while publishing it in four others is
+inconsistent rather than protective. The URLs are filled in above.
+
+If the intent was to keep Cloud Run hostnames out of the repo, that is a
+decision to apply everywhere at once — including `apiTargets.ts`, which needs
+the origin at runtime and would have to read it from config instead. Neither
+service relies on an unguessable URL for security: `discord-interactions`
+verifies Ed25519 signatures, the API services are IAP- or Firebase-gated.
+
+### Resolving service URLs
+
+Cloud Run assigns service URLs, so they are not in source. To re-read them:
 
 ```bash
 gcloud run services list --region=us-east1 \
@@ -170,7 +216,7 @@ default applies (task-timeout **600s**, max-retries **3**).
 flowchart TB
  GH[GitHub] --> CI[Actions / Cloud Build]
  CI --> IMG[Artifact Registry images]
- IMG --> WEB[Cloud Run: trading-platform]
+ IMG --> WEB[Cloud Run: solyra-api-prod]
  IMG --> JOB[Cloud Run: 67 jobs]
  SCH[Cloud Scheduler x58] -->|OIDC| JOB
  SCH -.->|BROKEN: gamma-levels-daily| MISSING[p2-build-gamma-levels — no IaC]

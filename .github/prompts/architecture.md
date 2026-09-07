@@ -33,7 +33,12 @@ Then begin section 1.
 
 ### 1. System overview (one paragraph, ~80-120 words)
 
-What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal React + FastAPI dashboard at the `trading-platform` Cloud Run Service). Single-user / small-team — no public auth, no per-user data partitioning. Mention the rough job count derived from `refresh-inputs/inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
+What this system does, who runs it, what the primary delivery surfaces are (Discord webhooks for scheduled briefs + slash-command Cloud Run service; secondary internal dashboard). Mention the rough job count derived from `refresh-inputs/inventory.json` (filter `assetType=run.googleapis.com/Job`) and the project ID.
+
+Two facts this prompt must keep asserting, because a generator that infers them from older docs gets both wrong and this file is regenerated monthly:
+
+- **The API is served by TWO API-only Cloud Run services**, `solyra-api-prod` (behind IAP) and `solyra-api-staging` (public edge, Firebase-gated). The React frontend moved to github.com/TeneikaAskew/solyra in #957; `platform/Dockerfile` copies no `dist/`, so do NOT describe a combined "React + FastAPI dashboard" on one service.
+- **Do NOT write "no public auth".** `solyra-api-staging` is publicly reachable and gated per-request by a Firebase ID token, currently with open self-signup (`AUTH_OPEN_SIGNUP=1`), and `stocks.insightscollective.org` points at it. Per-user data partitioning does exist for the journal and watchlists. Describe the auth posture from `docs/product/09-SECURITY-AUTH.md` rather than from an older overview.
 
 ### 2. Component inventory (table form)
 

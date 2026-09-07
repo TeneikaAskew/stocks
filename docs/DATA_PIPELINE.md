@@ -162,7 +162,10 @@ is needed. SPX *option chains* remain fully covered in
 **ML value** — Medium. Future models might use "days until earnings" as a feature; the calendar enables that.
 
 **Canonical writer** — [`scripts/fetch_earnings_calendar.py`](../scripts/fetch_earnings_calendar.py) invoked by Cloud Run job `fetch-earnings-calendar`
-**Schedule** — Cloud Scheduler `earnings-calendar-daily` at **7:15 AM ET Mon–Fri** (`15 7 * * 1-5 America/New_York`)
+**Schedule** — Cloud Scheduler `daily-earnings-refresh-calendar` (`0 19 * * 1-5`, `America/New_York`) — 7:00 PM ET Mon–Fri
+plus `weekly-earnings-refresh-calendar` (`0 19 * * 0`) — 7:00 PM ET Sunday.
+Read live 2026-09-06; the scheduler this section used to name,
+`earnings-calendar-daily` at 7:15 AM, does not exist.
 **Sources** — AV `EARNINGS_CALENDAR` endpoint (date of truth) + Unusual Whales CSV (expected moves) + Earnings Whispers CSV (strategy picks, requires login)
 **Writes** — ~50-200 rows/week depending on earnings season
 **Freshness budget** — 192h (8 days — allows one missed weekly run)
@@ -310,13 +313,22 @@ is needed. SPX *option chains* remain fully covered in
 
 **Current status** — The fetcher script exists but the **table has never been created in `gcp/schema.sql`**. All Greeks recomputation currently falls back to a hardcoded risk-free rate (probably 5% or whatever the default is in `options_greeks.py`), which is slightly inaccurate but not catastrophic.
 
-**Canonical writer (planned)** — [`gcp/fetchers/fetch_fred_rates.py`](../gcp/fetchers/fetch_fred_rates.py)
-**Cloud Run job (not yet created)** — `fetch-fred-rates`
-**Proposed schedule** — Daily at 18:00 ET (after FRED publishes daily rates, which happens around 4 PM ET)
+> **Shipped — this section is a record of the plan, not of open work.**
+> Read live 2026-09-06: the `fetch-fred-rates` Cloud Run Job exists, the
+> `fred-rates-daily` scheduler fires it at `30 6 * * *` (`America/New_York`),
+> and `daily_rates` holds 2,916 rows with `max(date) = 2026-09-03`. Items 1–4
+> below are done. Item 5 (`options_greeks.py` reading the table instead of a
+> hardcoded rate) is the only one still worth checking.
+
+**Canonical writer** — [`gcp/fetchers/fetch_fred_rates.py`](../gcp/fetchers/fetch_fred_rates.py)
+**Cloud Run job** — `fetch-fred-rates`
+**Schedule** — `fred-rates-daily`, `30 6 * * *` `America/New_York` (06:30 ET
+daily). The 18:00 ET slot below was the *proposal*; the deployed job runs in the
+morning and picks up the prior session's FRED publication.
 **Freshness budget** — 72h (FRED has a 1-2 day publishing lag)
 
-**Proposed changes**
-1. 🔴 **Add the `daily_rates` table definition** to [gcp/schema.sql](../gcp/schema.sql):
+**Proposed changes** (status as of 2026-09-06)
+1. ✅ **Add the `daily_rates` table definition** to [gcp/schema.sql](../gcp/schema.sql):
    ```sql
    CREATE TABLE IF NOT EXISTS daily_rates (
      date             DATE PRIMARY KEY,
@@ -326,9 +338,9 @@ is needed. SPX *option chains* remain fully covered in
      data_source      VARCHAR(30) DEFAULT 'fred'
    );
    ```
-2. 🔴 **Run the migration** against the production Cloud SQL database: `psql ... -f gcp/schema.sql` (the `CREATE TABLE IF NOT EXISTS` is idempotent)
-3. 🟡 **Backfill** via `python scripts/fetch_fred_rates.py --backfill` (one-time)
-4. 🟡 **Create a Cloud Run job** `fetch-fred-rates` + Cloud Scheduler entry at 18:00 ET daily
+2. ✅ **Run the migration** against the production Cloud SQL database: `psql ... -f gcp/schema.sql` (the `CREATE TABLE IF NOT EXISTS` is idempotent) — table exists live
+3. ✅ **Backfill** via `python scripts/fetch_fred_rates.py --backfill` (one-time) — 2,916 rows live
+4. ✅ **Create a Cloud Run job** `fetch-fred-rates` + Cloud Scheduler entry — deployed as `fred-rates-daily` at 06:30 ET daily, not the proposed 18:00
 5. 🟡 **Update `options_greeks.py`** to actually read from the new table instead of the hardcoded fallback
 
 ---
@@ -339,16 +351,16 @@ is needed. SPX *option chains* remain fully covered in
 |---|---|---|---|
 | `market_data_daily` | fetch-market-data Cloud Run | 23:00 ET Mon-Fri | ✅ OK |
 | `market_data_intraday` | (same writer) | (same schedule) | ✅ OK |
-| `etf_options_snapshots` | fetch-av-options-backfill | 01:00 UTC Mon-Fri | ⚠️ Needs verify — ensure automation actually runs daily |
+| `etf_options_snapshots` | fetch-av-options-backfill | 21:00 ET Mon-Fri (`av-options-daily`, `0 21 * * 1-5`) + monthly bulk (`av-options-monthly`, `0 5 1 * *`) | ✅ scheduler verified live 2026-09-06 |
 | `earnings_options_snapshots` | **NONE** (writer & scheduler missing) | n/a | 🔴 ORPHANED — see §4 above |
-| `earnings_calendar` | fetch-earnings-calendar Cloud Run | 7:15 AM ET Mon-Fri | ✅ OK |
+| `earnings_calendar` | fetch-earnings-calendar Cloud Run | 7:00 PM ET Mon-Fri + Sun | ✅ scheduler verified live 2026-09-06 |
 | `earnings_history` | (not built) | (lazy on first UI request) | 🆕 Not yet built |
 | `economic_events` | fetch-economic-events Cloud Run | 7:00 AM ET Mon-Fri | ✅ OK — canonical via GCP since 2026-05-01 |
 | `premarket_analysis` | premarket-brief Cloud Run | 08:30 ET Mon-Fri | ✅ OK (needs env var fail-fast too) |
 | `signal_alerts` | signal-monitor Cloud Run | 09:25-16:00 ET Mon-Fri | 🔴 Empty — April 10 regression, self-heal tomorrow |
 | `trades` | trade-logger (via signal-monitor) | (same lifecycle) | 🔴 Same root cause as signal_alerts |
 | `journal_entries` | User via UI | On-demand | ✅ OK |
-| `daily_rates` | fetch-fred-rates Cloud Run (not built) | Daily 18:00 ET (planned) | 🔴 **Table doesn't exist** |
+| `daily_rates` | fetch-fred-rates Cloud Run | Daily 06:30 ET (`fred-rates-daily`, `30 6 * * *`) | ✅ live — 2,916 rows, `max(date) = 2026-09-03` (read 2026-09-06) |
 
 ---
 
@@ -364,7 +376,7 @@ is needed. SPX *option chains* remain fully covered in
 
 ### P1 — This week
 - [ ] Add the `daily_rates` table to schema + migrate + backfill via FRED + create Cloud Run job
-- [ ] Create a Cloud Monitoring alert policy on Cloud Run job execution failures for: `fetch-market-data`, `fetch-earnings-options`, `signal-monitor`, `premarket-brief`, `fetch-av-options-backfill`. Alert to Discord webhook.
+- [ ] Create a Cloud Monitoring alert policy on Cloud Run job execution failures for: `fetch-market-data`, `signal-monitor`, `premarket-brief`, `fetch-av-options-backfill`. Alert to Discord webhook. (`fetch-earnings-options` was on this list; no such job exists — verified live 2026-09-06.)
 - [x] **Done 2026-04-26**: removed `fetch-etf-options` (the 9x/day intraday Cloud Run job with the `ticker='ALL'` bug) along with the fetcher + workflow files. Daily EOD via `fetch-av-options-backfill` is the canonical writer.
 - [ ] Investigate the SPX 4-month gap in `market_data_daily` (separate incident)
 - [ ] Verify `fetch_earnings_options.py` uses AV, not yahooquery, for ticker resolution
@@ -417,7 +429,14 @@ Expanded audit checks (as of 2026-04-14):
 - **Value sanity** — `high >= low`, non-negative volume, SPX close within 1000–20000, non-positive options strike rejection
 
 ### 2. Cloud Monitoring alert policies (recommended)
-Cover the 5 critical Cloud Run jobs (`fetch-market-data`, `fetch-av-options-backfill`, `signal-monitor`, `premarket-brief`, `fetch-earnings-options`). One policy per job on job execution failure:
+Cover the 4 critical Cloud Run jobs (`fetch-market-data`, `fetch-av-options-backfill`,
+`signal-monitor`, `premarket-brief`). One policy per job on job execution failure.
+
+`fetch-earnings-options` used to be listed here as a fifth. It does not exist as a
+Cloud Run Job (verified live 2026-09-06) — `earnings_options_snapshots` has no
+writer at all, which §4 records as ORPHANED. A monitoring policy on a job that
+was never deployed would report success forever, so it is removed from the list
+rather than left as a to-do.
 
 ```bash
 gcloud alpha monitoring policies create \

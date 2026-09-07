@@ -65,21 +65,22 @@ flowchart LR
     EW[Earnings Whispers]:::ext
     UW[Unusual Whales]:::ext
 
-    SCH[Cloud Scheduler<br/>60 cron triggers]:::gcp
+    SCH[Cloud Scheduler<br/>66 cron triggers]:::gcp
     JOBS[Cloud Run Jobs<br/>34 fetchers + analyzers]:::gcp
-    SVC1[Cloud Run Service:<br/>trading-platform<br/>FastAPI + React + IAP]:::gcp
+    SVC1[Cloud Run Service:<br/>solyra-api-prod<br/>FastAPI API + IAP]:::gcp
+    SVC1S[Cloud Run Service:<br/>solyra-api-staging<br/>FastAPI API + Firebase]:::gcp
     SVC2[Cloud Run Service:<br/>discord-interactions<br/>slash commands]:::gcp
     SVC3[Cloud Run Service:<br/>failure-notifier]:::gcp
     GCS[GCS<br/>raw parquets,<br/>archives]:::gcp
     SQL[(Cloud SQL Postgres 15<br/>trading-db<br/>39 tables)]:::db
-    SECR[Secret Manager<br/>~20 secrets]:::gcp
+    SECR[Secret Manager<br/>22 secrets]:::gcp
     PS[Pub/Sub<br/>gcp-job-failures]:::gcp
     LG[Cloud Logging<br/>sink on ERROR]:::gcp
     VAI[Vertex AI<br/>Gemini Flash + embeddings]:::ext
 
     DSC[Discord<br/>webhooks + slash]:::out
     GH[GitHub<br/>auto-issued failures]:::out
-    USR[User browser<br/>via IAP]:::out
+    USR[User browser<br/>Firebase sign-in]:::out
 
     AV & FRED & FF & EDGAR & FV & RSS & EW & UW --> JOBS
     SCH --> JOBS
@@ -88,9 +89,10 @@ flowchart LR
     JOBS -- reads --> SQL
     JOBS -- LLM calls --> VAI
 
-    USR --> SVC1
-    SVC1 -- reads --> SQL
-    SVC1 -- enqueues --> JOBS
+    USR --> SVC1S
+    SVC1S -- reads --> SQL
+    SVC1S -- enqueues --> JOBS
+    SVC1 -. same image, IAP-gated, not browser-reached .-> SQL
 
     DSC -- POST signed --> SVC2
     SVC2 -- dispatch --> JOBS
@@ -103,13 +105,13 @@ flowchart LR
     SVC3 --> GH
 
     JOBS -- pushes --> DSC
-    SECR -. injected env vars .-> JOBS & SVC1 & SVC2 & SVC3
+    SECR -. injected env vars .-> JOBS & SVC1 & SVC1S & SVC2 & SVC3
 ```
 
 **Read this diagram top-to-bottom in three lanes:**
 
 1. **Ingest lane (top)** — Cloud Scheduler fires Cloud Run Jobs that pull from external APIs and land data in Cloud SQL + GCS.
-2. **Serve lane (middle)** — `trading-platform` (the dashboard) and `discord-interactions` (slash commands) read from Cloud SQL and dispatch the same Cloud Run Jobs on demand.
+2. **Serve lane (middle)** — `solyra-api-staging` is the API the browser actually reaches (Firebase-gated; the custom domain `api.stocks.insightscollective.org` maps to it, though solyra calls the run.app origin directly); `solyra-api-prod` runs the same image behind IAP and no browser reaches it today; `discord-interactions` handles slash commands. All three read Cloud SQL, and the two API services dispatch the same Cloud Run Jobs on demand. Diagnosing "the user-facing service" through the prod node is looking at the wrong one.
 3. **Observe lane (bottom)** — Cloud Logging watches every Cloud Run Job for errors, pipes them through Pub/Sub to the failure-notifier service, which fans out to Discord + GitHub.
 
 ---
@@ -122,15 +124,15 @@ Every GCP service the system actually uses, with the role it plays.
 |---|---|---|
 | **Cloud SQL (Postgres 15)** | Single source of truth for all structured data. **39 tables (34 logical + 5 partition children of `market_data_intraday`)**. Always-on. | ❌ No free tier — $35–50/mo |
 | **Cloud Run Jobs** | All scheduled batch work. Every fetcher, every analyzer, every backfill is a Cloud Run Job. | ✅ Mostly within free tier (180k vCPU-sec, 360k GB-sec/mo) |
-| **Cloud Run Services** | 3 long-lived HTTP services, all `min-instances=0`. | ✅ Free at idle |
-| **Cloud Scheduler** | **60 cron triggers** (verified 2026-05-16 against live `gcloud scheduler jobs list`; includes the hourly news-sentiment + news-topics loops). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; ~57 paid jobs ≈ $5.70/mo |
-| **Artifact Registry** | Single Docker repo `trading` holds the `trading-system` image. | ⚠️ 0.5 GB free; one image stays under |
+| **Cloud Run Services** | 4 long-lived HTTP services, all `min-instances=0`. | ✅ Free at idle |
+| **Cloud Scheduler** | **66 cron triggers** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`: 65 ENABLED and one PAUSED, `signal-quality-report-hourly`). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; 63 paid jobs ≈ $6.30/mo |
+| **Artifact Registry** | Two Docker repos (read live 2026-09-07): `trading` holds the `trading-system` Jobs image, `gcr.io` holds the `solyra-api` API image both API services run. | ⚠️ 0.5 GB free; cleanup policy keeps it near |
 | **Cloud Build** | Builds the Docker image when `gcp/deploy.sh build` runs. | ✅ 120 min/day free, plenty |
 | **Cloud Storage (GCS)** | Raw parquet archives, daily snapshots, archived Yahoo data. Bucket lifecycle rule moves old objects to nearline. | ✅ 5 GB-month free |
 | **Pub/Sub** | Single topic `gcp-job-failures` + DLQ for the failure pipeline. | ✅ 10 GB/mo free, low traffic |
 | **Cloud Logging** | Captures every job's stdout/stderr; ERROR-level entries trigger the Pub/Sub sink. | ✅ 50 GB/mo free, well under |
-| **Secret Manager** | All credentials (DB pass, API keys, Discord tokens, GitHub PAT). | ⚠️ 6 free; 20 secrets ≈ $0.84/mo |
-| **IAP (Identity-Aware Proxy)** | Auto-managed IAP gates the trading-platform service to bictech.org Google identities. | ✅ Free (auto-managed mode) |
+| **Secret Manager** | All credentials (DB pass, API keys, Discord tokens, GitHub PAT). | ⚠️ 6 free; 22 secrets ≈ $0.96/mo |
+| **IAP (Identity-Aware Proxy)** | Auto-managed IAP gates the solyra-api-prod service to bictech.org Google identities. | ✅ Free (auto-managed mode) |
 | **Cloud Tasks** | One queue `insight-pipeline-queue` — used by the platform's "Refresh insight" button to enqueue per-ticker runs without blocking the request. | ✅ 1M ops/mo free |
 | **Vertex AI** | Gemini 2.0 Flash for the brief's per-ticker explanations and the AI Insight pipeline persona LLMs. `text-embedding-005` for journal-entry embeddings. | ⚠️ Pay-per-token; ~$3–5/mo at current usage |
 
@@ -189,7 +191,7 @@ The full table list — **39 tables (34 logical + 5 partition children of `marke
 
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
-| `market_data_daily` | Daily OHLCV + 60+ derived indicator columns + pre-market context per ticker per date. The single most-read table in the system. ETF tickers only (SPY/IWM/QQQ + watchlist/earnings names); the SPX *index* has no OHLCV feed and is not stored here. | **`fetch-market-data`** (11 PM nightly), **`fetch-premarket-refresh`** (8:20 AM), **`backfill-ticker`** (on demand) | *premarket-brief*, *insight-pipeline*, *historical_signals*, *signal-monitor*, *trading-platform* (`/api/dashboard/brief/{ticker}`), *Charts page* |
+| `market_data_daily` | Daily OHLCV + 60+ derived indicator columns + pre-market context per ticker per date. The single most-read table in the system. ETF tickers only (SPY/IWM/QQQ + watchlist/earnings names); the SPX *index* has no OHLCV feed and is not stored here. | **`fetch-market-data`** (11 PM nightly), **`fetch-premarket-refresh`** (8:20 AM), **`backfill-ticker`** (on demand) | *premarket-brief*, *insight-pipeline*, *historical_signals*, *signal-monitor*, *solyra-api-prod* (`/api/dashboard/brief/{ticker}`), *Charts page* |
 | `market_data_intraday` | 1-minute OHLCV bars. **Partitioned by ticker** (`PARTITION BY LIST (ticker)`) — five child partitions: `market_data_intraday_spy`, `_iwm`, `_qqq`, `_spx`, `_other` ([`gcp/schema.sql:106-114`](../gcp/schema.sql#L106)). ~30M+ rows. | **`fetch-alphavantage-intraday`** (monthly), **`fetch-market-data`** (current month) | *signal-monitor*, *historical_signals*, *brief premarket-context calc* |
 | `earnings_reactions` | Per-event playability scores + archetype tags joining `earnings_history × market_data_daily` ([`gcp/schema.sql:472`](../gcp/schema.sql#L472)). | **`compute-earnings-reactions`** (weekdays 19:30) | *premarket-brief earnings reaction profile*, *insight-pipeline* |
 | `daily_rates` | Risk-free rate (`DGS3MO`) + S&P dividend yield (configured constant). Used by Black-Scholes Greeks computations. | **`fetch-fred-rates`** (daily 6:30 AM) | *`lib.options_greeks`*, *backtest job* |
@@ -206,8 +208,8 @@ The full table list — **39 tables (34 logical + 5 partition children of `marke
 
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
-| `earnings_calendar` | Forward-looking earnings dates from 3 sources: AlphaVantage (date-of-truth), Unusual Whales (market-mover ranking), Earnings Whispers (strategy + strike picks). One row per `(ticker, earnings_date, strategy, data_source)`. | **`fetch-earnings-calendar`** (weekdays 7:15 AM), **`evaluate-ew-strikes`** (after-hours, fills `ew_*_on_day`) | *premarket-brief*, *insight-pipeline*, *catalysts router*, *ranker* |
-| `earnings_history` | Historical quarterly EPS — `reportedDate`, `reportedEPS`, `estimatedEPS`, `surprise`, `surprisePercentage`, going back 10+ years from AV `EARNINGS` endpoint. | **`fetch-earnings-history`** (Sun 6 AM weekly) | *future ranker post-earnings reaction signal* |
+| `earnings_calendar` | Forward-looking earnings dates from 3 sources: AlphaVantage (date-of-truth), Unusual Whales (market-mover ranking), Earnings Whispers (strategy + strike picks). One row per `(ticker, earnings_date, strategy, data_source)`. | **`fetch-earnings-calendar`** (weekdays + Sun 7:00 PM), **`evaluate-ew-strikes`** (23:00, fills `ew_*_on_day`) | *premarket-brief*, *insight-pipeline*, *catalysts router*, *ranker* |
+| `earnings_history` | Historical quarterly EPS — `reportedDate`, `reportedEPS`, `estimatedEPS`, `surprise`, `surprisePercentage`, going back 10+ years from AV `EARNINGS` endpoint. | **`fetch-earnings-history`** (19:15 ET — weekdays and Sun) | *future ranker post-earnings reaction signal* |
 | `economic_events` | Macro events with date + time + importance (CPI, NFP, FOMC, etc.). ForexFactory (preferred — has times) + FRED (fallback). | **`fetch-economic-events`** (weekdays 7 AM) | *premarket-brief Economic Calendar embed*, *catalysts page* |
 | `sec_filings` | Form 8-K / 10-Q / 10-K filings from SEC EDGAR with item codes (1.01 M&A, 5.02 exec change, etc.). | **`fetch-sec-filings`** (4 slots/day post-PR-#157) | *insight-pipeline catalyst dots*, *ranker `_candidates_from_8k`*, *Catalysts page* |
 | `insider_transactions` | Form 4 filings — every officer/director buy or sell. | **`fetch-insider-transactions`** (weekdays 7 AM) | *ranker insider_buying / insider_selling signals*, *Catalysts page* |
@@ -228,7 +230,7 @@ The full table list — **39 tables (34 logical + 5 partition children of `marke
 
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
-| `premarket_analysis` | One row per `(analysis_date, ticker)` — the brief's per-ticker decision packet (price, RSI, FTFC, Strat candle/combo, ORB recommendation, playbook, gap_pct). UPSERTed each morning. | **`premarket-brief`** | *trading-platform `/api/dashboard`*, *insight-pipeline (reads brief context)* |
+| `premarket_analysis` | One row per `(analysis_date, ticker)` — the brief's per-ticker decision packet (price, RSI, FTFC, Strat candle/combo, ORB recommendation, playbook, gap_pct). UPSERTed each morning. | **`premarket-brief`** | *solyra-api-prod `/api/dashboard`*, *insight-pipeline (reads brief context)* |
 | `premarket_analysis_history` | **Append-only audit trail** — every actual brief execution captured before the canonical `premarket_analysis` row gets overwritten by a re-run. | brief on every run | *forensics*, *replay validation* |
 | `signal_alerts` | Real-time signal fires — direction, score, level_broken, ORB levels, indicators at signal time. | **`signal-monitor`** during market hours | *Live Market page*, *trades page* |
 | `trades` | Auto-pipeline trade ledger — entry/exit, return %, `signal_strength`, the conditions met. | **`signal-monitor`** when a position closes | *Trades page*, *backtest comparator*, *weekend-review* |
@@ -239,7 +241,7 @@ The full table list — **39 tables (34 logical + 5 partition children of `marke
 | `insight_runs` | Durable run-state for async pipeline execution — `queued / running / done / failed` + `trigger ∈ {on_demand, scheduled, local_dev, manual_batch}` + reference to `report_id`. | insight-pipeline (state machine) | *platform UI status indicator* |
 | `ranker_runs` | One row per `lib.agents.ranker.rank_tickers` call — captures inputs (weights) + ranked output (JSONB). Reproducibility audit. | **`auto-refresh-top-n`**, *platform UI ranker calls* | *rationale display*, *historical comparison* |
 | `model_routing` | Per-role model routing config (e.g. PM persona = Gemini Pro, Analyst = Flash). One row per role. | seed migration, occasional manual UPDATE | *insight pipeline* |
-| `signal_metrics` | Trailing clean-rate / fire-rate / agreement metrics computed by the Phase 0.5 quality jobs ([`gcp/schema.sql:2120`](../gcp/schema.sql#L2120)). Drives the alarm threshold in `signal-quality-alarm`. | **`signal-quality-report`** (hourly + nightly) | *`signal-quality-alarm`*, *trading-platform analytics router* |
+| `signal_metrics` | Trailing clean-rate / fire-rate / agreement metrics computed by the Phase 0.5 quality jobs ([`gcp/schema.sql:2120`](../gcp/schema.sql#L2120)). Drives the alarm threshold in `signal-quality-alarm`. | **`signal-quality-report`** (hourly + nightly) | *`signal-quality-alarm`*, *solyra-api-prod analytics router* |
 
 ### 5.6 Schema relationships
 
@@ -268,7 +270,21 @@ There are **no formal foreign keys** between domain tables — only the `insight
 
 ## 6. Cloud Run Jobs catalog
 
-34 Cloud Run Jobs (live count verified 2026-05-16; most defined in [`gcp/deploy.sh`](../gcp/deploy.sh), a few deployed manually). Every one runs on the same `trading-system` image, differing only in `--command` and `--args`. All defaulting to retry policy `--max-retries 1` unless noted.
+**76 Cloud Run Jobs** live (`gcloud run jobs list --region=us-east1`, read
+2026-09-06 — the count here said 34 from a 2026-05-16 reading and had not been
+re-read since). 67 of them are declared in
+[`gcp/deploy.sh`](../gcp/deploy.sh); eight exist only because someone ran
+`gcloud run jobs create` by hand and are therefore not reproducible from the
+repo: `backtest-playability`, `compare-tier-fires`, `p2-outcomes-grid`,
+`p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`,
+`p7a-iwm-30m-pipeline`, `strat-dir-features`. Two are the reverse —
+`compute-spx-greeks-backfill` and `options-exec-backtest` are declared in
+`deploy.sh` but do not exist live.
+
+The catalog below is a curated subset, not an inventory; run the `gcloud`
+command for the full list. Every job runs on the same `trading-system` image,
+differing only in `--command` and `--args`, and defaults to `--max-retries 1`
+unless noted.
 
 ### 6.1 Data ingestion (the fetchers)
 
@@ -296,14 +312,14 @@ There are **no formal foreign keys** between domain tables — only the `insight
 
 | Job | Memory / Timeout | Schedule (ET) | What it does |
 |---|---|---|---|
-| `premarket-brief` | 1 GiB / 30 min | weekdays 08:30 + Sun 09:00 | Loads daily data → computes Strat / FTFC / level map → renders 3-embed Discord brief (overview + ticker analysis + economic calendar) → persists to `premarket_analysis` |
+| `premarket-brief` | 1 GiB / 30 min | weekdays 08:30 + Sun 21:00 | Loads daily data → computes Strat / FTFC / level map → renders 3-embed Discord brief (overview + ticker analysis + economic calendar) → persists to `premarket_analysis` |
 | `auto-refresh-top-n` | 1 GiB / 10 min | weekdays 08:10 | Runs `lib.agents.ranker.rank_tickers()` → picks top N (default 3) → enqueues per-ticker insight runs into Cloud Tasks (so they pre-warm before brief at 8:30) |
 | `insight-pipeline` | 2 GiB / 30 min | weekdays 08:45 + on-demand | Multi-agent AI pipeline (analyst / PM / risk personas) → entry zones, stops, targets, persona plans → `insight_reports` |
 | `insight-discord-push` | 512 MiB / 2 min | weekdays 09:15 | Reads today's `insight_reports`, formats one Discord embed per ticker with title-led news field |
 | `signal-monitor` | 2 GiB / 8 hr | weekdays 09:25 (runs until close) | Polls AV every 60 sec → maintains rolling indicator window → fires `signal_alerts` + writes `trades` on close |
 | `signal-monitor` (ORB modes) | 2 GiB / – | weekdays 09:45 (15-min ORB), 10:00 (30-min ORB) | Same image, different `--args`: `--mode=orb-snapshot --window=15m / 30m` |
 | `signal-monitor-eod-resolver` | 1 GiB / 1 hr / `--max-retries 0` | weekdays 16:30 | Post-close reconciliation of the day's `signal_alerts` — resolves each fire's outcome (target hit / stopped / time-expiry) |
-| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | weekdays hourly 10:00–16:00 + nightly Tue–Sat 01:00 | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
+| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | nightly Tue–Sat 01:00; the weekdays-hourly 10:00–16:00 entry (`signal-quality-report-hourly`) is **paused** and does not fire | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
 | `signal-quality-alarm` | 512 MiB / 2 min / `--max-retries 0` ([`gcp/deploy.sh:225`](../gcp/deploy.sh#L225)) | weekdays Tue–Sat 02:00 | Reads `signal_metrics`; deliberately exits non-zero when trailing-7d clean-rate drops > 3 pp vs prior 7d, which the failure-notifier converts into a labeled GitHub issue. |
 | `weekend-review` | 1 GiB / – | Sat 09:00 | Aggregates the week's trades, compares actual vs backtest, posts Discord summary |
 | `evaluate-ew-strikes` | 512 MiB / 10 min | weekdays 23:00 | Scores how each EW strike pick played out: HIT / MISS / KEPT / ASSIGNED + minutes-to-hit + minutes-in-zone |
@@ -326,9 +342,9 @@ There are **no formal foreign keys** between domain tables — only the `insight
 
 ## 7. Cloud Run Services catalog
 
-Five long-lived HTTP services: three deployed from this repo (`trading-platform`, `discord-interactions`, `failure-notifier`, all with `min-instances=0` so they cost nothing at idle) plus the two Solyra API services (§7.1.1), which are deployed from the stocks-repo Cloud Build triggers rather than `gcp/deploy.sh`.
+Four long-lived HTTP services, all with `min-instances=0` so they cost nothing at idle. `solyra-api-staging` and `solyra-api-prod` (§7.1) deploy from the Cloud Build triggers in [`gcp/cloudbuild/`](../gcp/cloudbuild/), with [`platform/deploy.sh`](../platform/deploy.sh) as the manual path; `discord-interactions` and `failure-notifier` deploy from [`gcp/deploy.sh`](../gcp/deploy.sh). `trading-platform` and `trading-platform-staging` were deleted on 2026-09-06 and are not in this count.
 
-### 7.1 `trading-platform` — the dashboard
+### 7.1 `solyra-api-staging` / `solyra-api-prod` — the Solyra API
 
 | Aspect | Value |
 |---|---|
@@ -336,28 +352,41 @@ Five long-lived HTTP services: three deployed from this repo (`trading-platform`
 | Memory / CPU | 1 GiB / 1 vCPU |
 | Scaling | 0–5 instances |
 | Auth | **IAP (Identity-Aware Proxy) auto-managed** scoped to `bictech.org` Google identities. Admin email (`teneika@bictech.org`) bypasses the optional in-app token gate |
-| Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic), and the SPA at `/` |
+| Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic). **No SPA**: the frontend left in #957 and the image carries no `dist/`, so `/` and every client route answer 404 |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
-| URL | The generated `trading-platform-…run.app` URL only. This service no longer has a custom domain: `stocks.insightscollective.org` was remapped away from it to `solyra-api-staging` on 2026-09-05, and on 2026-09-06 that mapping moved to `api.stocks.insightscollective.org` (see the `solyra-api-*` entry below) so `stocks.insightscollective.org` could become the Firebase auth-email sending domain (reserved for the SPA) |
-| Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/trading-platform`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
+| URL (staging) | Custom domain `api.stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, since 2026-09-06; `stocks.insightscollective.org` from 2026-09-05 until then), plus the generated `solyra-api-staging-…run.app` URL, which is what the SPA actually calls. The bare `stocks.insightscollective.org` is now the Firebase auth-email sending domain and is reserved for the SPA |
+| URL (prod) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app`, IAP-gated. **No custom domain points here.** Diagnosing prod through either `stocks` hostname reaches staging instead, under a different auth policy and against the same production data ([09](../docs/product/09-SECURITY-AUTH.md)) |
+| Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/solyra-api`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
 
-This is the only thing a human directly hits in a browser.
+No human hits either service in a browser: the SPA ([TeneikaAskew/solyra](https://github.com/TeneikaAskew/solyra)) is hosted outside Cloud Run and calls `solyra-api-staging` over the API.
 
-**Deploy pipeline (added 2026-05-16).** `trading-platform` deploys in two stages via GitHub Actions:
+**Deploy pipeline — rebuilt 2026-09-05.** Two Cloud Build triggers, one per service:
 
-- [`deploy-platform-staging.yml`](../.github/workflows/deploy-platform-staging.yml) — on push to `main` touching `platform/`, `lib/`, `requirements.txt`, or `gcp/database.py`, runs `STAGING=1 ./platform/deploy.sh` to build the image and deploy a Cloud Run revision tagged `staging` at **0% traffic** (`--no-traffic --tag staging`). Reachable at `https://staging---trading-platform-…run.app`; production traffic is untouched.
-- [`promote-platform-prod.yml`](../.github/workflows/promote-platform-prod.yml) — manual `workflow_dispatch` that routes 100% of production traffic to the current `staging`-tagged revision (`gcloud run services update-traffic --to-tags=staging=100`). Shares the staging workflow's concurrency group so a deploy and a promote cannot interleave.
+| Trigger | Fires | Deploys |
+|---|---|---|
+| `deploy-solyra-api-staging` | push to `main` touching `platform/`, `lib/`, `requirements.txt`, `gcp/database.py` | `solyra-api-staging` |
+| `deploy-solyra-api-prod` | **manual only** | `solyra-api-prod` |
 
-In `STAGING=1` mode `platform/deploy.sh` omits the `--no-allow-unauthenticated` flag: re-asserting the service IAM policy needs `run.services.setIamPolicy`, which the CI deploy service account does not hold, and a staging revision inherits the service's existing IAP-gated auth posture anyway.
+Merging to `main` cannot reach production. The prod trigger promotes the image
+digest currently serving staging (`status.imageDigest` off the live service)
+rather than rebuilding from `main`, so prod ships the bits staging validated
+rather than whatever merged in between. Deploys set the image only; env vars,
+secrets, Cloud SQL and memory live on the service, because `--set-env-vars`
+replaces the entire set on each deploy.
 
-### 7.1.1 `solyra-api-staging` / `solyra-api-prod` — the Solyra API
+This replaced a tag-based blue/green on one service: a `staging`-tagged
+revision at 0% traffic, promoted by shifting traffic to the tag. That stopped
+working on 2026-08-25 when `--no-traffic` was dropped from the trigger — a tag
+carries no traffic guarantee of its own, so the "staging" revision was serving
+100% of production and the promote step was a no-op. Verified live 2026-09-04,
+while the service still existed: <!-- verify-docs-ok: historical record of a service deleted 2026-09-06; the deletion is stated two sentences later -->
+`trading-platform-00167-qiz`, `tag: staging`,
+`percent: 100`. The environment a deploy lands in is now the service name, not
+a traffic percentage. `trading-platform` and `trading-platform-staging` were
+deleted on 2026-09-06 after the frontend cut over.
 
-| Aspect | Value |
-|---|---|
-| Role | FastAPI backend for the Solyra SPA (github.com/TeneikaAskew/solyra), which is hosted outside Cloud Run |
-| URL | `solyra-api-staging`: custom domain `api.stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, since 2026-09-06; previously `stocks.insightscollective.org` from 2026-09-05) plus the generated `solyra-api-staging-…run.app` URL, which is what the SPA calls. `solyra-api-prod`: generated `solyra-api-prod-…run.app` URL, behind IAP; no custom domain |
-| Auth | staging `AUTH_MODE=firebase` (per-request Firebase ID token), prod `AUTH_MODE=iap` |
-| Deploy path | Not deployed by this repo's `gcp/deploy.sh` or `platform/deploy.sh`; merging to `main` auto-deploys staging and the manual `deploy-solyra-api-prod` Cloud Build trigger moves prod (see FRONTEND.md in the solyra repo) |
+`platform/deploy.sh` still carries the `STAGING=1` revision-tag mode for one-off
+operator use; it is marked legacy in the script and is not what CI runs.
 
 ### 7.2 `discord-interactions` — the slash command service
 
@@ -387,7 +416,7 @@ In `STAGING=1` mode `platform/deploy.sh` omits the `--no-allow-unauthenticated` 
 
 ## 8. Cloud Scheduler — the daily timeline
 
-**60 scheduler jobs** (verified 2026-05-16 against live `gcloud scheduler jobs list`; the count includes the hourly `news-sentiment-{0800..1700}` and `news-topics-{0805..1705}` loops at 10 entries each). All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
+**66 scheduler jobs** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`). The per-hour `news-sentiment-{0800..1700}` / `news-topics-{0805..1705}` loops an earlier revision of this line described are gone: #1004 consolidated them into single `news-sentiment-hourly` and `news-topics-hourly` entries, and the four `sec-filings-{0700,1000,1300,1700}` triggers into one `sec-filings-intraday`. All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
 
 ```mermaid
 gantt
@@ -412,7 +441,7 @@ gantt
     orb-15m-alert                 :b3, 09:45, 5m
     orb-30m-alert                 :b4, 10:00, 5m
     fetch-sec-filings (slot 2/4)  :b5, 10:00, 5m
-    signal-quality-report-hourly  :b6, 10:00, 60m
+    signal-quality-report-hourly (paused) :b6, 10:00, 60m
     fetch-sec-filings (slot 3/4)  :b7, 13:00, 5m
     fetch-news-sentiment*         :b8, 14:00, 10m
 
@@ -453,7 +482,7 @@ gantt
 | Sun 19:00 | `fetch-earnings-calendar` | Week-ahead earnings calendar refresh |
 | Sun 19:15 | `fetch-earnings-history` | Backfill historical EPS for new tickers |
 | Sun 19:30 | `compute-earnings-reactions` | Recompute playability scores on the week's new history |
-| Sun 09:00 | `premarket-brief` | Week-ahead earnings + economic calendar digest |
+| Sun 21:00 | `premarket-brief` | Week-ahead earnings + economic calendar digest |
 | Tue–Sat 01:00 | `historical-signals-watchlist` | Nightly signal-history extension for every watchlist ticker |
 | Tue–Sat 01:00 | `signal-quality-report-nightly` | Phase 0.5 nightly quality rollup into `signal_metrics` ([`gcp/deploy.sh:1365`](../gcp/deploy.sh#L1365)) |
 | Tue–Sat 02:00 | `signal-quality-alarm-daily` | Reads `signal_metrics`, exits non-zero on > 3 pp clean-rate drop ([`gcp/deploy.sh:1375`](../gcp/deploy.sh#L1375)) |
@@ -476,7 +505,7 @@ Every external API the system depends on, with the role and the failure mode if 
 | **RSS feeds (×11)** | Seeking Alpha, Yahoo Finance (×3), CNBC (×2), MarketWatch (×3), Investing.com (×4), NASDAQ trade halts | None | Per-feed fault isolation; a dead feed doesn't block the others |
 | **Earnings Whispers** | Strategy + strike picks via authenticated cookie / CSRF flow | login form (creds in env) | Brittle; falls back to AV+UW only |
 | **Unusual Whales** | Earnings calendar with market-cap ranking | API key | Falls back to AV-only |
-| **Benzinga** | Catalyst calendar (analyst days, conferences, FDA/PDUFA dates, etc.) | API key (`benzinga-api-key`) | Consumed on-demand by the `trading-platform` catalysts router + `scripts/fetch_catalyst_calendar.py`; not a scheduled fetcher. Catalysts page degrades gracefully if down |
+| **Benzinga** | Catalyst calendar (analyst days, conferences, FDA/PDUFA dates, etc.) | API key (`benzinga-api-key`) | Consumed on-demand by the `solyra-api-prod` catalysts router + `scripts/fetch_catalyst_calendar.py`; not a scheduled fetcher. Catalysts page degrades gracefully if down |
 | **Vertex AI (Gemini Flash)** | `lib.adapters.vertex.VertexAdapter` for brief explanations + insight pipeline persona LLMs | ADC via runtime SA | `BRIEF_LLM_DISABLE=1` env bypasses the entire layer in emergencies |
 | **Vertex AI (text-embedding-005)** | 768-dim embeddings for `journal_entries.embedding` | ADC | Reflection memory disabled if down (insight pipeline skips that summarizer block) |
 | **Discord** | Webhook (push) + Interactions endpoint (signed POST) | webhook URL secret + Ed25519 verify on signed requests | Push fails are retried with backoff; interactions service returns 503 if the public key isn't loaded |
@@ -665,11 +694,11 @@ Estimated monthly run-rate at current usage. **Cloud SQL is ~70% of the bill.**
 | Service | Estimate | Notes |
 |---|---|---|
 | Cloud SQL `db-g1-small` + 55 GB SSD + backups + PITR | **$35–50** | Always-on, never-free. Biggest lever: stop instance during quiet windows or downsize to `db-f1-micro` |
-| Cloud Scheduler (60 jobs, 3 free) | **$5.70** | Each paid job is $0.10/mo |
+| Cloud Scheduler (66 jobs, 3 free) | **$6.30** | Each paid job is $0.10/mo |
 | Cloud Run Jobs vCPU + memory | **$1–5** | Slight overage on the 180k vCPU-sec free tier; biggest consumers are signal-monitor (8 hr/day) and historical-signals-watchlist |
 | Cloud Run Services | **$0–1** | All min-instances=0, near-zero idle cost |
 | Vertex AI Gemini Flash | **$3–5** | Per-brief ~$0.005, per-insight ~$0.10. Can be killed via `BRIEF_LLM_DISABLE=1` |
-| Secret Manager (20 secrets, 6 free) | **$0.84** | $0.06/secret-version-month |
+| Secret Manager (22 secrets, 6 free) | **$0.96** | $0.06/secret-version-month |
 | Cloud Storage (under 5 GB) | **$0–1** | Within free tier |
 | Pub/Sub | **$0** | Way under 10 GB/mo free |
 | Cloud Logging | **$0–2** | Under 50 GB/mo free |
@@ -776,7 +805,7 @@ gcloud sql instances patch trading-db --activation-policy=ALWAYS # start
 - `gcp/discord_interactions/main.py` — slash-command service (see §7.2).
 - `gcp/failure_notifier.py` — failure-pipeline service (see §7.3, §11).
 - `lib/agents/` — multi-agent insight pipeline (the consumer side of the catalyst tables).
-- `platform/api/routers/` — FastAPI routers reading from Cloud SQL (the trading-platform service's HTTP surface).
+- `platform/api/routers/` — FastAPI routers reading from Cloud SQL (the solyra-api-prod service's HTTP surface).
 
 ## Appendix B — when to update this doc
 

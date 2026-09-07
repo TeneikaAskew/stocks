@@ -158,7 +158,7 @@
   - [x] `migrate` command
   - [x] `build` command
   - [x] `fetchers` command
-  - [x] `schedulers` command (21 cron triggers)
+  - [x] `schedulers` command (66 cron triggers)
 
 ### Container
 - [x] `gcp/Dockerfile` — Updated with psycopg2 deps + scripts/
@@ -226,6 +226,7 @@
   - `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest`
 - **Note:** `gcp/deploy.sh build` updated to use a minimal temp build context (86 files / ~1.3 MB) instead of the full repo (4 GB). Copies only `lib/`, `gcp/`, `scripts/`, `alert_config.json`, `requirements-gcp.txt`.
 
+<!-- verify-docs-ok: a dated Phase 4 record of what was deployed on 2026-02-23, not a claim about the live fleet; the live count is stated in the superseded-record note above -->
 ### Cloud Run Jobs (8 jobs) ✅ 2026-02-23 (updated 2026-04-12)
 - [x] `fetch-market-data` — deployed
 - [x] `fetch-etf-options` — deployed
@@ -238,12 +239,22 @@
 - **Note:** `signal-monitor` converted from Cloud Run Service → Job (no HTTP server needed for polling loop)
 
 ### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
+
+> **Historical record — superseded.** This is what was provisioned in Feb–Apr
+> 2026. Read live 2026-09-07 there are **66** scheduler entries. Three of the
+> lines below are no longer true of the live system: `fetch-market-data-daily`
+> now runs `0 23 * * 1-5` (not `0 17`), the 9 `etf-options-*` triggers were
+> removed with their job on 2026-04-26, and the 6 `earnings-opts-*` triggers
+> fire `fetch-earnings-options`, which was never deployed. For the live set run
+> `gcloud scheduler jobs list --location=us-east1`; for the declared set read
+> `deploy_schedulers()` in `gcp/deploy.sh`.
+
 - [x] `premarket-brief-daily` — `30 8 * * 1-5` ET
 - [x] `signal-monitor-daily` — `25 9 * * 1-5` ET (new — was missing)
 - [x] `weekend-review-weekly` — `0 9 * * 6` ET
-- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET
-- [x] `etf-options-0930` through `etf-options-1605` — 9 triggers
-- [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers
+- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET *(now `0 23 * * 1-5`)*
+- [x] `etf-options-0930` through `etf-options-1605` — 9 triggers *(removed 2026-04-26)*
+- [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers *(job never deployed)*
 - [x] `av-intraday-monthly` — `0 21 1 * *` ET
 - [x] `economic-events-daily` — `0 7 * * 1-5` ET (**new** 2026-04-12)
 - [ ] Test manual trigger on each job
@@ -370,7 +381,10 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 ## Cost Estimates (Monthly)
 
-> Based on current data: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler triggers, 7 Cloud Run Jobs
+> Based on data as of 2026-02: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler
+> triggers, and 7 jobs. **The fleet has grown well past this basis** — read live
+> 2026-09-07 there are 66 scheduler entries and 76 Cloud Run Jobs, so treat the figures
+> below as a floor, not an estimate. `COST_ANALYSIS.md` carries the current view.
 
 | Service | Resource | Est. Cost/mo |
 |---------|----------|-------------|
@@ -415,6 +429,7 @@ Pre-existing failures (unrelated to dashboard work):
 
 - 2026-09-01: Archive four retired projects under `archive/` (earnings_options_analytics, google-apps-script, success-report-site, website) — exact 1:1 move of 115 files, verified nothing dropped and nothing newly tracked. Needed two .gitignore rules: the repo-root `data/` rule matched archive/*/data/ and would have silently dropped ten committed fixtures while leaving them on disk; a paired rule keeps *.csv and .clasp.json excluded since the live projects never tracked them. Five stale paths in .github/workflows/README.md repointed. No Python module imports these and their workflows are already fully retired, so no code path changed and the suite was not re-run.
 - 2026-09-01: Re-apply the frontend doc move to solyra (PR #960 was marked merged but none of it reached main — FRONTEND.md, Frontend.drawio, 03-UI-SCREENS.md, the strat-engine design brief and both solyra landing-page docs were all still tracked here and ERD.md still linked locally, leaving them duplicated across both repos). Six inbound links repointed at solyra rather than deleted. Frontend-icons.drawio deliberately left: its working copy differs from both repos, so removing it would destroy the only copy of that revision.
+<!-- verify-docs-ok: dated record; the original service name and its revision IDs must stay so logs and revisions stay correlatable (Codex, PR #990) -->
 - 2026-07-05: Solyra public landing page shipped (PRs #684, #686) — landing at `/` in every auth mode, app moved to `/dashboard`, public `POST /api/waitlist` + `waitlist_signups` table (applied via apply-schema-migrations before rollout), proof tile filled from walk_forward_results (50% trade-weighted win rate, 2,980 OOS trades). Deployed: trading-platform-staging rev 00021-dqx (public, firebase) + trading-platform rev 00073-cof (IAP, traffic pinned — promote explicitly after future deploys). Follow-ups: #683 (lazy app shell), #685 (rename internal Heatseeker/Flowseeker tabs before public launch)
 - 2026-07-05: Add Frontend-icons.drawio — 15-tab frontend diagram: Auth & Entry process flow (IAP SSO, TokenGate, dev fallback + caveats) and one data-flow tab per route (hooks → endpoints → routers → tables R/W, external-service tiles), from a fresh codebase sweep
 - 2026-07-05: Add Architecture-icons.drawio — GCP-icon + process-flow rebuild merged with repo content (ported Earnings Pipeline page as swim-lanes; Backtest page updated for PRs #519/#547/#548)
@@ -443,6 +458,7 @@ Pre-existing failures (unrelated to dashboard work):
 - 2026-02-22: options_pnl_translation.py — Greeks-approximation 0DTE P&L estimator using daily options chains
 - 2026-02-22: phase6_playbook_combined.md — appendix with multi-TF filtered win rates (1m+30m 56–59%, 5m+15m ~62%)
 - 2026-02-23: trade_analysis_pipeline.py — fix market-hours filter (allow 4:00 PM exits), add Trade_Profitable fallback for 6-month comparison; IWM report updated with 6-month window analysis
+<!-- verify-docs-ok: dated record; the original service name and its revision IDs must stay so logs and revisions stay correlatable (Codex, PR #990) -->
 - 2026-04-25: Deploy `platform/` to Cloud Run as `trading-platform` with auto-managed IAP SSO scoped to bictech.org; add `/dev` diagnostic page gated to teneika@bictech.org; Playwright `iap-setup`/`cloud` projects + storage-state cookies for E2E against deployed URL
 - 2026-04-25: Fix WCAG button contrast (8 occurrences) and TypeScript build errors (5 files) blocking the multi-stage Docker build
 - 2026-04-25: Ranker — split insider_cluster into insider_buying (+1.5) / insider_selling (-1.5); weighted_score now allows negative weights with abs()-normalized max

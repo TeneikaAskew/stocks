@@ -1,15 +1,6 @@
 name: Deploy staging
 
-# DO NOT DISPATCH until #990 (chore/rename-services-to-solyra) has merged.
-# The gcr.io/trading-platform image packages were retired on 2026-09-07
-# (docs/audits/COST_AUDIT_2026-09-06.md §3a) and the live services are
-# solyra-api-prod / solyra-api-staging. On this branch platform/deploy.sh
-# still defaults to IMAGE_NAME=trading-platform and, under
-# STAGING_SERVICE=1, to the deleted trading-platform-staging service, so a
-# dispatch would rebuild the retired package and deploy a revision of a
-# service that no longer exists. #990 renames both defaults.
-#
-# One-click redeploy of trading-platform-staging (the PUBLIC, Firebase-gated
+# One-click redeploy of solyra-api-staging (the PUBLIC, Firebase-gated
 # staging service solyra talks to) from the current main, with the DB schema
 # rolled forward first.
 #
@@ -172,6 +163,14 @@ on:
         options: ['false', 'true']
 
 # Never let two deploys interleave; never cancel one mid-flight.
+#
+# This group only serialises this workflow against ITSELF. It has no reach over
+# the deploy-solyra-api-staging Cloud Build trigger, which deploys the same
+# service on push to main (Codex, PR #990). The cross-path interlock is
+# gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh, which platform/deploy.sh
+# runs in STAGING_SERVICE mode and which the trigger config runs as its first
+# step; both paths also deploy by image digest so an overlap can never leave the
+# service on an artifact neither run built. See gcp/cloudbuild/README.md.
 concurrency:
   group: deploy-staging
   cancel-in-progress: false
@@ -179,7 +178,7 @@ concurrency:
 env:
   GCP_PROJECT: adept-mountain-474619-d4
   REGION: us-east1
-  SERVICE: trading-platform-staging
+  SERVICE: solyra-api-staging
 
 jobs:
   deploy:
@@ -338,7 +337,7 @@ jobs:
       # DB_USER/DB_NAME normally come from the live service (step above);
       # the GitHub secrets are the safety net in case the live service ever
       # stops carrying them in plain env.
-      - name: Build and deploy trading-platform-staging
+      - name: Build and deploy solyra-api-staging
         env:
           DB_USER: ${{ env.DB_USER || secrets.DB_USER }}
           DB_NAME: ${{ env.DB_NAME || secrets.DB_NAME }}
