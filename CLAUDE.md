@@ -867,16 +867,16 @@ before relying on a layer that isn't yet deployed.
 |---|---|---|---|---|
 | **Daily PD snapshots** | Cloud SQL automated snapshots | 7 most recent | One restore point per day at ~03:00 UTC | ✅ live (always was) |
 | **Point-in-time recovery (PITR)** | WAL archive | 7 days of transaction log | Any second within last 7 days | ✅ live (enabled 2026-05-10) |
-| **Weekly `pg_dump`** | Logical SQL dump (gzipped) | 30 days (lifecycle rule) | Whole-DB snapshot, target Sunday 04:00 UTC | 🚧 in flight on PR #389 — `cloud-sql-weekly-export` Job + scheduler not yet deployed; `gs://${PROJECT_ID}-trading-data/sql-dumps/` is empty until then |
+| **Weekly `pg_dump`** | Logical SQL dump (gzipped) | 30 days (lifecycle rule) | Whole-DB snapshot, Sunday 04:00 **ET** (`cloud-sql-weekly-export-sunday`, `0 4 * * 0`, `America/New_York`) | ✅ live — verified 2026-09-06: Job `cloud-sql-weekly-export` and its scheduler both exist, and `gs://${PROJECT_ID}-trading-data/sql-dumps/` holds 5 weekly dumps, most recent `trading-20260906-080030.sql.gz` (~14.8 GiB) |
 
-The first two are managed by Cloud SQL itself. The third (once PR #389
-merges + `./gcp/deploy.sh setup-pg-dump-iam && ./gcp/deploy.sh build &&
-./gcp/deploy.sh pg-dump && ./gcp/deploy.sh schedulers` runs) will be the
+The first two are managed by Cloud SQL itself. The third is the
 `cloud-sql-weekly-export` Cloud Run Job in `gcp/deploy.sh`
-(`deploy_weekly_pg_dump` + `setup_pg_dump_iam`). The pg_dump survives
-instance deletion or a region-wide GCP issue — the snapshots and PITR
-don't. **Check `gs://${PROJECT_ID}-trading-data/sql-dumps/` before
-relying on a pg_dump-based recovery path.**
+(`deploy_weekly_pg_dump` + `setup_pg_dump_iam`), fired by the
+`cloud-sql-weekly-export-sunday` scheduler. The pg_dump survives instance
+deletion or a region-wide GCP issue — the snapshots and PITR don't.
+**Check `gs://${PROJECT_ID}-trading-data/sql-dumps/` before relying on a
+pg_dump-based recovery path** — the object listing, not this table, is what
+proves a dump exists for the date you need.
 
 #### When to reach for which
 
@@ -884,7 +884,7 @@ relying on a pg_dump-based recovery path.**
 |---|---|
 | `DROP TABLE` or `DELETE FROM` mistake; need to restore to 5 minutes ago | **PITR** — fine-grained, no row loss within the recovery window |
 | Schema migration corrupted yesterday's data; need to restore to before the migration | **Daily snapshot** from 24h ago |
-| Cloud SQL instance accidentally deleted, or a hypothetical region outage in `us-east1` | **Weekly pg_dump** (once PR #389 lands and a dump exists). Until then this scenario has NO recovery path — daily snapshots and PITR don't survive instance deletion. Treat any instance-delete operation as sev-1 until the pg_dump layer is live. |
+| Cloud SQL instance accidentally deleted, or a hypothetical region outage in `us-east1` | **Weekly pg_dump** — live since 2026-08; recovers to the most recent Sunday 04:00 ET, so up to 7 days of writes are lost. Daily snapshots and PITR do **not** survive instance deletion, so this is the only layer that covers it. |
 | Audit a row's history (timestamps, who-wrote-what) | None of the above — no row-level audit log; rely on application-side write logs and `created_at` columns |
 
 #### Restore commands (read-only reference — run with care)
@@ -1139,8 +1139,8 @@ curl -sS -L -H "Authorization: Bearer $GH_TOKEN" \
 
 ### Testing Commands
 ```bash
-make test              # hermetic unit/API suite (excludes tests/e2e + tests/integration)
-make test-e2e          # Playwright E2E (tests/e2e/; needs make install-playwright)
+make test              # hermetic unit/API suite (excludes tests/integration)
+make test-e2e          # archived Playwright E2E (archive/tests/; needs make install-playwright)
 make test-integration  # real-SQL tests (tests/integration/; needs Postgres + gcp/schema.sql)
 make test-scripts      # script CLI regressions (tests/scripts/test_scripts.py)
 ```
@@ -1161,7 +1161,7 @@ over there). New test files go INSIDE the matching area folder, never at the
 | `tests/scripts/` | `scripts/` CLI regression tests |
 | `tests/audits/` | the `audit-*` job surfaces (freshness, drift, magnitude) |
 | `tests/meta/` | repo-level invariants (import coverage, workflow contracts) |
-| `tests/e2e/` | Playwright browser tests (excluded from `make test`) |
+| `archive/tests/` | Archived Playwright browser tests for the retired static report site — not in `make test`, not in CI |
 | `tests/integration/` | real-SQL tests needing a live Postgres (excluded from `make test`) |
 
 Shared fixtures stay at `tests/conftest.py` (cascades into every area) and

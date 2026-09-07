@@ -16,13 +16,17 @@ lock:
 	pip freeze --exclude-editable | sort > requirements.lock
 	@echo "Updated requirements.lock ($$(wc -l < requirements.lock) packages)"
 
-## Run the hermetic unit/API test suite (excludes E2E and DB-integration)
+## Run the hermetic unit/API test suite (excludes DB-integration)
+## tests/ no longer needs an E2E exclusion: the only browser test covered two
+## retired static pages and now lives at archive/tests/ (see test-e2e below).
 test:
-	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/e2e --ignore=tests/integration
+	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/integration
 
-## Run Playwright E2E tests for all web apps (requires: make install-playwright)
+## Run the ARCHIVED Playwright smoke tests for the retired static pages
+## (archive/success-report-site, archive/website). Not part of `make test` and
+## not run by CI — these cover no API surface. Requires: make install-playwright
 test-e2e:
-	$(PYTHON) -m pytest tests/e2e/test_e2e.py -v
+	$(PYTHON) -m pytest archive/tests/test_e2e.py -v
 
 ## Run real-SQL integration tests — needs a Postgres with gcp/schema.sql
 ## applied and DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME exported.

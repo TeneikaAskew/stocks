@@ -1,0 +1,78 @@
+name: Verify docs against live GCP
+
+# The operational docs make checkable claims -- schedules, wall-clock times,
+# resource counts, service names -- and nothing compared them to the live
+# project. `docs/PIPELINE.md` said the market-data ingest ran at "23:00 UTC"
+# while the scheduler had run `0 23 * * 1-5 America/New_York` for months, and a
+# timezone fix designed off that sentence was wrong end to end.
+#
+# scripts/verify_docs_against_live.py closes that, but a script nothing runs is
+# not a monitor: it existed only as instructions in RUNBOOK.md, so drift could
+# still merge (Codex, PR #990). This runs it.
+#
+# Daily rather than per-PR: it reads LIVE gcloud, so a pull request from a fork
+# has no credentials, and a doc that is correct at merge time drifts when the
+# infrastructure moves rather than when the file changes. A failure here means
+# either the docs or the project moved, and the run output names which claim.
+
+on:
+  schedule:
+    - cron: '0 13 * * 1-5'   # 09:00 ET on weekdays, after the morning jobs land
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/verify_docs_against_live.py'
+      - 'tests/scripts/test_verify_docs_against_live.py'
+
+permissions:
+  contents: read
+  id-token: write       # WIF token
+
+env:
+  GCP_PROJECT: adept-mountain-474619-d4
+  REGION: us-east1
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Same Workload Identity Federation auth refresh-architecture-docs.yml
+      # uses; no key material, and the identity only needs read access.
+      - name: Authenticate to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+
+      # The snapshot makes a failure reproducible offline: re-run the same
+      # comparison locally with --snapshot rather than needing gcloud access to
+      # see what the run saw.
+      #
+      # Written by the comparison itself, in ONE invocation. A separate
+      # `always()` step calling the script a second time read live GCP AGAIN,
+      # so infrastructure moving between the two calls produced an artifact
+      # with different counts or schedules -- or a clean one -- attached to a
+      # failure it could not reproduce (Codex, PR #990). `--write-snapshot`
+      # writes the state it read and then runs the comparison on that same
+      # state, so the artifact is by construction what produced the findings.
+      - name: Compare the operational docs against live GCP
+        run: python scripts/verify_docs_against_live.py --write-snapshot live.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-gcp-snapshot
+          path: live.json
+          if-no-files-found: ignore

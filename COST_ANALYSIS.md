@@ -22,7 +22,7 @@ The observed cost for August is significantly higher than in previous months, bu
 
 | Rank | Service | SKU | 90-day cost | Aug 2026 | Maps to (ARCHITECTURE.md) |
 |---:|---|---|---:|---:|---:|
-| 1 | Cloud Run | `Services CPU (Instance-based billing) in us-east1` | $47.89 | $47.89 | `trading-platform`, `discord-interactions`, `failure-notifier` services. |
+| 1 | Cloud Run | `Services CPU (Instance-based billing) in us-east1` | $47.89 | $47.89 | `solyra-api-prod`, `discord-interactions`, `failure-notifier` services. |
 | 2 | Cloud Run | `Jobs CPU in us-east1` | $35.70 | $35.70 | CPU time across all 76 Cloud Run Jobs. Not attributable per-job from billing. |
 | 3 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Standard storage in Americas` | $32.16 | $32.16 | Persistent disk on `trading-db`. |
 | 4 | Artifact Registry | `Artifact Registry Storage` | $29.10 | $29.10 | The `trading/trading-system` container repo. High cost suggests many images. |
@@ -85,7 +85,7 @@ A cost of $29.10 for Artifact Registry storage is unusually high for a project o
 **Validation:** Check the number and size of images currently stored in the repository.
 
 ### #2 — Investigate Cloud Run service performance (estimated saving: $10-20/mo)
-**Resource:** Cloud Run services, particularly `trading-platform`.
+**Resource:** Cloud Run services, particularly `solyra-api-prod`.
 **Change:** The `Services CPU` is the highest cost item. This could be due to inefficient code, or the service being over-provisioned (e.g., `min-instances` set too high). Profile the application and check the service configuration.
 **Estimated saving:** Optimizing the service could lead to significant savings. A 20-40% reduction in CPU consumption is often achievable and would result in $10-20/month savings.
 **Risk:** Reducing instances or CPU could impact performance. Changes should be tested under load.
