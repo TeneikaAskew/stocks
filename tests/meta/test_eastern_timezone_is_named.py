@@ -126,8 +126,14 @@ UNAMBIGUOUS_LEGACY = ("US/Eastern", "EST5EDT", "America/Montreal",
 AMBIGUOUS_LEGACY = ("EST", "EDT")
 ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 
+# `[:=]`, not `=`. Adding `*.yml`/`*.yaml` to the scan was pointless while the
+# context accepted only assignment syntax: a Kubernetes or Compose file writes
+# `TZ: EST` and `timezone: "-05:00"` as ordinary mapping entries, so the very
+# files the scan was widened to cover kept their standard spelling outside it
+# (Codex, PR #993). The colon costs nothing elsewhere -- these keys mean a
+# timezone in any file that has them.
 _TZ_CONTEXT = (
-    r"tz\s*=|tzinfo\s*=|time_?zone\s*=|time-zone[= ]|ZoneInfo\s*\(|"
+    r"tz\s*[:=]|tzinfo\s*[:=]|time_?zone\s*[:=]|time-zone[:= ]|ZoneInfo\s*\(|"
     r"pytz\.timezone\s*\(|tz_convert\s*\(|tz_localize\s*\(|"
     r"AT TIME ZONE\s*|Timestamp\.now\s*\(|astimezone\s*\("
 )
@@ -277,6 +283,34 @@ def _scope_nodes(scope: ast.AST):
             stack.extend(ast.iter_child_nodes(node))
 
 
+def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
+    """(names a parameter shadows, names a constant default binds).
+
+    Returns empty sets for a Module or ClassDef, neither of which takes
+    parameters.
+    """
+    args = getattr(scope, "args", None)
+    if args is None:
+        return set(), {}
+    positional = list(args.posonlyargs) + list(args.args)
+    names = {a.arg for a in positional + list(args.kwonlyargs)}
+    for extra in (args.vararg, args.kwarg):
+        if extra is not None:
+            names.add(extra.arg)
+
+    # `defaults` right-aligns with posonlyargs+args; `kw_defaults` is 1:1 with
+    # kwonlyargs, holding None where a keyword-only argument has none.
+    defaults: dict[str, tuple[str, ast.AST]] = {}
+    pairs = list(zip(positional[len(positional) - len(args.defaults):],
+                     args.defaults))
+    pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults)
+              if d is not None]
+    for arg, default in pairs:
+        if isinstance(default, ast.Constant) and isinstance(default.value, str):
+            defaults[arg.arg] = (default.value, default)
+    return names, defaults
+
+
 def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]:
     """`id(node)` -> the string bindings visible at that node, lexically.
 
@@ -296,7 +330,19 @@ def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]
     out: dict[int, dict[str, tuple[str, ast.AST]]] = {}
 
     def descend(scope: ast.AST, inherited: dict) -> None:
-        bindings = dict(inherited)
+        # A parameter shadows whatever the enclosing scope bound to that name,
+        # and `_collect_bindings` reads assignments only -- so with
+        # `TZ = "EST"` at module level, `def load(TZ): ZoneInfo(TZ)` inherited
+        # the module's binding and was reported for a value the runtime never
+        # sees. That is the same false CI failure the scoping fix was for, one
+        # level in (Codex, PR #993).
+        #
+        # A parameter with a constant string DEFAULT is not merely dropped:
+        # `def load(tz="EST")` really does resolve to `EST` when the caller
+        # passes nothing, so the default is bound instead.
+        shadowed, defaults = _parameter_bindings(scope)
+        bindings = {k: v for k, v in inherited.items() if k not in shadowed}
+        bindings.update(defaults)
         bindings.update(_collect_bindings(_scope_nodes(scope), {}))
         out[id(scope)] = bindings
         for node in _scope_nodes(scope):
@@ -435,8 +481,13 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # `{"tz": "EST"}` -- a config literal read back at some other site.
         if isinstance(node, ast.Dict):
             for k, v in zip(node.keys, node.values):
-                if (isinstance(k, ast.Constant) and k.value in _TZ_KEYWORDS
-                        and isinstance(v, ast.Constant)):
+                # `.lower()`, matching the subscript handling above. The
+                # conventional spelling for a subprocess environment is
+                # `env={"TZ": "EST"}` -- uppercase -- and a case-sensitive
+                # membership test walked straight past it while the adjacent
+                # `os.environ["TZ"]` form was caught (Codex, PR #993).
+                if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        and k.value.lower() in _TZ_KEYWORDS):
                     follow(legacy, offsets, node, v, bindings,
                            lambda shown, k=k: f"{k.value!r}: {shown}")
 
@@ -618,7 +669,13 @@ def _arrays_carrying_timezone(func: str) -> set[str]:
         if re.search(r"--time-zone[=\s]+[\"']?" + re.escape(EASTERN)
                      + r"[\"']?", func[start:i]):
             names.add(m.group(1))
-    return {f"${{{n}[@]}}" for n in names} | {f"${n}" for n in names}
+    # `${flags[@]}` only. Bash expands a bare `$flags` to element ZERO, so for
+    # the `_enrich_common` layout that passes `--location` and silently drops
+    # the `--time-zone` that follows it -- and accepting the scalar spelling
+    # meant that typo produced no offender while the scheduler received no
+    # zone at all (Codex, PR #993). The quoted and unquoted array forms both
+    # expand to every element; the scalar does not.
+    return {f"${{{n}[@]}}" for n in names}
 
 
 _INVOCATION = re.compile(r"gcloud\s+scheduler\s+jobs\s+(?:create|update)\s+http")
@@ -802,3 +859,96 @@ def test_the_tz_environment_variable_is_read_as_a_timezone():
     # The canonical name is not a finding, and neither is an unrelated key.
     assert _hits('os.environ["TZ"] = "America/New_York"\n') == ([], [])
     assert _hits('os.environ["EST_LABEL"] = "EST"\n') == ([], [])
+
+
+def test_a_parameter_shadows_an_inherited_binding():
+    """`TZ = "EST"` at module level says nothing about `def load(TZ)`.
+
+    The scoping fix stopped joining names across sibling functions but still
+    inherited enclosing scopes into a function whose own PARAMETER shadows
+    them, because `_collect_bindings` reads assignments and a parameter is not
+    one. Same false CI failure, one level in (Codex, PR #993).
+    """
+    legacy, offsets = _hits(
+        'TZ = "EST"\n'
+        '\n'
+        'def load(TZ):\n'
+        '    return ZoneInfo(TZ)\n'
+    )
+    assert (legacy, offsets) == ([], [])
+
+    # Every parameter kind shadows, not just a positional one.
+    assert _hits('TZ = "EST"\n\ndef load(*, TZ="America/New_York"):\n'
+                 '    return ZoneInfo(TZ)\n') == ([], [])
+    assert _hits('TZ = "EST"\n\nload = lambda TZ: ZoneInfo(TZ)\n') == ([], [])
+
+
+def test_a_constant_default_is_bound_rather_than_merely_shadowed():
+    """`def load(tz="EST")` really does resolve to EST when nothing is passed.
+
+    Dropping the inherited binding is right; dropping the parameter entirely
+    would let the default through, so the default is bound instead.
+    """
+    # An AMBIGUOUS value, deliberately. `US/Eastern` as a default would be
+    # reported anyway — it is an unambiguous zone name and the bare-constant
+    # check catches it wherever it stands — so it cannot tell whether the
+    # binding did any work. `EST` is only ever reported through a timezone
+    # context, so the binding is the whole mechanism here.
+    legacy, _ = _hits('def load(tz="EST"):\n    return ZoneInfo(tz)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    _, offsets = _hits('def load(*, tz="-05:00"):\n    return ZoneInfo(tz)\n')
+    assert any("-05:00" in h for h in offsets), offsets
+
+    # And the canonical default is not a finding.
+    assert _hits('def load(tz="America/New_York"):\n'
+                 '    return ZoneInfo(tz)\n') == ([], [])
+
+
+def test_an_uppercase_dict_key_is_a_timezone_key():
+    """`env={"TZ": "EST"}` is the conventional spelling for a subprocess.
+
+    The case-sensitive membership test walked past it while the adjacent
+    `os.environ["TZ"]` form was caught — the same key, two spellings, two
+    answers (Codex, PR #993).
+    """
+    legacy, _ = _hits('subprocess.run(cmd, env={"TZ": "EST"})\n')
+    assert any("EST" in h for h in legacy), legacy
+    assert _hits('subprocess.run(cmd, env={"TZ": "America/New_York"})\n') == ([], [])
+    # An unrelated key is still not a timezone context.
+    assert _hits('d = {"EST_LABEL": "EST"}\n') == ([], [])
+
+
+def test_a_yaml_mapping_entry_is_a_timezone_context():
+    """`TZ: EST` is how a Compose or Kubernetes file spells it.
+
+    Adding *.yml/*.yaml to the scan achieved nothing while the context
+    required `=`: the standard mapping syntax of the files just brought in
+    was the one spelling it could not see (Codex, PR #993).
+    """
+    assert NONPY_AMBIGUOUS.search("      TZ: EST")
+    assert NONPY_AMBIGUOUS.search('  timezone: "EDT"')
+    assert NONPY_FIXED_OFFSET.search("  timezone: -05:00")
+    # Still not a bare word out of context.
+    assert not NONPY_AMBIGUOUS.search("headline stop words: EST")
+    assert NONPY_AMBIGUOUS.search("tz=EST")   # the assignment form still works
+
+
+def test_only_a_whole_array_expansion_carries_the_later_flags():
+    """Bash expands `$flags` to element ZERO, not the whole array.
+
+    For the `_enrich_common` layout that passes `--location` and drops the
+    `--time-zone` after it, so accepting the scalar spelling meant the typo
+    produced no offender while the scheduler received no zone at all
+    (Codex, PR #993).
+    """
+    func = (
+        '_enrich_common() {\n'
+        '  local flags=(--location "$REGION" --time-zone "America/New_York")\n'
+        '}\n'
+    )
+    zoned = _arrays_carrying_timezone(func)
+    assert "${flags[@]}" in zoned
+    assert "$flags" not in zoned, (
+        "a scalar expansion passes only the first element, so it does not "
+        "carry the --time-zone that follows")
