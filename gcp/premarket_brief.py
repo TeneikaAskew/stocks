@@ -1575,6 +1575,28 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                       file=sys.stderr, flush=True)
                 traceback.print_exc(file=sys.stderr)
                 sys.stderr.flush()
+                # Marked, not merely logged. This branch printed a traceback
+                # and fell through, so the run went on to write the canonical
+                # premarket row while `strat_levels` still held the PREVIOUS
+                # day's values -- a published brief whose levels silently did
+                # not move, which is the shape of failure this whole audit is
+                # about (Codex, PR #994).
+                #
+                # It became reachable in this PR: `_business_days_between`
+                # used to return 0 when the NYSE calendar lookup failed, which
+                # disabled the staleness guard, and now raises instead. That
+                # RuntimeError landed here, so the fix would have converted a
+                # silent wrong answer into a silent identical one.
+                #
+                # `PLAYBOOK_FAILED` rather than a new status: it is what the
+                # enclosing handler already sets for a failure in this block,
+                # and `persist_to_cloud_sql` reads it to route the row to
+                # premarket_analysis_history (audit trail) instead of the
+                # canonical table. The stale-source branch above keeps its own
+                # `STALE_DAILY_DATA`, which is a narrower diagnosis.
+                d['status'] = 'PLAYBOOK_FAILED'
+                d['playbook_error'] = (
+                    f"strat_levels persist failed: {type(exc).__name__}: {exc}")
         except Exception as e:
             import traceback
             print(f"[brief:{ticker}] playbook block FAILED: {type(e).__name__}: {e}",

@@ -747,19 +747,39 @@ python scripts/audit_silent_fallbacks.py --worst   # broad, unlogged, container-
 python scripts/audit_silent_fallbacks.py --json    # diff against the last run
 ```
 
-Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`):
+Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`), taken
+from this branch with main at `f7d09c07` merged in. The base commit is named
+because the number is only meaningful against a tree: re-read it after any
+merge, with the two commands below, before treating a difference as a
+regression.
 
 ```
 $ python scripts/audit_silent_fallbacks.py
-423 swallowing handlers in 122 files; 245 return a container or a zero rather than None
+438 swallowing handlers in 124 files; 256 return a container or a zero rather than None
 
 $ python scripts/audit_silent_fallbacks.py --worst
-54 swallowing handlers in 35 files (broad, unlogged, container-or-zero); 54 return a container or a zero rather than None
+54 swallowing handlers in 36 files (broad, unlogged, container-or-zero); 54 return a container or a zero rather than None
 ```
+
+The numbers recorded here before were `423 ... 122 files ... 245` and
+`54 ... 35 files`, read before main was merged into this branch and before
+the tuple fix below. A baseline the section calls reproducible has to be
+reproducible against the commit it ships with, or the next run reads
+fifteen handlers as regressions when thirteen are merged history and two are
+the scanner learning to see them (Codex, PR #994).
+
+Deliberately NOT a CI gate. A test comparing these numbers to a live scan
+would be red on every unrelated PR the moment main gained a handler, because
+`actions/checkout@v4` builds the PR's MERGE commit while the doc was written
+against the branch -- a failure the author cannot reproduce and did not
+cause. The baseline is a dated reading with its base named, and refreshing it
+is a step in the merge, not a gate on everyone else.
 
 The 2026-09-06 reading recorded here was `255 swallowing handlers in 88 files;
 146 return a container or a zero rather than None`, and neither number was
-right. Two scanner defects, both found in review (Codex, PR #994):
+right. Six scanner defects, every one of them found in review
+(Codex, PR #994) -- which is the point the count is making: a scanner nobody
+reviews reports a number, not an inventory.
 
 * it walked `Return` nodes only, so a handler that swallows by ASSIGNMENT
   (`dc = []`) or by `pass` was invisible -- about a third of the inventory,
@@ -785,7 +805,15 @@ right. Two scanner defects, both found in review (Codex, PR #994):
   able to tell -- `lib/data_loader.py:513` omits a timeframe that was asked
   for, and `scripts/fetch_earnings_calendar.py` drops earnings rows in three
   places. There is no value to name in a `continue`, which is exactly why a
-  scanner built on returns could not see it.
+  scanner built on returns could not see it;
+* `_neutral` accepted a returned tuple only when EVERY element was a bare
+  constant, so a multi-value handler whose neutrals include a container was
+  not inventoried at all -- `return ([], None, None)` in
+  `platform/api/routers/grid.py:583` and both `return {}, None` paths in
+  `gcp/fetchers/fetch_sec_filings.py:283-289`, which are precisely the
+  container substitutions `--worst` ranks. Tuple elements are now classified
+  recursively; a non-neutral element still disqualifies the tuple. Two more
+  handlers, both forbidden-shape.
 
 A third defect moved the count the other way: `ast.walk` descended into nested
 `except` blocks, so an inner handler's fallback was attributed to every

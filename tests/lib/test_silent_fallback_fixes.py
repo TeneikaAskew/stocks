@@ -940,3 +940,127 @@ def test_the_force_flag_reaches_the_gate_from_the_command_line():
     assert "process_one_date(ticker, snap, force=args.force)" in src, (
         "main() must pass the parsed --force through; deriving it from the "
         "chain covered only the fully populated date")
+
+
+# ── Codex review of PR #994 ─────────────────────────────────────────────────
+
+def test_a_container_inside_a_returned_tuple_is_inventoried():
+    """`return ([], None, None)` is a container substitution like any other.
+
+    `_neutral` accepted a tuple only when EVERY element was an `ast.Constant`,
+    so a multi-value handler returning its neutrals as a tuple was invisible
+    exactly when one of them was the container this audit ranks worst. Two
+    live sites were missing from the inventory: `_fetch_on_demand` in
+    `platform/api/routers/grid.py` and `_read_cik_cache` in
+    `gcp/fetchers/fetch_sec_filings.py` (Codex, PR #994).
+    """
+    import ast
+    mod = _scanner()
+
+    def neutral_of(expr: str):
+        return mod._neutral(ast.parse(expr, mode="eval").body)
+
+    assert neutral_of("([], None, None)") == "tuple of neutrals"
+    assert neutral_of("({}, None)") == "tuple of neutrals"
+    assert neutral_of("(None, None)") == "tuple of neutrals"       # unchanged
+    # A nested tuple resolves through the same test.
+    assert neutral_of("(([], None), 0)") == "tuple of neutrals"
+    # And a real value in any position still disqualifies the whole tuple, so
+    # widening the test does not turn every multi-return into a finding.
+    assert neutral_of("(df, None)") is None
+    assert neutral_of("([], compute())") is None
+
+    # End-to-end: the two named sites carry the shape and are ranked. The
+    # helper alone is not enough -- `scan()` builds the row, and an earlier
+    # round of this same review found it intersecting the wrong strings.
+    by_file = {}
+    for r in mod.scan(REPO):
+        by_file.setdefault(r["file"], []).append(r)
+
+    grid = [r for r in by_file.get("platform/api/routers/grid.py", [])
+            if "tuple of neutrals" in r["returns"]]
+    sec = [r for r in by_file.get("gcp/fetchers/fetch_sec_filings.py", [])
+           if "tuple of neutrals" in r["returns"]]
+    assert grid, "grid.py's ([], None, None) handler must be in the inventory"
+    assert sec, "fetch_sec_filings.py's ({}, None) handler must be in the inventory"
+    assert all(r["forbidden_shape"] for r in grid + sec), (
+        "a tuple carrying a container is a forbidden shape, not a bare None")
+
+
+def test_the_live_quote_nullable_fields_stay_required():
+    """Nullable is not optional, and the OpenAPI snapshot must say so.
+
+    `Optional[float] = None` makes a Pydantic field optional as well as
+    nullable, which drops it from the schema's `required` list. `get_live_quote`
+    builds all three keys unconditionally, so a generated client or a contract
+    test would have been told to accept a response that omits one -- a
+    different claim from the frontend's `number | null` (Codex, PR #994).
+    """
+    snapshot = json.loads(
+        (REPO / "platform" / "api" / "openapi.json").read_text())
+    schema = snapshot["components"]["schemas"]["LiveQuoteResponse"]
+
+    for field in ("change", "change_pct", "prev_close"):
+        assert field in schema["required"], (
+            f"{field} is emitted on every response; it must stay required")
+        types = {t.get("type") for t in schema["properties"][field]["anyOf"]}
+        assert types == {"number", "null"}, (
+            f"{field} must be nullable, not optional: {types}")
+
+    # The required fields that are NOT nullable keep their plain type, so this
+    # test would notice the widening being applied to the wrong half.
+    assert schema["properties"]["price"]["type"] == "number"
+
+
+def test_a_strat_levels_persist_failure_marks_the_ticker():
+    """A persist failure must reach a status-bearing path, not just a log.
+
+    `_business_days_between` now raises when the NYSE calendar lookup fails,
+    instead of returning 0 and disabling the staleness guard. That RuntimeError
+    lands in `generate_premarket_brief`'s persistence handler, which logged a
+    traceback and fell through -- so the run published its canonical premarket
+    row while `strat_levels` still held the previous day's values, and the
+    fix converted a silent wrong answer into a silent identical one
+    (Codex, PR #994).
+
+    Asserted structurally over EVERY handler on that `try`, so a third one
+    added later cannot reintroduce the swallow.
+    """
+    import ast
+    tree = ast.parse((REPO / "gcp" / "premarket_brief.py").read_text())
+
+    def calls_persist(node) -> bool:
+        for n in ast.walk(node):
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+            if name == "persist_level_map":
+                return True
+        return False
+
+    # EVERY `try` the call sits inside, not just the innermost: the persist is
+    # nested in the wider playbook block, and a failure swallowed at either
+    # level publishes the same unchanged levels.
+    tries = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Try) and any(calls_persist(b) for b in n.body)]
+    assert tries, "persist_level_map must be called inside a try"
+
+    def sets_status(handler) -> bool:
+        for n in ast.walk(handler):
+            if not isinstance(n, ast.Assign):
+                continue
+            for t in n.targets:
+                if (isinstance(t, ast.Subscript)
+                        and isinstance(t.slice, ast.Constant)
+                        and t.slice.value == "status"):
+                    return True
+        return False
+
+    handlers = [h for t in tries for h in t.handlers]
+    assert handlers, "the persist call must have at least one handler"
+    unmarked = [h for h in handlers if not sets_status(h)]
+    assert not unmarked, (
+        "a strat_levels persist failure that sets no status lets the run "
+        "publish a canonical row over unchanged levels; unmarked handlers at "
+        f"lines {[h.lineno for h in unmarked]}")

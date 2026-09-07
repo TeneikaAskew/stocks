@@ -94,9 +94,17 @@ def _neutral(value: ast.expr | None) -> str | None:
         return "[]"
     if isinstance(value, ast.Dict) and not value.keys:
         return "{}"
+    # Recursive, not `ast.Constant`-only. A multi-value handler returns its
+    # neutrals in a tuple, and the containers are exactly the substitutions
+    # this audit ranks worst -- so requiring every element to be a bare
+    # constant hid `return ([], None, None)`
+    # (platform/api/routers/grid.py) and both `return ({}, None)` paths in
+    # gcp/fetchers/fetch_sec_filings.py from the inventory entirely, while
+    # counting the all-constant `(None, None)` beside them (Codex, PR #994).
+    # A nested tuple recurses through the same test; a non-neutral element
+    # (a name, a real call) still disqualifies the whole tuple.
     if isinstance(value, ast.Tuple) and value.elts and all(
-            isinstance(e, ast.Constant) and e.value in (None, 0, 0.0, "", False)
-            for e in value.elts):
+            _neutral(e) is not None for e in value.elts):
         return "tuple of neutrals"
     if isinstance(value, ast.Call):
         f = value.func

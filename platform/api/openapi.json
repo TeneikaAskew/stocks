@@ -4414,6 +4414,9 @@
           "high",
           "low",
           "volume",
+          "change",
+          "change_pct",
+          "prev_close",
           "last_updated",
           "market_session",
           "market_open"

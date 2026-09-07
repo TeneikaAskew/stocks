@@ -372,13 +372,13 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [875](platform/api/routers/backtest.py#L875)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3289](gcp/premarket_brief.py#L3289), [3290](gcp/premarket_brief.py#L3290), [3305](gcp/premarket_brief.py#L3305), [3307](gcp/premarket_brief.py#L3307)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3311](gcp/premarket_brief.py#L3311), [3312](gcp/premarket_brief.py#L3312), [3327](gcp/premarket_brief.py#L3327), [3329](gcp/premarket_brief.py#L3329)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [98](gcp/premarket_playbook_resolver.py#L98), [478](gcp/premarket_playbook_resolver.py#L478)
 - [`gcp/signal_monitor.py`](gcp/signal_monitor.py) — line [544](gcp/signal_monitor.py#L544)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [96](scripts/backfill_history_tables.py#L96)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3262](gcp/premarket_brief.py#L3262), [3263](gcp/premarket_brief.py#L3263)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [3284](gcp/premarket_brief.py#L3284), [3285](gcp/premarket_brief.py#L3285)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [96](scripts/backfill_history_tables.py#L96), [123](scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -677,7 +677,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_market_data.py`](gcp/fetchers/fetch_market_data.py) — line [299](gcp/fetchers/fetch_market_data.py#L299), [717](gcp/fetchers/fetch_market_data.py#L717), [725](gcp/fetchers/fetch_market_data.py#L725), [750](gcp/fetchers/fetch_market_data.py#L750), [1011](gcp/fetchers/fetch_market_data.py#L1011)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](gcp/fetchers/fetch_premarket_refresh.py) — line [13](gcp/fetchers/fetch_premarket_refresh.py#L13), [146](gcp/fetchers/fetch_premarket_refresh.py#L146)
 - [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) — line [147](gcp/migrate_to_gcp.py#L147)
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [365](gcp/premarket_brief.py#L365), [370](gcp/premarket_brief.py#L370), [770](gcp/premarket_brief.py#L770), [2313](gcp/premarket_brief.py#L2313)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [365](gcp/premarket_brief.py#L365), [370](gcp/premarket_brief.py#L370), [770](gcp/premarket_brief.py#L770), [2335](gcp/premarket_brief.py#L2335)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [116](gcp/premarket_playbook_resolver.py#L116)
 - [`gcp/refresh_earnings_views.py`](gcp/refresh_earnings_views.py) — line [140](gcp/refresh_earnings_views.py#L140)
 - [`gcp/research/p2_outcomes_grid.py`](gcp/research/p2_outcomes_grid.py) — line [144](gcp/research/p2_outcomes_grid.py#L144), [149](gcp/research/p2_outcomes_grid.py#L149)
@@ -777,7 +777,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [342](gcp/discord_interactions/main.py#L342), [345](gcp/discord_interactions/main.py#L345)
-- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [7](gcp/premarket_brief.py#L7), [3297](gcp/premarket_brief.py#L3297), [3342](gcp/premarket_brief.py#L3342)
+- [`gcp/premarket_brief.py`](gcp/premarket_brief.py) — line [7](gcp/premarket_brief.py#L7), [3319](gcp/premarket_brief.py#L3319), [3364](gcp/premarket_brief.py#L3364)
 - [`gcp/premarket_playbook_resolver.py`](gcp/premarket_playbook_resolver.py) — line [320](gcp/premarket_playbook_resolver.py#L320), [326](gcp/premarket_playbook_resolver.py#L326), [503](gcp/premarket_playbook_resolver.py#L503), [586](gcp/premarket_playbook_resolver.py#L586)
 - [`lib/movement_statement.py`](lib/movement_statement.py) — line [21](lib/movement_statement.py#L21), [218](lib/movement_statement.py#L218), [244](lib/movement_statement.py#L244)
 - [`lib/strategies/brief_bias.py`](lib/strategies/brief_bias.py) — line [83](lib/strategies/brief_bias.py#L83), [156](lib/strategies/brief_bias.py#L156)
