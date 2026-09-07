@@ -179,6 +179,7 @@ _load_tags() {
             if [[ "${err}" == *NOT_FOUND* || "${err}" == *"not found"* ]]; then
                 _TAG_CACHE[${repo_image}]=""
             else
+                rm -f "${errf}"
                 echo "  ERROR: cannot list tags on ${repo_image}: ${err%%$'\n'*}" >&2
                 return 1
             fi
