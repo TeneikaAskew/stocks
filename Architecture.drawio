@@ -218,22 +218,25 @@
                     <mxGeometry x="1000" y="725" width="160" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_group" value="⑦ Cloud Run Services (always-on)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
-                    <mxGeometry x="1200" y="640" width="1160" height="130" as="geometry"/>
+                    <mxGeometry x="1200" y="640" width="1420" height="130" as="geometry"/>
                 </mxCell>
-                <mxCell id="svc_tp" value="trading-platform&#xa;FastAPI + React (mounts 13 routers:&#xa;insights, live, options, playbook,&#xa;backtest, signals, journal, dashboard,&#xa;catalysts, admin, analytics, config, health)&#xa;▸ API domain: api.stocks.insightscollective.org → solyra-api-staging (managed TLS)&#xa;▸ stocks.insightscollective.org = Firebase auth-email domain / reserved for the SPA (since 2026-09-06)&#xa;▸ deploy: staging revision → promote workflow&#xa;▸ --no-cpu-throttling (PR #507) for BackgroundTasks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
+                <mxCell id="svc_tp" value="trading-platform&#xa;FastAPI + React (mounts 13 routers:&#xa;insights, live, options, playbook,&#xa;backtest, signals, journal, dashboard,&#xa;catalysts, admin, analytics, config, health)&#xa;▸ no custom domain (generated run.app URL only; stocks.* hostname left this service 2026-09-05)&#xa;▸ deploy: staging revision → promote workflow&#xa;▸ --no-cpu-throttling (PR #507) for BackgroundTasks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1220" y="675" width="240" height="105" as="geometry"/>
                 </mxCell>
-                <mxCell id="svc_di" value="discord-interactions&#xa;Discord slash-cmd HTTP endpoint&#xa;(verifies via discord-public-key)&#xa;invokes Run Jobs via Run API&#xa;★ /replay-signals (PR #510) routes signal-replay Job" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
-                    <mxGeometry x="1480" y="675" width="240" height="95" as="geometry"/>
+                <mxCell id="svc_solyra" value="solyra-api-staging / solyra-api-prod&#xa;Solyra API (FastAPI; serves the Solyra SPA,&#xa;which is hosted off Cloud Run)&#xa;▸ api.stocks.insightscollective.org → solyra-api-staging (managed TLS, since 2026-09-06)&#xa;▸ stocks.insightscollective.org = Firebase auth-email domain / reserved for the SPA&#xa;▸ staging AUTH_MODE=firebase · prod behind IAP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="1480" y="675" width="240" height="105" as="geometry"/>
                 </mxCell>
-                <mxCell id="svc_fn" value="failure-notifier&#xa;Pub/Sub-driven&#xa;creates labeled GitHub issues&#xa;(github-pat + github-repo secrets)&#xa;★ close-on-success reconciler (PR #493)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
+                <mxCell id="svc_di" value="discord-interactions&#xa;Discord slash-cmd HTTP endpoint&#xa;(verifies via discord-public-key)&#xa;invokes Run Jobs via Run API&#xa;★ /replay-signals (PR #510) routes signal-replay Job" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1740" y="675" width="240" height="95" as="geometry"/>
                 </mxCell>
+                <mxCell id="svc_fn" value="failure-notifier&#xa;Pub/Sub-driven&#xa;creates labeled GitHub issues&#xa;(github-pat + github-repo secrets)&#xa;★ close-on-success reconciler (PR #493)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="2000" y="675" width="240" height="95" as="geometry"/>
+                </mxCell>
                 <mxCell id="svc_sm_orphan" value="✓ signal-monitor (Service)&#xa;DELETED 2026-05-15&#xa;(Job of same name remains active)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#388e3c;fontSize=10;fontStyle=2;" parent="1" vertex="1">
-                    <mxGeometry x="2000" y="675" width="220" height="80" as="geometry"/>
+                    <mxGeometry x="2260" y="675" width="220" height="80" as="geometry"/>
                 </mxCell>
                 <mxCell id="svc_runner" value="trading-runner SA&#xa;runtime identity for all Jobs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" parent="1" vertex="1">
-                    <mxGeometry x="2240" y="685" width="100" height="60" as="geometry"/>
+                    <mxGeometry x="2500" y="685" width="100" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="data_group" value="⑧ GCP Data Plane — single source of truth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="40" y="800" width="1140" height="200" as="geometry"/>
@@ -445,7 +448,13 @@
                 <mxCell id="e_browser_tp" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" parent="1" source="ext_browser" target="svc_tp" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
+                <mxCell id="e_browser_tp_solyra" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" parent="1" source="ext_browser" target="svc_solyra" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
                 <mxCell id="e_tp_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#0e8088;strokeWidth=2;" parent="1" source="svc_tp" target="sql_box" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_tp_sql_solyra" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#0e8088;strokeWidth=2;" parent="1" source="svc_solyra" target="sql_box" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_tp_ct" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;strokeWidth=2;" parent="1" source="svc_tp" target="ct_box" edge="1">
@@ -476,6 +485,9 @@
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_lib_tp" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" parent="1" source="lib_group" target="svc_tp" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_lib_tp_solyra" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" parent="1" source="lib_group" target="svc_solyra" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_lib_fetch" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" parent="1" source="lib_group" target="fetch_group" edge="1">

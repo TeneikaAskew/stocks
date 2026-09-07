@@ -526,13 +526,19 @@
           <mxGeometry x="622" y="866" width="548" height="140" as="geometry" />
         </mxCell>
         <mxCell id="g_svc" value="Cloud Run Services" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#e9eefb;strokeColor=#5c7cc4;dashed=0;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#1f2933;spacingTop=6;spacingLeft=10;" parent="1" vertex="1">
-          <mxGeometry x="1210" y="830" width="1150" height="190" as="geometry" />
+          <mxGeometry x="1210" y="830" width="1150" height="320" as="geometry" />
         </mxCell>
         <mxCell id="ic_tp" value="trading-platform" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontStyle=1;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
           <mxGeometry x="1240" y="872" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="tp_txt" value="FastAPI (13 routers) + React SPA&#10;api.stocks.insightscollective.org → solyra-api-staging&#10;(stocks.* = Firebase mail domain / future SPA)&#10;IAP-gated · managed TLS · --no-cpu-throttling (PR #507) · min-instances=1" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
+        <mxCell id="tp_txt" value="FastAPI (13 routers) + React SPA&#10;no custom domain: generated run.app URL only&#10;(stocks.* hostname left this service 2026-09-05)&#10;IAP-gated · managed TLS · --no-cpu-throttling (PR #507) · min-instances=1" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
           <mxGeometry x="1300" y="866" width="380" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="ic_solyra" value="solyra-api-staging / -prod" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontStyle=1;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
+          <mxGeometry x="1240" y="1012" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="solyra_txt" value="Solyra API (FastAPI) for the Solyra SPA (hosted off Cloud Run)&#10;api.stocks.insightscollective.org → solyra-api-staging (managed TLS, 2026-09-06)&#10;stocks.insightscollective.org = Firebase auth-email domain / reserved for the SPA&#10;staging AUTH_MODE=firebase · prod behind IAP" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
+          <mxGeometry x="1300" y="1006" width="380" height="100" as="geometry" />
         </mxCell>
         <mxCell id="ic_di" value="discord-interactions" style="sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;fillColor=#4285F4;verticalLabelPosition=bottom;verticalAlign=top;labelPosition=center;align=center;fontSize=10;fontColor=#1f2933;shape=mxgraph.gcp2.cloud_run;" parent="1" vertex="1">
           <mxGeometry x="1700" y="872" width="48" height="48" as="geometry" />
