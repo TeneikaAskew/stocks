@@ -155,6 +155,33 @@ def _journal_owner(request: Request) -> str:
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
+def _reject_unrepresentable_price(value):
+    """Reject a price the 4dp dedupe key cannot represent, at the boundary.
+
+    `allow_inf_nan=False` stops `inf`, but a FINITE `1e24` passes it and still
+    cannot be quantized to four places -- so `_round_half_up_4dp` raised,
+    `_dedupe_key` caught it, and the row got `price_norm = None`. Two rows at
+    `1e24` and `2e24` in the same ticker/direction/minute then shared one
+    dedupe key: preview called the second a duplicate and commit skipped it,
+    while the Postgres index -- which stores the real numerics -- would have
+    kept both. Sequential and concurrent commits disagreed about the same two
+    rows (Codex, PR #991).
+
+    Collapsing distinct values into one key is the duplicate-detection
+    equivalent of a silent fallback: the second trade vanishes and the client
+    is told it was a duplicate. The answer is 422, naming the field.
+
+    Deliberately NOT a magic bound like `1e20`. The limit is whatever
+    `_round_half_up_4dp` can actually represent, so validation calls that
+    function and the two can never disagree -- which is the failure this
+    replaces, one level up.
+    """
+    if value is None:
+        return value
+    _round_half_up_4dp(float(value))   # raises ValueError -> 422
+    return value
+
+
 class JournalTradeCreate(BaseModel):
     # A price of inf/-inf/NaN is not a trade. Pydantic accepts JSON `1e309`
     # as `inf` by default, which then reached `_dedupe_key` and crashed the
@@ -176,6 +203,9 @@ class JournalTradeCreate(BaseModel):
     exit_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profits: Optional[list[float]] = None   # up to 3 levels -> tp1..tp3
+
+    _check_prices = field_validator(
+        "entry_price", "exit_price", "stop_loss")(_reject_unrepresentable_price)
     # Derived if omitted. Constrained to the values `_derive_status` actually
     # produces (plus the "closed"-but-flat-return legacy value) so a typo'd
     # override can't persist a junk status the rest of the app can't render.
@@ -247,6 +277,11 @@ class ImportCommitTrade(BaseModel):
     return_pct: Optional[float] = None   # ADVISORY ONLY — ignored at commit, see docstring
     quantity: int = 1
     status: str = "active"               # "active" | "closed" — advisory, re-derived below
+
+    # `entry_price` is half the dedupe key, so a value the key cannot
+    # represent has to be rejected here rather than collapsed into it.
+    _check_prices = field_validator(
+        "entry_price", "exit_price")(_reject_unrepresentable_price)
 
 
 class ImportCommitRequest(BaseModel):
@@ -733,6 +768,15 @@ def _dedupe_key(ticker, direction, entry_ts, entry_price) -> tuple:
     try:
         price_norm = _round_half_up_4dp(float(entry_price))
     except (TypeError, ValueError):
+        # `None` here means "no comparable price", and two rows that both land
+        # on it compare equal. That is correct only for a MISSING price. An
+        # unquantizable one is a different thing -- two distinct values
+        # collapsing into one key -- and it is rejected at the request
+        # boundary now (`_reject_unrepresentable_price`) rather than being
+        # allowed to reach this line. What still arrives here is a price read
+        # back from storage, where any row that predates that boundary can
+        # only collide with another equally unusable row, never suppress a
+        # valid one.
         price_norm = None
     return (str(ticker).strip().upper(), str(direction).strip().upper(), ts_norm, price_norm)
 

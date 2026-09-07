@@ -65,6 +65,7 @@ from api import gcs_reader  # noqa: E402
 # router only loads data and shapes the HTTP contract; all scoring/benchmark
 # math lives in lib/backtest.py (CLAUDE.md: "lib/ is the shared backend spine").
 from lib.backtest import replay_labeled_trades  # noqa: E402
+from lib.single_flight import SingleFlight  # noqa: E402
 
 # Task 4.2/4.3 — style mining + labeled walk-forward. Same "lib/ is the
 # shared backend spine" rule: the router only loads data, filters to closed
@@ -115,6 +116,18 @@ def _equity_pattern(ticker_upper: str, run: str | None = None) -> str:
 _RESULTS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))   # 1h
 _EQUITY_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=32, ttl=3600))    # 1h
 _ALL_RUNS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=600))   # 10m
+# Coalesces cold misses on /api/backtest/all/{ticker}. Filling that cache
+# LISTs the bucket twice and then downloads and parses EVERY historical
+# backtest CSV for the ticker, so a page-load burst multiplied GCS traffic,
+# pandas memory and worker occupancy by the number of callers once the handler
+# moved to the threadpool — the `async def` with no `await` had serialised them
+# for free, and nobody had written that guarantee down (Codex, PR #991).
+_ALL_RUNS_FLIGHT = SingleFlight()
+# The claimant does bucket LISTs plus one download and parse per historical
+# run, so it is measured in seconds rather than milliseconds; a decliner that
+# waits much longer than this is holding a worker for an outcome it is
+# unlikely to reach, and it has a 404-or-serve answer either way.
+_ALL_RUNS_WAIT_S = 5.0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -314,6 +327,34 @@ def list_all_backtests(ticker: str):
     if cached is not MISS:
         return cached
 
+    with _ALL_RUNS_FLIGHT.claim(ticker_upper) as mine:
+        if not mine:
+            # A decliner waits for the claimant and re-reads. It never does
+            # the work itself, even on timeout: the whole cost here is the
+            # duplicated LIST-download-parse, so running it after a wait is
+            # strictly worse than either half alone.
+            _ALL_RUNS_FLIGHT.wait(ticker_upper, _ALL_RUNS_WAIT_S)
+            cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+            if cached is not MISS:
+                return cached
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Backtest runs for {ticker_upper} are being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        # Re-read inside the claim: winning the claim does not mean being
+        # first, and a request descheduled between the miss above and the
+        # claim can take it moments after the previous claimant stored the
+        # answer.
+        cached = _ALL_RUNS_CACHE.get(ticker_upper, MISS)
+        if cached is not MISS:
+            return cached
+        return _list_all_backtests_uncached(ticker_upper)
+
+
+def _list_all_backtests_uncached(ticker_upper: str):
+    """The GCS read behind `list_all_backtests`, run by the flight claimant only."""
     backtest_blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper))
     if not backtest_blobs:
         raise HTTPException(

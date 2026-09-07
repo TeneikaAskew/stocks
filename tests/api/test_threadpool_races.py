@@ -1127,3 +1127,249 @@ def test_the_catalyst_wait_is_bounded():
     assert 0 < mod._CATALYST_WAIT_S <= 30, (
         f"_CATALYST_WAIT_S={mod._CATALYST_WAIT_S} either does not bound the "
         f"wait or holds a FastAPI worker far longer than a Benzinga round trip")
+
+
+# ── Decliners never do the work anyway ──────────────────────────────────────
+#
+# Three handlers took the same wrong trade and each was corrected separately:
+# wait for the claimant, and on timeout do the expensive thing regardless. A
+# decliner reaches its timeout precisely when the resource is contended, so
+# that costs a held worker AND a duplicate copy of the work at the worst
+# possible moment (Codex, PR #991). The tests below pin the corrected policy
+# per handler, because "the decliner does not do the work" is a property each
+# call site has to hold on its own.
+
+
+def _claim_held(flight, key):
+    """Enter a claim on `key` and keep it, so the next caller is a decliner.
+
+    Deterministic where a second thread would be a race: the handler under
+    test finds the key in flight because this context manager is still open,
+    not because two threads happened to interleave.
+    """
+    return flight.claim(key)
+
+
+def test_a_market_dates_decliner_serves_stale_rather_than_rescanning():
+    """The scan is a 1,716 ms parallel seq scan holding a pooled connection.
+
+    A decliner that runs it after a timed-out wait fills the 5+2 connection
+    pool with duplicate copies of it under exactly the contention that made
+    the claimant slow (Codex, PR #991). A stale date list is a real answer —
+    the list only grows — so it is served, labelled in `source` so a slow
+    refresh cannot pass for a live read.
+    """
+    import api.main as m
+    from datetime import datetime, timedelta, timezone as _tz
+
+    ticker = "STALEDT"
+    stale_payload = {"ticker": ticker, "source": "cloud_sql",
+                     "dates": ["20260901"], "months": ["202609"]}
+    m._MARKET_DATES_CACHE[ticker] = (
+        "old-ts", datetime.now(_tz.utc) - timedelta(hours=99), stale_payload)
+    scans = []
+    orig = m._dates_query
+
+    def counting_query(sql, params=None):
+        scans.append(sql)
+        return orig(sql, params)
+
+    m._dates_query = counting_query
+    try:
+        with _claim_held(m._MARKET_DATES_FLIGHT, ticker):
+            out = m.get_available_dates(ticker)
+    finally:
+        m._dates_query = orig
+        m._MARKET_DATES_CACHE.pop(ticker, None)
+
+    assert out["dates"] == ["20260901"], out
+    assert "stale" in out["source"], (
+        f"a stale list served as a live read: source={out['source']!r}")
+    assert not any("DISTINCT DATE(ts)" in s for s in scans), (
+        f"the decliner ran the full scan anyway: {scans}")
+
+
+def test_a_market_dates_decliner_with_no_cache_gets_503_not_a_second_scan():
+    """With nothing cached there is no answer to give.
+
+    An empty `dates` list would read as "this ticker has no bars", which is
+    the fabricated result the 503s elsewhere in this handler exist to avoid.
+    """
+    import api.main as m
+    from fastapi import HTTPException
+
+    ticker = "NOCACHE"
+    m._MARKET_DATES_CACHE.pop(ticker, None)
+    scans = []
+    orig = m._dates_query
+
+    def counting_query(sql, params=None):
+        scans.append(sql)
+        return orig(sql, params)
+
+    m._dates_query = counting_query
+    try:
+        with _claim_held(m._MARKET_DATES_FLIGHT, ticker):
+            with pytest.raises(HTTPException) as exc:
+                m.get_available_dates(ticker)
+    finally:
+        m._dates_query = orig
+
+    assert exc.value.status_code == 503, exc.value.status_code
+    assert not any("DISTINCT DATE(ts)" in s for s in scans), (
+        f"the decliner ran the full scan anyway: {scans}")
+    # Raising is the point: returning a payload here would mean an empty
+    # `dates` list, which reads as "this ticker has no bars".
+    assert (exc.value.headers or {}).get("Retry-After"), (
+        "a 503 that does not say when to retry gives the caller nothing to "
+        f"act on: headers={exc.value.headers!r}")
+
+
+def test_a_backtest_decliner_never_re_lists_and_re_downloads():
+    """Filling this cache LISTs the bucket twice and downloads and parses
+    every historical run for the ticker, so a duplicate is expensive in GCS
+    calls, pandas memory and worker occupancy alike (Codex, PR #991)."""
+    from api.routers import backtest as bt
+    from fastapi import HTTPException
+
+    ticker = "FLIGHTBT"
+    bt._ALL_RUNS_CACHE.pop(ticker, None)
+    calls = []
+    orig = bt.gcs_reader.list_matching_blobs
+    bt.gcs_reader.list_matching_blobs = lambda *a, **k: calls.append(a) or []
+    try:
+        with _claim_held(bt._ALL_RUNS_FLIGHT, ticker):
+            with pytest.raises(HTTPException) as exc:
+                bt.list_all_backtests(ticker)
+    finally:
+        bt.gcs_reader.list_matching_blobs = orig
+
+    assert exc.value.status_code == 503, exc.value.status_code
+    assert calls == [], f"the decliner listed the bucket anyway: {calls}"
+
+
+def test_a_backtest_decliner_serves_the_cache_the_claimant_filled():
+    """The wait exists to turn a duplicate read into a hit; when the claimant
+    has already stored the answer, the decliner must return it."""
+    from api.routers import backtest as bt
+
+    ticker = "FILLEDBT"
+    filled = {"ticker": ticker, "total_runs": 0, "runs": []}
+    bt._ALL_RUNS_CACHE[ticker] = filled
+    calls = []
+    orig = bt.gcs_reader.list_matching_blobs
+    bt.gcs_reader.list_matching_blobs = lambda *a, **k: calls.append(a) or []
+    try:
+        with _claim_held(bt._ALL_RUNS_FLIGHT, ticker):
+            out = bt.list_all_backtests(ticker)
+    finally:
+        bt.gcs_reader.list_matching_blobs = orig
+        bt._ALL_RUNS_CACHE.pop(ticker, None)
+
+    assert out == filled
+    assert calls == []
+
+
+def test_every_bounded_wait_is_actually_bounded():
+    """A wait that is not bounded hands a worker over indefinitely, which is
+    the failure mode `claim`-and-decline exists to avoid."""
+    import api.main as m
+    from api.routers import backtest as bt
+    from api.routers import catalysts as cat
+
+    for mod, name in ((m, "_MARKET_DATES_WAIT_S"),
+                      (bt, "_ALL_RUNS_WAIT_S"),
+                      (cat, "_CATALYST_WAIT_S")):
+        value = getattr(mod, name)
+        assert isinstance(value, (int, float)) and 0 < value <= 30, (
+            f"{name}={value!r} either does not bound the wait or holds a "
+            f"FastAPI worker far longer than the work it waits on")
+
+
+# ── The options-dates cache carries the version it was read at ──────────────
+
+def test_a_late_dates_write_cannot_publish_under_a_newer_probe():
+    """A slow request must not leave a stale list that later reads accept.
+
+    Request A probes date D1, runs its query and is descheduled; B probes D2
+    and stores the post-ingestion list; A resumes and writes its
+    pre-ingestion list. With the version in a map beside the cache, that
+    marker still read D2, so every later probe compared equal and served A's
+    stale list for the full 12h TTL (Codex, PR #991).
+
+    Driven through the handler, because the defect is in what the handler
+    accepts from the cache — asserting the tuple shape directly would pass
+    against the bug.
+    """
+    import pandas as pd
+    from unittest.mock import patch
+    from api.routers import options as opt
+
+    ticker, limit = "IWM", 5
+    stale = ["2026-09-04", "2026-09-03"]
+    # The state a late write leaves behind: A's pre-ingestion list, at the
+    # date A probed.
+    opt._DATES_CACHE[(ticker, limit)] = ("2026-09-04", stale)
+
+    probe = pd.DataFrame({"snapshot_date": ["2026-09-07"]})          # D2
+    walked = pd.DataFrame({"snapshot_date": ["2026-09-07", "2026-09-04"]})
+    calls = []
+
+    def fake_query(sql, params=None):
+        calls.append(sql)
+        return probe if "LIMIT  1" in sql else walked
+
+    try:
+        with patch.object(opt, "query_to_dataframe_strict", fake_query), \
+             patch.object(opt, "_require_cloud_sql", lambda: None):
+            out = opt.get_options_dates(ticker, limit=limit)
+    finally:
+        opt._DATES_CACHE.pop((ticker, limit), None)
+
+    assert out["dates"] == ["2026-09-07", "2026-09-04"], (
+        f"a pre-ingestion list was served as current: {out}")
+    assert out.get("cached") is False, out
+    assert len(calls) == 2, (
+        f"the stale entry was served from cache rather than re-read: {calls}")
+
+
+def test_the_dates_cache_has_no_second_map_to_disagree_with():
+    """The version lives in the entry. A parallel map is what let a payload
+    and its version drift apart, so its absence is the fix."""
+    from api.routers import options as opt
+    assert not hasattr(opt, "_DATES_CACHE_LATEST"), (
+        "a separate latest-date map is back; the version belongs in the entry")
+
+
+# ── Prices the dedupe key cannot represent ──────────────────────────────────
+
+def test_two_unquantizable_prices_do_not_become_one_duplicate():
+    """`1e24` is finite, passes `allow_inf_nan=False`, and still cannot be
+    quantized to 4dp — so both it and `2e24` used to get `price_norm = None`
+    and share a dedupe key. Preview then called the second a duplicate and
+    commit skipped it, while the Postgres index would have kept both
+    (Codex, PR #991)."""
+    from pydantic import ValidationError
+    from api.routers.journal import ImportCommitTrade, JournalTradeCreate
+
+    for price in (1e24, 2e24):
+        with pytest.raises(ValidationError) as exc:
+            ImportCommitTrade(ticker="IWM", direction="CALL",
+                              entry_ts="2026-09-07 10:00", entry_price=price)
+        assert exc.value.errors()[0]["loc"] == ("entry_price",), exc.value.errors()
+        with pytest.raises(ValidationError):
+            JournalTradeCreate(ticker="IWM", direction="CALL",
+                               entry_date="2026-09-07", entry_time="10:00",
+                               entry_price=price)
+
+    # A price that IS representable still round-trips, ties included — the
+    # property the helper exists for, undisturbed by the new boundary.
+    ok = JournalTradeCreate(ticker="IWM", direction="CALL",
+                            entry_date="2026-09-07", entry_time="10:00",
+                            entry_price=1.03125)
+    assert ok.entry_price == 1.03125
+    # And the optional price fields are checked too, not just the keyed one.
+    with pytest.raises(ValidationError):
+        JournalTradeCreate(ticker="IWM", direction="CALL",
+                           entry_date="2026-09-07", entry_time="10:00",
+                           entry_price=1.0, exit_price=1e24)

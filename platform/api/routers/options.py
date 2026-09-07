@@ -86,16 +86,18 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # (ticker, date_str) → response dict; 12h TTL (EOD rows are immutable).
 _CHAIN_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=512, ttl=43200))
-# ticker → list[date_str]; 12h TTL. Dates list only changes once per day when
-# the scheduled AV fetcher runs, so long TTL avoids re-running the distinct
-# scan on cold caches. The composite (ticker, data_source, snapshot_date)
-# index DOES exist as idx_etf_options_ticker_source_date — an older comment
-# here claimed otherwise.
+# (ticker, limit) → (probed snapshot_date, list[date_str]); 12h TTL. The dates
+# list only changes once per day when the scheduled AV fetcher runs, so a long
+# TTL avoids re-running the walk on cold caches. The composite
+# (ticker, data_source, snapshot_date) index DOES exist as
+# idx_etf_options_ticker_source_date — an older comment here claimed otherwise.
+#
+# The date is stored IN the entry. A separate ticker → latest-date map used to
+# drive a ticker-wide sweep, and it let a slow writer publish a stale list
+# under a fresh marker; see the read in `get_options_dates`. Freshness is still
+# ticker-wide in effect — every variant probes the same date and rejects itself
+# when it moves — but no entry can now disagree with its own version.
 _DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
-# ticker -> newest snapshot_date last observed. Drives ticker-wide
-# invalidation so every `limit` variant is dropped together; without it the
-# variants are independent keys that can hold different "latest" dates.
-_DATES_CACHE_LATEST: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
@@ -329,22 +331,34 @@ def get_options_dates(
     if not probe.empty:
         latest_date = probe["snapshot_date"].iloc[0]
 
-    # `pop(key, None)`, not `del`. This check-then-delete is three separate
-    # locked operations, so under threadpool dispatch two requests can both
-    # observe the same moved date and both try to drop the same keys — and
-    # `del` on a key the other thread already removed raises KeyError out of a
-    # handler that was only invalidating a cache. Dropping an entry twice is
-    # harmless; raising is not.
-    if _DATES_CACHE_LATEST.get(ticker_upper) != latest_date:
-        for key in [k for k in _DATES_CACHE if k[0] == ticker_upper]:
-            _DATES_CACHE.pop(key, None)
-        _DATES_CACHE_LATEST[ticker_upper] = latest_date
-
+    # The probed date is stored WITH the payload, not in a second map beside
+    # it. Keeping the version separately let a slow request publish a stale
+    # list under a fresh marker: request A probes date D1, runs its query, and
+    # is descheduled; request B probes D2, sweeps the cache, and stores the
+    # post-ingestion list; A resumes and overwrites that entry with its
+    # pre-ingestion list while the marker still reads D2, so every later probe
+    # compares equal and the stale list is served for the full 12h TTL
+    # (Codex, PR #991). This became reachable when the handler moved to the
+    # threadpool.
+    #
+    # Versioning the payload makes that unrepresentable rather than unlikely:
+    # a write carries the date its own query saw, and a read compares against
+    # it, so a late write can only publish an entry that the next read
+    # rejects. It also removes the sweep and the second map entirely — each
+    # key now invalidates itself on read — which is the shape
+    # /api/market/dates already uses.
     cache_key = (ticker_upper, limit)
     cached = _DATES_CACHE.get(cache_key)
     if cached is not None:
-        return {"ticker": ticker_upper, "dates": cached,
-                "source": "cloud_sql", "cached": True}
+        cached_date, cached_dates = cached
+        if cached_date == latest_date:
+            return {"ticker": ticker_upper, "dates": cached_dates,
+                    "source": "cloud_sql", "cached": True}
+        # `pop(key, None)`, not `del`. Under threadpool dispatch two requests
+        # can both observe the same moved date and both drop this key, and
+        # `del` on a key the other thread already removed raises KeyError out
+        # of a handler that was only invalidating a cache.
+        _DATES_CACHE.pop(cache_key, None)
 
     sql = None
     if limit != 1:
@@ -408,7 +422,7 @@ def get_options_dates(
             ),
         )
 
-    _DATES_CACHE[cache_key] = dates
+    _DATES_CACHE[cache_key] = (latest_date, dates)
     return {
         "ticker": ticker_upper,
         "dates": dates,

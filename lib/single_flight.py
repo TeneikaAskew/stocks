@@ -25,11 +25,20 @@ decision that belongs to the caller, because the honest answer differs:
                               a monitoring surface tolerates staleness better
                               than it tolerates a starved worker pool
     market dates           -> `wait()` a bounded moment, then re-read; the
-                              claimant usually finishes first, and the fallback
-                              is doing the work rather than failing
+                              claimant usually finishes first, so the wait
+                              usually turns a duplicate scan into a hit
 
 `wait()` exists for that last shape and is deliberately bounded: it caps how
 long a worker may be held rather than removing the bound entirely.
+
+What a timed-out waiter must NOT do is the work anyway. An earlier draft of
+this file offered that as the market-dates fallback and every caller that took
+it was corrected in review: a decliner reaches its timeout precisely when the
+resource is contended, so doing the work then holds a worker for the full wait
+AND adds a duplicate copy of the expensive operation at the worst moment
+(Codex, PR #991, three times over — catalysts, market dates, backtests). The
+fallback after a timeout is an honest answer: a stale value labelled as stale,
+or a 503. Never a second copy of the work.
 
 **Winning a claim is not the same as being first.** Every caller checks its
 cache before claiming, so a request descheduled between those two steps can

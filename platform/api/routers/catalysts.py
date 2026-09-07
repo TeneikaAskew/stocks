@@ -270,6 +270,15 @@ def get_catalyst_events(
     # still in flight reports a source this response does not carry, which is
     # the fabricated-provenance shape Rule 3.7 forbids -- and the operator
     # reading it would have no way to tell a quiet day from a slow vendor.
+    # AUDIT-2026-09-07: silent fallback — reachable when BENZINGA_API_KEY is
+    # unset or the vendor returns nothing: `_fetch_live_events` returns None,
+    # the response still names Benzinga as a source, and an operator cannot
+    # tell "no catalysts today" from "not configured". Pre-existing and NOT
+    # fixed here: naming a source honestly in that case means counting what
+    # each source contributed, which changes the `source` string for every
+    # response and belongs in its own change (CLAUDE.md Rule 3.7, "when you
+    # find an existing fallback"). The in-flight case below is this PR's own
+    # and is fixed.
     sources = ["Benzinga (fetch in flight)"] if benzinga_pending else ["Benzinga"]
     if db_events:
         sources.append(f"DB (news + sec, {len(db_events)})")

@@ -646,9 +646,22 @@ def get_available_dates(ticker: str):
     # `wait`, not claim-and-decline: a decliner here has no honest answer of
     # its own to return, only the one the claimant is about to produce. So it
     # waits a BOUNDED moment and re-reads the cache — the claimant normally
-    # finishes first, turning a duplicate scan into a hit — and does the work
-    # itself if the wait times out. That caps how long a worker can be held
-    # rather than handing it over indefinitely, which a plain lock would do.
+    # finishes first, turning a duplicate scan into a hit.
+    #
+    # A decliner NEVER runs the scan, not even after the wait times out. It
+    # used to fall through and run it, which is worse than either half alone:
+    # under the database contention that makes the claimant slow, every
+    # decliner holds a worker for the full wait AND then starts its own copy
+    # of a 1,716 ms scan, filling the 5+2 connection pool with duplicate work
+    # at exactly the moment the pool is the scarce thing (Codex, PR #991).
+    # That is the same trade — counting what the waiter gains and ignoring
+    # what it costs — that was overturned twice on the catalyst path in this
+    # PR, and this is the third instance of it.
+    #
+    # What a decliner returns instead, in order: a fresh entry; a STALE entry,
+    # labelled in `source` so a slow refresh is not served as a live read; and
+    # if there is nothing cached at all, a 503, because the honest answer is
+    # that the list is not available yet rather than a fabricated empty one.
     #
     # The freshness probe stays OUTSIDE: it is one index descent, it is what
     # produces `latest_ts` for the check below, and serialising it would make
@@ -672,12 +685,33 @@ def get_available_dates(ticker: str):
             within_ttl = datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL
             if fresh and within_ttl:
                 return payload
+            if not mine:
+                # Stale, and someone else is already refreshing it. The date
+                # list only grows, so a stale copy is a real answer missing at
+                # most the newest session — far better than a duplicate scan.
+                # `source` is a free-form string in the response contract, so
+                # saying which it is costs no schema change (Rule 6), and NOT
+                # saying it would make a slow refresh indistinguishable from a
+                # live read (Rule 3.7).
+                return {**payload,
+                        "source": f"{payload['source']} (stale, refresh in flight)"}
             # `pop`, not `del`. The claim above does not give exclusive access:
-            # a decliner whose wait times out proceeds and runs alongside the
-            # claimant on this same ticker, and `del` on a key the other one
+            # a request that entered before this claimant took the flight can
+            # still be inside this block, and `del` on a key the other one
             # already dropped raises KeyError out of a handler that was only
             # invalidating a stale entry.
             _MARKET_DATES_CACHE.pop(ticker_upper, None)
+        elif not mine:
+            # Nothing cached and the claimant has not finished. There is no
+            # answer to give, and an empty `dates` list would read as "this
+            # ticker has no bars" — a fabricated result, which is exactly what
+            # the 503s further down this handler exist to avoid.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Trading dates for {ticker_upper} are being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "2"},
+            )
 
         # ── Cloud SQL primary ────────────────────────────────────────────────────
         if _CLOUD_SQL:
