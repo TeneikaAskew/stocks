@@ -118,10 +118,15 @@ if [ ! -s "$WORK/failed_steps.log" ]; then
   exit 1
 fi
 
-SECTION=$(sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' "$WORK/failed_steps.log")
+# Scanned from a FILE, never through a pipe. `printf "$SECTION" | grep -q`
+# under pipefail read a confirmed stall as "not transient" whenever more than
+# a pipe buffer of output followed the record: grep exits on its first match,
+# printf takes SIGPIPE, the pipeline is non-zero, and an `if` condition does
+# not reach the ERR trap. (Codex, PR #1032, round 12.)
+sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' "$WORK/failed_steps.log" > "$WORK/section.log"
 
-if printf '%s\n' "$SECTION" | grep -qE "${RECORD}${TRANSPORT}"; then
-  CAUSE=$(printf '%s\n' "$SECTION" | grep -oE "${RECORD}${TRANSPORT}" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')
+if grep -qE "${RECORD}${TRANSPORT}" "$WORK/section.log"; then
+  CAUSE=$(grep -oE "${RECORD}${TRANSPORT}" "$WORK/section.log" | grep -oE "$TRANSPORT" | sort -u | tr '\n' ' ')
   echo "transient Vertex transport stall: ${CAUSE}"
   exit 0
 fi

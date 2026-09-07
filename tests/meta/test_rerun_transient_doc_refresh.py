@@ -589,3 +589,18 @@ def test_the_annotate_step_fails_on_2_rather_than_leaving_a_pr_quietly(tmp_path)
     assert proc.returncode == 2, (proc.stdout, proc.stderr)
     assert "could not classify" in proc.stdout
     assert comments == "" and closes == ""
+
+
+def test_a_long_section_after_the_record_does_not_become_a_false_negative():
+    """Codex P2, round 12. `printf "$SECTION" | grep -q` under `set -o
+    pipefail`: grep exits on its first match, and if more than a pipe buffer
+    of output is still to be written, printf takes SIGPIPE, the pipeline is
+    non-zero, and the `if` reads a confirmed stall as "not transient". The
+    ERR trap does not fire inside an `if`, so nothing said so. The model can
+    emit as much as it likes after the CLI's fatal line -- and did, in the
+    transcripts this workflow has already seen -- so the trailer here is a
+    megabyte of in-window lines behind run 20's real record."""
+    trailer = "".join(f"2026-09-07T17:06:59.7{i:06d}Z model output line {i} " + "x" * 80 + "\n"
+                      for i in range(12000))
+    assert len(trailer) > 1_000_000
+    assert _classify_rc(REAL_STALL + trailer) == 0
