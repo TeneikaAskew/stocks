@@ -1,15 +1,97 @@
-# Auto-dispatches the apply-schema-migrations Cloud Run Job whenever
-# gcp/schema.sql changes on main. Replaces the GHA workflow
-# .github/workflows/apply-schema-migrations-on-change.yml.
+# Trigger: apply-schema-on-change
+# Fires:   push to main touching gcp/schema.sql
+#
+# Applies THIS revision's gcp/schema.sql, not whatever schema.sql the
+# apply-schema-migrations job's image happened to be built with.
+#
+# The previous config was a single `gcloud run jobs execute` of the already
+# deployed job. That job reads gcp/schema.sql from inside its own image
+# (gcp/apply_schema.py DEFAULT_SCHEMA), and the trading-system image is only
+# built by a manual `./gcp/deploy.sh build`, so the trigger applied a stale
+# schema while the deploy-solyra-api-staging trigger shipped code that read
+# the new columns (Codex on #1022: trades.run_kind filters would have 500'd
+# every /api/analytics/summary request until someone ran the manual step).
+#
+# Same shape as deploy-solyra-api-staging-cloudbuild.yaml: build the image
+# from the triggering source, push an immutable ${SHORT_SHA} tag, resolve it
+# to a digest, move the job to that digest, execute, pin.
+#
+# The build context is the repository checkout; gcp/Dockerfile COPYs
+# requirements-gcp.txt, lib/, gcp/, scripts/ and alert_config.json from the
+# root, the same set gcp/deploy.sh build_image stages (data/ is gitignored,
+# so the 4 GB local directory never reaches Cloud Build).
+#
+# The live trigger holds this config INLINE (gcloud builds triggers describe
+# apply-schema-on-change). After changing this file, re-import it:
+#   gcloud builds triggers update github apply-schema-on-change \
+#     --region=global --inline-config=gcp/cloudbuild/apply-schema-cloudbuild.yaml
+#
+# Residual ordering note: this trigger and deploy-solyra-api-staging fire on
+# the same push and cannot see each other. For a PR that adds a column AND a
+# reader of it, apply the schema from the branch before merging
+# (`./gcp/deploy.sh apply-schema && gcloud run jobs execute
+# apply-schema-migrations --region us-east1 --wait`); every statement in
+# schema.sql is IF NOT EXISTS / OR REPLACE, so the post-merge run is a no-op.
+#
+# Required IAM on the trigger SA (trading-runner@): see README.md in this dir
+# (artifactregistry.writer for the push, run.developer for the job update and
+# execute).
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: gcloud
+    id: preflight
+    entrypoint: bash
     args:
-      - run
-      - jobs
-      - execute
-      - apply-schema-migrations
-      - --region=us-east1
-      - --wait
+      - -c
+      - |
+        set -euo pipefail
+        # SHORT_SHA is populated for trigger-started builds only; refuse to
+        # push a nameless tag if this config is submitted by hand.
+        if [ -z "$SHORT_SHA" ]; then
+          echo "ERROR: SHORT_SHA is empty. This config is for the" >&2
+          echo "       apply-schema-on-change trigger; by hand use" >&2
+          echo "       ./gcp/deploy.sh apply-schema then execute the job." >&2
+          exit 1
+        fi
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    waitFor: [preflight]
+    args: [build, --file, gcp/Dockerfile, --tag, '${_IMAGE}:${SHORT_SHA}', .]
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    waitFor: [build]
+    args: [push, '${_IMAGE}:${SHORT_SHA}']
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: apply
+    waitFor: [push]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        DIGEST=$(gcloud artifacts docker images describe "${_IMAGE}:${SHORT_SHA}" \
+                   --format='value(image_summary.fully_qualified_digest)')
+        if [ -z "$${DIGEST}" ]; then
+          echo "ERROR: could not resolve ${_IMAGE}:${SHORT_SHA} to a digest" >&2
+          exit 1
+        fi
+        echo ">> apply-schema-migrations -> $${DIGEST}"
+        gcloud run jobs update apply-schema-migrations \
+          --image="$${DIGEST}" \
+          --region=us-east1 \
+          --quiet
+        gcloud run jobs execute apply-schema-migrations \
+          --region=us-east1 \
+          --wait
+  # Pin the digest the job now runs so the registry cleanup policy cannot
+  # delete it (same reasoning as the staging trigger; --no-sweep because
+  # trading-runner@ cannot delete tags).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: pin
+    waitFor: [apply]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
+substitutions:
+  _IMAGE: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system
 options:
   logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

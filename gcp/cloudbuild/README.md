@@ -9,6 +9,8 @@ itself (`gcloud builds triggers describe <NAME>`).
 | File | Trigger | GHA workflow replaced |
 |------|---------|----------------------|
 | `apply-schema-cloudbuild.yaml`           | `apply-schema-on-change` (push to main on `gcp/schema.sql`) | `.github/workflows/apply-schema-migrations-on-change.yml` |
+
+`apply-schema-cloudbuild.yaml` builds the trading-system image from the triggering revision, moves `apply-schema-migrations` to that digest and then executes it, so the schema applied is the one in the merged commit (before 2026-09-07 it only re-executed the job on whatever image it was last built with). The live trigger stores the config inline; after editing the file, `gcloud builds triggers update github apply-schema-on-change --region=global --inline-config=gcp/cloudbuild/apply-schema-cloudbuild.yaml`.
 | `deploy-solyra-api-staging-cloudbuild.yaml` | `deploy-solyra-api-staging` (push to main on `platform/`, `lib/`, etc.) | `.github/workflows/deploy-platform-staging.yml` |
 | `deploy-solyra-api-prod-cloudbuild.yaml`  | `deploy-solyra-api-prod` (manual) | `.github/workflows/promote-platform-prod.yml` |
 
