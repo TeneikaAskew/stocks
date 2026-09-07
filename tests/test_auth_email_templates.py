@@ -113,34 +113,81 @@ def test_verify_applied_reports_each_drift():
 
 
 # ── Token acquisition ────────────────────────────────────────────────────────
-def test_get_access_token_prefers_explicit_env():
-    assert aet.get_access_token({"GOOGLE_OAUTH_ACCESS_TOKEN": "x" * 50}) == "x" * 50
-
-
-def test_get_access_token_drops_short_placeholder_before_gcloud():
-    seen = {}
-
+def _gcloud_ok(seen):
     def fake_run(cmd, env, **kw):
         seen["env"] = env
         return subprocess.CompletedProcess(cmd, 0, stdout="ya29." + "a" * 60 + "\n", stderr="")
+    return fake_run
 
-    with patch.object(aet.subprocess, "run", side_effect=fake_run):
-        tok = aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": "placeholder14c", "PATH": "/usr/bin"})
+
+def test_get_access_token_prefers_explicit_env():
+    probe = lambda project, token: pytest.fail("explicit token must not be probed")  # noqa: E731
+    assert aet.get_access_token({"GOOGLE_OAUTH_ACCESS_TOKEN": "x" * 50}, probe=probe) == "x" * 50
+
+
+def test_placeholder_is_dropped_only_after_the_api_calls_it_unsupported():
+    seen = {}
+    probed = []
+
+    def probe(project, token):
+        probed.append(token)
+        return "unsupported"
+
+    with patch.object(aet.subprocess, "run", side_effect=_gcloud_ok(seen)):
+        tok = aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": "placeholder14c", "PATH": "/usr/bin"}, probe=probe)
+    assert probed == ["placeholder14c"]
     assert tok.startswith("ya29.")
     assert "CLOUDSDK_AUTH_ACCESS_TOKEN" not in seen["env"]
 
 
-def test_get_access_token_keeps_real_env_token_for_gcloud():
-    seen = {}
-
-    def fake_run(cmd, env, **kw):
-        seen["env"] = env
-        return subprocess.CompletedProcess(cmd, 0, stdout="ya29." + "b" * 60 + "\n", stderr="")
-
+def test_accepted_env_token_is_used_as_the_callers_identity():
     real = "ya29." + "r" * 80
-    with patch.object(aet.subprocess, "run", side_effect=fake_run):
-        aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": real})
-    assert seen["env"]["CLOUDSDK_AUTH_ACCESS_TOKEN"] == real
+    with patch.object(aet.subprocess, "run", side_effect=lambda *a, **k: pytest.fail("gcloud must not run")):
+        assert aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": real}, probe=lambda p, t: "ok") == real
+        # 403 = valid identity, missing role: keep it so the real call fails loudly.
+        assert aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": real}, probe=lambda p, t: "denied") == real
+
+
+def test_expired_env_token_refuses_to_switch_identity_unless_opted_in():
+    real = "ya29." + "e" * 80
+    with patch.object(aet.subprocess, "run", side_effect=lambda *a, **k: pytest.fail("gcloud must not run")):
+        with pytest.raises(RuntimeError, match="Refusing to silently run as a different principal"):
+            aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": real}, probe=lambda p, t: "unauthenticated")
+
+    seen = {}
+    with patch.object(aet.subprocess, "run", side_effect=_gcloud_ok(seen)):
+        tok = aet.get_access_token(
+            {"CLOUDSDK_AUTH_ACCESS_TOKEN": real, aet.IDENTITY_FALLBACK_ENV: "1"},
+            probe=lambda p, t: "unauthenticated",
+        )
+    assert tok.startswith("ya29.")
+    assert "CLOUDSDK_AUTH_ACCESS_TOKEN" not in seen["env"]
+
+
+def test_long_unsupported_token_is_not_treated_as_a_placeholder():
+    """A 58-char ya29.-shaped value also reports ACCESS_TOKEN_TYPE_UNSUPPORTED
+    (measured in scripts/db_query_cr.sh), so the reason alone never justifies
+    discarding what the caller selected."""
+    real = "ya29." + "u" * 53
+    with pytest.raises(RuntimeError, match="Refusing"):
+        aet.get_access_token({"CLOUDSDK_AUTH_ACCESS_TOKEN": real}, probe=lambda p, t: "unsupported")
+
+
+def test_probe_token_maps_api_answers():
+    class R:
+        def __init__(self, status, text=""):
+            self.status_code, self.text = status, text
+
+    with patch("requests.get", return_value=R(200)):
+        assert aet.probe_token("p", "t") == "ok"
+    with patch("requests.get", return_value=R(401, '{"reason": "ACCESS_TOKEN_TYPE_UNSUPPORTED"}')):
+        assert aet.probe_token("p", "t") == "unsupported"
+    with patch("requests.get", return_value=R(401, "expired")):
+        assert aet.probe_token("p", "t") == "unauthenticated"
+    with patch("requests.get", return_value=R(403)):
+        assert aet.probe_token("p", "t") == "denied"
+    with patch("requests.get", return_value=R(500)):
+        assert aet.probe_token("p", "t") == "other:500"
 
 
 def test_summarize_lists_every_template():
@@ -224,3 +271,56 @@ def test_apply_exits_0_when_every_phase_lands():
          patch.object(aet, "fetch_config", side_effect=lambda p, t: live), \
          patch.object(aet, "apply_config", side_effect=fake_apply):
         assert aet.main(["--apply"]) == 0
+
+
+def test_is_content_problem_separates_locked_fields_from_sender_fields():
+    assert aet.is_content_problem("verifyEmailTemplate.body: not applied (live='x')")
+    assert aet.is_content_problem("resetPasswordTemplate.subject: not applied (live='old')")
+    assert aet.is_content_problem("callbackUri: want 'a', got 'b'")
+    assert not aet.is_content_problem("verifyEmailTemplate.senderDisplayName: not applied (live=None)")
+    assert not aet.is_content_problem("verifyEmailTemplate.replyTo: not applied (live=None)")
+
+
+def test_apply_classifies_a_silently_dropped_body_as_locked(capsys):
+    """Google answers 200 to the content PATCH but does not persist the HTML
+    body: subject and callbackUri land, body drifts. That is the lock, not a
+    generic verification failure — exit 2 with the unlock guidance."""
+    live = {"notification": {"sendEmail": {"callbackUri": "x", **{k: {"body": "stock"} for k in aet.TEMPLATES}}}}
+
+    def fake_apply(project, token, body, mask):
+        for key, tpl in body["notification"]["sendEmail"].items():
+            if key == "callbackUri":
+                live["notification"]["sendEmail"]["callbackUri"] = tpl
+            else:
+                live["notification"]["sendEmail"][key].update({f: v for f, v in tpl.items() if f != "body"})
+        return live
+
+    with patch.object(aet, "get_access_token", return_value="tok"), \
+         patch.object(aet, "fetch_config", side_effect=lambda p, t: live), \
+         patch.object(aet, "apply_config", side_effect=fake_apply):
+        rc = aet.main(["--apply"])
+
+    out = capsys.readouterr()
+    assert rc == 2
+    assert "phase content: accepted by the API but 4 content field(s) were not persisted" in out.out
+    assert "LOCKED on this project" in out.err
+    assert all(".body:" in line for line in out.err.splitlines() if line.startswith("  - "))
+
+
+def test_dry_run_prints_the_phased_requests_apply_would_send(capsys):
+    live = {"notification": {"sendEmail": {
+        "callbackUri": "x",
+        **{k: {"senderLocalPart": "noreply", "replyTo": "help@live.test"} for k in aet.TEMPLATES}}}}
+
+    with patch.object(aet, "get_access_token", return_value="tok"), \
+         patch.object(aet, "fetch_config", side_effect=lambda p, t: live), \
+         patch.object(aet, "apply_config", side_effect=lambda *a, **k: pytest.fail("dry run must not write")):
+        assert aet.main(["--dry-run"]) == 0
+
+    out = capsys.readouterr().out
+    assert "── phase sender ──" in out and "── phase content ──" in out
+    assert "updateMask=notification.sendEmail.verifyEmailTemplate.senderDisplayName" in out
+    assert "notification.sendEmail.callbackUri" in out
+    assert '"replyTo": "help@live.test"' in out  # live value carried over, visible in the preview
+    assert "senderLocalPart" not in out.split("── phase content ──")[0].split("updateMask=")[1].split("\n")[0]
+    assert "nothing was written" in out

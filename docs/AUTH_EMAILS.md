@@ -79,7 +79,8 @@ forgot-password / verification flows work with Google's stock emails.
 # See what is live (sender, subject, body size, callbackUri, DNS state)
 python -m gcp.auth_email_templates --show
 
-# Preview the exact PATCH body (no network)
+# Preview the exact phased PATCH requests --apply would send, built against
+# the live config (reads it, writes nothing)
 python -m gcp.auth_email_templates --dry-run
 
 # Write rendered HTML previews to open in a browser
@@ -100,12 +101,19 @@ Write to ..." line to the footer.
 When the SPA moves to its own domain, re-run with `--app-url https://<host>`
 after adding that host to authorized domains. Nothing else changes.
 
-Auth: the script uses `GOOGLE_OAUTH_ACCESS_TOKEN` if set, else
-`gcloud auth print-access-token`, else Application Default Credentials. In a
-Claude Code Remote session `CLOUDSDK_AUTH_ACCESS_TOKEN` is a 14-character
-placeholder that shadows the real service-account credential; the script
-drops it (same rule as `scripts/db_query_cr.sh`). The caller needs
-`roles/identityplatform.admin` or `roles/editor` on the project.
+Auth: `GOOGLE_OAUTH_ACCESS_TOKEN` if set (used as-is), else
+`CLOUDSDK_AUTH_ACCESS_TOKEN`, else `gcloud auth print-access-token`, else
+Application Default Credentials. `CLOUDSDK_AUTH_ACCESS_TOKEN` gets the same
+treatment as in `scripts/db_query_cr.sh`: the script asks the API whether the
+value is usable (a read-only GET of the config) instead of inspecting it. In
+a Claude Code Remote session that variable is a 14-character placeholder the
+API rejects as `ACCESS_TOKEN_TYPE_UNSUPPORTED`; only that answer combined
+with a sub-40-character value is treated as "never a credential", and the
+script falls through to gcloud's configured service account. Any other
+rejection stops the run rather than silently writing the config as a
+different principal; set `AUTH_EMAIL_ALLOW_IDENTITY_FALLBACK=1` to accept the
+identity switch. The caller needs `roles/identityplatform.admin` or
+`roles/editor` on the project.
 
 Every template is replaced whole: the update mask names the template message,
 so a field omitted from the PATCH is cleared. That is why the script builds

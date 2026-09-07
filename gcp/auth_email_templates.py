@@ -60,6 +60,7 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -289,6 +290,14 @@ def is_template_locked(err: BaseException) -> bool:
     return TEMPLATE_LOCKED in str(err)
 
 
+def is_content_problem(problem: str) -> bool:
+    """True when a verify_applied() line names a field Google refuses/drops on
+    a locked project (subject, body, bodyFormat, callbackUri) rather than a
+    sender field."""
+    field_path = problem.split(":", 1)[0]
+    return field_path == "callbackUri" or field_path.rsplit(".", 1)[-1] in CONTENT_FIELDS
+
+
 def verify_applied(config: dict, patch_body: dict) -> list[str]:
     """Compare a freshly-fetched config against what was sent; return mismatches."""
     want = patch_body["notification"]["sendEmail"]
@@ -327,32 +336,106 @@ def summarize(config: dict) -> str:
 
 
 # ── Google API access (443 only) ─────────────────────────────────────────────
-def get_access_token(env: dict[str, str] | None = None) -> str:
+IDENTITY_FALLBACK_ENV = "AUTH_EMAIL_ALLOW_IDENTITY_FALLBACK"
+
+
+def probe_token(project: str, token: str) -> str:
+    """Ask the API whether `token` is usable for this project (read-only GET).
+
+    Returns one of:
+      "ok"             — accepted (2xx)
+      "unsupported"    — 401 with reason ACCESS_TOKEN_TYPE_UNSUPPORTED: not a
+                         credential at all (the Claude Code Remote placeholder)
+      "unauthenticated"— any other 401: a real credential that expired or was
+                         revoked
+      "denied"         — 403: valid identity, missing role
+      "other:<status>" — anything else
+    Same discipline as scripts/db_query_cr.sh: usability is decided by asking
+    the API, not by inspecting the token.
+    """
+    import requests  # lazy
+
+    resp = requests.get(
+        f"{IDENTITY_API}/projects/{project}/config",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=60,
+    )
+    if resp.status_code < 300:
+        return "ok"
+    if resp.status_code == 401:
+        return "unsupported" if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in resp.text else "unauthenticated"
+    if resp.status_code == 403:
+        return "denied"
+    return f"other:{resp.status_code}"
+
+
+def get_access_token(
+    env: dict[str, str] | None = None,
+    project: str = DEFAULT_PROJECT,
+    probe: Callable[[str, str], str] = probe_token,
+) -> str:
     """An OAuth2 access token for the Identity Toolkit admin API.
 
-    Order: GOOGLE_OAUTH_ACCESS_TOKEN → `gcloud auth print-access-token` →
-    Application Default Credentials. Claude Code Remote sessions export a
-    14-character CLOUDSDK_AUTH_ACCESS_TOKEN placeholder that shadows the
-    working service-account credential in gcloud's own store (same handling
-    as scripts/db_query_cr.sh), so a short value is dropped before gcloud runs.
+    Order: GOOGLE_OAUTH_ACCESS_TOKEN (explicit, used as-is) →
+    CLOUDSDK_AUTH_ACCESS_TOKEN (the caller's chosen identity, kept unless the
+    API proves it was never a credential) → `gcloud auth print-access-token`
+    → Application Default Credentials.
+
+    CLOUDSDK_AUTH_ACCESS_TOKEN handling mirrors scripts/db_query_cr.sh. Claude
+    Code Remote sessions export a short placeholder there; whether it is
+    usable is decided by asking the API, not by looking at it:
+
+      * accepted → use it. It is the identity the caller selected.
+      * ACCESS_TOKEN_TYPE_UNSUPPORTED and shorter than 40 chars → it was never
+        a credential, so nothing the caller chose is being discarded; fall
+        through to gcloud's configured credentials.
+      * any other rejection → stop. Dropping a real-but-expired token would
+        run the PATCH as a different, possibly more privileged principal.
+        Set AUTH_EMAIL_ALLOW_IDENTITY_FALLBACK=1 to accept that switch.
+      * 403 → use it and let the real call fail loudly; substituting another
+        identity would hide the missing role the operator needs to see.
     """
     env = dict(os.environ if env is None else env)
     explicit = env.get("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip()
     if explicit:
         return explicit
-    placeholder = env.get("CLOUDSDK_AUTH_ACCESS_TOKEN")
-    if placeholder is not None and len(placeholder) < 40:
-        logger.info("CLOUDSDK_AUTH_ACCESS_TOKEN is %d chars (harness placeholder) — ignoring it", len(placeholder))
-        env.pop("CLOUDSDK_AUTH_ACCESS_TOKEN")
+
+    selected = env.get("CLOUDSDK_AUTH_ACCESS_TOKEN")
+    if selected:
+        verdict = probe(project, selected)
+        if verdict in ("ok", "denied") or verdict.startswith("other:"):
+            return selected
+        if verdict == "unsupported" and len(selected) < 40:
+            logger.info(
+                "CLOUDSDK_AUTH_ACCESS_TOKEN is %d chars and the API rejected it as "
+                "ACCESS_TOKEN_TYPE_UNSUPPORTED — a harness placeholder, not a credential; "
+                "using gcloud's configured credentials instead", len(selected),
+            )
+            env.pop("CLOUDSDK_AUTH_ACCESS_TOKEN")
+        elif env.get(IDENTITY_FALLBACK_ENV) == "1":
+            logger.warning(
+                "CLOUDSDK_AUTH_ACCESS_TOKEN was rejected (%s); %s=1 is set, so continuing "
+                "under gcloud's configured identity", verdict, IDENTITY_FALLBACK_ENV,
+            )
+            env.pop("CLOUDSDK_AUTH_ACCESS_TOKEN")
+        else:
+            raise RuntimeError(
+                f"CLOUDSDK_AUTH_ACCESS_TOKEN was rejected by the API ({verdict}) and is "
+                f"{len(selected)} characters — long enough to be a real credential that has "
+                "expired or been revoked. Refusing to silently run as a different principal: "
+                "refresh the token, unset it yourself, or set "
+                f"{IDENTITY_FALLBACK_ENV}=1 to accept the identity switch."
+            )
+
     try:
         out = subprocess.run(
             ["gcloud", "auth", "print-access-token"],
             env=env, capture_output=True, text=True, check=True, timeout=60,
         )
         token = out.stdout.strip()
-        if len(token) >= 40:
+        if token:
             return token
-        logger.info("gcloud returned a %d-char token; falling back to ADC", len(token))
+        logger.info("gcloud returned an empty token; falling back to ADC")
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.info("gcloud token unavailable (%s); falling back to ADC", exc)
     from google.auth import default as google_auth_default  # lazy: only needed on this path
@@ -421,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--support-email", default=None, help="adds a 'Questions? Write to …' line to the footer")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--show", action="store_true", help="print the live email config and exit")
-    mode.add_argument("--dry-run", action="store_true", help="print the PATCH body + mask, no write")
+    mode.add_argument("--dry-run", action="store_true", help="print the exact phased PATCH requests --apply would send, no write")
     mode.add_argument("--apply", action="store_true", help="PATCH the live config, then re-fetch and verify")
     mode.add_argument("--render-dir", help="write rendered HTML previews to this directory and exit")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -438,15 +521,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{key}: {rendered['subject']!r} -> {out / (key + '.html')}")
         return 0
 
+    token = get_access_token(project=args.project)
+    existing = fetch_config(args.project, token)
+
     if args.dry_run:
-        body, mask = build_patch(branding)
-        print(f"updateMask={mask}")
-        print(json.dumps(body, indent=2))
+        # Exactly the requests --apply would send, in order, built against the
+        # live config (reply-to carry-over and the sender-local-part diff both
+        # depend on it), so what is reviewed is what will be issued.
+        body, _ = build_patch(branding, existing)
+        for label, phase_body, mask in split_patch(body, existing):
+            print(f"── phase {label} ──\nPATCH {IDENTITY_API}/projects/{args.project}/config?updateMask={mask}")
+            print(json.dumps(phase_body, indent=2))
+        print("\n(dry run: nothing was written)")
         return 0
 
-    token = get_access_token()
-
-    existing = fetch_config(args.project, token)
     if args.show or not args.apply:
         print(summarize(existing))
         if not args.show:
@@ -455,10 +543,12 @@ def main(argv: list[str] | None = None) -> int:
 
     body, _ = build_patch(branding, existing)
     locked = False
+    accepted: list[str] = []
     for label, phase_body, mask in split_patch(body, existing):
         try:
             apply_config(args.project, token, phase_body, mask)
-            print(f"phase {label}: accepted")
+            accepted.append(label)
+            print(f"phase {label}: accepted by the API (verifying below)")
         except RuntimeError as exc:
             if not is_template_locked(exc):
                 raise
@@ -467,6 +557,13 @@ def main(argv: list[str] | None = None) -> int:
 
     fresh = fetch_config(args.project, token)
     problems = verify_applied(fresh, body)
+    # A 200 on the content phase is not proof it landed: Google drops HTML
+    # bodies silently on a locked project. Drift in any content field after
+    # an accepted content phase is the same lock, just quieter.
+    silently_dropped = [prob for prob in problems if is_content_problem(prob)] if "content" in accepted else []
+    if silently_dropped:
+        locked = True
+        print(f"phase content: accepted by the API but {len(silently_dropped)} content field(s) were not persisted")
     print(summarize(fresh))
     if locked:
         print(
