@@ -623,9 +623,16 @@ def _ticker_info_harness(mp, store, fetches, sleep_s=0.05):
 
     mp.setattr(ticker_info, "fetch_ticker_overview", fake_fetch)
     mp.setattr(ticker_info, "_cloud_sql_available", lambda: False)
-    mp.setattr(ticker_info, "_load_local_cache", lambda: dict(store))
-    mp.setattr(ticker_info, "_merge_into_local_cache",
-               lambda t, u, *, replace: store.__setitem__(t, dict(u)))
+    # Only the STORAGE is faked. `_merge_into_local_cache` used to be stubbed
+    # here with a one-line reimplementation, which meant every test through
+    # this harness exercised the stub's merge semantics rather than the real
+    # function -- so the peers-preservation test passed against a call site
+    # that could still lose peers (Codex, PR #991). A harness that reimplements
+    # the thing under test cannot fail for the reason it exists.
+    mp.setattr(ticker_info, "_load_local_cache",
+               lambda: {k: dict(v) for k, v in store.items()})
+    mp.setattr(ticker_info, "_save_local_cache",
+               lambda cache: (store.clear(), store.update(cache)))
     return ticker_info
 
 
@@ -714,6 +721,151 @@ def test_an_overview_refresh_does_not_discard_independently_cached_peers():
 
     assert store["IWM"].get("_peers") == ["VTWO", "IJR"], (
         f"the overview refresh discarded the cached peers: {store['IWM']}")
+
+
+def test_peers_stored_after_the_overview_fetch_still_survive():
+    """The window the first fix left open.
+
+    That fix read `_peers` at the CALL SITE, folded it into `info`, and then
+    called `_merge_into_local_cache(replace=True)` — which re-reads the cache
+    under `_LOCAL_CACHE_LOCK` and replaces the whole entry. A `get_peers()`
+    store landing between the call site's read and the merge's locked re-read
+    was therefore still erased (Codex, PR #991): the read was outside the lock
+    that the write it was racing has to take.
+
+    This places a peers write in exactly that window. The overview payload
+    already exists — the fetch has returned — and only then do peers land.
+    """
+    import lib.ticker_info as ti
+
+    with pytest.MonkeyPatch.context() as mp:
+        cache: dict = {}
+        mp.setattr(ti, "_load_local_cache", lambda: cache)
+        mp.setattr(ti, "_save_local_cache", lambda c: cache.update(c))
+
+        info = {"Name": "iShares Russell 2000", "_fetched_utc": "2026-09-07T00:00:00+00:00"}
+
+        # A concurrent get_peers() completes HERE: after the overview fetch
+        # returned `info`, before the overview is written.
+        ti._merge_into_local_cache("IWM", {"_peers": ["VTWO", "IJR"]}, replace=False)
+
+        ti._merge_into_local_cache("IWM", info, replace=True, preserve=("_peers",))
+
+    assert cache["IWM"].get("_peers") == ["VTWO", "IJR"], (
+        "a peers write landing after the overview payload was assembled was "
+        f"erased by the replace: {cache['IWM']}")
+    assert cache["IWM"].get("Name") == "iShares Russell 2000", (
+        "preserving peers must not cost the overview itself")
+
+
+def test_the_overview_branch_does_not_read_the_cache_twice_to_preserve_peers():
+    """The property the fix actually establishes.
+
+    The first fix read `_peers` at the call site and folded it into `info`
+    before calling `_merge_into_local_cache(replace=True)`. That read took the
+    lock, released it, and only then did the merge re-acquire and re-read — so
+    a `get_peers()` store landing in between was still erased (Codex, PR #991).
+
+    The window cannot be tested by scheduling a write into it, because the fix
+    is that the window no longer exists: preservation now reads from the SAME
+    locked snapshot the replace is built from. What IS observable is that the
+    separate pre-read is gone — exactly ONE cache load happens between the
+    vendor fetch returning and the write, and it is the merge's own.
+    """
+    import lib.ticker_info as ti
+
+    loads = {"n": 0}
+    marks: dict = {}
+    store = {"IWM": {"_peers": ["VTWO", "IJR"],
+                     "_fetched_utc": "2020-01-01T00:00:00+00:00"}}
+
+    def load():
+        loads["n"] += 1
+        return {k: dict(v) for k, v in store.items()}
+
+    def fake_fetch(ticker: str):
+        marks["after_fetch"] = loads["n"]
+        return {"Symbol": ticker, "Name": "Test"}
+
+    def save(cache):
+        marks.setdefault("at_save", loads["n"])
+        store.clear()
+        store.update(cache)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ti, "fetch_ticker_overview", fake_fetch)
+        mp.setattr(ti, "_cloud_sql_available", lambda: False)
+        mp.setattr(ti, "_load_local_cache", load)
+        mp.setattr(ti, "_save_local_cache", save)
+        ti.get_ticker_info("IWM")
+
+    between = marks["at_save"] - marks["after_fetch"]
+    assert between == 1, (
+        f"{between} cache reads between the vendor fetch and the write; expected "
+        "exactly 1 (the merge's own, under the lock). More than one means a "
+        "preservation read happens outside the lock the write it races takes.")
+    assert store["IWM"].get("_peers") == ["VTWO", "IJR"]
+
+
+def test_preserve_never_overwrites_a_value_the_update_supplies():
+    """A future overview that returns peers of its own must win."""
+    import lib.ticker_info as ti
+
+    with pytest.MonkeyPatch.context() as mp:
+        cache = {"IWM": {"_peers": ["stale"]}}
+        mp.setattr(ti, "_load_local_cache", lambda: cache)
+        mp.setattr(ti, "_save_local_cache", lambda c: cache.update(c))
+        ti._merge_into_local_cache("IWM", {"_peers": ["fresh"]},
+                                   replace=True, preserve=("_peers",))
+
+    assert cache["IWM"]["_peers"] == ["fresh"]
+
+
+def test_concurrent_overview_and_peers_writes_never_lose_either():
+    """Both paths hammering one ticker; neither may erase the other.
+
+    No test in this repo drove two threads through the same cache path before
+    this round, which is why the overwrite survived a review and a fix.
+    """
+    import threading
+    import lib.ticker_info as ti
+
+    with pytest.MonkeyPatch.context() as mp:
+        cache: dict = {}
+        real_lock = ti._LOCAL_CACHE_LOCK
+        mp.setattr(ti, "_load_local_cache", lambda: {k: dict(v) for k, v in cache.items()})
+
+        def save(c):
+            with real_lock:
+                cache.clear()
+                cache.update(c)
+
+        mp.setattr(ti, "_save_local_cache", save)
+
+        errors: list[str] = []
+
+        def write_overview(n: int) -> None:
+            ti._merge_into_local_cache(
+                "IWM", {"Name": f"overview-{n}"}, replace=True, preserve=("_peers",))
+
+        def write_peers(n: int) -> None:
+            ti._merge_into_local_cache("IWM", {"_peers": [f"peer-{n}"]}, replace=False)
+
+        threads = []
+        for i in range(25):
+            threads.append(threading.Thread(target=write_overview, args=(i,)))
+            threads.append(threading.Thread(target=write_peers, args=(i,)))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        entry = cache.get("IWM", {})
+        assert entry.get("_peers"), (
+            f"peers were lost under concurrent overview refreshes: {entry}")
+        assert entry.get("Name"), (
+            f"the overview was lost under concurrent peers writes: {entry}")
+        assert not errors, errors
 
 
 def test_the_import_index_enforces_the_endpoints_own_dedupe_key():

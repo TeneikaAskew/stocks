@@ -172,7 +172,8 @@ def _save_local_cache(cache: dict) -> None:
                 tmp.unlink(missing_ok=True)
 
 
-def _merge_into_local_cache(ticker: str, updates: dict, *, replace: bool) -> None:
+def _merge_into_local_cache(ticker: str, updates: dict, *, replace: bool,
+                            preserve: "tuple[str, ...]" = ()) -> None:
     """Atomically fold `updates` into one ticker's entry.
 
     The callers previously did load -> fetch from the network -> modify -> save,
@@ -191,11 +192,27 @@ def _merge_into_local_cache(ticker: str, updates: dict, *, replace: bool) -> Non
     `replace=True` overwrites the ticker's entry (a fresh overview);
     `replace=False` merges keys into whatever is there (peers, which must not
     drop an overview stored concurrently).
+
+    `preserve` names keys a `replace=True` write must carry forward from the
+    entry it is replacing, when `updates` does not supply them. That has to
+    happen HERE rather than at the call site: the first fix for the peers
+    overwrite read the existing value before calling this, and a `get_peers()`
+    store landing between that read and this locked re-read was still erased
+    (Codex, PR #991). Reading it inside the lock, from the same `cache` the
+    replace is about to overwrite, closes the window -- there is no longer a
+    gap for a concurrent write to fall into.
     """
     with _LOCAL_CACHE_LOCK:
         cache = _load_local_cache()          # RLock: re-entrant by design
         if replace:
-            cache[ticker] = updates
+            entry = dict(updates)
+            existing = cache.get(ticker) or {}
+            for key in preserve:
+                # `key not in entry`: a future overview that starts returning
+                # the key itself must win, not be overwritten by the old value.
+                if key not in entry and key in existing:
+                    entry[key] = existing[key]
+            cache[ticker] = entry
         else:
             cache.setdefault(ticker, {}).update(updates)
         _save_local_cache(cache)
@@ -332,11 +349,13 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
             # flight -- so an overview refresh racing a peers refresh could
             # discard peers that had just been scraped, and `get_peers` does
             # not read them back from the Cloud SQL relationships column, so
-            # the next request scrapes FinViz again. Carry them across.
-            existing_peers = (_load_local_cache().get(ticker) or {}).get("_peers")
-            if existing_peers is not None and "_peers" not in info:
-                info["_peers"] = existing_peers
-            _merge_into_local_cache(ticker, info, replace=True)
+            # the next request scrapes FinViz again.
+            #
+            # Carried across INSIDE the locked merge. Reading `_peers` here and
+            # folding it into `info` first looks equivalent and is not: a peers
+            # store landing between that read and the merge's own locked
+            # re-read was still erased.
+            _merge_into_local_cache(ticker, info, replace=True, preserve=("_peers",))
             return info
 
     # Return stale data rather than nothing

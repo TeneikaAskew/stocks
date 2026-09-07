@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 import httpx
 import pandas as pd
 from cachetools import TTLCache
-from lib.single_flight import SingleFlight
 from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -22,11 +21,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# Add project root to path so we can import lib/
+# Add project root to path so we can import lib/.
+#
+# EVERY `lib.*` import must stay BELOW this line. `make api` and
+# scripts/dev_server.sh both `cd platform` before launching uvicorn, so the
+# repository root is not on sys.path until the insert above runs -- an eager
+# `from lib...` above it raises ModuleNotFoundError before the server starts.
+# The test suite cannot see that: pytest runs from the repository root, where
+# `lib` is importable via the cwd, so the whole suite passes while `make api`
+# is broken. tests/api/test_dev_server_import.py runs the real launch layout.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
+from lib.single_flight import SingleFlight
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import (
     AUTH_MODE,
