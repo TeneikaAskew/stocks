@@ -124,10 +124,9 @@ name: Deploy staging
 #                                    inventoried as well). It fails closed:
 #                                    without this grant the run stops before
 #                                    building, with the failing call named.
-#                                    NOT yet granted to arch-refresh-bot@ as
-#                                    of 2026-09-07 (reader on gcr.io only);
-#                                    an owner must add it before the next
-#                                    dispatch:
+#                                    Granted to arch-refresh-bot@ on both
+#                                    repos 2026-09-07 (read back live). To
+#                                    re-apply after a rebuild of the SA:
 #                                      for r in "gcr.io us" "trading us-east1"; do set -- $r
 #                                        gcloud artifacts repositories add-iam-policy-binding $1 --location=$2 \
 #                                          --member=serviceAccount:arch-refresh-bot@adept-mountain-474619-d4.iam.gserviceaccount.com \

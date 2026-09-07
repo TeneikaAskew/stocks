@@ -84,9 +84,13 @@ What shipped:
 - Identities that run `pin-images`: `trading-runner@` (Cloud Build
   trigger, has what it needs), operators / `claude-web@` (interactive
   path, sweeps too), and `arch-refresh-bot@` via
-  `.github/workflows/deploy-staging.yml`, which still needs
-  `roles/artifactregistry.writer` on both repos (commands in the workflow
-  header).
+  `.github/workflows/deploy-staging.yml`, granted
+  `roles/artifactregistry.writer` on both repos 2026-09-07 (commands kept
+  in the workflow header).
+- 2026-09-07: `retire-legacy-images` run after prod was promoted to
+  `solyra-api`; `trading-platform` (175 versions) and
+  `trading-platform-staging` (9) deleted, the guard having confirmed no
+  live revision referenced either. `gcr.io` now holds only `solyra-api`.
 - Both image builds (`build_image`, `build_research_image`) pin before
   moving their tag and refuse to build if pinning fails; the dispatcher
   runs deploy steps one at a time (never as `a && b`) so a failed build
