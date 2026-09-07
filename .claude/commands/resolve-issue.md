@@ -122,7 +122,10 @@ fi
 
 # CASE B — no existing PR. Create one branch, and remember its name; every
 # later phase refers back to it rather than reconstructing a prefix.
-git checkout -b fix/<short-description>     # or feature/ chore/ docs/ test/
+# Name the base explicitly: without it the branch forks from whatever is
+# checked out, so an unrelated feature branch's commits ride into the PR, or
+# the branch starts behind main. `git fetch` above does not move HEAD.
+git checkout -b fix/<short-description> origin/main   # or feature/ chore/ docs/ test/
 ```
 
 Whichever case you took, capture the branch name now:
@@ -406,12 +409,20 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
 1. `pull_request_read` `method: "get_review_comments"` — **before** CI, not
    after.
-2. `pull_request_read` `method: "get_reviews"` — compare each review's
-   `commit_id` against the PR head SHA. **`get_reviews` returns oldest first,
-   so the current review is on the LAST page**; reading page 1 and finding an
-   older "no findings" is exactly how #991 merged two minutes after a review it
-   never saw. All threads `is_outdated` means the head is unreviewed: comment
-   `@codex review` and wait.
+2. Confirm the current head **has been reviewed**, which is not the same as "a
+   review object exists for it". A clean run posts no review at all, only a
+   reaction, so requiring a review object would deadlock every PR that has
+   nothing wrong with it. Either of these satisfies this step:
+   - `pull_request_read` `method: "get_reviews"` returning a review whose
+     `commit_id` is the head SHA. **It returns oldest first, so the current
+     review is on the LAST page**; reading page 1 and finding an older "no
+     findings" is exactly how #991 merged two minutes after a review it never
+     saw; or
+   - the Codex summary comment showing **Completed** against the head SHA.
+
+   What fails this step is neither of those: a summary still showing Running,
+   or naming an older commit, with all threads `is_outdated`. That head is
+   genuinely unreviewed — comment `@codex review` and wait.
 3. Every thread fixed-and-resolved, naming what changed and the covering test
    and commit, or replied to with why not. Zero unresolved is the bar.
 4. Verify each finding against the code before fixing it: reproduce, write the
