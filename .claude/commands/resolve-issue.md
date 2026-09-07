@@ -309,10 +309,16 @@ ways and pasted; it does not have to be a pytest case:
 | Resolution | The before/after check |
 |---|---|
 | A behaviour changes | a test, as below |
-| A module or job is deleted | the consumer grep across `lib/ gcp/ platform/ scripts/ tests/` and solyra — hits before, silent after — plus `make test` clean |
-| A scheduler or job is retired | `gcloud scheduler jobs list` / `run jobs list` before and after |
+| A module or job is deleted | `! grep -rq "<symbol>" lib/ gcp/ platform/ scripts/ tests/` and the same in a solyra checkout — **negated**, so it FAILS while a consumer survives and PASSES once none does. "Hits before, silent after" describes the OUTPUT and inverts the STATUS: `grep` exits 0 on a hit, so unnegated it passes before the deletion and fails after. Plus `make test` clean |
+| A scheduler or job is retired | `! gcloud scheduler jobs list --location=us-east1 --format='value(name)' \| grep -qx "<job>"` — negated for the same reason; a bare `list` exits 0 whether or not the job is there, so it observes without asserting |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
+
+The first three rows are assertions and their exit status is the result; the
+two query-plan rows are measurements, and there the evidence is the two
+`rows=` numbers pasted side by side, because a plan cannot be a boolean. Know
+which one you are producing — an assertion whose failing state also exits 0 is
+the defect this table keeps growing rows to prevent.
 
 Skipping the before half is what is never acceptable. "It passes now" says
 nothing; "it failed before and passes now" is the evidence.
@@ -399,6 +405,18 @@ one. While writing, the standing gates:
     until old clients have aged out — a session-length wait, or telemetry
     showing the field has stopped arriving. Making the API tolerant before the
     frontend switches is necessary and is not the whole sequence.
+
+  **Both narrowings end with a solyra sync PR**, the same third step the
+  widening has. Once the removal is on this repo's `main`, solyra's vendored
+  snapshot declares a field this API no longer has, and its `contract:check`
+  runs on every PR over there — so one unfinished narrowing turns every
+  unrelated frontend PR red. That PR runs `npm run contract:sync` and takes the
+  field out of `src/types/`, the canonical mock and `tests/helpers/fixtures/`,
+  and it needs its own solyra branch because the consumer-first PR merged
+  earlier. It cannot be folded into that earlier PR: while this repo's `main`
+  still declares the field as required, dropping it from solyra's canonical
+  mock fails its `contract.test.ts` with `must have required property`. The
+  issue does not close before that sync PR lands.
 
   The invariant under all three cases: **whichever side is RECEIVING must
   tolerate the new shape before the sending side produces it.** For a response
