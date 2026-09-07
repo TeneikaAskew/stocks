@@ -101,6 +101,33 @@ def latest_image_digest() -> str:
     raise RuntimeError(f"no 'latest' tag found at {parent}")
 
 
+def resolve_tag_digest(tag: str) -> str:
+    """Resolve any `trading-system:<tag>` to its current digest via
+    Artifact Registry. Raises when the tag does not exist — the caller
+    records that as an error rather than skipping the job (#835)."""
+    from google.cloud import artifactregistry_v1
+    client = artifactregistry_v1.ArtifactRegistryClient()
+    parent = (f"projects/{PROJECT}/locations/{REGION}/"
+              f"repositories/trading/packages/trading-system")
+    for t in client.list_tags(parent=parent):
+        if t.name.rsplit("/", 1)[-1] == tag:
+            digest = t.version.rsplit("/", 1)[-1]
+            if not digest.startswith("sha256:"):
+                raise RuntimeError(f"unexpected digest format: {digest!r}")
+            return digest
+    raise RuntimeError(f"no tag {tag!r} at {parent}")
+
+
+def _image_tag(image: str) -> str | None:
+    """`...:tag` → 'tag'; digest refs and untagged images → None."""
+    if "@" in image:
+        return None
+    last = image.rsplit("/", 1)[-1]
+    if ":" not in last:
+        return None
+    return last.rsplit(":", 1)[-1]
+
+
 def list_run_jobs() -> list[dict]:
     """Return [{name, image}] for every Cloud Run Job in REGION via the
     google-cloud-run Python SDK."""
@@ -135,7 +162,12 @@ def list_schedulers() -> list[dict]:
             uri = s.http_target.uri or ""
         m = re.search(r"/jobs/([^:/]+)", uri)
         target_job = m.group(1) if m else ""
-        rows.append({"name": name, "target_job": target_job, "uri": uri})
+        # ENABLED / PAUSED / DISABLED / UPDATE_FAILED — read by
+        # check_scheduler_state (#833). The enum's .name is the stable
+        # string across SDK versions; fall back to str() if it is not one.
+        state = getattr(s.state, "name", None) or str(s.state)
+        rows.append({"name": name, "target_job": target_job, "uri": uri,
+                     "state": state})
     return rows
 
 
@@ -194,19 +226,60 @@ def check_image_drift(report: Report) -> None:
             continue
         if not exec_image:
             continue  # job has never executed
-        # exec_image is either a tag (rare) or `...@sha256:...`
+        # exec_image is either `...@sha256:...` or a tag. A tag used to be
+        # skipped ("can't compare directly"), which is exactly how
+        # fetch-fred-rates ran on `:spx-removal-fred-20260516` for 3.5
+        # months unnoticed (#835). Resolve it through Artifact Registry;
+        # an unresolvable tag is an error, not a skip.
         m = re.search(r"@(sha256:[0-9a-f]+)", exec_image)
-        if not m:
-            continue  # tag-form, can't compare directly
-        pinned = m.group(1)
+        via = ""
+        if m:
+            pinned = m.group(1)
+        else:
+            tag = _image_tag(exec_image) or "latest"
+            try:
+                pinned = resolve_tag_digest(tag)
+            except Exception as e:
+                report.errors.append(
+                    f"{j['name']}: cannot resolve execution image tag "
+                    f"{tag!r}: {e!s}"[:200])
+                continue
+            via = f" (tag `{tag}`)"
         if pinned != latest:
             report.add(
                 severity="MEDIUM",
                 check="image-drift",
                 target=j["name"],
-                detail=(f"pinned `{pinned[:19]}…` ≠ latest `{latest[:19]}…` — "
+                detail=(f"pinned `{pinned[:19]}…`{via} ≠ latest `{latest[:19]}…` — "
                         "run `gcloud run jobs update --image=:latest` to re-pin"),
             )
+
+
+def check_configured_image_tags(report: Report) -> None:
+    """Flag any trading-system job whose SPEC pins a tag other than
+    `latest`. deploy.sh deploys `${IMAGE}` (implicit :latest); a hand
+    `gcloud run jobs update --image=...:sometag` leaves the spec on that
+    tag until someone notices (#835: fetch-fred-rates on a May tag). This
+    catches it from the spec alone, before or regardless of execution."""
+    try:
+        jobs = list_run_jobs()
+    except Exception as e:
+        report.errors.append(f"list_run_jobs: {e}")
+        return
+    for j in jobs:
+        if "trading-system" not in j["image"]:
+            continue
+        tag = _image_tag(j["image"])
+        if tag is None or tag == "latest":
+            continue
+        report.add(
+            severity="MEDIUM",
+            check="image-tag-pinned",
+            target=j["name"],
+            detail=(f"job spec pins `trading-system:{tag}`; deploy.sh deploys "
+                    "`:latest` — run `./gcp/deploy.sh <target>` (or "
+                    "`gcloud run jobs update --image=...:latest`) to converge"),
+        )
 
 
 def check_scheduler_orphans(report: Report) -> None:
@@ -226,6 +299,35 @@ def check_scheduler_orphans(report: Report) -> None:
                 check="scheduler-orphan",
                 target=s["name"],
                 detail=f"scheduler fires `{s['target_job']}` but no such CR Job exists",
+            )
+
+
+def check_scheduler_state(report: Report) -> None:
+    """Any scheduler not ENABLED is drift: deploy.sh's `_schedule` creates
+    every entry ENABLED and records no pause, so a live PAUSED entry is
+    either an unrecorded decision or an accident (#833:
+    signal-quality-report-hourly sat PAUSED from 2026-05-05 with nothing
+    in the repo saying why). Resume it, or retire it in deploy.sh."""
+    try:
+        schedulers = list_schedulers()
+    except Exception as e:
+        report.errors.append(f"scheduler list: {e}")
+        return
+    for s in schedulers:
+        state = s.get("state")
+        if state is None:
+            # Never assume ENABLED: an older listing shape without state
+            # would otherwise pass every paused scheduler silently.
+            report.errors.append(f"{s['name']}: scheduler listing carried no state")
+            continue
+        if state != "ENABLED":
+            report.add(
+                severity="MEDIUM",
+                check="scheduler-paused",
+                target=s["name"],
+                detail=(f"scheduler is {state} live; deploy.sh's _schedule would "
+                        "recreate it ENABLED — resume it, or retire it in deploy.sh "
+                        "with the reason recorded"),
             )
 
 
@@ -256,7 +358,9 @@ def main() -> int:
     log.info("infra-drift-detector starting (project=%s region=%s)", PROJECT, REGION)
 
     check_image_drift(report)
+    check_configured_image_tags(report)
     check_scheduler_orphans(report)
+    check_scheduler_state(report)
 
     summary = report.summary()
     log.info("=== summary ===\n%s", summary)

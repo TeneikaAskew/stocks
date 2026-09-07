@@ -3699,13 +3699,23 @@ deploy_schedulers() {
     _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
 
     # Phase 0.5 — signal-quality report.
-    # Hourly during market hours: --mode=rolling, incremental update of
-    # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
-    # 14-20 UTC (10:00-16:00 ET in DST or 09:00-15:00 ET in standard
-    # time; scheduler timezone is America/New_York so cron is read in
-    # local time — 10-16 ET). 7 invocations per trading day.
-    _schedule "signal-quality-report-hourly" \
-        "0 10-16 * * 1-5" "signal-quality-report"
+    #
+    # RETIRED 2026-09-07 (#833, audit D1): `signal-quality-report-hourly`
+    # (`0 10-16 * * 1-5`, --mode=rolling) was found PAUSED live with no
+    # record of why; the pause dates to 2026-05-05, three days after #192
+    # created it. What it did: re-score the last few hours of fires into
+    # `signal_metrics` as status='pending' rows until all seven MFE
+    # windows closed. It did not evaluate or generate signals — the
+    # signal monitor does that per bar. Nothing reads 'pending' rows
+    # (gcp/signal_quality_alarm.py:168 considers status='final' only; the
+    # other readers are offline analysis over final rows), and the
+    # nightly run below has written the same rows as 'final' every night
+    # since. Seven executions a day for no consumer: removed rather than
+    # resumed. `--mode=rolling` stays in scripts/signal_quality_report.py
+    # for manual use. Delete the live scheduler with
+    #   gcloud scheduler jobs delete signal-quality-report-hourly --location us-east1
+    # gcp/audit_infra_drift.py::check_scheduler_state now flags any
+    # scheduler left PAUSED so a repeat is visible within a day.
 
     # Nightly: --mode=historical promotes rolling 'pending' rows to
     # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
