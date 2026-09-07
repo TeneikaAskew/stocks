@@ -25,7 +25,9 @@ everything else is re-raised untouched.
 
 from __future__ import annotations
 
+import errno
 import logging
+import socket
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,9 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
     found: list[type[BaseException]] = [
         # A refused or dropped socket, and a timeout waiting on one. Both are
         # OSError subclasses; OSError itself is deliberately NOT here, because
-        # a `FileNotFoundError` on a path we chose is our bug.
+        # a `FileNotFoundError` on a path we chose is our bug. The network
+        # being GONE -- unreachable, down, unresolvable -- is a plain OSError
+        # too, and is decided by errno in `_network_unreachable` below.
         ConnectionError,
         TimeoutError,
         # `ImportError` is deliberately NOT here any more. Classifying every
@@ -92,8 +96,19 @@ def _driver_errors() -> tuple[type[BaseException], ...]:
         # is checked out past `pool_timeout` -- a genuine capacity outage. It
         # is NOT a subclass of the builtin `TimeoutError` listed above, so the
         # guards were re-raising it as a bare 500 (Codex P2 on #999).
-        found += [sa_exc.OperationalError, sa_exc.InterfaceError,
-                  sa_exc.DisconnectionError, sa_exc.TimeoutError]
+        # `DisconnectionError` is SQLAlchemy's own, raised by pre-ping when the
+        # pooled connection is found dead.
+        #
+        # `sa_exc.InterfaceError` is deliberately NOT here. SQLAlchemy raises
+        # its wrapper FROM the driver's exception and keeps it as `.orig`, and
+        # the wrapper's class only echoes the driver's class name -- so
+        # registering it accepted pg8000's `InterfaceError("Cursor closed")`
+        # wholesale, straight past the message filter below (Codex P1 on
+        # #999). A wrapper is decided by what it wraps: `is_infrastructure_
+        # error` walks `.orig` as well as `__cause__`, and the driver rules
+        # apply to what it finds there.
+        found += [sa_exc.OperationalError, sa_exc.DisconnectionError,
+                  sa_exc.TimeoutError]
     except Exception:                       # pragma: no cover
         logger.debug("sqlalchemy not importable; its errors are not classified")
     try:                                    # GCS and the rest of google-cloud
@@ -124,14 +139,40 @@ OPTIONAL_DEPENDENCIES: frozenset[str] = frozenset(
 def _optional_dependency_missing(exc: BaseException) -> bool:
     """A `ModuleNotFoundError` for a package this image is allowed not to have.
 
-    Matched on the top-level package of `exc.name`, which the interpreter sets
-    on every module-not-found it raises. `ImportError` for a symbol that does
-    not exist (`cannot import name ...`) is a plain `ImportError`, not a
-    `ModuleNotFoundError`, and is never an outage.
+    Matched on the EXACT `exc.name`, which the interpreter sets to the module
+    it could not find. An absent package gives the package name, `lightgbm`,
+    even from `import lightgbm.sklearn`; a package that IS installed with a
+    submodule that is not gives `sklearn.nonexistent`. Matching the top-level
+    segment read the second -- a typo, a stale reference after a refactor --
+    as an unavailable feature and answered a retryable 503 for it
+    indefinitely (Codex P1 on #999; verified: `import sklearn.nonexistent_zzz`
+    raises with `name='sklearn.nonexistent_zzz'`). `ImportError` for a symbol
+    that does not exist (`cannot import name ...`) is a plain `ImportError`,
+    not a `ModuleNotFoundError`, and is never an outage.
     """
     if not isinstance(exc, ModuleNotFoundError) or not exc.name:
         return False
-    return exc.name.split(".")[0] in OPTIONAL_DEPENDENCIES
+    return exc.name in OPTIONAL_DEPENDENCIES
+
+
+#: The errnos of a socket that could not be opened because the NETWORK is
+#: gone, as distinct from refused or reset (already `ConnectionError`
+#: subclasses) and timed out (`TimeoutError`). The Cloud SQL connector opens
+#: its data-plane socket with `socket.create_connection` before handing it to
+#: pg8000, so a VPC or routing outage surfaces as a plain `OSError` carrying
+#: one of these, and a DNS failure as `socket.gaierror` -- neither a
+#: `ConnectionError` (Codex P1 on #999). `OSError` itself stays out: a
+#: `FileNotFoundError` on a path we chose is our bug.
+_NETWORK_ERRNOS: frozenset[int] = frozenset(
+    {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ENETRESET,
+     errno.EHOSTDOWN})
+
+
+def _network_unreachable(exc: BaseException) -> bool:
+    """A socket that failed because the network or the name is gone."""
+    if isinstance(exc, (socket.gaierror, socket.herror)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _NETWORK_ERRNOS
 
 
 try:                                        # pragma: no cover - image without it
@@ -201,6 +242,7 @@ def _retryable_http_response(exc: BaseException) -> bool:
 #: What cannot be decided by class alone. Each reads the one exception it is
 #: about and answers False for everything else.
 _INFRASTRUCTURE_PREDICATES = (_optional_dependency_missing,
+                              _network_unreachable,
                               _pg8000_transport_failure,
                               _pg8000_server_gone,
                               _retryable_http_response)
@@ -216,17 +258,25 @@ def is_infrastructure_error(exc: BaseException) -> bool:
 
     The `__cause__` chain is followed, because a driver error is routinely
     re-raised inside a helper's own wrapper (`raise RuntimeError(...) from
-    exc`) and the outage is no less real for having been wrapped. The chain is
-    walked with a seen-set rather than a depth cap, the same way the guard
+    exc`) and the outage is no less real for having been wrapped. So is
+    `.orig`, where SQLAlchemy's `DBAPIError` keeps the driver's exception,
+    because the wrapper's class says only which driver class was wrapped and
+    the driver rules above need the exception itself (Codex P1 on #999). The
+    walk keeps a seen-set rather than a depth cap, the same way the guard
     file's resolvers do, because a chain has no natural length and what it
     cannot do is revisit an exception.
     """
     seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
+    pending: list[BaseException] = [exc]
+    while pending:
+        cur = pending.pop()
+        if id(cur) in seen:
+            continue
         seen.add(id(cur))
         if (isinstance(cur, INFRASTRUCTURE_ERRORS)
                 or any(decide(cur) for decide in _INFRASTRUCTURE_PREDICATES)):
             return True
-        cur = cur.__cause__
+        for nxt in (cur.__cause__, getattr(cur, "orig", None)):
+            if isinstance(nxt, BaseException):
+                pending.append(nxt)
     return False

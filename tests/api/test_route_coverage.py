@@ -1283,6 +1283,42 @@ def test_infrastructure_errors_are_classified_by_type():
                             name="gcp.research.strat_pred_serv"))
     assert not is_infrastructure_error(
         ModuleNotFoundError("No module named 'x'"))      # no name: not decided
+    # EXACT name. The interpreter names the module it could not find, so a
+    # submodule that does not exist inside an INSTALLED optional package is
+    # `sklearn.nonexistent`, and matching the top-level segment read that
+    # typo as an unavailable feature (Codex P1 on #999). Pinned against the
+    # interpreter itself, on a package every image has.
+    try:
+        import json.nonexistent_zzz  # noqa: F401
+    except ModuleNotFoundError as real:
+        assert real.name == "json.nonexistent_zzz"
+    for name in ("sklearn.nonexistent", "scipy.sparse.nonexistent",
+                 "firebase_admin.typo", "lightgbm.sklearn.x"):
+        assert not is_infrastructure_error(
+            ModuleNotFoundError(f"No module named '{name}'", name=name)), name
+    assert is_infrastructure_error(
+        ModuleNotFoundError("No module named 'scipy'", name="scipy"))
+
+    # The data-plane socket. The connector opens it with
+    # `socket.create_connection` before handing it to pg8000, and a network
+    # that is gone is a plain `OSError` by errno, or a `socket.gaierror` for
+    # a name that will not resolve -- neither a `ConnectionError`
+    # (Codex P1 on #999). A path or permission error is still ours.
+    import errno
+    import socket
+    for exc in (OSError(errno.ENETUNREACH, "Network is unreachable"),
+                OSError(errno.EHOSTUNREACH, "No route to host"),
+                OSError(errno.ENETDOWN, "Network is down"),
+                socket.gaierror(-2, "Name or service not known"),
+                socket.herror(1, "Unknown host"),
+                socket.timeout("timed out")):
+        assert is_infrastructure_error(exc), (type(exc).__name__, exc)
+    for exc in (FileNotFoundError(errno.ENOENT, "no such file"),
+                PermissionError(errno.EACCES, "denied"),
+                IsADirectoryError(errno.EISDIR, "dir"),
+                OSError(errno.EIO, "i/o error"),
+                OSError("no errno at all")):
+        assert not is_infrastructure_error(exc), (type(exc).__name__, exc)
 
     # The PRODUCTION driver. `model_routing.connect()` returns a bare pg8000
     # connection, so its client-side failures arrive raw and without a
@@ -1332,6 +1368,30 @@ def test_infrastructure_errors_are_classified_by_type():
         raise sa_exc.DatabaseError("SELEC 1", {}, wrong) from wrong
     except sa_exc.DatabaseError as wrapped_sa:
         assert not is_infrastructure_error(wrapped_sa)
+    # The wrapper's class only echoes the driver's class name, so it is not
+    # registered: `sa_exc.InterfaceError` around pg8000's "Cursor closed" was
+    # accepted wholesale, straight past the message filter (Codex P1 on
+    # #999). What it wraps decides, reached through `__cause__` and, when a
+    # re-raise has stripped that, through `.orig`.
+    from api.infra_errors import INFRASTRUCTURE_ERRORS
+    assert sa_exc.InterfaceError not in INFRASTRUCTURE_ERRORS
+    for message, expected in (("Cursor closed", False),
+                              ("identifier must be a str", False),
+                              ("network error", True),
+                              ("connection is closed", True)):
+        orig = pg8000_exc.InterfaceError(message)
+        try:
+            raise sa_exc.InterfaceError("SELECT 1", {}, orig) from orig
+        except sa_exc.InterfaceError as wrapped_sa:
+            assert is_infrastructure_error(wrapped_sa) is expected, message
+        bare = sa_exc.InterfaceError("SELECT 1", {}, orig)   # no __cause__
+        assert bare.__cause__ is None and bare.orig is orig
+        assert is_infrastructure_error(bare) is expected, (message, "orig")
+    psy = psycopg2.InterfaceError("connection already closed")
+    try:
+        raise sa_exc.InterfaceError("SELECT 1", {}, psy) from psy
+    except sa_exc.InterfaceError as wrapped_sa:
+        assert is_infrastructure_error(wrapped_sa)
 
     # The Cloud SQL connector's control plane. `Connector.connect()` fetches
     # metadata and an ephemeral certificate from the SQL Admin API over
