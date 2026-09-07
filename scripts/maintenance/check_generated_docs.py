@@ -66,7 +66,17 @@ SIZE_FLOOR_EXEMPT = ("README.md",)
 CHURN_CEILING = 0.50
 # Documents that are wholly rendered from the inventory legitimately churn
 # hard when the fleet changes, so they carry a higher ceiling.
-CHURN_CEILING_RENDERED = {"docs/API.md": 0.90}
+# Two documents are legitimately re-derived in full every month rather than
+# edited in place, so a high churn there is normal and a 50% ceiling would
+# block the refresh for doing its job:
+#   docs/API.md      — every line comes from the router files
+#   COST_ANALYSIS.md — written wholesale from the billing CSVs; when the SKU
+#                      ordering shifts, most of its table rows change
+# They are not unprotected: the size floor is the real guard for
+# COST_ANALYSIS.md, and it catches the degradation that matters. In the
+# 2026-09-02 incident it fell 163 -> 103 lines (63% of its previous size,
+# under the 80% floor) and would have been stopped on that alone.
+CHURN_CEILING_RENDERED = {"docs/API.md": 0.90, "COST_ANALYSIS.md": 0.85}
 DIFF_DOCS = DOCS + ("docs/API.md",)
 REMOVED_HEADING = "Removed since last refresh"
 

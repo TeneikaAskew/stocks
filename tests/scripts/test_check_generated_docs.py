@@ -86,16 +86,16 @@ def test_a_rewrite_that_keeps_its_length_is_a_finding(tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
         _copy(REPO / d, prev / d)
-    old = (prev / "COST_ANALYSIS.md").read_text().splitlines()
+    old = (prev / "ARCHITECTURE.md").read_text().splitlines()
     heads = [ln for ln in old if ln.startswith("#")]
     body = ["Every other line replaced with different prose." for _ in range(len(old) - len(heads))]
-    (root / "COST_ANALYSIS.md").write_text("\n".join(heads + body) + "\n")
+    (root / "ARCHITECTURE.md").write_text("\n".join(heads + body) + "\n")
     stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
-    assert stats["COST_ANALYSIS.md"]["churn"] > 0.5
+    assert stats["ARCHITECTURE.md"]["churn"] > 0.5
     findings = gate.gate_diff_budget(list(stats.values()))
-    assert any("COST_ANALYSIS.md" in f and "rewrite" in f for f in findings), findings
+    assert any("ARCHITECTURE.md" in f and "rewrite" in f for f in findings), findings
     # ...and a human reconstructing that one doc can say so, for that doc only
-    assert gate.gate_diff_budget(list(stats.values()), allow_rewrite=("COST_ANALYSIS.md",)) == []
+    assert gate.gate_diff_budget(list(stats.values()), allow_rewrite=("ARCHITECTURE.md",)) == []
 
 
 def test_diff_stats_report_names_what_moved(tmp_path):
@@ -111,6 +111,39 @@ def test_diff_stats_report_names_what_moved(tmp_path):
     assert "A brand new section" in report and "+added" in report
     cost = next(st for st in stats if st["doc"] == "COST_ANALYSIS.md")
     assert cost["added"] >= 3 and cost["removed"] == 0 and cost["churn"] == 0.0
+
+
+def test_the_2026_09_02_regeneration_would_have_been_stopped(tmp_path):
+    """The incident this gate exists for, measured against the real commits.
+
+    b3b5271 -> e50c759 (#953) is the monthly refresh that shrank
+    ARCHITECTURE.md from 394 lines to 158 while every gate of the day passed.
+    Churn on the four docs was 87 / 88 / 75 / 70 percent. Each must be caught
+    either by the churn ceiling or, for the documents legitimately re-derived
+    in full, by the size floor.
+    """
+    import subprocess
+    root, prev = tmp_path, tmp_path / "previous"
+    prev.mkdir()
+    four = ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md")
+    for d in four:
+        for rev, dest in (("b3b5271", prev), ("e50c759", root)):
+            out = subprocess.run(["git", "show", f"{rev}:{d}"], cwd=REPO,
+                                 capture_output=True, text=True)
+            if out.returncode:
+                pytest.skip(f"{d} not present at {rev} in this clone")
+            (dest / d).parent.mkdir(parents=True, exist_ok=True)
+            (dest / d).write_text(out.stdout)
+
+    stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
+    assert stats["ARCHITECTURE.md"]["churn"] > 0.80, stats["ARCHITECTURE.md"]["churn"]
+    assert stats["DATA_DEPENDENCIES.md"]["churn"] > 0.80
+
+    caught = set()
+    for f in gate.gate_diff_budget(list(stats.values())) + gate.gate_headings_and_size(root, prev):
+        caught.add(f.split(":")[0])
+    for d in four:
+        assert d in caught, f"{d} would have shipped unnoticed; caught={caught}"
 
 
 def test_lost_heading_and_shrink_are_findings(tmp_path):
