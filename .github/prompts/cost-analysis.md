@@ -33,6 +33,17 @@ Three, ranked by $/month, each with the resource, the exact change (gcloud comma
 
 ## Rules
 
+- **The project is `adept-mountain-474619-d4`, region `us-east1`.** Every
+  `gcloud` command you write must use that project id. A 2026-09-07 dry run of
+  this prompt invented `solyra-trader` in a confirmation command, which makes
+  the whole recommendation untrustworthy: a reader who pastes it gets an error
+  and stops believing the rest of the document.
+- **Check what is already applied before recommending it.** The same dry run
+  proposed adding an Artifact Registry cleanup policy that #1004 had already
+  deployed. Before writing a recommendation, look for it in `ARCHITECTURE.md`
+  §3 (GCP services in use), `docs/audits/COST_AUDIT_2026-09-06.md` and
+  `live.json`; if the mitigation exists, say so and quantify what it has
+  already saved instead of proposing it again.
 - Numbers must be honest: write what the CSV says, never round for prose.
 - Total spend in the first sentence.
 - No projections beyond the data.

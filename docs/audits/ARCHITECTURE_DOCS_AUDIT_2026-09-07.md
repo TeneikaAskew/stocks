@@ -242,3 +242,16 @@ The gates and the inventory module had unit tests, but nothing had ever run the 
 Negative tests on the freeze/restore pair, all passing: a tampered working input is restored to its pre-Gemini bytes; a corrupted frozen copy fails the manifest check; a missing frozen copy refuses the run; and an edit to any tracked file outside the eight generated docs is refused by name.
 
 **What still cannot be exercised from a sandbox**, and therefore remains unproven until this merges to `main`: the WIF auth action, the four Gemini regeneration steps (they need the `arch-refresh-bot@` Vertex identity), and `gh pr create`. Everything else in the workflow — the asset, IAM and billing dumps, the live snapshot's ~30 gcloud reads, the digest, the block render, both drawio regenerations, the freeze/restore pair, all the gates, the change detection and the no-op summary — has now been run end to end with real data. The first dispatch from `main` is still the only true end-to-end test, because the WIF provider admits `refs/heads/main` only.
+
+### Dry-running the prompts against Vertex
+
+The Gemini CLI cannot run in this sandbox (`HttpsProxyAgent is not a constructor` — its bundled HTTP agent breaks behind the egress proxy; a runner has no proxy), but Vertex itself is reachable, so each rewritten prompt was exercised directly against `gemini-2.5-pro` with the real inputs.
+
+**`architecture.md`** was given the real 1,087-line `ARCHITECTURE.md`, the real digest and one changed fact (two new schedulers). Its first line back was *"I will not rewrite the file. Instead, I will perform a series of targeted `replace` operations"*, followed by scoped old/new pairs beginning with the read-date line. That is the behaviour the whole prompt rewrite exists to produce, confirmed on the real document rather than argued.
+
+**`cost-analysis.md`** was given the real 90-day billing rollup ($222.71; July $4.77, August $211.00, September $6.94). The document it produced was accurate on every figure and correctly flagged the July→August jump, but it contained two defects worth fixing in the prompt rather than in the output:
+
+1. it invented the project id `solyra-trader` in a confirmation command — a reader who pastes it gets an error and stops trusting the rest of the page;
+2. it recommended adding an Artifact Registry cleanup policy that #1004 had already deployed.
+
+The prompt now states the project id and region as a rule, and requires a proposed mitigation to be checked against `ARCHITECTURE.md` §3, the cost audit and `live.json` before being written — if it already exists, quantify what it saved instead of proposing it again. Re-run after the change: no invented ids, the correct project used, and no duplicate registry recommendation.
