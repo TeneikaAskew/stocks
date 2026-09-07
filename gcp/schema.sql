@@ -2139,7 +2139,7 @@ CREATE INDEX IF NOT EXISTS idx_news_sentiment_match_method
 
 -- ── watchlists: per-user ticker subscriptions, durably stored ───────────────
 -- Replaces the alert_config.json file-based watchlist that was writing to
--- the trading-platform Cloud Run service's ephemeral filesystem (lost on
+-- the solyra-api-prod Cloud Run service's ephemeral filesystem (lost on
 -- every restart, never reached the fetcher containers).
 --
 -- Schema is per-user from day one so a future auth layer can flip on

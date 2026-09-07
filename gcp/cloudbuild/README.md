@@ -9,8 +9,8 @@ itself (`gcloud builds triggers describe <NAME>`).
 | File | Trigger | GHA workflow replaced |
 |------|---------|----------------------|
 | `apply-schema-cloudbuild.yaml`           | `apply-schema-on-change` (push to main on `gcp/schema.sql`) | `.github/workflows/apply-schema-migrations-on-change.yml` |
-| `deploy-platform-staging-cloudbuild.yaml` | `deploy-platform-staging` (push to main on `platform/`, `lib/`, etc.) | `.github/workflows/deploy-platform-staging.yml` |
-| `promote-platform-prod-cloudbuild.yaml`  | `promote-platform-prod` (manual) | `.github/workflows/promote-platform-prod.yml` |
+| `deploy-solyra-api-staging-cloudbuild.yaml` | `deploy-solyra-api-staging` (push to main on `platform/`, `lib/`, etc.) | `.github/workflows/deploy-platform-staging.yml` |
+| `deploy-solyra-api-prod-cloudbuild.yaml`  | `deploy-solyra-api-prod` (manual) | `.github/workflows/promote-platform-prod.yml` |
 
 ## Required IAM grants on `trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com`
 
@@ -24,7 +24,34 @@ without any extra grants (the SA already has `roles/run.developer`
 which covers `run.jobs.run`, and the build output is small enough
 that the missing `logging.logWriter` only produces a warning).
 
-The `deploy-platform-staging` and `promote-platform-prod` triggers
+### What `trading-runner@` actually holds (read live 2026-09-05)
+
+This list was previously incomplete, which is a real hazard for a project
+rebuild and produced a false alarm on review (Codex, PR #990): reading only the
+two grants below, the staging trigger's inline `docker push` looks like it must
+fail for want of Artifact Registry write access. It does not — the SA holds
+`artifactregistry.writer` at project level, which covers `uploadArtifacts` on
+the Artifact-Registry-backed `gcr.io` repo. Verified:
+
+```
+$ gcloud projects get-iam-policy adept-mountain-474619-d4 \
+    --flatten="bindings[].members" \
+    --filter="bindings.members:trading-runner@..."
+roles/aiplatform.user            roles/logging.logWriter
+roles/artifactregistry.writer    roles/run.developer
+roles/cloudbuild.builds.editor   roles/run.invoker
+roles/cloudsql.client            roles/secretmanager.secretAccessor
+roles/cloudsql.editor            roles/serviceusage.serviceUsageConsumer
+                                 roles/storage.objectAdmin
+```
+
+The two that the staging trigger depends on and that a rebuild must not omit
+are `artifactregistry.writer` (the `docker push` step, which now runs inline as
+this SA rather than delegating to a nested Cloud Build) and `run.developer`
+(the `gcloud run deploy` step). Re-verify before relying on this; a grant can
+be revoked without any repo change.
+
+The `deploy-solyra-api-staging` and `deploy-solyra-api-prod` triggers
 need these grants before they'll run successfully:
 
 ```bash
@@ -36,14 +63,39 @@ gcloud projects add-iam-policy-binding adept-mountain-474619-d4 \
   --role='roles/logging.logWriter' \
   --condition=None
 
-# 2) Start sub-builds (platform/deploy.sh internally calls `gcloud builds submit`
-#    to build the trading-platform Docker image). Without this, deploy-platform-
-#    staging fails at the sub-build step.
+# 2) Start sub-builds. Kept for the historical deploy path that shelled out to
+#    platform/deploy.sh (which calls `gcloud builds submit`). The staging
+#    trigger now builds inline with gcr.io/cloud-builders/docker, so this is
+#    no longer load-bearing for it, but platform/deploy.sh still needs it when
+#    an operator runs it directly.
 gcloud projects add-iam-policy-binding adept-mountain-474619-d4 \
   --member="serviceAccount:${SA}" \
   --role='roles/cloudbuild.builds.editor' \
   --condition=None
 ```
+
+`platform/deploy.sh` also runs `./gcp/deploy.sh pin-images --no-sweep`
+before its sub-build, so the digest every live revision runs keeps an
+`inuse-*` tag when `:latest` moves (the Artifact Registry cleanup policy
+deletes untagged versions older than 14 days). That step needs, and the
+SA already holds:
+
+- `roles/run.developer` — `run.jobs.get/list`, `run.executions.get`,
+  `run.services.get`, `run.revisions.get` to read what is deployed;
+- `roles/artifactregistry.writer` — `artifactregistry.tags.create/update`
+  and `dockerimages.get` to write the pins.
+
+The same step runs when `.github/workflows/deploy-staging.yml` dispatches
+`platform/deploy.sh` under the WIF identity `arch-refresh-bot@`. That
+account holds `roles/run.admin` (the reads) but only
+`roles/artifactregistry.reader` on `gcr.io`, so it was granted
+`roles/artifactregistry.writer` on both repos on 2026-09-07; the workflow
+header carries the commands in case the SA is ever rebuilt.
+
+It does NOT hold `artifactregistry.tags.delete`, which is why the trigger
+path passes `--no-sweep`: releasing pins nothing needs any more is left to
+the interactive `gcp/deploy.sh` path (`build`, `pin-images`, any deploy
+command), which runs as an operator or `claude-web@`.
 
 These bindings need `roles/resourcemanager.projectIamAdmin` (or
 `roles/owner`) to set. The sandbox `claude-web@` SA only has
@@ -53,12 +105,84 @@ account with broader permissions.
 After granting both, test:
 
 ```bash
-gcloud builds triggers run deploy-platform-staging --branch=main
+gcloud builds triggers run deploy-solyra-api-staging --branch=main
 # Then watch:
 gcloud builds list --limit=1 --format='value(id,status)'
 ```
 
-The third trigger (`promote-platform-prod`) is manual-only; invoke
-with `gcloud builds triggers run promote-platform-prod` whenever
-you want to route 100% traffic to the current `staging`-tagged
-revision. The same IAM grants above cover it.
+The third trigger (`deploy-solyra-api-prod`) is manual-only and is the
+path prod is SUPPOSED to change through:
+
+```bash
+# 1. read what staging is serving, and validate THAT
+gcloud run services describe solyra-api-staging --region=us-east1 --format=json \
+  | python3 gcp/cloudbuild/serving_revision.py
+# 2. promote it by name
+gcloud builds triggers run deploy-solyra-api-prod --branch=main \
+  --substitutions=_EXPECT_STAGING_REVISION=<the revision from step 1>
+```
+
+It no longer shifts traffic between tags on one service. It reads the image
+digest currently serving `solyra-api-staging` and deploys that exact digest to
+`solyra-api-prod`, so prod ships the bits staging validated rather than a fresh
+build of whatever has since merged to main. The same IAM grants above cover it.
+
+**There is a second way into prod, and it does not have this gate.**
+`./platform/deploy.sh` with its defaults (no `STAGING_SERVICE=1`) builds the
+caller's working tree and deploys it straight to `solyra-api-prod`. That path
+never consults staging, so nothing there is the digest anybody validated, and
+`_EXPECT_STAGING_REVISION` cannot apply to it. It is kept deliberately as the
+break-glass route for the case the promote trigger cannot serve — prod is
+broken and staging is too — and it is named here rather than left for an
+auditor to find, because "the only path that changes prod" was not true
+(Codex, PR #990). Use it only when the promote path cannot work, and expect
+the revision it creates to be replaced by the next promotion.
+
+`_EXPECT_STAGING_REVISION` is **required**, and it is what ties the promotion to
+what you actually looked at. "What staging is serving now" and "what was
+validated" are the same answer only while nothing deploys in between — and the
+staging trigger fires on every push to main, so that is not a safe assumption.
+With the expectation passed, a staging deploy landing in the gap aborts the
+promotion instead of silently substituting a revision nobody reviewed. An image
+digest is accepted in its place if you validated by artifact. The failure
+message prints the revision serving right now, so re-running after a
+re-validation is a copy-paste.
+
+## Two staging deploy paths, and how they are kept from interleaving
+
+`solyra-api-staging` is deployed by **two** things that cannot see each other:
+
+* the `deploy-solyra-api-staging` trigger, on push to main
+* `.github/workflows/deploy-staging.yml`, dispatched by an operator, which
+  runs `platform/deploy.sh` → `gcloud builds submit platform/cloudbuild.yaml`
+
+The workflow's `concurrency: deploy-staging` group serialises the workflow
+against itself and has no reach over a Cloud Build run (Codex, PR #990). Two
+mechanisms close the gap:
+
+1. **Immutable tags, deploy by digest.** Both paths used to build, push and
+   deploy the bare image — `:latest`, a mutable pointer both of them write. Two
+   overlapping runs could push over each other between one run's push and its
+   deploy, so `gcloud run deploy --image …:latest` resolved to an image that
+   run never built. Since the promote trigger above deliberately promotes
+   whatever digest is serving staging, a mutable tag put an unvalidated image
+   one click from production. Both paths now tag with the commit
+   (`$SHORT_SHA`, or `git rev-parse --short HEAD` in `platform/deploy.sh`),
+   resolve that tag to its `sha256` digest, and deploy the **digest** — so a
+   revision is pinned to exactly the artifact its run built.
+
+2. **A shared interlock.** `assert_no_concurrent_staging_deploy.sh` runs first
+   in both paths and fails loud if another deploy build is in flight. Both
+   paths are Cloud Build runs in this project, so one can see the other through
+   the build tags in the two configs (`solyra-api-staging-deploy` in the
+   trigger config, `solyra-api-image-build` in `platform/cloudbuild.yaml` —
+   `gcloud builds submit` has no flag for build tags, so each tag has to live
+   in its own file, and the script scans for both). It needs
+   `cloudbuild.builds.list`, which `roles/cloudbuild.builds.editor` already
+   grants to both `trading-runner@` and the workflow's WIF SA — no new grants.
+
+   It refuses rather than queues: a deploy that silently starts twenty minutes
+   later is harder to reason about than one an operator re-runs. Because
+   `platform/cloudbuild.yaml` serves prod as well and its tag is static, a prod
+   deploy also blocks a concurrent staging deploy — conservative rather than
+   wrong, since both are manual and both publish into the same repository.

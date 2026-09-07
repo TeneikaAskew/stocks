@@ -13,9 +13,9 @@ These are derived from the actual backup config — `gcloud sql instances descri
 |---|---|---|---|
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
-| **Cloud Run Jobs (27 jobs) + Schedulers (40+)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
-| **Cloud Run Services (3: trading-platform, discord-interactions, failure-notifier)** | 30 min | n/a | Same `deploy.sh` redeploys. |
-| **Secret Manager (19 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
+| **Cloud Run Jobs (76 jobs) + Schedulers (66)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
+| **Cloud Run Services (4: solyra-api-prod, solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the two API services (step 10 below). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
+| **Secret Manager (22 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
 
 **Bottom line:** the only piece with a real DR posture is Cloud SQL. Everything else is "redeploy from git + Secret Manager." If you lose **both** Cloud SQL **and** Secret Manager simultaneously, you're rebuilding from external API key reissuance — that's the long pole.
@@ -365,10 +365,10 @@ gcloud builds cancel <BUILD_ID>
 | **Cloud SQL `trading-db`** | Daily automated backups @ 03:00 UTC, 7-backup retention; transaction log retention 7d enables PITR | ❌ Never tested | ⚠️ **Backups exist but no rehearsed restore.** Worth a one-time `gcloud sql backups restore` to a `-test` instance to validate. |
 | **GCS `adept-mountain-474619-d4-trading-data`** | None — versioning OFF; 730-day delete lifecycle on `raw/` | n/a | 🔴 **No backup.** Risk-low (Cloud SQL is canonical), but if a fetcher ever writes corrupted parquet on top of good parquet, the good copy is gone. **Recommend: enable versioning.** |
 | **GCS `adept-mountain-474619-d4_cloudbuild`** | Auto-managed by Cloud Build (24h source retention) | n/a | 🟢 OK — the source tarballs aren't worth backing up; Cloud Build auto-prunes anyway. |
-| **Secret Manager (19 secrets)** | None at the Secret Manager level | n/a | ⚠️ **No automated backup.** Internal secrets (DB pass, admin token) can be re-generated. External secrets (AV, FRED, Anthropic, Discord webhook, GitHub PAT, EW user/pass, Benzinga, sec-user-agent) **must be re-issued from each provider** — this is the long pole on whole-project rebuild. **Recommend: print or 1Password-archive the values you can't easily re-issue.** |
+| **Secret Manager (22 secrets)** | None at the Secret Manager level | n/a | ⚠️ **No automated backup.** Internal secrets (DB pass, admin token) can be re-generated. External secrets (AV, FRED, Anthropic, Discord webhook, GitHub PAT, EW user/pass, Benzinga, sec-user-agent) **must be re-issued from each provider** — this is the long pole on whole-project rebuild. **Recommend: print or 1Password-archive the values you can't easily re-issue.** |
 | **Container images (Artifact Registry)** | None — no retention policy on `trading/trading-system` | n/a | 🟢 OK — `./gcp/deploy.sh build` rebuilds from current source in ~3 min. Old images aren't load-bearing for DR. |
-| **Cloud Run Jobs (29) / Services (3)** | Config in `gcp/deploy.sh` (git) | ✅ Implicitly tested every time we deploy | 🟢 OK — `deploy.sh all` recreates everything from scratch. |
-| **Cloud Scheduler (40+ jobs)** | Config in `gcp/deploy.sh::deploy_schedulers` (git) | ✅ Implicitly tested | 🟢 OK — `deploy.sh schedulers` recreates from scratch. Last-tested 2026-05-01 when premarket-brief schedulers were recreated. |
+| **Cloud Run Jobs (76) / Services (4)** | Config in `gcp/deploy.sh` (git) | ✅ Implicitly tested every time we deploy | 🟢 OK — `deploy.sh all` recreates everything from scratch. |
+| **Cloud Scheduler (66 jobs)** | Config in `gcp/deploy.sh::deploy_schedulers` (git) | ✅ Implicitly tested | 🟢 OK — `deploy.sh schedulers` recreates from scratch. Last-tested 2026-05-01 when premarket-brief schedulers were recreated. |
 | **Pub/Sub (`gcp-job-failures` + DLQ)** | Topics auto-recreated by `deploy.sh` (no message retention beyond default 7d) | n/a | 🟢 OK — topics are config; messages are ephemeral. |
 | **Log sink (`gcp-job-failures-sink`)** | Created by `setup_notifier_secrets` in deploy.sh | ✅ | 🟢 OK |
 | **Code (this repo)** | GitHub | ✅ Tested with every clone | 🟢 OK |
@@ -451,9 +451,21 @@ echo -n "<value>" | gcloud secrets create <name> --data-file=- --replication-pol
 # deploy_notifier + deploy_schedulers + backfill_watchlist
 
 # === Step 10: Deploy services that aren't in `all` ===
+# `gcp/deploy.sh all` deploys the JOBS and failure-notifier. It does not create
+# either API service -- those are platform/deploy.sh's -- so a rebuild that
+# stops at step 9 leaves the browser-facing API absent (Codex, PR #990).
 ./gcp/deploy.sh discord    # discord-interactions Cloud Run Service (slash commands)
                            # Then point Discord's Interactions Endpoint URL at the new
                            # service URL and run scripts/discord/register_commands.py
+
+# The two API services. Staging first: it is the one the frontend calls, and
+# prod is a promotion of a digest staging has served.
+STAGING_SERVICE=1 ./platform/deploy.sh   # solyra-api-staging  (public edge, Firebase)
+./platform/deploy.sh                     # solyra-api-prod     (IAP)
+# Then re-create the custom domain mapping, which is Cloud Run state and in no
+# script:
+gcloud beta run domain-mappings create --service=solyra-api-staging \
+    --domain=api.stocks.insightscollective.org --region=us-east1
 
 # === Step 11: Restore data (if Cloud SQL backup is recoverable) ===
 # If you had a Cloud SQL export (sqldump) in another project / off-cloud:
@@ -502,7 +514,31 @@ Things that could fail silently today because nothing watches them. Ranked by si
 7. **⚠️ `fetch-earnings-options` Cloud Run Job confirmed missing** (per [DATA_DEPENDENCIES.md §5](DATA_DEPENDENCIES.md) and the recently-merged drift PR). Nothing watches whether `earnings_options_snapshots` is fresh because the writer doesn't exist.
    - **Fix:** decide — rebuild the fetcher or drop the table.
 
-8. **⚠️ The `premarket_analysis_history` and `insight_reports_history` tables are write-only.** They exist for "compliance / replay" but no consumer reads them. If they accumulate forever (no retention policy), the small Postgres instance will eventually run out of disk.
+8. **⚠️ Nothing watched whether this runbook was still true.** `docs/PIPELINE.md`
+   documented the market-data ingest as "23:00 UTC" while the scheduler has run
+   `0 23 * * 1-5` in `America/New_York` for months, and a timezone fix designed
+   off that sentence was wrong end-to-end. `docs/GCP_ARCHITECTURE.md` claimed 34
+   Cloud Run Jobs against 76 live. Doc rot is a silent failure like any other.
+   - **Fix (done 2026-09-06):** `scripts/verify_docs_against_live.py` compares
+     every schedule, wall-clock, count and service-name claim in the operational
+     docs against `gcloud`, and exits non-zero on a mismatch. It runs on a
+     schedule in `.github/workflows/verify-docs-against-live.yml` (09:00 ET
+     weekdays, WIF-authenticated) — a script nothing invokes is not a monitor,
+     and until that workflow existed this section described one that only ran
+     when somebody remembered (Codex, PR #990). Run it by hand with:
+
+     ```bash
+     python scripts/verify_docs_against_live.py            # reads live via gcloud
+     python scripts/verify_docs_against_live.py --write-snapshot live.json
+     python scripts/verify_docs_against_live.py --snapshot live.json   # offline
+     ```
+
+     Run it after any infrastructure change. A line the heuristics cannot judge
+     (a historical record naming a deleted service, a count deliberately about
+     the repo rather than the fleet) is exempted in place with
+     `<!-- verify-docs-ok: reason -->`, so the reason sits next to the claim.
+
+9. **⚠️ The `premarket_analysis_history` and `insight_reports_history` tables are write-only.** They exist for "compliance / replay" but no consumer reads them. If they accumulate forever (no retention policy), the small Postgres instance will eventually run out of disk.
    - **Fix:** add a quarterly cleanup job that deletes rows older than 90 days, OR move them to a partitioned table with auto-drop, OR if no replay use case ever materializes, drop the tables.
 
 ---

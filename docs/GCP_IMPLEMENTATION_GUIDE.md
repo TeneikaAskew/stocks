@@ -109,7 +109,7 @@ An event-driven options trading intelligence system that:
 | Backup Storage | Google Cloud Storage | Raw Parquet archives |
 | Scheduled Jobs | Cloud Run Jobs | All data fetching + analysis |
 | Real-time Monitor | Cloud Run Job | Intraday signal polling (scheduled 9:25 AM ET) |
-| Scheduling | Cloud Scheduler | 21 cron triggers |
+| Scheduling | Cloud Scheduler | 66 cron triggers |
 | Alerts | Discord Webhooks | Real-time trade alerts |
 | Secrets | Secret Manager | API keys, DB credentials, webhook URLs |
 | Container Build | Cloud Build | Docker image CI |
@@ -214,7 +214,6 @@ stocks/
 │   ├── test_indicators.py
 │   ├── test_signals.py
 │   ├── test_strat.py
-│   ├── test_e2e.py                # Playwright E2E (28 tests)
 │   └── test_scripts.py            # CLI regression (18 tests)
 │
 ├── website/                       # Trading dashboard web app (port 8104)
@@ -775,7 +774,7 @@ All sources are normalized to canonical names before returning:
 | Cron Triggers | Cloud Scheduler | 21 triggers | All America/New_York timezone |
 | Container Images | Artifact Registry | `trading/trading-system` | us-east1 |
 | Build | Cloud Build | (default) | `gcloud builds submit` |
-| Secrets | Secret Manager | 6 secrets | See §14 |
+| Secrets | Secret Manager | 22 secrets | See §14 |
 | Identity | IAM Service Account | `trading-runner@PROJECT.iam` | Least-privilege roles |
 
 ### Service Account Roles
@@ -831,33 +830,32 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `fetch-economic-events` | `gcp.fetchers.fetch_economic_events` | 512 Mi | 1 | 300s | 1 |
 | `fetch-earnings-calendar` | `scripts/fetch_earnings_calendar.py` | 512 Mi | 1 | 300s | 1 |
 
-### Cloud Scheduler Triggers (24 total)
+### Cloud Scheduler Triggers
 
-| Trigger Name | Cron (ET) | Target Job |
-|-------------|-----------|------------|
-| `premarket-brief-daily` | `30 8 * * 1-5` | premarket-brief |
-| `weekend-review-saturday` | `0 9 * * 6` | weekend-review |
-| `fetch-market-data-daily` | `0 17 * * 1-5` | fetch-market-data |
-| `etf-options-open` | `30 9 * * 1-5` | fetch-etf-options |
-| `etf-options-open-2` | `35 9 * * 1-5` | fetch-etf-options |
-| `etf-options-open-3` | `40 9 * * 1-5` | fetch-etf-options |
-| `etf-options-mid-morning` | `0 10 * * 1-5` | fetch-etf-options |
-| `etf-options-late-morning` | `30 11 * * 1-5` | fetch-etf-options |
-| `etf-options-afternoon-1` | `0 13 * * 1-5` | fetch-etf-options |
-| `etf-options-afternoon-2` | `30 14 * * 1-5` | fetch-etf-options |
-| `etf-options-power-hour` | `30 15 * * 1-5` | fetch-etf-options |
-| `etf-options-close` | `5 16 * * 1-5` | fetch-etf-options |
-| `earnings-options-preopen` | `0 9 * * 1-5` | fetch-earnings-options |
-| `earnings-options-open` | `35 9 * * 1-5` | fetch-earnings-options |
-| `earnings-options-mid` | `0 10 * * 1-5` | fetch-earnings-options |
-| `earnings-options-noon` | `0 12 * * 1-5` | fetch-earnings-options |
-| `earnings-options-close-1` | `50 15 * * 1-5` | fetch-earnings-options |
-| `earnings-options-close-2` | `30 16 * * 1-5` | fetch-earnings-options |
-| `alphavantage-intraday-monthly` | `0 21 1 * *` | fetch-alphavantage-intraday |
-| `economic-events-daily` | `0 7 * * 1-5` | fetch-economic-events |
-| `earnings-calendar-daily` | `15 7 * * 1-5` | fetch-earnings-calendar |
-| `analyze-market-data-daily` | `0 18 * * 1-5` | (future) |
-| `run-pipeline-daily` | `30 18 * * 1-5` | (future) |
+**Read live, do not read this section as an inventory.** The table that used to
+live here listed 24 triggers from the 2026-02 build-out. Read live 2026-09-06
+there are **84**, and 18 of the 24 rows pointed at jobs that no longer exist
+(`fetch-etf-options` was deleted 2026-04-26; `fetch-earnings-options` was never
+deployed; `analyze-market-data-daily` and `run-pipeline-daily` were marked
+"(future)" and never built). Two rows were also wrong about the schedule of a
+job that does exist: `fetch-market-data-daily` was listed as `0 17 * * 1-5`
+while it has run at `0 23 * * 1-5` for months, and `earnings-calendar-daily`
+does not exist under that name at all (it is `daily-earnings-refresh-calendar`
+at `0 19 * * 1-5`).
+
+That table was the direct cause of a wrong timezone fix on 2026-09-06, so it is
+replaced with the command that answers the question correctly:
+
+```bash
+gcloud scheduler jobs list --location=us-east1 \
+  --format="table(name.basename(),schedule,timeZone,state,httpTarget.uri)"
+```
+
+Every entry runs in `America/New_York` (verified live 2026-09-06 — zero entries
+in any other zone), so a cron field here is a NY wall-clock time and shifts with
+DST. The declared set lives in `deploy_schedulers()` in
+[`gcp/deploy.sh`](../gcp/deploy.sh); `scripts/verify_docs_against_live.py`
+compares what the docs claim against what `gcloud` returns.
 
 ### Data Flow: Pre-Market Brief
 
@@ -1318,7 +1316,7 @@ echo -n 'YOUR_AV_KEY' | \
 **Step 6 — Create Cloud Scheduler triggers**
 
 ```bash
-./gcp/deploy.sh schedulers  # creates all 21 cron triggers
+./gcp/deploy.sh schedulers  # creates all 66 cron triggers
 ```
 
 **Step 7 — Full deploy (steps 4-6)**
@@ -1351,7 +1349,7 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/raw/
 ./gcp/deploy.sh monitor     # Deploy signal-monitor service
 ./gcp/deploy.sh weekend     # Deploy weekend-review job
 ./gcp/deploy.sh fetchers    # Deploy all 4 fetch jobs
-./gcp/deploy.sh schedulers  # Create 21 Cloud Scheduler triggers
+./gcp/deploy.sh schedulers  # Create the Cloud Scheduler triggers (66 live)
 ./gcp/deploy.sh all         # build + fetchers + premarket + monitor + weekend + schedulers
 ```
 
@@ -1514,7 +1512,7 @@ GROUP BY 1 ORDER BY 1 DESC LIMIT 8;
 
 The `fetch-earnings-options` job resolves active tickers in priority order:
 
-1. **Cloud SQL `earnings_calendar` table** (primary) — tickers with `earnings_date` in the next 7 days. Populated by the `fetch-earnings-calendar` job at 7:15 AM ET.
+1. **Cloud SQL `earnings_calendar` table** (primary) — tickers with `earnings_date` in the next 7 days. Populated by the `fetch-earnings-calendar` job at 7:00 PM ET (`daily-earnings-refresh-calendar`, `0 19 * * 1-5`; read live 2026-09-06).
 2. **GCS strategy CSVs** (fallback) — `sheets/*.csv` in the GCS bucket.
 3. **Local CSVs** (fallback) — `google-apps-script/data/*.csv`.
 
@@ -1539,7 +1537,7 @@ done
 | Cloud Run Job | signal-monitor, 8h timeout, 0 retries, scheduled daily | ~$3/mo |
 | Cloud Storage | ~50 GB + 15 write ops/day | ~$2/mo |
 | Cloud Scheduler | 21 triggers × ~20 weekdays/mo | ~$0.21/mo |
-| Secret Manager | 6 secrets × ~100 accesses/day | ~$0.06/mo |
+| Secret Manager | 22 secrets × ~100 accesses/day | ~$0.20/mo |
 | Artifact Registry | ~1 GB images | ~$0.10/mo |
 | Cloud Build | ~1 build/week × 5 min | ~$0.25/mo |
 | **Total** | | **~$38/mo** |

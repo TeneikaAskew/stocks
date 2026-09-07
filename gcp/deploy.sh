@@ -10,6 +10,8 @@
 #   ./gcp/deploy.sh setup      # provision Cloud SQL, GCS bucket, service account
 #   ./gcp/deploy.sh migrate    # migrate local Parquet data → GCS + Cloud SQL
 #   ./gcp/deploy.sh build      # build & push Docker image only
+#   ./gcp/deploy.sh pin-images # tag every image digest a Cloud Run job/service pins
+#   ./gcp/deploy.sh registry-cleanup # apply the Artifact Registry cleanup policy
 #   ./gcp/deploy.sh premarket  # deploy pre-market brief job
 #   ./gcp/deploy.sh monitor    # deploy signal monitor service
 #   ./gcp/deploy.sh weekend    # deploy weekend review job
@@ -62,8 +64,439 @@ build_image() {
     cp -r lib/                 "$tmpdir/lib/"
     cp -r gcp/                 "$tmpdir/gcp/"
     cp -r scripts/             "$tmpdir/scripts/"
-    gcloud builds submit --tag "${IMAGE}" "$tmpdir"
+    # Re-pin before the tag moves: every build re-points :latest, which
+    # untags the digest the currently deployed jobs still run on. The
+    # cleanup policy only deletes UNTAGGED versions, so pinning first keeps
+    # those digests alive until the jobs are redeployed (see pin_image_tags).
+    pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :latest off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
+    gcloud builds submit --tag "${IMAGE}" "$tmpdir" || { echo "ERROR: build failed; :latest not moved." >&2; rm -rf "$tmpdir"; return 1; }
     rm -rf "$tmpdir"
+}
+
+# ── Artifact Registry hygiene ─────────────────────────────────────────────────
+# Why this exists: every `gcloud builds submit --tag IMAGE` moves :latest and
+# leaves the previous digest untagged. Nothing ever deleted them, so by
+# 2026-09 the `trading` repo held 448 versions / 282 GiB (~$30/month, the
+# third-largest line on the bill) for an image that has 7 tags.
+#
+# Deleting untagged versions blindly is NOT safe: a Cloud Run Job resolves its
+# image tag to a digest when it is created/updated and every later execution
+# runs that exact digest (verified 2026-09-06: signal-monitor updated 08-30
+# still executed the 08-30 digest after :latest moved on 09-01). On 2026-09-06
+# the 76 jobs pinned 30 distinct digests, 23 of them untagged, the oldest
+# from April. Deleting one of those would fail the job's next execution
+# with "image not found". Services are the same: every revision that still
+# receives traffic or carries a tag can scale out from its own digest.
+#
+# So the policy is two-part:
+#   1. pin_image_tags — tag every digest a job or service can still run as
+#      `inuse-job-<job>` / `inuse-svc-<revision>`. Tags move to the new
+#      digest when the job is redeployed and pinned again, so an old digest
+#      is released only once nothing runs it. Stale inuse-* tags (job or
+#      revision gone) are removed. Runs before every build (so :latest
+#      cannot move off an unpinned digest) and after every deploy command
+#      (see the dispatcher), so a job deployed through this script is
+#      pinned the moment it is updated.
+#   2. setup_registry_cleanup — a cleanup policy that KEEPS every tagged
+#      version and the 10 most recent versions, and DELETES untagged
+#      versions older than 14 days. The 10-version / 14-day slack covers a
+#      job updated by hand (outside this script) and not yet executed: its
+#      digest is the then-current tag, still tagged until the next build
+#      and inside the recent-10 window after.
+#
+# Everything here fails CLOSED (CLAUDE.md Rule 3.7): an inventory read that
+# fails, a revision without a digest, or a tag that cannot be written aborts
+# the run with a nonzero status. An unreadable inventory is never treated
+# as an empty one, because the stale-tag sweep would then release every pin.
+#
+# How a job's deployed digest is found: the job's latest execution records
+# the resolved digest AND the job generation it ran
+# (metadata.labels['run.googleapis.com/jobGeneration']). When that matches
+# the job's current metadata.generation the execution digest is exactly what
+# the job will run next. When the job has been updated since (or never run),
+# the template's image reference is resolved to a digest now — exact when
+# the job was deployed through this script (pinned right after deploy), and
+# the best available otherwise.
+
+# Split a gcloud `value(a,b,c)` row on TABS, preserving empty columns.
+# `IFS=$'\t' read` cannot do this: tab is IFS whitespace, so adjacent tabs
+# collapse and an empty middle field (a job that has never executed has no
+# latestCreatedExecution) shifts every later column left (Codex, PR #1004).
+# Usage: _split_tsv "<row>" var1 var2 var3
+_split_tsv() {
+    local row=$1; shift
+    local name
+    for name in "$@"; do
+        if [[ "${row}" == *$'\t'* ]]; then
+            printf -v "${name}" '%s' "${row%%$'\t'*}"
+            row=${row#*$'\t'}
+        else
+            printf -v "${name}" '%s' "${row}"
+            row=""
+        fi
+    done
+}
+
+# gcr.io/<project>/<pkg> -> us-docker.pkg.dev/<project>/gcr.io/<pkg>. Cloud
+# Run reports legacy images by their gcr.io host; the artifacts CLI only
+# accepts the pkg.dev form of the gcr.io-redirect repo.
+_pkgdev_path() {
+    local ref=$1
+    if [[ "${ref}" == gcr.io/* ]]; then
+        ref="us-docker.pkg.dev/${ref#gcr.io/}"
+        ref="${ref/${PROJECT_ID}\//${PROJECT_ID}/gcr.io/}"
+    fi
+    echo "${ref}"
+}
+
+# Per-run cache of `tags list` per repo image, so pinning ~80 targets does
+# not issue ~80 list calls. Keyed by repo image; value is "tag<TAB>version"
+# lines. Invalidated by _pin_tag after it writes a tag. _load_tags must be
+# called directly (never inside $(...)), otherwise the assignment lands in a
+# subshell and is lost (Codex, PR #1004); callers then read
+# ${_TAG_CACHE[<repo_image>]} themselves.
+declare -A _TAG_CACHE=()
+# Every repo image _pin_tag wrote or checked a tag on during this run, so the
+# stale-tag sweep visits each package that can hold an inuse-* tag rather
+# than a hard-coded list (Codex, PR #1004).
+declare -A _SEEN_REPOS=()
+
+_load_tags() {
+    # _load_tags <repo_image>  -> fills _TAG_CACHE[<repo_image>]; nonzero on failure.
+    # A package that does not exist (retired, e.g. trading-platform after
+    # retire-legacy-images) has no tags and is NOT a failure; any other
+    # error (permission, API) is, because a sweep over an unreadable
+    # package could release nothing or the wrong thing.
+    local repo_image=$1
+    if [ -z "${_TAG_CACHE[${repo_image}]+x}" ]; then
+        local out err errf
+        errf=$(mktemp)
+        if out=$(gcloud artifacts docker tags list "${repo_image}" \
+                --format="value(tag,version)" 2>"${errf}"); then
+            _TAG_CACHE[${repo_image}]="${out}"
+        else
+            err=$(cat "${errf}" 2>/dev/null)
+            if [[ "${err}" == *NOT_FOUND* || "${err}" == *"not found"* ]]; then
+                _TAG_CACHE[${repo_image}]=""
+            else
+                rm -f "${errf}"
+                echo "  ERROR: cannot list tags on ${repo_image}: ${err%%$'\n'*}" >&2
+                return 1
+            fi
+        fi
+        rm -f "${errf}"
+    fi
+}
+
+_pin_tag() {
+    # _pin_tag <image@sha256:...> <tag-name>   nonzero when the tag is not in place
+    local ref=$1 tag=$2
+    local repo_image
+    repo_image=$(_pkgdev_path "${ref%%@*}")
+    ref="${repo_image}@${ref#*@}"
+    local existing
+    _SEEN_REPOS[${repo_image}]=1
+    _load_tags "${repo_image}" || return 1
+    existing=$(printf '%s\n' "${_TAG_CACHE[${repo_image}]}" \
+        | awk -F'\t' -v t="${tag}" '{n=split($1,p,"/"); if (p[n]==t) print $2}' \
+        | sed 's/.*@//')
+    if [ "${existing}" = "${ref#*@}" ]; then
+        return 0
+    fi
+    local short=${ref#*@sha256:}
+    if gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>&1; then
+        echo "  pinned ${tag} -> ${short:0:12}"
+        unset "_TAG_CACHE[${repo_image}]"
+        return 0
+    fi
+    echo "  ERROR: could not tag ${ref} as ${tag}" >&2
+    return 1
+}
+
+_resolve_image_ref() {
+    # _resolve_image_ref <image[:tag]>  -> prints image@sha256:...; nonzero on failure
+    local ref=$1 base tag digest
+    if [[ "${ref}" == *@sha256:* ]]; then
+        echo "${ref}"; return 0
+    fi
+    local name=${ref##*/}
+    if [[ "${name}" == *:* ]]; then
+        base=${ref%:*}; tag=${name#*:}
+    else
+        base=${ref}; tag=latest
+    fi
+    base=$(_pkgdev_path "${base}")
+    digest=$(gcloud artifacts docker images describe "${base}:${tag}" \
+        --format="value(image_summary.digest)" 2>/dev/null) || {
+        echo "  ERROR: cannot resolve ${base}:${tag}" >&2; return 1; }
+    [[ "${digest}" == sha256:* ]] || { echo "  ERROR: no digest for ${base}:${tag}" >&2; return 1; }
+    echo "${base}@${digest}"
+}
+
+_job_pinned_image() {
+    # _job_pinned_image <job>  -> prints the digest ref the job will run next
+    local job=$1 out gen exec_name ref exec_out exec_gen img
+    out=$(gcloud run jobs describe "${job}" --region "${REGION}" \
+        --format="value(metadata.generation,status.latestCreatedExecution.name,spec.template.spec.template.spec.containers[0].image)" 2>/dev/null) \
+        || { echo "  ERROR: cannot describe job ${job}" >&2; return 1; }
+    _split_tsv "${out}" gen exec_name ref
+    if [ -n "${exec_name}" ]; then
+        exec_out=$(gcloud run jobs executions describe "${exec_name}" --region "${REGION}" \
+            --format="value(metadata.labels['run.googleapis.com/jobGeneration'],spec.template.spec.containers[0].image)" 2>/dev/null) \
+            || { echo "  ERROR: cannot describe execution ${exec_name}" >&2; return 1; }
+        _split_tsv "${exec_out}" exec_gen img
+        if [ "${exec_gen}" = "${gen}" ] && [[ "${img}" == *@sha256:* ]]; then
+            echo "${img}"; return 0
+        fi
+    fi
+    _resolve_image_ref "${ref}"
+}
+
+_service_live_images() {
+    # _service_live_images <service> -> "revision<TAB>image@digest" for every
+    # revision that can still serve: each status.traffic target (percent > 0
+    # or tagged) plus the latest ready revision. Nonzero on any read failure.
+    local svc=$1 out rev img
+    out=$(gcloud run services describe "${svc}" --region "${REGION}" \
+        --format="value(status.traffic[].revisionName,status.latestReadyRevisionName)" 2>/dev/null) \
+        || { echo "  ERROR: cannot describe service ${svc}" >&2; return 1; }
+    local -a revs=()
+    for rev in $(printf '%s' "${out}" | tr ';\t' '  '); do
+        [ -n "${rev}" ] || continue
+        revs+=("${rev}")
+    done
+    [ "${#revs[@]}" -gt 0 ] || { echo "  ERROR: ${svc} reports no revisions" >&2; return 1; }
+    for rev in $(printf '%s\n' "${revs[@]}" | sort -u); do
+        img=$(gcloud run revisions describe "${rev}" --region "${REGION}" \
+            --format="value(status.imageDigest)" 2>/dev/null) \
+            || { echo "  ERROR: cannot describe revision ${rev}" >&2; return 1; }
+        [[ "${img}" == *@sha256:* ]] || { echo "  ERROR: ${rev} reports no imageDigest" >&2; return 1; }
+        printf '%s\t%s\n' "${rev}" "${img}"
+    done
+}
+
+# pin_image_tags [--no-sweep]
+# Pins every in-use digest; then, unless --no-sweep, releases inuse-* tags
+# that no job or revision needs any more. The sweep needs
+# artifactregistry.tags.delete, which roles/artifactregistry.writer (the
+# Cloud Build trigger identity, trading-runner@) does NOT include, while
+# pinning itself only needs tags.create/update. platform/deploy.sh, which
+# runs under that identity, therefore calls this with --no-sweep: pinning
+# is the safety step and must succeed there; releasing stale pins is
+# hygiene the interactive deploy path does (Codex, PR #1004).
+pin_image_tags() {
+    local sweep=1
+    [ "${1:-}" = "--no-sweep" ] && sweep=0
+    echo "Pinning in-use image digests as inuse-* tags..."
+    local jobs services failures=0
+    local -a wanted=()   # "<repo_image>:<tag>" pairs, keyed by package so a
+                         # job that moved packages releases its old pin
+                         # (Codex, PR #1004)
+    local job svc lines rev img tag repo_image tags
+
+    # Inventory first; refuse to proceed on any read failure (an unreadable
+    # inventory must never look like an empty one).
+    jobs=$(gcloud run jobs list --region "${REGION}" --format="value(metadata.name)" 2>/dev/null) \
+        || { echo "ERROR: cannot list Cloud Run jobs; no tags changed." >&2; return 1; }
+    services=$(gcloud run services list --region "${REGION}" --format="value(metadata.name)" 2>/dev/null) \
+        || { echo "ERROR: cannot list Cloud Run services; no tags changed." >&2; return 1; }
+    if [ -z "${jobs}" ] && [ -z "${services}" ]; then
+        echo "ERROR: inventory returned no jobs and no services; refusing to touch tags." >&2
+        return 1
+    fi
+
+    for job in ${jobs}; do
+        if img=$(_job_pinned_image "${job}"); then
+            _pin_tag "${img}" "inuse-job-${job}" || failures=$((failures + 1))
+            wanted+=("$(_pkgdev_path "${img%%@*}"):inuse-job-${job}")
+        else
+            failures=$((failures + 1))
+        fi
+    done
+
+    for svc in ${services}; do
+        if lines=$(_service_live_images "${svc}"); then
+            while IFS=$'\t' read -r rev img; do
+                [ -n "${rev}" ] || continue
+                _pin_tag "${img}" "inuse-svc-${rev}" || failures=$((failures + 1))
+                wanted+=("$(_pkgdev_path "${img%%@*}"):inuse-svc-${rev}")
+            done <<<"${lines}"
+        else
+            failures=$((failures + 1))
+        fi
+    done
+
+    if [ "${failures}" -ne 0 ]; then
+        echo "ERROR: ${failures} pin(s) failed; stale-tag sweep skipped, no tag released." >&2
+        return 1
+    fi
+    if [ "${sweep}" -eq 0 ]; then
+        echo "Pinned ${#wanted[@]} in-use tags (stale-tag sweep skipped: --no-sweep)."
+        return 0
+    fi
+
+    # Release inuse-* tags whose job/revision no longer exists so their
+    # digests become eligible for cleanup. Only reached when every pin above
+    # succeeded, so `wanted` is the complete in-use set.
+    for repo_image in "${IMAGE}" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform-staging" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/solyra-api"; do
+        _SEEN_REPOS[${repo_image}]=1
+    done
+    for repo_image in "${!_SEEN_REPOS[@]}"; do
+        _load_tags "${repo_image}" || { failures=$((failures + 1)); continue; }
+        tags=${_TAG_CACHE[${repo_image}]}
+        while IFS=$'\t' read -r tag _; do
+            tag=${tag##*/}
+            [[ "${tag}" == inuse-* ]] || continue
+            if ! printf '%s\n' "${wanted[@]}" | grep -qxF "${repo_image}:${tag}"; then
+                # Drop the cached listing either way: a later pass in the
+                # same process (build_image pins, then the post-deploy pin)
+                # must re-read rather than try to delete this tag again.
+                unset "_TAG_CACHE[${repo_image}]"
+                if gcloud artifacts docker tags delete "${repo_image}:${tag}" --quiet >/dev/null 2>&1; then
+                    echo "  released stale ${tag}"
+                else
+                    echo "  ERROR: could not release ${repo_image}:${tag}" >&2
+                    failures=$((failures + 1))
+                fi
+            fi
+        done <<<"${tags}"
+    done
+    if [ "${failures}" -ne 0 ]; then
+        echo "ERROR: stale-tag sweep hit ${failures} failure(s)." >&2
+        return 1
+    fi
+    echo "Pinned ${#wanted[@]} in-use tags."
+}
+
+# Delete the pre-#990 API image packages once no live service can run them.
+# Refuses while any traffic-receiving, tagged, or latest-ready revision of
+# any service references trading-platform(-staging), and refuses on any read
+# failure, so running it early or during an API blip cannot break prod.
+retire_legacy_images() {
+    local legacy_repo="us-docker.pkg.dev/${PROJECT_ID}/gcr.io"
+    local services svc live rev img blocked=0
+    services=$(gcloud run services list --region "${REGION}" --format="value(metadata.name)" 2>/dev/null) \
+        || { echo "ERROR: cannot list Cloud Run services; nothing deleted." >&2; return 1; }
+    [ -n "${services}" ] || { echo "ERROR: service inventory is empty; nothing deleted." >&2; return 1; }
+    for svc in ${services}; do
+        live=$(_service_live_images "${svc}") || { echo "ERROR: could not inspect ${svc}; nothing deleted." >&2; return 1; }
+        while IFS=$'\t' read -r rev img; do
+            [ -n "${rev}" ] || continue
+            if [[ "${img}" == */trading-platform@* || "${img}" == */trading-platform-staging@* ]]; then
+                echo "  ${svc} revision ${rev} still runs ${img#*/}" >&2
+                blocked=1
+            fi
+        done <<<"${live}"
+    done
+    if [ "${blocked}" -eq 1 ]; then
+        echo "ERROR: a live revision still runs a legacy image. Promote prod" \
+             "(deploy-solyra-api-prod trigger) first, then re-run." >&2
+        return 1
+    fi
+    local pkg versions rc=0
+    for pkg in trading-platform trading-platform-staging; do
+        versions=$(gcloud artifacts docker images list "${legacy_repo}/${pkg}" \
+            --format="value(version)" 2>/dev/null) \
+            || { echo "  ERROR: cannot list ${legacy_repo}/${pkg}" >&2; rc=1; continue; }
+        if [ -z "${versions}" ]; then
+            echo "  ${pkg}: nothing to delete"
+            continue
+        fi
+        echo "Deleting ${legacy_repo}/${pkg} ($(printf '%s\n' "${versions}" | wc -l) versions)..."
+        if gcloud artifacts docker images delete "${legacy_repo}/${pkg}" --delete-tags --quiet; then
+            echo "  deleted ${pkg}"
+        else
+            echo "  ERROR: delete failed for ${pkg}" >&2
+            rc=1
+        fi
+    done
+    return "${rc}"
+}
+
+setup_registry_cleanup() {
+    echo "Applying Artifact Registry cleanup policy..."
+    local policy
+    policy=$(mktemp)
+    cat > "${policy}" <<'EOF'
+[
+  {
+    "name": "keep-tagged",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "TAGGED"}
+  },
+  {
+    "name": "keep-10-most-recent",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 10}
+  },
+  {
+    "name": "delete-untagged-older-than-14d",
+    "action": {"type": "Delete"},
+    "condition": {"tagState": "UNTAGGED", "olderThan": "1209600s"}
+  }
+]
+EOF
+    # `gcr.io` (multi-region us) is the legacy gcr.io-redirect repo holding
+    # the API service images.
+    #
+    # `keep-tagged` is gone, and it has to be: every push to main that touches
+    # platform/ leaves a `solyra-api:<short sha>` tag, so a blanket keep-tagged
+    # rule meant the repository grew forever -- the unbounded growth this
+    # cleanup machinery exists to prevent, reintroduced by the immutable tag
+    # scheme #990 added (Codex, PR #990). Build tags older than 30 days are
+    # deleted now.
+    #
+    # That is only safe because the digests actually in use are TAGGED
+    # `inuse-*`, which the first Keep rule preserves. #1004 left this scoped
+    # to the retired trading-platform* packages precisely because the
+    # deploy-solyra-api-staging trigger did not pin; it does now (a `pin`
+    # step after its deploy), and so does the prod promote config, which is
+    # the condition that note said to widen on.
+    local gcr_policy
+    gcr_policy=$(mktemp)
+    cat > "${gcr_policy}" <<'EOF'
+[
+  {
+    "name": "keep-in-use-and-latest",
+    "action": {"type": "Keep"},
+    "condition": {"tagPrefixes": ["inuse-", "latest"]}
+  },
+  {
+    "name": "keep-10-most-recent",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 10}
+  },
+  {
+    "name": "delete-untagged-legacy-older-than-14d",
+    "action": {"type": "Delete"},
+    "condition": {
+      "tagState": "UNTAGGED",
+      "olderThan": "1209600s",
+      "packageNamePrefixes": ["trading-platform"]
+    }
+  },
+  {
+    "name": "delete-old-solyra-api-build-tags",
+    "action": {"type": "Delete"},
+    "condition": {
+      "olderThan": "2592000s",
+      "packageNamePrefixes": ["solyra-api"]
+    }
+  }
+]
+EOF
+    # `trading` (us-east1) holds the jobs image; every path that moves its
+    # tags (build_image, build_research_image) pins first.
+    gcloud artifacts repositories set-cleanup-policies trading \
+        --location "${REGION}" --policy "${policy}" --no-dry-run --quiet
+    gcloud artifacts repositories set-cleanup-policies gcr.io \
+        --location us --policy "${gcr_policy}" --no-dry-run --quiet
+    rm -f "${policy}" "${gcr_policy}"
+    echo "Cleanup policy applied to trading (${REGION}) and gcr.io (us, delete scoped to trading-platform*)."
+    echo "  Deletions run asynchronously (Artifact Registry sweeps roughly daily)."
 }
 
 # ── AI Insights pipeline (Cloud Run Job) ─────────────────────────────────────
@@ -510,17 +943,53 @@ _env_string() {
 #   6. After this script runs, set the service URL as the "Interactions
 #      Endpoint URL" in Discord Dev Portal → General Information.
 #   7. Run scripts/discord/register_commands.py to register the commands.
+# 1 during the discord-warm window (Mon-Fri 09:00-16:29 ET), else 0 — but
+# ONLY when both discord-warm-open and discord-warm-close exist and are
+# ENABLED. Without a scheduler to raise it again, deploying 0 outside the
+# window would leave the bot cold through every following market day
+# (Codex, PR #1004); any read failure counts as "not verified" and keeps it
+# warm.
+_discord_min_instances_now() {
+    local name state
+    for name in discord-warm-open discord-warm-close; do
+        state=$(gcloud scheduler jobs describe "${name}" --location "${REGION}" \
+            --format="value(state)" 2>/dev/null) || state=""
+        if [ "${state}" != "ENABLED" ]; then
+            echo "  ${name} not verified ENABLED; keeping min-instances=1 (run ./gcp/deploy.sh schedulers)" >&2
+            echo 1
+            return 0
+        fi
+    done
+    local dow hhmm
+    dow=$(TZ=America/New_York date +%u); hhmm=$(TZ=America/New_York date +%H%M)
+    if [ "${dow}" -le 5 ] && [ "${hhmm}" -ge 0900 ] && [ "${hhmm}" -lt 1630 ]; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+
 deploy_discord_interactions() {
     echo "Deploying discord-interactions SERVICE..."
 
-    # Discord-specific secrets only — the service queries Cloud SQL via
+    # Discord-specific configuration — the service queries Cloud SQL via
     # the same connector path as the rest of the platform.
-    local discord_app_id discord_public_key discord_bot_token
+    #
+    # DISCORD_APP_ID and DISCORD_PUBLIC_KEY are public identifiers (the
+    # public key is Discord's Ed25519 *verification* key) and ride as plain
+    # env vars. DISCORD_BOT_TOKEN is a credential and is bound by
+    # reference with --set-secrets like every other credential on this
+    # service (DB_PASS, AV_API_KEY, the webhooks, FRED, Benzinga). It used
+    # to be read into this shell and pasted into --set-env-vars, which put
+    # the token in plaintext in the revision spec of a public
+    # (--allow-unauthenticated) service, in `gcloud run services describe`
+    # output, and in every deploy log (#830, audit K2). The value is never
+    # read here any more — only its existence is checked.
+    local discord_app_id discord_public_key
     discord_app_id="$(_secret discord-app-id 2>/dev/null || true)"
     discord_public_key="$(_secret discord-public-key 2>/dev/null || true)"
-    discord_bot_token="$(_secret discord-bot-token 2>/dev/null || true)"
     if [ -z "${discord_app_id}" ] || [ -z "${discord_public_key}" ] \
-       || [ -z "${discord_bot_token}" ]; then
+       || ! gcloud secrets describe discord-bot-token --project="${PROJECT_ID}" >/dev/null 2>&1; then
         echo "ERROR: Discord secrets missing. Create discord-app-id, " \
              "discord-public-key, discord-bot-token in Secret Manager first." >&2
         return 1
@@ -530,12 +999,22 @@ deploy_discord_interactions() {
     env="$(_env_string)"
     env="${env},DISCORD_APP_ID=${discord_app_id}"
     env="${env},DISCORD_PUBLIC_KEY=${discord_public_key}"
-    env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+    # DB_SECRET_FLAG is "--set-secrets=K=secret:ver,..."; append the token.
+    local discord_secret_flag
+    discord_secret_flag="${DB_SECRET_FLAG},DISCORD_BOT_TOKEN=discord-bot-token:latest"
 
-    # Cloud Run service deploy. min-instances=1 keeps one warm container so
-    # Discord's 3-sec interaction-ack window never blows up on cold start
-    # (measured: 4-10 s cold start on this image, well past the 3-s limit).
+    # Cloud Run service deploy. One warm container (min-instances=1) keeps
+    # Discord's 3-sec interaction-ack window from blowing up on cold start
+    # (measured: 4-10 s cold start on this image, well past the 3-s limit),
+    # but a warm instance is ~$51/month at 24x7. Since 2026-09-06 the
+    # discord-warm-open / discord-warm-close schedulers (deploy_schedulers)
+    # set min-instances to 1 at 09:00 ET and 0 at 16:30 ET on weekdays, so
+    # this deploy picks whichever value the schedule would have in force
+    # right now rather than resetting to 1 until the next boundary.
+    local discord_min
+    discord_min=$(_discord_min_instances_now)
+    echo "  min-instances=${discord_min} (market-hours schedule; see discord-warm-open/close)"
     # --no-cpu-throttling keeps CPU on between requests so FastAPI
     # BackgroundTasks (replay_in_background, validate_in_background,
     # backtest_in_background) finish their work and edit the deferred reply
@@ -544,7 +1023,7 @@ deploy_discord_interactions() {
     gcloud run deploy discord-interactions \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 \
-        --min-instances 1 --max-instances 5 \
+        --min-instances "${discord_min}" --max-instances 5 \
         --no-cpu-throttling \
         --timeout 600 \
         --port 8080 \
@@ -552,7 +1031,7 @@ deploy_discord_interactions() {
         --service-account "${SA_EMAIL}" \
         --command "uvicorn" \
         --args "gcp.discord_interactions.main:app,--host,0.0.0.0,--port,8080" \
-        ${DB_SECRET_FLAG} \
+        ${discord_secret_flag} \
         --set-env-vars "${env}" \
         --quiet
 
@@ -836,24 +1315,38 @@ deploy_premarket_playbook_resolver() {
 # the dashboard's historical "view as of" mode (loads only bars before the
 # date — no look-ahead).
 #
-# Capacity (CLAUDE.md §0):
-#   Volume:    ~1.25M RTH 1-min bars/ticker × 3 tickers ≈ 3.75M rows. Tickers
-#              are processed one at a time (frames released between iterations),
-#              so peak working set is ONE ticker's enriched frame: 1.25M rows ×
-#              ~50 indicator columns × 8 B × pandas copy-overhead ≈ 3–5 GB.
-#              (Empirical: 4Gi OOM-killed (signal 9) after the first ticker.)
-#   Velocity:  1 Cloud SQL load per ticker (3 reads) + 1 upsert per ticker.
-#              No per-row SQL — cards are vectorised over the in-memory frame.
-#   Wall:      ~5 min/run (full-history load + 12-card scoring × 3 tickers).
-#   timeout:   3600s = 1hr (≥ 4× wall-clock; backfill runs one date per exec).
-#   memory:    8Gi (≥ 4 CPU required) — headroom over the empirical ~4 GB peak.
+# Capacity (CLAUDE.md §0), re-measured 2026-09-06 (#861):
+#   Volume:    2.0M (IWM) / 2.3M (QQQ) / 2.4M (SPY) raw 1-min bars per
+#              ticker in market_data_intraday (2015 → today, extended hours
+#              included; the RTH filter runs after load). Each ticker's
+#              enriched frame is ~50 indicator columns × 8 B × rows plus
+#              pandas copy overhead ≈ 4-6 GB peak.
+#   Velocity:  1 Cloud SQL load per ticker + 1 upsert per ticker. No per-row
+#              SQL — cards are vectorised over the in-memory frame.
+#   Wall:      ~5 min per ticker (measured: IWM alone finished in 5m00s on
+#              2026-09-06). Tasks run in parallel, so ~5 min per execution.
+#   tasks:     3, one ticker per task (scripts/analysis/phase6_playbook.py
+#              select_tickers_for_task). A single process walking all three
+#              tickers was OOM-killed (signal 9) at 8Gi on the SECOND ticker
+#              on 2026-09-06: the first ticker's frame is not returned to
+#              the OS, so the working set grew with the ticker count. Per
+#              task, peak = one ticker, independent of how many tickers run.
+#   memory:    16Gi (4 CPU) — ≥ 2× the ~6 GB single-ticker peak (Rule 0:
+#              estimate the working set, double it). 8Gi is proven for IWM
+#              alone but not for SPY, which carries 21% more bars.
+#   timeout:   3600s (≥ 4× the 5-min wall).
 #   retries:   0 (idempotent upsert on PK (ticker, card_num, analysis_date);
-#              transient retries don't help and would double-run the load).
+#              a transient retry would just re-run the 5-min load).
+#   cost:      3 tasks × ~5 min × (4 vCPU + 16Gi) ≈ $0.12/run × 21 runs/mo
+#              ≈ $2.60/month.
+# Both branches carry the sizing flags so `deploy.sh phase6-playbook`
+# converges a hand-tweaked live job back to this spec (#854).
 deploy_phase6_playbook() {
     echo "Deploying phase6-playbook job..."
     gcloud run jobs create phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 8Gi --cpu 4 --max-retries 0 \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.analysis.phase6_playbook" \
@@ -863,6 +1356,9 @@ deploy_phase6_playbook() {
         --quiet 2>/dev/null || \
     gcloud run jobs update phase6-playbook \
         --image "${IMAGE}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
+        --task-timeout 3600 \
         --command "python,-m,scripts.analysis.phase6_playbook" \
         --args="--write-db" \
         ${DB_SECRET_FLAG} \
@@ -897,7 +1393,10 @@ build_research_image() {
     cp -r lib/    "$tmpdir/lib/"
     cp -r gcp/    "$tmpdir/gcp/"
     cp -r scripts/ "$tmpdir/scripts/"
-    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir"
+    # Same guard as build_image: this build moves :research, which the
+    # research jobs pin by digest (Codex, PR #1004).
+    pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :research off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
+    gcloud builds submit --tag "${IMAGE}:research" "$tmpdir" || { echo "ERROR: research build failed; :research not moved." >&2; rm -rf "$tmpdir"; return 1; }
     rm -rf "$tmpdir"
 }
 
@@ -3181,6 +3680,137 @@ _schedule_args() {
 }
 
 
+# Delete a retired scheduler entry. Absent (NOT_FOUND) is the normal,
+# silent case; any other describe or delete failure is reported and returns
+# nonzero so deploy_schedulers can fail instead of leaving a legacy entry
+# firing alongside its replacement (Codex, PR #1004).
+_unschedule() {
+    local NAME=$1 err
+    if err=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+            --format="value(name)" 2>&1 >/dev/null); then
+        if gcloud scheduler jobs delete "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+            echo "  retired ${NAME}"
+        else
+            echo "  ERROR: could not delete scheduler ${NAME}" >&2
+            return 1
+        fi
+    elif [[ "${err}" == *NOT_FOUND* ]]; then
+        return 0
+    else
+        echo "  ERROR: cannot describe scheduler ${NAME}: ${err%%$'\n'*}" >&2
+        return 1
+    fi
+}
+
+# Create-or-update a plain ":run" scheduler and VERIFY it (schedule, target
+# and ENABLED state read back) before returning. Nonzero on any mismatch.
+# Used where a new entry replaces old ones: the old entries are only deleted
+# once the replacement is proven live, so a failed create cannot leave a job
+# with no trigger at all (Codex, PR #1004).
+_schedule_verified() {
+    local NAME=$1 CRON=$2 JOB=$3 uri live
+    uri=$(_job_uri "${JOB}")
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.uri,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"${uri}"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }], expected [${CRON} | ${uri} | ENABLED]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON}"
+}
+
+# Scheduler that sets a Cloud Run SERVICE's min-instances. The v2 PATCH with
+# updateMask=template.scaling.minInstanceCount creates a revision that differs
+# from its predecessor only in minScale (verified 2026-09-06: env, secrets,
+# CPU allocation, command and startup boost all unchanged). Cloud Scheduler
+# cannot send PATCH, so the entry POSTs with X-HTTP-Method-Override: PATCH,
+# which Google APIs honour (verified: the override reaches Cloud Run as
+# UpdateService with the intended updateMask).
+#
+# Runs as trading-runner@. Cloud Run requires the caller to hold
+# iam.serviceAccounts.actAs on the revision's runtime SA, which is
+# trading-runner itself; that self-binding is NOT something the sandbox
+# deploy identity (claude-web@, roles/editor) can grant — setIamPolicy on a
+# service account is owner-only. So the helper checks for the binding and,
+# if it cannot add it, refuses to create the scheduler and prints the one
+# command an owner has to run. A scheduler that 403s twice a day is a slow
+# leak (CLAUDE.md Rule 0.6), so it is never created ahead of the grant.
+_schedule_min_instances() {
+    local NAME=$1 CRON=$2 SVC=$3 COUNT=$4
+    local uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/services/${SVC}?updateMask=template.scaling.minInstanceCount"
+    local body='{"template":{"scaling":{"minInstanceCount":'"${COUNT}"'}}}'
+    local policy
+    policy=$(gcloud iam service-accounts get-iam-policy "${SA_EMAIL}" \
+        --flatten="bindings[].members" \
+        --filter="bindings.role=roles/iam.serviceAccountUser AND bindings.members=serviceAccount:${SA_EMAIL}" \
+        --format="value(bindings.role)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read IAM policy of ${SA_EMAIL}" >&2; return 1; }
+    if [ -z "${policy}" ]; then
+        if ! gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+                --member "serviceAccount:${SA_EMAIL}" --role roles/iam.serviceAccountUser \
+                --quiet >/dev/null 2>&1; then
+            echo "  ERROR: ${NAME} not created: ${SA_EMAIL} lacks actAs on itself and this" >&2
+            echo "         identity cannot grant it. A project owner must run once:" >&2
+            echo "         gcloud iam service-accounts add-iam-policy-binding ${SA_EMAIL} \\" >&2
+            echo "           --member=serviceAccount:${SA_EMAIL} --role=roles/iam.serviceAccountUser" >&2
+            echo "         then re-run: ./gcp/deploy.sh schedulers" >&2
+            return 1
+        fi
+    fi
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json,X-HTTP-Method-Override=PATCH" \
+            --message-body "${body}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --headers "Content-Type=application/json,X-HTTP-Method-Override=PATCH" \
+            --message-body "${body}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    local live
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.headers.X-HTTP-Method-Override,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"PATCH"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON} -> ${SVC} min-instances=${COUNT}"
+}
+
 _schedule_brief() {
     local NAME=$1 CRON=$2 JOB=$3
     local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BRIEF_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
@@ -3268,6 +3898,10 @@ _schedule_with_args() {
 
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
+    # Set by any verified entry that failed to converge; the function then
+    # exits nonzero at the end instead of reporting "All schedulers
+    # configured." over a broken one.
+    local SCHEDULER_FAILURES=0
 
     # Pre-market brief — 8:30 AM ET weekdays (today's earnings).
     # _schedule_brief (not _schedule) so BRIEF_TRIGGERED_BY=cloud-scheduler:<name>
@@ -3326,6 +3960,24 @@ deploy_schedulers() {
     _schedule "gamma-levels-daily" "30 22 * * 1-5" "p2-build-gamma-levels"
 
     _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
+
+    # Phase 6 playbook cards — 04:30 ET Mon-Fri. Rebuilds the 12 structured
+    # setup cards per ticker into playbook_cards (the typed source
+    # /api/playbook reads) keyed to today's analysis_date, from the full
+    # 1-min history through the previous session (av-intraday-nightly lands
+    # D-1's bars at 21:00 ET, so 04:30 sees everything through yesterday).
+    # Runs before premarket-brief-daily (08:30 ET), which is when the
+    # dashboard's "top setup" is first read for the day.
+    #
+    # Issue #861: the job existed (deploy_phase6_playbook) but had NO
+    # scheduler entry, so playbook_cards froze at analysis_date 2026-06-13
+    # after the last manual backfill on 2026-06-14 and the dashboard served
+    # an 85-day-old card set as today's setups until the 2026-08-27 audit
+    # caught it. Three things now catch a repeat: this cron, the
+    # playbook_cards entry in scripts/audit_data_freshness.py CHECKS, and
+    # the MAX_PLAYBOOK_AGE_DAYS 503 guard in platform/api/routers/playbook.py.
+    # tests/gcp/test_phase6_playbook_scheduler.py pins the first two.
+    _schedule "phase6-playbook-daily" "30 4 * * 1-5" "phase6-playbook"
 
     # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the
     # strat-engine-daily base writer (23:35 ET Mon-Fri). strat_data_builder
@@ -3601,7 +4253,7 @@ deploy_schedulers() {
     # Platform keep-warm — DROPPED (was: a plain unauthenticated GET to
     # ${PLATFORM_URL}/api/earnings/health/ping every 5 min on business hours).
     #
-    # The trading-platform service is deployed by platform/deploy.sh behind
+    # The solyra-api-prod service is deployed by platform/deploy.sh behind
     # Identity-Aware Proxy (IAP) — NOT by this file, and NOT with plain Cloud
     # Run IAM. A bare unauthenticated GET gets 401/403 at IAP and never reaches
     # the FastAPI worker, so it warmed nothing while still firing on a cron.
@@ -3652,13 +4304,23 @@ deploy_schedulers() {
     _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
 
     # Phase 0.5 — signal-quality report.
-    # Hourly during market hours: --mode=rolling, incremental update of
-    # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
-    # 14-20 UTC (10:00-16:00 ET in DST or 09:00-15:00 ET in standard
-    # time; scheduler timezone is America/New_York so cron is read in
-    # local time — 10-16 ET). 7 invocations per trading day.
-    _schedule "signal-quality-report-hourly" \
-        "0 10-16 * * 1-5" "signal-quality-report"
+    #
+    # RETIRED 2026-09-07 (#833, audit D1): `signal-quality-report-hourly`
+    # (`0 10-16 * * 1-5`, --mode=rolling) was found PAUSED live with no
+    # record of why; the pause dates to 2026-05-05, three days after #192
+    # created it. What it did: re-score the last few hours of fires into
+    # `signal_metrics` as status='pending' rows until all seven MFE
+    # windows closed. It did not evaluate or generate signals — the
+    # signal monitor does that per bar. Nothing reads 'pending' rows
+    # (gcp/signal_quality_alarm.py:168 considers status='final' only; the
+    # other readers are offline analysis over final rows), and the
+    # nightly run below has written the same rows as 'final' every night
+    # since. Seven executions a day for no consumer: removed rather than
+    # resumed. `--mode=rolling` stays in scripts/signal_quality_report.py
+    # for manual use. Delete the live scheduler with
+    #   gcloud scheduler jobs delete signal-quality-report-hourly --location us-east1
+    # gcp/audit_infra_drift.py::check_scheduler_state now flags any
+    # scheduler left PAUSED so a repeat is visible within a day.
 
     # Nightly: --mode=historical promotes rolling 'pending' rows to
     # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
@@ -3690,27 +4352,32 @@ deploy_schedulers() {
     # History: this used to be 17 schedules every 30 min — see PR
     # cleanup that retired the redundant slots. The deletion loop below
     # is idempotent; once the obsolete jobs are gone, it's a no-op.
-    _schedule "sec-filings-0700"  "0 7 * * 1-5"    "fetch-sec-filings"
-    _schedule "sec-filings-1000"  "0 10 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1300"  "0 13 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
-
-    # One-shot cleanup of the 13 retired sec-filings schedules. Idempotent:
-    # `gcloud scheduler jobs delete` returns non-zero when the job is
-    # already gone, which we swallow with `|| true`. Safe to leave in
-    # forever; consider removing this loop once a deploy or two has
-    # confirmed all targets are gone in your environment.
-    for OBSOLETE in \
-        sec-filings-0930 sec-filings-1030 sec-filings-1100 \
-        sec-filings-1130 sec-filings-1200 sec-filings-1230 \
-        sec-filings-1330 sec-filings-1400 sec-filings-1430 \
-        sec-filings-1500 sec-filings-1530 sec-filings-1600 \
-        sec-filings-2000 ; do
-        gcloud scheduler jobs delete "${OBSOLETE}" \
-            --location "${REGION}" --quiet 2>/dev/null \
-            && echo "  retired ${OBSOLETE}" \
-            || true
-    done
+    #
+    # 2026-09-06: the four slots collapsed into ONE scheduler entry. Cloud
+    # Scheduler bills $0.10/job/month past the first three, and all four
+    # entries were byte-identical apart from the hour (same :run URI, no
+    # body), so a cron hour list expresses them exactly. Same change for
+    # the hourly news-sentiment / news-topics entries below (20 -> 2).
+    # One-shot cleanup of retired sec-filings schedules (13 from the old
+    # every-30-min cadence, 4 from the per-hour entries consolidated
+    # above) runs ONLY after the replacement is read back live and
+    # ENABLED with the intended cron. Idempotent: `gcloud scheduler jobs
+    # delete` (via _unschedule) treats NOT_FOUND as done and reports any
+    # other failure. Safe to leave in forever.
+    if _schedule_verified "sec-filings-intraday"  "0 7,10,13,17 * * 1-5"  "fetch-sec-filings"; then
+        for OBSOLETE in \
+            sec-filings-0700 sec-filings-1000 sec-filings-1300 sec-filings-1700 \
+            sec-filings-0930 sec-filings-1030 sec-filings-1100 \
+            sec-filings-1130 sec-filings-1200 sec-filings-1230 \
+            sec-filings-1330 sec-filings-1400 sec-filings-1430 \
+            sec-filings-1500 sec-filings-1530 sec-filings-1600 \
+            sec-filings-2000 ; do
+            _unschedule "${OBSOLETE}" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+        done
+    else
+        echo "  sec-filings-intraday NOT verified; legacy sec-filings entries left in place." >&2
+        SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    fi
 
     # Insider transactions — daily at 7 AM ET. AV refreshes Form 4 data
     # overnight from EDGAR; daily cadence catches everything new.
@@ -3749,15 +4416,43 @@ deploy_schedulers() {
     # RPM plan: 10 runs/day × 5 watchlist tickers = 50 calls/day.
     # Ticker mode reads alert_config.json["watchlist"] when no
     # --tickers arg is passed (see fetch_news_sentiment.main()).
-    for h in 08 09 10 11 12 13 14 15 16 17; do
-        _schedule "news-sentiment-${h}00"  "0 ${h} * * 1-5"  "fetch-news-sentiment"
-    done
-
+    #
+    # 2026-09-06: one scheduler entry with an hour range replaces the ten
+    # per-hour entries (news-sentiment-0800 .. -1700); the cadence is
+    # unchanged. The per-hour entries carried no body, so nothing
+    # downstream could tell them apart.
     # Topic mode: catalyst stream across all tickers AV tracks. Same
     # hourly cadence, offset 5 min so AV calls stagger.
-    for h in 08 09 10 11 12 13 14 15 16 17; do
-        _schedule "news-topics-${h}05"  "5 ${h} * * 1-5"  "fetch-news-sentiment-topics"
-    done
+    #
+    # Each replacement is read back live before its per-hour predecessors
+    # are retired (same gate as sec-filings-intraday above).
+    if _schedule_verified "news-sentiment-hourly"  "0 8-17 * * 1-5"  "fetch-news-sentiment"; then
+        for h in 08 09 10 11 12 13 14 15 16 17; do
+            _unschedule "news-sentiment-${h}00" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+        done
+    else
+        echo "  news-sentiment-hourly NOT verified; per-hour entries left in place." >&2
+        SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    fi
+    if _schedule_verified "news-topics-hourly"  "5 8-17 * * 1-5"  "fetch-news-sentiment-topics"; then
+        for h in 08 09 10 11 12 13 14 15 16 17; do
+            _unschedule "news-topics-${h}05" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+        done
+    else
+        echo "  news-topics-hourly NOT verified; per-hour entries left in place." >&2
+        SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    fi
+
+    # discord-interactions warm window. One always-on instance is ~$51/month;
+    # warm only Mon-Fri 09:00-16:30 ET is ~$11. Outside the window the first
+    # slash command after ~15 idle minutes cold-starts (4-10 s) and Discord
+    # reports "did not respond"; a retry then succeeds. Webhook posts from
+    # jobs (briefs, insights, signal alerts) do not go through this service
+    # and are unaffected. See docs/audits/COST_AUDIT_2026-09-06.md §6.
+    _schedule_min_instances "discord-warm-open"  "0 9 * * 1-5"   "discord-interactions" 1 \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    _schedule_min_instances "discord-warm-close" "30 16 * * 1-5" "discord-interactions" 0 \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
 
     # Upcoming-reporter mode: 06:00 ET weekdays, before premarket-brief
     # (08:45). EARNINGS_WINDOW_DAYS=7 on the job resolves the universe
@@ -3814,6 +4509,10 @@ deploy_schedulers() {
     # ready by the time the user opens the platform.
     _schedule "auto-refresh-top-n"       "10 8 * * 1-5"  "auto-refresh-top-n"
 
+    if [ "${SCHEDULER_FAILURES}" -ne 0 ]; then
+        echo "ERROR: ${SCHEDULER_FAILURES} verified scheduler(s) did not converge (see above)." >&2
+        return 1
+    fi
     echo "All schedulers configured."
 }
 
@@ -3839,19 +4538,38 @@ backfill_watchlist() {
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
+# Every command that deploys a job or service is followed by pin_image_tags
+# (see the tail of this file), so the digest a job was just pinned to gets
+# its inuse-* tag before the next build can move :latest off it.
+#
+# Steps run through _run, one simple command at a time, never as an AND
+# list: inside a function on the left of `&&` Bash suspends errexit, so a
+# failed `gcloud builds submit` followed by a successful `rm -rf` returned 0
+# and the deploy proceeded with the previous image (Codex, PR #1004). With
+# _run, the first failing command inside any step aborts the script.
+_run() {
+    local step
+    for step in "$@"; do
+        "${step}"
+    done
+}
+_PIN_AFTER=1
 case "${1:-help}" in
-    setup)       setup ;;
-    migrate)     shift; migrate "$@" ;;
-    build)       build_image ;;
-    build-research) build_research_image ;;
-    premarket)   build_image && deploy_premarket ;;
-    earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
-    earnings-long-watchlist) build_image && deploy_earnings_long_watchlist ;;
-    refresh-earnings-views) build_image && deploy_refresh_earnings_views ;;
-    monitor)     build_image && deploy_monitor ;;
-    eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
-    playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
-    phase6-playbook) build_image && deploy_phase6_playbook ;;
+    setup)       _PIN_AFTER=0; setup ;;
+    migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
+    build)       _PIN_AFTER=0; build_image ;;
+    pin-images)  _PIN_AFTER=0; pin_image_tags "${2:-}" ;;
+    registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
+    retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
+    build-research) _PIN_AFTER=0; build_research_image ;;
+    premarket) _run build_image deploy_premarket ;;
+    earnings-reactions-brief) _run build_image deploy_earnings_reactions_brief ;;
+    earnings-long-watchlist) _run build_image deploy_earnings_long_watchlist ;;
+    refresh-earnings-views) _run build_image deploy_refresh_earnings_views ;;
+    monitor) _run build_image deploy_monitor ;;
+    eod-resolver) _run build_image deploy_signal_monitor_eod_resolver ;;
+    playbook-resolver) _run build_image deploy_premarket_playbook_resolver ;;
+    phase6-playbook) _run build_image deploy_phase6_playbook ;;
     strat-engine) deploy_strat_engine ;;
     direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
     build-options-greeks) deploy_build_options_greeks ;;  # research image
@@ -3862,37 +4580,37 @@ case "${1:-help}" in
     direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
     direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
     magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
-    magnitude-inference) build_research_image && deploy_magnitude_inference ;;
+    magnitude-inference) _run build_research_image deploy_magnitude_inference ;;
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
-    weekend)     build_image && deploy_weekend ;;
-    fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
-    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
-    schedulers)  deploy_schedulers ;;
-    backfill)    shift; backfill_watchlist "$@" ;;
-    apply-schema) build_image && deploy_apply_schema_migrations ;;
-    pg-dump)      build_image && deploy_weekly_pg_dump ;;
-    setup-pg-dump-iam) setup_pg_dump_iam ;;
-    fred-rates)   build_image && deploy_fetch_fred_rates ;;
-    db-query)     build_image && deploy_db_query ;;
-    freshness-watchdog) build_image && deploy_freshness_watchdog ;;
-    audit-infra-drift) build_image && deploy_audit_infra_drift ;;
-    audit-magnitude-drift) build_image && deploy_audit_magnitude_drift ;;
-    audit-walkforward) build_image && deploy_audit_walkforward ;;
-    audit-brief-bias) build_image && deploy_audit_brief_bias ;;
-    spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
-    calibrate)    build_image && deploy_calibrate_thresholds ;;
-    param-sweep)  build_image && deploy_param_sweep ;;
-    earnings-sweep) build_image && deploy_earnings_sweep ;;
-    earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
-    intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
-    options-retention) build_image && deploy_options_retention ;;
-    signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
-    signal-replay) build_image && deploy_signal_replay ;;
-    indicator-correlation) build_image && deploy_indicator_correlation ;;
+    weekend) _run build_image deploy_weekend ;;
+    fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
+    insights) _run build_image setup_insight_tasks_queue deploy_insight_pipeline deploy_insight_discord_push deploy_historical_signals_watchlist deploy_auto_refresh_top_n ;;
+    schedulers)  _PIN_AFTER=0; deploy_schedulers ;;
+    backfill)    _PIN_AFTER=0; shift; backfill_watchlist "$@" ;;
+    apply-schema) _run build_image deploy_apply_schema_migrations ;;
+    pg-dump) _run build_image deploy_weekly_pg_dump ;;
+    setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
+    fred-rates) _run build_image deploy_fetch_fred_rates ;;
+    db-query) _run build_image deploy_db_query ;;
+    freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
+    audit-infra-drift) _run build_image deploy_audit_infra_drift ;;
+    audit-magnitude-drift) _run build_image deploy_audit_magnitude_drift ;;
+    audit-walkforward) _run build_image deploy_audit_walkforward ;;
+    audit-brief-bias) _run build_image deploy_audit_brief_bias ;;
+    spx-greeks) _run build_image deploy_compute_spx_greeks_backfill ;;
+    calibrate) _run build_image deploy_calibrate_thresholds ;;
+    param-sweep) _run build_image deploy_param_sweep ;;
+    earnings-sweep) _run build_image deploy_earnings_sweep ;;
+    earnings-options-backfill) _run build_image deploy_earnings_options_backfill ;;
+    intraday-bulk-backfill) _run build_image deploy_intraday_bulk_backfill ;;
+    options-retention) _run build_image deploy_options_retention ;;
+    signal-quality) _run build_image deploy_signal_quality_report deploy_signal_quality_alarm ;;
+    signal-replay) _run build_image deploy_signal_replay ;;
+    indicator-correlation) _run build_image deploy_indicator_correlation ;;
     regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
-    setup-notifier-secrets) setup_notifier_secrets ;;
-    notifier)    build_image && deploy_notifier ;;
-    discord)     build_image && deploy_discord_interactions ;;
+    setup-notifier-secrets) _PIN_AFTER=0; setup_notifier_secrets ;;
+    notifier) _run build_image deploy_notifier ;;
+    discord) _run build_image deploy_discord_interactions ;;
     all)
         build_image
         deploy_premarket
@@ -3900,6 +4618,7 @@ case "${1:-help}" in
         deploy_monitor
         deploy_signal_monitor_eod_resolver
         deploy_premarket_playbook_resolver
+        deploy_phase6_playbook
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue
@@ -3918,6 +4637,7 @@ case "${1:-help}" in
         echo "All components deployed."
         ;;
     help|*)
+        _PIN_AFTER=0
         echo "Usage: $0 <command>"
         echo ""
         echo "  setup      Provision Cloud SQL, GCS bucket, service account"
@@ -3976,6 +4696,29 @@ case "${1:-help}" in
         echo "             Deploy earnings-sweep job — calibration of the"
         echo "             playability lookback knobs, auto-applied to"
         echo "             earnings_calibration. On-demand."
+        echo "  pin-images [--no-sweep]"
+        echo "             Tag every image digest a Cloud Run job/service is pinned"
+        echo "             to as inuse-job-<job> / inuse-svc-<revision> (runs before"
+        echo "             every build and after every deploy; keeps in-use digests"
+        echo "             out of cleanup). --no-sweep skips releasing stale pins"
+        echo "             (needs artifactregistry.tags.delete; used by the Cloud"
+        echo "             Build trigger identity, which lacks it)."
+        echo "  registry-cleanup"
+        echo "             pin-images, then apply the Artifact Registry cleanup"
+        echo "             policy (keep tagged + 10 newest, delete untagged >14d)"
+        echo "             to the trading and gcr.io repos."
+        echo "  retire-legacy-images"
+        echo "             Delete the pre-#990 gcr.io/trading-platform(-staging)"
+        echo "             image packages. Refuses while a live service runs one."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
+# A failed AND-list inside a case arm (e.g. build_image failing before
+# deploy_x) does not trip errexit, so capture the arm's status here and
+# return it: post-pinning must never turn a failed deploy into exit 0
+# (Codex, PR #1004), and there is nothing new to pin after a failure.
+_DISPATCH_RC=$?
+if [ "${_DISPATCH_RC}" -eq 0 ] && [ "${_PIN_AFTER}" -eq 1 ]; then
+    pin_image_tags
+fi
+exit "${_DISPATCH_RC}"

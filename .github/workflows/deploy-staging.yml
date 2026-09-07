@@ -1,6 +1,6 @@
 name: Deploy staging
 
-# One-click redeploy of trading-platform-staging (the PUBLIC, Firebase-gated
+# One-click redeploy of solyra-api-staging (the PUBLIC, Firebase-gated
 # staging service solyra talks to) from the current main, with the DB schema
 # rolled forward first.
 #
@@ -109,6 +109,28 @@ name: Deploy staging
 #                                      act as service account <numeric id>"
 #                                      AFTER the source tarball uploads
 #                                      (run #12)
+#   roles/artifactregistry.writer    on BOTH image repos (gcr.io, location
+#                                    us, and trading, location us-east1) —
+#                                    platform/deploy.sh now runs
+#                                    `./gcp/deploy.sh pin-images --no-sweep`
+#                                    before its build, which lists tags on
+#                                    every package a Cloud Run job or service
+#                                    runs and creates/moves inuse-* tags so
+#                                    the Artifact Registry cleanup policy
+#                                    never deletes a digest that is still
+#                                    deployed. Reader is not enough (no
+#                                    tags.create/update) and it must cover
+#                                    the trading repo too (the jobs image is
+#                                    inventoried as well). It fails closed:
+#                                    without this grant the run stops before
+#                                    building, with the failing call named.
+#                                    Granted to arch-refresh-bot@ on both
+#                                    repos 2026-09-07 (read back live). To
+#                                    re-apply after a rebuild of the SA:
+#                                      for r in "gcr.io us" "trading us-east1"; do set -- $r
+#                                        gcloud artifacts repositories add-iam-policy-binding $1 --location=$2 \
+#                                          --member=serviceAccount:arch-refresh-bot@adept-mountain-474619-d4.iam.gserviceaccount.com \
+#                                          --role=roles/artifactregistry.writer; done
 #   roles/artifactregistry.reader    on the gcr.io repo (location us) —
 #                                    `gcloud run deploy` resolves the freshly
 #                                    built image via
@@ -141,6 +163,14 @@ on:
         options: ['false', 'true']
 
 # Never let two deploys interleave; never cancel one mid-flight.
+#
+# This group only serialises this workflow against ITSELF. It has no reach over
+# the deploy-solyra-api-staging Cloud Build trigger, which deploys the same
+# service on push to main (Codex, PR #990). The cross-path interlock is
+# gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh, which platform/deploy.sh
+# runs in STAGING_SERVICE mode and which the trigger config runs as its first
+# step; both paths also deploy by image digest so an overlap can never leave the
+# service on an artifact neither run built. See gcp/cloudbuild/README.md.
 concurrency:
   group: deploy-staging
   cancel-in-progress: false
@@ -148,7 +178,7 @@ concurrency:
 env:
   GCP_PROJECT: adept-mountain-474619-d4
   REGION: us-east1
-  SERVICE: trading-platform-staging
+  SERVICE: solyra-api-staging
 
 jobs:
   deploy:
@@ -307,7 +337,7 @@ jobs:
       # DB_USER/DB_NAME normally come from the live service (step above);
       # the GitHub secrets are the safety net in case the live service ever
       # stops carrying them in plain env.
-      - name: Build and deploy trading-platform-staging
+      - name: Build and deploy solyra-api-staging
         env:
           DB_USER: ${{ env.DB_USER || secrets.DB_USER }}
           DB_NAME: ${{ env.DB_NAME || secrets.DB_NAME }}

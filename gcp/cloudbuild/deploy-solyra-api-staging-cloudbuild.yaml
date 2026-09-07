@@ -1,0 +1,126 @@
+# Trigger: deploy-solyra-api-staging
+# Fires:   push to main touching platform/, lib/, requirements.txt, gcp/database.py
+#
+# ⚠️ THAT FILTER IS TOO NARROW, and the fix is a live trigger change an owner
+# must apply -- it is trigger configuration, not repository content, so this
+# file cannot carry it (read live 2026-09-07):
+#
+#   includedFiles = platform/**  lib/**  requirements.txt  gcp/database.py
+#
+# `platform/Dockerfile` copies `scripts/` and `gcp/` wholesale, and API routes
+# import from both at request time -- `scripts.fetch_catalyst_calendar`,
+# `gcp.fetchers._watchlist`, `gcp.research.strat_engine.strat_pred_serve`. So a
+# fix to one of those request paths merges to main, does NOT start a staging
+# build, and the browser-facing service keeps serving the old code; the digest
+# available for promotion to prod is stale for the same reason (Codex, #990).
+#
+#   gcloud builds triggers update github deploy-solyra-api-staging \
+#     --region=global \
+#     --included-files='platform/**,lib/**,scripts/**,gcp/**,requirements.txt'
+#
+# Widening rather than enumerating: the Dockerfile copies whole directories, so
+# a per-module list would drift the moment a route imports something new.
+#
+# Builds the API image and deploys it to the STAGING service, solyra-api-staging.
+# Merging to main NEVER touches prod. Prod moves only when a human runs the
+# deploy-solyra-api-prod trigger (see the sibling file).
+#
+# This replaced a tag-based blue/green on the single trading-platform service,
+# where a deploy created a `staging`-tagged revision and a manual promote shifted
+# traffic to it. That design silently became an auto-promote to prod when
+# --no-traffic was dropped on 2026-08-25, so a `staging` tag ended up carrying
+# 100% of production traffic. Two separate services replace it: the environment
+# a deploy lands in is now the service name, not a traffic percentage.
+#
+# Deploys the IMAGE ONLY. Env vars, secrets, Cloud SQL, memory and the service
+# account live on the Cloud Run service and are deliberately NOT set here:
+# --set-env-vars replaces the entire set on every deploy, which is why flags like
+# MOVEMENT_STATEMENT_ENABLED previously had to "ride along" in the deploy script
+# or be silently dropped.
+#
+# IMMUTABLE TAG, DEPLOY BY DIGEST. This used to build, push and deploy the bare
+# `${_IMAGE}` -- i.e. `:latest`, a mutable pointer that the OTHER staging deploy
+# path (.github/workflows/deploy-staging.yml -> platform/deploy.sh) writes too.
+# Two overlapping runs could then push over each other between one run's push
+# and its deploy, so `gcloud run deploy --image ...:latest` resolved to an image
+# that run never built, and staging ran code from neither run as anyone observed
+# it. Worse, the prod promote trigger deliberately promotes the digest currently
+# serving staging -- so a mutable tag put an unvalidated image one click from
+# production.
+#
+# So: tag with ${SHORT_SHA}, then resolve that tag to its sha256 digest and
+# deploy the digest. The running revision is pinned to one artifact, and
+# `gcloud run revisions list` says which commit built it.
+#
+# Required IAM on the trigger SA (trading-runner@): see README.md in this dir.
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: preflight
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        # SHORT_SHA is populated for trigger-started builds only. Submitting
+        # this config by hand would otherwise tag `${_IMAGE}:` and push a
+        # nameless tag, so refuse rather than guess a tag.
+        if [ -z "$SHORT_SHA" ]; then
+          echo "ERROR: SHORT_SHA is empty. This config is for the" >&2
+          echo "       deploy-solyra-api-staging trigger; to deploy by hand" >&2
+          echo "       use STAGING_SERVICE=1 ./platform/deploy.sh." >&2
+          exit 1
+        fi
+        bash gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh "$BUILD_ID"
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    waitFor: [preflight]
+    args: [build, --file, platform/Dockerfile, --tag, '${_IMAGE}:${SHORT_SHA}', .]
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    waitFor: [build]
+    args: [push, '${_IMAGE}:${SHORT_SHA}']
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: deploy
+    waitFor: [push]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        DIGEST=$(gcloud container images describe "${_IMAGE}:${SHORT_SHA}" \
+                   --format='value(image_summary.fully_qualified_digest)')
+        if [ -z "$${DIGEST}" ]; then
+          echo "ERROR: could not resolve ${_IMAGE}:${SHORT_SHA} to a digest" >&2
+          exit 1
+        fi
+        echo ">> deploying $${DIGEST}"
+        gcloud run deploy solyra-api-staging \
+          --image="$${DIGEST}" \
+          --region=us-east1 \
+          --platform=managed
+  # PIN what is now serving, so the cleanup policy cannot delete it.
+  #
+  # Every qualifying push leaves a `${_IMAGE}:${SHORT_SHA}` tag and nothing
+  # removed them, so `solyra-api` grew without bound under the policy's
+  # keep-tagged rule (Codex, PR #990). The policy now expires solyra-api
+  # versions older than 30 days -- which is only safe if the digests actually
+  # in use carry an `inuse-*` tag, and this is the step that gives them one.
+  #
+  # --no-sweep because this build runs as trading-runner@:
+  # roles/artifactregistry.writer creates and moves tags but cannot delete
+  # them, so releasing stale pins stays with the interactive gcp/deploy.sh
+  # path. Pinning is the safety step and still fails closed.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: pin
+    waitFor: [deploy]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
+substitutions:
+  _IMAGE: gcr.io/adept-mountain-474619-d4/solyra-api
+# Read by assert_no_concurrent_staging_deploy.sh in BOTH deploy paths, which is
+# the only way one can see the other -- neither GitHub's concurrency group nor a
+# Cloud Build trigger has reach over the other path.
+tags: [solyra-api-staging-deploy]
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s
