@@ -2852,6 +2852,23 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_run_kind
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
     ON signal_alerts(replay_id) WHERE replay_id IS NOT NULL;
 
+-- Provenance on trades, same convention as signal_alerts.run_kind
+-- (#820 R3). An earlier revision of scripts/backfill_signals.py wrote
+-- 412 simulated trades (entry_time 2026-03-19 .. 2026-04-13, ftfc_score 0,
+-- exit_reason target_hit/time_stop, all inserted 2026-04-18 02:59 UTC)
+-- with no marker, so they were indistinguishable from resolver-written
+-- trades. 'live' (default) | 'replay' | 'backfill'. After this lands via
+-- apply-schema-migrations, mark those rows by the alert join:
+--   UPDATE trades t SET run_kind='backfill'
+--     FROM signal_alerts a
+--    WHERE a.ticker=t.ticker AND a.alert_ts=t.entry_time
+--      AND a.run_kind='backfill';
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS run_kind VARCHAR(16) NOT NULL DEFAULT 'live';
+
+CREATE INDEX IF NOT EXISTS idx_trades_run_kind
+    ON trades(run_kind) WHERE run_kind != 'live';
+
 -- Phase 1 direction gate (per docs/audits/2026-05-10-risk-reviewer-validation.md):
 -- the live signal_monitor reads insight_reports and decides whether
 -- to suppress / downgrade / tag the fire. These columns record the
