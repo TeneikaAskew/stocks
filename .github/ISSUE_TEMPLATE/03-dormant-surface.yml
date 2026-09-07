@@ -146,8 +146,10 @@ body:
       label: Acceptance criteria
       description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
-        Retire: `grep -r "<name>" lib/ gcp/ platform/ scripts/` returns nothing; the schedule is
-        deleted; the retention/export decision is recorded; the cost delta is measured.
+        Retire: `git grep -q "<name>" -- . ':!docs/'` returns 1 — repo-wide, since
+        .github/workflows/deploy-staging.yml:299 dispatches a job the four source dirs
+        cannot see; the schedule is deleted; the retention/export decision is recorded;
+        the cost delta is measured.
 
         Restore: writer scheduled and in gcp/deploy.sh `all)`; an entry in
         scripts/audit_data_freshness.py with writer_job and min_rows_per_day; a max-age guard at

@@ -73,10 +73,10 @@ body:
   - type: textarea
     id: reverification
     attributes:
-      label: Re-verified against the live system on <date>
+      label: Re-verified against the live system
       description: >-
-        Run the report's own measurement again now and paste the command with
-        its output. If the numbers moved, say by how much. If it no longer
+        Start with today's date on its own line, then run the report's own
+        measurement again now and paste the command with its output. If the numbers moved, say by how much. If it no longer
         reproduces, say so here and close the issue on this evidence.
       render: shell
       placeholder: |

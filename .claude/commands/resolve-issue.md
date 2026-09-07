@@ -88,7 +88,8 @@ Then check whether work already exists, because the failure handlers open one
 automatically and a stale draft PR is the usual reason two branches diverge:
 
 ```bash
-git fetch origin
+git fetch origin \
+  || { echo "FETCH FAILED — refs are stale, so branch selection and the baseline would both run against yesterday's main"; false; }
 git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
 # and: mcp__github__search_pull_requests
 #        q="repo:TeneikaAskew/stocks is:open <issue-number>"
@@ -139,7 +140,8 @@ commit it. Never `checkout -f`, which discards it.
 ```bash
 git status --porcelain           # must be empty before going further
 git rev-parse --abbrev-ref HEAD
-git fetch origin
+git fetch origin \
+  || { echo "FETCH FAILED — refs are stale, so branch selection and the baseline would both run against yesterday's main"; false; }
 
 # CASE A — a PR already exists for this issue (including an auto-created
 # fix/workflow-* draft). Work on ITS head. Do not open a second PR.
@@ -1036,7 +1038,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      ```bash
      deploy_candidate() {                  # <target> and MERGE_SHA are yours to fill
-       local MERGE_SHA="<the merge commit the PR reports>" SRC rc
+       local MERGE_SHA="<the merge commit the PR reports>" SRC rc wt
        git fetch origin main || return 1
        git merge-base --is-ancestor "$MERGE_SHA" origin/main \
          || { echo "$MERGE_SHA is not on main — not deploying"; return 1; }
@@ -1053,9 +1055,10 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          # real one. Deploying the tip also ships those commits, so CI must
          # be green on $SRC itself, not only on your PR.
        fi
-       git worktree add /tmp/deploy-src "$SRC" || return 1
+       wt=$(mktemp -d -t deploy-src-XXXXXX) && rmdir "$wt"
+       git worktree add "$wt" "$SRC" || return 1
        (
-         cd /tmp/deploy-src || exit 1
+         cd "$wt" || exit 1
          [ "$(git rev-parse HEAD)" = "$SRC" ] || { echo "worktree HEAD != $SRC"; exit 1; }
          [ -z "$(git status --porcelain)" ] || { git status --porcelain; exit 1; }
          # Does this target run on the RESEARCH image? Derive it, do not trust
@@ -1072,8 +1075,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target>
          # (no research image: just `./gcp/deploy.sh <target>`)
        )
+       # A SCHEDULE change is a second deploy. `gcp/deploy.sh:4588` makes
+       # `schedulers` its own target and `deploy_schedulers` runs from `all)`
+       # at 4635 — no job-specific target applies it. So a fix that touches
+       # `deploy_schedulers` ships a new image on the old cadence, or with no
+       # trigger at all, and every check below still passes.
+       #   ./gcp/deploy.sh schedulers
+       # then verify with the retirement row's listing, against the new value.
        rc=$?                               # capture BEFORE cleanup
-       git worktree remove /tmp/deploy-src
+       git worktree remove "$wt"
        test $rc -eq 0 \
          || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; return 1; }
      }
