@@ -354,10 +354,28 @@ changed:
 | What changed | How to exercise the candidate |
 |---|---|
 | Signal, indicator, strategy or fire-path code | `python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. Hermetic, in-process, and the production path per Rule 3.6, so it runs YOUR tree. |
-| Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree, same reason. |
+| Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree — but they are NOT hermetic; see below before running one. |
 | A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job** — but read the isolation note below first: a renamed job is not an isolated one. |
 | API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. |
 | A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now. |
+
+**`BRIEF_AS_OF` and `INSIGHT_AS_OF` are not sandbox flags.** Setting either
+resolves to `allow_update=True`:
+
+```
+gcp/premarket_brief.py     if os.environ.get('BRIEF_AS_OF'):   return True, 'replay_refresh'
+gcp/insight_pipeline_job.py if os.environ.get('INSIGHT_AS_OF'): return True, 'replay_refresh'
+```
+
+So an as-of run persists history and overwrites the canonical report row for
+that date. `run_kind='replay_refresh'` labels what it wrote, which makes the
+write *distinguishable* — it does not make it *not happen*. Run one in an
+environment holding production credentials and unreviewed code has rewritten a
+production row. And in a sandbox with no database path it writes nothing and
+exercises none of the persistence, so it is not a candidate check either way.
+Mock the persistence and the outbound calls, or point at an isolated database,
+before running one — the same requirement as the candidate job below, for the
+same reason.
 
 **A `<job>-candidate` isolates the Cloud Run resource, not its dependencies.**
 There is no staging database here. `gcp/deploy.sh:50` sets a single
@@ -489,14 +507,23 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    If you cannot or should not undraft it — a PR this session did not open —
    stop and say a human must.
 1. `pull_request_read` `method: "get_review_comments"` — **before** CI, not
-   after.
+   after, and **page it to exhaustion**. Nine review rounds on one PR is not
+   hypothetical here, and a first page that happens to show every thread
+   resolved says nothing about the next one. Zero unresolved means zero across
+   every page, the same discipline the issue listing and `get_reviews` already
+   get.
 2. Confirm the current head **has been reviewed**, which is not the same as "a
    review object exists for it". A clean run posts no review at all, only a
    reaction, so requiring a review object would deadlock every PR that has
    nothing wrong with it. Either of these satisfies this step:
    - `pull_request_read` `method: "get_reviews"` returning a review that is
-     **authored by the review bot**, is not `CHANGES_REQUESTED`, and whose
-     `commit_id` is the head SHA. **It returns oldest first, so the current
+     **authored by the review bot**, is not `CHANGES_REQUESTED`, whose
+     `commit_id` is the head SHA, and whose `submitted_at` is **after** the
+     ready-for-review transition in step 0 — marking a draft ready does not
+     move the head, so a review of that same SHA from an earlier
+     `@codex review` satisfies a SHA-only test while the readiness-triggered
+     run is still going. Note the transition time when you undraft and compare
+     against it. **`get_reviews` returns oldest first, so the current
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
@@ -551,9 +578,29 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    - **Deploy it yourself where you can** — `./gcp/deploy.sh <target>` for a
      job — then re-run the Phase 6 verification against the deployed revision
      and paste that output. Name the digest.
-   - **Confirm the staging build actually fired** for an API change, rather
+
+     **Check out the merge commit first.** `deploy.sh` builds by copying the
+     working tree into a tmpdir and running `gcloud builds submit --tag
+     "${IMAGE}" "$tmpdir"`; it never reads a commit and never records one. The
+     merge happened on the remote, so the local checkout is still the feature
+     branch — and if `main` advanced while the PR was open, deploying from
+     here publishes an image missing those merged changes, under a tag that
+     claims to be main:
+
+     ```bash
+     git fetch origin main
+     git checkout origin/main
+     git rev-parse HEAD        # must equal the merge commit the PR reports
+     ./gcp/deploy.sh <target>
+     ```
+
+   - **For an API change, confirm the staging build actually fired** rather
      than assuming the merge triggered one; a merge outside `includedFiles`
-     silently does not.
+     silently does not. **Staging is not the end of it.** The same file says
+     prod moves only when a human runs the `deploy-solyra-api-prod` trigger,
+     so a staging-only outcome leaves the fix not serving. Run that trigger
+     and verify against prod, or take the next bullet — do not treat "staging
+     is green" as the deployment.
    - **Where promotion is an owner action this session cannot take**, keep the
      issue OPEN, put the exact command in "Still open before this closes", and
      say the fix is merged but not yet serving. Closing on candidate evidence
