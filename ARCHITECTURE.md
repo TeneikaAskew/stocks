@@ -126,7 +126,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | Setting | Live value (2026-09-07) | Note |
 |---|---|---|
 | Engine / tier | PostgreSQL 15, `db-g1-small` | [`gcp/setup_cloud_sql.sh:106`](gcp/setup_cloud_sql.sh#L106) |
-| Storage | 191 GB (auto-grown; `etf_options_snapshots` 74 GB, `market_data_intraday_other` 67 GB) | corrected 2026-09-07: docs had said 55 GB, and `docs/GCP_IMPLEMENTATION_GUIDE.md` still said the original 20 GB |
+| Storage | 191 GB (auto-grown; `etf_options_snapshots` 74 GB, `market_data_intraday_other` 67 GB) | corrected 2026-09-07 in this doc, `docs/GCP_IMPLEMENTATION_GUIDE.md` and `COST_ANALYSIS.md`, which had said 55 GB, 20 GB and 55 GB respectively |
 | Network | **public IPv4 enabled** (`34.24.66.12`), one authorized network, `sslMode=ALLOW_UNENCRYPTED_AND_ENCRYPTED`, SSL not required | corrected 2026-09-07: docs had said "no public IP"; the setup script never passes `--no-assign-ip`. Cloud Run connects through the Cloud SQL connector; the public IP is for the authorized-network operator path. Whether to disable it is an operator decision (§17). |
 | Backups | automated daily 03:00 UTC, 7 retained, latest 2026-09-06 SUCCESSFUL | |
 | Point-in-time recovery | on, 7-day transaction log retention | |
