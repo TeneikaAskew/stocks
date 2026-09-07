@@ -167,8 +167,20 @@ async def admin_update_route(
         raise HTTPException(
             status_code=503, detail="model route store temporarily unavailable"
         ) from exc
-    # Return the updated row
-    for r in list_routes():
+    # Return the updated row.
+    #
+    # `list_routes()` opens its OWN connection, so the write succeeding says
+    # nothing about this read succeeding: a transient read failure after a
+    # committed write still escaped as a bare 500, past the 503 handling the
+    # write just gained (Codex, PR #999). Same contract as the write.
+    try:
+        rows = list_routes()
+    except Exception as exc:
+        logger.error("model route reload failed after writing %s: %s", role, exc)
+        raise HTTPException(
+            status_code=503, detail="model route store temporarily unavailable"
+        ) from exc
+    for r in rows:
         if r.role == role:
             return _route_to_row(r)
     raise HTTPException(status_code=500, detail="update succeeded but row not found")
@@ -552,13 +564,28 @@ async def admin_strat_engine_predict(
     # Lazy-import the predict path so the API container doesn't have
     # lightgbm + scikit-learn loaded into memory unless this endpoint
     # is actually hit. Heavy module-load only when needed.
-    from gcp.database import get_engine  # noqa: PLC0415
-    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
-    import pandas as _pd  # noqa: PLC0415
+    # The IMPORT is inside the guard too, not just the calls. `strat_pred_serve`
+    # pulls lightgbm and scikit-learn, so a container built without them raises
+    # ModuleNotFoundError before `get_engine()` is ever reached -- another bare
+    # 500, and the one that actually fires in an API image that skipped the
+    # heavy ML extras. An unavailable predict stack IS "strat engine
+    # temporarily unavailable"; it is not a crash. (Codex, PR #999)
+    try:
+        from gcp.database import get_engine  # noqa: PLC0415
+        from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+        import pandas as _pd  # noqa: PLC0415
 
-    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
-    engine = get_engine()
-    result = predict_one(engine, ticker, tf, as_of=as_of)
+        as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
+        engine = get_engine()
+        result = predict_one(engine, ticker, tf, as_of=as_of)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("strat-engine predict failed for %s %s: %s: %s",
+                     ticker, tf, type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=503, detail="strat engine temporarily unavailable"
+        ) from exc
     return StratEnginePredictResponse(**result)
 
 
@@ -670,14 +697,32 @@ async def admin_structure_continuation(
             ),
         )
 
-    # Lazy-import the heavy predict path only when the endpoint is hit.
-    from gcp.database import get_engine  # noqa: PLC0415
-    from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
-    import pandas as _pd  # noqa: PLC0415
+    # Same unguarded path as the predict endpoint above -- imports included,
+    # since `strat_pred_serve` pulls lightgbm and scikit-learn and a container
+    # without them raises before `get_engine()`. A backend outage on the
+    # ENABLED path became a bare 500, which the route sweep could not see
+    # while the flag defaulted OFF (Codex, PR #999).
+    #
+    # This endpoint's own contract is an explicit UNAVAILABLE envelope for
+    # "the model cannot produce one" -- but unreachable infrastructure is not
+    # a consulted-and-empty model, so it answers 503 rather than a 200
+    # envelope that would tell the caller the opposite of what happened.
+    try:
+        from gcp.database import get_engine  # noqa: PLC0415
+        from gcp.research.strat_engine.strat_pred_serve import predict_one  # noqa: PLC0415
+        import pandas as _pd  # noqa: PLC0415
 
-    as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
-    engine = get_engine()
-    result = predict_one(engine, ticker, tf, as_of=as_of)
+        as_of = _pd.to_datetime(body.as_of_timestamp) if body.as_of_timestamp else None
+        engine = get_engine()
+        result = predict_one(engine, ticker, tf, as_of=as_of)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("structure-continuation predict failed for %s %s: %s: %s",
+                     ticker, tf, type(exc).__name__, exc)
+        raise HTTPException(
+            status_code=503, detail="strat engine temporarily unavailable"
+        ) from exc
 
     base = {
         "ticker": result.get("ticker", ticker),

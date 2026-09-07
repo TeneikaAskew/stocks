@@ -485,8 +485,23 @@ async def movement_statement(
 
     from lib.movement_statement import assemble_movement_statement  # noqa: PLC0415
 
-    level_map = _build_movement_level_map(ticker_u)
-    result = assemble_movement_statement(ticker_u, tf, level_map=level_map)
+    # Both of these read the database. Neither was guarded, so a backend
+    # outage on the ENABLED path became a bare 500 -- invisible to the route
+    # sweep, which exercised this endpoint only through its flag-OFF 404
+    # (Codex, PR #999). The endpoint's own contract carries per-field
+    # UNAVAILABLE statuses for missing data; infrastructure being down is a
+    # different thing and answers 503, so a caller cannot read it as "the
+    # levels were consulted and had nothing".
+    try:
+        level_map = _build_movement_level_map(ticker_u)
+        result = assemble_movement_statement(ticker_u, tf, level_map=level_map)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("movement statement failed for %s %s: %s", ticker_u, tf, exc)
+        raise HTTPException(
+            status_code=503, detail="movement statement temporarily unavailable"
+        ) from exc
 
     # Defensive: the assembler returns None only when the flag is OFF, but we
     # already gated on the flag above. If it still returns None (e.g. an env

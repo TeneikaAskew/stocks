@@ -305,9 +305,10 @@ REQUESTS: list[Req] = [
     Req("GET", "/api/admin/models", 200),
     Req("GET", "/api/admin/structure-brief", 200),
     Req("GET", "/api/admin/strat-engine/state", 200),
-    Req("POST", "/api/admin/strat-engine/predict", 400,
-        json={"ticker": T, "timeframe": "1d"},
-        note="the handler's own timeframe check"),
+    Req("POST", "/api/admin/strat-engine/predict", 503,
+        json={"ticker": T, "timeframe": "15m"},
+        note="a VALID timeframe, so it reaches get_engine(); '1d' stopped at "
+             "the handler's own timeframe check and covered nothing past it"),
     Req("POST", "/api/admin/strat-engine/structure-continuation", 404,
         json={"ticker": T, "timeframe": "15m"}),
     Req("GET", "/api/admin/users", 503, note="was a bare 500"),
@@ -508,7 +509,13 @@ def client(tmp_path_factory):
         # `fetch_with_retry`. The key is read into a module-level constant at
         # import time, so clearing the environment is not enough on an already
         # imported module -- blank the constants where they are looked up.
-        for mod_name, attr in (("api.routers.live", "AV_API_KEY"),
+        # `api.main` binds its own copy and `_fetch_av_daily_reference` opens
+        # an httpx connection with it; its failures are swallowed before the
+        # expected 404, so the sweep stayed green while making an external
+        # request and the pinned status varied with whether a key was
+        # configured (Codex, PR #999). Four modules, not three.
+        for mod_name, attr in (("api.main", "AV_API_KEY"),
+                               ("api.routers.live", "AV_API_KEY"),
                                ("api.routers.grid", "_AV_API_KEY"),
                                ("api.routers.options", "_AV_API_KEY")):
             mod = sys.modules.get(mod_name)
@@ -516,6 +523,20 @@ def client(tmp_path_factory):
                 mp.setattr(mod, attr, "")
         mp.setattr(ticker_info, "_get_av_key",
                    lambda: (_ for _ in ()).throw(KeyError("no AV key in tests")))
+
+        # Benzinga is the third vendor these routes reach. `/catalysts/events`
+        # and `/catalysts/ticker/{t}` call `_fetch_live_events` on a cache
+        # miss, which hits the Benzinga calendar with a 30 s timeout and, on
+        # success, calls `save_catalysts` -- writing
+        # `platform/data/catalysts/catalyst_calendar.json`, because this
+        # fixture chdirs into `platform/`. So the sweep could spend vendor
+        # quota, block on the network, and leave state behind while still
+        # returning the expected 200 (Codex, PR #999).
+        #
+        # Read from the environment at CALL time (`catalysts.py`
+        # `_fetch_live_events`), so clearing the variable is enough here --
+        # unlike the AV constants above, which are bound at import.
+        mp.delenv("BENZINGA_API_KEY", raising=False)
 
         # Pin the auth mode. It is read from the environment at import time,
         # and under `AUTH_MODE=firebase` the middleware 401s every gated route
@@ -525,6 +546,17 @@ def client(tmp_path_factory):
         import api.auth as api_auth_mode
 
         mp.setattr(api_auth_mode, "AUTH_MODE", "open")
+
+        # Feature flags. Both are read from the environment at call time and
+        # default OFF, so the table's expectations described whichever
+        # deployment the developer's shell happened to describe. Pinned OFF
+        # here, which is what the flag-OFF 404 rows assert; the enabled paths
+        # get their own requests in
+        # `test_the_feature_gated_handlers_survive_a_backend_outage`, because
+        # a sweep that only ever sees the 404 marks the operation covered
+        # without executing the code that serves users (Codex, PR #999).
+        mp.delenv("MOVEMENT_STATEMENT_ENABLED", raising=False)
+        mp.delenv("STRUCTURE_CONTINUATION_ENABLED", raising=False)
 
         import api.routers.admin as admin
 
@@ -855,3 +887,67 @@ def test_options_dates_is_not_a_500(client):
     """The other endpoint from this week's defects (#992)."""
     r = client.get(f"/api/options/dates/{T}")
     assert r.status_code == 404, r.text[:300]
+
+
+@pytest.mark.parametrize("flag,method,path,body", [
+    ("MOVEMENT_STATEMENT_ENABLED", "GET",
+     f"/api/movement-statement?ticker={T}&timeframe=15m", None),
+    ("STRUCTURE_CONTINUATION_ENABLED", "POST",
+     "/api/admin/strat-engine/structure-continuation",
+     {"ticker": T, "timeframe": "15m"}),
+])
+def test_the_feature_gated_handlers_survive_a_backend_outage(
+    client, monkeypatch, flag, method, path, body,
+):
+    """A flag-OFF 404 covers the route and executes none of the real code.
+
+    The sweep's rows for these two operations stop at the feature-flag check,
+    which is the first statement in each handler. The table therefore marked
+    both covered while the code that serves users -- the part behind the flag,
+    which reads the database -- was never executed. Turned on with the same
+    backend outage injected, both returned a BARE 500 from an unguarded
+    `get_engine()` (Codex, PR #999).
+
+    So the flag is turned ON here and the response is required to be a handled
+    one. 503 is the contract: these endpoints already return explicit
+    UNAVAILABLE envelopes for "the model has nothing to say", and a database
+    that is unreachable is infrastructure rather than a consulted-but-empty
+    model -- answering 200 with an envelope would tell the caller the opposite
+    of what happened.
+    """
+    monkeypatch.setenv(flag, "1")
+    resp = client.request(method, path, json=body) if body else client.get(path)
+
+    assert resp.status_code != 500, (
+        f"{method} {path} with {flag}=1 returned a bare 500 — an unhandled "
+        f"exception reaching FastAPI, not an error the frontend can render.\n"
+        f"body: {resp.text[:400]}")
+    assert resp.status_code == 503, (
+        f"expected 503 for a backend outage on the enabled path, got "
+        f"{resp.status_code}: {resp.text[:400]}")
+    assert resp.headers.get("content-type", "").startswith("application/json")
+
+
+def test_a_successful_route_write_still_guards_its_reload(client, monkeypatch):
+    """`set_route` and `list_routes` open separate connections.
+
+    The sweep's `PUT /api/admin/routes/analyst` row makes the WRITE fail, so
+    it never reaches the reload underneath. A committed write followed by a
+    transient read failure therefore still escaped as a bare 500, past the 503
+    the write had just gained (Codex, PR #999). Stub the write to SUCCEED and
+    only the read to fail.
+    """
+    import api.routers.admin as admin
+
+    monkeypatch.setattr(admin, "set_route", lambda *a, **k: None)
+    monkeypatch.setattr(
+        admin, "list_routes",
+        lambda: (_ for _ in ()).throw(RuntimeError("connection refused")))
+
+    resp = client.put("/api/admin/routes/analyst",
+                      json={"provider": "vertex", "model": "gemini-2.5-flash"})
+
+    assert resp.status_code == 503, (
+        f"a read failure after a successful write is still a bare "
+        f"{resp.status_code}: {resp.text[:400]}")
+    assert resp.json()["detail"] == "model route store temporarily unavailable"
