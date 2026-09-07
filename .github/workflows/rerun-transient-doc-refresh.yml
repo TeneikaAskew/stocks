@@ -103,7 +103,13 @@ jobs:
       github.event.workflow_run.run_attempt > 1
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A job-level block REPLACES the workflow-level one, so `actions: read`
+    # has to be repeated here: the classifier reads attempt 1's jobs and logs
+    # through the API, and without it every `gh api .../actions/...` call is
+    # "Resource not accessible by integration" -- the re-check this job exists
+    # to make would fail on its first request, every time.
     permissions:
+      actions: read
       contents: read
       pull-requests: write
     steps:
@@ -133,7 +139,22 @@ jobs:
           fi
           PR=$(gh api "repos/${REPO}/pulls?state=open&head=${REPO%%/*}:${BRANCH}" --jq '.[0].number // empty')
           if [ -z "$PR" ]; then
-            echo "no open failure PR for ${BRANCH}; nothing to close"
+            # scripts/handle_workflow_failure.py:find_existing_pr creates the
+            # per-run branch only when no `fix/workflow-refresh-architecture-docs-*`
+            # PR is open. Otherwise it comments "Please review this additional
+            # failure and update the fix in this PR" on the one that is -- a PR
+            # about some EARLIER, possibly real, failure. That PR must not be
+            # closed, but the request it now carries is answered here so it does
+            # not read as outstanding work.
+            OLDER=$(gh api "repos/${REPO}/pulls?state=open&per_page=100" \
+              --jq "[.[] | select(.head.label | startswith(\"${REPO%%/*}:${BRANCH%-*}-\"))] | .[0].number // empty")
+            if [ -z "$OLDER" ]; then
+              echo "no open failure PR for this workflow; nothing to close or annotate"
+              exit 0
+            fi
+            gh pr comment "$OLDER" --repo "$REPO" --body \
+              "The additional failure recorded here from run ${RUN_ID} was a transient Vertex transport stall, re-verified against attempt 1's logs. The re-run succeeded ([run]($RUN_URL)), so that entry needs no fix. This PR stays open for the failure it was originally opened for."
+            echo "annotated #${OLDER}; no per-run PR (${BRANCH}) to close"
             exit 0
           fi
           gh pr comment "$PR" --repo "$REPO" --body \

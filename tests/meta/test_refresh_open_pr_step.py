@@ -186,8 +186,36 @@ def test_a_dispatch_from_a_branch_fails_before_it_burns_a_run():
     names = [s.get("name") for s in STEPS]
     guard = "Refuse to run from anywhere but main"
     assert guard in names, "the branch-dispatch guard is gone"
-    assert names.index(guard) < names.index("Authenticate to GCP (WIF)")
-    step = STEPS[names.index(guard)]
+    # First, not merely before auth: nothing it needs is installed by the
+    # seven setup steps, and a run that cannot authenticate should not spend
+    # forty seconds installing a CLI first.
+    assert names.index(guard) == 0, names[:3]
+    step = STEPS[0]
     assert step["if"] == "github.ref != 'refs/heads/main'"
     assert "refs/heads/main" in step["run"] and "::error::" in step["run"]
     assert "exit 1" in step["run"]
+    # The ref reaches the script through env. A branch name may contain `$`,
+    # `(` and backticks, and `${{ }}` inside `run:` is expanded before bash
+    # reads the line -- the standard Actions script-injection shape.
+    assert step["env"]["REF"] == "${{ github.ref }}"
+    assert "${{" not in step["run"], step["run"]
+
+
+def test_a_missing_drift_report_is_named_not_blanked(tmp_path):
+    """`verify_other.md` is written by the verify step. If it is absent at
+    PR time something upstream went wrong, and an empty string in the body is
+    indistinguishable from "no drift" (Rule 3.7)."""
+    _, work, _, out = _run_step(tmp_path)
+    body = (out / "create.txt").read_text()
+    assert "_no docs-vs-live report produced_" not in body  # present -> real content
+    (work / "refresh-inputs/verify_other.md").unlink()
+    # Re-run the step in the same repo: a second run this month edits the PR.
+    env = dict(os.environ)
+    env.update(PATH=f"{tmp_path / 'bin'}:{env['PATH']}", PR_BRANCH_PREFIX="bot/arch-refresh",
+               GEMINI_MODEL="gemini-2.5-pro", GH_TOKEN="stub", GH_OUT=str(out),
+               GH_CALLS=str(out / "calls.txt"), GH_EXISTING_PR="123")
+    (work / STAGED[0]).write_text("regenerated again\n")
+    proc = subprocess.run(["bash", "-c", OPEN_PR["run"]], cwd=work, env=env,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "_no docs-vs-live report produced_" in (out / "edit.txt").read_text()

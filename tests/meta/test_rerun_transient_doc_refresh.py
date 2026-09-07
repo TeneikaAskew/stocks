@@ -331,8 +331,13 @@ def test_it_can_rerun_and_asks_for_nothing_more():
     assert perms["actions"] == "write", "cannot re-run without actions: write"
     assert perms["contents"] == "read"
     assert set(perms) == {"actions", "contents"}, f"extra permissions: {perms}"
+    # A job-level permissions block REPLACES the workflow-level one. The
+    # cleanup job runs the classifier, which reads attempt 1's jobs and logs
+    # through the API, so it needs actions: read of its own -- an earlier
+    # version had only contents/pull-requests here and would have failed on
+    # its first `gh api .../actions/...` call, every time.
     assert DOC["jobs"]["close-obsolete-failure-pr"]["permissions"] == {
-        "contents": "read", "pull-requests": "write"}
+        "actions": "read", "contents": "read", "pull-requests": "write"}
     assert "rerun-failed-jobs" in STEP
 
 
@@ -442,3 +447,93 @@ def test_the_refresh_workflow_does_not_retry_in_job():
     for r in gemini_steps:
         assert "for ATTEMPT" not in r and "MAX_ATTEMPTS" not in r, \
             "an in-job retry loop is back in the refresh workflow"
+
+
+# ── the cleanup step, executed ──────────────────────────────────────────────
+
+CLEANUP_STEP = next(st for st in DOC["jobs"]["close-obsolete-failure-pr"]["steps"] if "run" in st)
+
+CLEANUP_GH_STUB = """#!/usr/bin/env bash
+echo "$@" >> "$GH_CALLS"
+case "$*" in
+  *"/logs"*)              cat "$LOG_FIXTURE" ;;
+  *"actions/jobs/"*)      cat "$WINDOW_FIXTURE" ;;
+  *"attempts/1/jobs"*)    echo 1 ;;
+  *"pulls?state=open&head="*) printf '%s' "$PER_RUN_PR" ;;
+  *"pulls?state=open&per_page="*) printf '%s' "$OLDER_PR" ;;
+  "pr comment"*)          printf '%s' "$*" >> "$GH_OUT/comments.txt" ;;
+  "pr close"*)            printf '%s' "$*" >> "$GH_OUT/closes.txt" ;;
+esac
+"""
+
+
+def _run_cleanup(tmp_path, *, log_text, per_run_pr="", older_pr=""):
+    """Run the cleanup step's own script. `gh` answers the classifier's calls
+    with the given log and a window spanning it, the per-run PR lookup with
+    `per_run_pr`, and the prefix lookup with `older_pr` -- both already in
+    the shape `--jq` would have produced, since the stub ignores --jq."""
+    d = tmp_path
+    (d / "log.txt").write_text(log_text)
+    stamps = sorted(re.findall(r"^(\S+Z) ", log_text, re.M))
+    (d / "windows.txt").write_text(f"{stamps[0]}\t{stamps[-1]}\n" if stamps else "")
+    bin_dir = d / "bin"; bin_dir.mkdir()
+    out = d / "out"; out.mkdir()
+    (bin_dir / "gh").write_text(CLEANUP_GH_STUB)
+    (bin_dir / "gh").chmod(0o755)
+    env = dict(os.environ)
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", GH_TOKEN="stub",
+               REPO="TeneikaAskew/stocks", RUN_ID="777",
+               BRANCH="fix/workflow-refresh-architecture-docs-25",
+               RUN_URL="https://example.invalid/run/777",
+               LOG_FIXTURE=str(d / "log.txt"), WINDOW_FIXTURE=str(d / "windows.txt"),
+               GH_OUT=str(out), GH_CALLS=str(out / "calls.txt"),
+               PER_RUN_PR=per_run_pr, OLDER_PR=older_pr)
+    proc = subprocess.run(["bash", "-c", CLEANUP_STEP["run"]], cwd=REPO, env=env,
+                          capture_output=True, text=True)
+    comments = (out / "comments.txt").read_text() if (out / "comments.txt").exists() else ""
+    closes = (out / "closes.txt").read_text() if (out / "closes.txt").exists() else ""
+    return proc, comments, closes
+
+
+def test_cleanup_closes_the_per_run_pr_after_a_verified_stall(tmp_path):
+    proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_STALL, per_run_pr="4242")
+    assert proc.returncode == 0, proc.stderr
+    assert "pr comment 4242" in comments
+    assert "pr close 4242" in closes
+    assert "--delete-branch" not in closes
+
+
+def test_cleanup_annotates_but_never_closes_an_older_failure_pr(tmp_path):
+    """The handler creates fix/...-<run_number> only when no failure PR for
+    this workflow is open; otherwise it comments "please review this
+    additional failure" on the existing one. That PR is about an EARLIER
+    failure and must survive; the request it now carries must not."""
+    proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_STALL, older_pr="1021")
+    assert proc.returncode == 0, proc.stderr
+    assert "pr comment 1021" in comments
+    assert "transient Vertex transport stall" in comments
+    assert closes == "", closes
+
+
+def test_cleanup_touches_nothing_when_attempt_1_was_a_real_failure(tmp_path):
+    proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_REFUSAL,
+                                          per_run_pr="4242", older_pr="1021")
+    assert proc.returncode == 0, proc.stderr
+    assert "was not a transport stall" in proc.stdout
+    assert comments == "" and closes == ""
+
+
+def test_cleanup_is_quiet_when_no_failure_pr_exists(tmp_path):
+    proc, comments, closes = _run_cleanup(tmp_path, log_text=REAL_STALL)
+    assert proc.returncode == 0, proc.stderr
+    assert "nothing to close or annotate" in proc.stdout
+    assert comments == "" and closes == ""
+
+
+def test_the_older_pr_lookup_matches_the_handlers_own_prefix():
+    """`find_existing_pr` matches `OWNER:fix/workflow-<file>-`; the lookup
+    here strips the run number off BRANCH to rebuild exactly that prefix."""
+    src = (REPO / "scripts/handle_workflow_failure.py").read_text()
+    assert 'head_pattern = f"{self.owner}:fix/workflow-{workflow_base}-"' in src
+    run = CLEANUP_STEP["run"]
+    assert 'startswith(\\"${REPO%%/*}:${BRANCH%-*}-\\")' in run

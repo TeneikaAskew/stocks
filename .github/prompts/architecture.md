@@ -23,9 +23,8 @@ into this prompt by `scripts/maintenance/render_doc_prompts.py` before you were
 called. They are correct as of this run. **Use them verbatim wherever the
 document states a count.** Do not recount them from an input file, do not
 derive a count by counting entries you can see in a truncated read, and do not
-carry one forward from the previous version of the document. A 2026-09-07 run
-wrote "24 Cloud Scheduler jobs" against a live fleet of 65 and went red on that
-single line.
+carry one forward from the previous version of the document. A 2026-09-07 run wrote a
+scheduler count under half the live figure and went red on that single line.
 
 ## Inputs you have (all under `refresh-inputs/`, all small enough to read whole)
 

@@ -85,6 +85,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # ── This workflow can only run from main ──────────────────────────────
+      # The Workload Identity provider's attribute condition is
+      #
+      #   assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'
+      #
+      # read 2026-09-07 with `gcloud iam workload-identity-pools providers list
+      # --workload-identity-pool=github-pool --location=global`. So a
+      # workflow_dispatch from a feature branch dies inside
+      # google-github-actions/auth with no explanation, then opens a failure
+      # issue and a draft PR about it. Run 23 was dispatched from a branch to
+      # validate a fix and got exactly that.
+      #
+      # The condition is the right boundary -- it is what stops any PR branch
+      # from assuming this project's GCP identity -- so this step says so
+      # rather than loosening it. A fix to this workflow is validated by
+      # merging it and dispatching from main, not from the branch.
+      #
+      # The ref goes through env rather than into the script text: a branch
+      # name may contain `$`, `(` and backticks, and `${{ }}` inside `run:` is
+      # expanded before bash reads it.
+      - name: Refuse to run from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::This workflow authenticates to GCP through a Workload Identity provider whose attribute condition pins assertion.ref to refs/heads/main, so it cannot run from ${REF}. Merge the change and dispatch from main."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -153,28 +181,6 @@ jobs:
       # The same auth covers gcloud + BigQuery + Vertex AI — no separate
       # GEMINI_API_KEY secret needed. Vertex picks up ADC automatically
       # when GOOGLE_GENAI_USE_VERTEXAI=true.
-      # ── This workflow can only run from main ──────────────────────────────
-      # The Workload Identity provider's attribute condition is
-      #
-      #   assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'
-      #
-      # read 2026-09-07 with `gcloud iam workload-identity-pools providers list
-      # --workload-identity-pool=github-pool --location=global`. So a
-      # workflow_dispatch from a feature branch dies inside
-      # google-github-actions/auth with no explanation, then opens a failure
-      # issue and a draft PR about it. Run 23 was dispatched from a branch to
-      # validate a fix and got exactly that.
-      #
-      # The condition is the right boundary -- it is what stops any PR branch
-      # from assuming this project's GCP identity -- so this step says so
-      # rather than loosening it. A fix to this workflow is validated by
-      # merging it and dispatching from main, not from the branch.
-      - name: Refuse to run from anywhere but main
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::This workflow authenticates to GCP through a Workload Identity provider whose attribute condition pins assertion.ref to refs/heads/main, so it cannot run from ${{ github.ref }}. Merge the change and dispatch from main."
-          exit 1
-
       - name: Authenticate to GCP (WIF)
         uses: google-github-actions/auth@v2
         with:
@@ -931,7 +937,7 @@ jobs:
           # The added/removed accounting the gate step produced, so a reviewer
           # sees what moved without reading the whole diff.
           DIFF_REPORT=$(cat refresh-inputs/diff_report.md 2>/dev/null || echo "_no accounting produced_")
-          DRIFT=$(cat refresh-inputs/verify_other.md 2>/dev/null || true)
+          DRIFT=$(cat refresh-inputs/verify_other.md 2>/dev/null || echo "_no docs-vs-live report produced_")
 
           # A PR may already be open for this branch from an earlier run this
           # month. `gh pr create` errors loudly in that case even though the

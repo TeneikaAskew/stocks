@@ -15,9 +15,11 @@ Two properties are pinned here, because either one alone is inert:
     the numbers with every test still green.
 
 The substitution values below are deliberately NOT the ones in the committed
-snapshot. The prompt text quotes the incident ("a live fleet of 65"), so an
-assertion on 65 would pass against a prompt that was never rendered at all --
-the same shape of trap as a test that matches its own comment.
+snapshot, so a prompt that was never rendered cannot pass by carrying the
+current fleet size somewhere in its prose. And the prose is not allowed to:
+the verifier's own count patterns are run over every template below, because
+a literal count in the text that tells the model never to carry a literal
+count is the same defect one layer up, and it goes stale the same way.
 """
 from __future__ import annotations
 
@@ -203,3 +205,31 @@ def test_the_verified_counts_are_the_ones_the_verifier_can_flag():
     checked = set(_re.findall(r'^\s*"(run_jobs|services|schedulers|secrets|queues)"',
                               block, _re.M))
     assert checked == {k for _, k in rp.VERIFIED}, checked
+
+
+def test_no_prompt_carries_a_fleet_count_of_its_own():
+    """The prompts once said `wrote "24 Cloud Scheduler jobs" against a live
+    fleet of 65`. Both numbers were true on 2026-09-07 and both go stale, in a
+    paragraph whose whole point is that the model must not carry a stale
+    count. Checked with the verifier's own COUNT_CLAIMS, so the vocabulary is
+    the one that gates the documents, not a second one written here."""
+    import importlib.util
+    # Registered before exec, as tests/scripts/test_verify_docs_against_live.py
+    # does: the module's dataclass resolves its own name through sys.modules.
+    spec = importlib.util.spec_from_file_location(
+        "verify_docs_against_live", REPO / "scripts/verify_docs_against_live.py")
+    vd = sys.modules.get("verify_docs_against_live") or importlib.util.module_from_spec(spec)
+    if "verify_docs_against_live" not in sys.modules:
+        sys.modules["verify_docs_against_live"] = vd
+        spec.loader.exec_module(vd)
+    for name in PROMPTS:
+        text = rp.PLACEHOLDER.sub("", (PROMPT_DIR / f"{name}.md").read_text())
+        # `§6 Cloud Run Jobs` is a section reference, not a fleet size. The
+        # verifier has no such exemption, which is why the documents write
+        # "## 6. Cloud Run Jobs" -- the dot breaks the pattern -- and why a
+        # doc that ever wrote "§6 Cloud Run Jobs" would go red. Here the
+        # section number is dropped so the reference itself is not the claim.
+        text = re.sub(r"§\d+", "§", text)
+        for pattern, _key, label in vd.COUNT_CLAIMS:
+            m = pattern.search(text)
+            assert m is None, f"{name}.md carries a literal count claim: {m.group(0)!r} ({label})"
