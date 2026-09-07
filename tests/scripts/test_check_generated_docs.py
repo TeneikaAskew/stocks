@@ -59,7 +59,46 @@ def test_editing_inside_a_marker_block_is_a_finding(live, repo, tmp_path):
     s = inv.MARKER_START.format(name="jobs")
     text = text.replace(s, s + "\n| `hand-edited-row` | x | x | x | x | x |", 1)
     (root / gate.ARCH).write_text(text)
-    assert any("marker block differs" in f for f in gate.gate_markers(root, repo, live))
+    findings = gate.gate_markers(root, repo, live)
+    # Named, with the first differing line: run 24 reported "an inventory
+    # marker block differs" for 05-c and nothing more, and the artifact that
+    # held the answer was behind an endpoint the sandbox cannot reach.
+    assert any("inventory:jobs block differs" in f and "hand-edited-row" in f for f in findings), findings
+
+
+def test_a_model_edited_block_is_restored_from_the_fresh_render_by_name(live, repo, tmp_path):
+    """Run 24's fix. The blocks are the workflow's, rendered from the frozen
+    snapshot before the model runs; a model edit inside one is overwritten
+    with the authoritative render and REPORTED, rather than failing the
+    refresh. Only blocks that differ are named, and after the restore the
+    marker gate has nothing to say."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    text = (root / gate.ARCH).read_text()
+    s = inv.MARKER_START.format(name="jobs")
+    text = text.replace(s, s + "\n| `hand-edited-row` | x | x | x | x | x |", 1)
+    (root / gate.ARCH).write_text(text)
+    assert [n for n, _ in inv.differing_blocks(root / gate.ARCH, repo, live, root=root)] == ["jobs"]
+    assert inv.restore_blocks(root / gate.ARCH, repo, live, root=root) == ["jobs"]
+    assert "hand-edited-row" not in (root / gate.ARCH).read_text()
+    assert gate.gate_markers(root, repo, live) == []
+    # Idempotent: a second restore touches nothing and names nothing.
+    assert inv.restore_blocks(root / gate.ARCH, repo, live, root=root) == []
+
+
+def test_a_block_without_its_end_marker_cannot_be_restored_and_is_a_finding(live, repo, tmp_path):
+    """The one shape a restore must not paper over: with no end marker the
+    block cannot be located, so nothing can say where the render should go."""
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    text = (root / gate.ARCH).read_text()
+    text = text.replace(inv.MARKER_END.format(name="jobs"), "", 1)
+    (root / gate.ARCH).write_text(text)
+    with pytest.raises(ValueError):
+        inv.restore_blocks(root / gate.ARCH, repo, live, root=root)
+    assert any("inventory:jobs:start --> without" in f for f in gate.gate_markers(root, repo, live))
 
 
 def test_removing_both_markers_of_a_block_is_a_finding(live, repo, tmp_path):

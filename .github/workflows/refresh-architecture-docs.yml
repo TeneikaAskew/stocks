@@ -666,6 +666,23 @@ jobs:
           cp "$RUNNER_TEMP/frozen/docs/product/infrastructure/05-e-API.md" docs/product/infrastructure/05-e-API.md
           cp "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md" docs/INVESTMENT_MODELS_SUMMARY.md
           echo "gate inputs restored and verified against the pre-Gemini manifest"
+          # The inventory marker blocks are the workflow's: rendered from the
+          # frozen snapshot before the model ran and told to it as off-limits.
+          # Run 24 edited inside one in 05-c and the whole refresh went red for
+          # it. The correct bytes are known exactly, so a block the model
+          # touched is rewritten from the fresh render, using the inputs just
+          # restored, and named here as a warning; the prose around it still
+          # goes through every gate. A start marker without its end is not
+          # restorable and fails loud below.
+          RESTORED=$(python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json \
+            --restore docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md)
+          if [ -n "$RESTORED" ]; then
+            while IFS= read -r LINE; do
+              echo "::warning::the model edited a rendered block; ${LINE}"
+            done <<< "$RESTORED"
+          else
+            echo "no marker block was touched by the model"
+          fi
 
       # Re-run the drawio validation against what will actually be committed:
       # the render step validated the diagrams BEFORE the model could reach

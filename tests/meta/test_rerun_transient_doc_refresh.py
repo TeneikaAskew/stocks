@@ -178,7 +178,12 @@ def _classify_rc(log_text: str, window="all", tmp_path=None, fail_on: str = "") 
         # unavailable log does: gh exits 1.
         'if [ -n "$FAIL_ON" ] && [[ "$*" == *"$FAIL_ON"* ]]; then echo "gh: HTTP 403" >&2; exit 1; fi\n'
         'case "$*" in\n'
-        '  *"/logs"*) cat "$LOG_FIXTURE" ;;\n'
+        # Refuses an escape-sequence body without the flag, as gh does; the
+        # first production run of the classifier died on exactly that.
+        '  *"/logs"*)\n'
+        '    if grep -q $\'\\x1b\' "$LOG_FIXTURE" && [[ "$*" != *"--allow-escape-sequences"* ]]; then\n'
+        '      echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2; exit 1; fi\n'
+        '    cat "$LOG_FIXTURE" ;;\n'
         '  *"actions/jobs/"*) cat "$WINDOW_FIXTURE" ;;\n'
         '  *) echo 1 ;;\n'
         'esac\n'
@@ -461,7 +466,10 @@ CLEANUP_GH_STUB = """#!/usr/bin/env bash
 echo "$@" >> "$GH_CALLS"
 if [ -n "$FAIL_ON" ] && [[ "$*" == *"$FAIL_ON"* ]]; then echo "gh: HTTP 403" >&2; exit 1; fi
 case "$*" in
-  *"/logs"*)              cat "$LOG_FIXTURE" ;;
+  *"/logs"*)
+    if grep -q $'\x1b' "$LOG_FIXTURE" && [[ "$*" != *"--allow-escape-sequences"* ]]; then
+      echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2; exit 1; fi
+    cat "$LOG_FIXTURE" ;;
   *"actions/jobs/"*)      cat "$WINDOW_FIXTURE" ;;
   *"attempts/1/jobs"*)    echo 1 ;;
   *"/jobs?per_page="*)    echo 1 ;;
@@ -604,3 +612,25 @@ def test_a_long_section_after_the_record_does_not_become_a_false_negative():
                       for i in range(12000))
     assert len(trailer) > 1_000_000
     assert _classify_rc(REAL_STALL + trailer) == 0
+
+
+# Run 24's real shape: the runner colours its own `##[group]Run` echo of the
+# step script, so every real job log carries ANSI sequences. gh refuses to
+# print such a body unless told to, and the first production execution of the
+# classifier died on exactly that -- exit 2 on every real log.
+ANSI_STEP_HEADER = (
+    "2026-09-07T22:19:40.5620813Z \x1b[36;1m    echo \"blocking. Each line is a claim\"\x1b[0m\n"
+    "2026-09-07T22:19:40.5621244Z \x1b[36;1m    exit $FAIL\x1b[0m\n"
+    "2026-09-07T22:19:40.5667162Z ##[endgroup]\n"
+)
+
+
+def test_a_real_log_with_ansi_sequences_is_read_not_refused():
+    """The stub refuses exactly as gh does when the flag is absent, so this
+    can only pass if the script asks for escape sequences and then strips
+    them before matching."""
+    assert _classify_rc(ANSI_STEP_HEADER + REAL_STALL) == 0
+    assert _classify_rc(ANSI_STEP_HEADER + REAL_REFUSAL) == 1
+    # And a record wrapped in colour is still anchored at start of line.
+    coloured = REAL_STALL.replace("Z Error when talking", "Z \x1b[31mError when talking", 1)
+    assert _classify_rc(ANSI_STEP_HEADER + coloured) == 0

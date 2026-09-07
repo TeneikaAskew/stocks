@@ -29,6 +29,8 @@ import pathlib
 import re
 import sys
 
+from scripts.maintenance.check_generated_docs import relation_counts
+
 PLACEHOLDER = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
 
 
@@ -51,6 +53,7 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
     """
     lc = live["counts"]
     rc = repo_inventory["repo"]["counts"]
+    declared_relations, runtime_relations = relation_counts(repo_inventory["repo"], live)
     raw = {
         "LIVE_JOBS": lc["jobs"],
         "LIVE_SCHEDULERS": lc["schedulers"],
@@ -59,11 +62,19 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
         "LIVE_DB_TABLES": len(live["db_tables"]),
         "DECLARED_JOBS": rc["jobs"],
         "DECLARED_SCHEDULERS": rc["schedulers"],
-        "DECLARED_TABLES": rc["tables"],
+        # The gate checks "N runtime relations" as a SET difference between the
+        # live relations and everything schema.sql declares -- tables, views
+        # and materialized views. Run 24 handed the model the live count and
+        # the TABLE count and let it derive the rest; it wrote 26, 28 and 30
+        # against a true 27. Both halves come from the gate's own helper now.
+        "DECLARED_RELATIONS": declared_relations,
+        "RUNTIME_RELATIONS": runtime_relations,
     }
     for name, value in raw.items():
         if not isinstance(value, int) or isinstance(value, bool):
             raise SystemExit(f"{name} is {value!r}, not an int — the inputs are broken")
+        if name == "RUNTIME_RELATIONS" and value == 0:
+            continue  # nothing created outside schema.sql is a valid state
         if value <= 0:
             raise SystemExit(f"{name} is {value} — refusing to render a prompt from an empty snapshot")
     for name, key in VERIFIED:
