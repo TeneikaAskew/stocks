@@ -171,7 +171,17 @@ _TZ_CONTEXT = (
     # and `SET TIME ZONE 'EST'` / `SET timezone TO 'EDT'` freeze the whole
     # connection at a fixed offset -- a wider blast radius than any single
     # expression, and neither spelling was a context (Codex, PR #993).
-    + _B + r"SET\s+TIME[ _]?ZONE\s*(?:TO\s+)?"
+    # `LOCAL` and `SESSION` are the scope modifiers Postgres accepts between
+    # `SET` and the setting name; requiring `TIME ZONE` immediately after
+    # `SET` exempted `SET LOCAL timezone TO 'EST'`, which does the same thing
+    # for the transaction (Codex, PR #993).
+    + _B + r"SET\s+(?:LOCAL\s+|SESSION\s+)?TIME[ _]?ZONE\s*(?:TO\s+)?|"
+    # Dockerfiles take `ENV <key> <value>` as well as `ENV <key>=<value>`, and
+    # the abbreviated `tz` key required a `:` or `=`. Dockerfiles were added to
+    # this scan precisely to cover deployment configuration, so accepting only
+    # the equals form let an image pin a fixed Eastern offset with both guards
+    # green (Codex, PR #993).
+    + _B + r"ENV\s+TZ\s+"
 )
 
 # Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
@@ -196,12 +206,24 @@ NONPY_AMBIGUOUS = re.compile(
     r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
+# `EST5` is POSIX's fixed form -- a std abbreviation with an offset and NO DST
+# rule, so it is frozen at UTC-5 all year, and it is what `TZ=EST5` installs
+# for a whole process. `UTC-05:00` is the same zone spelled the way pandas and
+# several config formats accept it. Both were invisible to a pattern that knew
+# only a bare number and the `Etc/GMT` names (Codex, PR #993).
+#
+# `EST5EDT` deliberately does NOT match here: the anchors keep the `EST5`
+# alternative from claiming its prefix, and it belongs to the backward-link
+# test rather than this one -- it IS DST-correct, it is just the wrong name.
+_FIXED_OFFSET_TEXT = (r"(?:-\s*0?[45]:?00|EST5|"
+                      r"(?:UTC|GMT)\s*-\s*0?[45](?::?00)?)")
 # Quotes optional, like the legacy-name pattern above and for the same reason:
 # `timezone=-05:00` in a shell or YAML file is the ordinary spelling, and
 # requiring both quotes exempted it (Codex, PR #993). The lookahead keeps the
 # unquoted branch from matching a longer number.
 NONPY_FIXED_OFFSET = re.compile(
-    r"(?:" + _TZ_CONTEXT + r")\s*['\"]?\s*-\s*0?[45]:?00\s*['\"]?(?![0-9])", re.I
+    r"(?:" + _TZ_CONTEXT + r")\s*['\"]?\s*" + _FIXED_OFFSET_TEXT
+    + r"\s*['\"]?(?![A-Za-z0-9_])", re.I
 )
 
 # ── Python: parsed, not pattern-matched ────────────────────────────────────
@@ -217,8 +239,28 @@ NONPY_FIXED_OFFSET = re.compile(
 # `gettz` is dateutil's, and python-dateutil is a declared dependency here.
 # A whitelist of constructors is a list of the ones someone thought of, which
 # is why the unambiguous names are ALSO matched independently of it below.
-_TZ_CALLS = {"ZoneInfo", "timezone", "localize", "tz_localize", "tz_convert",
-             "astimezone", "now", "Timestamp", "gettz", "FixedOffset"}
+# Split by how much the NAME ALONE tells you, because `_call_name` reads the
+# final attribute and drops the receiver. `translator.localize("EST")` and
+# `cache.now("EDT")` are ordinary calls in an i18n layer and a cache, and
+# reporting them is a false CI failure on code with no timezone in it -- the
+# exact outcome the ambiguous names are kept context-gated to avoid
+# (Codex, PR #993).
+#
+# A SPECIFIC name means a timezone and nothing else, so it is a context on its
+# own. A GENERIC one is a context only when the receiver says so: `pytz` or
+# `pd` makes `timezone`/`now` a timezone call, an unknown object does not.
+# Unambiguous zone names and fixed offsets are still reported through a
+# generic call, because those spellings mean one thing wherever they appear;
+# it is only the bare `EST`/`EDT` tokens that need the stronger context.
+_TZ_CALLS_SPECIFIC = {"ZoneInfo", "tz_localize", "tz_convert", "astimezone",
+                      "Timestamp", "gettz", "FixedOffset", "tzoffset"}
+_TZ_CALLS_GENERIC = {"timezone", "localize", "now"}
+_TZ_CALLS = _TZ_CALLS_SPECIFIC | _TZ_CALLS_GENERIC
+# Receivers that make a generic name specific. Alias-resolved, so
+# `import pytz as p` still reaches `pytz` -- and read as the LAST attribute of
+# the chain, so `pd.Timestamp.now(...)` resolves to `Timestamp`.
+_TZ_RECEIVERS = {"pytz", "tz", "dateutil", "pd", "pandas", "datetime",
+                 "Timestamp", "zoneinfo"}
 
 # Constructors whose numeric argument IS the offset, in MINUTES.
 # `pytz.FixedOffset(-300)` is a fixed UTC-5 zone -- right for Eastern in
@@ -228,6 +270,11 @@ _TZ_CALLS = {"ZoneInfo", "timezone", "localize", "tz_localize", "tz_convert",
 # declared dependency of this repository, so this is a live spelling.
 _FIXED_OFFSET_CALLS = {"FixedOffset"}
 _EASTERN_OFFSET_MINUTES = (-240, -300)
+# dateutil's equivalent, and the unit is the trap: `tzoffset(None, -18000)` is
+# the same frozen UTC-5 zone as `FixedOffset(-300)`, in SECONDS. Reading it as
+# minutes would have compared -18000 against (-240, -300) and found nothing,
+# so the constructor and its unit have to arrive together (Codex, PR #993).
+_FIXED_OFFSET_SECOND_CALLS = {"tzoffset"}
 # `key` is NOT here. It is the ZoneInfo constructor's parameter name and
 # nothing else's, so as a GLOBAL keyword it flags `cache.get(key="EST")` and
 # any other ordinary lookup -- a false CI failure on code that has no timezone
@@ -243,7 +290,7 @@ _TZ_KEYWORDS = {"tz", "tzinfo", "timezone", "time_zone"}
 # (Codex, PR #993). Only +4 and +5: the others are not Eastern in any season.
 _FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05")
 _FIXED_OFFSET_STRINGS = re.compile(
-    r"^(?:-0?[45]:?00|Etc/GMT\+0?[45])$")
+    r"^(?:" + _FIXED_OFFSET_TEXT + r"|Etc/GMT\+0?[45])$")
 
 # Matched with no context, like the unambiguous legacy names and for the same
 # reason: `Etc/GMT+5` means one thing.
@@ -259,6 +306,25 @@ def _call_name(node: ast.Call) -> str:
         return fn.id
     if isinstance(fn, ast.Attribute):
         return fn.attr
+    return ""
+
+
+def _call_receiver(node: ast.Call) -> str:
+    """What the call is made ON, as written: `pytz` in `pytz.timezone(...)`.
+
+    `_call_name` reads the final attribute and drops this, which is what let
+    an unrelated `translator.localize(...)` be classified from its method name
+    alone. Read as the LAST attribute of the chain, so `pd.Timestamp.now(...)`
+    reports `Timestamp` rather than `pd`; a bare `f(...)` has no receiver.
+    """
+    fn = node.func
+    if not isinstance(fn, ast.Attribute):
+        return ""
+    inner = fn.value
+    if isinstance(inner, ast.Name):
+        return inner.id
+    if isinstance(inner, ast.Attribute):
+        return inner.attr
     return ""
 
 
@@ -469,7 +535,7 @@ def _local_aliases(scope: ast.AST) -> dict[str, str]:
     return {k: v for k, v in seen.items() if k not in conflicted}
 
 
-def _local_attrs(scope: ast.AST) -> dict[str, dict[str, tuple[str, ast.AST]]]:
+def _local_attrs(scope: ast.AST) -> dict[str, dict[str, ast.AST]]:
     """`obj -> {attr: (value, node)}`, for resolving `obj.attr` as a zone.
 
     Two spellings land in one map because they read identically at the use
@@ -487,7 +553,7 @@ def _local_attrs(scope: ast.AST) -> dict[str, dict[str, tuple[str, ast.AST]]]:
     a false finding in the reverse. That is the third map on this file to
     default to file-wide, which is why they are now built by one descent.
     """
-    out: dict[str, dict[str, tuple[str, ast.AST]]] = {}
+    out: dict[str, dict[str, ast.AST]] = {}
     for node in _scope_nodes(scope):
         if isinstance(node, ast.ClassDef):
             body = _collect_bindings(_scope_nodes(node), {})
@@ -497,7 +563,7 @@ def _local_attrs(scope: ast.AST) -> dict[str, dict[str, tuple[str, ast.AST]]]:
             targets = (node.targets if isinstance(node, ast.Assign)
                        else [node.target])
             v = node.value
-            if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
+            if _binding_text(v) is None and not _is_eastern_fixed_timedelta(v):
                 continue
             for tgt in targets:
                 if (isinstance(tgt, ast.Attribute)
@@ -506,7 +572,7 @@ def _local_attrs(scope: ast.AST) -> dict[str, dict[str, tuple[str, ast.AST]]]:
     return out
 
 
-def _declared_global_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
+def _declared_global_bindings(tree: ast.AST) -> dict[str, ast.AST]:
     """Module-level bindings written from inside a function.
 
     `def setup(): global TZ; TZ = "EST"` really does bind the module's `TZ`,
@@ -520,7 +586,7 @@ def _declared_global_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
     legal when an enclosing scope already binds the name, and that binding
     shadows a module-level entry before it is ever read.
     """
-    out: dict[str, tuple[str, ast.AST]] = {}
+    out: dict[str, ast.AST] = {}
     for scope in ast.walk(tree):
         if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -530,14 +596,13 @@ def _declared_global_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
                 declared.update(node.names)
         if not declared:
             continue
-        for name, (_value, src) in _collect_bindings(
-                _scope_nodes(scope), {}).items():
+        for name, src in _collect_bindings(_scope_nodes(scope), {}).items():
             if name in declared:
                 _keep(out, name, src)
     return out
 
 
-def _nonlocal_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]:
+def _nonlocal_bindings(tree: ast.AST) -> dict[int, dict[str, ast.AST]]:
     """`id(enclosing scope)` -> the bindings a nested `nonlocal` writes into it.
 
     `def outer(): TZ = "UTC"; def inner(): nonlocal TZ; TZ = "EST"` rebinds
@@ -551,7 +616,7 @@ def _nonlocal_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
 
-    out: dict[int, dict[str, tuple[str, ast.AST]]] = {}
+    out: dict[int, dict[str, ast.AST]] = {}
     for scope in ast.walk(tree):
         if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -561,8 +626,7 @@ def _nonlocal_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]
                 declared.update(node.names)
         if not declared:
             continue
-        for name, (_value, src) in _collect_bindings(
-                _scope_nodes(scope), {}).items():
+        for name, src in _collect_bindings(_scope_nodes(scope), {}).items():
             if name not in declared:
                 continue
             anc = parents.get(id(scope))
@@ -585,14 +649,51 @@ class _Env(NamedTuple):
     three at once and there is one place left to get that wrong.
     """
 
-    bindings: dict[str, tuple[str, ast.AST]]       # NAME = "..."
+    bindings: dict[str, ast.AST]                   # NAME = <value node>
     aliases: dict[str, str]                        # import ... as NAME
-    attrs: dict[str, dict[str, tuple[str, ast.AST]]]   # NAME.attr = "..."
+    attrs: dict[str, dict[str, ast.AST]]           # NAME.attr = <value node>
 
 
 _EMPTY_ENV = _Env({}, {}, {})
 
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _outer_evaluated(scope: ast.AST):
+    """Subtrees of `scope` that Python evaluates in the ENCLOSING scope.
+
+    A scope node is not evaluated all at once. Its header -- decorators, base
+    classes, parameter defaults, annotations, a comprehension's first iterable
+    -- runs where the `def`/`class`/`[...]` is written, before the new scope
+    exists. Mapping the whole node to its own environment therefore resolved
+    those against names the runtime cannot see there: with `TZ = "EST"`,
+    `def f(TZ="UTC", value=ZoneInfo(TZ))` builds its default from the OUTER
+    `EST` while the descent read the parameter's own `UTC` (Codex, PR #993).
+
+    The comprehension case was fixed first and on its own; this is the same
+    rule for the rest of the family, which is the level it should have been
+    fixed at. Only the FIRST comprehension iterable qualifies -- every later
+    clause really does run inside.
+    """
+    if isinstance(scope, _COMPREHENSIONS):
+        yield scope.generators[0].iter
+        return
+    for attr in ("decorator_list", "bases", "keywords"):
+        yield from (getattr(scope, attr, None) or [])
+    args = getattr(scope, "args", None)
+    if args is None:
+        return
+    yield from args.defaults
+    yield from (d for d in args.kw_defaults if d is not None)
+    for group in (args.posonlyargs, args.args, args.kwonlyargs):
+        for a in group:
+            if a.annotation is not None:
+                yield a.annotation
+    for extra in (args.vararg, args.kwarg):
+        if extra is not None and extra.annotation is not None:
+            yield extra.annotation
+    if getattr(scope, "returns", None) is not None:
+        yield scope.returns
 
 
 def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
@@ -612,14 +713,14 @@ def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
 
     # `defaults` right-aligns with posonlyargs+args; `kw_defaults` is 1:1 with
     # kwonlyargs, holding None where a keyword-only argument has none.
-    defaults: dict[str, tuple[str, ast.AST]] = {}
+    defaults: dict[str, ast.AST] = {}
     pairs = list(zip(positional[len(positional) - len(args.defaults):],
                      args.defaults))
     pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults)
               if d is not None]
     for arg, default in pairs:
-        if isinstance(default, ast.Constant) and isinstance(default.value, str):
-            defaults[arg.arg] = (default.value, default)
+        if _binding_text(default) is not None:
+            defaults[arg.arg] = default
     return names, defaults
 
 
@@ -668,9 +769,9 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
         bindings.update(defaults)
         bindings.update(_collect_bindings(_scope_nodes(scope), {}))
         if scope is tree:
-            for name, (_value, src) in globals_.items():
+            for name, src in globals_.items():
                 _keep(bindings, name, src)
-        for name, (_value, src) in nonlocals.get(id(scope), {}).items():
+        for name, src in nonlocals.get(id(scope), {}).items():
             _keep(bindings, name, src)
 
         aliases = survives(inherited.aliases)
@@ -697,15 +798,12 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
             if not isinstance(node, _SCOPES):
                 continue
             descend(node, nested)
-            if isinstance(node, _COMPREHENSIONS):
-                # The FIRST iterable is evaluated eagerly in the ENCLOSING
-                # scope -- Python builds the iterator before the comprehension
-                # scope exists. So in `tz = "EST"; [tz for tz in [ZoneInfo(tz)]]`
-                # the `tz` inside `ZoneInfo` is the outer one, while the
-                # descent had just shadowed it with the comprehension target
-                # and resolved nothing (Codex, PR #993). Every other clause,
-                # including a second `for`, really is inner.
-                stack = [node.generators[0].iter]
+            # ...then put back the parts of its header that the enclosing
+            # scope evaluates. Done after the descent so it overrides what
+            # that wrote, and stopping at nested scopes so a lambda inside a
+            # default keeps its own environment.
+            for header in _outer_evaluated(node):
+                stack = [header]
                 while stack:
                     sub = stack.pop()
                     out[id(sub)] = env
@@ -716,8 +814,23 @@ def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
     return out
 
 
-def _keep(out: dict, name: str, v: ast.Constant) -> None:
-    """Record `name -> (value, node)`, keeping a legacy binding over a benign one.
+def _binding_text(node: ast.AST) -> "str | None":
+    """The string a binding holds, or None when it is not a string constant."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_interesting(node: ast.AST) -> bool:
+    """Would this value, reached through a name, be a finding on its own?"""
+    text = _binding_text(node)
+    if text is not None:
+        return text in ALL_LEGACY or bool(_FIXED_OFFSET_STRINGS.match(text))
+    return _is_eastern_fixed_timedelta(node)
+
+
+def _keep(out: dict, name: str, v: ast.AST) -> None:
+    """Record `name -> node`, keeping a legacy binding over a benign one.
 
     Shared by every map here -- bindings, class and instance attributes,
     `global` and `nonlocal` writes -- so the precedence is stated once.
@@ -730,19 +843,21 @@ def _keep(out: dict, name: str, v: ast.Constant) -> None:
     correctly, but it must not model it in the direction that hides the thing
     it looks for: if a name is EVER bound to a legacy zone or a fixed offset
     in this scope, that binding is what the guard keeps.
+
+    The stored value is the NODE. A binding used to hold the string it read,
+    which meant only string constants could be followed -- so the routine
+    `OFFSET = timedelta(hours=-5); timezone(OFFSET)` resolved to nothing and
+    the fixed-offset check only ever saw a constructor called inline
+    (Codex, PR #993). Keeping the node lets `follow` re-dispatch on whatever
+    was bound, and the string checks read it back through `_binding_text`.
     """
-    interesting = (v.value in ALL_LEGACY
-                   or bool(_FIXED_OFFSET_STRINGS.match(v.value)))
     held = out.get(name)
-    if held is not None and not interesting:
-        held_value = held[0]
-        if (held_value in ALL_LEGACY
-                or _FIXED_OFFSET_STRINGS.match(held_value)):
-            return          # do not overwrite a violation with a value
-    out[name] = (v.value, v)
+    if held is not None and not _is_interesting(v) and _is_interesting(held):
+        return              # do not overwrite a violation with a value
+    out[name] = v
 
 
-def _collect_bindings(nodes, out: dict[str, tuple[str, ast.AST]]):
+def _collect_bindings(nodes, out: dict[str, ast.AST]):
     """`NAME = "..."` -> (value, node), over the nodes handed in.
 
     `EASTERN = "US/Eastern"` then `ZoneInfo(EASTERN)` is a routine way to share
@@ -758,7 +873,12 @@ def _collect_bindings(nodes, out: dict[str, tuple[str, ast.AST]]):
         else:
             continue
         v = node.value
-        if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
+        # A string constant, whatever it says -- a benign one has to be
+        # recorded so it can shadow an inherited legacy one. Plus the
+        # constructed offsets, which are only worth carrying when they are the
+        # thing this guard looks for; a `timedelta(hours=3)` resolves to
+        # nothing and shadowing is already handled by `_bound_names`.
+        if _binding_text(v) is None and not _is_eastern_fixed_timedelta(v):
             continue
         for t in targets:
             if isinstance(t, ast.Name):
@@ -781,11 +901,25 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
 
     reported: set[int] = set()
+    # A binding can only hold a constant or a constructor call, so a chain is
+    # short by construction and cannot cycle. The cap is a guard against a
+    # future binding kind that could, not a limit anything hits today.
+    _MAX_FOLLOW_DEPTH = 4
 
-    def follow(bucket_legacy, bucket_offsets, node, arg, env, where):
-        """Report `arg` when it is, or resolves to, a legacy zone or offset."""
-        reported.add(id(arg))
-        if isinstance(arg, ast.Constant) and arg.value in ALL_LEGACY:
+    def follow(bucket_legacy, bucket_offsets, node, arg, env, where,
+               ambiguous_ok=True, depth=0):
+        """Report `arg` when it is, or resolves to, a legacy zone or offset.
+
+        `ambiguous_ok=False` drops the bare `EST`/`EDT` tokens, for a call
+        whose name alone does not establish a timezone context.
+        """
+        if depth == 0:
+            # Only the argument as written is marked reported. A value reached
+            # THROUGH a name lives at its own assignment, where the standalone
+            # scan should still see it.
+            reported.add(id(arg))
+        legacy_here = ALL_LEGACY if ambiguous_ok else UNAMBIGUOUS_LEGACY
+        if isinstance(arg, ast.Constant) and arg.value in legacy_here:
             note(bucket_legacy, arg, where(repr(arg.value)))
             return True
         if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
@@ -795,30 +929,26 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         if _is_eastern_fixed_timedelta(arg):
             note(bucket_offsets, arg, where("timedelta(hours=-4|-5, ...)"))
             return True
-        # `Settings.tz`, resolved through the class body -- or the plain
-        # `settings.tz = "..."` assignment -- that binds it.
-        held = (env.attrs.get(arg.value.id, {}).get(arg.attr)
-                if isinstance(arg, ast.Attribute)
-                and isinstance(arg.value, ast.Name) else None)
-        if held is not None:
-            value, _src = held
-            shown = f"{arg.value.id}.{arg.attr} (= {value!r})"
-            if value in ALL_LEGACY:
-                note(bucket_legacy, arg, where(shown))
-                return True
-            if _FIXED_OFFSET_STRINGS.match(value):
-                note(bucket_offsets, arg, where(shown))
-                return True
-
-        if isinstance(arg, ast.Name) and arg.id in env.bindings:
-            value, _src = env.bindings[arg.id]
-            shown = f"{arg.id} (= {value!r})"
-            if value in ALL_LEGACY:
-                note(bucket_legacy, arg, where(shown))
-                return True
-            if _FIXED_OFFSET_STRINGS.match(value):
-                note(bucket_offsets, arg, where(shown))
-                return True
+        # An indirection -- `Settings.tz`, `settings.tz`, or a plain name --
+        # is resolved to the NODE it was bound to and re-dispatched through
+        # this same function, so every spelling above is reachable through a
+        # name. Resolving to a string instead was what made
+        # `OFFSET = timedelta(hours=-5); timezone(OFFSET)` invisible: the
+        # binding held no string, so there was nothing to compare
+        # (Codex, PR #993).
+        if depth < _MAX_FOLLOW_DEPTH:
+            target = label = None
+            if (isinstance(arg, ast.Attribute)
+                    and isinstance(arg.value, ast.Name)):
+                target = env.attrs.get(arg.value.id, {}).get(arg.attr)
+                label = f"{arg.value.id}.{arg.attr}"
+            elif isinstance(arg, ast.Name):
+                target = env.bindings.get(arg.id)
+                label = arg.id
+            if target is not None:
+                return follow(bucket_legacy, bucket_offsets, node, target, env,
+                              lambda shown, l=label: where(f"{l} (= {shown})"),
+                              ambiguous_ok, depth + 1)
         return False
 
     for node in ast.walk(tree):
@@ -902,7 +1032,14 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                            lambda shown, k=k: f"{k.value!r}: {shown}")
 
         # A legacy zone name as the value of a timezone-ish keyword, anywhere.
-        if isinstance(node, ast.keyword) and node.arg in _TZ_KEYWORDS:
+        # `.lower()`, matching the dict-key and subscript branches. Building
+        # an environment is conventionally `os.environ.update(TZ="EST")` or
+        # `dict(os.environ, TZ="-05:00")` -- uppercase -- and a case-sensitive
+        # test walked past both while the adjacent forms were caught, which is
+        # the same inconsistency this file already fixed once for dict keys
+        # (Codex, PR #993).
+        if (isinstance(node, ast.keyword) and node.arg
+                and node.arg.lower() in _TZ_KEYWORDS):
             follow(legacy, offsets, node, node.value, env,
                    lambda shown, a=node.arg: f"{a}={shown}")
 
@@ -911,23 +1048,40 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         name = env.aliases.get(_call_name(node), _call_name(node))
         if name not in _TZ_CALLS:
             continue
+        # Whether the CALL is enough of a timezone context to convict a bare
+        # `EST`. A specific constructor is; a generic method name is only when
+        # its receiver says so. Without this, `translator.localize("EST")` and
+        # `cache.now("EDT")` were reported, which is a false CI failure on
+        # code that has no timezone in it (Codex, PR #993).
+        receiver = _call_receiver(node)
+        specific = (name in _TZ_CALLS_SPECIFIC
+                    or env.aliases.get(receiver, receiver) in _TZ_RECEIVERS)
 
-        # `pytz.FixedOffset(-300)` -- the offset is a plain integer count of
-        # MINUTES, so no string or `timedelta` check could ever see it.
-        if name in _FIXED_OFFSET_CALLS:
-            minutes = next(
-                (a for a in list(node.args)
+        # `pytz.FixedOffset(-300)` and `dateutil.tz.tzoffset(None, -18000)` --
+        # the offset is a plain number, so no string or `timedelta` check
+        # could ever see it, and the two constructors disagree about the UNIT.
+        if name in _FIXED_OFFSET_CALLS or name in _FIXED_OFFSET_SECOND_CALLS:
+            seconds = name in _FIXED_OFFSET_SECOND_CALLS
+            # `tzoffset(name, offset)` takes the offset SECOND; `FixedOffset`
+            # takes it first. Both also accept it by keyword.
+            positional = list(node.args)[1:] if seconds else list(node.args)
+            candidate = next(
+                (a for a in positional
                  + [k.value for k in node.keywords if k.arg in (None, "offset")]),
                 None)
-            value = _const_number(minutes) if minutes is not None else None
-            if value is not None and int(value) in _EASTERN_OFFSET_MINUTES:
-                reported.add(id(minutes))
-                note(offsets, node, f"{name}({value:g}) minutes")
+            value = _const_number(candidate) if candidate is not None else None
+            wanted = (_EASTERN_OFFSET_SECONDS if seconds
+                      else _EASTERN_OFFSET_MINUTES)
+            if value is not None and int(value) in wanted:
+                reported.add(id(candidate))
+                note(offsets, node,
+                     f"{name}({value:g}) {'seconds' if seconds else 'minutes'}")
                 continue
         # Positional and keyword arguments alike.
         for arg in list(node.args) + [k.value for k in node.keywords]:
             follow(legacy, offsets, node, arg, env,
-                   lambda shown, n=name: f"{n}(... {shown} ...)")
+                   lambda shown, n=name: f"{n}(... {shown} ...)",
+                   ambiguous_ok=specific)
 
     # `ast.walk` is breadth-first, so a call is visited before its own
     # arguments: a constant already reported with the call that gives it
@@ -1170,11 +1324,12 @@ def test_a_legacy_binding_survives_a_later_reassignment():
     docstring claimed the rule was (Codex, PR #993).
     """
     tree = ast.parse('TZ = "EST"\nZoneInfo(TZ)\nTZ = "UTC"\n')
-    assert _scoped_envs(tree)[id(tree)].bindings["TZ"][0] == "EST"
+    assert _binding_text(_scoped_envs(tree)[id(tree)].bindings["TZ"]) == "EST"
 
     # A name never bound to anything interesting still takes its last value.
     tree = ast.parse('TZ = "UTC"\nTZ = "America/New_York"\n')
-    assert _scoped_envs(tree)[id(tree)].bindings["TZ"][0] == "America/New_York"
+    assert (_binding_text(_scoped_envs(tree)[id(tree)].bindings["TZ"])
+            == "America/New_York")
 
     # And end to end, which is the claim that matters.
     legacy, _ = _hits('TZ = "EST"\nZoneInfo(TZ)\nTZ = "UTC"\n')
@@ -1929,3 +2084,192 @@ def test_the_first_comprehension_iterable_is_evaluated_outside():
     assert _hits('tz = "EST"\n'
                  'zones = [ZoneInfo(tz) for group in groups for tz in group]\n'
                  ) == ([], [])
+
+
+def test_a_dateutil_fixed_offset_is_an_offset():
+    """`tzoffset(None, -18000)` is UTC-5 in SECONDS, not minutes.
+
+    python-dateutil is a declared dependency, so this is a live spelling. The
+    unit is the trap: read as minutes, -18000 matches nothing and the frozen
+    zone passes (Codex, PR #993).
+    """
+    _, offsets = _hits('from dateutil.tz import tzoffset\n'
+                       'tz = tzoffset(None, -18000)\n')
+    assert any("seconds" in h for h in offsets), offsets
+
+    # UTC-4, and the keyword form, and a timedelta argument.
+    for src in ('tz = dateutil.tz.tzoffset(None, -14400)\n',
+                'tz = tzoffset("EST", offset=-18000)\n',
+                'tz = tzoffset(None, timedelta(hours=-5))\n'):
+        assert _hits(src)[1], src
+
+    # A different zone is not this guard's business, and the FIRST argument is
+    # a name rather than an offset — reading it as one would report any
+    # tzoffset whose label happened to be numeric.
+    assert _hits('tz = tzoffset(None, -28800)\n') == ([], [])
+    assert _hits('tz = tzoffset(-300, 3600)\n') == ([], [])
+
+
+def test_a_definition_header_is_evaluated_in_the_enclosing_scope():
+    """A `def`'s header runs where it is written, not inside itself.
+
+    With `TZ = "EST"`, `def f(TZ="UTC", value=ZoneInfo(TZ))` builds its
+    default from the OUTER `EST`; mapping the whole function to its own
+    environment resolved it to the parameter's `UTC` and reported nothing
+    (Codex, PR #993).
+
+    The comprehension case was fixed first and on its own. This is the same
+    rule for decorators, base classes, defaults and annotations — the level
+    it should have been fixed at, since each was a separate miss.
+    """
+    legacy, _ = _hits('TZ = "EST"\n\ndef f(TZ="UTC", value=ZoneInfo(TZ)):\n'
+                      '    return value\n')
+    assert any("EST" in h for h in legacy), (
+        f"a default built from the outer binding was read as the "
+        f"parameter's own: {legacy}")
+
+    # A decorator, a base class, and an annotation, all evaluated outside.
+    for label, src in (
+        ("decorator", 'TZ = "EST"\n\n@register(ZoneInfo(TZ))\ndef f(TZ="UTC"):\n'
+                      '    pass\n'),
+        ("base class", 'TZ = "EST"\n\nclass C(Base[ZoneInfo(TZ)]):\n'
+                       '    TZ = "UTC"\n'),
+        ("annotation", 'TZ = "EST"\n\ndef f(TZ="UTC", x: ZoneInfo(TZ) = None):\n'
+                       '    pass\n'),
+    ):
+        assert any("EST" in h for h in _hits(src)[0]), (label, _hits(src))
+
+    # The BODY still sees the parameter, which is the shadowing this must not
+    # undo.
+    assert _hits('TZ = "EST"\n\ndef f(TZ="America/New_York"):\n'
+                 '    return ZoneInfo(TZ)\n') == ([], [])
+
+
+def test_a_fixed_offset_stored_in_a_name_still_resolves():
+    """`OFFSET = timedelta(hours=-5); timezone(OFFSET)` is the routine form.
+
+    Bindings held the STRING they read, so a name bound to a constructor call
+    resolved to nothing and the fixed-offset check only ever saw a constructor
+    passed inline (Codex, PR #993). They hold the node now, and `follow`
+    re-dispatches on whatever was bound — so every spelling it recognises is
+    reachable through a name, not just the string ones.
+    """
+    _, offsets = _hits('OFFSET = timedelta(hours=-5)\ntz = timezone(OFFSET)\n')
+    assert offsets, offsets
+
+    # Through a class attribute, and through the negated spelling.
+    _, offsets = _hits('class C:\n    OFF = timedelta(hours=-4)\n'
+                       'tz = timezone(C.OFF)\n')
+    assert offsets, offsets
+    _, offsets = _hits('OFFSET = -timedelta(hours=5)\ntz = timezone(OFFSET)\n')
+    assert offsets, offsets
+
+    # A benign offset stored the same way is not a finding.
+    assert _hits('OFFSET = timedelta(hours=1)\ntz = timezone(OFFSET)\n') == ([], [])
+
+
+def test_an_uppercase_keyword_argument_is_a_timezone_key():
+    """`os.environ.update(TZ="EST")` is the conventional spelling.
+
+    The dict-key and subscript branches were lowercased and this one was not,
+    so the same value was caught in two forms and missed in the third
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('os.environ.update(TZ="EST")\n')
+    assert legacy, legacy
+    _, offsets = _hits('env = dict(os.environ, TZ="-05:00")\n')
+    assert offsets, offsets
+
+    # Still gated on the key meaning a timezone.
+    assert _hits('cache.set(KEY="EST")\n') == ([], [])
+
+
+def test_posix_and_utc_prefixed_offsets_are_offsets():
+    """`EST5` and `UTC-05:00` are fixed zones spelled as names.
+
+    `TZ=EST5` installs a POSIX zone with no DST rule — frozen at UTC-5 all
+    year — and a pattern that knew only a bare number and the `Etc/GMT` names
+    walked past both (Codex, PR #993).
+    """
+    for src in ('os.environ["TZ"] = "EST5"\n',
+                'ts = pd.Timestamp("2026-01-01", tz="UTC-05:00")\n',
+                'tz = ZoneInfo("GMT-05:00")\n'):
+        assert _hits(src)[1], src
+
+    # `EST5EDT` is DST-correct and belongs to the backward-link test, not
+    # this one — the anchors must stop `EST5` claiming its prefix.
+    legacy, offsets = _hits('tz = ZoneInfo("EST5EDT")\n')
+    assert legacy and not offsets, (legacy, offsets)
+    # And a non-Eastern POSIX zone is not this guard's business.
+    assert _hits('os.environ["TZ"] = "PST8PDT"\n') == ([], [])
+
+
+def test_a_generic_method_name_is_not_a_timezone_context():
+    """`translator.localize("EST")` has nothing to do with timezones.
+
+    `_call_name` reads the final attribute and drops the receiver, so any
+    method named `localize`, `now` or `timezone` was classified as a timezone
+    constructor — and since `EST`/`EDT` are deliberately allowed as ordinary
+    tokens, that is a false CI failure on unrelated code (Codex, PR #993).
+    """
+    assert _hits('translator.localize("EST")\n') == ([], [])
+    assert _hits('cache.now("EDT")\n') == ([], [])
+    assert _hits('settings.timezone("EST")\n') == ([], [])
+
+    # A recognised receiver makes the same name specific again.
+    assert _hits('import pytz\ntz = pytz.timezone("EST")\n')[0]
+    assert _hits('import pytz as p\ntz = p.timezone("EST")\n')[0]
+    assert _hits('ts = pd.Timestamp.now("EST")\n')[0]
+    # As does a constructor whose name means one thing.
+    assert _hits('tz = ZoneInfo("EST")\n')[0]
+    assert _hits('dt.astimezone(ZoneInfo("EST"))\n')[0]
+
+    # An UNAMBIGUOUS name is still reported through a generic call: only the
+    # bare tokens need the stronger context.
+    assert _hits('translator.localize("US/Eastern")\n')[0]
+    assert _hits('cache.now("-05:00")\n')[1]
+    # And a timezone keyword is a context on its own, whatever the receiver.
+    assert _hits('cache.now(tz="EST")\n')[0]
+
+
+def test_postgres_set_scope_modifiers_are_still_set():
+    """`SET LOCAL timezone TO 'EST'` freezes the transaction.
+
+    Requiring `TIME ZONE` immediately after `SET` exempted the two standard
+    scope modifiers (Codex, PR #993).
+    """
+    for stmt in ("SET LOCAL timezone TO 'EST'", "SET SESSION TIME ZONE 'EDT'",
+                 "set local time zone 'est'"):
+        assert NONPY_AMBIGUOUS.search(stmt), stmt
+    assert NONPY_FIXED_OFFSET.search("SET SESSION TIME ZONE '-05:00'")
+    # Not every `SET LOCAL` is a timezone.
+    assert not NONPY_AMBIGUOUS.search("SET LOCAL search_path TO estimates")
+
+
+def test_dockers_whitespace_env_form_is_a_timezone_key():
+    """`ENV TZ EST` is valid Dockerfile, and Dockerfiles are scanned for
+    exactly this (Codex, PR #993)."""
+    assert NONPY_AMBIGUOUS.search("ENV TZ EST")
+    assert NONPY_FIXED_OFFSET.search("ENV TZ -05:00")
+    # The equals form still works, and an unrelated ENV is not a timezone.
+    assert NONPY_AMBIGUOUS.search("ENV TZ=EST")
+    assert not NONPY_AMBIGUOUS.search("ENV ESTIMATOR fast")
+
+
+def test_the_timezone_context_is_not_vacuous():
+    """An empty alternative in `_TZ_CONTEXT` matches everywhere.
+
+    Found while injection-testing the Dockerfile form: deleting one
+    alternative left the `|` before it, and the context then matched the empty
+    string — so every bare `EST` and `EDT` in the repository became a
+    finding. CI would go red loudly rather than silently, but the failure
+    reads as "the guard found 400 violations" rather than "the guard is
+    broken", which is the wrong thing to debug at 2am. One assertion here says
+    which it is.
+    """
+    assert not re.compile(_TZ_CONTEXT).match(""), (
+        "_TZ_CONTEXT matches the empty string — an alternative is missing "
+        "its body, probably a trailing or doubled '|'")
+    # And the ambiguous names still need a real context in front of them.
+    assert not NONPY_AMBIGUOUS.search("the estimate was EST")
+    assert not NONPY_AMBIGUOUS.search("EST")
