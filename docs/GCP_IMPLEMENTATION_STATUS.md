@@ -393,8 +393,8 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 | **Cloud SQL** | Automated backups (~5 GB) | ~$0.40 |
 | **Cloud Storage** | 7.6 GB standard storage | ~$0.15 |
 | **Cloud Storage** | Operations (reads/writes) | ~$0.05 |
-| **Cloud Run Jobs** | Execution time (all 7 jobs) | ~$1.50 |
-| **Cloud Scheduler** | 22 triggers (3 free) | ~$1.90 |
+| **Cloud Run Jobs** | Execution time (all 76 jobs, live 2026-09-07) | see COST_ANALYSIS.md |
+| **Cloud Scheduler** | 65 triggers (live 2026-09-07; 3 free) | ~$6.20 |
 | **Secret Manager** | Access operations | ~$0.02 |
 | **Artifact Registry** | Docker image storage | ~$0.10 |
 | **Total estimate** | | **~$17–20/mo** |

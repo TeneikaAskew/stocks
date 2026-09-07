@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pre-market refresh fetcher — runs at 8:30 AM ET, before the 8:45 brief.
+Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief.
 
 Targets a small set of tickers (today's earnings reporters + watchlist),
 fetches today's pre-market bars from AlphaVantage, and UPSERTs the
@@ -10,10 +10,10 @@ columns into ``market_data_daily`` for today's date.
 Why a separate job from ``fetch_market_data.py``:
   - The nightly 11 PM fetcher captures the full session (including
     pre-market), but that's after the brief has fired.
-  - At 8:45 AM brief render time, today's market_data_daily row doesn't
+  - At 8:30 AM brief render time, today's market_data_daily row doesn't
     yet exist, so the brief's LEFT JOIN to gap_pct returns NULL.
-  - A targeted ~30-50 ticker refresh at 8:30 AM costs <1 minute of AV
-    budget and populates today's gap_pct in time for the 8:45 brief.
+  - A targeted ~30-50 ticker refresh at 8:20 AM costs <1 minute of AV
+    budget and populates today's gap_pct in time for the 8:30 brief.
 
 Usage:
     python -m gcp.fetchers.fetch_premarket_refresh
