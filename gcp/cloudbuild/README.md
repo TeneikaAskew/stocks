@@ -59,9 +59,9 @@ SA already holds:
 The same step runs when `.github/workflows/deploy-staging.yml` dispatches
 `platform/deploy.sh` under the WIF identity `arch-refresh-bot@`. That
 account holds `roles/run.admin` (the reads) but only
-`roles/artifactregistry.reader` on `gcr.io` and nothing on `trading`, so
-it needs `roles/artifactregistry.writer` on both repos before its next
-dispatch; the workflow header carries the grant commands.
+`roles/artifactregistry.reader` on `gcr.io`, so it was granted
+`roles/artifactregistry.writer` on both repos on 2026-09-07; the workflow
+header carries the commands in case the SA is ever rebuilt.
 
 It does NOT hold `artifactregistry.tags.delete`, which is why the trigger
 path passes `--no-sweep`: releasing pins nothing needs any more is left to
