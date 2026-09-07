@@ -246,6 +246,36 @@ class ExportRequest(BaseModel):
     trades: list[JournalTradeExportItem]
 
 
+_NAIVE_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
+
+
+def _reject_zoned_timestamp(value):
+    """Refuse an import timestamp that carries a UTC offset or zone name.
+
+    `_dedupe_key` normalises with `str(ts)[:16]`, which truncates any offset
+    away, so `2026-09-07 10:00+00` and `2026-09-07 10:00-04` share one
+    application key. `uq_journal_entries_import_dedupe` does not agree: the
+    column is TIMESTAMPTZ, so Postgres resolves those to 10:00 and 14:00 UTC
+    and keeps them apart. A sequential commit would then skip the second as a
+    duplicate while concurrent commits insert both -- the two authorities
+    disagreeing about the same rows, which is what the index exists to stop
+    (Codex, PR #991).
+
+    Rejected rather than normalised: `journal_entries.entry_ts` holds a
+    naive-ET wall-clock literal, so an offset-bearing input asserts an instant
+    for a column that does not store one. There is no correct instant to
+    normalise TO, and picking one would be a fabricated interpretation of the
+    caller's data (Rule 3.7).
+    """
+    if value is None:
+        return value
+    if not _NAIVE_TS_RE.match(str(value).strip()):
+        raise ValueError(
+            "must be naive 'YYYY-MM-DD HH:MM' wall-clock (seconds and a 'T' "
+            f"separator are allowed); a UTC offset or zone is not, got {value!r}")
+    return value
+
+
 class ImportCommitTrade(BaseModel):
     """One selected `PairedTrade` from a broker-import preview, ready to
     commit. Mirrors `lib.broker_import.PairedTrade`'s fields exactly — no
@@ -282,6 +312,11 @@ class ImportCommitTrade(BaseModel):
     # represent has to be rejected here rather than collapsed into it.
     _check_prices = field_validator(
         "entry_price", "exit_price")(_reject_unrepresentable_price)
+    # `entry_ts` is the other half, and the key truncates an offset away while
+    # the unique index resolves it. Same reasoning, same answer: reject at the
+    # boundary so the two can never disagree about one pair of rows.
+    _check_timestamps = field_validator(
+        "entry_ts", "exit_ts")(_reject_zoned_timestamp)
 
 
 class ImportCommitRequest(BaseModel):

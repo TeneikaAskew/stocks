@@ -63,20 +63,25 @@ def _pattern(ticker_lower: str) -> str:
 def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
     """Legacy path: load from GCS parquet. Used only when Cloud SQL is off."""
     cached = _DF_CACHE.get(ticker_upper, MISS)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not MISS:
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
     with _DF_FLIGHT.claim(ticker_upper) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _DF_CACHE.get(ticker_upper, MISS)
+        if cached is not MISS:
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The signals frame is being computed now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not MISS:
-            return cached
 
         ticker_lower = ticker_upper.lower()
         blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _pattern(ticker_lower))

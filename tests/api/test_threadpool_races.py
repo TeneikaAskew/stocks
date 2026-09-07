@@ -1695,3 +1695,353 @@ def test_an_uncached_helper_is_only_reachable_from_a_claimant():
             "these calls to a `_uncached` helper are outside a claim, so the "
             "coalescing guard exempts their cache fills while the work is "
             "still duplicated:\n  " + "\n  ".join(loose))
+
+
+# ── A decliner must serve a cache hit before it 503s ────────────────────────
+#
+# The coalescing round put the re-read inside the claim and then declined
+# ABOVE it:
+#
+#     with _CHAIN_FLIGHT.claim(cache_key) as mine:
+#         cached = _CHAIN_CACHE.get(cache_key)   # re-read...
+#         if not mine:
+#             raise HTTPException(503, ...)      # ...and never consulted
+#         if cached is not None:
+#             return {**cached, "cached": True}
+#
+# So two overlapping requests for an ALREADY-CACHED key give the second a 503
+# with `Retry-After` while the answer sits in the cache it just read. The
+# pre-claim read had the same problem one level up: its result was assigned
+# and discarded, so even an uncontended hot read entered the flight instead of
+# returning immediately (Codex, PR #991 — after the merge).
+#
+# Both halves are asserted: the hot path returns before claiming, and inside
+# the claim a hit outranks the decline.
+
+
+def _claim_blocks(path):
+    """Yield (with_node, source) for every `*_FLIGHT.claim(...) as mine`."""
+    import ast
+    src = path.read_text()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.With) or not node.items:
+            continue
+        if ".claim(" in ast.unparse(node.items[0].context_expr):
+            yield node
+
+
+def _api_modules():
+    root = Path(__file__).resolve().parent.parent.parent / "platform" / "api"
+    return sorted(p for p in root.rglob("*.py") if "__pycache__" not in str(p))
+
+
+def test_a_decliner_serves_a_cache_hit_before_it_503s():
+    """A 503 is only honest when there is nothing to serve.
+
+    Structural rather than threaded, and deliberately: the property is an
+    ordering within one function, so a threaded test would assert it for the
+    one handler it drives and say nothing about the other seven that copied
+    the same shape. This walks every claim block instead, so the next one
+    written the wrong way round fails here.
+
+    A block satisfies the rule two ways: a cache-hit return earlier in the
+    `with` body than the decline, or a decline branch that serves the cache
+    itself before raising (`_ALL_RUNS_FLIGHT` does the latter).
+    """
+    import ast
+
+    offenders = []
+    for path in _api_modules():
+        for node in _claim_blocks(path):
+            decline = hit = None
+            for i, st in enumerate(node.body):
+                if not isinstance(st, ast.If):
+                    continue
+                if ast.unparse(st.test).strip() == "not mine":
+                    if decline is None and any(
+                            isinstance(x, ast.Raise) for x in ast.walk(st)):
+                        # A decline that returns the cache before raising is
+                        # already correct, whatever else the block does.
+                        if any(isinstance(x, ast.Return) for x in ast.walk(st)):
+                            decline = None
+                            break
+                        decline = i
+                elif hit is None and any(
+                        isinstance(x, ast.Return) for x in ast.walk(st)):
+                    hit = i
+            if decline is None:
+                continue
+            if hit is None or hit > decline:
+                rel = path.relative_to(path.parent.parent.parent)
+                offenders.append(f"{rel}:{node.lineno} "
+                                 f"{ast.unparse(node.items[0].context_expr)}")
+
+    assert not offenders, (
+        "these claim blocks raise 503 at a decliner before checking the cache "
+        "they just re-read, so a concurrent request for an already-cached key "
+        "is refused while the answer is in hand:\n  " + "\n  ".join(offenders)
+        + "\n\nMove the cache-hit return above `if not mine:`.")
+
+
+def test_a_hot_read_returns_before_it_claims_the_flight():
+    """The flight exists to coalesce FILLS, not to serialise hits.
+
+    Every one of these handlers read its cache before the claim and then threw
+    the value away, so a request that could have returned immediately took the
+    claim (or declined behind someone who had) for a key that needed no work.
+    """
+    import ast
+
+    offenders = []
+    for path in _api_modules():
+        tree = ast.parse(path.read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.With) or not node.items:
+                    continue
+                expr = ast.unparse(node.items[0].context_expr)
+                if ".claim(" not in expr:
+                    continue
+                # Only blocks that can answer from cache at all.
+                if not any(isinstance(st, ast.If)
+                           and ast.unparse(st.test).strip() != "not mine"
+                           and any(isinstance(x, ast.Return) for x in ast.walk(st))
+                           for st in node.body):
+                    continue
+                before = []
+                for st in fn.body:
+                    if st is node or (st.lineno >= node.lineno):
+                        break
+                    before.append(st)
+                if not any(isinstance(st, ast.If)
+                           and any(isinstance(x, ast.Return) for x in ast.walk(st))
+                           for st in before):
+                    rel = path.relative_to(path.parent.parent.parent)
+                    offenders.append(f"{rel}:{node.lineno} {expr} (in {fn.name})")
+
+    assert not offenders, (
+        "these handlers read the cache before claiming and discarded the "
+        "result, so an uncontended hit still enters the flight:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nReturn the pre-claim hit instead of assigning it and moving on.")
+
+
+def test_a_concurrent_options_chain_hit_is_served_not_503ed():
+    """The site Codex anchored the finding on, driven end to end."""
+    from unittest.mock import patch
+    from api.routers import options as opt
+
+    key = ("SPY", "2026-09-04")
+    payload = {"ticker": "SPY", "date": "2026-09-04", "contracts": [],
+               "source": "cloud_sql"}
+    opt._CHAIN_CACHE[key] = payload
+    queries = []
+    try:
+        with patch.object(opt, "_require_cloud_sql", lambda: None), \
+             patch.object(opt, "query_to_dataframe_strict",
+                          lambda *a, **k: queries.append(a)):
+            with _claim_held(opt._CHAIN_FLIGHT, key):
+                out = opt.get_options("SPY", "2026-09-04")
+    finally:
+        opt._CHAIN_CACHE.pop(key, None)
+
+    assert out["contracts"] == [], out
+    assert out["cached"] is True, out
+    assert queries == [], f"a cache hit re-queried the chain: {queries}"
+
+
+def test_a_concurrent_report_list_hit_is_served_not_503ed():
+    from api.routers import playbook as pb
+
+    ticker = "HITRPT"
+    payload = {"ticker": ticker, "reports": []}
+    pb._LIST_CACHE[ticker] = payload
+    calls = []
+    orig = pb.gcs_reader.list_matching_blobs
+    pb.gcs_reader.list_matching_blobs = lambda *a, **k: calls.append(a) or []
+    try:
+        with _claim_held(pb._REPORT_LIST_FLIGHT, ticker):
+            out = pb.list_reports(ticker)
+    finally:
+        pb.gcs_reader.list_matching_blobs = orig
+        pb._LIST_CACHE.pop(ticker, None)
+
+    assert out == payload, out
+    assert calls == [], f"a cache hit listed the bucket: {calls}"
+
+
+def test_a_concurrent_signals_frame_hit_is_served_not_503ed():
+    from api.routers import signals as sg
+
+    ticker = "HITSIG"
+    payload = ("blob.parquet", "frame")
+    sg._DF_CACHE[ticker] = payload
+    calls = []
+    orig = sg.gcs_reader.list_matching_blobs
+    sg.gcs_reader.list_matching_blobs = lambda *a, **k: calls.append(a) or []
+    try:
+        with _claim_held(sg._DF_FLIGHT, ticker):
+            out = sg._load_ticker_df_parquet(ticker)
+    finally:
+        sg.gcs_reader.list_matching_blobs = orig
+        sg._DF_CACHE.pop(ticker, None)
+
+    assert out == payload, out
+    assert calls == [], f"a cache hit listed the bucket: {calls}"
+
+
+def test_a_concurrent_live_grid_hit_is_served_with_its_cache_header():
+    """The grid hit branch also sets `Cache-Control`; reordering must keep it."""
+    from unittest.mock import patch
+    from fastapi import Response
+    from api.routers import grid as gr
+
+    key = ("SPY", 8.0, "")
+    payload = {"ticker": "SPY", "nodes": []}
+    gr._LIVE_GRID_CACHE[key] = payload
+    response = Response()
+    loads = []
+    try:
+        with patch.object(gr, "_require_cloud_sql", lambda: None), \
+             patch.object(gr, "_load_chain_for_live",
+                          lambda *a, **k: loads.append(a)):
+            with _claim_held(gr._LIVE_GRID_FLIGHT, key):
+                out = gr.get_grid_live(ticker="SPY", request=None,
+                                       response=response,
+                                       strike_window_pct=8.0,
+                                       expirations=None,
+                                       allow_on_demand=True)
+    finally:
+        gr._LIVE_GRID_CACHE.pop(key, None)
+
+    assert out == payload, out
+    assert response.headers["Cache-Control"] == "public, max-age=60"
+    assert loads == [], f"a cache hit loaded the chain: {loads}"
+
+
+# ── A forced refresh must actually refresh ──────────────────────────────────
+#
+# The re-read added under the claim ("winning it is not being first") skipped
+# the vendor batch whenever the file already held events. That is right for
+# the cold-cache path, where a non-empty file can only mean a peer just filled
+# it -- and wrong for `refresh=true`, where a non-empty file is the ordinary
+# case and is precisely what the caller asked to replace. The handler's own
+# comment two lines up still promised "an operator asking for a refresh gets
+# one" while the code had stopped doing it (Codex, PR #991 -- after the
+# merge).
+#
+# `save_catalysts` stamps `last_updated` on every write and publishes with
+# `os.replace`, so the value a request walked in with distinguishes the two:
+# unchanged means nobody refreshed and this claimant must, changed means a
+# peer produced a new batch and duplicating it would spend 11 serial Benzinga
+# calls for data already in hand.
+
+
+def _catalyst_gen(monkeypatch, mod, generations):
+    """Serve `generations` from `_load_cached_events` on successive calls."""
+    seq = list(generations)
+    def fake_load():
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+    monkeypatch.setattr(mod, "_load_cached_events", fake_load)
+
+
+def test_a_forced_refresh_fetches_even_when_the_file_already_has_events(monkeypatch):
+    from api.routers import catalysts as cat
+
+    stored = {"last_updated": "2026-09-07T09:00:00", "events": [{"date": "2026-09-07"}]}
+    fetched = []
+    _catalyst_gen(monkeypatch, cat, [stored])
+    monkeypatch.setattr(cat, "_fetch_live_events",
+                        lambda *a, **k: fetched.append(a) or [{"date": "2026-09-08"}])
+    monkeypatch.setattr(cat, "_db_catalyst_events", lambda *a, **k: [])
+
+    cat.get_catalyst_events(date_from="2026-09-07", date_to="2026-09-08",
+                            tickers=None, types=None, refresh=True)
+
+    assert fetched, (
+        "refresh=true returned the existing file without calling Benzinga; "
+        "the documented forced refresh silently did nothing")
+
+
+def test_a_claimant_skips_the_batch_only_when_a_peer_refreshed(monkeypatch):
+    """The other half: the coalescing the re-read was added for must survive."""
+    from api.routers import catalysts as cat
+
+    before = {"last_updated": "2026-09-07T09:00:00", "events": [{"date": "2026-09-07"}]}
+    after = {"last_updated": "2026-09-07T09:05:00", "events": [{"date": "2026-09-09"}]}
+    fetched = []
+    # First read is the pre-claim observation, second is inside the claim: a
+    # peer refreshed in between, so this claimant must not spend its own batch.
+    _catalyst_gen(monkeypatch, cat, [before, after])
+    monkeypatch.setattr(cat, "_fetch_live_events",
+                        lambda *a, **k: fetched.append(a) or [])
+    monkeypatch.setattr(cat, "_db_catalyst_events", lambda *a, **k: [])
+
+    cat.get_catalyst_events(date_from="2026-09-07", date_to="2026-09-08",
+                            tickers=None, types=None, refresh=True)
+
+    assert fetched == [], (
+        "a peer had just published a new batch and this claimant repeated all "
+        "11 Benzinga calls anyway")
+
+
+def test_a_timezone_bearing_import_timestamp_is_rejected():
+    """`entry_ts` is advertised naive, and only naive is consistent.
+
+    `_dedupe_key` truncates to 16 characters, so `2026-09-07 10:00+00` and
+    `2026-09-07 10:00-04` both normalise to `2026-09-07 10:00` and share one
+    application key. The unique index does NOT agree: the column is
+    `TIMESTAMPTZ`, so Postgres resolves those two to 10:00 and 14:00 UTC and
+    `date_trunc('minute', entry_ts AT TIME ZONE 'UTC')` keeps them apart.
+
+    The two authorities then disagree about the same pair of rows -- a
+    sequential commit skips the second as a duplicate, concurrent commits
+    insert both -- which is the exact class of split-brain the index was added
+    to close (Codex, PR #991 -- after the merge).
+
+    Rejecting is the fix rather than normalising the key to a UTC instant:
+    the column holds a naive-ET wall-clock literal (see `_import_rows`), so an
+    offset-bearing input is asserting an instant for a column that does not
+    store one. There is no correct interpretation to normalise TO.
+    """
+    import api.routers.journal as journal
+
+    # The collision this prevents, stated so the reason survives the fix.
+    assert (journal._dedupe_key("IWM", "CALL", "2026-09-07 10:00+00", 1.0)
+            == journal._dedupe_key("IWM", "CALL", "2026-09-07 10:00-04", 1.0)), (
+        "if the key stops truncating the offset away, this rejection can be "
+        "revisited -- but then the index has to be revisited with it")
+
+    for bad in ("2026-09-07 10:00+00", "2026-09-07 10:00-04:00",
+                "2026-09-07T10:00:00Z", "2026-09-07 10:00 UTC"):
+        with pytest.raises(Exception) as exc:
+            journal.ImportCommitTrade(ticker="IWM", direction="CALL",
+                                      entry_ts=bad, entry_price=1.0)
+        assert "entry_ts" in str(exc.value), (bad, str(exc.value))
+
+    # An offset on the OPTIONAL exit is the same mistake.
+    with pytest.raises(Exception) as exc:
+        journal.ImportCommitTrade(ticker="IWM", direction="CALL",
+                                  entry_ts="2026-09-07 10:00", entry_price=1.0,
+                                  exit_ts="2026-09-07 11:00+00")
+    assert "exit_ts" in str(exc.value), str(exc.value)
+
+
+def test_the_naive_import_timestamp_forms_still_parse():
+    """The rejection must not narrow what the importer legitimately sends.
+
+    `_dedupe_key` already accepts both separators and optional seconds, so all
+    four of these reach one key and all four must be accepted.
+    """
+    import api.routers.journal as journal
+
+    keys = set()
+    for good in ("2026-09-07 10:00", "2026-09-07T10:00",
+                 "2026-09-07 10:00:00", "2026-09-07T10:00:00"):
+        trade = journal.ImportCommitTrade(ticker="IWM", direction="CALL",
+                                          entry_ts=good, entry_price=1.0)
+        keys.add(journal._dedupe_key(trade.ticker, trade.direction,
+                                     trade.entry_ts, trade.entry_price))
+    assert len(keys) == 1, f"accepted forms must share one key: {keys}"

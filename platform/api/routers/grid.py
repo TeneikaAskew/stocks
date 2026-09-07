@@ -598,21 +598,27 @@ def get_grid_live(
 
     cache_key = (ticker_upper, round(strike_window_pct, 2), expirations or "")
     cached = _LIVE_GRID_CACHE.get(cache_key)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not None:
+        response.headers["Cache-Control"] = "public, max-age=60"
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
     with _LIVE_GRID_FLIGHT.claim(cache_key) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _LIVE_GRID_CACHE.get(cache_key)
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=60"
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The live gamma grid is being computed now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not None:
-            response.headers["Cache-Control"] = "public, max-age=60"
-            return cached
 
         contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_live(
             ticker_upper,
@@ -705,21 +711,27 @@ def get_grid_historical(
     cache_key = (ticker_upper, date_str, round(strike_window_pct, 2),
                  expirations or "")
     cached = _HIST_GRID_CACHE.get(cache_key)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not None:
+        response.headers["Cache-Control"] = "public, max-age=43200"
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
     with _HIST_GRID_FLIGHT.claim(cache_key) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _HIST_GRID_CACHE.get(cache_key)
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=43200"
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The historical gamma grid is being computed now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not None:
-            response.headers["Cache-Control"] = "public, max-age=43200"
-            return cached
 
         contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_historical(
             ticker_upper, requested_date,
@@ -880,21 +892,27 @@ def get_nodes_live(
 
     cache_key = (ticker_upper, round(strike_window_pct, 2))
     cached = _NODES_CACHE.get(cache_key)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not None:
+        response.headers["Cache-Control"] = "public, max-age=60"
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
     with _NODES_FLIGHT.claim(cache_key) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _NODES_CACHE.get(cache_key)
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=60"
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The live gamma nodes is being computed now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not None:
-            response.headers["Cache-Control"] = "public, max-age=60"
-            return cached
 
         contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_live(ticker_upper)
         if data_source == "unavailable" or not contracts:
@@ -943,21 +961,27 @@ def get_nodes_historical(
 
     cache_key = (ticker_upper, date_str, round(strike_window_pct, 2))
     cached = _HIST_NODES_CACHE.get(cache_key)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not None:
+        response.headers["Cache-Control"] = "public, max-age=43200"
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
     with _HIST_NODES_FLIGHT.claim(cache_key) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _HIST_NODES_CACHE.get(cache_key)
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=43200"
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The historical gamma nodes is being computed now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not None:
-            response.headers["Cache-Control"] = "public, max-age=43200"
-            return cached
 
         contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_historical(
             ticker_upper, requested_date,

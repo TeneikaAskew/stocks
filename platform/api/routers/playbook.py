@@ -371,19 +371,24 @@ def list_reports(ticker: str):
     ticker_upper = ticker.upper()
 
     cached = _LIST_CACHE.get(ticker_upper, MISS)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not MISS:
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses
     # on one key each run this whole fill (Codex, PR #991).
     with _REPORT_LIST_FLIGHT.claim(ticker_upper) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _LIST_CACHE.get(ticker_upper, MISS)
+        if cached is not MISS:
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The report list is being read now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not MISS:
-            return cached
 
         # 1) ticker-specific reports: phase*_{ticker_lower}.md
         ticker_specific = gcs_reader.list_matching_blobs(
@@ -441,19 +446,24 @@ def get_report(ticker: str, phase: str):
 
     cache_key = (ticker_upper, phase_lower)
     cached = _REPORT_TEXT_CACHE.get(cache_key, MISS)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not MISS:
+        return cached
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses
     # on one key each run this whole fill (Codex, PR #991).
     with _REPORT_TEXT_FLIGHT.claim(cache_key) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _REPORT_TEXT_CACHE.get(cache_key, MISS)
+        if cached is not MISS:
+            return cached
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The report text is being read now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not MISS:
-            return cached
 
         # Try ticker-specific file first
         candidates = gcs_reader.list_matching_blobs(
