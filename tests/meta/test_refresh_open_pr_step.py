@@ -164,3 +164,30 @@ def test_every_staged_document_is_one_the_refresh_produces():
     assert set(gate.DOCS) <= set(STAGED), set(gate.DOCS) - set(STAGED)
     for f in STAGED:
         assert (REPO / f).exists(), f"{f} is staged by the refresh but not in the repo"
+
+
+# ── the run has to be able to authenticate at all ───────────────────────────
+
+def test_a_dispatch_from_a_branch_fails_before_it_burns_a_run():
+    """Run 23 was dispatched from a feature branch to validate a fix and died
+    inside `google-github-actions/auth` with three unexplained lines, then
+    opened a failure issue and a draft PR about it.
+
+    The cause is the Workload Identity provider's attribute condition, read
+    from GCP on 2026-09-07:
+
+        assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'
+
+    That is the boundary stopping any PR branch from assuming this project's
+    GCP identity, so the workflow says so instead of the condition being
+    relaxed. This pins the guard's position: after it, an opaque auth failure
+    from a branch is a regression.
+    """
+    names = [s.get("name") for s in STEPS]
+    guard = "Refuse to run from anywhere but main"
+    assert guard in names, "the branch-dispatch guard is gone"
+    assert names.index(guard) < names.index("Authenticate to GCP (WIF)")
+    step = STEPS[names.index(guard)]
+    assert step["if"] == "github.ref != 'refs/heads/main'"
+    assert "refs/heads/main" in step["run"] and "::error::" in step["run"]
+    assert "exit 1" in step["run"]
