@@ -84,19 +84,36 @@ class TradeLogger:
 
         combined.to_parquet(path, index=False)
 
-    def get_daily_trades(self, date=None) -> pd.DataFrame:
+    # trades.run_kind separates live monitor trades from the rows a deleted
+    # backfill script wrote ('backfill') and tagged replays ('replay'). The
+    # readers default to live so the weekend review, like the API readers,
+    # never counts simulated rows (Codex on #1022); run_kind=None reads
+    # every kind, matching DataLoader.load_trades.
+    @staticmethod
+    def _run_kind_clause(run_kind, params: dict) -> str:
+        if run_kind is None:
+            return ""
+        params['rk'] = run_kind
+        return " AND run_kind = :rk"
+
+    def get_daily_trades(self, date=None, run_kind='live') -> pd.DataFrame:
         """Load trades for a specific date (Cloud SQL preferred, Parquet fallback)."""
         if _cloud_sql_active():
             try:
                 from gcp.database import query_to_dataframe
                 date_str = str(date or datetime.now().date())
+                params = {'d': date_str}
                 df = query_to_dataframe(
-                    "SELECT * FROM trades WHERE trade_date = :d ORDER BY entry_time",
-                    {'d': date_str},
+                    "SELECT * FROM trades WHERE trade_date = :d"
+                    + self._run_kind_clause(run_kind, params)
+                    + " ORDER BY entry_time",
+                    params,
                 )
                 if not df.empty:
                     return df
             except Exception as e:
+                # AUDIT-2026-05-13: silent fallback — a failed query falls
+                # through to the Parquet files below
                 log.warning("Cloud SQL daily trades query failed: %s", e)
 
         # Parquet fallback
@@ -105,7 +122,7 @@ class TradeLogger:
             return pd.read_parquet(path)
         return pd.DataFrame()
 
-    def get_weekly_trades(self, week_end_date=None) -> pd.DataFrame:
+    def get_weekly_trades(self, week_end_date=None, run_kind='live') -> pd.DataFrame:
         """Load all trades from the past 7 days (Cloud SQL preferred)."""
         if _cloud_sql_active():
             try:
@@ -113,13 +130,18 @@ class TradeLogger:
                 if week_end_date is None:
                     week_end_date = datetime.now().date()
                 start = week_end_date - pd.Timedelta(days=6)
+                params = {'start': str(start), 'end': str(week_end_date)}
                 df = query_to_dataframe(
-                    "SELECT * FROM trades WHERE trade_date BETWEEN :start AND :end ORDER BY entry_time",
-                    {'start': str(start), 'end': str(week_end_date)},
+                    "SELECT * FROM trades WHERE trade_date BETWEEN :start AND :end"
+                    + self._run_kind_clause(run_kind, params)
+                    + " ORDER BY entry_time",
+                    params,
                 )
                 if not df.empty:
                     return df
             except Exception as e:
+                # AUDIT-2026-05-13: silent fallback — a failed query falls
+                # through to the Parquet files below
                 log.warning("Cloud SQL weekly trades query failed: %s", e)
 
         # Parquet fallback
@@ -135,15 +157,24 @@ class TradeLogger:
 
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    def get_all_trades(self) -> pd.DataFrame:
+    def get_all_trades(self, run_kind='live') -> pd.DataFrame:
         """Load all logged trades (Cloud SQL preferred, then all local Parquet files)."""
         if _cloud_sql_active():
             try:
                 from gcp.database import query_to_dataframe
-                df = query_to_dataframe("SELECT * FROM trades ORDER BY entry_time")
+                params: dict = {}
+                clause = self._run_kind_clause(run_kind, params)
+                df = query_to_dataframe(
+                    "SELECT * FROM trades"
+                    + (" WHERE" + clause[len(" AND"):] if clause else "")
+                    + " ORDER BY entry_time",
+                    params or None,
+                )
                 if not df.empty:
                     return df
             except Exception as e:
+                # AUDIT-2026-05-13: silent fallback — a failed query falls
+                # through to the Parquet files below
                 log.warning("Cloud SQL all-trades query failed: %s", e)
 
         # Parquet fallback
