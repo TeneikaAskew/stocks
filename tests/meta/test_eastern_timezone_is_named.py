@@ -367,14 +367,23 @@ NONPY_AMBIGUOUS = re.compile(
 # `EST5EDT` deliberately does NOT match: the anchors keep the `EST5`
 # alternative from claiming its prefix, and it belongs to the backward-link
 # test rather than this one -- it IS DST-correct, it is just the wrong name.
-_FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00|EST5|EDT4)"
+#
+# The seconds field is OPTIONAL and must be `00`. `-05:00:00` is the same
+# UTC-5 written longhand and stays a finding; `-05:00:30` is UTC-05:00:30,
+# which is not Eastern in either season, and the pattern used to claim its
+# `-05:00` prefix and fail CI on it (Codex, PR #993). Same shape as the
+# `FixedOffset(-300.5)` finding two rounds ago -- a near-miss offset
+# truncated into a violation -- in the text matcher rather than the AST one.
+_FIXED_OFFSET_TEXT = r"(?:-\s*0?[45]:?00(?::00)?|EST5|EDT4)"
 # Quotes optional, like the legacy-name pattern above and for the same reason:
 # `timezone=-05:00` in a shell or YAML file is the ordinary spelling, and
 # requiring both quotes exempted it (Codex, PR #993). The lookahead keeps the
 # unquoted branch from matching a longer number.
 NONPY_FIXED_OFFSET = re.compile(
     r"(?:" + _TZ_CONTEXT + r")\s*['\"]?\s*" + _FIXED_OFFSET_TEXT
-    + r"\s*['\"]?(?![A-Za-z0-9_])", re.I
+    # `:` in the lookahead, so a seconds field the pattern did NOT consume
+    # rejects the match instead of leaving it matched on a prefix.
+    + r"\s*['\"]?(?![A-Za-z0-9_:])", re.I
 )
 # Postgres also takes a bare number: `SET TIME ZONE -5` installs the same
 # frozen UTC-5 session zone as `SET TIME ZONE '-05:00'`, and the matcher above
@@ -6605,3 +6614,55 @@ def test_the_real_deploy_script_tokenises():
 # to the machinery six of the last twelve regressions came from, in service of
 # one spelling. That is the trade this whole class is about, and it is the
 # user's call rather than mine.
+# -- Round 25 (Codex, PR #993) ----------------------------------------------
+
+
+def test_a_clock_offset_with_seconds_is_read_whole():
+    """`SET TIME ZONE INTERVAL '-05:00:30' HOUR TO SECOND` is NOT Eastern.
+
+    The pattern matched the `-05:00` prefix and its lookahead permitted the
+    following `:`, so a session set to UTC-05:00:30 -- an offset that is
+    neither EST nor EDT -- failed the guard. A false CI failure, and the same
+    shape as the `FixedOffset(-300.5)` finding two rounds ago: a near-miss
+    offset truncated into a violation (Codex, PR #993).
+
+    The seconds field is optional and must be `00`, so the longhand spelling
+    of the real offsets is still caught.
+    """
+    forbidden = [
+        "SET TIME ZONE INTERVAL '-05:00:00' HOUR TO SECOND",
+        "SET TIME ZONE INTERVAL '-05:00' HOUR TO MINUTE",
+        "SET TIME ZONE '-05:00'",
+        "SET TIME ZONE '-04:00:00'",
+        "SET TIME ZONE '-0500'",
+        "timezone=-05:00",
+        "TZ=EST5",
+    ]
+    for src in forbidden:
+        assert NONPY_FIXED_OFFSET.search(src), src
+
+    allowed = [
+        "SET TIME ZONE INTERVAL '-05:00:30' HOUR TO SECOND",
+        "SET TIME ZONE INTERVAL '-04:00:01' HOUR TO SECOND",
+        "TZ=EST5EDT",          # DST-correct, just the wrong name
+    ]
+    for src in allowed:
+        assert not NONPY_FIXED_OFFSET.search(src), src
+
+
+# Recorded on #1019 rather than fixed:
+#
+#   * `HOURS = -5; OFFSET = timedelta(hours=HOURS); timezone(OFFSET)`.
+#
+# Each half already works on its own -- `OFFSET = timedelta(hours=-5)` is
+# kept as a binding, and `timezone(timedelta(hours=HOURS))` resolves the name
+# -- and only the COMPOSITION fails, because `_collect_bindings` decides
+# whether to keep a call binding by evaluating it without the environment and
+# drops the node when that cannot resolve.
+#
+# That is the same category as the tuple-destructuring and constant-subscript
+# deferrals still open from rounds 19 and 20, and it is deferred for the same
+# reason: closing it means either resolving inside the prefilter, which needs
+# an environment the collector is still building, or retaining every call
+# binding for `follow` to sort out later, which widens what eleven resolvers
+# already compose over.
