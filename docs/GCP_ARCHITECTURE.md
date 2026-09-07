@@ -111,7 +111,7 @@ flowchart LR
 **Read this diagram top-to-bottom in three lanes:**
 
 1. **Ingest lane (top)** — Cloud Scheduler fires Cloud Run Jobs that pull from external APIs and land data in Cloud SQL + GCS.
-2. **Serve lane (middle)** — `solyra-api-staging` is the API the browser actually reaches (`stocks.insightscollective.org` maps to it, Firebase-gated); `solyra-api-prod` runs the same image behind IAP and no browser reaches it today; `discord-interactions` handles slash commands. All three read Cloud SQL, and the two API services dispatch the same Cloud Run Jobs on demand. Diagnosing "the user-facing service" through the prod node is looking at the wrong one.
+2. **Serve lane (middle)** — `solyra-api-staging` is the API the browser actually reaches (Firebase-gated; the custom domain `api.stocks.insightscollective.org` maps to it, though solyra calls the run.app origin directly); `solyra-api-prod` runs the same image behind IAP and no browser reaches it today; `discord-interactions` handles slash commands. All three read Cloud SQL, and the two API services dispatch the same Cloud Run Jobs on demand. Diagnosing "the user-facing service" through the prod node is looking at the wrong one.
 3. **Observe lane (bottom)** — Cloud Logging watches every Cloud Run Job for errors, pipes them through Pub/Sub to the failure-notifier service, which fans out to Discord + GitHub.
 
 ---

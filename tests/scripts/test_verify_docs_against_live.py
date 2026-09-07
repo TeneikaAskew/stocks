@@ -81,6 +81,7 @@ LIVE = {
     "services": ["solyra-api-prod", "solyra-api-staging"],
     "secrets": ["av-api-key"],
     "queues": ["insight-pipeline-queue"],
+    "domain_mappings": {"api.stocks.example.org": "solyra-api-staging"},
 }
 
 
@@ -94,6 +95,7 @@ def _check(tmp_path, text, name="docs/PIPELINE.md"):
     vd.check_schedules(p, name, LIVE, out)
     vd.check_known_names(p, name, LIVE, out)
     vd.check_counts(p, name, LIVE, out)
+    vd.check_domain_mappings(p, name, LIVE, out)
     return out
 
 
@@ -553,3 +555,31 @@ def test_a_declared_live_pair_reports_once_not_twice(tmp_path):
     """Two patterns can match the same claim; only one finding should result."""
     out = _check(tmp_path, "| Cloud Scheduler (60 live / 58 declared) |")
     assert len(out) == 1, [str(f) for f in out]
+
+
+def test_a_hostname_that_no_longer_maps_is_caught(tmp_path):
+    """The mapping lives in Cloud Run, so a doc is its only record.
+
+    Nine places said `stocks.insightscollective.org` maps to
+    solyra-api-staging while the live mapping was `api.stocks...`; the bare
+    host had become the Firebase email sending domain. Nothing compared a
+    hostname to anything (Codex, PR #990).
+    """
+    out = _check(tmp_path, "`stocks.example.org` maps to `solyra-api-staging`.")
+    assert [f.check for f in out] == ["mapping-drift"], [f.detail for f in out]
+    assert "api.stocks.example.org" in out[0].detail
+
+
+def test_the_live_hostname_is_clean(tmp_path):
+    assert _check(tmp_path, "`api.stocks.example.org` maps to `solyra-api-staging`.") == []
+
+
+def test_a_hostname_is_a_claim_even_without_maps_to(tmp_path):
+    """"via", "also served at", "points at" -- chasing phrasings is how the
+    timezone guard lost four rounds. A host under our own domain is the claim."""
+    out = _check(tmp_path, "| Staging | run.app URL, also `stocks.example.org` |")
+    assert [f.check for f in out] == ["mapping-drift"]
+
+
+def test_a_hostname_under_another_domain_is_not_our_claim(tmp_path):
+    assert _check(tmp_path, "Docs live at `example.com` and `docs.other.org`.") == []

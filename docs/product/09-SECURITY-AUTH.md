@@ -307,7 +307,7 @@ carried: IAP on Cloud Run is service-level and cannot be dropped per-revision,
 so staging is public at the edge and re-protected in the app. Only
 `/api/health`, `/api/me`, `/api/config/firebase` answer without a token.
 
-**`stocks.insightscollective.org` maps to `solyra-api-staging`** (remapped
+**`api.stocks.insightscollective.org` maps to `solyra-api-staging`** (remapped
 2026-09-05 from the IAP-gated prod service). That is the product's public
 entry point by design: a memorable hostname, Firebase sign-in, and **open
 registration** — `AUTH_OPEN_SIGNUP=1` is the intended onboarding model, not a

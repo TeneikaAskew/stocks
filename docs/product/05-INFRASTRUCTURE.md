@@ -72,13 +72,13 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 | Environment | Service | URL | Auth | Evidence |
 |---|---|---|---|---|
 | **Production** | `solyra-api-prod` (us-east1) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
-| **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `stocks.insightscollective.org` since 2026-09-05 | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
+| **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `api.stocks.insightscollective.org` | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
 | **Discord interactions** | `discord-interactions` | `https://discord-interactions-5sjtb3yl7a-ue.a.run.app` | `--allow-unauthenticated` (Discord cannot IAM-auth); Ed25519 signature verification at the app layer | live read 2026-09-05 |
 | **Failure notifier** | `failure-notifier` | `https://failure-notifier-5sjtb3yl7a-ue.a.run.app` | internal | live read 2026-09-05 |
 | **Local dev (frontend)** | Vite — in the solyra repo since the #957 split | `http://localhost:5173` | none (`AUTH_MODE` unset → `open`) | solyra `vite.config.ts`; `platform/` here holds only the API |
 | **Local dev (API)** | uvicorn | `http://localhost:8000` | none | `Makefile:73`; solyra's Vite proxies `/api` → `:8000` |
 
-**A custom domain now exists.** `stocks.insightscollective.org` maps to
+**A custom domain now exists.** `api.stocks.insightscollective.org` maps to
 `solyra-api-staging` (moved off the prod service 2026-09-05; the CNAME to
 `ghs.googlehosted.com` is service-independent so the move needed no DNS change).
 It is committed nowhere in source — Cloud Run holds the mapping — so treat

@@ -372,6 +372,15 @@ def read_live() -> dict:
     queues = json.loads(
         _gcloud("tasks", "queues", "list", f"--location={REGION}", "--format=json")
     )
+    # Domain mappings live in Cloud Run, not in source, so a doc is the only
+    # place the hostname appears and nothing compared it to anything. Eleven
+    # places in these docs said `stocks.insightscollective.org` maps to
+    # solyra-api-staging while the live mapping is `api.stocks...`; the bare
+    # host is the Firebase email sending domain now (Codex, PR #990).
+    mappings = json.loads(
+        _gcloud("beta", "run", "domain-mappings", "list", f"--region={REGION}",
+                "--format=json")
+    )
     schedulers = {}
     for s in sched:
         name = s["name"].rsplit("/", 1)[-1]
@@ -389,6 +398,8 @@ def read_live() -> dict:
         "services": sorted(s["metadata"]["name"] for s in services),
         "secrets": sorted(x["name"].rsplit("/", 1)[-1] for x in secrets),
         "queues": sorted(q["name"].rsplit("/", 1)[-1] for q in queues),
+        "domain_mappings": {m["metadata"]["name"]: m["spec"]["routeName"]
+                            for m in mappings},
     }
 
 
@@ -624,6 +635,84 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                 seen.add(key)
 
 
+# "`host` maps to `service`", "host points at service", "host -> service".
+# Backticks optional: these docs write the hostname both ways.
+MAPPING_CLAIM = re.compile(
+    r"`?([a-z0-9][a-z0-9.-]*\.[a-z]{2,})`?\s*"
+    r"(?:maps? (?:to|here)|points? (?:at|to)|->|→)\s*"
+    r"`?(solyra-api-[a-z]+|trading-platform[a-z-]*)`?", re.I)
+
+
+def check_domain_mappings(path: pathlib.Path, rel: str, live: dict,
+                          out: list[Finding]) -> None:
+    """A documented hostname must map where the doc says it does.
+
+    Cloud Run holds the mapping and nothing in source does, so a doc is the
+    only record of it and every copy drifted together when the mapping moved.
+    """
+    mappings = live.get("domain_mappings")
+    if not mappings:
+        return
+
+    # Every host under a domain we actually map, whether or not the line spells
+    # out "maps to". Chasing phrasings with a pattern is the mistake #993 made
+    # four times: these docs write the hostname as "maps here", "points at",
+    # "via", "also served at" and "also `host`", and a checker that knows five
+    # of those does not know the sixth. A hostname under our own domain IS a
+    # claim that it serves something, so the presence of one that is not a live
+    # mapping is the finding -- and a legitimate non-Cloud-Run use of the name
+    # (it is the Firebase email sending domain now) takes a verify-docs-ok
+    # marker, which makes that use visible rather than assumed.
+    # The registrable domain, not the mapped host's immediate parent: from
+    # `api.stocks.insightscollective.org` that is `insightscollective.org`, so
+    # the bare `stocks.insightscollective.org` -- which is what every stale
+    # copy says -- is inside the scope rather than outside it.
+    suffixes = {".".join(h.rsplit(".", 2)[-2:]) for h in mappings if h.count(".") >= 1}
+    host_re = re.compile(
+        r"\b((?:[a-z0-9][a-z0-9.-]*\.)?(?:" + "|".join(re.escape(x) for x in sorted(suffixes))
+        + r"))\b", re.I) if suffixes else None
+
+    for i, line in _lines(path):
+        if RETIRED_OK.search(line):
+            continue
+        flagged: set[str] = set()
+        if host_re:
+            for hm in host_re.finditer(line):
+                host = hm.group(1).lower()
+                if host in mappings:
+                    continue
+                flagged.add(host)
+                out.append(Finding(
+                    "mapping-drift", rel, i,
+                    f"`{host}` is named in an operational doc but is not a live "
+                    f"Cloud Run domain mapping; live: "
+                    + ", ".join(f"`{h}` -> `{sv}`" for h, sv in sorted(mappings.items()))))
+        # The second pass exists for a host that IS a live mapping but is
+        # documented against the wrong service. A host the first pass already
+        # named would otherwise be reported twice for one line.
+        for m in MAPPING_CLAIM.finditer(line):
+            host, service = m.group(1).lower(), m.group(2)
+            if host in flagged:
+                continue
+            actual = mappings.get(host)
+            if actual == service:
+                continue
+            if actual is None:
+                # A host that maps nowhere. Only a finding when the doc says
+                # it maps to something -- which is what MAPPING_CLAIM matched.
+                out.append(Finding(
+                    "mapping-drift", rel, i,
+                    f"`{host}` is documented as mapping to `{service}`, but no "
+                    f"Cloud Run domain mapping exists for it; live: "
+                    + (", ".join(f"`{h}` -> `{sv}`" for h, sv in sorted(mappings.items()))
+                       or "none")))
+            else:
+                out.append(Finding(
+                    "mapping-drift", rel, i,
+                    f"`{host}` is documented as mapping to `{service}`; live it "
+                    f"maps to `{actual}`"))
+
+
 def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
     """Backticked names introduced as a Cloud Run Job / scheduler must exist."""
     known = (set(live["run_jobs"]) | set(live["schedulers"]) | set(live["services"])
@@ -781,6 +870,7 @@ def main() -> int:
         check_schedules(p, rel, live, findings)
         check_known_names(p, rel, live, findings)
         check_counts(p, rel, live, findings)
+        check_domain_mappings(p, rel, live, findings)
 
     print(f"checked {len(paths)} operational docs against "
           f"{len(live['schedulers'])} schedulers / {len(live['run_jobs'])} jobs / "

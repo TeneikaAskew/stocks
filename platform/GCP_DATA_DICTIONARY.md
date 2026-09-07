@@ -20,14 +20,14 @@
 ## 0. The Cloud Run *services* (live state, read 2026-09-07)
 
 Four services exist. **Two of them serve this API**, from the same code, and the
-one the browser actually reaches is `solyra-api-staging` — `stocks.insightscollective.org`
+one the browser actually reaches is `solyra-api-staging` — `api.stocks.insightscollective.org`
 maps to it and it is the origin solyra's `src/lib/apiTargets.ts` calls. An
 operator diagnosing "the user-facing service" through the prod row is looking
 at the wrong service.
 
 | Service | Region | What it is | Service account | Ingress / app auth | Secrets mounted |
 |---|---|---|---|---|---|
-| **`solyra-api-staging`** | us-east1 | **The service the browser talks to.** FastAPI only — no SPA in the image since #957. `stocks.insightscollective.org` maps here. | `trading-platform-svc@…` | `allUsers` → `roles/run.invoker` (public), app auth `AUTH_MODE=firebase` with `AUTH_OPEN_SIGNUP=1` | `DB_PASS` ← `trading-db-pass:latest`; `AV_API_KEY` and `ALPHA_VANTAGE_API_KEY` ← `av-api-key:latest` |
+| **`solyra-api-staging`** | us-east1 | **The service the browser talks to.** FastAPI only — no SPA in the image since #957. `api.stocks.insightscollective.org` maps here. | `trading-platform-svc@…` | `allUsers` → `roles/run.invoker` (public), app auth `AUTH_MODE=firebase` with `AUTH_OPEN_SIGNUP=1` | `DB_PASS` ← `trading-db-pass:latest`; `AV_API_KEY` and `ALPHA_VANTAGE_API_KEY` ← `av-api-key:latest` |
 | **`solyra-api-prod`** | us-east1 | Same FastAPI app, IAP-gated. Not reached by the browser today. | `trading-platform-svc@…` | IAP enabled, no `allUsers` binding, app auth `AUTH_MODE=iap` | identical to staging |
 | `discord-interactions` | us-east1 | Discord slash-command webhook receiver (`gcp/discord_interactions`). Not part of the UI. | `trading-runner@…` | — | DB + AV + Discord + `DISCORD_APP_ID/PUBLIC_KEY/BOT_TOKEN` |
 | `failure-notifier` | us-east1 | Pub/Sub-driven GCP-job-failure → GitHub issue/PR sink (`gcp/failure_notifier`). Not part of the UI. | `trading-runner@…` | — | DB + `GITHUB_PAT`/`GITHUB_REPO` + `discord-webhook-gcp` |
@@ -268,7 +268,7 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 
 | GCP service | Used for |
 |---|---|
-| **Cloud Run — services** | Four, read live 2026-09-07. `solyra-api-staging` (FastAPI only — **the service the browser reaches**, via `stocks.insightscollective.org`); `solyra-api-prod` (same FastAPI image, IAP-gated, not browser-reached today); `discord-interactions` (slash-command webhook); `failure-notifier` (job-failure → GitHub). Neither API image ships the SPA — that ended at #957; see §0. |
+| **Cloud Run — services** | Four, read live 2026-09-07. `solyra-api-staging` (FastAPI only — **the service the browser reaches**; `api.stocks.insightscollective.org` maps to it); `solyra-api-prod` (same FastAPI image, IAP-gated, not browser-reached today); `discord-interactions` (slash-command webhook); `failure-notifier` (job-failure → GitHub). Neither API image ships the SPA — that ended at #957; see §0. |
 | **Cloud Run — jobs** (76 live, read 2026-09-07) | All data ingestion + analytics writers. Page-relevant: `insight-pipeline` (AI Insights), `fetch-market-data` + `fetch-alphavantage-intraday` + `backfill-daily-indicators` (price data → Dashboard/Charts/Live), `fetch-av-options-backfill` + `fetch-av-options-realtime` (Options Flow), `historical-signals-watchlist` (Signals), `premarket-brief` (Dashboard brief + Playbook md), `fetch-news-sentiment*`/`fetch-earnings-calendar`/`fetch-earnings-history`/`fetch-sec-filings`/`fetch-insider-transactions`/`fetch-economic-events`/`fetch-fred-rates` (Catalysts), `backtest` (Insights backtest panel), `auto-refresh-top-n` (pre-warms insight cache), `db-query` (ops SQL), `strat-engine` (research artifacts → Admin). |
 | **Cloud SQL (Postgres `trading-db`)** | System of record for nearly every page. ~50 tables; page-critical: `market_data_daily`/`market_data_intraday`, `etf_options_snapshots`, `historical_signals`, `insight_reports`/`insight_runs`/`insight_reports_history`/`model_routing`, `premarket_analysis`, `news_sentiment`/`earnings_calendar`/`earnings_history`/`sec_filings`/`insider_transactions`/`economic_events`, `journal_entries`, `trades`, `watchlists`, `ticker_info`, `signal_alerts`. |
 | **Vertex AI (Gemini)** | The LLM for AI Insights. Model `gemini-3.1-flash-lite` for all 7 agent roles (live `model_routing`), via `google-genai` in Vertex mode on the **`global`** endpoint. Adapter registry also supports Anthropic + OpenAI (`lib/agents/pricing.py` price table), but **only the Vertex adapter is registered** by the insights router/job, and the live routing table targets Vertex exclusively. |
