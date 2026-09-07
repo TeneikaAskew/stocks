@@ -92,7 +92,10 @@ _NON_SOURCE_SUFFIXES = {".md", ".txt", ".json", ".png", ".jpg", ".svg"}
 
 def _source_files() -> list[pathlib.Path]:
     out = []
-    for pattern in ("*.py", "*.sql", "*.sh"):
+    # YAML and Dockerfiles are where a `TZ: US/Eastern` or `ENV TZ=EST` would
+    # live, and neither was scanned -- the guard's docstring says
+    # repository-wide (Codex, PR #993).
+    for pattern in ("*.py", "*.sql", "*.sh", "*.yml", "*.yaml", "Dockerfile*"):
         for p in REPO.rglob(pattern):
             if SKIP_DIRS & set(p.relative_to(REPO).parts):
                 continue
@@ -150,8 +153,12 @@ NONPY_AMBIGUOUS = re.compile(
     r"""['"]?(?:""" + "|".join(AMBIGUOUS_LEGACY) + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
+# Quotes optional, like the legacy-name pattern above and for the same reason:
+# `timezone=-05:00` in a shell or YAML file is the ordinary spelling, and
+# requiring both quotes exempted it (Codex, PR #993). The lookahead keeps the
+# unquoted branch from matching a longer number.
 NONPY_FIXED_OFFSET = re.compile(
-    r"(?:" + _TZ_CONTEXT + r")\s*['\"]\s*-\s*0?[45]:?00\s*['\"]", re.I
+    r"(?:" + _TZ_CONTEXT + r")\s*['\"]?\s*-\s*0?[45]:?00\s*['\"]?(?![0-9])", re.I
 )
 
 # ── Python: parsed, not pattern-matched ────────────────────────────────────
@@ -203,23 +210,102 @@ def _call_name(node: ast.Call) -> str:
     return ""
 
 
-def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
-    """`timedelta(hours=-4|-5, ...)`, with any number of other arguments.
+# timedelta's signature, in the order its positional arguments take.
+_TIMEDELTA_UNITS = (("days", 86400), ("seconds", 1), ("microseconds", 1e-6),
+                    ("milliseconds", 1e-3), ("minutes", 60), ("hours", 3600),
+                    ("weeks", 604800))
+_EASTERN_OFFSET_SECONDS = (-14400, -18000)   # UTC-4 and UTC-5
 
-    The `, minutes=0` case is why this is a walk and not a pattern: the old
-    regex required the closing paren immediately after the hour value.
+
+def _const_number(node: ast.AST):
+    """The value of a numeric constant, negation included, or None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)):
+        inner = _const_number(node.operand)
+        return None if inner is None else -inner
+    return None
+
+
+def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
+    """A constant `timedelta(...)` totalling -4h or -5h, however it is spelled.
+
+    Checking only `hours=` missed `timedelta(seconds=-18000)` and the
+    positional `timedelta(0, -18000)`, which are the same frozen zone in a
+    different spelling (Codex, PR #993) -- the fourth time on this file that a
+    check knew one way of writing the thing it forbids. The whole constant is
+    evaluated now, so any combination of units that lands on the offset counts,
+    and a `timedelta` with a non-constant argument is simply not decidable
+    here and is left alone rather than guessed at.
     """
     if not isinstance(node, ast.Call) or _call_name(node) != "timedelta":
         return False
+    total = 0.0
+    for arg, (_, scale) in zip(node.args, _TIMEDELTA_UNITS):
+        v = _const_number(arg)
+        if v is None:
+            return False
+        total += v * scale
+    units = dict(_TIMEDELTA_UNITS)
     for kw in node.keywords:
-        if kw.arg != "hours":
-            continue
-        v = kw.value
-        if (isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.USub)
-                and isinstance(v.operand, ast.Constant)
-                and v.operand.value in (4, 5)):
-            return True
-    return False
+        if kw.arg not in units:
+            return False          # **kwargs, or a unit we do not model
+        v = _const_number(kw.value)
+        if v is None:
+            return False
+        total += v * units[kw.arg]
+    return int(round(total)) in _EASTERN_OFFSET_SECONDS
+
+
+# A new lexical scope. `ast.walk` does not know about these, which is how the
+# file-wide binding map came to join names that Python never joins.
+_SCOPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+           ast.Lambda)
+
+
+def _scope_nodes(scope: ast.AST):
+    """Every node lexically inside `scope`, not descending into nested scopes.
+
+    A nested `def` is yielded (it is a statement of this scope) but its body is
+    not, so a binding made inside it does not leak outward.
+    """
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]:
+    """`id(node)` -> the string bindings visible at that node, lexically.
+
+    Collecting bindings once for the whole module joined names that share
+    nothing but a spelling: an ordinary local `value = "EST"` in one function
+    and an independent `ZoneInfo(value)` in another were reported as a single
+    violation, which is a CI failure on correct code (Codex, PR #993). The
+    guard tolerates ambiguous tokens outside a timezone context precisely so it
+    does not do that, and this is the same mistake one level down.
+
+    An inner scope INHERITS its enclosing scopes -- `EASTERN = "US/Eastern"` at
+    module level really is what `ZoneInfo(EASTERN)` inside a function reads,
+    and following that is the whole point of the map -- and shadows them, which
+    is what Python does. The "a legacy binding wins over a later one" rule
+    stays inside a single scope, where the reassignment it models happens.
+    """
+    out: dict[int, dict[str, tuple[str, ast.AST]]] = {}
+
+    def descend(scope: ast.AST, inherited: dict) -> None:
+        bindings = dict(inherited)
+        bindings.update(_collect_bindings(_scope_nodes(scope), {}))
+        out[id(scope)] = bindings
+        for node in _scope_nodes(scope):
+            out[id(node)] = bindings
+            if isinstance(node, _SCOPES):
+                descend(node, bindings)
+
+    descend(tree, {})
+    return out
 
 
 def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
@@ -239,8 +325,12 @@ def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
     it looks for: if a name is EVER bound to a legacy zone or a fixed offset
     in this file, that binding is what the guard keeps.
     """
-    out: dict[str, tuple[str, ast.AST]] = {}
-    for node in ast.walk(tree):
+    return _collect_bindings(ast.walk(tree), {})
+
+
+def _collect_bindings(nodes, out: dict[str, tuple[str, ast.AST]]):
+    """The shared body of the two readers above."""
+    for node in nodes:
         if isinstance(node, ast.Assign):
             targets = node.targets
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
@@ -274,14 +364,14 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
 
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
-    bindings = _string_bindings(tree)
+    scoped = _scoped_bindings(tree)
 
     def note(bucket, node, what):
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
 
     reported: set[int] = set()
 
-    def follow(bucket_legacy, bucket_offsets, node, arg, where):
+    def follow(bucket_legacy, bucket_offsets, node, arg, bindings, where):
         """Report `arg` when it is, or resolves to, a legacy zone or offset."""
         reported.add(id(arg))
         if isinstance(arg, ast.Constant) and arg.value in ALL_LEGACY:
@@ -306,6 +396,22 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         return False
 
     for node in ast.walk(tree):
+        # The bindings of the scope this node sits in, not the module's.
+        bindings = scoped.get(id(node), {})
+
+        # `os.environ["TZ"] = "EST"` -- and `settings["timezone"] = ...`. The
+        # target is an ast.Subscript, so it binds no NAME for the map above to
+        # follow later: the assignment is itself the use, and the value is the
+        # violation (Codex, PR #993).
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for tgt in targets:
+                key = tgt.slice if isinstance(tgt, ast.Subscript) else None
+                if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                        and key.value.lower() in _TZ_KEYWORDS):
+                    follow(legacy, offsets, node, node.value, bindings,
+                           lambda shown, k=key.value: f"[{k!r}] = {shown}")
+
         # Every UNAMBIGUOUS legacy name, wherever it stands, with no call-name
         # whitelist in front of it. A whitelist is a list of the constructors
         # somebody thought of, and `dateutil.tz.gettz("US/Eastern")` was not
@@ -331,12 +437,12 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             for k, v in zip(node.keys, node.values):
                 if (isinstance(k, ast.Constant) and k.value in _TZ_KEYWORDS
                         and isinstance(v, ast.Constant)):
-                    follow(legacy, offsets, node, v,
+                    follow(legacy, offsets, node, v, bindings,
                            lambda shown, k=k: f"{k.value!r}: {shown}")
 
         # A legacy zone name as the value of a timezone-ish keyword, anywhere.
         if isinstance(node, ast.keyword) and node.arg in _TZ_KEYWORDS:
-            follow(legacy, offsets, node, node.value,
+            follow(legacy, offsets, node, node.value, bindings,
                    lambda shown, a=node.arg: f"{a}={shown}")
 
         if not isinstance(node, ast.Call):
@@ -346,7 +452,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             continue
         # Positional and keyword arguments alike.
         for arg in list(node.args) + [k.value for k in node.keywords]:
-            follow(legacy, offsets, node, arg,
+            follow(legacy, offsets, node, arg, bindings,
                    lambda shown, n=name: f"{n}(... {shown} ...)")
 
     # `ast.walk` is breadth-first, so a call is visited before its own
@@ -628,3 +734,71 @@ def test_market_open_is_the_same_wall_clock_on_both_sides_of_dst():
     winter = datetime(2026, 1, 15, 9, 30, tzinfo=et)
     assert summer.astimezone(ZoneInfo("UTC")).hour == 13
     assert winter.astimezone(ZoneInfo("UTC")).hour == 14
+
+
+def _hits(source: str) -> tuple[list[str], list[str]]:
+    """Run the Python scan over `source` as if it were a file in the repo."""
+    return _python_hits(REPO / "gcp" / "_scratch_for_this_test.py", source)
+
+
+def test_a_local_in_one_function_does_not_taint_another():
+    """The binding map must not join names Python never joins.
+
+    Collected once for the whole module, an ordinary local `value = "EST"` in
+    one function and an independent `ZoneInfo(value)` in another resolved to
+    the same binding and reported a violation -- a CI failure on correct code,
+    from a guard whose whole design tolerates ambiguous tokens outside a
+    timezone context so it would not do that (Codex, PR #993).
+    """
+    legacy, offsets = _hits(
+        'def stop_word_list():\n'
+        '    value = "EST"\n'
+        '    return [value]\n'
+        '\n'
+        'def load(value):\n'
+        '    return ZoneInfo(value)\n'
+    )
+    assert (legacy, offsets) == ([], [])
+
+
+def test_an_enclosing_binding_still_reaches_the_call_that_reads_it():
+    """Scoping must not cost the indirection the map exists for.
+
+    `EASTERN = "US/Eastern"` at module level really is what `ZoneInfo(EASTERN)`
+    inside a function reads, and following that is the reason this map exists.
+    """
+    legacy, _ = _hits(
+        'EASTERN = "US/Eastern"\n'
+        '\n'
+        'def load():\n'
+        '    return ZoneInfo(EASTERN)\n'
+    )
+    assert any("EASTERN" in h and "US/Eastern" in h for h in legacy), legacy
+
+    # And a nested binding shadows it, the way Python does.
+    legacy, _ = _hits(
+        'TZ = "EST"\n'
+        '\n'
+        'def load():\n'
+        '    TZ = "America/New_York"\n'
+        '    return ZoneInfo(TZ)\n'
+    )
+    assert legacy == [], legacy
+
+
+def test_the_tz_environment_variable_is_read_as_a_timezone():
+    """`os.environ["TZ"] = "EST"` sets the process clock for every naive call.
+
+    The target is an `ast.Subscript`, so it binds no name the map can follow
+    later and the assignment is itself the use -- and nothing looked at it
+    (Codex, PR #993).
+    """
+    legacy, _ = _hits('import os\nos.environ["TZ"] = "EST"\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    _, offsets = _hits('os.environ["TZ"] = "Etc/GMT+5"\n')
+    assert any("Etc/GMT+5" in h for h in offsets), offsets
+
+    # The canonical name is not a finding, and neither is an unrelated key.
+    assert _hits('os.environ["TZ"] = "America/New_York"\n') == ([], [])
+    assert _hits('os.environ["EST_LABEL"] = "EST"\n') == ([], [])
