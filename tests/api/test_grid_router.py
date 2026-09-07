@@ -893,3 +893,29 @@ class TestGridTimeseriesFallbacks:
         assert body["spot_method"] == "median_strike"
         assert body["data_source"] == "realtime_degraded"
         assert any("median strike" in w.lower() for w in body["warnings"])
+
+    def test_snapshot_with_no_gamma_is_omitted_not_served_as_zero(self, client, monkeypatch):
+        """Codex P1 on #1005: coverage was gated over the whole window, so a
+        latest snapshot with every gamma NULL slipped through when earlier
+        snapshots were populated, and aggregate_by_strike turned it into a
+        real-looking collapse to GEX == 0.0 as the current point. Each
+        snapshot must be gated on its own: an all-missing snapshot is
+        omitted (and named), never published as zero."""
+        t1 = pd.Timestamp("2026-06-01T15:50:00")
+        t2 = pd.Timestamp("2026-06-01T15:55:00")
+        df = pd.concat([_ts_chain(t1), _ts_chain(t2, gamma_values=[None] * 4)], ignore_index=True)
+        _install_query_router(monkeypatch, realtime_df=df)
+        r = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19&strikes=95,100")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["data_source"] == "realtime_degraded"
+        stamps = {row["snapshot_ts"] for row in body["series"]}
+        assert stamps == {t1.isoformat()}, "the zero-coverage snapshot must be omitted"
+        assert all(row["gex"] != 0.0 for row in body["series"])
+        assert any(t2.isoformat() in w and "omitted" in w.lower() for w in body["warnings"])
+        # Auto-ranked strikes and the reference spot must come from the latest
+        # snapshot that HAS gamma, not from the omitted one.
+        r2 = client.get("/api/options/SPY/grid/timeseries?expiration=2026-06-19")
+        assert r2.status_code == 200
+        assert r2.json()["data_source"] == "realtime_degraded"
+        assert r2.json()["strikes_resolved"] == [95.0, 100.0]

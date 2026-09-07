@@ -1048,33 +1048,22 @@ async def get_grid_timeseries(
                 detail="Invalid `strikes` parameter — empty after parsing",
             )
     else:
-        # Rank strikes by |net gamma × OI| at the latest snapshot using the
-        # same aggregation every other gamma surface uses (lib.gamma —
-        # one source of truth for math). The previous inline
-        # `float(gamma or 0) * float(open_interest or 0)` read a vendor
-        # gamma outage as "zero gamma at every strike" (#826, CLAUDE.md
-        # §3.7); coverage is gated below before anything is computed.
-        latest_ts = df["snapshot_ts"].max()
-        df_latest = df[df["snapshot_ts"] == latest_ts]
-        ranked = sorted(
-            gamma.aggregate_by_strike(_df_to_contracts(df_latest)),
-            key=lambda r: abs(r["net_gamma"]), reverse=True,
-        )[:10]
-        strike_set = {r["strike"] for r in ranked}
+        strike_set = None  # resolved below from the latest snapshot that has gamma
 
-    df = df[df["strike"].isin(strike_set)]
-    if df.empty:
-        return {
-            "ticker": ticker_upper,
-            "expiration": expiration,
-            "lookback_hours": lookback_hours,
-            "data_source": "unavailable",
-            "series": [],
-            "warnings": [
-                f"no rows match strikes={sorted(strike_set)} for "
-                f"expiration={expiration}"
-            ],
-        }
+    if strike_set is not None:
+        df = df[df["strike"].isin(strike_set)]
+        if df.empty:
+            return {
+                "ticker": ticker_upper,
+                "expiration": expiration,
+                "lookback_hours": lookback_hours,
+                "data_source": "unavailable",
+                "series": [],
+                "warnings": [
+                    f"no rows match strikes={sorted(strike_set)} for "
+                    f"expiration={expiration}"
+                ],
+            }
 
     def _unavailable_series(reason: str) -> dict:
         # Typed UNAVAILABLE envelope for this endpoint's shape (CLAUDE.md
@@ -1091,27 +1080,64 @@ async def get_grid_timeseries(
 
     warnings: list[str] = []
 
-    # §3.7 gate on vendor gamma coverage over the whole window, mirroring
-    # lib.gamma.build_summary: 0 % is an outage (unavailable, not zero GEX);
-    # under 98 % the series is served but labelled understated (#826).
-    coverage, n_missing, n_rows = gamma.greeks_coverage(_df_to_contracts(df))
-    if n_rows > 0 and coverage == 0.0:
+    # §3.7 gate on vendor gamma coverage, PER SNAPSHOT (Codex P1, #1005): a
+    # whole-window gate let a latest snapshot with every gamma NULL through
+    # whenever earlier snapshots were populated, and aggregate_by_strike
+    # then published it as a real-looking collapse to GEX == 0.0. A snapshot
+    # with no gamma at all is omitted and named; partial coverage across the
+    # kept snapshots is served but labelled understated, mirroring
+    # lib.gamma.build_summary's 98 % threshold (#826).
+    kept: list[tuple[object, list[dict]]] = []
+    omitted: list[str] = []
+    n_missing_total = 0
+    n_rows_total = 0
+    for ts in sorted(df["snapshot_ts"].unique()):
+        contracts = _df_to_contracts(df[df["snapshot_ts"] == ts])
+        cov, n_missing, n_rows = gamma.greeks_coverage(contracts)
+        if n_rows == 0:
+            continue
+        if cov == 0.0:
+            omitted.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+            continue
+        kept.append((ts, contracts))
+        n_missing_total += n_missing
+        n_rows_total += n_rows
+    if not kept:
         return _unavailable_series(
-            f"vendor gamma missing on ALL {n_rows} contracts in the window — "
-            "GEX unavailable (feed outage?), not zero"
+            f"vendor gamma missing on every contract in all {len(omitted)} "
+            "snapshot(s) in the window — GEX unavailable (feed outage?), not zero"
         )
+    if omitted:
+        warnings.append(
+            f"{len(omitted)} snapshot(s) omitted — vendor gamma missing on every "
+            f"contract (feed outage?), not a zero-GEX reading: {', '.join(omitted)}"
+        )
+    coverage = 1.0 - (n_missing_total / n_rows_total)
     if coverage < 0.98:
         warnings.append(
-            f"vendor gamma missing on {n_missing}/{n_rows} contracts "
+            f"vendor gamma missing on {n_missing_total}/{n_rows_total} contracts "
             f"({coverage:.1%} coverage) — GEX is understated; treat the "
             "series as degraded"
         )
 
+    # Reference snapshot = the latest one that HAS gamma: it ranks the
+    # strikes (when none were requested) and supplies the parity spot.
+    latest_contracts = kept[-1][1]
+    if strike_set is None:
+        # Rank strikes by |net gamma × OI| using the same aggregation every
+        # other gamma surface uses (lib.gamma — one source of truth for
+        # math). The previous inline `float(gamma or 0) * float(oi or 0)`
+        # read a vendor outage as "zero gamma at every strike" (#826).
+        ranked = sorted(
+            gamma.aggregate_by_strike(latest_contracts),
+            key=lambda r: abs(r["net_gamma"]), reverse=True,
+        )[:10]
+        strike_set = {r["strike"] for r in ranked}
+
     # Per-snapshot per-strike net GEX (we need spot to compute dollar
-    # notional — use the latest snapshot's parity-derived spot as a
+    # notional — use the reference snapshot's parity-derived spot as a
     # stable reference across the lookback window. Spot doesn't move
     # enough in 1 hour to materially distort the time series).
-    latest_contracts = _df_to_contracts(df[df["snapshot_ts"] == df["snapshot_ts"].max()])
     spot_est = gamma.estimate_spot(latest_contracts)
     if spot_est.price <= 0:
         # No usable quotes for a parity spot. The old code substituted a
@@ -1134,10 +1160,9 @@ async def get_grid_timeseries(
     # Aggregate per (snapshot_ts, strike) → signed gamma × OI via
     # lib.gamma.aggregate_by_strike, then GEX at the reference spot.
     rows = []
-    for ts in sorted(df["snapshot_ts"].unique()):
-        snap = df[df["snapshot_ts"] == ts]
+    for ts, contracts in kept:
         ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-        for agg_row in gamma.aggregate_by_strike(_df_to_contracts(snap)):
+        for agg_row in gamma.aggregate_by_strike(contracts):
             strike = agg_row["strike"]
             if strike not in strike_set:
                 continue

@@ -292,10 +292,13 @@ def test_image_drift_resolves_tag_form_execution_image(monkeypatch):
 
     latest = "sha256:" + "a" * 64
     old = "sha256:" + "b" * 64
+    # The job SPEC declares the managed :latest family (a stray configured
+    # tag is check_configured_image_tags' finding); the most recent
+    # EXECUTION ran on a tag-form image that resolves to an older digest.
     with patch.object(mod, "latest_image_digest", return_value=latest), \
          patch.object(mod, "list_run_jobs",
                       return_value=[{"name": "fetch-fred-rates",
-                                     "image": "..../trading-system:spx-removal-fred-20260516"}]), \
+                                     "image": "..../trading-system:latest"}]), \
          patch.object(mod, "latest_execution_image",
                       return_value="..../trading-system:spx-removal-fred-20260516"), \
          patch.object(mod, "resolve_tag_digest", return_value=old) as resolve:
@@ -412,3 +415,54 @@ def test_main_runs_all_checks():
          patch.object(mod, "post_to_discord", return_value=True):
         assert mod.main() == 0
     assert set(calls) == {"image", "tags", "orphans", "state"}
+
+
+# ──────────────── Codex P2 on #1005 — research jobs are a managed family ────────────────
+
+def test_configured_research_tag_is_not_flagged():
+    """gcp/deploy.sh deploys every research job from `${IMAGE}:research` on
+    purpose (the main image lacks scikit-learn / LightGBM). `research` is a
+    managed family, not drift; only tags deploy.sh never uses are flagged."""
+    from gcp import audit_infra_drift as mod
+
+    with patch.object(mod, "list_run_jobs", return_value=[
+        {"name": "regime-combo", "image": "..../trading-system:research"},
+        {"name": "strat-engine", "image": "..../trading-system:research"},
+        {"name": "fetch-fred-rates", "image": "..../trading-system:spx-removal-fred-20260516"},
+    ]):
+        r = mod.Report()
+        mod.check_configured_image_tags(r)
+
+    assert [f.target for f in r.findings] == ["fetch-fred-rates"]
+    assert "research" in mod.MANAGED_IMAGE_TAGS and "latest" in mod.MANAGED_IMAGE_TAGS
+
+
+def test_image_drift_compares_research_job_against_research_tag():
+    """A `:research` job's executions must be compared with the research
+    tag's current digest, not with `:latest` — otherwise every research job
+    reads as drifted on every run."""
+    from gcp import audit_infra_drift as mod
+
+    latest = "sha256:" + "a" * 64
+    research_now = "sha256:" + "c" * 64
+    research_old = "sha256:" + "d" * 64
+
+    def resolve(tag):
+        assert tag == "research"
+        return research_now
+
+    with patch.object(mod, "latest_image_digest", return_value=latest), \
+         patch.object(mod, "list_run_jobs", return_value=[
+             {"name": "regime-combo", "image": "..../trading-system:research"},
+             {"name": "strat-engine", "image": "..../trading-system:research"},
+         ]), \
+         patch.object(mod, "latest_execution_image", side_effect=[
+             f"..../trading-system@{research_now}",   # regime-combo: current
+             f"..../trading-system@{research_old}",   # strat-engine: behind
+         ]), \
+         patch.object(mod, "resolve_tag_digest", side_effect=resolve):
+        r = mod.Report()
+        mod.check_image_drift(r)
+
+    assert [(f.check, f.target) for f in r.findings] == [("image-drift", "strat-engine")]
+    assert "research" in r.findings[0].detail

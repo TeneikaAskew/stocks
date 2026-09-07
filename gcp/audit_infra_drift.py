@@ -118,6 +118,16 @@ def resolve_tag_digest(tag: str) -> str:
     raise RuntimeError(f"no tag {tag!r} at {parent}")
 
 
+# Image families gcp/deploy.sh deploys on purpose. `latest` is the main
+# trading-system build; `research` is the heavier research build (scikit-learn,
+# LightGBM, …) that every research job is deployed from as `${IMAGE}:research`.
+# A configured tag outside this set is a hand `jobs update --image` that
+# deploy.sh will never converge (#835); a job's executions are compared
+# against ITS OWN family's current digest, never blindly against :latest
+# (Codex P2, #1005 — research jobs are not drift).
+MANAGED_IMAGE_TAGS = frozenset({"latest", "research"})
+
+
 def _image_tag(image: str) -> str | None:
     """`...:tag` → 'tag'; digest refs and untagged images → None."""
     if "@" in image:
@@ -215,10 +225,23 @@ def check_image_drift(report: Report) -> None:
         report.errors.append(f"list_run_jobs: {e}")
         return
 
+    family_digest: dict[str, str] = {"latest": latest}
     for j in jobs:
         if "trading-system" not in j["image"]:
             # Image doesn't share the trading-system base — skip.
             continue
+        # The family this job declares (its configured tag; untagged = latest).
+        # Its executions are compared with THAT tag's current digest.
+        family = _image_tag(j["image"]) or "latest"
+        if family not in family_digest:
+            try:
+                family_digest[family] = resolve_tag_digest(family)
+            except Exception as e:
+                report.errors.append(
+                    f"{j['name']}: cannot resolve configured image tag "
+                    f"{family!r}: {e!s}"[:200])
+                continue
+        expected = family_digest[family]
         try:
             exec_image = latest_execution_image(j["name"])
         except Exception as e:
@@ -245,22 +268,24 @@ def check_image_drift(report: Report) -> None:
                     f"{tag!r}: {e!s}"[:200])
                 continue
             via = f" (tag `{tag}`)"
-        if pinned != latest:
+        if pinned != expected:
             report.add(
                 severity="MEDIUM",
                 check="image-drift",
                 target=j["name"],
-                detail=(f"pinned `{pinned[:19]}…`{via} ≠ latest `{latest[:19]}…` — "
-                        "run `gcloud run jobs update --image=:latest` to re-pin"),
+                detail=(f"pinned `{pinned[:19]}…`{via} ≠ current `:{family}` "
+                        f"`{expected[:19]}…` — run `gcloud run jobs update "
+                        f"--image=...:{family}` to re-pin"),
             )
 
 
 def check_configured_image_tags(report: Report) -> None:
-    """Flag any trading-system job whose SPEC pins a tag other than
-    `latest`. deploy.sh deploys `${IMAGE}` (implicit :latest); a hand
-    `gcloud run jobs update --image=...:sometag` leaves the spec on that
-    tag until someone notices (#835: fetch-fred-rates on a May tag). This
-    catches it from the spec alone, before or regardless of execution."""
+    """Flag any trading-system job whose SPEC pins a tag outside
+    MANAGED_IMAGE_TAGS. deploy.sh deploys `${IMAGE}` (implicit :latest) or
+    `${IMAGE}:research`; a hand `gcloud run jobs update --image=...:sometag`
+    leaves the spec on that tag until someone notices (#835:
+    fetch-fred-rates on a May tag). This catches it from the spec alone,
+    before or regardless of execution."""
     try:
         jobs = list_run_jobs()
     except Exception as e:
@@ -270,15 +295,15 @@ def check_configured_image_tags(report: Report) -> None:
         if "trading-system" not in j["image"]:
             continue
         tag = _image_tag(j["image"])
-        if tag is None or tag == "latest":
+        if tag is None or tag in MANAGED_IMAGE_TAGS:
             continue
         report.add(
             severity="MEDIUM",
             check="image-tag-pinned",
             target=j["name"],
-            detail=(f"job spec pins `trading-system:{tag}`; deploy.sh deploys "
-                    "`:latest` — run `./gcp/deploy.sh <target>` (or "
-                    "`gcloud run jobs update --image=...:latest`) to converge"),
+            detail=(f"job spec pins `trading-system:{tag}`; deploy.sh only deploys "
+                    f"{sorted(MANAGED_IMAGE_TAGS)} — run `./gcp/deploy.sh <target>` "
+                    "to converge"),
         )
 
 
