@@ -3,7 +3,7 @@
 > Authoritative map of how the trading platform runs end-to-end: which jobs
 > fire when, how data flows, and where the indicator-combination work (regime
 > combos + Strat combos) plugs in. For the raw-data *fetcher* details see
-> [`DATA_PIPELINE.md`](DATA_PIPELINE.md); this doc is the higher-level
+> [`DATA_PIPELINE.md`](05-g-DATA_PIPELINE.md); this doc is the higher-level
 > "how it all runs live" overview.
 
 Last updated: 2026-05-31.

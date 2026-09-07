@@ -172,8 +172,8 @@
   - [x] `pandas-market-calendars>=4.3.1`
 
 ### Documentation
-- [x] `docs/GCP_IMPLEMENTATION_GUIDE.md` — Full architecture guide (14 sections)
-- [x] `docs/GCP_IMPLEMENTATION_STATUS.md` — This file
+- [x] `docs/product/infrastructure/05-i-GCP_IMPLEMENTATION_GUIDE.md` — Full architecture guide (14 sections)
+- [x] `docs/product/infrastructure/05-j-GCP_IMPLEMENTATION_STATUS.md` — This file
 
 ### Claude Automation
 - [x] `.claude/commands/gcp-deploy.md` — `/gcp-deploy` slash command
@@ -384,7 +384,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 > Based on data as of 2026-02: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler
 > triggers, and 7 jobs. **The fleet has grown well past this basis** — read live
 > 2026-09-07 there are 65 scheduler entries and 76 Cloud Run Jobs, so treat the figures
-> below as a floor, not an estimate. `COST_ANALYSIS.md` carries the current view.
+> below as a floor, not an estimate. `docs/product/infrastructure/05-d-COST_ANALYSIS.md` carries the current view.
 
 | Service | Resource | Est. Cost/mo |
 |---------|----------|-------------|

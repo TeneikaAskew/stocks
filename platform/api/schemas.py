@@ -20,6 +20,14 @@ Two deliberate choices keep the models from changing production behaviour:
   default, and a value outside the declared type is a loud 500, never a
   silently coerced default (CLAUDE.md Rule 3.7).
 
+  The two halves of that are separable and the distinction is load-bearing:
+  ``Optional[X]`` with no default is REQUIRED-and-nullable, which is what a
+  field the route always emits but can emit as ``null`` needs. Adding
+  ``= None`` also makes it optional and removes it from the schema's
+  ``required`` list, telling a generated client the key may be absent when
+  it never is (Codex, PR #994). Default only where the router really can
+  omit the key.
+
 Closed sets are ``Literal`` only where the producing code provably emits
 nothing else; env-driven strings (auth mode, session names, data sources)
 stay ``str`` so a mis-set variable cannot turn a working route into a 500.
@@ -54,9 +62,24 @@ class LiveQuoteResponse(ApiModel):
     high: float
     low: float
     volume: int
-    change: float
-    change_pct: float
-    prev_close: float
+    # Nullable, and REQUIRED. `get_live_quote` answers a malformed
+    # AlphaVantage payload with a 502 for price/OHLC/volume, but returns
+    # `None` for these three when the vendor omits them or sends something
+    # unparseable, because solyra's `LiveQuote` already declares them
+    # `number | null` and renders null as an em-dash -- so a non-Optional
+    # annotation turned that honest null into a ResponseValidationError 500
+    # (CLAUDE.md Rule 3.7).
+    #
+    # No `= None`, though. A default makes the field OPTIONAL as well as
+    # nullable and drops it out of the OpenAPI `required` list, which says
+    # something the route does not do: the handler builds all three keys
+    # unconditionally, so a response that omits one is a bug, and a generated
+    # client or contract test would have been told to accept it
+    # (Codex, PR #994). The frontend contract is `number | null`, not
+    # `number | null | undefined`; only the value type is widened here.
+    change: Optional[float]
+    change_pct: Optional[float]
+    prev_close: Optional[float]
     last_updated: str
     market_session: str
     market_open: bool

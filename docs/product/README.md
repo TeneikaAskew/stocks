@@ -14,6 +14,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md) | What does each of the 15 screens do? |
 | [04 Backend Api](04-BACKEND-API.md) | Which of the 92 platform endpoints support it, and how is each authenticated? |
 | [05 Infrastructure](05-INFRASTRUCTURE.md) | What runs and deploys it — 76 jobs, 65 schedulers? |
+| [05 Infrastructure references](05-INFRASTRUCTURE.md#reference-documents) | Where are the long-form architecture, ERD, API, cost and pipeline documents? (`docs/product/infrastructure/`) |
 | [06 Data Architecture](06-DATA-ARCHITECTURE.md) | What are the 64 relations and how does data flow? |
 | [07 Model Registry](07-MODEL-REGISTRY.md) | Which rules and models exist, and are they trustworthy? |
 | [08 Ai Agent Architecture](08-AI-AGENT-ARCHITECTURE.md) | What are the 14 LLM nodes actually wired today? |

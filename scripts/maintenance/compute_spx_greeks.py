@@ -179,7 +179,68 @@ def update_computed_columns(df: pd.DataFrame) -> int:
     return total
 
 
-def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
+class GreeksUnavailable(RuntimeError):
+    """Enrichment produced no finite Greeks for a non-empty chain.
+
+    Typed so the caller counts it as a failed date rather than a silent
+    no-op: `main` exits non-zero, and the Cloud Run job's failure is visible
+    to the failure-notifier instead of reading as a clean run.
+    """
+
+
+def _keep_solved(enriched: pd.DataFrame, prior: pd.DataFrame) -> pd.DataFrame:
+    """Fill non-finite results from the values the table already held.
+
+    A re-solve is not always an improvement: an underivable spot or a failed
+    IV solve produces NaN for a contract whose Greeks are already stored and
+    correct. Writing that back is data loss dressed as a backfill, so a new
+    value replaces the old one only where the new value is finite.
+
+    Merged on `id`, not on position: `enrich_av_chain_with_greeks` may drop
+    rows, and aligning two frames of different lengths by index would shift
+    every value after the first gap onto the wrong contract.
+    """
+    if prior.empty or "id" not in enriched.columns:
+        return enriched
+    carried = prior.set_index("id")
+    out = enriched.set_index("id")
+    for col in COMPUTED_COLS:
+        if col not in carried.columns:
+            continue
+        old = pd.to_numeric(carried[col], errors="coerce").reindex(out.index)
+        if col not in out.columns:
+            out[col] = old
+            continue
+        new = pd.to_numeric(out[col], errors="coerce")
+        out[col] = new.where(np.isfinite(new), old)
+    return out.reset_index()
+
+
+def _pending_gamma_ids(chain: pd.DataFrame) -> set | None:
+    """The row ids this run was selected to fill, or None when rows have no id.
+
+    `list_dates_to_process` selects a date when ANY row has a NULL gamma, so
+    the work is those rows and not the whole chain. Without an `id` column the
+    rows cannot be followed through enrichment (which may drop some), and the
+    caller falls back to a whole-chain count.
+    """
+    if "id" not in chain.columns:
+        return None
+    if "gamma_computed" not in chain.columns:
+        return set(chain["id"])
+    g = pd.to_numeric(chain["gamma_computed"], errors="coerce")
+    return set(chain.loc[~np.isfinite(g), "id"])
+
+
+def _finite_gamma_ids(df: pd.DataFrame) -> set:
+    """Row ids carrying a finite gamma in this frame."""
+    if "id" not in df.columns or "gamma_computed" not in df.columns:
+        return set()
+    g = pd.to_numeric(df["gamma_computed"], errors="coerce")
+    return set(df.loc[np.isfinite(g), "id"])
+
+
+def process_one_date(ticker: str, snap: date, force: bool = False) -> tuple[int, int]:
     """Load → enrich → UPDATE for one snapshot date.
 
     Returns (loaded_rows, updated_rows). updated_rows can be < loaded_rows
@@ -190,17 +251,121 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
         log.warning("  %s %s: empty chain, skipping", ticker, snap)
         return 0, 0
 
-    enriched = enrich_av_chain_with_greeks(chain, ticker, snap)
-    n_updated = update_computed_columns(enriched)
+    # Drop the sidecar columns before enriching.
+    #
+    # `enrich_av_chain_with_greeks` short-circuits the WHOLE chain when
+    # `_has_existing_computed_greeks` finds ANY finite value, but
+    # `list_dates_to_process` selects a date when ANY row is NULL/NaN. A
+    # partially populated snapshot therefore satisfies both: it is selected as
+    # needing work, then skipped wholesale, and the finite-count gate below
+    # passes on the rows that were already there -- so the job exits 0 and the
+    # missing rows stay missing on every retry (Codex, PR #994).
+    #
+    # Dropping them makes the early return unreachable here, so every row this
+    # job was selected for is actually computed. The skip stays useful on the
+    # request path, where re-solving a fully populated chain is wasted work;
+    # this job's entire purpose is to fill the gaps.
+    # Kept FIRST, because the drop below is otherwise destructive. `load_chain`
+    # selects the sidecars, so this frame is the only copy of every value a
+    # previous run already solved; `update_computed_columns` writes whatever
+    # comes back for every row it is given. Dropping the columns and writing
+    # the result therefore puts NULL over a valid Greek for any contract that
+    # solved last week and fails today -- a fix for a silent fallback that
+    # destroys data, which is worse than the fallback (Codex, PR #994).
+    have = [c for c in COMPUTED_COLS if c in chain.columns]
+    prior = (chain[["id", *have]].copy()
+             if "id" in chain.columns and have else pd.DataFrame())
 
-    # Quick coverage stat for the log line — how many rows have a finite
-    # gamma_computed after enrichment.
+    pending_ids = _pending_gamma_ids(chain)
+    pending_before = len(pending_ids) if pending_ids is not None else len(chain)
+    chain = chain.drop(
+        columns=[c for c in COMPUTED_COLS if c in chain.columns], errors="ignore")
+
+    enriched = enrich_av_chain_with_greeks(chain, ticker, snap)
+
+    # What THIS RUN solved. The gate below intersects it with the PENDING
+    # rows, and that intersection is what makes the gate sound: a total finite
+    # count over the frame counts rows earlier runs filled, so one
+    # already-solved row on a date whose entire pending set failed cleared the
+    # gate, rewrote the same values and exited 0 with the gaps intact -- the
+    # no-op-reported-as-success this job was fixed for, reintroduced by the
+    # fix for the round before it (Codex, PR #994).
+    #
+    # Read before the carry-forward rather than after. Today the two are
+    # equivalent, because a pending row is one whose prior value was NaN and
+    # the merge cannot restore it to finite. That equivalence is a property of
+    # `_pending_gamma_ids`, not of this line, so this does not depend on it.
+    solved_now = _finite_gamma_ids(enriched)
+
+    enriched = _keep_solved(enriched, prior)
+
+    # How many rows carry a finite gamma_computed after enrichment. This was
+    # a log-line statistic and nothing else, which made the job unable to fail
+    # for the reason it exists (Codex, PR #994):
+    #
+    #   * a failed rate lookup returns the chain UNTOUCHED, so the sidecars
+    #     keep whatever they had — and `load_chain` already selects them, so
+    #     they are the existing NULLs;
+    #   * an underivable spot returns the sidecars present and entirely NaN.
+    #
+    # Either way `update_computed_columns` rewrites NULL over NULL and returns
+    # the full row count, `process_one_date` raises nothing, `failures` stays
+    # 0, and the Cloud Run job exits 0 reporting a backfill it did not
+    # perform. `n_updated` counts rows touched, not Greeks computed.
     g = pd.to_numeric(enriched.get("gamma_computed"), errors="coerce")
     finite = int(np.isfinite(g).sum()) if g is not None else 0
+
+    if pending_ids is None:
+        # No `id` column, so the pending rows cannot be followed through
+        # enrichment. Whole-chain gate, which is what this was before ids
+        # were available to it.
+        if finite == 0:
+            raise GreeksUnavailable(
+                f"{ticker} {snap}: {len(chain)} rows loaded and 0 finite "
+                f"gamma_computed after enrichment — nothing was computed, so "
+                f"this date is a failure rather than a no-op")
+        still_missing = len(enriched) - finite
+    else:
+        # The rows this date was SELECTED for.
+        #
+        # Under `--force` that is EVERY row, and the flag has to be passed in
+        # to know it. Inferring it from an empty pending set covered only the
+        # fully populated date; a PARTIALLY populated one under `--force` still
+        # has pending rows, so one of them solving made `filled` non-empty and
+        # the gate passed while every row `--force` was asked to recompute
+        # failed and `_keep_solved` restored its old value (Codex, PR #994).
+        # Two rounds on this gate now have come from deriving the selected set
+        # instead of being told it.
+        #
+        # Without `--force` the pending set IS the selection, by construction:
+        # `list_dates_to_process` picks a date because some row has no gamma.
+        # The `or` covers a date reached with nothing pending by another route
+        # -- a concurrent run filling it in between, a manual invocation --
+        # which is work too, not an empty selection.
+        selected = set(chain["id"]) if force else (pending_ids or set(chain["id"]))
+        filled = selected & solved_now
+        if selected and not filled:
+            raise GreeksUnavailable(
+                f"{ticker} {snap}: 0 of {len(selected)} rows this date was "
+                f"selected for were solved (pending before this run: "
+                f"{len(pending_ids)}) — nothing was computed, so it is a "
+                f"failure rather than a no-op, however many rows earlier runs "
+                f"already filled")
+        still_missing = len(selected - solved_now)
+
+    n_updated = update_computed_columns(enriched)
     log.info(
-        "  %s %s: loaded=%d enriched_finite=%d updated=%d",
-        ticker, snap, len(chain), finite, n_updated,
+        "  %s %s: loaded=%d pending=%d enriched_finite=%d still_missing=%d updated=%d",
+        ticker, snap, len(chain), pending_before, finite, still_missing, n_updated,
     )
+    if still_missing:
+        # Not a failure -- a partially solved chain is real progress and the
+        # rows that solved are worth writing. But it is not silence either:
+        # the date will be selected again next run, and an operator seeing
+        # this line repeat with the same count knows the remainder is not
+        # merely un-attempted.
+        log.warning("  %s %s: %d rows still have no computed gamma after this run",
+                    ticker, snap, still_missing)
     return len(chain), n_updated
 
 
@@ -248,7 +413,7 @@ def main() -> int:
     failures = 0
     for i, snap in enumerate(dates, 1):
         try:
-            loaded, updated = process_one_date(ticker, snap)
+            loaded, updated = process_one_date(ticker, snap, force=args.force)
             total_rows += loaded
             total_updated += updated
         except Exception as exc:

@@ -774,7 +774,7 @@ These are the things we learned by hitting them, not by reading docs:
 ## See also
 
 - [`CLAUDE.md`](../CLAUDE.md) — full project rules, including the production-grade architecture rule (rule 0) and the database access patterns
-- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — the full architecture reference (jobs, services, schema, deploy paths)
+- [`05-a-ARCHITECTURE.md`](product/infrastructure/05-a-ARCHITECTURE.md) — the full architecture reference (jobs, services, schema, deploy paths)
 - [`gcp/queries/README.md`](../gcp/queries/README.md) — the SQL files directory convention
 - `.github/workflows/db-query.yml` (deleted 2026-05-30; use `scripts/db_query_cr.sh`) — the workflow itself
 - [`gcp/queries/run_query.py`](../gcp/queries/run_query.py) — the runner script with full inline documentation

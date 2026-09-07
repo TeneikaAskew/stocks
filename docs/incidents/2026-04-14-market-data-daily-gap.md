@@ -58,7 +58,7 @@ if not is_cloud_sql_configured():
 This makes future config regressions visible: Cloud Run will mark the execution as failed, Cloud Scheduler's failure count will increment, and — once alerting is configured — an on-call notification can fire.
 
 ### 3. Freshness audit (follow-up)
-This incident revealed that there is NO monitoring today that would catch "Cloud SQL row for date X was not written." The follow-up work builds a freshness audit script + API endpoint + Dashboard widget. See [docs/DATA_PIPELINE.md](../DATA_PIPELINE.md) (to be written).
+This incident revealed that there is NO monitoring today that would catch "Cloud SQL row for date X was not written." The follow-up work builds a freshness audit script + API endpoint + Dashboard widget. See [docs/DATA_PIPELINE.md](../product/infrastructure/05-g-DATA_PIPELINE.md) (to be written).
 
 ## Out of scope for this incident
 
