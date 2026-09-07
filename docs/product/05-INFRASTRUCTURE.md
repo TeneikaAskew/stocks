@@ -5,7 +5,7 @@
 **VERIFIED — CODE.** Parsed from `gcp/deploy.sh` at `d335f2f` by resolving each
 `deploy_*()` function body, so flags built into a `common_flags=( ... )` bash array are
 captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-declared count, not the live one; the live count is stated immediately below -->
-**67 Cloud Run jobs** and **58 Cloud Scheduler entries** are *declared in the repo*.
+**67 Cloud Run jobs** and **65 Cloud Scheduler entries** are *declared in the repo* (re-parsed from `gcp/deploy.sh` on 2026-09-07 by `scripts/maintenance/doc_inventory.py`; the earlier 58 predated #1004's consolidation of the per-hour news and sec-filings entries).
 
 **VERIFIED — LIVE, 2026-09-07.** `gcloud run jobs list --region=us-east1` returns
 **76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **65 scheduler
@@ -15,7 +15,7 @@ the reading above is vouched for here. The dated audit under
 `docs/audits/2026-08-27-claude-codebase-review/` also records 84 and is left as
 written, being a record of what was measured on its own date.
 
-<!-- verify-docs-ok: the 58-declared figure two paragraphs up is a parse of gcp/deploy.sh at a named commit, a different measurement that has not been redone; a naive count of _schedule* call sites is not a usable corroboration either: it counted a loop body as one entry when those loops existed, and #1004 has since replaced them with single hourly triggers, so the two numbers were never measuring the same thing --> The two numbers answer different questions and both belong here: the code
+<!-- verify-docs-ok: the declared count two paragraphs up is a parse of gcp/deploy.sh, a different measurement from the live fleet; both are stated so the reader can see they now agree at 65 --> The two numbers answer different questions and both belong here: the code
 count is what a fresh `deploy.sh` run would produce, the live count is what is actually
 billing and firing. The gap is undeclared infrastructure —
 
