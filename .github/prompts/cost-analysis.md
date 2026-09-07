@@ -2,7 +2,7 @@
 
 You are an automated documentation agent. Regenerate `COST_ANALYSIS.md` from the billing digests.
 
-**Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "COST_ANALYSIS.md"`, full markdown body). No stdout output, no preamble, no summary.
+**Output discipline (read this twice).** Produce the file with the **`write_file`** tool (`file_path: "COST_ANALYSIS.md"` at the **repository root**, full markdown body). Never `docs/COST_ANALYSIS.md` or any other directory, and never a second copy. No stdout output, no preamble, no summary.
 
 ## Inputs (under `refresh-inputs/`)
 

@@ -510,3 +510,55 @@ def test_every_gcloud_track_the_inventory_uses_is_installed_on_the_runner():
     assert required <= installed, (
         f"doc_inventory calls gcloud {sorted(required)} but the workflow installs "
         f"{sorted(installed) or 'nothing'}; the live snapshot will die on the runner")
+
+
+def _prompt_targets() -> dict[str, str]:
+    """The repo-root path each prompt tells the model to write."""
+    out = {}
+    for f in sorted((REPO / ".github/prompts").glob("*.md")):
+        m = re.search(r'`file_path: "([^"]+)"`', f.read_text())
+        if m:
+            out[f.name] = m.group(1)
+    return out
+
+
+def test_every_prompt_pins_its_output_to_the_repository_root():
+    """Run 15 reached all four Gemini steps and then died at the stray-write
+    scan because the model had written `docs/DATA_DEPENDENCIES.md`. Its prompt
+    was the only one that never stated a path — cost-analysis.md gave an
+    explicit file_path and landed correctly. Every prompt states one now.
+    (Run 15, 2026-09-07.)"""
+    prompts = sorted((REPO / ".github/prompts").glob("*.md"))
+    assert len(prompts) == 4, [p.name for p in prompts]
+    targets = _prompt_targets()
+    assert set(targets) == {p.name for p in prompts}, \
+        f"prompt without an explicit file_path: {sorted({p.name for p in prompts} - set(targets))}"
+    for name, target in targets.items():
+        assert "/" not in target, f"{name} points at {target}, which is not the repository root"
+        assert "repository root" in (REPO / ".github/prompts" / name).read_text(), \
+            f"{name} does not say its path is repo-root-relative"
+
+
+def test_the_prompt_targets_are_exactly_the_documents_the_workflow_stages():
+    """A prompt writing a document the stray-write scan does not allow fails
+    the run; a document the scan allows that no prompt writes is dead config.
+    Deriving both sides from their sources keeps them from drifting apart."""
+    restore = {s.get("name"): s.get("run") or "" for s in _steps()}[
+        "Restore gate inputs and refuse model edits outside the docs"]
+    allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
+    assert set(_prompt_targets().values()) == allowed, (
+        f"prompts write {sorted(set(_prompt_targets().values()))} but the scan allows "
+        f"{sorted(allowed)}")
+
+
+def test_a_generated_doc_in_the_wrong_directory_says_so():
+    """`docs/DATA_DEPENDENCIES.md` as a bare name does not tell a reader whether
+    the model invented a file or misplaced a real one. (Run 15, 2026-09-07.)"""
+    restore = {s.get("name"): s.get("run") or "" for s in _steps()}[
+        "Restore gate inputs and refuse model edits outside the docs"]
+    # Assert the EMITTED string, not the word anywhere in the step: the
+    # explanatory comment above the code also contains "wrong directory", so a
+    # bare substring check passed with the behaviour removed.
+    assert 'STRAY="$STRAY $F(wrong directory:' in restore, \
+        "the scan does not label a generated doc written to the wrong directory"
+    assert 'basename "$F"' in restore, "the scan does not compare basenames"
