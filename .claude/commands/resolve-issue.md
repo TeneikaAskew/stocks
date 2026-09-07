@@ -442,7 +442,14 @@ one. While writing, the standing gates:
      one at this step. No snapshot change, so its `contract:check` still
      passes against the current stocks `main`. Merged and deployed.
   2. **then stocks** — widen the response model, regenerate
-     `platform/api/openapi.json`, merge, deploy.
+     `platform/api/openapi.json`, merge, deploy. **Not the moment solyra's
+     step 1 merges — the moment its old bundles are gone.** Deploying the
+     compatible frontend changes what a browser fetches NEXT and nothing about
+     a session already open, and solyra registers no service worker and no
+     update prompt, so a tab keeps its bundle until someone reloads. Emitting
+     the null before that hits exactly the readers the ordering protects. Same
+     wait as the two narrowings below, for the same reason: a deploy and every
+     client having it are different events.
   3. **then solyra again** — `contract:sync`, and the null moves into the
      canonical mock and fixtures now that the schema admits it.
 
@@ -1072,16 +1079,20 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          # build_research_image, CHAIN the build — a failed research build
          # leaves the previous :research tag in place, so the deploy then
          # SUCCEEDS while pointing the job at code without the fix:
-         ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target>
-         # (no research image: just `./gcp/deploy.sh <target>`)
+         # A SCHEDULE change is a second deploy, CHAINED INTO THIS SUBSHELL so
+         # its status reaches the same `rc`. `gcp/deploy.sh:4588` makes
+         # `schedulers` its own target and `deploy_schedulers` runs from `all)`
+         # at 4635 — no job-specific target applies it, so a fix touching
+         # `deploy_schedulers` otherwise ships a new image on the old cadence,
+         # or with no trigger at all, and every check below still passes.
+         # Verify it afterwards with the retirement row's listing, against the
+         # new value. Anything placed AFTER the `)` and before `rc=$?` becomes
+         # the status `rc` captures, so a failed job deploy plus a successful
+         # scheduler update would read as success:
+         ./gcp/deploy.sh build-research && ./gcp/deploy.sh <target> \
+           && ./gcp/deploy.sh schedulers
+         # (no research image, no schedule change: just `./gcp/deploy.sh <target>`)
        )
-       # A SCHEDULE change is a second deploy. `gcp/deploy.sh:4588` makes
-       # `schedulers` its own target and `deploy_schedulers` runs from `all)`
-       # at 4635 — no job-specific target applies it. So a fix that touches
-       # `deploy_schedulers` ships a new image on the old cadence, or with no
-       # trigger at all, and every check below still passes.
-       #   ./gcp/deploy.sh schedulers
-       # then verify with the retirement row's listing, against the new value.
        rc=$?                               # capture BEFORE cleanup
        git worktree remove "$wt"
        test $rc -eq 0 \
