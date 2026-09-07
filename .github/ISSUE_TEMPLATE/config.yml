@@ -2,35 +2,35 @@
 # are not a gate. A finding that does not fit one of them is better filed
 # freehand than squeezed into the wrong shape.
 #
-# Note that these forms apply to the GitHub web UI only. Issues created through
-# the API bypass them entirely, which covers every automated filer in this repo:
+# These forms apply to the GitHub web UI only. Issues created through the API
+# bypass them entirely, which covers every automated filer in this repo:
 # .github/workflows/handle-workflow-failure.yml (workflow-failure) and
-# gcp/failure_notifier.py (gcp-job-failure), plus anything an agent opens. Those
-# carry their own body format and their own dedupe-by-label behaviour.
+# gcp/failure_notifier.py (gcp-job-failure), plus anything an agent opens.
+# Those carry their own body format and their own dedupe-by-label behaviour.
+#
+# contact_links: `name` is kept under 50 characters and `about` under 200,
+# because over-length values make the whole file invalid and the links then
+# silently do not render.
 blank_issues_enabled: true
 
 contact_links:
-  - name: A workflow or Cloud Run Job just failed
+  - name: A workflow or Cloud Run Job failed
     url: https://github.com/TeneikaAskew/stocks/issues?q=is%3Aissue+is%3Aopen+label%3Aautomated
     about: >-
-      Do not file these by hand. handle-workflow-failure.yml and
-      gcp/failure_notifier.py open them automatically and append repeat failures
-      as comments to the existing issue rather than opening a new one. Check the
-      automated label first; if one is already open, add your findings there.
+      Do not file these by hand. They are opened automatically and repeat
+      failures append to the existing issue. Check the automated label and add
+      your findings there.
 
-  - name: The rules these forms are enforcing
+  - name: The rules these forms enforce
     url: https://github.com/TeneikaAskew/stocks/blob/main/CLAUDE.md
     about: >-
-      Rule 3.11 (a claim without evidence is a guess, say which one it is),
-      Rule 0 (capacity math before merge), Rule 3.5 (replay now, never next
-      session), Rule 3.6 (production replay paths, no throwaway harnesses),
-      Rule 3.7 (no silent fallbacks), Rule 2.5 (read reviews before merging).
-      Each one names the incident that produced it.
+      Rule 3.11 (a claim without evidence is a guess), Rule 0 (capacity math),
+      Rule 3.5 (replay now), Rule 3.6 (production replay paths), Rule 3.7 (no
+      silent fallbacks), Rule 2.5 (reviews before merge).
 
-  - name: How to get evidence out of the live system from a sandbox
+  - name: Getting evidence from the live system
     url: https://github.com/TeneikaAskew/stocks/blob/main/docs/CLAUDE_CODE_ON_WEB.md
     about: >-
-      Outbound egress is port 443 only, so psql and the Cloud SQL proxy time
-      out. Use ./scripts/db_query_cr.sh for SQL and gcloud for GCP state; both
-      run the real work inside GCP. There is no excuse for filing an unmeasured
-      claim on the grounds that the database was unreachable.
+      Egress is port 443 only, so psql and the Cloud SQL proxy time out. Use
+      ./scripts/db_query_cr.sh for SQL and gcloud for GCP state. An unreachable
+      database is no reason to guess.

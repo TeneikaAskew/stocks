@@ -34,6 +34,19 @@ With no argument, list what is open and stop for a decision:
 Group by label and report counts, then ask which to take. Do not pick one
 yourself unless the user named a label or a number.
 
+With a **label** (`/resolve-issue tech-debt`, `/resolve-issue severity:critical`),
+list the open issues carrying it and stop for a selection. Resolve to exactly
+one issue number before going further; never start work across a label's whole
+set:
+
+```bash
+# via MCP: mcp__github__list_issues owner=TeneikaAskew repo=stocks state=OPEN
+#          labels=["<label>"] orderBy=UPDATED_AT direction=DESC minimal_output=true
+```
+
+If exactly one issue matches, say so and proceed with it. If none match, say
+the label is empty rather than widening the search on your own.
+
 With an issue number, read the body **and every comment** before anything else.
 Comments carry the correction history: a severity that was challenged, a Codex
 reply that already implemented half of it, a prior status comment naming what
@@ -41,10 +54,24 @@ is still open. Classify:
 
 | Signal | Class | Route |
 |---|---|---|
-| `workflow-failure` + `automated` | GH Actions failure | `/debug-workflow`, or the `workflow-debugger` agent |
+| `workflow-failure` + `automated` | GH Actions failure | `/debug-workflow`, or the `workflow-debugger` agent — **but see the note below first** |
 | `gcp-job-failure` + `automated` | Cloud Run Job failure | `gcp-job-doctor` agent |
 | `audit-2026-08-27` + `severity:*` | Audit finding, possibly months old | Full phases below, Phase 1 is mandatory |
 | `tech-debt`, unlabelled | Ordinary defect or gap | Full phases below |
+
+Classify on the body as well as the labels. An issue filed through
+`.github/ISSUE_TEMPLATE/` records its Priority and Severity as **body text from
+a dropdown, not as a label** — a form selection does not label anything. So
+read the "Priority" and "Severity" sections before concluding an issue is
+unrated, and apply the matching `severity:` label yourself when you take it.
+
+**Workflow-failure route, in a Remote or Cowork session**: `/debug-workflow`
+and the `workflow-debugger` agent gather runs and logs with `gh`, and `gh`
+plus raw `api.github.com` return 403 here (CLAUDE.md, "GitHub API access from
+the sandbox"). When `mcp__github__*` tools are present, do the diagnosis with
+them instead — `actions_list`, `actions_get`, `get_job_logs` with
+`return_content=true` — and treat the agent's checklist as the method rather
+than its commands as runnable. Only fall back to `gh` where MCP is absent.
 
 Then check whether work already exists, because the failure handlers open one
 automatically and a stale draft PR is the usual reason two branches diverge:
@@ -55,13 +82,26 @@ git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
 # and: mcp__github__search_pull_requests q="repo:TeneikaAskew/stocks <issue-number>"
 ```
 
-If a draft PR exists for this issue, work on its branch. Do not open a second.
-
-**Branch before touching any file** (CLAUDE.md Rule 2):
+**Branch before touching any file** (CLAUDE.md Rule 2), and the two cases are
+exclusive. Check out the existing head, or create a branch, never both:
 
 ```bash
 git status && git rev-parse --abbrev-ref HEAD
+git fetch origin
+
+# CASE A — a PR already exists for this issue (including an auto-created
+# fix/workflow-* draft). Work on ITS head. Do not open a second PR.
+git checkout -B "<the PR's headRefName>" "origin/<the PR's headRefName>"
+
+# CASE B — no existing PR. Create one branch, and remember its name; every
+# later phase refers back to it rather than reconstructing a prefix.
 git checkout -b fix/<short-description>     # or feature/ chore/ docs/ test/
+```
+
+Whichever case you took, capture the branch name now:
+
+```bash
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
 ```
 
 ---
@@ -225,10 +265,36 @@ Verify the **thing that was broken**, not a neighbour. On 2026-08-29 a deploy
 was "verified" by running `audit-magnitude-drift`, which passed while the
 re-anchor it shipped alongside recorded nothing at all.
 
+**Run the candidate, not the deployed revision.** `gcloud run jobs execute`
+runs the image the job currently points at, which is the image *without* your
+fix. Executing it straight after editing files proves nothing about the change
+and reads as proof that it works. Pick the right instrument for what you
+changed:
+
+| What changed | How to exercise the candidate |
+|---|---|
+| Signal, indicator, strategy or fire-path code | `python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. Hermetic, in-process, and the production path per Rule 3.6, so it runs YOUR tree. |
+| Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree, same reason. |
+| A Cloud Run Job's own behaviour, sizing or schedule | Build and deploy the candidate first (`gcloud builds submit`, then point the job at that digest), and only then execute. Say which digest you ran. |
+| API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. |
+| A query plan | `EXPLAIN (ANALYZE, BUFFERS)` runs against live data and is independent of any deploy, so it is valid now. |
+
+Data-state facts (is the table current, did the scheduler exist) are read from
+live at any time. What must not happen is presenting an old revision's run as
+evidence for a new revision's fix.
+
 ```bash
-gcloud run jobs execute <job> --region=us-east1 --wait
+# Data state — valid before or after the fix, reads the live system
 ./scripts/db_query_cr.sh -q "<the Phase 1 query, re-run>"
+
+# Candidate behaviour — only after the candidate is what actually runs
+gcloud run jobs execute <job> --region=us-east1 --wait   # deployed image only
 ```
+
+Where the final proof genuinely needs the merged image in production, say so
+explicitly, name it in the issue's "Still open before this closes", and keep
+the issue open until it lands. That is not the forbidden "wait for the next
+session": the replay above still has to be run now against the candidate.
 
 Paste the before and the after. For a performance claim, `EXPLAIN (ANALYZE,
 BUFFERS)` and read `rows=` on the scan node, not just Execution Time: a `LIMIT`
@@ -252,13 +318,32 @@ is wrong, what the tests do and that they were run against unfixed code first,
 and the suite count. Conventional format, imperative mood, subject under 72
 chars, no AI attribution.
 
+Push the branch you are actually on. Do not reconstruct a `fix/` prefix here:
+Phase 0 may have created a `feature/`, `chore/`, `docs/` or `test/` branch, or
+checked out an existing PR's head, and pushing a name that does not exist fails
+with a refspec error.
+
 ```bash
-git push -u origin fix/<short-description>
+git push -u origin HEAD          # or "$BRANCH", captured in Phase 0
 ```
 
 Retry a network failure up to 4 times with backoff (2s, 4s, 8s, 16s). Never
-force-push. Then subscribe to the PR's activity so CI and review events wake
-this session.
+force-push.
+
+**A push is not a PR.** If Phase 0 took CASE B (a branch you created), open the
+pull request now and keep the number it returns; every step below refers to it:
+
+```
+mcp__github__create_pull_request
+  owner=TeneikaAskew repo=stocks base=main
+  head="<the branch you just pushed>"
+  title="<type(scope): description>"
+  body="<the filled template>"
+```
+
+If Phase 0 took CASE A, the PR already exists: the push updated it. Do not open
+a second one. Either way, confirm you have a PR number before Phase 8, then
+subscribe to its activity so CI and review events wake this session.
 
 ---
 

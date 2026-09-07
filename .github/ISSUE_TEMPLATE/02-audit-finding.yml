@@ -75,10 +75,7 @@ body:
     id: already-addressed
     attributes:
       label: Partially addressed already
-      description: >-
-        What has already shipped against this finding, and what that shipment
-        deliberately did not do. #810 shipped observability, not enforcement,
-        and saying so is what stopped it being re-litigated as unfixed.
+      description: What already shipped against this finding, and what that shipment deliberately did not do.
       placeholder: |
         #810 shipped observability, not enforcement: every fire now records
         `concurrent_positions` and `mtm_pnl`, plus a `risk_shadow:` log line naming which
@@ -178,6 +175,12 @@ body:
             The re-verification above was run against the live system while
             filing this issue. It is not the report's original numbers restated,
             not recalled from a previous session, and not read off a doc.
+          required: true
+        - label: >-
+            I will apply the labels after filing. The Severity dropdown writes
+            body text, not a label, so this issue does not carry `severity:*`
+            or its audit label until someone adds them, and `/resolve-issue`
+            classifies partly on those.
           required: true
         - label: >-
             Where I characterised a population, I asked for the distribution

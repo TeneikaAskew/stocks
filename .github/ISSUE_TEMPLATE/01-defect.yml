@@ -36,14 +36,7 @@ body:
     id: evidence
     attributes:
       label: Evidence from the live system
-      description: >-
-        Paste the command AND its output, together. Read the system, not the
-        docs: `./scripts/db_query_cr.sh -q "..."`, `gcloud scheduler jobs
-        describe <job> --location=us-east1`, `gcloud run jobs describe <job>
-        --region=us-east1`, `gcloud beta run jobs executions list --job=<job>`,
-        `gcloud logging read ...`, `EXPLAIN (ANALYZE, BUFFERS)`, or a test run.
-        For a performance claim, read `rows=` on the scan node, not just
-        Execution Time: a LIMIT in an outer query does not bound an inner scan.
+      description: Paste the command AND its output together, from the live system. See the worked example below.
       render: shell
       placeholder: |
         $ ./scripts/db_query_cr.sh -q "SELECT max(analysis_date), current_date - max(analysis_date), count(*) FROM playbook_cards"
@@ -58,13 +51,7 @@ body:
     id: distribution
     attributes:
       label: Distribution, where you are characterising data
-      description: >-
-        An aggregate cannot characterise a population. MIN/MAX on
-        `market_data_intraday` implied one timestamp convention and there were
-        two; the conclusion drove a change that shifted premarket bars four to
-        five hours and had to be reverted. If this issue makes a claim about
-        what a table or a population looks like, paste the grouped counts, not
-        the extremes. Otherwise write "n/a".
+      description: If this issue claims what a table or population looks like, paste grouped counts, not MIN/MAX. Otherwise write "n/a".
       render: shell
       placeholder: |
         $ ./scripts/db_query_cr.sh -q "SELECT extract(hour from ts) h, count(*), min(ts::date), max(ts::date) FROM market_data_intraday WHERE ticker='IWM' GROUP BY 1 ORDER BY 1"
@@ -132,12 +119,7 @@ body:
     id: remediation
     attributes:
       label: Proposed remediation direction
-      description: >-
-        Direction, not a patch. Prefer the order this repo has learned: stop the
-        misinformation at the boundary first (reversible, ships today), fix the
-        writer second, guard the class third. If the correct answer is "do not
-        fix", say so here and put the measurement that supports it under
-        Evidence.
+      description: Direction, not a patch. Boundary first, then writer, then class guard. "Do not fix" is a valid answer if the evidence supports it.
       placeholder: |
         1. Disable the render behind an explicit max-age contract that fails loud.
         2. Then diagnose the writer; the June stop is worth checking against deploy history.

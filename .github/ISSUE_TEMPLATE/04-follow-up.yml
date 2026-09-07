@@ -32,11 +32,7 @@ body:
     id: why-deferred
     attributes:
       label: Why it was not done there
-      description: >-
-        Say it plainly. "Out of scope" is a reason; so is "the fix is
-        cross-cutting and needs a capacity design under Rule 0"; so is "these
-        were left out because they sit outside the frontend's main fan-out".
-        A deferral without a stated reason reads as an oversight.
+      description: Say it plainly. A deferral without a stated reason reads as an oversight.
       placeholder: |
         The fix is cross-cutting and needs a capacity design under CLAUDE.md Rule 0: the obvious
         repair puts a Cloud SQL round-trip in the per-bar fire path, 3 tickers x 390 RTH bars per
@@ -48,11 +44,7 @@ body:
     id: evidence
     attributes:
       label: Evidence from the live system
-      description: >-
-        Show the remainder is real and still open, now. For a move, this is the
-        "still reproduces in this repo" check with the updated paths. For a
-        coverage gap, run the check and paste what it reports. Command and
-        output together.
+      description: Show the remainder is real and still open, now. Command and output together.
       render: shell
       placeholder: |
         $ python scripts/export_openapi.py --check && grep -c '"200"' platform/api/openapi.json
@@ -81,11 +73,7 @@ body:
     id: why-it-matters
     attributes:
       label: Why it matters
-      description: >-
-        The concrete consequence, ideally one that has already happened. "An
-        operation without a response_model emits an empty schema, so a renamed
-        field passes CI in both repos and breaks the other at runtime" is worth
-        more than "improves type safety".
+      description: The concrete consequence, ideally one that has already happened rather than one you expect.
       placeholder: |
         Widening is not caught: if a field goes from required `string` to nullable, the mock and
         the type both stay valid while production can now return a null the app does not handle.

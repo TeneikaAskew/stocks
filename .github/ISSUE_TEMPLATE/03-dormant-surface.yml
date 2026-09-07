@@ -87,10 +87,7 @@ body:
     id: forensics
     attributes:
       label: How it got here
-      description: >-
-        Git forensics with dates and commits. A surface dropped as collateral of
-        an unrelated rewrite reads differently from one deliberately retired,
-        and the commit message usually does not mention it. Use the pickaxe.
+      description: Git forensics with dates and commits. Use the pickaxe; a surface dropped by an unrelated rewrite reads differently from one retired on purpose.
       render: shell
       placeholder: |
         $ git log --oneline -S "DataPipelineStatus" -- src platform/src
@@ -104,11 +101,7 @@ body:
     id: options
     attributes:
       label: Options, with a recommendation
-      description: >-
-        Give the reader a decision to make, and say which one you would take and
-        why. If the surface is user-facing and stale, disabling the render is
-        one line and stops the misinformation today, before the writer is
-        diagnosed.
+      description: Give the reader a decision and say which one you would take. If the surface is user-facing and stale, disabling the render ships today.
       placeholder: |
         - **Retire** — nobody noticed its absence for three months and the briefing-first
           dashboard has no slot for an ops widget. Recommended unless the next option is
@@ -134,11 +127,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: >-
-        Retirement and restoration have different bars. Retiring means proving
-        no caller and recording the retention decision. Restoring means a
-        writer, a deploy path, a schedule, a freshness SLO, and a consumer-age
-        guard, not just a re-run.
+      description: Retiring and restoring have different bars. Restoring needs a writer, a schedule, a freshness SLO and a consumer guard, not just a re-run.
       placeholder: |
         Retire: `grep -r "<name>" lib/ gcp/ platform/ scripts/` returns nothing; the schedule is
         deleted; the retention/export decision is recorded; the cost delta is measured.
