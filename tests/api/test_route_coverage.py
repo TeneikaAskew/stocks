@@ -220,7 +220,12 @@ REQUESTS: list[Req] = [
     Req("GET", f"/api/options/{T}/nodes", 503),
     Req("GET", f"/api/options/{T}/{D}/nodes", 503),
     Req("GET", f"/api/options/{T}/grid/timeseries", 503),
-    Req("GET", f"/api/options/dates/{T}", 404, note="#992's endpoint"),
+    # 503, not 404. #992 replaced the swallowing query helper with the strict
+    # one precisely so a database outage stops being reported as "no data
+    # ingested, run the fetcher" -- so with no reachable database this is now
+    # an explicit unavailable state. The 404 remains the answer when the
+    # database ANSWERS and the ticker genuinely has no snapshots.
+    Req("GET", f"/api/options/dates/{T}", 503, note="#992's endpoint"),
     Req("GET", f"/api/options/{T}/{D}", 404),
     Req("GET", f"/api/options/live/{T}/{D}", 503, note="no AV key"),
     Req("POST", "/api/options/greeks", 422, json={"options": [], "spot": 200.0},
@@ -365,7 +370,11 @@ REQUESTS: list[Req] = [
     Req("PUT", "/api/me/profile", 503, json={"display_name": "rc"}),
 
     # ── market ──────────────────────────────────────────────────────────────
-    Req("GET", f"/api/market/dates/{T}", 200),
+    # 503 for the same reason as the options twin above: #991 made a
+    # configured-but-broken Cloud SQL fail loud rather than fall through to
+    # the GCS staging parquets with a 200, which had degraded the answer with
+    # nothing visible to the user or the operator.
+    Req("GET", f"/api/market/dates/{T}", 503),
     Req("GET", f"/api/market/data/{T}/{D}", 404),
     Req("GET", f"/api/market/reference/{T}/{D}", 404),
     Req("GET", f"/api/market/coverage?symbols={T}", 503),
@@ -925,9 +934,29 @@ def test_admin_answers_503_when_firebase_is_unavailable(client):
 
 
 def test_options_dates_is_not_a_500(client):
-    """The other endpoint from this week's defects (#992)."""
+    """The other endpoint from this week's defects (#992).
+
+    This test is why the route table exists. Merging main brought in #992's
+    switch to the strict query helper, and strict WITHOUT a handler is not an
+    improvement over swallowing -- it just moves the wrong answer, from a 404
+    blaming the operator to a bare 500 carrying a driver traceback. Neither is
+    the explicit unavailable state Rule 3.7 asks for, and 113 other tests
+    passed over it.
+
+    503, and the detail must not leak the driver message: this endpoint is
+    reachable unauthenticated and a SQLAlchemy error renders the SQL, its
+    bound parameters and connection metadata.
+    """
     r = client.get(f"/api/options/dates/{T}")
-    assert r.status_code == 404, r.text[:300]
+    assert r.status_code == 503, r.text[:300]
+    # EXACT, not a keyword scan. A first version listed driver strings to
+    # look for and passed against a detail that interpolated the exception,
+    # because this environment's error text happened to contain none of them
+    # — a leak test that only catches the leaks you guessed. Pinning the whole
+    # string catches any interpolation, whatever the driver says that day.
+    assert r.json()["detail"] == (
+        f"Could not read option snapshot dates for {T}: "
+        f"the database is unavailable."), r.json()["detail"]
 
 
 @pytest.mark.parametrize("flag,method,path,body", [
