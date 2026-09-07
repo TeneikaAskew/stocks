@@ -31,7 +31,7 @@ Six findings have **documented production incidents** linked to them. They form 
 | C-02 | `lib/data_loader.py:80-86` same swallow, layered on top of C-01 | same | #339 (added traceback logging — kept the empty-DF return) |
 | C-03 | `lib/options_greeks.py:106-114` hardcoded `_DEFAULT_RISK_FREE` on FRED fail | Ongoing — no incident YET; Greeks shipped on stale `r` is hypothetical-but-imminent | none |
 | C-04 | `lib/signals.py:196-212` swallow `_latest_overrides()` + malformed JSON | 2026-05-09 — 95/98 IWM PUTs fired `above_vwap` despite live-disabled | #358, #372, #329 |
-| C-05 | 6× `continue-on-error: true` in fetcher workflows | Multiple silent-success workflow runs shipped no rows | none — open |
+| C-05 | 6× `continue-on-error: true` in fetcher workflows | Multiple silent-success workflow runs shipped no rows | **RESOLVED 2026-09-07** — zero live instances (§7.4) |
 | C-06 | `gcp/signal_monitor.py:418-439` `except: self.level_maps[ticker] = None` | Same 5/4–5/8 outage at the downstream call site | #339 |
 
 The remaining ~115 findings have no incident on record, but the same shape — silent error swallowing or `or 0` coercion on financial fields — means the next incident is a question of which fetcher loses connectivity first.
@@ -467,7 +467,32 @@ return DataResult.ok(df)
 
 Caller branches on `result.status`, not on `df.empty`.
 
-### 7.4 `continue-on-error: true` in fetcher workflows (6 sites, MIXED)
+### 7.4 `continue-on-error: true` in fetcher workflows (0 sites live — RESOLVED)
+
+**Re-checked 2026-09-07 while scoping the scanner (Codex, PR #994).** All six
+are gone, and not by deleting the lines: the three workflows that held them no
+longer exist. The AlphaVantage fetchers moved to Cloud Run Jobs on Cloud
+Scheduler, where a non-zero exit is a failed execution with no equivalent of
+`continue-on-error` to silence it.
+
+```
+$ rg -n 'continue-on-error' .github/workflows/
+(no matches)
+
+$ ls .github/workflows/*.yml
+backtest-pipeline.yml   deploy-staging.yml   gh-api.yml
+handle-workflow-failure.yml   refresh-architecture-docs.yml
+```
+
+`analyze-market-data.yml`, `fetch-alphavantage-intraday-monthly.yml` and
+`validate-market-data.yml` — the three files every C-05 location named — are
+all absent. The three `continue-on-error` mentions left in the repo are in
+`CLAUDE.md`, describing the pattern rather than using it.
+
+The original finding is kept below as written, because a resolved finding
+whose text is deleted stops being checkable.
+
+#### Original finding (6 sites, MIXED)
 
 Single recipe: delete the line. The existing `handle-failure` reusable workflow opens the issue + PR. No replacement needed.
 
@@ -689,9 +714,32 @@ audit that named them.
 
 ### 12.3 The inventory is now a script
 
-`scripts/audit_silent_fallbacks.py` replaces the hand-maintained list. It walks
-the AST for exception handlers that return a neutral value without re-raising,
-and reports two signals that predict severity:
+`scripts/audit_silent_fallbacks.py` replaces the hand-maintained list **for one
+of the shapes this audit covers**, and it is worth being exact about which,
+because the numbers below are otherwise read as a cross-layer total that they
+are not (Codex, PR #994).
+
+**In scope:** Python (`*.py`) exception handlers that return a neutral value
+without re-raising. Reproducible, diffable, and what every figure in this
+section counts.
+
+**Not in scope, and still hand-maintained:**
+
+| Shape | Why not here | Reproduce with |
+|---|---|---|
+| `or 0` / `?? 0` coercions (e.g. `lib/agents/trade_planner.py:840-841`) | no `try` to anchor on; needs a type-aware pass to tell a financial field from a retry budget, and a regex over `\| 0` reports mostly the latter | `rg -n '\bor 0\b|\bor 0\.0\b' --glob '*.py'` |
+| `.fillna(0)` / `.replace(nan, 0)` | same: whether it is a fallback depends on the column | `rg -n 'fillna\(0|fillna\(value=0' --glob '*.py'` |
+| `continue-on-error: true` in workflows | YAML, not Python; a different tool. **Zero live instances** — C-05's six were retired with their workflows (see §7.4) | `rg -n 'continue-on-error' .github/workflows/` |
+| Frontend `?? 0` / `catch { return [] }` | a different repo (TeneikaAskew/solyra), governed by its own CLAUDE.md Rule 4 | solyra's own review |
+
+Extending the scanner to those is real work with a real false-positive budget,
+and shipping it half-done would put a number on a category it cannot actually
+count — the failure mode this audit exists to name. Until then the table above
+is the reproducible record for them, and the scanner's totals are scoped
+in-place rather than presented as the whole picture.
+
+It walks the AST for exception handlers that return a neutral value without
+re-raising, and reports two signals that predict severity:
 
 ```bash
 python scripts/audit_silent_fallbacks.py           # full inventory
