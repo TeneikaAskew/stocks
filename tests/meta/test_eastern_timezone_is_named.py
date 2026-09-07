@@ -292,8 +292,12 @@ def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
 
 # A new lexical scope. `ast.walk` does not know about these, which is how the
 # file-wide binding map came to join names that Python never joins.
+# A comprehension has its own scope in Python 3 -- its target is invisible
+# outside it -- so it is descended into rather than folded into the enclosing
+# function, which would have shadowed the name for the whole function body.
 _SCOPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
-           ast.Lambda)
+           ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+           ast.GeneratorExp)
 
 
 def _scope_nodes(scope: ast.AST):
@@ -308,6 +312,82 @@ def _scope_nodes(scope: ast.AST):
         yield node
         if not isinstance(node, _SCOPES):
             stack.extend(ast.iter_child_nodes(node))
+
+
+def _target_names(node: ast.AST) -> set[str]:
+    """Every name an assignment target BINDS, through tuples and stars.
+
+    Filtered on `ast.Store` context rather than on node type, because a
+    target subtree contains loads too: in `cfg[tz] = 1` both `cfg` and `tz`
+    are `Name` nodes and NEITHER is bound -- the subscript writes into an
+    existing object. Collecting every Name in the subtree shadowed `tz` and
+    silenced the guard for the rest of the scope, which is the failure mode
+    opposite to the one this shadowing logic exists to fix, and just as bad.
+    Python already marks the distinction; this reads it rather than guessing.
+    """
+    return {sub.id for sub in ast.walk(node)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store)}
+
+
+def _bound_names(scope: ast.AST) -> set[str]:
+    """Every name this scope binds, by ANY construct, nested scopes excluded.
+
+    This is the shadowing question, and it is separate from "can I resolve
+    what it was bound to". `_collect_bindings` only reads `NAME = "literal"`,
+    so every OTHER way of rebinding a name left the enclosing scope's binding
+    in place and reported it -- `for tz in zones`, `[... for tz in ...]`,
+    `name, tz = pair`, `with f as tz`, `except E as tz`, `(tz := f())`,
+    `import zoneinfo as tz`. Seven false CI failures of one shape.
+
+    Three of that shape had already been found individually (a file-wide map,
+    a parameter, a class body), each fixed by naming the construct. Naming
+    constructs one at a time is the losing move this file argues against
+    elsewhere: the answer is to collect what Python binds and treat anything
+    unresolvable as shadowing, which fails toward silence rather than toward
+    a false accusation.
+
+    `global`/`nonlocal` need no special case, and an earlier version that gave
+    them one was wrong in both directions. A bare `global TZ` binds nothing,
+    so it never enters this set and the outer binding correctly survives. A
+    `global TZ` WITH an assignment does rebind the name -- to whatever was
+    assigned, which is usually not a literal this file can resolve -- so it
+    must shadow, and subtracting the declaration would have kept a stale
+    outer binding and reported it. Collecting bindings rather than
+    declarations gets both right with no branch.
+    """
+    out: set[str] = set()
+    for node in _scope_nodes(scope):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                out |= _target_names(tgt)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            out |= _target_names(node.target)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            out |= _target_names(node.target)
+        elif isinstance(node, ast.withitem):
+            if node.optional_vars is not None:
+                out |= _target_names(node.optional_vars)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                out.add(node.name)
+        elif isinstance(node, ast.NamedExpr):
+            out |= _target_names(node.target)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                out.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+            out.add(node.name)          # binds in THIS scope, body excluded
+        elif isinstance(node, ast.Delete):
+            for tgt in node.targets:
+                out |= _target_names(tgt)
+        elif isinstance(node, ast.MatchAs) and node.name:
+            out.add(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name:
+            out.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            out.add(node.rest)
+    return out
 
 
 def _import_aliases(tree: ast.AST) -> dict[str, str]:
@@ -413,7 +493,11 @@ def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]
         # A parameter with a constant string DEFAULT is not merely dropped:
         # `def load(tz="EST")` really does resolve to `EST` when the caller
         # passes nothing, so the default is bound instead.
+        # An inherited binding survives only if this scope does not rebind the
+        # name AT ALL -- by any construct, not just the ones resolvable to a
+        # literal. `_collect_bindings` then puts back the subset that is.
         shadowed, defaults = _parameter_bindings(scope)
+        shadowed |= _bound_names(scope)
         bindings = {k: v for k, v in inherited.items() if k not in shadowed}
         bindings.update(defaults)
         bindings.update(_collect_bindings(_scope_nodes(scope), {}))
@@ -1218,3 +1302,123 @@ def test_an_aliased_import_still_resolves_to_the_constructor():
     # The canonical value through an alias is still not a finding.
     assert _hits('from zoneinfo import ZoneInfo as ZI\n'
                  'tz = ZI("America/New_York")\n') == ([], [])
+
+
+@pytest.mark.parametrize("label,source", [
+    ("for-loop target",
+     'tz = "EST"\n\ndef load(zones):\n    for tz in zones:\n        ZoneInfo(tz)\n'),
+    ("comprehension target",
+     'tz = "EST"\n\ndef load(zones):\n    return [ZoneInfo(tz) for tz in zones]\n'),
+    ("generator target",
+     'tz = "EST"\n\ndef load(zones):\n    return (ZoneInfo(tz) for tz in zones)\n'),
+    ("tuple unpacking",
+     'tz = "EST"\n\ndef load(pair):\n    name, tz = pair\n    return ZoneInfo(tz)\n'),
+    ("starred unpacking",
+     'tz = "EST"\n\ndef load(row):\n    *rest, tz = row\n    return ZoneInfo(tz)\n'),
+    ("with .. as",
+     'tz = "EST"\n\ndef load(f):\n    with f as tz:\n        return ZoneInfo(tz)\n'),
+    ("except .. as",
+     'tz = "EST"\n\ndef load(f):\n    try:\n        pass\n    except Exception as tz:\n'
+     '        return ZoneInfo(tz)\n'),
+    ("walrus",
+     'tz = "EST"\n\ndef load(f):\n    if (tz := f()):\n        return ZoneInfo(tz)\n'),
+    ("import as",
+     'tz = "EST"\n\ndef load():\n    import zoneinfo as tz\n    return ZoneInfo(tz)\n'),
+    ("augmented assignment",
+     'tz = "EST"\n\ndef load(s):\n    tz = s\n    tz += "!"\n    return ZoneInfo(tz)\n'),
+    ("nested def name",
+     'tz = "EST"\n\ndef load():\n    def tz():\n        return "America/New_York"\n'
+     '    return ZoneInfo(tz())\n'),
+])
+def test_any_rebinding_shadows_an_enclosing_binding(label, source):
+    """A name this scope rebinds by ANY construct is not the outer one.
+
+    `_collect_bindings` only reads `NAME = "literal"`, so every other way of
+    rebinding a name left the enclosing binding in place and reported it.
+    Three instances of this shape had already been found and fixed one at a
+    time — a file-wide map, a parameter, a class body — and eleven more were
+    sitting behind them.
+
+    Naming constructs one at a time is the losing move this file argues
+    against elsewhere, so `_bound_names` collects what Python binds and
+    anything unresolvable shadows: the guard falls silent rather than
+    accusing valid code (Codex, PR #993, and pre-empting the rest of the
+    family).
+    """
+    assert _hits(source) == ([], []), label
+
+
+def test_shadowing_does_not_swallow_the_bindings_that_matter():
+    """The other direction: over-shadowing would silence the whole guard.
+
+    Dropping an inherited binding whenever the scope mentions the name would
+    be trivially free of false positives and useless, so each resolvable
+    shape is pinned here alongside the parametrised cases above.
+    """
+    # A module constant read inside a function.
+    legacy, _ = _hits('EASTERN = "US/Eastern"\n\ndef load():\n'
+                      '    return ZoneInfo(EASTERN)\n')
+    assert any("EASTERN" in h for h in legacy), legacy
+
+    # An ambiguous value, which is ONLY ever reported through the binding.
+    legacy, _ = _hits('TZ = "EST"\n\ndef load():\n    return ZoneInfo(TZ)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    # `global` declares that the assignment writes the OUTER name, so the
+    # outer binding still describes what the call reads — it must not shadow.
+    legacy, _ = _hits('TZ = "EST"\n\ndef setup():\n    global TZ\n    TZ = TZ\n'
+                      '\ndef load():\n    return ZoneInfo(TZ)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    # A subscript target binds no name. Both `cfg` and `tz` are `Name` nodes
+    # inside `cfg[tz] = 1` and neither is bound, so collecting every Name in
+    # the target subtree shadowed `tz` and silenced the guard for the rest of
+    # the scope -- the opposite failure to the one shadowing exists to fix.
+    # The binding must be INHERITED for this to test anything: a literal
+    # assigned in the same scope is re-added by `_collect_bindings` whatever
+    # the shadowing set says, so a local `tz = "EST"` would pass either way.
+    legacy, _ = _hits('tz = "EST"\n\ndef load(cfg):\n    cfg[tz] = 1\n'
+                      '    return ZoneInfo(tz)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    # A bare `global` binds nothing, so the outer binding survives.
+    legacy, _ = _hits('TZ = "EST"\n\ndef load():\n    global TZ\n'
+                      '    return ZoneInfo(TZ)\n')
+    assert any("EST" in h for h in legacy), legacy
+
+
+def test_a_global_assignment_still_shadows():
+    """`global TZ` WITH an assignment rebinds the name.
+
+    An earlier version subtracted declared names from the bound set, which
+    kept the module's stale literal and reported it against a value the
+    function had just replaced. Collecting bindings rather than declarations
+    gets both directions right with no branch.
+    """
+    assert _hits('TZ = "EST"\n\ndef load(src):\n    global TZ\n'
+                 '    TZ = src.read()\n    return ZoneInfo(TZ)\n') == ([], [])
+
+
+def test_a_comprehension_shadows_only_inside_itself():
+    """A comprehension is its own scope; folding it into the enclosing
+    function would shadow the name for the whole body.
+
+    Here the same name means two different things: the comprehension's own
+    target, and the function local read after it. Only the second is a
+    finding, and a checker that treats the comprehension as part of the
+    function misses it entirely.
+    """
+    legacy, _ = _hits(
+        'tz = "EST"\n'
+        '\n'
+        'def load(zones):\n'
+        '    seen = [str(tz) for tz in zones]   # the comprehension\'s own tz\n'
+        '    return ZoneInfo(tz)                # the module\'s tz\n'
+    )
+    assert any("EST" in h for h in legacy), (
+        "the read after the comprehension was shadowed by the comprehension's "
+        f"own target: {legacy}")
+
+    # And the read INSIDE the comprehension is correctly the loop variable.
+    assert _hits('tz = "EST"\n\ndef load(zones):\n'
+                 '    return [ZoneInfo(tz) for tz in zones]\n') == ([], [])
