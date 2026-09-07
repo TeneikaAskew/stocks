@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,11 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / ".github/scripts/gemini_doc_step.sh"
 WORKFLOW = REPO / ".github/workflows/refresh-architecture-docs.yml"
+
+sys.path.insert(0, str(REPO))
+from scripts.maintenance import check_generated_docs as gate  # noqa: E402
+
+WRITABLE = list(gate.DOCS)
 
 BODY_TIMEOUT = (
     "Error when talking to Gemini API Full report available at: /tmp/x.json "
@@ -55,6 +61,14 @@ def _run(tmp_path: Path, stub: str, *, doc="docs/product/infrastructure/05-c-DAT
     (work / f".github/prompts/{prompt}.md").write_text("do the thing\n")
     (work / doc).parent.mkdir(parents=True, exist_ok=True)
     (work / doc).write_text(on_disk)
+    # Every document a prompt may write, as the freeze step records them.
+    others = [d for d in WRITABLE if d != doc]
+    for d in others:
+        (work / d).parent.mkdir(parents=True, exist_ok=True)
+        (work / d).write_text(f"OTHER {d}\n")
+    runner = tmp_path / "runner"
+    (runner / "frozen").mkdir(parents=True, exist_ok=True)
+    (runner / "frozen/writable_docs.txt").write_text("\n".join(WRITABLE) + "\n")
     if with_previous:
         # What "Save previous doc versions" wrote -- the committed PRE-render
         # copy. It is deliberately allowed to differ from what is on disk.
@@ -153,13 +167,14 @@ def test_a_missing_document_fails_before_calling_the_model(tmp_path):
     (work / ".github/scripts/gemini_doc_step.sh").write_bytes(SCRIPT.read_bytes())
     (work / ".github/scripts/gemini_doc_step.sh").chmod(0o755)
     (work / ".github/prompts/data-dependencies.md").write_text("do the thing\n")
+    (tmp_path / "runner/frozen").mkdir(parents=True)
+    (tmp_path / "runner/frozen/writable_docs.txt").write_text("\n".join(WRITABLE) + "\n")
     bin_dir = tmp_path / "bin"
     _stub_gemini(bin_dir, 'echo x >> "$ATTEMPTS_FILE"\necho ok\n')
     env = dict(os.environ)
     env.update(PATH=f"{bin_dir}:{env['PATH']}", RUNNER_TEMP=str(tmp_path / "runner"),
                GEMINI_MODEL="stub", ATTEMPTS_FILE=str(tmp_path / "attempts"),
                GEMINI_RETRY_SLEEP="0")
-    (tmp_path / "runner").mkdir(exist_ok=True)
     proc = subprocess.run(
         ["bash", ".github/scripts/gemini_doc_step.sh", "data-dependencies",
          "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md"],
@@ -203,18 +218,71 @@ def test_the_retry_restores_the_rendered_document_not_the_committed_one(tmp_path
     assert "STALE ROWS" not in seen
 
 
+def test_a_failed_attempt_cannot_leave_an_edit_in_another_generated_doc(tmp_path):
+    """Codex P2 on this PR, reproduced.
+
+    Every invocation holds write_file/replace over the whole checkout, and the
+    post-model scan allowlists the four generated documents collectively. So a
+    failed data-dependencies attempt can edit 05-a-ARCHITECTURE.md, retry
+    cleanly, and leave that edit eligible for publication with nothing having
+    looked at it. The retry restores the whole writable set, not just its own
+    document.
+    """
+    victim = gate.ARCH
+    stub = (
+        'echo x >> "$ATTEMPTS_FILE"\n'
+        'N=$(wc -w < "$ATTEMPTS_FILE")\n'
+        'if [ "$N" -eq 1 ]; then\n'
+        f'  echo SMUGGLED > "{victim}"\n'
+        f'  echo "{BODY_TIMEOUT}"\n'
+        '  exit 1\n'
+        'fi\n'
+        'echo done\n'
+    )
+    proc, attempts, work = _run(tmp_path, stub)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert attempts == 2
+    left = (work / victim).read_text()
+    assert "SMUGGLED" not in left, f"a failed attempt's edit to {victim} survived: {left!r}"
+    assert left == f"OTHER {victim}\n"
+
+
+def test_a_transcript_that_was_not_captured_fails_the_step(tmp_path):
+    """Codex P2 on this PR, reproduced.
+
+    `gate_transcripts()` reads a missing log as "no findings", so a `tee` that
+    failed would silently disable the truncation and unreadable-input checks
+    for this document while the run went on to publish. Taking only
+    PIPESTATUS[0] made that invisible. Modelled by making the transcript path
+    unwritable, which is what an I/O error in RUNNER_TEMP looks like.
+    """
+    stub = 'echo x >> "$ATTEMPTS_FILE"\necho "all good"\n'
+    runner = tmp_path / "runner"
+    (runner / "transcripts").mkdir(parents=True)
+    # A directory where the log file must go: tee cannot write it.
+    (runner / "transcripts/data-dependencies.log").mkdir()
+    proc, attempts, _ = _run(tmp_path, stub)
+    assert proc.returncode != 0, proc.stdout
+    assert "transcript for data-dependencies was not captured" in proc.stdout
+    assert attempts == 1, "it should fail on the capture, not retry"
+
+
 def test_every_gemini_step_goes_through_the_script():
     """A step added later that calls `gemini` directly would silently opt out
     of the retry, which is how this regression would come back."""
     doc = yaml.safe_load(WORKFLOW.read_text())
     steps = doc["jobs"]["refresh"]["steps"]
     runs = [s.get("run") or "" for s in steps]
-    called = [r for r in runs if "gemini_doc_step.sh" in r]
-    assert len(called) == 4, f"expected 4 prompt steps, found {len(called)}"
+    invoked = [r for r in runs if '"$RUNNER_TEMP/frozen/gemini_doc_step.sh" ' in r]
+    assert len(invoked) == 4, f"expected 4 prompt steps, found {len(invoked)}"
     for r in runs:
         code = "\n".join(ln.split("#", 1)[0] for ln in r.splitlines())
         assert "gemini --model" not in code, \
             "a step invokes the Gemini CLI directly, bypassing the retry"
+        # The checkout copy is model-writable for the whole run; only the
+        # freeze step's `cp` may name it, never an invocation. (Codex, #1032.)
+        assert ".github/scripts/gemini_doc_step.sh " not in code or code.strip().startswith("set -e"), \
+            "a step runs the script from the model-writable checkout"
     # The script is executable in git, or the runner cannot invoke it.
     mode = subprocess.run(["git", "ls-files", "-s", ".github/scripts/gemini_doc_step.sh"],
                           cwd=REPO, capture_output=True, text=True).stdout.split()

@@ -24,9 +24,14 @@
 # runs 15 and 16 must still go red, and a retry that swallowed those would be
 # the silent fallback the rule forbids.
 #
-# Each attempt starts from the same baseline: the document exactly as this
-# step found it. A failed attempt can leave it half-edited, and a retry that
-# compounded that would be worse than the timeout.
+# Each attempt starts from the same baseline: every document a prompt may
+# write, exactly as this step found it. A failed attempt can leave one
+# half-edited, and a retry that compounded that would be worse than the
+# timeout. It is the whole set and not just this step's own document because
+# every invocation holds write_file/replace over the checkout and the
+# post-model scan allowlists all four collectively -- so a failed
+# data-dependencies attempt could alter 05-a-ARCHITECTURE.md, retry cleanly,
+# and leave that edit eligible for publication. (Codex, PR #1032.)
 #
 # The baseline is snapshotted HERE, not taken from refresh-inputs/previous/.
 # That directory is written by "Save previous doc versions", which runs BEFORE
@@ -46,7 +51,11 @@ PROMPT="${1:?prompt basename required}"
 DOC="${2:?document path required}"
 PROMPT_FILE=".github/prompts/${PROMPT}.md"
 LOG="${RUNNER_TEMP:?RUNNER_TEMP required}/transcripts/${PROMPT}.log"
-BASELINE="${RUNNER_TEMP:?RUNNER_TEMP required}/gemini-baseline/${PROMPT}"
+SNAP_DIR="${RUNNER_TEMP:?RUNNER_TEMP required}/gemini-baseline/${PROMPT}"
+# The documents a prompt may write, derived from check_generated_docs.DOCS and
+# captured by the freeze step BEFORE the model ran -- reading it from the
+# checkout here would re-open the hole the frozen script closes.
+WRITABLE_LIST="${GEMINI_WRITABLE_DOCS_FILE:-${RUNNER_TEMP}/frozen/writable_docs.txt}"
 MAX_ATTEMPTS="${GEMINI_MAX_ATTEMPTS:-2}"
 # Seconds of backoff before a retry. Only the tests set this (to 0); the
 # workflow uses the default, because a transport stall that just timed out is
@@ -59,31 +68,58 @@ RETRY_SLEEP="${GEMINI_RETRY_SLEEP:-20}"
 TRANSIENT='UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|TypeError: terminated|ECONNRESET|socket hang up|Error when talking to Gemini API'
 
 test -f "$PROMPT_FILE" || { echo "::error::no prompt at ${PROMPT_FILE}"; exit 1; }
-mkdir -p "$(dirname "$LOG")" "$(dirname "$BASELINE")"
+test -s "$WRITABLE_LIST" || {
+  echo "::error::no writable-document list at ${WRITABLE_LIST}; the freeze step must record it before any prompt runs"
+  exit 1; }
+mkdir -p "$(dirname "$LOG")" "$SNAP_DIR"
 
-# The post-render, pre-model state. Captured before attempt 1 so a retry can
-# put it back byte-for-byte.
-if [ -f "$DOC" ]; then
-  cp "$DOC" "$BASELINE"
-else
-  echo "::error::${DOC} does not exist; the render step should have left it in place"
-  exit 1
-fi
+# The post-render, pre-model state of every writable document, captured before
+# attempt 1 so a retry can put all of them back byte-for-byte.
+WRITABLE=()
+while IFS= read -r D; do [ -n "$D" ] && WRITABLE+=("$D"); done < "$WRITABLE_LIST"
+case " ${WRITABLE[*]} " in
+  *" ${DOC} "*) ;;
+  *) echo "::error::${DOC} is not in ${WRITABLE_LIST}; a prompt writing a document the gates do not score is a bug, not a retryable failure"; exit 1;;
+esac
+for D in "${WRITABLE[@]}"; do
+  if [ ! -f "$D" ]; then
+    echo "::error::${D} does not exist; the render step should have left every writable document in place"
+    exit 1
+  fi
+  cp "$D" "${SNAP_DIR}/$(printf '%s' "$D" | tr '/' '_')"
+done
 
 for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
   if [ "$ATTEMPT" -gt 1 ]; then
-    if [ ! -f "$BASELINE" ]; then
-      echo "::error::no baseline snapshot at ${BASELINE}; refusing to retry ${PROMPT} against a workspace the failed attempt may have half-edited"
-      exit 1
-    fi
-    cp "$BASELINE" "$DOC"
-    echo "restored ${DOC} from the pre-attempt snapshot so attempt ${ATTEMPT} starts from the same baseline as attempt 1"
+    for D in "${WRITABLE[@]}"; do
+      SNAP="${SNAP_DIR}/$(printf '%s' "$D" | tr '/' '_')"
+      if [ ! -f "$SNAP" ]; then
+        echo "::error::no baseline snapshot for ${D}; refusing to retry ${PROMPT} against a workspace the failed attempt may have half-edited"
+        exit 1
+      fi
+      cmp -s "$SNAP" "$D" || echo "  ${D} was changed by the failed attempt; restoring"
+      cp "$SNAP" "$D"
+    done
+    echo "restored ${#WRITABLE[@]} writable document(s) from the pre-attempt snapshot so attempt ${ATTEMPT} starts from the same baseline as attempt 1"
     sleep $(( (ATTEMPT - 1) * RETRY_SLEEP ))
   fi
 
   echo "gemini ${PROMPT} -> ${DOC} (attempt ${ATTEMPT}/${MAX_ATTEMPTS})"
   gemini --model "${GEMINI_MODEL}" --prompt "$(cat "$PROMPT_FILE")" 2>&1 | tee "$LOG"
-  RC=${PIPESTATUS[0]}
+  # Both statuses in one read: any command after the pipeline -- an assignment
+  # included -- resets PIPESTATUS, so taking them one at a time leaves
+  # PIPESTATUS[1] unbound under `set -u`.
+  PIPE=("${PIPESTATUS[@]}")
+  RC=${PIPE[0]}
+  TEE_RC=${PIPE[1]}
+  # gate_transcripts() reads a missing log as "no findings", so a tee that
+  # failed would silently disable the truncation and unreadable-input checks
+  # for this document while the run went on to publish. Taking only
+  # PIPESTATUS[0] made that invisible. (Codex, PR #1032.)
+  if [ "$TEE_RC" -ne 0 ] || [ ! -s "$LOG" ]; then
+    echo "::error::the transcript for ${PROMPT} was not captured (tee exit ${TEE_RC}, log $( [ -s "$LOG" ] && echo non-empty || echo empty )). gate_transcripts() reads an absent log as clean, so this run cannot be verified."
+    exit 1
+  fi
   if [ "$RC" -eq 0 ]; then
     exit 0
   fi
