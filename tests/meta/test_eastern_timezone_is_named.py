@@ -33,6 +33,7 @@ import functools
 import pathlib
 import re
 from datetime import datetime, timedelta
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -128,9 +129,21 @@ def _source_files() -> list[pathlib.Path]:
 # problem as the rest -- so allowing them let an alternate legacy spelling
 # through a guard whose whole purpose is to forbid legacy spellings
 # (Codex, PR #993).
+# Derived rather than recalled: every entry in IANA's `backward` file whose
+# TARGET observes US/Canada Eastern -- America/New_York, America/Detroit,
+# America/Toronto, America/Iqaluit, America/Indiana/Indianapolis and
+# America/Kentucky/Louisville. That rule is what adds `America/Louisville`,
+# `America/Nipigon`, `America/Thunder_Bay` and `America/Pangnirtung`, which a
+# list of the spellings anyone had happened to meet did not (Codex, PR #993).
+# The canonical targets are deliberately absent: `America/Toronto` is the
+# right name for Toronto, and banning it would be a different rule.
+# `America/Atikokan`/`America/Coral_Harbour` are absent too -- they link to
+# America/Panama, which is EST year-round and is not Eastern.
 UNAMBIGUOUS_LEGACY = ("US/Eastern", "EST5EDT", "America/Montreal",
                       "Canada/Eastern", "US/East-Indiana", "US/Michigan",
-                      "America/Fort_Wayne", "America/Indianapolis")
+                      "America/Fort_Wayne", "America/Indianapolis",
+                      "America/Louisville", "America/Nipigon",
+                      "America/Thunder_Bay", "America/Pangnirtung")
 AMBIGUOUS_LEGACY = ("EST", "EDT")
 ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 
@@ -153,7 +166,12 @@ _TZ_CONTEXT = (
     + _B + r"pytz\.timezone\s*\(|" + _B + r"tz_convert\s*\(|"
     + _B + r"tz_localize\s*\(|" + _B + r"AT TIME ZONE\s*|"
     + _B + r"Timestamp\.now\s*\(|" + _B + r"astimezone\s*\(|"
-    + _B + r"timezone\s*\("
+    + _B + r"timezone\s*\(|"
+    # Postgres installs a session zone with `SET`, not only `AT TIME ZONE`,
+    # and `SET TIME ZONE 'EST'` / `SET timezone TO 'EDT'` freeze the whole
+    # connection at a fixed offset -- a wider blast radius than any single
+    # expression, and neither spelling was a context (Codex, PR #993).
+    + _B + r"SET\s+TIME[ _]?ZONE\s*(?:TO\s+)?"
 )
 
 # Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
@@ -169,7 +187,8 @@ _TZ_CONTEXT = (
 # and the ambiguous `EST`/`EDT` still need a timezone context before them and
 # a non-word character after, so `estimate` and `edtVersion` stay clean.
 NONPY_UNAMBIGUOUS = re.compile(
-    r"""['"]?(?:""" + "|".join(UNAMBIGUOUS_LEGACY) + r""")['"]?"""
+    r"""['"]?(?:""" + "|".join(re.escape(z) for z in UNAMBIGUOUS_LEGACY)
+    + r""")['"]?"""
     r"""(?![A-Za-z0-9_/-])""", re.I
 )
 NONPY_AMBIGUOUS = re.compile(
@@ -271,6 +290,14 @@ def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
     and a `timedelta` with a non-constant argument is simply not decidable
     here and is left alone rather than guessed at.
     """
+    # `timezone(-timedelta(hours=5))` is the same frozen zone written with the
+    # sign outside the call, and it read as a non-constant argument and was
+    # left alone (Codex, PR #993). The negation is part of the constant.
+    sign = 1
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        if isinstance(node.op, ast.USub):
+            sign = -sign
+        node = node.operand
     if not isinstance(node, ast.Call) or _call_name(node) != "timedelta":
         return False
     total = 0.0
@@ -287,7 +314,7 @@ def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
         if v is None:
             return False
         total += v * units[kw.arg]
-    return int(round(total)) in _EASTERN_OFFSET_SECONDS
+    return int(round(total * sign)) in _EASTERN_OFFSET_SECONDS
 
 
 # A new lexical scope. `ast.walk` does not know about these, which is how the
@@ -306,12 +333,19 @@ def _scope_nodes(scope: ast.AST):
     A nested `def` is yielded (it is a statement of this scope) but its body is
     not, so a binding made inside it does not leak outward.
     """
-    stack = list(ast.iter_child_nodes(scope))
+    # Reversed onto a LIFO stack, which yields SOURCE order. Pushing them
+    # forwards yielded each statement list backwards, so "a later assignment
+    # replaces an earlier one" was silently "an earlier one replaces a later".
+    # `_keep` makes that harmless for the values this guard cares about -- a
+    # legacy binding is never overwritten by a benign one in either direction
+    # -- but a traversal that runs backwards is a trap for the next check
+    # added here, and it cost one test to notice.
+    stack = list(ast.iter_child_nodes(scope))[::-1]
     while stack:
         node = stack.pop()
         yield node
         if not isinstance(node, _SCOPES):
-            stack.extend(ast.iter_child_nodes(node))
+            stack.extend(list(ast.iter_child_nodes(node))[::-1])
 
 
 def _target_names(node: ast.AST) -> set[str]:
@@ -390,8 +424,8 @@ def _bound_names(scope: ast.AST) -> set[str]:
     return out
 
 
-def _import_aliases(tree: ast.AST) -> dict[str, str]:
-    """`alias -> original name`, for `import X as Y` and `from X import Y as Z`.
+def _local_aliases(scope: ast.AST) -> dict[str, str]:
+    """`alias -> original name`, for `import X as Y` / `from X import Y as Z`.
 
     `_call_name` reports the name as written, so `from zoneinfo import
     ZoneInfo as ZI` made `ZI("EST")` miss `_TZ_CALLS` entirely and the call
@@ -399,41 +433,166 @@ def _import_aliases(tree: ast.AST) -> dict[str, str]:
     an import is not obscure, and a whitelist that only knows the canonical
     spelling is a whitelist of what someone thought of -- the argument this
     file already makes about call-name whitelists, one level down.
+
+    Collected PER SCOPE, like every other map here. A file-wide version keyed
+    on the alias alone joined two unrelated imports that reuse a short name:
+    `from zoneinfo import ZoneInfo as load` in one function and `from json
+    import loads as load` in another resolved to whichever appeared last in
+    the file, which is a MISS in one order and a FALSE POSITIVE in the other
+    -- both reproduced (Codex, PR #993).
+
+    One scope aliasing one name to two DIFFERENT originals drops the name
+    instead of picking a winner. Which import is in effect at a given line is
+    a flow question and this guard is not flow-sensitive, so either answer is
+    a guess: keeping the constructor invents a timezone call out of an
+    unrelated one, and keeping the other hides a real one. `_keep` resolves
+    the same tie the other way for VALUES, deliberately -- a name ever bound
+    to a legacy zone is reported. The difference is what a wrong guess costs.
+    A misresolved value reports a literal that is genuinely written in the
+    file; a misresolved alias reports a call to a function that has nothing to
+    do with timezones, which is a false CI failure on correct code.
     """
-    out: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                if a.asname:
-                    out[a.asname] = a.name
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                if a.asname:
-                    # `import pytz as p` -> the tail, so `p.timezone(...)`
-                    # still resolves through the attribute path.
-                    out[a.asname] = a.name.rsplit(".", 1)[-1]
-    return out
-
-
-def _class_attribute_bindings(tree: ast.AST) -> dict[tuple[str, str], tuple[str, ast.AST]]:
-    """`(ClassName, attr) -> (value, node)` for `class C: attr = "..."`.
-
-    `class Settings: tz = "EST"` then `ZoneInfo(Settings.tz)` produced nothing:
-    the literal is ambiguous so it is not reported on its own, and `follow`
-    resolved only `ast.Name`, never the `ast.Attribute` the call actually
-    receives (Codex, PR #993).
-
-    Keyed on the PAIR, not on the attribute name. A bare `tz` key would join
-    `Settings.tz` to an unrelated `Other.tz`, which is the cross-scope join
-    this file already fixed once one level up.
-    """
-    out: dict[tuple[str, str], tuple[str, ast.AST]] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
+    seen: dict[str, str] = {}
+    conflicted: set[str] = set()
+    for node in _scope_nodes(scope):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        for name, binding in _collect_bindings(_scope_nodes(node), {}).items():
-            out[(node.name, name)] = binding
+        for a in node.names:
+            if not a.asname:
+                continue
+            # `import pytz as p` -> the tail, so `p.timezone(...)` still
+            # resolves through the attribute path.
+            original = (a.name if isinstance(node, ast.ImportFrom)
+                        else a.name.rsplit(".", 1)[-1])
+            if seen.setdefault(a.asname, original) != original:
+                conflicted.add(a.asname)
+    return {k: v for k, v in seen.items() if k not in conflicted}
+
+
+def _local_attrs(scope: ast.AST) -> dict[str, dict[str, tuple[str, ast.AST]]]:
+    """`obj -> {attr: (value, node)}`, for resolving `obj.attr` as a zone.
+
+    Two spellings land in one map because they read identically at the use
+    site. `class Settings: tz = "EST"` then `ZoneInfo(Settings.tz)` produced
+    nothing -- the literal is ambiguous so it is not reported on its own, and
+    `follow` resolved only `ast.Name`, never the `ast.Attribute` the call
+    receives. `settings.timezone = "EST"` was invisible for the mirror-image
+    reason: the target is an `ast.Attribute`, so it binds no NAME either
+    (Codex, PR #993).
+
+    Keyed by the OBJECT name and scoped, not by the attribute name and
+    file-wide. A `(ClassName, attr)` key looked specific enough and was not:
+    two `class Settings` bodies in two different functions are different
+    classes, and conflating them produced a miss in one declaration order and
+    a false finding in the reverse. That is the third map on this file to
+    default to file-wide, which is why they are now built by one descent.
+    """
+    out: dict[str, dict[str, tuple[str, ast.AST]]] = {}
+    for node in _scope_nodes(scope):
+        if isinstance(node, ast.ClassDef):
+            body = _collect_bindings(_scope_nodes(node), {})
+            if body:
+                out.setdefault(node.name, {}).update(body)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            v = node.value
+            if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
+                continue
+            for tgt in targets:
+                if (isinstance(tgt, ast.Attribute)
+                        and isinstance(tgt.value, ast.Name)):
+                    _keep(out.setdefault(tgt.value.id, {}), tgt.attr, v)
     return out
+
+
+def _declared_global_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
+    """Module-level bindings written from inside a function.
+
+    `def setup(): global TZ; TZ = "EST"` really does bind the module's `TZ`,
+    so an unrelated `ZoneInfo(TZ)` elsewhere reads `EST` -- and the descent
+    below saw only a local assignment in `setup`, resolved nothing outside it,
+    and reported nothing (Codex, PR #993).
+
+    `nonlocal` is the same statement pointed at a different scope, and it gets
+    `_nonlocal_bindings` rather than a share of this one. Folding it in here
+    was the first attempt and it resolved nothing at all: `nonlocal` is only
+    legal when an enclosing scope already binds the name, and that binding
+    shadows a module-level entry before it is ever read.
+    """
+    out: dict[str, tuple[str, ast.AST]] = {}
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        declared: set[str] = set()
+        for node in _scope_nodes(scope):
+            if isinstance(node, ast.Global):
+                declared.update(node.names)
+        if not declared:
+            continue
+        for name, (_value, src) in _collect_bindings(
+                _scope_nodes(scope), {}).items():
+            if name in declared:
+                _keep(out, name, src)
+    return out
+
+
+def _nonlocal_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]:
+    """`id(enclosing scope)` -> the bindings a nested `nonlocal` writes into it.
+
+    `def outer(): TZ = "UTC"; def inner(): nonlocal TZ; TZ = "EST"` rebinds
+    OUTER's `TZ`, so a later `ZoneInfo(TZ)` in `outer` reads `EST`. Resolved to
+    the nearest enclosing function that binds the name, which is the scope
+    Python itself picks -- an approximation that merged it at module level
+    instead never fired, because the enclosing binding shadows it.
+    """
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+
+    out: dict[int, dict[str, tuple[str, ast.AST]]] = {}
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        declared: set[str] = set()
+        for node in _scope_nodes(scope):
+            if isinstance(node, ast.Nonlocal):
+                declared.update(node.names)
+        if not declared:
+            continue
+        for name, (_value, src) in _collect_bindings(
+                _scope_nodes(scope), {}).items():
+            if name not in declared:
+                continue
+            anc = parents.get(id(scope))
+            while anc is not None:
+                if (isinstance(anc, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.Lambda))
+                        and name in _bound_names(anc)):
+                    _keep(out.setdefault(id(anc), {}), name, src)
+                    break
+                anc = parents.get(id(anc))
+    return out
+
+
+class _Env(NamedTuple):
+    """What a name resolves to at one point in the tree.
+
+    Three maps, one descent. Each was added separately, each defaulted to
+    file-wide, and each was then found by review to join names Python keeps
+    apart. Building them together means a scope's shadowing applies to all
+    three at once and there is one place left to get that wrong.
+    """
+
+    bindings: dict[str, tuple[str, ast.AST]]       # NAME = "..."
+    aliases: dict[str, str]                        # import ... as NAME
+    attrs: dict[str, dict[str, tuple[str, ast.AST]]]   # NAME.attr = "..."
+
+
+_EMPTY_ENV = _Env({}, {}, {})
+
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
 def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
@@ -464,8 +623,8 @@ def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
     return names, defaults
 
 
-def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]:
-    """`id(node)` -> the string bindings visible at that node, lexically.
+def _scoped_envs(tree: ast.AST) -> dict[int, _Env]:
+    """`id(node)` -> the names visible at that node, lexically.
 
     Collecting bindings once for the whole module joined names that share
     nothing but a spelling: an ordinary local `value = "EST"` in one function
@@ -480,9 +639,11 @@ def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]
     is what Python does. The "a legacy binding wins over a later one" rule
     stays inside a single scope, where the reassignment it models happens.
     """
-    out: dict[int, dict[str, tuple[str, ast.AST]]] = {}
+    out: dict[int, _Env] = {}
+    globals_ = _declared_global_bindings(tree)
+    nonlocals = _nonlocal_bindings(tree)
 
-    def descend(scope: ast.AST, inherited: dict) -> None:
+    def descend(scope: ast.AST, inherited: _Env) -> None:
         # A parameter shadows whatever the enclosing scope bound to that name,
         # and `_collect_bindings` reads assignments only -- so with
         # `TZ = "EST"` at module level, `def load(TZ): ZoneInfo(TZ)` inherited
@@ -493,15 +654,34 @@ def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]
         # A parameter with a constant string DEFAULT is not merely dropped:
         # `def load(tz="EST")` really does resolve to `EST` when the caller
         # passes nothing, so the default is bound instead.
-        # An inherited binding survives only if this scope does not rebind the
-        # name AT ALL -- by any construct, not just the ones resolvable to a
-        # literal. `_collect_bindings` then puts back the subset that is.
+        # An inherited name survives only if this scope does not rebind it AT
+        # ALL -- by any construct, not just the ones resolvable to a literal --
+        # and that one `shadowed` set governs all three maps, because Python
+        # has one namespace per scope and not three.
         shadowed, defaults = _parameter_bindings(scope)
         shadowed |= _bound_names(scope)
-        bindings = {k: v for k, v in inherited.items() if k not in shadowed}
+
+        def survives(m):
+            return {k: v for k, v in m.items() if k not in shadowed}
+
+        bindings = survives(inherited.bindings)
         bindings.update(defaults)
         bindings.update(_collect_bindings(_scope_nodes(scope), {}))
-        out[id(scope)] = bindings
+        if scope is tree:
+            for name, (_value, src) in globals_.items():
+                _keep(bindings, name, src)
+        for name, (_value, src) in nonlocals.get(id(scope), {}).items():
+            _keep(bindings, name, src)
+
+        aliases = survives(inherited.aliases)
+        aliases.update(_local_aliases(scope))
+
+        attrs = {k: dict(v) for k, v in survives(inherited.attrs).items()}
+        for obj, members in _local_attrs(scope).items():
+            attrs.setdefault(obj, {}).update(members)
+
+        env = _Env(bindings, aliases, attrs)
+        out[id(scope)] = env
 
         # Python does NOT close over a class namespace: a method does not see
         # the class body's names, it sees the enclosing function or module. So
@@ -511,23 +691,36 @@ def _scoped_bindings(tree: ast.AST) -> dict[int, dict[str, tuple[str, ast.AST]]]
         # and the third one this scoping machinery has produced (Codex,
         # PR #993). A nested scope under a class inherits what the CLASS
         # inherited, not what the class defines.
-        nested = inherited if isinstance(scope, ast.ClassDef) else bindings
+        nested = inherited if isinstance(scope, ast.ClassDef) else env
         for node in _scope_nodes(scope):
-            out[id(node)] = bindings
-            if isinstance(node, _SCOPES):
-                descend(node, nested)
+            out[id(node)] = env
+            if not isinstance(node, _SCOPES):
+                continue
+            descend(node, nested)
+            if isinstance(node, _COMPREHENSIONS):
+                # The FIRST iterable is evaluated eagerly in the ENCLOSING
+                # scope -- Python builds the iterator before the comprehension
+                # scope exists. So in `tz = "EST"; [tz for tz in [ZoneInfo(tz)]]`
+                # the `tz` inside `ZoneInfo` is the outer one, while the
+                # descent had just shadowed it with the comprehension target
+                # and resolved nothing (Codex, PR #993). Every other clause,
+                # including a second `for`, really is inner.
+                stack = [node.generators[0].iter]
+                while stack:
+                    sub = stack.pop()
+                    out[id(sub)] = env
+                    if not isinstance(sub, _SCOPES):
+                        stack.extend(ast.iter_child_nodes(sub))
 
-    descend(tree, {})
+    descend(tree, _EMPTY_ENV)
     return out
 
 
-def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
-    """`NAME = "..."` -> (value, node), for following an indirect zone.
+def _keep(out: dict, name: str, v: ast.Constant) -> None:
+    """Record `name -> (value, node)`, keeping a legacy binding over a benign one.
 
-    `EASTERN = "US/Eastern"` then `ZoneInfo(EASTERN)` is a routine way to share
-    one timezone across a module, and it passes a check that only reads
-    constants at the call site because the argument is an `ast.Name` (Codex,
-    PR #993).
+    Shared by every map here -- bindings, class and instance attributes,
+    `global` and `nonlocal` writes -- so the precedence is stated once.
 
     A LEGACY binding wins, not the last one. "Last assignment wins" was the
     first rule here and it says the opposite of what this file claims: with
@@ -536,13 +729,27 @@ def _string_bindings(tree: ast.AST) -> dict[str, tuple[str, ast.AST]]:
     disappeared (Codex, PR #993). A guard does not need to model reassignment
     correctly, but it must not model it in the direction that hides the thing
     it looks for: if a name is EVER bound to a legacy zone or a fixed offset
-    in this file, that binding is what the guard keeps.
+    in this scope, that binding is what the guard keeps.
     """
-    return _collect_bindings(ast.walk(tree), {})
+    interesting = (v.value in ALL_LEGACY
+                   or bool(_FIXED_OFFSET_STRINGS.match(v.value)))
+    held = out.get(name)
+    if held is not None and not interesting:
+        held_value = held[0]
+        if (held_value in ALL_LEGACY
+                or _FIXED_OFFSET_STRINGS.match(held_value)):
+            return          # do not overwrite a violation with a value
+    out[name] = (v.value, v)
 
 
 def _collect_bindings(nodes, out: dict[str, tuple[str, ast.AST]]):
-    """The shared body of the two readers above."""
+    """`NAME = "..."` -> (value, node), over the nodes handed in.
+
+    `EASTERN = "US/Eastern"` then `ZoneInfo(EASTERN)` is a routine way to share
+    one timezone across a module, and it passes a check that only reads
+    constants at the call site because the argument is an `ast.Name` (Codex,
+    PR #993). The caller decides which nodes are in scope; this reads them.
+    """
     for node in nodes:
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -553,18 +760,9 @@ def _collect_bindings(nodes, out: dict[str, tuple[str, ast.AST]]):
         v = node.value
         if not (isinstance(v, ast.Constant) and isinstance(v.value, str)):
             continue
-        interesting = (v.value in ALL_LEGACY
-                       or bool(_FIXED_OFFSET_STRINGS.match(v.value)))
         for t in targets:
-            if not isinstance(t, ast.Name):
-                continue
-            held = out.get(t.id)
-            if held is not None and not interesting:
-                held_value = held[0]
-                if (held_value in ALL_LEGACY
-                        or _FIXED_OFFSET_STRINGS.match(held_value)):
-                    continue      # do not overwrite a violation with a value
-            out[t.id] = (v.value, v)
+            if isinstance(t, ast.Name):
+                _keep(out, t.id, v)
     return out
 
 
@@ -577,16 +775,14 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
 
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
-    scoped = _scoped_bindings(tree)
-    attrs = _class_attribute_bindings(tree)
-    aliases = _import_aliases(tree)
+    envs = _scoped_envs(tree)
 
     def note(bucket, node, what):
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
 
     reported: set[int] = set()
 
-    def follow(bucket_legacy, bucket_offsets, node, arg, bindings, where):
+    def follow(bucket_legacy, bucket_offsets, node, arg, env, where):
         """Report `arg` when it is, or resolves to, a legacy zone or offset."""
         reported.add(id(arg))
         if isinstance(arg, ast.Constant) and arg.value in ALL_LEGACY:
@@ -599,10 +795,13 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         if _is_eastern_fixed_timedelta(arg):
             note(bucket_offsets, arg, where("timedelta(hours=-4|-5, ...)"))
             return True
-        # `Settings.tz`, resolved through the class body that defines it.
-        if (isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name)
-                and (arg.value.id, arg.attr) in attrs):
-            value, _src = attrs[(arg.value.id, arg.attr)]
+        # `Settings.tz`, resolved through the class body -- or the plain
+        # `settings.tz = "..."` assignment -- that binds it.
+        held = (env.attrs.get(arg.value.id, {}).get(arg.attr)
+                if isinstance(arg, ast.Attribute)
+                and isinstance(arg.value, ast.Name) else None)
+        if held is not None:
+            value, _src = held
             shown = f"{arg.value.id}.{arg.attr} (= {value!r})"
             if value in ALL_LEGACY:
                 note(bucket_legacy, arg, where(shown))
@@ -611,8 +810,8 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 note(bucket_offsets, arg, where(shown))
                 return True
 
-        if isinstance(arg, ast.Name) and arg.id in bindings:
-            value, _src = bindings[arg.id]
+        if isinstance(arg, ast.Name) and arg.id in env.bindings:
+            value, _src = env.bindings[arg.id]
             shown = f"{arg.id} (= {value!r})"
             if value in ALL_LEGACY:
                 note(bucket_legacy, arg, where(shown))
@@ -623,8 +822,8 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         return False
 
     for node in ast.walk(tree):
-        # The bindings of the scope this node sits in, not the module's.
-        bindings = scoped.get(id(node), {})
+        # The names visible in the scope this node sits in, not the module's.
+        env = envs.get(id(node), _EMPTY_ENV)
 
         # `os.environ["TZ"] = "EST"` -- and `settings["timezone"] = ...`. The
         # target is an ast.Subscript, so it binds no NAME for the map above to
@@ -636,8 +835,16 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 key = tgt.slice if isinstance(tgt, ast.Subscript) else None
                 if (isinstance(key, ast.Constant) and isinstance(key.value, str)
                         and key.value.lower() in _TZ_KEYWORDS):
-                    follow(legacy, offsets, node, node.value, bindings,
+                    follow(legacy, offsets, node, node.value, env,
                            lambda shown, k=key.value: f"[{k!r}] = {shown}")
+                # `settings.timezone = "EST"` -- an attribute target binds no
+                # NAME either, so the same argument applies to it as to the
+                # subscript above, and it was missed for the same reason
+                # (Codex, PR #993).
+                if (isinstance(tgt, ast.Attribute)
+                        and tgt.attr.lower() in _TZ_KEYWORDS):
+                    follow(legacy, offsets, node, node.value, env,
+                           lambda shown, a=tgt.attr: f".{a} = {shown}")
 
         # Every UNAMBIGUOUS legacy name, wherever it stands, with no call-name
         # whitelist in front of it. A whitelist is a list of the constructors
@@ -649,6 +856,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         if (isinstance(node, ast.Constant)
                 and node.value in UNAMBIGUOUS_LEGACY
                 and id(node) not in reported):
+            reported.add(id(node))
             note(legacy, node, repr(node.value))
 
         # Same rule, different bucket: `Etc/GMT+5` is a named zone frozen at
@@ -657,7 +865,28 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         if (isinstance(node, ast.Constant)
                 and node.value in _FIXED_OFFSET_ZONES
                 and id(node) not in reported):
+            reported.add(id(node))
             note(offsets, node, repr(node.value))
+
+        # A zone name EMBEDDED in a longer string. Python source carries SQL,
+        # and `cur.execute("SELECT ts AT TIME ZONE 'US/Eastern' ...")` is a
+        # live way to name the zone that no exact-value check can see -- the
+        # constant is the whole statement, not the zone (Codex, PR #993). The
+        # `.sql` scan already reads exactly these patterns; this points them at
+        # the same SQL when it happens to be quoted inside a `.py` file, so the
+        # spelling is not permitted in one place and banned in the other.
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in reported):
+            for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
+                                    (NONPY_AMBIGUOUS, legacy),
+                                    (NONPY_FIXED_ZONE, offsets),
+                                    (NONPY_FIXED_OFFSET, offsets)):
+                m = pattern.search(node.value)
+                if m:
+                    reported.add(id(node))
+                    note(bucket, node,
+                         f"in string: {' '.join(m.group(0).split())[:80]}")
+                    break
 
         # `{"tz": "EST"}` -- a config literal read back at some other site.
         if isinstance(node, ast.Dict):
@@ -669,17 +898,17 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 # `os.environ["TZ"]` form was caught (Codex, PR #993).
                 if (isinstance(k, ast.Constant) and isinstance(k.value, str)
                         and k.value.lower() in _TZ_KEYWORDS):
-                    follow(legacy, offsets, node, v, bindings,
+                    follow(legacy, offsets, node, v, env,
                            lambda shown, k=k: f"{k.value!r}: {shown}")
 
         # A legacy zone name as the value of a timezone-ish keyword, anywhere.
         if isinstance(node, ast.keyword) and node.arg in _TZ_KEYWORDS:
-            follow(legacy, offsets, node, node.value, bindings,
+            follow(legacy, offsets, node, node.value, env,
                    lambda shown, a=node.arg: f"{a}={shown}")
 
         if not isinstance(node, ast.Call):
             continue
-        name = aliases.get(_call_name(node), _call_name(node))
+        name = env.aliases.get(_call_name(node), _call_name(node))
         if name not in _TZ_CALLS:
             continue
 
@@ -697,7 +926,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
                 continue
         # Positional and keyword arguments alike.
         for arg in list(node.args) + [k.value for k in node.keywords]:
-            follow(legacy, offsets, node, arg, bindings,
+            follow(legacy, offsets, node, arg, env,
                    lambda shown, n=name: f"{n}(... {shown} ...)")
 
     # `ast.walk` is breadth-first, so a call is visited before its own
@@ -941,11 +1170,15 @@ def test_a_legacy_binding_survives_a_later_reassignment():
     docstring claimed the rule was (Codex, PR #993).
     """
     tree = ast.parse('TZ = "EST"\nZoneInfo(TZ)\nTZ = "UTC"\n')
-    assert _string_bindings(tree)["TZ"][0] == "EST"
+    assert _scoped_envs(tree)[id(tree)].bindings["TZ"][0] == "EST"
 
     # A name never bound to anything interesting still takes its last value.
     tree = ast.parse('TZ = "UTC"\nTZ = "America/New_York"\n')
-    assert _string_bindings(tree)["TZ"][0] == "America/New_York"
+    assert _scoped_envs(tree)[id(tree)].bindings["TZ"][0] == "America/New_York"
+
+    # And end to end, which is the claim that matters.
+    legacy, _ = _hits('TZ = "EST"\nZoneInfo(TZ)\nTZ = "UTC"\n')
+    assert any("EST" in h for h in legacy), legacy
 
 
 def test_the_repository_scan_is_read_once():
@@ -1221,13 +1454,23 @@ def test_the_remaining_eastern_backward_links_are_rejected():
     spellings (Codex, PR #993).
     """
     for name in ("US/East-Indiana", "US/Michigan", "America/Fort_Wayne",
-                 "America/Indianapolis"):
+                 "America/Indianapolis", "America/Louisville",
+                 "America/Nipigon", "America/Thunder_Bay",
+                 "America/Pangnirtung"):
         legacy, _ = _hits(f'tz = ZoneInfo("{name}")\n')
         assert any(name in h for h in legacy), f"{name} not reported: {legacy}"
         assert NONPY_UNAMBIGUOUS.search(f'tz = "{name}"'), name
 
     # A Central backward link is a different zone, not this guard's business.
     assert _hits('tz = ZoneInfo("US/Central")\n') == ([], [])
+    # Nor is a link whose target is not Eastern: America/Coral_Harbour points
+    # at America/Panama, which is EST year-round and never observes Eastern.
+    assert _hits('tz = ZoneInfo("America/Coral_Harbour")\n') == ([], [])
+    # And the canonical names of the Eastern-observing zones stay legal: this
+    # guard forbids legacy SPELLINGS, not other cities.
+    for canonical in ("America/Toronto", "America/Detroit",
+                      "America/Kentucky/Louisville"):
+        assert _hits(f'tz = ZoneInfo("{canonical}")\n') == ([], []), canonical
 
 
 def test_an_identifier_ending_in_tz_is_not_a_timezone_key():
@@ -1422,3 +1665,267 @@ def test_a_comprehension_shadows_only_inside_itself():
     # And the read INSIDE the comprehension is correctly the loop variable.
     assert _hits('tz = "EST"\n\ndef load(zones):\n'
                  '    return [ZoneInfo(tz) for tz in zones]\n') == ([], [])
+
+
+def test_an_import_alias_does_not_cross_between_scopes():
+    """Two functions may rename two different imports to one short name.
+
+    The alias map was file-wide and keyed on the alias alone, so
+    `from zoneinfo import ZoneInfo as load` in one function and
+    `from json import loads as load` in another resolved to whichever came
+    LAST in the file. Both orders are wrong and in opposite directions, which
+    is why both are asserted here (Codex, PR #993).
+    """
+    real_first = (
+        'def load_zone():\n'
+        '    from zoneinfo import ZoneInfo as load\n'
+        '    return load("EST")\n'
+        '\n'
+        'def load_config(raw):\n'
+        '    from json import loads as load\n'
+        '    return load(raw)\n'
+    )
+    legacy, _ = _hits(real_first)
+    assert any("EST" in h for h in legacy), (
+        f"the real constructor was masked by a later unrelated alias: {legacy}")
+
+    # The reverse order is the false-finding direction: nothing here builds a
+    # timezone, so nothing may be reported.
+    unrelated_first = (
+        'def load_config(raw):\n'
+        '    from json import loads as load\n'
+        '    return load("EST")\n'
+        '\n'
+        'def load_zone(name):\n'
+        '    from zoneinfo import ZoneInfo as load\n'
+        '    return load(name)\n'
+    )
+    assert _hits(unrelated_first) == ([], []), (
+        "an unrelated call was read as a ZoneInfo constructor because some "
+        "other scope aliased that name")
+
+    # ONE scope aliasing one name to two different originals is a flow
+    # question, and this guard is not flow-sensitive. Neither answer is
+    # defensible, so the name resolves to nothing: a wrong guess here reports
+    # a call to a function that has nothing to do with timezones, and a false
+    # CI failure is the one outcome this file will not trade for a catch.
+    both_in_one_scope = (
+        'from zoneinfo import ZoneInfo as load\n'
+        'load("EST")\n'
+        'from json import loads as load\n'
+    )
+    assert _hits(both_in_one_scope) == ([], []), _hits(both_in_one_scope)
+
+    # Aliasing the same name to the same original twice is not a conflict.
+    legacy, _ = _hits('from zoneinfo import ZoneInfo as ZI\n'
+                      'from zoneinfo import ZoneInfo as ZI\n'
+                      'ZI("EST")\n')
+    assert any("EST" in h for h in legacy), legacy
+
+
+def test_two_local_classes_of_the_same_name_are_not_one_class():
+    """`(ClassName, attr)` looked specific enough and is not.
+
+    Two `class Settings` bodies in two functions are two classes. Keyed on the
+    pair and collected file-wide, whichever body came last won — a MISS in one
+    declaration order and a FALSE FINDING in the reverse (Codex, PR #993).
+    """
+    legacy, _ = _hits(
+        'def eastern():\n'
+        '    class Settings:\n'
+        '        tz = "EST"\n'
+        '    return ZoneInfo(Settings.tz)\n'
+        '\n'
+        'def utc():\n'
+        '    class Settings:\n'
+        '        tz = "UTC"\n'
+        '    return ZoneInfo(Settings.tz)\n'
+    )
+    assert any("EST" in h for h in legacy), (
+        f"a later same-named class body masked the violation: {legacy}")
+    assert len([h for h in legacy if "EST" in h]) == 1, (
+        f"the UTC class was reported as the EST one: {legacy}")
+
+    # Reverse order: the UTC class is declared first, and must not inherit the
+    # other function's attribute.
+    legacy, _ = _hits(
+        'def utc():\n'
+        '    class Settings:\n'
+        '        tz = "UTC"\n'
+        '    return ZoneInfo(Settings.tz)\n'
+        '\n'
+        'def eastern():\n'
+        '    class Settings:\n'
+        '        tz = "EST"\n'
+        '    return ZoneInfo(Settings.tz)\n'
+    )
+    assert len(legacy) == 1 and "EST" in legacy[0], legacy
+
+
+def test_a_global_write_reaches_the_module_binding():
+    """`global TZ; TZ = "EST"` binds the module's name, not a local one.
+
+    The descent saw a local assignment inside the writer, resolved nothing
+    outside it, and reported nothing — while at runtime every other reader of
+    the module global gets `EST` (Codex, PR #993).
+    """
+    legacy, _ = _hits(
+        'def configure():\n'
+        '    global TZ\n'
+        '    TZ = "EST"\n'
+        '\n'
+        'def stamp(ts):\n'
+        '    return ts.astimezone(ZoneInfo(TZ))\n'
+    )
+    assert any("EST" in h for h in legacy), legacy
+
+    # Without the `global` it is an ordinary local and reaches nothing.
+    assert _hits('def configure():\n'
+                 '    TZ = "EST"\n'
+                 '\n'
+                 'def stamp(ts):\n'
+                 '    return ZoneInfo(TZ)\n') == ([], [])
+
+
+def test_a_nonlocal_write_reaches_the_enclosing_binding():
+    """`nonlocal` is the same statement pointed at a closure, not the module.
+
+    Folding it in with `global` resolved nothing at all: `nonlocal` is only
+    legal where an enclosing scope already binds the name, and that binding
+    shadows a module-level entry before it is read. It has to land on the
+    scope Python picks — the nearest enclosing function that binds the name.
+    """
+    legacy, _ = _hits(
+        'def outer():\n'
+        '    tz = "America/New_York"\n'
+        '\n'
+        '    def override():\n'
+        '        nonlocal tz\n'
+        '        tz = "EST"\n'
+        '\n'
+        '    override()\n'
+        '    return ZoneInfo(tz)\n'
+    )
+    assert any("EST" in h for h in legacy), legacy
+
+    # A sibling function that binds its own `tz` is a different name.
+    assert _hits(
+        'def outer():\n'
+        '    tz = "America/New_York"\n'
+        '\n'
+        '    def override():\n'
+        '        nonlocal tz\n'
+        '        tz = "EST"\n'
+        '\n'
+        '    return override\n'
+        '\n'
+        'def elsewhere(tz):\n'
+        '    return ZoneInfo(tz)\n') == ([], [])
+
+
+def test_an_attribute_assignment_is_a_timezone_write():
+    """`settings.timezone = "EST"` binds no NAME, so nothing followed it.
+
+    Exactly the argument the subscript branch already makes for
+    `os.environ["TZ"] = "EST"`: the assignment IS the use, and the value is
+    the violation (Codex, PR #993).
+    """
+    legacy, _ = _hits('settings.timezone = "EST"\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    _, offsets = _hits('conn.tz = "-05:00"\n')
+    assert any("-05:00" in h for h in offsets), offsets
+
+    # And the write is readable afterwards, like a class attribute.
+    legacy, _ = _hits('cfg.tzinfo = "US/Eastern"\ndt.astimezone(cfg.tzinfo)\n')
+    assert legacy, legacy
+
+    # An attribute that is not a timezone key carries no such meaning.
+    assert _hits('parser.stopword = "EST"\n') == ([], [])
+    assert _hits('settings.timezone = "America/New_York"\n') == ([], [])
+
+
+def test_a_negated_timedelta_is_still_a_fixed_offset():
+    """`timezone(-timedelta(hours=5))` puts the sign outside the call.
+
+    The whole-constant evaluation only looked inside `timedelta(...)`, so a
+    negation wrapping it read as a non-constant argument and was left alone —
+    the fifth spelling of the same frozen zone to walk past this check
+    (Codex, PR #993).
+    """
+    for src in ('tz = timezone(-timedelta(hours=5))\n',
+                'tz = timezone(-timedelta(hours=4))\n',
+                'tz = timezone(-timedelta(seconds=18000))\n'):
+        _, offsets = _hits(src)
+        assert offsets, src
+
+    # The sign still has to land on Eastern.
+    assert _hits('tz = timezone(-timedelta(hours=8))\n') == ([], [])
+    assert _hits('tz = timezone(timedelta(hours=5))\n') == ([], [])
+
+
+def test_a_session_timezone_statement_is_a_timezone_context():
+    """`SET TIME ZONE 'EST'` freezes the whole connection.
+
+    `AT TIME ZONE` was a context and `SET TIME ZONE` was not, though the
+    second has the wider blast radius: it applies to every subsequent query on
+    that connection rather than to one expression (Codex, PR #993).
+    """
+    for stmt in ("SET TIME ZONE 'EST'", "SET timezone TO 'EDT'",
+                 "set time zone 'est'", "SET TIMEZONE TO 'EST'"):
+        assert NONPY_AMBIGUOUS.search(stmt), stmt
+        legacy, _ = _hits(f'cur.execute("{stmt}")\n')
+        assert legacy, stmt
+
+    # The canonical name through the same statement is not a finding.
+    assert _hits('cur.execute("SET TIME ZONE \'America/New_York\'")\n') == ([], [])
+    # And an unrelated `SET` is not a timezone context.
+    assert not NONPY_AMBIGUOUS.search("SET search_path TO estimates")
+
+
+def test_a_zone_named_inside_an_embedded_sql_string_is_found():
+    """Python source carries SQL, and the constant is the statement.
+
+    `cur.execute("SELECT ts AT TIME ZONE 'US/Eastern' ...")` is a live way to
+    name the zone that no exact-value check can see. The `.sql` scan already
+    reads these patterns; a spelling cannot be banned in one file type and
+    permitted in another because of where the quotes fall (Codex, PR #993).
+    """
+    legacy, _ = _hits(
+        'SQL = "SELECT ts AT TIME ZONE \'US/Eastern\' AS d FROM bars"\n')
+    assert any("US/Eastern" in h for h in legacy), legacy
+
+    legacy, _ = _hits(
+        'SQL = "SELECT ts AT TIME ZONE \'EST\' AS d FROM bars"\n')
+    assert legacy, legacy
+
+    _, offsets = _hits('SQL = "SELECT ts AT TIME ZONE \'Etc/GMT+5\' FROM bars"\n')
+    assert offsets, offsets
+
+    # The canonical zone in the same shape is clean, and so is prose that
+    # merely contains the ambiguous token with no timezone context.
+    assert _hits(
+        'SQL = "SELECT ts AT TIME ZONE \'America/New_York\' FROM bars"\n') == ([], [])
+    assert _hits('STOPWORDS = ["est", "edt", "gmt"]\n') == ([], [])
+
+    # A constant already reported by the call that gives it meaning is not
+    # reported a second time by the embedded scan.
+    legacy, _ = _hits('tz = ZoneInfo("US/Eastern")\n')
+    assert len(legacy) == 1, legacy
+
+
+def test_the_first_comprehension_iterable_is_evaluated_outside():
+    """Python builds the first iterator before the comprehension scope exists.
+
+    So in `[tz for tz in [ZoneInfo(tz)]]` the inner `tz` is the OUTER one,
+    while the descent had just shadowed it with the comprehension's own target
+    and resolved nothing (Codex, PR #993).
+    """
+    legacy, _ = _hits('tz = "EST"\nzones = [tz for tz in [ZoneInfo(tz)]]\n')
+    assert any("EST" in h for h in legacy), legacy
+
+    # Every other clause really is inner: a second `for` iterates over names
+    # the comprehension itself bound, so the outer binding does not reach it.
+    assert _hits('tz = "EST"\n'
+                 'zones = [ZoneInfo(tz) for group in groups for tz in group]\n'
+                 ) == ([], [])
