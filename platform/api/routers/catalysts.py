@@ -215,7 +215,19 @@ def get_catalyst_events(
         flight_key = f"{d_from}:{d_to}:{','.join(ticker_list or [])}"
         with _CATALYST_FLIGHT.claim(flight_key) as mine:
             if mine:
-                events = _fetch_live_events(d_from, d_to, ticker_list)
+                # Re-read under the claim before spending a vendor batch.
+                # Winning the claim does not mean being first: a request
+                # descheduled between the cache check above and `claim()` can
+                # take the claim moments after a previous claimant fetched,
+                # saved and released -- and would then repeat the entire
+                # 11-endpoint Benzinga batch inside one cache lifetime, which
+                # is the bound this flight exists to hold (Codex, PR #991).
+                # The other three cold paths already do this; catalysts was
+                # the one I did not carry it to.
+                cached = _load_cached_events()
+                events = cached.get("events") if cached else None
+                if events is None:
+                    events = _fetch_live_events(d_from, d_to, ticker_list)
             else:
                 finished = _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
                 # Re-read: a claimant that finished inside the wait has just

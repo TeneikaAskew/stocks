@@ -107,6 +107,8 @@ _DATES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=43200))
 # variants are genuinely different queries and serialising them against each
 # other would trade one queue for another.
 _DATES_FLIGHT = SingleFlight()
+# The chain read is a per-(ticker, date) query; same shape, same reason.
+_CHAIN_FLIGHT = SingleFlight()
 # Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
 # Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
 # exposure on the free tier (5 calls/min, 500/day).
@@ -477,85 +479,97 @@ def get_options(ticker: str, date_str: str):
 
     cache_key = (ticker_upper, date_str)
     cached = _CHAIN_CACHE.get(cache_key)
-    if cached is not None:
-        return {**cached, "cached": True}
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _CHAIN_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _CHAIN_CACHE.get(cache_key)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The options chain is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not None:
+            return {**cached, "cached": True}
 
-    # etf_options_snapshots stores multiple intraday snapshots per day (one row
-    # per contract per snapshot_ts — ~80 for an active day). Restrict to the
-    # latest snapshot_ts so we return a single chain (~5K contracts) rather than
-    # every snapshot stacked (~430K rows). Loading all of them OOM-killed the
-    # 1 GiB container, took ~60 s, AND inflated GEX ~80x by summing open interest
-    # across duplicate snapshots. max(snapshot_ts) matches the existing "as of"
-    # marker computed below.
-    sql = """
-        SELECT contract_symbol, expiration, strike, option_type,
-               bid, ask, mark, last_price, volume, open_interest,
-               implied_volatility, delta, gamma, theta, vega, rho,
-               snapshot_ts
-        FROM   etf_options_snapshots
-        WHERE  ticker = :ticker
-          AND  snapshot_date = :snap_date
-          AND  data_source = 'alphavantage'
-          AND  snapshot_ts = (
-                 SELECT MAX(snapshot_ts)
-                 FROM   etf_options_snapshots
-                 WHERE  ticker = :ticker
-                   AND  snapshot_date = :snap_date
-                   AND  data_source = 'alphavantage'
-               )
-        ORDER  BY expiration, strike, option_type
-    """
-    df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
-
-    if df.empty:
-        # Look up the nearest available date for a helpful error message.
-        nearest_sql = """
-            SELECT MAX(snapshot_date) AS nearest
+        # etf_options_snapshots stores multiple intraday snapshots per day (one row
+        # per contract per snapshot_ts — ~80 for an active day). Restrict to the
+        # latest snapshot_ts so we return a single chain (~5K contracts) rather than
+        # every snapshot stacked (~430K rows). Loading all of them OOM-killed the
+        # 1 GiB container, took ~60 s, AND inflated GEX ~80x by summing open interest
+        # across duplicate snapshots. max(snapshot_ts) matches the existing "as of"
+        # marker computed below.
+        sql = """
+            SELECT contract_symbol, expiration, strike, option_type,
+                   bid, ask, mark, last_price, volume, open_interest,
+                   implied_volatility, delta, gamma, theta, vega, rho,
+                   snapshot_ts
             FROM   etf_options_snapshots
             WHERE  ticker = :ticker
+              AND  snapshot_date = :snap_date
               AND  data_source = 'alphavantage'
-              AND  snapshot_date <= :snap_date
+              AND  snapshot_ts = (
+                     SELECT MAX(snapshot_ts)
+                     FROM   etf_options_snapshots
+                     WHERE  ticker = :ticker
+                       AND  snapshot_date = :snap_date
+                       AND  data_source = 'alphavantage'
+                   )
+            ORDER  BY expiration, strike, option_type
         """
-        nearest_df = query_to_dataframe(
-            nearest_sql, {"ticker": ticker_upper, "snap_date": parsed_date}
-        )
-        nearest = None
-        if not nearest_df.empty and nearest_df.iloc[0]["nearest"] is not None:
-            n = nearest_df.iloc[0]["nearest"]
-            nearest = n.strftime("%Y-%m-%d") if hasattr(n, "strftime") else str(n)
+        df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
 
-        msg = (
-            f"No AlphaVantage options data for {ticker_upper} on {date_str}. "
-            + (f"Most recent available: {nearest}." if nearest
-               else "No earlier data ingested for this ticker.")
-        )
-        raise HTTPException(status_code=404, detail=msg)
+        if df.empty:
+            # Look up the nearest available date for a helpful error message.
+            nearest_sql = """
+                SELECT MAX(snapshot_date) AS nearest
+                FROM   etf_options_snapshots
+                WHERE  ticker = :ticker
+                  AND  data_source = 'alphavantage'
+                  AND  snapshot_date <= :snap_date
+            """
+            nearest_df = query_to_dataframe(
+                nearest_sql, {"ticker": ticker_upper, "snap_date": parsed_date}
+            )
+            nearest = None
+            if not nearest_df.empty and nearest_df.iloc[0]["nearest"] is not None:
+                n = nearest_df.iloc[0]["nearest"]
+                nearest = n.strftime("%Y-%m-%d") if hasattr(n, "strftime") else str(n)
 
-    contracts = _df_to_contracts(df)
+            msg = (
+                f"No AlphaVantage options data for {ticker_upper} on {date_str}. "
+                + (f"Most recent available: {nearest}." if nearest
+                   else "No earlier data ingested for this ticker.")
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
-    # Take the max snapshot_ts as the "as of" marker.
-    snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
-    if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
-        snapshot_timestamp = snapshot_ts_val.isoformat()
-    else:
-        snapshot_timestamp = date_str
+        contracts = _df_to_contracts(df)
 
-    response = {
-        "ticker": ticker_upper,
-        "date": date_str,
-        "options": contracts,
-        "snapshot_timestamp": snapshot_timestamp,
-        "metadata": {
-            "source": "cloud_sql",
-            "data_source": "alphavantage",
-            "row_count": len(contracts),
-        },
-    }
-    _CHAIN_CACHE[cache_key] = response
-    return {**response, "cached": False}
+        # Take the max snapshot_ts as the "as of" marker.
+        snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
+        if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
+            snapshot_timestamp = snapshot_ts_val.isoformat()
+        else:
+            snapshot_timestamp = date_str
+
+        response = {
+            "ticker": ticker_upper,
+            "date": date_str,
+            "options": contracts,
+            "snapshot_timestamp": snapshot_timestamp,
+            "metadata": {
+                "source": "cloud_sql",
+                "data_source": "alphavantage",
+                "row_count": len(contracts),
+            },
+        }
+        _CHAIN_CACHE[cache_key] = response
+        return {**response, "cached": False}
 
 
-# ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
+    # ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
 
 
 @router.get("/api/options/live/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)

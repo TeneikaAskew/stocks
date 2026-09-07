@@ -40,8 +40,21 @@ logging.getLogger("gcp.database").setLevel(logging.ERROR + 1)
 # 5-minute TTL cache — freshness doesn't change faster than this.
 # Stdlib-only to avoid adding the cachetools dep just for one entry.
 _CACHE_TTL = 300  # seconds
-_cache_value: dict | None = None
-_cache_expires_at: float = 0.0
+# ONE tuple, `(report, expires_at)`, replaced by a single name rebinding.
+# Two separate globals were written in sequence, so a reader arriving between
+# the two saw the NEW report against the OLD expiry: it judged a report that
+# had just been produced as expired, declined the still-active flight, and
+# returned that fresh report labelled `stale: true` with an age measured from
+# the previous expiry. On the first fill the previous expiry is 0.0, which
+# made `stale_age_seconds` roughly the process's entire monotonic uptime plus
+# the TTL -- a number with no meaning at all, on the field an operator reads
+# to decide how much to trust the report (Codex, PR #991).
+#
+# A tuple rebinding is atomic under the GIL and every reader takes ONE
+# snapshot of it, so the two halves can no longer disagree. That is cheaper
+# and harder to get wrong than a lock around three accesses, and this is the
+# health surface: it should not be able to block on itself.
+_cache: "tuple[dict, float] | None" = None
 
 
 # Coalesces concurrent audits without parking a worker on a lock. See
@@ -78,10 +91,10 @@ def freshness_report_dict() -> dict:
     * **503** when there is nothing cached at all, which says "ask again in a
       moment" rather than fabricating a report or holding the connection.
     """
-    global _cache_value, _cache_expires_at
     now = time.monotonic()
-    if _cache_value is not None and now < _cache_expires_at:
-        return _cache_value
+    snapshot = _cache            # one read; see the comment on `_cache`
+    if snapshot is not None and now < snapshot[1]:
+        return snapshot[0]
 
     with _AUDIT_FLIGHT.claim(_AUDIT_KEY) as mine:
         if mine:
@@ -92,15 +105,18 @@ def freshness_report_dict() -> dict:
             # audit inside one TTL, which is the bound this function's
             # docstring promises. Claiming is not the same as being first.
             now = time.monotonic()
-            if _cache_value is not None and now < _cache_expires_at:
-                return _cache_value
+            snapshot = _cache
+            if snapshot is not None and now < snapshot[1]:
+                return snapshot[0]
             return _run_audit_and_cache(now)
 
         # Another request is auditing. Never wait for it.
-        if _cache_value is not None:
-            age_s = round(time.monotonic() - (_cache_expires_at - _CACHE_TTL))
+        snapshot = _cache
+        if snapshot is not None:
+            report, expires_at = snapshot
+            age_s = round(time.monotonic() - (expires_at - _CACHE_TTL))
             log.info("freshness audit in flight; serving a %ds-old report", age_s)
-            return {**_cache_value, "stale": True, "stale_age_seconds": age_s}
+            return {**report, "stale": True, "stale_age_seconds": age_s}
         raise HTTPException(
             status_code=503,
             detail=("Freshness audit in progress and no cached report is "
@@ -110,7 +126,7 @@ def freshness_report_dict() -> dict:
 
 def _run_audit_and_cache(now: float) -> dict:
     """Run the freshness audit and store it. Caller must hold the claim."""
-    global _cache_value, _cache_expires_at
+    global _cache
     try:
         # Import lazily so the module loads even if the audit script has issues
         import audit_data_freshness as audit_mod
@@ -123,8 +139,7 @@ def _run_audit_and_cache(now: float) -> dict:
         raise HTTPException(status_code=500, detail=f"Freshness audit failed: {exc}")
 
     response = report.to_dict()
-    _cache_value = response
-    _cache_expires_at = now + _CACHE_TTL
+    _cache = (response, now + _CACHE_TTL)   # one rebinding, see `_cache`
     return response
 
 

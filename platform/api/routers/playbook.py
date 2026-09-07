@@ -65,6 +65,7 @@ from api.schemas import (
     PlaybookResponse,
     ReportListResponse,
 )
+from lib.single_flight import SingleFlight  # noqa: E402
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -90,6 +91,10 @@ PLAYBOOK_WRITER_JOB = "phase6-playbook"
 # ThreadSafeCache, not a bare TTLCache: #991 dispatches these handlers to
 # the threadpool, and cachetools makes no concurrency guarantee -- two
 # threads through one TTLCache can corrupt its link list.
+# Coalesces cold fills; see lib/single_flight.py for why a decliner
+# never blocks and never does the work anyway.
+_REPORT_LIST_FLIGHT = SingleFlight()
+_REPORT_TEXT_FLIGHT = SingleFlight()
 _PLAYBOOK_CACHE: ThreadSafeCache = ThreadSafeCache(
     TTLCache(maxsize=32, ttl=3600))                             # /api/playbook responses
 _LIST_CACHE: ThreadSafeCache = ThreadSafeCache(
@@ -366,54 +371,65 @@ def list_reports(ticker: str):
     ticker_upper = ticker.upper()
 
     cached = _LIST_CACHE.get(ticker_upper, MISS)
-    if cached is not MISS:
-        return cached
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses
+    # on one key each run this whole fill (Codex, PR #991).
+    with _REPORT_LIST_FLIGHT.claim(ticker_upper) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _LIST_CACHE.get(ticker_upper, MISS)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The report list is being read now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not MISS:
+            return cached
 
-    # 1) ticker-specific reports: phase*_{ticker_lower}.md
-    ticker_specific = gcs_reader.list_matching_blobs(
-        GCS_PREFIX, rf"^phase.*_{re.escape(ticker_lower)}\.md$"
-    )
-
-    # 2) combined / multi-ticker reports: phase*.md that don't end with another ticker
-    all_phases = gcs_reader.list_matching_blobs(GCS_PREFIX, r"^phase.*\.md$")
-
-    available: list[dict] = []
-    seen = set()
-
-    for blob_name in ticker_specific:
-        filename = blob_name.rsplit("/", 1)[-1]
-        stem = filename.rsplit(".", 1)[0]
-        without_ticker = stem[: -(len(ticker_lower) + 1)] if stem.endswith(f"_{ticker_lower}") else stem
-        available.append({
-            "filename": filename,
-            "phase": without_ticker,
-            "path": f"gs://{gcs_reader.BUCKET}/{blob_name}",
-        })
-        seen.add(filename)
-
-    for blob_name in all_phases:
-        filename = blob_name.rsplit("/", 1)[-1]
-        if filename in seen:
-            continue
-        stem = filename.rsplit(".", 1)[0]
-        # Skip files that end with another known ticker
-        if any(stem.endswith(f"_{t}") for t in KNOWN_TICKERS if t != ticker_lower):
-            continue
-        available.append({
-            "filename": filename,
-            "phase": stem,
-            "path": f"gs://{gcs_reader.BUCKET}/{blob_name}",
-        })
-
-    if not available:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No reports found for ticker '{ticker_upper}' in GCS",
+        # 1) ticker-specific reports: phase*_{ticker_lower}.md
+        ticker_specific = gcs_reader.list_matching_blobs(
+            GCS_PREFIX, rf"^phase.*_{re.escape(ticker_lower)}\.md$"
         )
 
-    resp = {"ticker": ticker_upper, "reports": available}
-    _LIST_CACHE[ticker_upper] = resp
-    return resp
+        # 2) combined / multi-ticker reports: phase*.md that don't end with another ticker
+        all_phases = gcs_reader.list_matching_blobs(GCS_PREFIX, r"^phase.*\.md$")
+
+        available: list[dict] = []
+        seen = set()
+
+        for blob_name in ticker_specific:
+            filename = blob_name.rsplit("/", 1)[-1]
+            stem = filename.rsplit(".", 1)[0]
+            without_ticker = stem[: -(len(ticker_lower) + 1)] if stem.endswith(f"_{ticker_lower}") else stem
+            available.append({
+                "filename": filename,
+                "phase": without_ticker,
+                "path": f"gs://{gcs_reader.BUCKET}/{blob_name}",
+            })
+            seen.add(filename)
+
+        for blob_name in all_phases:
+            filename = blob_name.rsplit("/", 1)[-1]
+            if filename in seen:
+                continue
+            stem = filename.rsplit(".", 1)[0]
+            # Skip files that end with another known ticker
+            if any(stem.endswith(f"_{t}") for t in KNOWN_TICKERS if t != ticker_lower):
+                continue
+            available.append({
+                "filename": filename,
+                "phase": stem,
+                "path": f"gs://{gcs_reader.BUCKET}/{blob_name}",
+            })
+
+        if not available:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No reports found for ticker '{ticker_upper}' in GCS",
+            )
+
+        resp = {"ticker": ticker_upper, "reports": available}
+        _LIST_CACHE[ticker_upper] = resp
+        return resp
 
 
 @router.get("/api/reports/{ticker}/{phase}", response_class=PlainTextResponse)
@@ -425,40 +441,51 @@ def get_report(ticker: str, phase: str):
 
     cache_key = (ticker_upper, phase_lower)
     cached = _REPORT_TEXT_CACHE.get(cache_key, MISS)
-    if cached is not MISS:
-        return cached
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses
+    # on one key each run this whole fill (Codex, PR #991).
+    with _REPORT_TEXT_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _REPORT_TEXT_CACHE.get(cache_key, MISS)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The report text is being read now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not MISS:
+            return cached
 
-    # Try ticker-specific file first
-    candidates = gcs_reader.list_matching_blobs(
-        GCS_PREFIX, rf"^{re.escape(phase_lower)}.*_{re.escape(ticker_lower)}\.md$"
-    )
-
-    # Fall back to combined reports that don't end with another ticker
-    if not candidates:
-        all_phase = gcs_reader.list_matching_blobs(GCS_PREFIX, rf"^{re.escape(phase_lower)}.*\.md$")
-        candidates = [
-            b for b in all_phase
-            if not any(b.rsplit(".", 1)[0].endswith(f"_{t}") for t in KNOWN_TICKERS if t != ticker_lower)
-        ]
-
-    if not candidates:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No report found for ticker '{ticker_upper}' phase '{phase}' in GCS",
+        # Try ticker-specific file first
+        candidates = gcs_reader.list_matching_blobs(
+            GCS_PREFIX, rf"^{re.escape(phase_lower)}.*_{re.escape(ticker_lower)}\.md$"
         )
 
-    # Most specific (longest filename) match
-    blob_name = max(candidates, key=lambda b: len(b.rsplit("/", 1)[-1]))
-    # blob_name already includes the BASE_PREFIX (e.g. "raw/reports/phase1_strat_mining_iwm.md")
-    # Strip it to get the path relative to BASE_PREFIX, which is what download_text expects
-    if blob_name.startswith(gcs_reader.BASE_PREFIX):
-        blob_path_relative = blob_name[len(gcs_reader.BASE_PREFIX):]
-    else:
-        blob_path_relative = blob_name
+        # Fall back to combined reports that don't end with another ticker
+        if not candidates:
+            all_phase = gcs_reader.list_matching_blobs(GCS_PREFIX, rf"^{re.escape(phase_lower)}.*\.md$")
+            candidates = [
+                b for b in all_phase
+                if not any(b.rsplit(".", 1)[0].endswith(f"_{t}") for t in KNOWN_TICKERS if t != ticker_lower)
+            ]
 
-    content = _download_markdown(blob_path_relative)
-    _REPORT_TEXT_CACHE[cache_key] = content
-    return content
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No report found for ticker '{ticker_upper}' phase '{phase}' in GCS",
+            )
+
+        # Most specific (longest filename) match
+        blob_name = max(candidates, key=lambda b: len(b.rsplit("/", 1)[-1]))
+        # blob_name already includes the BASE_PREFIX (e.g. "raw/reports/phase1_strat_mining_iwm.md")
+        # Strip it to get the path relative to BASE_PREFIX, which is what download_text expects
+        if blob_name.startswith(gcs_reader.BASE_PREFIX):
+            blob_path_relative = blob_name[len(gcs_reader.BASE_PREFIX):]
+        else:
+            blob_path_relative = blob_name
+
+        content = _download_markdown(blob_path_relative)
+        _REPORT_TEXT_CACHE[cache_key] = content
+        return content
 
 
 # ── POST /api/playbook/evaluate ─────────────────────────────────────────────

@@ -443,8 +443,10 @@ def test_freshness_decliner_serves_a_stale_report_rather_than_waiting(monkeypatc
     import time
     from api.routers import health
 
-    monkeypatch.setattr(health, "_cache_value", {"ok": True, "sources": []})
-    monkeypatch.setattr(health, "_cache_expires_at", time.monotonic() - 1)  # expired
+    # Expired, and set as ONE tuple: the report and its expiry are a single
+    # value now, precisely so a reader cannot see one half updated.
+    monkeypatch.setattr(health, "_cache",
+                        ({"ok": True, "sources": []}, time.monotonic() - 1))
 
     with health._AUDIT_FLIGHT.claim(health._AUDIT_KEY) as mine:
         assert mine
@@ -464,8 +466,7 @@ def test_freshness_decliner_503s_when_nothing_is_cached(monkeypatch):
     from fastapi import HTTPException
     from api.routers import health
 
-    monkeypatch.setattr(health, "_cache_value", None)
-    monkeypatch.setattr(health, "_cache_expires_at", time.monotonic() - 1)
+    monkeypatch.setattr(health, "_cache", None)
 
     with health._AUDIT_FLIGHT.claim(health._AUDIT_KEY) as mine:
         assert mine
@@ -1101,9 +1102,14 @@ def test_a_catalyst_decliner_never_starts_a_second_vendor_batch():
            / "platform" / "api" / "routers" / "catalysts.py").read_text()
     body = src[src.index("with _CATALYST_FLIGHT.claim("):src.index("# Fall back to cache")]
 
-    # The fetch is reachable only on the claimant branch.
-    assert re.search(r"if mine:\s*\n\s*events = _fetch_live_events", body), (
-        "the fetch must sit under `if mine:` so only the claimant runs it")
+    # The fetch is reachable only from the claimant branch — and the claimant
+    # re-reads the cache first, since winning a claim is not the same as being
+    # first (Codex, PR #991).
+    claimant = body[body.index("if mine:"):body.index("else:")]
+    assert "_load_cached_events()" in claimant, (
+        "the claimant spends a vendor batch without re-reading the cache a "
+        "previous claimant may have just filled:\n" + claimant)
+    assert "_fetch_live_events" in claimant, claimant
     decliner = body[body.index("else:"):]
     assert "_fetch_live_events" not in decliner, (
         "the decliner branch starts a second vendor batch:\n" + decliner)
@@ -1552,3 +1558,140 @@ def test_the_options_dates_query_runs_inside_the_claim():
         assert len(line) - len(line.lstrip()) > claim_indent, (
             f"`{marker}` sits outside the claim, so the flight coalesces "
             f"nothing:\n{line}")
+
+
+# ── Every expensive cache fill is coalesced, and the list is the argument ────
+
+# `module: {cache: why it needs no flight}`. An entry here is a claim that
+# duplicating this fill under a burst is cheap enough not to matter; anything
+# not listed must run inside a `SingleFlight` claim.
+#
+# This inventory exists because "add a flight to this one too" arrived as four
+# separate review findings across three rounds, each naming the next cache in
+# the same list (Codex, PR #991). Enumerating them once and asserting the rest
+# turns the fifth into a CI failure instead of a fifth round.
+_UNCOALESCED_BY_DESIGN = {
+    "routers/playbook.py": {
+        "_PLAYBOOK_CACHE": "its hit path re-applies MAX_PLAYBOOK_AGE_DAYS on "
+                           "every read, so a decliner cannot serve the entry "
+                           "without duplicating that rule; coalescing it needs "
+                           "the freshness check factored out first, which is "
+                           "more than this PR should carry",
+    },
+    "main.py": {
+        "_SECTORS_CACHE": "one small query, 10m TTL, one key for the whole "
+                          "process — a duplicate costs one index read",
+    },
+    "routers/grid.py": {
+        "_ONDEMAND_RATE_CACHE": "the rate limiter itself; coalescing it would "
+                                "make the limiter depend on the thing it limits",
+    },
+    "routers/options.py": {
+        "_LIVE_CACHE": "the AlphaVantage proxy, already bounded by the vendor "
+                       "rate limiter and its own 5-minute ceiling",
+    },
+}
+
+
+def _cache_fills(src: str):
+    """[(cache name, lineno, inside a claim?)] for each module-level cache write.
+
+    A fill inside a function named `*_uncached` counts as guarded: that is the
+    convention for a claimant's body extracted out of a handler, and
+    `test_an_uncached_helper_is_only_reachable_from_a_claimant` is what makes
+    the name mean something rather than decorate something.
+    """
+    import ast
+    tree = ast.parse(src)
+    claims = [n for n in ast.walk(tree)
+              if isinstance(n, ast.With) and any(
+                  isinstance(i.context_expr, ast.Call)
+                  and isinstance(i.context_expr.func, ast.Attribute)
+                  and i.context_expr.func.attr == "claim"
+                  for i in n.items)]
+    claims += [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name.endswith("_uncached")]
+    guarded = {id(sub) for c in claims for sub in ast.walk(c)}
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript) or not isinstance(node.ctx, ast.Store):
+            continue
+        if not (isinstance(node.value, ast.Name)
+                and node.value.id.endswith("_CACHE")
+                and node.value.id.isupper()):
+            continue
+        out.append((node.value.id, node.lineno, id(node) in guarded))
+    return out
+
+
+@pytest.mark.parametrize("rel", [
+    "main.py", "routers/grid.py", "routers/options.py", "routers/backtest.py",
+    "routers/catalysts.py", "routers/playbook.py", "routers/signals.py",
+    "routers/health.py",
+])
+def test_every_expensive_cache_fill_runs_inside_a_claim(rel):
+    """A cold cache plus threadpool dispatch is N copies of the fill.
+
+    The event loop used to serialise them for free, and this branch is what
+    withdraws that. Each cache either fills inside a `SingleFlight` claim or
+    appears in `_UNCOALESCED_BY_DESIGN` with a reason — so the decision is
+    recorded either way, and a new cache added later fails here rather than
+    in someone's production burst.
+    """
+    src = (Path(__file__).resolve().parent.parent.parent
+           / "platform" / "api" / rel).read_text()
+    exempt = _UNCOALESCED_BY_DESIGN.get(rel, {})
+    naked = [f"{rel}:{line} {name}"
+             for name, line, guarded in _cache_fills(src)
+             if not guarded and name not in exempt]
+    assert not naked, (
+        "these cache fills run outside a single-flight claim, so concurrent "
+        "misses on one key each do the whole fill:\n  " + "\n  ".join(naked)
+        + "\n\nAdd a flight, or add the cache to _UNCOALESCED_BY_DESIGN with "
+          "the reason a duplicate fill is cheap.")
+
+
+def test_the_exemption_list_names_only_caches_that_exist():
+    """An exemption for a cache that has been renamed or deleted silently
+    exempts nothing, which is how an allowlist rots into a blindfold."""
+    import re
+    for rel, entries in _UNCOALESCED_BY_DESIGN.items():
+        src = (Path(__file__).resolve().parent.parent.parent
+               / "platform" / "api" / rel).read_text()
+        for name in entries:
+            assert re.search(rf"^{re.escape(name)}\s*[:=]", src, re.M), (
+                f"{rel} has no cache named {name}; the exemption is stale")
+
+
+def test_an_uncached_helper_is_only_reachable_from_a_claimant():
+    """`*_uncached` marks a claimant's body, so it must not be callable from
+    outside one — otherwise the convention exempts fills from the coalescing
+    guard while the work is still duplicated."""
+    import ast
+    for rel in ("main.py", "routers/grid.py", "routers/options.py",
+                "routers/backtest.py", "routers/catalysts.py",
+                "routers/playbook.py", "routers/signals.py"):
+        src = (Path(__file__).resolve().parent.parent.parent
+               / "platform" / "api" / rel).read_text()
+        tree = ast.parse(src)
+        helpers = {n.name for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and n.name.endswith("_uncached")}
+        if not helpers:
+            continue
+        claims = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.With) and any(
+                      isinstance(i.context_expr, ast.Call)
+                      and isinstance(i.context_expr.func, ast.Attribute)
+                      and i.context_expr.func.attr == "claim"
+                      for i in n.items)]
+        inside = {id(sub) for c in claims for sub in ast.walk(c)}
+        loose = [f"{rel}:{n.lineno} {n.func.id}"
+                 for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id in helpers and id(n) not in inside]
+        assert not loose, (
+            "these calls to a `_uncached` helper are outside a claim, so the "
+            "coalescing guard exempts their cache fills while the work is "
+            "still duplicated:\n  " + "\n  ".join(loose))

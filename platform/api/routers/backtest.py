@@ -123,6 +123,9 @@ _ALL_RUNS_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=16, ttl=600)
 # moved to the threadpool — the `async def` with no `await` had serialised them
 # for free, and nobody had written that guarantee down (Codex, PR #991).
 _ALL_RUNS_FLIGHT = SingleFlight()
+# The single-run reads have the same shape and the same cost per key.
+_RESULTS_FLIGHT = SingleFlight()
+_EQUITY_FLIGHT = SingleFlight()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -194,43 +197,61 @@ def get_backtest_results(ticker: str, run: str | None = None):
     if cached is not MISS:
         return cached
 
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
-    if not blobs:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No backtest results found in GCS for ticker '{ticker_upper}'",
-        )
+    # Coalesce cold fills: one GCS list plus a CSV download and pandas parse, uncoalesced once the handler moved to
+    # the threadpool, so a burst multiplies GCS traffic, pandas memory and
+    # worker occupancy by the number of callers (Codex, PR #991).
+    with _RESULTS_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not the same as being first.
+        cached = _RESULTS_CACHE.get(cache_key, MISS)
+        if cached is not MISS:
+            return cached
+        if not mine:
+            # No wait, for the reason `_ALL_RUNS_FLIGHT` records: this
+            # fill runs longer than any wait worth holding a worker for.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"Backtest results for {ticker_upper} is being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "5"},
+            )
 
-    blob_name = blobs[0]
-    filename = blob_name.rsplit("/", 1)[-1]
-    try:
-        df = gcs_reader.download_csv(blob_name)
-    except Exception as exc:
-        log.error("Failed to download %s: %s", blob_name, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to download backtest CSV from GCS: {exc}")
+        blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _backtest_pattern(ticker_upper, run))
+        if not blobs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No backtest results found in GCS for ticker '{ticker_upper}'",
+            )
 
-    if df.empty:
+        blob_name = blobs[0]
+        filename = blob_name.rsplit("/", 1)[-1]
+        try:
+            df = gcs_reader.download_csv(blob_name)
+        except Exception as exc:
+            log.error("Failed to download %s: %s", blob_name, exc)
+            raise HTTPException(status_code=502, detail=f"Failed to download backtest CSV from GCS: {exc}")
+
+        if df.empty:
+            resp = {
+                "ticker": ticker_upper,
+                "filename": filename,
+                "trade_count": 0,
+                "summary": {},
+                "trades": [],
+            }
+            _RESULTS_CACHE[cache_key] = resp
+            return resp
+
+        summary = _summarize_returns(df)
+        trades = _trades_to_percent_records(df)
         resp = {
             "ticker": ticker_upper,
             "filename": filename,
-            "trade_count": 0,
-            "summary": {},
-            "trades": [],
+            "trade_count": len(trades),
+            "summary": summary,
+            "trades": trades,
         }
         _RESULTS_CACHE[cache_key] = resp
         return resp
-
-    summary = _summarize_returns(df)
-    trades = _trades_to_percent_records(df)
-    resp = {
-        "ticker": ticker_upper,
-        "filename": filename,
-        "trade_count": len(trades),
-        "summary": summary,
-        "trades": trades,
-    }
-    _RESULTS_CACHE[cache_key] = resp
-    return resp
 
 
 @router.get("/api/backtest/equity/{ticker}", response_model=BacktestEquityResponse, response_model_exclude_unset=True)
@@ -245,72 +266,90 @@ def get_equity_curve(ticker: str, run: str | None = None):
     if cached is not MISS:
         return cached
 
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
-    if not blobs:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No equity curve found in GCS for ticker '{ticker_upper}'",
-        )
+    # Coalesce cold fills: one GCS list plus a CSV download and pandas parse, uncoalesced once the handler moved to
+    # the threadpool, so a burst multiplies GCS traffic, pandas memory and
+    # worker occupancy by the number of callers (Codex, PR #991).
+    with _EQUITY_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not the same as being first.
+        cached = _EQUITY_CACHE.get(cache_key, MISS)
+        if cached is not MISS:
+            return cached
+        if not mine:
+            # No wait, for the reason `_ALL_RUNS_FLIGHT` records: this
+            # fill runs longer than any wait worth holding a worker for.
+            raise HTTPException(
+                status_code=503,
+                detail=(f"The equity curve for {ticker_upper} is being read now; "
+                        f"retry shortly."),
+                headers={"Retry-After": "5"},
+            )
 
-    blob_name = blobs[0]
-    filename = blob_name.rsplit("/", 1)[-1]
-    try:
-        df = gcs_reader.download_csv(blob_name)
-    except Exception as exc:
-        log.error("Failed to download %s: %s", blob_name, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to download equity CSV from GCS: {exc}")
+        blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _equity_pattern(ticker_upper, run))
+        if not blobs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No equity curve found in GCS for ticker '{ticker_upper}'",
+            )
 
-    if df.empty:
-        resp = {"ticker": ticker_upper, "filename": filename, "summary": {}, "dates": [], "values": []}
+        blob_name = blobs[0]
+        filename = blob_name.rsplit("/", 1)[-1]
+        try:
+            df = gcs_reader.download_csv(blob_name)
+        except Exception as exc:
+            log.error("Failed to download %s: %s", blob_name, exc)
+            raise HTTPException(status_code=502, detail=f"Failed to download equity CSV from GCS: {exc}")
+
+        if df.empty:
+            resp = {"ticker": ticker_upper, "filename": filename, "summary": {}, "dates": [], "values": []}
+            _EQUITY_CACHE[cache_key] = resp
+            return resp
+
+        # Equity CSVs have: "Unnamed: 0" (date index) and "0" (equity value)
+        date_col = None
+        value_col = None
+        for col in df.columns:
+            if col in ("Unnamed: 0", "date", "Date", "index"):
+                date_col = col
+            elif col in ("0", "equity", "Equity", "value", "Value"):
+                value_col = col
+
+        # Fallback: first col = date, second col = value
+        if date_col is None and len(df.columns) >= 1:
+            date_col = df.columns[0]
+        if value_col is None and len(df.columns) >= 2:
+            value_col = df.columns[1]
+
+        dates = df[date_col].astype(str).tolist() if date_col else []
+        values = [float(v) if pd.notna(v) else None for v in df[value_col]] if value_col else []
+
+        # Summary stats
+        clean_values = [v for v in values if v is not None]
+        summary: dict = {}
+        if clean_values:
+            start_val = clean_values[0]
+            end_val = clean_values[-1]
+            peak = max(clean_values)
+            trough_after_peak = min(clean_values[clean_values.index(peak):])
+            max_drawdown = (trough_after_peak - peak) / peak if peak != 0 else 0.0
+            total_return = (end_val - start_val) / start_val if start_val != 0 else 0.0
+            summary = {
+                "start_value": round(start_val, 4),
+                "end_value": round(end_val, 4),
+                "peak_value": round(peak, 4),
+                "total_return_pct": round(total_return * 100, 4),
+                "max_drawdown_pct": round(max_drawdown * 100, 4),
+                "data_points": len(clean_values),
+            }
+
+        resp = {
+            "ticker": ticker_upper,
+            "filename": filename,
+            "summary": summary,
+            "dates": dates,
+            "values": values,
+        }
         _EQUITY_CACHE[cache_key] = resp
         return resp
-
-    # Equity CSVs have: "Unnamed: 0" (date index) and "0" (equity value)
-    date_col = None
-    value_col = None
-    for col in df.columns:
-        if col in ("Unnamed: 0", "date", "Date", "index"):
-            date_col = col
-        elif col in ("0", "equity", "Equity", "value", "Value"):
-            value_col = col
-
-    # Fallback: first col = date, second col = value
-    if date_col is None and len(df.columns) >= 1:
-        date_col = df.columns[0]
-    if value_col is None and len(df.columns) >= 2:
-        value_col = df.columns[1]
-
-    dates = df[date_col].astype(str).tolist() if date_col else []
-    values = [float(v) if pd.notna(v) else None for v in df[value_col]] if value_col else []
-
-    # Summary stats
-    clean_values = [v for v in values if v is not None]
-    summary: dict = {}
-    if clean_values:
-        start_val = clean_values[0]
-        end_val = clean_values[-1]
-        peak = max(clean_values)
-        trough_after_peak = min(clean_values[clean_values.index(peak):])
-        max_drawdown = (trough_after_peak - peak) / peak if peak != 0 else 0.0
-        total_return = (end_val - start_val) / start_val if start_val != 0 else 0.0
-        summary = {
-            "start_value": round(start_val, 4),
-            "end_value": round(end_val, 4),
-            "peak_value": round(peak, 4),
-            "total_return_pct": round(total_return * 100, 4),
-            "max_drawdown_pct": round(max_drawdown * 100, 4),
-            "data_points": len(clean_values),
-        }
-
-    resp = {
-        "ticker": ticker_upper,
-        "filename": filename,
-        "summary": summary,
-        "dates": dates,
-        "values": values,
-    }
-    _EQUITY_CACHE[cache_key] = resp
-    return resp
 
 
 @router.get("/api/backtest/all/{ticker}", response_model=BacktestAllResponse, response_model_exclude_unset=True)

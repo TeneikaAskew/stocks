@@ -1170,13 +1170,12 @@ class TestHealthFreshnessAPI:
     """`GET /api/health/freshness` — wraps `scripts/audit_data_freshness.py`.
 
     The endpoint has a module-level 5-minute TTL cache. Tests must reset
-    `_cache_value` between cases or stale results leak across.
+    `_cache` between cases or stale results leak across.
     """
 
     def _reset_cache(self):
         from api.routers import health as health_module
-        health_module._cache_value = None
-        health_module._cache_expires_at = 0.0
+        health_module._cache = None
 
     def test_freshness_returns_audit_dict(self, client, monkeypatch):
         from api.routers import health as health_module

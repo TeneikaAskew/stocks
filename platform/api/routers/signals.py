@@ -35,6 +35,7 @@ from api.schemas import (
     SignalsResponse,
     SimilarResponse,
 )
+from lib.single_flight import SingleFlight  # noqa: E402
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -49,6 +50,9 @@ _CLOUD_SQL = bool(
 
 # ── Legacy parquet fallback (kept for local-dev without Cloud SQL) ─────────
 GCS_PREFIX = "data/signals/"
+# Coalesces cold fills; see lib/single_flight.py for why a decliner
+# never blocks and never does the work anyway.
+_DF_FLIGHT = SingleFlight()
 _DF_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=8, ttl=3600))
 
 
@@ -59,34 +63,46 @@ def _pattern(ticker_lower: str) -> str:
 def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
     """Legacy path: load from GCS parquet. Used only when Cloud SQL is off."""
     cached = _DF_CACHE.get(ticker_upper, MISS)
-    if cached is not MISS:
-        return cached
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _DF_FLIGHT.claim(ticker_upper) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _DF_CACHE.get(ticker_upper, MISS)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The signals frame is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not MISS:
+            return cached
 
-    ticker_lower = ticker_upper.lower()
-    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _pattern(ticker_lower))
-    if not blobs:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No signals parquet found in GCS for {ticker_upper}.",
-        )
+        ticker_lower = ticker_upper.lower()
+        blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _pattern(ticker_lower))
+        if not blobs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No signals parquet found in GCS for {ticker_upper}.",
+            )
 
-    blob_name = blobs[0]
-    filename = blob_name.rsplit("/", 1)[-1]
-    try:
-        df = gcs_reader.download_parquet(
-            blob_name,
-            columns=[
-                "entry_time", "trade_type", "entry_price", "entry_rsi",
-                "entry_ema9", "entry_ema20", "entry_volume",
-                "signal_strength", "conditions_met", "return_pct",
-            ],
-        )
-    except Exception as exc:
-        log.error("Failed to download %s: %s", blob_name, exc)
-        raise HTTPException(status_code=502, detail=f"Failed to download signals parquet from GCS: {exc}")
+        blob_name = blobs[0]
+        filename = blob_name.rsplit("/", 1)[-1]
+        try:
+            df = gcs_reader.download_parquet(
+                blob_name,
+                columns=[
+                    "entry_time", "trade_type", "entry_price", "entry_rsi",
+                    "entry_ema9", "entry_ema20", "entry_volume",
+                    "signal_strength", "conditions_met", "return_pct",
+                ],
+            )
+        except Exception as exc:
+            log.error("Failed to download %s: %s", blob_name, exc)
+            raise HTTPException(status_code=502, detail=f"Failed to download signals parquet from GCS: {exc}")
 
-    _DF_CACHE[ticker_upper] = (filename, df)
-    return filename, df
+        _DF_CACHE[ticker_upper] = (filename, df)
+        return filename, df
 
 
 def _query_signals_sql(

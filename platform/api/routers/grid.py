@@ -394,6 +394,15 @@ _ONDEMAND_RATE_LOCK = threading.Lock()
 # would trade one starvation for another. The decliner has an honest answer —
 # the typed `unavailable` envelope the UI already renders and re-polls.
 _ONDEMAND_FLIGHT = SingleFlight()
+# Coalesces cold /grid/timeseries fills, which query every realtime contract in
+# the lookback window and then materialise and slice the frame.
+_TIMESERIES_FLIGHT = SingleFlight()
+# One flight per cache: the keys are different questions, so serialising them
+# against each other would trade one queue for another.
+_LIVE_GRID_FLIGHT = SingleFlight()
+_HIST_GRID_FLIGHT = SingleFlight()
+_NODES_FLIGHT = SingleFlight()
+_HIST_NODES_FLIGHT = SingleFlight()
 
 
 def _check_ondemand_rate_limit(client_ip: str, ticker: str) -> None:
@@ -589,73 +598,85 @@ def get_grid_live(
 
     cache_key = (ticker_upper, round(strike_window_pct, 2), expirations or "")
     cached = _LIVE_GRID_CACHE.get(cache_key)
-    if cached is not None:
-        response.headers["Cache-Control"] = "public, max-age=60"
-        return cached
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _LIVE_GRID_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _LIVE_GRID_CACHE.get(cache_key)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The live gamma grid is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=60"
+            return cached
 
-    contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_live(
-        ticker_upper,
-    )
-
-    # Phase B2: on-demand AV dispatch for off-list tickers when no
-    # Cloud SQL data exists. Scheduled-list tickers always have data
-    # (Track 0 fetcher keeps them current); off-list tickers are
-    # eligible for one-off live fetches.
-    if (data_source == "unavailable"
-            and allow_on_demand
-            and ticker_upper not in _SCHEDULED_REALTIME_TICKERS):
-        try:
-            client_ip = request.client.host if request.client else "unknown"
-            # Single-flight without waiting. The claimant fetches; a
-            # concurrent request for the same ticker re-reads Cloud SQL (the
-            # claimant may already have persisted) and otherwise falls through
-            # to the `unavailable` envelope rather than parking a worker.
-            with _ONDEMAND_FLIGHT.claim(ticker_upper) as is_claimant:
-                (contracts, ts_iso, snapshot_date,
-                 data_source, _days) = _load_chain_for_live(ticker_upper)
-                if data_source == "unavailable" and is_claimant:
-                    contracts, ts_iso, snapshot_date = _fetch_on_demand(
-                        ticker_upper, client_ip,
-                    )
-                    data_source = "realtime" if contracts else "unavailable"
-                elif data_source == "unavailable":
-                    logger.info(
-                        "on-demand fetch for %s already in flight; returning "
-                        "unavailable rather than queueing a worker behind it",
-                        ticker_upper)
-        except HTTPException:
-            raise   # propagate 429 / 503 — typed signals the UI can render
-        except Exception as exc:
-            # Defensive — _fetch_on_demand already catches and re-raises
-            # as HTTPException, but if anything slips through we surface
-            # an unavailable envelope rather than crash the request.
-            logger.error("On-demand dispatch panic for %s: %s: %s",
-                          ticker_upper, type(exc).__name__, exc)
-
-    if data_source == "unavailable" or not contracts:
-        envelope = _unavailable_envelope(
+        contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_live(
             ticker_upper,
-            "no realtime or EOD chain found within the lookup window"
-            + (" (on-demand fetch skipped)" if not allow_on_demand else ""),
         )
-        # Don't cache unavailable responses — operator wants to see
-        # the moment data appears, not a stale "no data" reply.
-        return envelope
 
-    exp_filter = [e.strip() for e in expirations.split(",")] if expirations else None
-    summary = gamma.build_grid_summary(
-        ticker_upper,
-        snapshot_date.isoformat() if snapshot_date else "",
-        contracts,
-        snapshot_ts=ts_iso,
-        data_source=data_source,
-        window_pct=strike_window_pct,
-        expirations_filter=exp_filter,
-    )
-    payload = summary.to_dict()
-    _LIVE_GRID_CACHE[cache_key] = payload
-    response.headers["Cache-Control"] = "public, max-age=60"
-    return payload
+        # Phase B2: on-demand AV dispatch for off-list tickers when no
+        # Cloud SQL data exists. Scheduled-list tickers always have data
+        # (Track 0 fetcher keeps them current); off-list tickers are
+        # eligible for one-off live fetches.
+        if (data_source == "unavailable"
+                and allow_on_demand
+                and ticker_upper not in _SCHEDULED_REALTIME_TICKERS):
+            try:
+                client_ip = request.client.host if request.client else "unknown"
+                # Single-flight without waiting. The claimant fetches; a
+                # concurrent request for the same ticker re-reads Cloud SQL (the
+                # claimant may already have persisted) and otherwise falls through
+                # to the `unavailable` envelope rather than parking a worker.
+                with _ONDEMAND_FLIGHT.claim(ticker_upper) as is_claimant:
+                    (contracts, ts_iso, snapshot_date,
+                     data_source, _days) = _load_chain_for_live(ticker_upper)
+                    if data_source == "unavailable" and is_claimant:
+                        contracts, ts_iso, snapshot_date = _fetch_on_demand(
+                            ticker_upper, client_ip,
+                        )
+                        data_source = "realtime" if contracts else "unavailable"
+                    elif data_source == "unavailable":
+                        logger.info(
+                            "on-demand fetch for %s already in flight; returning "
+                            "unavailable rather than queueing a worker behind it",
+                            ticker_upper)
+            except HTTPException:
+                raise   # propagate 429 / 503 — typed signals the UI can render
+            except Exception as exc:
+                # Defensive — _fetch_on_demand already catches and re-raises
+                # as HTTPException, but if anything slips through we surface
+                # an unavailable envelope rather than crash the request.
+                logger.error("On-demand dispatch panic for %s: %s: %s",
+                              ticker_upper, type(exc).__name__, exc)
+
+        if data_source == "unavailable" or not contracts:
+            envelope = _unavailable_envelope(
+                ticker_upper,
+                "no realtime or EOD chain found within the lookup window"
+                + (" (on-demand fetch skipped)" if not allow_on_demand else ""),
+            )
+            # Don't cache unavailable responses — operator wants to see
+            # the moment data appears, not a stale "no data" reply.
+            return envelope
+
+        exp_filter = [e.strip() for e in expirations.split(",")] if expirations else None
+        summary = gamma.build_grid_summary(
+            ticker_upper,
+            snapshot_date.isoformat() if snapshot_date else "",
+            contracts,
+            snapshot_ts=ts_iso,
+            data_source=data_source,
+            window_pct=strike_window_pct,
+            expirations_filter=exp_filter,
+        )
+        payload = summary.to_dict()
+        _LIVE_GRID_CACHE[cache_key] = payload
+        response.headers["Cache-Control"] = "public, max-age=60"
+        return payload
 
 
 @router.get("/api/options/{ticker}/{date_str}/grid", response_model=GammaGridResponse, response_model_exclude_unset=True)
@@ -684,36 +705,48 @@ def get_grid_historical(
     cache_key = (ticker_upper, date_str, round(strike_window_pct, 2),
                  expirations or "")
     cached = _HIST_GRID_CACHE.get(cache_key)
-    if cached is not None:
-        response.headers["Cache-Control"] = "public, max-age=43200"
-        return cached
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _HIST_GRID_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _HIST_GRID_CACHE.get(cache_key)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The historical gamma grid is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=43200"
+            return cached
 
-    contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_historical(
-        ticker_upper, requested_date,
-    )
-    if data_source == "unavailable" or not contracts:
-        return _unavailable_envelope(
-            ticker_upper,
-            f"no EOD chain at or before {date_str} within the lookup window",
+        contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_historical(
+            ticker_upper, requested_date,
         )
+        if data_source == "unavailable" or not contracts:
+            return _unavailable_envelope(
+                ticker_upper,
+                f"no EOD chain at or before {date_str} within the lookup window",
+            )
 
-    exp_filter = [e.strip() for e in expirations.split(",")] if expirations else None
-    summary = gamma.build_grid_summary(
-        ticker_upper,
-        snapshot_date.isoformat() if snapshot_date else date_str,
-        contracts,
-        snapshot_ts=ts_iso,
-        data_source=data_source,
-        window_pct=strike_window_pct,
-        expirations_filter=exp_filter,
-    )
-    payload = summary.to_dict()
-    _HIST_GRID_CACHE[cache_key] = payload
-    response.headers["Cache-Control"] = "public, max-age=43200"
-    return payload
+        exp_filter = [e.strip() for e in expirations.split(",")] if expirations else None
+        summary = gamma.build_grid_summary(
+            ticker_upper,
+            snapshot_date.isoformat() if snapshot_date else date_str,
+            contracts,
+            snapshot_ts=ts_iso,
+            data_source=data_source,
+            window_pct=strike_window_pct,
+            expirations_filter=exp_filter,
+        )
+        payload = summary.to_dict()
+        _HIST_GRID_CACHE[cache_key] = payload
+        response.headers["Cache-Control"] = "public, max-age=43200"
+        return payload
 
 
-# ─── /nodes endpoints (semantic taxonomy) ──────────────────────────────────
+    # ─── /nodes endpoints (semantic taxonomy) ──────────────────────────────────
 
 
 def _is_third_friday(d: date_type) -> bool:
@@ -847,41 +880,53 @@ def get_nodes_live(
 
     cache_key = (ticker_upper, round(strike_window_pct, 2))
     cached = _NODES_CACHE.get(cache_key)
-    if cached is not None:
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _NODES_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _NODES_CACHE.get(cache_key)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The live gamma nodes is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=60"
+            return cached
+
+        contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_live(ticker_upper)
+        if data_source == "unavailable" or not contracts:
+            return {
+                "ticker": ticker_upper,
+                "snapshot_ts": None,
+                "snapshot_date": None,
+                "data_source": "unavailable",
+                "spot": None,
+                "gamma_balance": None,
+            "gamma_flip": None,
+                "regime": "unknown",
+                "total_gex": 0.0,
+                "total_vex": 0.0,
+                "king": None,
+                "gates": [],
+                "midpoints": [],
+                "hedge_nodes": [],
+                "opex_nodes": [],
+                "tactical_summary": None,
+                "warnings": [
+                    "no realtime or EOD chain found within the lookup window",
+                ],
+            }
+
+        payload = _build_nodes_payload(
+            ticker_upper, contracts, ts_iso, snapshot_date,
+            data_source, strike_window_pct,
+        )
+        _NODES_CACHE[cache_key] = payload
         response.headers["Cache-Control"] = "public, max-age=60"
-        return cached
-
-    contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_live(ticker_upper)
-    if data_source == "unavailable" or not contracts:
-        return {
-            "ticker": ticker_upper,
-            "snapshot_ts": None,
-            "snapshot_date": None,
-            "data_source": "unavailable",
-            "spot": None,
-            "gamma_balance": None,
-        "gamma_flip": None,
-            "regime": "unknown",
-            "total_gex": 0.0,
-            "total_vex": 0.0,
-            "king": None,
-            "gates": [],
-            "midpoints": [],
-            "hedge_nodes": [],
-            "opex_nodes": [],
-            "tactical_summary": None,
-            "warnings": [
-                "no realtime or EOD chain found within the lookup window",
-            ],
-        }
-
-    payload = _build_nodes_payload(
-        ticker_upper, contracts, ts_iso, snapshot_date,
-        data_source, strike_window_pct,
-    )
-    _NODES_CACHE[cache_key] = payload
-    response.headers["Cache-Control"] = "public, max-age=60"
-    return payload
+        return payload
 
 
 @router.get("/api/options/{ticker}/{date_str}/nodes", response_model=GammaNodesResponse, response_model_exclude_unset=True)
@@ -898,47 +943,58 @@ def get_nodes_historical(
 
     cache_key = (ticker_upper, date_str, round(strike_window_pct, 2))
     cached = _HIST_NODES_CACHE.get(cache_key)
-    if cached is not None:
+    # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
+    # one key each run this whole fill; the `async def` with no `await`
+    # had serialised them for free (Codex, PR #991).
+    with _HIST_NODES_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not being first.
+        cached = _HIST_NODES_CACHE.get(cache_key)
+        if not mine:
+            raise HTTPException(
+                status_code=503,
+                detail=("The historical gamma nodes is being computed now; retry shortly."),
+                headers={"Retry-After": "5"},
+            )
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=43200"
+            return cached
+
+        contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_historical(
+            ticker_upper, requested_date,
+        )
+        if data_source == "unavailable" or not contracts:
+            return {
+                "ticker": ticker_upper,
+                "snapshot_ts": None,
+                "snapshot_date": None,
+                "data_source": "unavailable",
+                "spot": None,
+                "gamma_balance": None,
+            "gamma_flip": None,
+                "regime": "unknown",
+                "total_gex": 0.0,
+                "total_vex": 0.0,
+                "king": None,
+                "gates": [],
+                "midpoints": [],
+                "hedge_nodes": [],
+                "opex_nodes": [],
+                "tactical_summary": None,
+                "warnings": [
+                    f"no EOD chain at or before {date_str} within the lookup window",
+                ],
+            }
+
+        payload = _build_nodes_payload(
+            ticker_upper, contracts, ts_iso, snapshot_date,
+            data_source, strike_window_pct,
+        )
+        _HIST_NODES_CACHE[cache_key] = payload
         response.headers["Cache-Control"] = "public, max-age=43200"
-        return cached
-
-    contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_historical(
-        ticker_upper, requested_date,
-    )
-    if data_source == "unavailable" or not contracts:
-        return {
-            "ticker": ticker_upper,
-            "snapshot_ts": None,
-            "snapshot_date": None,
-            "data_source": "unavailable",
-            "spot": None,
-            "gamma_balance": None,
-        "gamma_flip": None,
-            "regime": "unknown",
-            "total_gex": 0.0,
-            "total_vex": 0.0,
-            "king": None,
-            "gates": [],
-            "midpoints": [],
-            "hedge_nodes": [],
-            "opex_nodes": [],
-            "tactical_summary": None,
-            "warnings": [
-                f"no EOD chain at or before {date_str} within the lookup window",
-            ],
-        }
-
-    payload = _build_nodes_payload(
-        ticker_upper, contracts, ts_iso, snapshot_date,
-        data_source, strike_window_pct,
-    )
-    _HIST_NODES_CACHE[cache_key] = payload
-    response.headers["Cache-Control"] = "public, max-age=43200"
-    return payload
+        return payload
 
 
 # ─── /grid/timeseries endpoint (Phase B2 — realtime only) ──────────────────
-
 
 _TIMESERIES_CACHE: ThreadSafeCache = ThreadSafeCache(TTLCache(maxsize=128, ttl=60))
 
@@ -999,243 +1055,264 @@ def get_grid_timeseries(
         response.headers["Cache-Control"] = "public, max-age=60"
         return cached
 
-    from gcp.database import query_to_dataframe
-
-    # Pull snapshots in the lookback window. Filter to a single expiration
-    # at the SQL level if specified, otherwise resolve below.
-    cutoff = datetime.now(timezone.utc) - pd.Timedelta(hours=lookback_hours)
-    where_exp = "AND expiration = :exp" if expiration else ""
-    sql = f"""
-        SELECT snapshot_ts, snapshot_date, expiration, strike, option_type,
-               open_interest, gamma, vega
-        FROM etf_options_snapshots
-        WHERE ticker = :ticker
-          AND data_source = 'alphavantage'
-          AND market_session = 'REALTIME'
-          AND snapshot_ts >= :cutoff
-          {where_exp}
-        ORDER BY snapshot_ts, expiration, strike
-    """
-    params: dict = {"ticker": ticker_upper, "cutoff": cutoff}
-    if expiration:
-        params["exp"] = expiration
-
-    df = query_to_dataframe(sql, params)
-    if df.empty:
-        payload = {
-            "ticker": ticker_upper,
-            "expiration": expiration,
-            "lookback_hours": lookback_hours,
-            "data_source": "unavailable",
-            "series": [],
-            "warnings": [
-                f"no realtime rows for {ticker_upper} in the last "
-                f"{lookback_hours}h "
-                + ("(expiration filter applied)" if expiration else "")
-            ],
-        }
-        return payload
-
-    # Resolve expiration: if not specified, pick the nearest upcoming.
-    # The expirations column carries datetime.date or pd.Timestamp;
-    # normalize to ISO.
-    def _exp_iso(v) -> str:
-        if hasattr(v, "isoformat"):
-            return v.isoformat()[:10]
-        return str(v)[:10]
-
-    df["expiration_iso"] = df["expiration"].map(_exp_iso)
-
-    if not expiration:
-        today = date_type.today()
-        all_exps = sorted({e for e in df["expiration_iso"].unique()})
-        upcoming = [e for e in all_exps
-                    if date_type.fromisoformat(e) >= today]
-        if not upcoming:
-            # All cached expirations have already expired — fall back to
-            # the most recent past one (still useful for short lookbacks).
-            chosen_exp = all_exps[-1] if all_exps else None
-        else:
-            chosen_exp = upcoming[0]
-        if chosen_exp is None:
-            return {
-                "ticker": ticker_upper,
-                "expiration": None,
-                "lookback_hours": lookback_hours,
-                "data_source": "unavailable",
-                "series": [],
-                "warnings": ["no expirations in fetched window"],
-            }
-        df = df[df["expiration_iso"] == chosen_exp]
-        expiration = chosen_exp
-
-    # Pick the strike set: explicit list, or top-10 by |GEX| at the
-    # most recent snapshot in the window.
-    if strikes:
-        try:
-            strike_set = {float(s.strip()) for s in strikes.split(",") if s.strip()}
-        except ValueError as exc:
-            # ?strikes=abc or ?strikes=100,xyz → typed 4xx instead of an
-            # internal 500. Surface the specific bad token so the caller
-            # can fix it (Codex review on PR #544).
+    # Coalesce cold fills. This query reads every realtime contract in the
+    # lookback window -- up to 6.5 hours of snapshots -- and then materialises
+    # and repeatedly slices the frame, so N concurrent misses on one key is N
+    # of those holding pooled connections and large DataFrames at once. The
+    # `async def` with no `await` had serialised them for free (Codex, PR #991).
+    with _TIMESERIES_FLIGHT.claim(cache_key) as mine:
+        # Re-read inside the claim: winning it is not the same as being first.
+        cached = _TIMESERIES_CACHE.get(cache_key)
+        if cached is not None:
+            response.headers["Cache-Control"] = "public, max-age=60"
+            return cached
+        if not mine:
+            # No wait: this fill is measured in seconds, so a wait would hold
+            # a worker for an outcome it is unlikely to reach.
             raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid `strikes` parameter — expected comma-separated "
-                    f"numbers (e.g. '650,655,660'). Parse error: {exc}"
-                ),
+                status_code=503,
+                detail=(f"The gamma timeseries for {ticker_upper} is being "
+                        f"computed now; retry shortly."),
+                headers={"Retry-After": "5"},
             )
-        if not strike_set:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid `strikes` parameter — empty after parsing",
-            )
-    else:
-        strike_set = None  # resolved below from the latest snapshot that has gamma
 
-    if strike_set is not None:
-        df = df[df["strike"].isin(strike_set)]
+        from gcp.database import query_to_dataframe
+
+        # Pull snapshots in the lookback window. Filter to a single expiration
+        # at the SQL level if specified, otherwise resolve below.
+        cutoff = datetime.now(timezone.utc) - pd.Timedelta(hours=lookback_hours)
+        where_exp = "AND expiration = :exp" if expiration else ""
+        sql = f"""
+            SELECT snapshot_ts, snapshot_date, expiration, strike, option_type,
+                   open_interest, gamma, vega
+            FROM etf_options_snapshots
+            WHERE ticker = :ticker
+              AND data_source = 'alphavantage'
+              AND market_session = 'REALTIME'
+              AND snapshot_ts >= :cutoff
+              {where_exp}
+            ORDER BY snapshot_ts, expiration, strike
+        """
+        params: dict = {"ticker": ticker_upper, "cutoff": cutoff}
+        if expiration:
+            params["exp"] = expiration
+
+        df = query_to_dataframe(sql, params)
         if df.empty:
-            return {
+            payload = {
                 "ticker": ticker_upper,
                 "expiration": expiration,
                 "lookback_hours": lookback_hours,
                 "data_source": "unavailable",
                 "series": [],
                 "warnings": [
-                    f"no rows match strikes={sorted(strike_set)} for "
-                    f"expiration={expiration}"
+                    f"no realtime rows for {ticker_upper} in the last "
+                    f"{lookback_hours}h "
+                    + ("(expiration filter applied)" if expiration else "")
                 ],
             }
+            return payload
 
-    def _unavailable_series(reason: str) -> dict:
-        # Typed UNAVAILABLE envelope for this endpoint's shape (CLAUDE.md
-        # §3.7 §EXTERNAL): the UI gets an empty series and the reason,
-        # never a number derived from a placeholder.
-        return {
+        # Resolve expiration: if not specified, pick the nearest upcoming.
+        # The expirations column carries datetime.date or pd.Timestamp;
+        # normalize to ISO.
+        def _exp_iso(v) -> str:
+            if hasattr(v, "isoformat"):
+                return v.isoformat()[:10]
+            return str(v)[:10]
+
+        df["expiration_iso"] = df["expiration"].map(_exp_iso)
+
+        if not expiration:
+            today = date_type.today()
+            all_exps = sorted({e for e in df["expiration_iso"].unique()})
+            upcoming = [e for e in all_exps
+                        if date_type.fromisoformat(e) >= today]
+            if not upcoming:
+                # All cached expirations have already expired — fall back to
+                # the most recent past one (still useful for short lookbacks).
+                chosen_exp = all_exps[-1] if all_exps else None
+            else:
+                chosen_exp = upcoming[0]
+            if chosen_exp is None:
+                return {
+                    "ticker": ticker_upper,
+                    "expiration": None,
+                    "lookback_hours": lookback_hours,
+                    "data_source": "unavailable",
+                    "series": [],
+                    "warnings": ["no expirations in fetched window"],
+                }
+            df = df[df["expiration_iso"] == chosen_exp]
+            expiration = chosen_exp
+
+        # Pick the strike set: explicit list, or top-10 by |GEX| at the
+        # most recent snapshot in the window.
+        if strikes:
+            try:
+                strike_set = {float(s.strip()) for s in strikes.split(",") if s.strip()}
+            except ValueError as exc:
+                # ?strikes=abc or ?strikes=100,xyz → typed 4xx instead of an
+                # internal 500. Surface the specific bad token so the caller
+                # can fix it (Codex review on PR #544).
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Invalid `strikes` parameter — expected comma-separated "
+                        f"numbers (e.g. '650,655,660'). Parse error: {exc}"
+                    ),
+                )
+            if not strike_set:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid `strikes` parameter — empty after parsing",
+                )
+        else:
+            strike_set = None  # resolved below from the latest snapshot that has gamma
+
+        if strike_set is not None:
+            df = df[df["strike"].isin(strike_set)]
+            if df.empty:
+                return {
+                    "ticker": ticker_upper,
+                    "expiration": expiration,
+                    "lookback_hours": lookback_hours,
+                    "data_source": "unavailable",
+                    "series": [],
+                    "warnings": [
+                        f"no rows match strikes={sorted(strike_set)} for "
+                        f"expiration={expiration}"
+                    ],
+                }
+
+        def _unavailable_series(reason: str) -> dict:
+            # Typed UNAVAILABLE envelope for this endpoint's shape (CLAUDE.md
+            # §3.7 §EXTERNAL): the UI gets an empty series and the reason,
+            # never a number derived from a placeholder.
+            return {
+                "ticker": ticker_upper,
+                "expiration": expiration,
+                "lookback_hours": lookback_hours,
+                "data_source": "unavailable",
+                "series": [],
+                "warnings": [reason],
+            }
+
+        warnings: list[str] = []
+
+        # §3.7 gate on vendor gamma coverage, PER SNAPSHOT (Codex P1, #1005): a
+        # whole-window gate let a latest snapshot with every gamma NULL through
+        # whenever earlier snapshots were populated, and aggregate_by_strike
+        # then published it as a real-looking collapse to GEX == 0.0. A snapshot
+        # with no gamma at all is omitted and named; partial coverage across the
+        # kept snapshots is served but labelled understated, mirroring
+        # lib.gamma.build_summary's 98 % threshold (#826).
+        kept: list[tuple[object, list[dict]]] = []
+        omitted: list[str] = []
+        n_missing_total = 0
+        n_rows_total = 0
+        for ts in sorted(df["snapshot_ts"].unique()):
+            contracts = _df_to_contracts(df[df["snapshot_ts"] == ts])
+            cov, n_missing, n_rows = gamma.greeks_coverage(contracts)
+            if n_rows == 0:
+                continue
+            if cov == 0.0:
+                omitted.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+                continue
+            kept.append((ts, contracts))
+            n_missing_total += n_missing
+            n_rows_total += n_rows
+        if not kept:
+            return _unavailable_series(
+                f"vendor gamma missing on every contract in all {len(omitted)} "
+                "snapshot(s) in the window — GEX unavailable (feed outage?), not zero"
+            )
+        if omitted:
+            warnings.append(
+                f"{len(omitted)} snapshot(s) omitted — vendor gamma missing on every "
+                f"contract (feed outage?), not a zero-GEX reading: {', '.join(omitted)}"
+            )
+        coverage = 1.0 - (n_missing_total / n_rows_total)
+        if coverage < 0.98:
+            warnings.append(
+                f"vendor gamma missing on {n_missing_total}/{n_rows_total} contracts "
+                f"({coverage:.1%} coverage) — GEX is understated; treat the "
+                "series as degraded"
+            )
+
+        # Reference snapshot = the latest one that HAS gamma: it ranks the
+        # strikes (when none were requested) and supplies the parity spot.
+        latest_contracts = kept[-1][1]
+        if strike_set is None:
+            # Rank strikes by |net gamma × OI| using the same aggregation every
+            # other gamma surface uses (lib.gamma — one source of truth for
+            # math). The previous inline `float(gamma or 0) * float(oi or 0)`
+            # read a vendor outage as "zero gamma at every strike" (#826).
+            ranked = sorted(
+                gamma.aggregate_by_strike(latest_contracts),
+                key=lambda r: abs(r["net_gamma"]), reverse=True,
+            )[:10]
+            strike_set = {r["strike"] for r in ranked}
+
+        # Per-snapshot per-strike net GEX (we need spot to compute dollar
+        # notional — use the reference snapshot's parity-derived spot as a
+        # stable reference across the lookback window. Spot doesn't move
+        # enough in 1 hour to materially distort the time series).
+        spot_est = gamma.estimate_spot(latest_contracts)
+        if spot_est.price <= 0:
+            # No usable quotes for a parity spot. The old code substituted a
+            # literal $100 here and served GEX = net_gamma × 100² as if it
+            # were real (#825). There is no honest number without a spot.
+            return _unavailable_series(
+                f"spot unavailable: parity estimate (method={spot_est.method!r}) "
+                "produced no price — refusing to compute GEX on a placeholder"
+            )
+        spot = spot_est.price
+        if spot_est.method == "median_strike":
+            # Served, but never as if it were a quote: the dollar GEX below is
+            # scaled by a strike, not a price. build_summary surfaces the same
+            # method on /grid; the UI shows it.
+            warnings.append(
+                f"spot {spot:.2f} is the chain's median strike (no usable quotes "
+                "or deltas), not a market price — GEX notional is approximate"
+            )
+
+        # Aggregate per (snapshot_ts, strike) → signed gamma × OI via
+        # lib.gamma.aggregate_by_strike, then GEX at the reference spot.
+        rows = []
+        for ts, contracts in kept:
+            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            for agg_row in gamma.aggregate_by_strike(contracts):
+                strike = agg_row["strike"]
+                if strike not in strike_set:
+                    continue
+                gex = agg_row["net_gamma"] * spot * spot * gamma.GEX_MULTIPLIER
+                rows.append({
+                    "snapshot_ts": ts_iso,
+                    "strike": float(strike),
+                    "gex": gex,
+                    "delta_from_prev": None,  # filled below
+                })
+
+        # Per-strike delta_from_prev — single pass after sort.
+        by_strike: dict[float, float] = {}
+        for r in rows:
+            prev = by_strike.get(r["strike"])
+            r["delta_from_prev"] = (r["gex"] - prev) if prev is not None else None
+            by_strike[r["strike"]] = r["gex"]
+
+        payload = {
             "ticker": ticker_upper,
             "expiration": expiration,
             "lookback_hours": lookback_hours,
-            "data_source": "unavailable",
-            "series": [],
-            "warnings": [reason],
+            "data_source": "realtime_degraded" if warnings else "realtime",
+            "strikes_resolved": sorted(strike_set),
+            "spot_used": spot,
+            "spot_method": spot_est.method,
+            "gamma_coverage": coverage,
+            "warnings": warnings,
+            "series": rows,
         }
-
-    warnings: list[str] = []
-
-    # §3.7 gate on vendor gamma coverage, PER SNAPSHOT (Codex P1, #1005): a
-    # whole-window gate let a latest snapshot with every gamma NULL through
-    # whenever earlier snapshots were populated, and aggregate_by_strike
-    # then published it as a real-looking collapse to GEX == 0.0. A snapshot
-    # with no gamma at all is omitted and named; partial coverage across the
-    # kept snapshots is served but labelled understated, mirroring
-    # lib.gamma.build_summary's 98 % threshold (#826).
-    kept: list[tuple[object, list[dict]]] = []
-    omitted: list[str] = []
-    n_missing_total = 0
-    n_rows_total = 0
-    for ts in sorted(df["snapshot_ts"].unique()):
-        contracts = _df_to_contracts(df[df["snapshot_ts"] == ts])
-        cov, n_missing, n_rows = gamma.greeks_coverage(contracts)
-        if n_rows == 0:
-            continue
-        if cov == 0.0:
-            omitted.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
-            continue
-        kept.append((ts, contracts))
-        n_missing_total += n_missing
-        n_rows_total += n_rows
-    if not kept:
-        return _unavailable_series(
-            f"vendor gamma missing on every contract in all {len(omitted)} "
-            "snapshot(s) in the window — GEX unavailable (feed outage?), not zero"
-        )
-    if omitted:
-        warnings.append(
-            f"{len(omitted)} snapshot(s) omitted — vendor gamma missing on every "
-            f"contract (feed outage?), not a zero-GEX reading: {', '.join(omitted)}"
-        )
-    coverage = 1.0 - (n_missing_total / n_rows_total)
-    if coverage < 0.98:
-        warnings.append(
-            f"vendor gamma missing on {n_missing_total}/{n_rows_total} contracts "
-            f"({coverage:.1%} coverage) — GEX is understated; treat the "
-            "series as degraded"
-        )
-
-    # Reference snapshot = the latest one that HAS gamma: it ranks the
-    # strikes (when none were requested) and supplies the parity spot.
-    latest_contracts = kept[-1][1]
-    if strike_set is None:
-        # Rank strikes by |net gamma × OI| using the same aggregation every
-        # other gamma surface uses (lib.gamma — one source of truth for
-        # math). The previous inline `float(gamma or 0) * float(oi or 0)`
-        # read a vendor outage as "zero gamma at every strike" (#826).
-        ranked = sorted(
-            gamma.aggregate_by_strike(latest_contracts),
-            key=lambda r: abs(r["net_gamma"]), reverse=True,
-        )[:10]
-        strike_set = {r["strike"] for r in ranked}
-
-    # Per-snapshot per-strike net GEX (we need spot to compute dollar
-    # notional — use the reference snapshot's parity-derived spot as a
-    # stable reference across the lookback window. Spot doesn't move
-    # enough in 1 hour to materially distort the time series).
-    spot_est = gamma.estimate_spot(latest_contracts)
-    if spot_est.price <= 0:
-        # No usable quotes for a parity spot. The old code substituted a
-        # literal $100 here and served GEX = net_gamma × 100² as if it
-        # were real (#825). There is no honest number without a spot.
-        return _unavailable_series(
-            f"spot unavailable: parity estimate (method={spot_est.method!r}) "
-            "produced no price — refusing to compute GEX on a placeholder"
-        )
-    spot = spot_est.price
-    if spot_est.method == "median_strike":
-        # Served, but never as if it were a quote: the dollar GEX below is
-        # scaled by a strike, not a price. build_summary surfaces the same
-        # method on /grid; the UI shows it.
-        warnings.append(
-            f"spot {spot:.2f} is the chain's median strike (no usable quotes "
-            "or deltas), not a market price — GEX notional is approximate"
-        )
-
-    # Aggregate per (snapshot_ts, strike) → signed gamma × OI via
-    # lib.gamma.aggregate_by_strike, then GEX at the reference spot.
-    rows = []
-    for ts, contracts in kept:
-        ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-        for agg_row in gamma.aggregate_by_strike(contracts):
-            strike = agg_row["strike"]
-            if strike not in strike_set:
-                continue
-            gex = agg_row["net_gamma"] * spot * spot * gamma.GEX_MULTIPLIER
-            rows.append({
-                "snapshot_ts": ts_iso,
-                "strike": float(strike),
-                "gex": gex,
-                "delta_from_prev": None,  # filled below
-            })
-
-    # Per-strike delta_from_prev — single pass after sort.
-    by_strike: dict[float, float] = {}
-    for r in rows:
-        prev = by_strike.get(r["strike"])
-        r["delta_from_prev"] = (r["gex"] - prev) if prev is not None else None
-        by_strike[r["strike"]] = r["gex"]
-
-    payload = {
-        "ticker": ticker_upper,
-        "expiration": expiration,
-        "lookback_hours": lookback_hours,
-        "data_source": "realtime_degraded" if warnings else "realtime",
-        "strikes_resolved": sorted(strike_set),
-        "spot_used": spot,
-        "spot_method": spot_est.method,
-        "gamma_coverage": coverage,
-        "warnings": warnings,
-        "series": rows,
-    }
-    _TIMESERIES_CACHE[cache_key] = payload
-    response.headers["Cache-Control"] = "public, max-age=60"
-    return payload
+        _TIMESERIES_CACHE[cache_key] = payload
+        response.headers["Cache-Control"] = "public, max-age=60"
+        return payload
