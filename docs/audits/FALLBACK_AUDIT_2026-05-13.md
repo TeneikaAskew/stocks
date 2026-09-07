@@ -703,10 +703,10 @@ Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`):
 
 ```
 $ python scripts/audit_silent_fallbacks.py
-355 swallowing handlers in 107 files; 177 return a container or a zero rather than None
+418 swallowing handlers in 122 files; 239 return a container or a zero rather than None
 
 $ python scripts/audit_silent_fallbacks.py --worst
- 29 swallowing handlers in 21 files (broad, unlogged, container-or-zero)
+52 swallowing handlers in 35 files (broad, unlogged, container-or-zero); 52 return a container or a zero rather than None
 ```
 
 The 2026-09-06 reading recorded here was `255 swallowing handlers in 88 files;
@@ -718,7 +718,13 @@ right. Two scanner defects, both found in review (Codex, PR #994):
   including the C-04 handlers the script was written to keep visible;
 * `forbidden_shape` intersected the DISPLAY strings (`dc = []`) with the
   shape set (`[]`), so no assignment ever counted as a forbidden shape and
-  `--worst` omitted them all.
+  `--worst` omitted them all;
+* it did not record LOOP-CONTROL swallows at all. `except Exception: continue`
+  drops the current item and the collection comes back short with no caller
+  able to tell -- `lib/data_loader.py:513` omits a timeframe that was asked
+  for, and `scripts/fetch_earnings_calendar.py` drops earnings rows in three
+  places. There is no value to name in a `continue`, which is exactly why a
+  scanner built on returns could not see it.
 
 A third defect moved the count the other way: `ast.walk` descended into nested
 `except` blocks, so an inner handler's fallback was attributed to every

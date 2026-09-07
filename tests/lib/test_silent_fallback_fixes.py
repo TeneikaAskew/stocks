@@ -481,3 +481,95 @@ def test_an_empty_chain_is_still_a_skip_not_a_failure():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(mod, "load_chain", lambda t, s: pd.DataFrame())
         assert mod.process_one_date("SPX", date(2026, 9, 4)) == (0, 0)
+
+
+def test_a_partially_populated_date_is_actually_filled():
+    """The early return skipped the whole chain when ANY row already had one.
+
+    `list_dates_to_process` selects a date when ANY row is NULL/NaN;
+    `enrich_av_chain_with_greeks` returns the frame unchanged when ANY row has
+    a finite value. A partially populated snapshot satisfied both, so it was
+    selected as needing work, skipped wholesale, and passed the finite-count
+    gate on the rows that were already there — leaving the gaps unfilled on
+    every retry (Codex, PR #994).
+    """
+    import pandas as pd
+    mod = _greeks_backfill_module()
+
+    partial = _chain_df()
+    partial["gamma_computed"] = [0.031, None]     # one solved, one pending
+    seen: dict = {}
+
+    def fake_enrich(df, t, s):
+        seen["columns"] = list(df.columns)
+        out = df.copy()
+        out["gamma_computed"] = [0.031, 0.028]    # both solved this run
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: partial)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", fake_enrich)
+        mp.setattr(mod, "update_computed_columns", lambda df: len(df))
+        loaded, n_updated = mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert "gamma_computed" not in seen["columns"], (
+        "the sidecars must be dropped before enriching, or the chain-wide "
+        "early return fires on the row that was already solved and the "
+        "pending one is never computed")
+    assert (loaded, n_updated) == (2, 2)
+
+
+@pytest.mark.parametrize("stmt,display,shape", [
+    ("continue", "continue (item dropped)", "continue"),
+    ("break", "break (loop abandoned)", "break"),
+])
+def test_loop_control_swallows_are_in_the_inventory(stmt, display, shape):
+    """`except Exception: continue` drops the current item and the collection
+    comes back SHORT — a neutral substitution with no value to name, which is
+    why walking returns and assignments could not see it (Codex, PR #994)."""
+    import ast
+    mod = _scanner()
+
+    src = "\n".join([
+        "def f(items):",
+        "    for i in items:",
+        "        try:",
+        "            g(i)",
+        "        except Exception:",
+        f"            {stmt}",
+        "",
+    ])
+    handler = next(n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.ExceptHandler))
+    got_display, got_shapes = mod._handler_returns(handler)
+    assert got_display == [display]
+    assert got_shapes == [shape]
+
+
+def test_a_dropped_item_counts_as_a_forbidden_shape():
+    """A short collection is as much a fabricated answer as an empty one."""
+    mod = _scanner()
+    assert "continue" in mod.FORBIDDEN_SHAPES
+
+
+def test_a_logged_continue_is_recorded_but_not_ranked_worst():
+    """`logs` is a separate column, so a handler that says something before
+    dropping the item still lands in the inventory without being prioritised
+    over a silent one."""
+    import ast
+    mod = _scanner()
+
+    src = "\n".join([
+        "def f(items):",
+        "    for i in items:",
+        "        try:",
+        "            g(i)",
+        "        except Exception:",
+        "            logger.warning('dropping %s', i)",
+        "            continue",
+        "",
+    ])
+    handler = next(n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.ExceptHandler))
+    display, _ = mod._handler_returns(handler)
+    assert display == ["continue (item dropped)"]

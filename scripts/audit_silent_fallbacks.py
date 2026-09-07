@@ -62,6 +62,9 @@ LOG_MARKERS = ("log.", "logger.", "logging.", "LOG.", "print(", "warn", "_log",
 # CONTAINER or NUMBER is the shape the rule forbids, because the caller cannot
 # tell it from a real empty result or a real zero.
 FORBIDDEN_SHAPES = {"[]", "{}", "0", "0.0", "''", "False", "list()", "dict()",
+                    # A dropped item is a neutral substitution: the
+                    # collection comes back short and no caller can tell.
+                    "continue",
                     "set()", "tuple()", "empty DataFrame", "tuple of neutrals"}
 
 
@@ -161,6 +164,27 @@ def _handler_returns(node: ast.ExceptHandler) -> tuple[list[str], list[str]]:
             if name:
                 out.append(f"{_target_names([n.target])} = {name}")
                 shapes.append(name)
+
+    # Loop-control swallows. `except Exception: continue` drops the current
+    # item and the collection silently comes back SHORT -- a neutral
+    # substitution with no value to name, which is why walking returns and
+    # assignments could not see it. `lib/data_loader.py` omits a timeframe
+    # the caller asked for; `scripts/fetch_earnings_calendar.py` drops
+    # earnings rows in three places, and those are ingestion handlers the
+    # backlog is meant to track (Codex, PR #994).
+    #
+    # Recorded even when the handler logs first: `logs` is a separate column,
+    # and `--worst` already filters on broad AND unlogged, so a logged
+    # `continue` lands in the inventory without being ranked as a priority.
+    for n in _own_nodes(node):
+        if isinstance(n, ast.Continue):
+            out.append("continue (item dropped)")
+            shapes.append("continue")
+            break
+        if isinstance(n, ast.Break):
+            out.append("break (loop abandoned)")
+            shapes.append("break")
+            break
 
     # A handler whose entire body is `pass` substitutes nothing and says
     # nothing -- the purest silent swallow, and previously invisible because

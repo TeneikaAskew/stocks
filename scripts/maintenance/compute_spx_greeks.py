@@ -199,6 +199,26 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
         log.warning("  %s %s: empty chain, skipping", ticker, snap)
         return 0, 0
 
+    # Drop the sidecar columns before enriching.
+    #
+    # `enrich_av_chain_with_greeks` short-circuits the WHOLE chain when
+    # `_has_existing_computed_greeks` finds ANY finite value, but
+    # `list_dates_to_process` selects a date when ANY row is NULL/NaN. A
+    # partially populated snapshot therefore satisfies both: it is selected as
+    # needing work, then skipped wholesale, and the finite-count gate below
+    # passes on the rows that were already there -- so the job exits 0 and the
+    # missing rows stay missing on every retry (Codex, PR #994).
+    #
+    # Dropping them makes the early return unreachable here, so every row this
+    # job was selected for is actually computed. The skip stays useful on the
+    # request path, where re-solving a fully populated chain is wasted work;
+    # this job's entire purpose is to fill the gaps.
+    pending_before = int(
+        pd.to_numeric(chain.get("gamma_computed"), errors="coerce").isna().sum()
+    ) if "gamma_computed" in chain.columns else len(chain)
+    chain = chain.drop(
+        columns=[c for c in COMPUTED_COLS if c in chain.columns], errors="ignore")
+
     enriched = enrich_av_chain_with_greeks(chain, ticker, snap)
 
     # How many rows carry a finite gamma_computed after enrichment. This was
@@ -223,10 +243,19 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
             f"date is a failure rather than a no-op")
 
     n_updated = update_computed_columns(enriched)
+    still_missing = len(enriched) - finite
     log.info(
-        "  %s %s: loaded=%d enriched_finite=%d updated=%d",
-        ticker, snap, len(chain), finite, n_updated,
+        "  %s %s: loaded=%d pending=%d enriched_finite=%d still_missing=%d updated=%d",
+        ticker, snap, len(chain), pending_before, finite, still_missing, n_updated,
     )
+    if still_missing:
+        # Not a failure -- a partially solved chain is real progress and the
+        # rows that solved are worth writing. But it is not silence either:
+        # the date will be selected again next run, and an operator seeing
+        # this line repeat with the same count knows the remainder is not
+        # merely un-attempted.
+        log.warning("  %s %s: %d rows still have no computed gamma after this run",
+                    ticker, snap, still_missing)
     return len(chain), n_updated
 
 
