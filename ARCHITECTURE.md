@@ -515,14 +515,14 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:513`](platform/api/routers/insights.py#L513) | Add a ticker to the watchlist and return its info + quote. |
 | `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:590`](platform/api/routers/insights.py#L590) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:905`](platform/api/routers/journal.py#L905) | Read-only teaching "Examples" — the UNION of the admin's own journal |
-| `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1348`](platform/api/routers/journal.py#L1348) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
-| `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1492`](platform/api/routers/journal.py#L1492) | Insert the caller-selected `PairedTrade`s from a preview. |
-| `POST` | `/api/journal/import/preview` | [`platform/api/routers/journal.py:1402`](platform/api/routers/journal.py#L1402) | Parse an uploaded broker CSV export and FIFO-pair round trips. |
-| `GET` | `/api/journal/seed/{ticker}` | [`platform/api/routers/journal.py:1282`](platform/api/routers/journal.py#L1282) | Read-only admin seed pull from the automated pipeline `trades` table. |
-| `POST` | `/api/journal/trades` | [`platform/api/routers/journal.py:1064`](platform/api/routers/journal.py#L1064) | Insert a journal entry for the signed-in user. Returns it with its id. |
+| `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1350`](platform/api/routers/journal.py#L1350) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
+| `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1494`](platform/api/routers/journal.py#L1494) | Insert the caller-selected `PairedTrade`s from a preview. |
+| `POST` | `/api/journal/import/preview` | [`platform/api/routers/journal.py:1404`](platform/api/routers/journal.py#L1404) | Parse an uploaded broker CSV export and FIFO-pair round trips. |
+| `GET` | `/api/journal/seed/{ticker}` | [`platform/api/routers/journal.py:1283`](platform/api/routers/journal.py#L1283) | Read-only admin seed pull from the automated pipeline `trades` table. |
+| `POST` | `/api/journal/trades` | [`platform/api/routers/journal.py:1065`](platform/api/routers/journal.py#L1065) | Insert a journal entry for the signed-in user. Returns it with its id. |
 | `GET` | `/api/journal/trades/{ticker}` | [`platform/api/routers/journal.py:865`](platform/api/routers/journal.py#L865) | Return the signed-in user's journal entries for the ticker, newest first. |
-| `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1227`](platform/api/routers/journal.py#L1227) | Delete one of the signed-in user's journal entries by UUID. |
-| `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1141`](platform/api/routers/journal.py#L1141) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
+| `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1228`](platform/api/routers/journal.py#L1228) | Delete one of the signed-in user's journal entries by UUID. |
+| `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1142`](platform/api/routers/journal.py#L1142) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
 | `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:326`](platform/api/routers/live.py#L326) | Return the 20-day average daily volume for RVOL calculation. |
 | `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:256`](platform/api/routers/live.py#L256) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
 | `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:468`](platform/api/routers/live.py#L468) | Compute indicators and CALL/PUT signals from a bar series. |
@@ -676,7 +676,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | 19:45 Sun / 20:00 Sun | `earnings-long-watchlist-sunday`, `refresh-earnings-views-weekly` |
 | 21:00 | `av-options-daily` (Mon–Fri), `av-intraday-nightly` (Mon–Sat, `--symbol=ALL --force`), `premarket-brief-sunday` (Sun: week-ahead mode) |
 | 21:15 | `premarket-playbook-resolver-daily` |
-| 22:00 / 22:30 | `options-daily-features`, `gamma-levels-daily` (→ hand-created `p2-build-gamma-levels`) |
+| 22:00 / 22:30 | `options-daily-features`, `gamma-levels-daily` (→ `p2-build-gamma-levels`) |
 | 23:00 / 23:15 / 23:35 | `fetch-market-data-daily` + `evaluate-ew-strikes-daily`, `options-daily-greeks`, `strat-engine-daily` |
 | Sat 09:00 / Sun 10:00 | `weekend-review-weekly`, `audit-walkforward-weekly` / `audit-brief-bias-weekly` |
 | hourly | `reconcile-failure-notifier-hourly` |
@@ -714,7 +714,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 
 1. **21:00** `av-options-daily` → `fetch-av-options-backfill` (`fetch_av_historical_options --tickers SPY IWM QQQ SPX --from-latest`) appends the day's option chain to `etf_options_snapshots`; `av-intraday-nightly` pulls the prior session's 1-minute bars into `market_data_intraday`.
 2. **21:15** `premarket-playbook-resolver` walks the day's RTH bars for every `(analysis_date, ticker)` in `premarket_analysis` and records trigger/target/stop outcomes.
-3. **22:00** `build-options-daily-features` materializes `options_daily_features` from the snapshots; **22:30** `p2-build-gamma-levels` (hand-created job) writes `gamma_levels_eod`.
+3. **22:00** `build-options-daily-features` materializes `options_daily_features` from the snapshots; **22:30** `p2-build-gamma-levels` (`deploy_p2_build_gamma_levels`, codified from the live job on 2026-09-07) writes `gamma_levels_eod`.
 4. **23:00** `fetch-market-data` upserts daily OHLCV + indicators into `market_data_daily` (and the current month's intraday), writes parquet to GCS; `evaluate-ew-strikes` scores the Earnings Whispers picks into `earnings_calendar.ew_*`.
 5. **23:15** `build-options-greeks` writes `etf_options_daily_greeks`; **23:35** `strat-engine-daily` runs `strat_data_builder` to refresh `strat_features_*`; **02:00** `strat-enrich-daily` runs `strat_enrich_levels --mode=backfill-all`.
 6. **01:00–03:00** `historical-signals-watchlist`, `signal-quality-report-nightly`, `signal-quality-alarm`, `backfill-daily-indicators`, `options-retention`.
@@ -878,7 +878,7 @@ Live read 2026-09-07T04:35:16Z. Repo declares 68 jobs / 65 schedulers; live has 
 **Jobs that have never executed** (0): none
 <!-- inventory:reconcile:end -->
 
-Interpretation (2026-09-07): the live-only jobs are hand-created research jobs from May plus `exec-backtest` (research image `research-exec-backtest`, last run 2026-05-27); `p2-build-gamma-levels` is the one that matters because a scheduler depends on it (#829, #834). Schedulers reconcile exactly: `signal-quality-report-hourly` (retired by #1005) was deleted live on 2026-09-07. `gamma-levels-daily` still targets a job `deploy.sh` never creates. Every job has executed at least once: the latest execution is read per job from `status.latestCreatedExecution`, so a weekly or on-demand job is no longer hidden behind the five-minute options refresh; the two non-green latest runs are `intraday-bulk-backfill` (failed 2026-05-23, a one-off backfill) and `strat-dir-features` (cancelled 2026-05-27, hand-created research). Live table drift (26 runtime relations) is in §5.2. Nine job fields differ between `deploy.sh` and the live job, listed in the block above: `compute-earnings-reactions` runs at 2 GiB / 5400 s with no retry against a declared 1 GiB / 1800 s and one, `db-query` at 8 GiB / 2 CPU against 512 MiB / 1, `strat-engine` at 16 GiB against 8, `build-options-greeks` at 7200 s against 3600, `phase6-playbook` at one task against three, and `magnitude-recal` runs a different entrypoint entirely. Each was changed by hand after a failure; a `deploy.sh` rebuild would silently undo every one, so the declarations should be raised to match rather than the live values lowered.
+Interpretation (2026-09-07): the live-only jobs are hand-created research jobs from May plus `exec-backtest` (research image `research-exec-backtest`, last run 2026-05-27); `p2-build-gamma-levels` was the one that mattered because a scheduler depends on it; it is declared as `deploy_p2_build_gamma_levels` since 2026-09-07 (#829, #834) and no longer counts as live-only. Schedulers reconcile exactly: `signal-quality-report-hourly` (retired by #1005) was deleted live on 2026-09-07. `gamma-levels-daily` now targets a job `deploy.sh` creates, and `tests/gcp/test_deploy_reachability.py` fails the suite if any scheduler target loses its deploy function again. Every job has executed at least once: the latest execution is read per job from `status.latestCreatedExecution`, so a weekly or on-demand job is no longer hidden behind the five-minute options refresh; the two non-green latest runs are `intraday-bulk-backfill` (failed 2026-05-23, a one-off backfill) and `strat-dir-features` (cancelled 2026-05-27, hand-created research). Live table drift (26 runtime relations) is in §5.2. Nine job fields differ between `deploy.sh` and the live job, listed in the block above: `compute-earnings-reactions` runs at 2 GiB / 5400 s with no retry against a declared 1 GiB / 1800 s and one, `db-query` at 8 GiB / 2 CPU against 512 MiB / 1, `strat-engine` at 16 GiB against 8, `build-options-greeks` at 7200 s against 3600, `phase6-playbook` at one task against three, and `magnitude-recal` runs a different entrypoint entirely. Each was changed by hand after a failure; a `deploy.sh` rebuild would silently undo every one, so the declarations should be raised to match rather than the live values lowered.
 
 ## 16. Code modules
 
@@ -1095,7 +1095,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 
 1. Cloud SQL has a public IPv4 with `ALLOW_UNENCRYPTED_AND_ENCRYPTED`; Cloud Run does not need it. Disable or require SSL? (operator decision)
 2. `solyra-api-staging` runs open self-signup against production data and owns the public hostname (#943, #990 §exposure). Flip `AUTH_OPEN_SIGNUP=0`?
-3. Eleven live jobs have no `deploy_*` function. Either add them to `gcp/deploy.sh` (at least `p2-build-gamma-levels`, which is scheduled) or delete them; `compute-spx-greeks-backfill` and `options-exec-backtest` are the reverse case.
+3. Ten live jobs have no `deploy_*` function (all unscheduled research one-offs; the scheduled `p2-build-gamma-levels` was codified on 2026-09-07). Either add them to `gcp/deploy.sh` or delete them; `compute-spx-greeks-backfill` and `options-exec-backtest` are the reverse case.
 4. 26 runtime-created relations (`strat_features_*`, `magnitude_*`, `gamma_levels_eod`, …) are outside `gcp/schema.sql` and therefore outside the migration path and the freshness audit.
 5. `gcp/fetchers/fetch_rss_news.py` writes `news_sentiment` but is neither deployed nor scheduled.
 6. `calibrate-thresholds-quarterly` has never fired (`lastAttemptTime` empty); the next slot is 2026-10-01 02:00 ET.

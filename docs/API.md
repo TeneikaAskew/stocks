@@ -103,14 +103,14 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:513`](../platform/api/routers/insights.py#L513) | Add a ticker to the watchlist and return its info + quote. |
 | `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:590`](../platform/api/routers/insights.py#L590) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:905`](../platform/api/routers/journal.py#L905) | Read-only teaching "Examples" — the UNION of the admin's own journal |
-| `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1348`](../platform/api/routers/journal.py#L1348) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
-| `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1492`](../platform/api/routers/journal.py#L1492) | Insert the caller-selected `PairedTrade`s from a preview. |
-| `POST` | `/api/journal/import/preview` | [`platform/api/routers/journal.py:1402`](../platform/api/routers/journal.py#L1402) | Parse an uploaded broker CSV export and FIFO-pair round trips. |
-| `GET` | `/api/journal/seed/{ticker}` | [`platform/api/routers/journal.py:1282`](../platform/api/routers/journal.py#L1282) | Read-only admin seed pull from the automated pipeline `trades` table. |
-| `POST` | `/api/journal/trades` | [`platform/api/routers/journal.py:1064`](../platform/api/routers/journal.py#L1064) | Insert a journal entry for the signed-in user. Returns it with its id. |
+| `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1350`](../platform/api/routers/journal.py#L1350) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
+| `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1494`](../platform/api/routers/journal.py#L1494) | Insert the caller-selected `PairedTrade`s from a preview. |
+| `POST` | `/api/journal/import/preview` | [`platform/api/routers/journal.py:1404`](../platform/api/routers/journal.py#L1404) | Parse an uploaded broker CSV export and FIFO-pair round trips. |
+| `GET` | `/api/journal/seed/{ticker}` | [`platform/api/routers/journal.py:1283`](../platform/api/routers/journal.py#L1283) | Read-only admin seed pull from the automated pipeline `trades` table. |
+| `POST` | `/api/journal/trades` | [`platform/api/routers/journal.py:1065`](../platform/api/routers/journal.py#L1065) | Insert a journal entry for the signed-in user. Returns it with its id. |
 | `GET` | `/api/journal/trades/{ticker}` | [`platform/api/routers/journal.py:865`](../platform/api/routers/journal.py#L865) | Return the signed-in user's journal entries for the ticker, newest first. |
-| `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1227`](../platform/api/routers/journal.py#L1227) | Delete one of the signed-in user's journal entries by UUID. |
-| `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1141`](../platform/api/routers/journal.py#L1141) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
+| `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1228`](../platform/api/routers/journal.py#L1228) | Delete one of the signed-in user's journal entries by UUID. |
+| `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1142`](../platform/api/routers/journal.py#L1142) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
 | `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:326`](../platform/api/routers/live.py#L326) | Return the 20-day average daily volume for RVOL calculation. |
 | `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:256`](../platform/api/routers/live.py#L256) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
 | `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:468`](../platform/api/routers/live.py#L468) | Compute indicators and CALL/PUT signals from a bar series. |

@@ -316,11 +316,11 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/database.py`](gcp/database.py) — line [905](gcp/database.py#L905)
 
 ### `journal_entries`
-- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [668](platform/api/routers/journal.py#L668), [1180](platform/api/routers/journal.py#L1180), [1234](platform/api/routers/journal.py#L1234)
+- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [668](platform/api/routers/journal.py#L668), [1181](platform/api/routers/journal.py#L1181), [1235](platform/api/routers/journal.py#L1235)
 - [`scripts/backfill_journal_embeddings.py`](scripts/backfill_journal_embeddings.py) — line [79](scripts/backfill_journal_embeddings.py#L79)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [329](gcp/backfill_ticker.py#L329), [436](gcp/backfill_ticker.py#L436), [504](gcp/backfill_ticker.py#L504)
+- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [336](gcp/backfill_ticker.py#L336), [443](gcp/backfill_ticker.py#L443), [512](gcp/backfill_ticker.py#L512)
 - [`gcp/fetchers/backfill_daily_indicators.py`](gcp/fetchers/backfill_daily_indicators.py) — line [415](gcp/fetchers/backfill_daily_indicators.py#L415)
 - [`gcp/fetchers/fetch_market_data.py`](gcp/fetchers/fetch_market_data.py) — line [436](gcp/fetchers/fetch_market_data.py#L436), [512](gcp/fetchers/fetch_market_data.py#L512), [520](gcp/fetchers/fetch_market_data.py#L520), [561](gcp/fetchers/fetch_market_data.py#L561), [804](gcp/fetchers/fetch_market_data.py#L804), [938](gcp/fetchers/fetch_market_data.py#L938)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](gcp/fetchers/fetch_premarket_refresh.py) — line [8](gcp/fetchers/fetch_premarket_refresh.py#L8), [215](gcp/fetchers/fetch_premarket_refresh.py#L215), [251](gcp/fetchers/fetch_premarket_refresh.py#L251), [256](gcp/fetchers/fetch_premarket_refresh.py#L256), [257](gcp/fetchers/fetch_premarket_refresh.py#L257), [258](gcp/fetchers/fetch_premarket_refresh.py#L258), [320](gcp/fetchers/fetch_premarket_refresh.py#L320)
@@ -330,7 +330,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/deep_backfill_ticker.py`](scripts/deep_backfill_ticker.py) — line [6](scripts/deep_backfill_ticker.py#L6), [43](scripts/deep_backfill_ticker.py#L43), [102](scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [525](gcp/backfill_ticker.py#L525)
+- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [533](gcp/backfill_ticker.py#L533)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](gcp/fetchers/fetch_alphavantage_intraday.py) — line [307](gcp/fetchers/fetch_alphavantage_intraday.py#L307)
 - [`gcp/fetchers/fetch_market_data.py`](gcp/fetchers/fetch_market_data.py) — line [464](gcp/fetchers/fetch_market_data.py#L464)
 - [`gcp/migrate_to_gcp.py`](gcp/migrate_to_gcp.py) — line [210](gcp/migrate_to_gcp.py#L210), [244](gcp/migrate_to_gcp.py#L244), [247](gcp/migrate_to_gcp.py#L247)
@@ -354,7 +354,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/agents/model_routing.py`](lib/agents/model_routing.py) — line [193](lib/agents/model_routing.py#L193)
 
 ### `news_sentiment`
-- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [538](gcp/backfill_ticker.py#L538)
+- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [546](gcp/backfill_ticker.py#L546)
 - [`gcp/fetchers/fetch_news_sentiment.py`](gcp/fetchers/fetch_news_sentiment.py) — line [375](gcp/fetchers/fetch_news_sentiment.py#L375), [376](gcp/fetchers/fetch_news_sentiment.py#L376)
 - [`gcp/fetchers/fetch_rss_news.py`](gcp/fetchers/fetch_rss_news.py) — line [699](gcp/fetchers/fetch_rss_news.py#L699), [710](gcp/fetchers/fetch_rss_news.py#L710), [711](gcp/fetchers/fetch_rss_news.py#L711)
 - [`scripts/backfill_news_sentiment.py`](scripts/backfill_news_sentiment.py) — line [101](scripts/backfill_news_sentiment.py#L101), [102](scripts/backfill_news_sentiment.py#L102)
@@ -446,7 +446,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/run_param_sweep.py`](scripts/run_param_sweep.py) — line [108](scripts/run_param_sweep.py#L108)
 
 ### `watchlists`
-- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [223](gcp/backfill_ticker.py#L223), [242](gcp/backfill_ticker.py#L242), [246](gcp/backfill_ticker.py#L246)
+- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [230](gcp/backfill_ticker.py#L230), [249](gcp/backfill_ticker.py#L249), [253](gcp/backfill_ticker.py#L253)
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [655](gcp/discord_interactions/main.py#L655), [691](gcp/discord_interactions/main.py#L691)
 - [`gcp/fetchers/_watchlist.py`](gcp/fetchers/_watchlist.py) — line [258](gcp/fetchers/_watchlist.py#L258), [262](gcp/fetchers/_watchlist.py#L262), [263](gcp/fetchers/_watchlist.py#L263), [295](gcp/fetchers/_watchlist.py#L295)
 <!-- inventory:writes:end -->
@@ -586,7 +586,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_dir_walk_forward_extended.py`](gcp/research/strat_engine/strat_dir_walk_forward_extended.py) — line [10](gcp/research/strat_engine/strat_dir_walk_forward_extended.py#L10)
 - [`lib/agents/ranker/signals.py`](lib/agents/ranker/signals.py) — line [113](lib/agents/ranker/signals.py#L113), [117](lib/agents/ranker/signals.py#L117)
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [522](lib/agents/summarizers.py#L522), [527](lib/agents/summarizers.py#L527), [601](lib/agents/summarizers.py#L601), [649](lib/agents/summarizers.py#L649), [655](lib/agents/summarizers.py#L655), [676](lib/agents/summarizers.py#L676), [682](lib/agents/summarizers.py#L682)
-- [`lib/data_loader.py`](lib/data_loader.py) — line [556](lib/data_loader.py#L556), [598](lib/data_loader.py#L598)
+- [`lib/data_loader.py`](lib/data_loader.py) — line [556](lib/data_loader.py#L556), [599](lib/data_loader.py#L599), [604](lib/data_loader.py#L604)
 - [`lib/features/experimental/options_derived.py`](lib/features/experimental/options_derived.py) — line [3](lib/features/experimental/options_derived.py#L3), [67](lib/features/experimental/options_derived.py#L67), [115](lib/features/experimental/options_derived.py#L115)
 - [`lib/features/flow_direction.py`](lib/features/flow_direction.py) — line [4](lib/features/flow_direction.py#L4), [408](lib/features/flow_direction.py#L408), [445](lib/features/flow_direction.py#L445)
 - [`lib/options_exec_backtest/__init__.py`](lib/options_exec_backtest/__init__.py) — line [12](lib/options_exec_backtest/__init__.py#L12)
@@ -630,7 +630,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/insight_pipeline_job.py`](gcp/insight_pipeline_job.py) — line [357](gcp/insight_pipeline_job.py#L357)
 - [`lib/strategies/insight_cache.py`](lib/strategies/insight_cache.py) — line [274](lib/strategies/insight_cache.py#L274)
 - [`platform/api/routers/insights.py`](platform/api/routers/insights.py) — line [163](platform/api/routers/insights.py#L163), [175](platform/api/routers/insights.py#L175), [196](platform/api/routers/insights.py#L196), [232](platform/api/routers/insights.py#L232)
-- [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [198](scripts/backfill_and_replay.py#L198)
+- [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [202](scripts/backfill_and_replay.py#L202)
 - [`scripts/backfill_history_tables.py`](scripts/backfill_history_tables.py) — line [3](scripts/backfill_history_tables.py#L3), [154](scripts/backfill_history_tables.py#L154), [156](scripts/backfill_history_tables.py#L156), [188](scripts/backfill_history_tables.py#L188), [189](scripts/backfill_history_tables.py#L189)
 - [`scripts/validation/validate_brief_accuracy.py`](scripts/validation/validate_brief_accuracy.py) — line [365](scripts/validation/validate_brief_accuracy.py#L365)
 
@@ -659,11 +659,11 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `journal_entries`
 - [`lib/agents/summarizers.py`](lib/agents/summarizers.py) — line [1541](lib/agents/summarizers.py#L1541)
 - [`platform/api/routers/backtest.py`](platform/api/routers/backtest.py) — line [545](platform/api/routers/backtest.py#L545), [717](platform/api/routers/backtest.py#L717)
-- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [445](platform/api/routers/journal.py#L445), [845](platform/api/routers/journal.py#L845), [882](platform/api/routers/journal.py#L882), [974](platform/api/routers/journal.py#L974), [1157](platform/api/routers/journal.py#L1157)
+- [`platform/api/routers/journal.py`](platform/api/routers/journal.py) — line [445](platform/api/routers/journal.py#L445), [845](platform/api/routers/journal.py#L845), [882](platform/api/routers/journal.py#L882), [974](platform/api/routers/journal.py#L974), [1158](platform/api/routers/journal.py#L1158)
 - [`scripts/backfill_journal_embeddings.py`](scripts/backfill_journal_embeddings.py) — line [59](scripts/backfill_journal_embeddings.py#L59)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [288](gcp/backfill_ticker.py#L288), [353](gcp/backfill_ticker.py#L353)
+- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [295](gcp/backfill_ticker.py#L295), [360](gcp/backfill_ticker.py#L360)
 - [`gcp/build_intraday_gex.py`](gcp/build_intraday_gex.py) — line [56](gcp/build_intraday_gex.py#L56), [73](gcp/build_intraday_gex.py#L73), [79](gcp/build_intraday_gex.py#L79)
 - [`gcp/discord_interactions/main.py`](gcp/discord_interactions/main.py) — line [332](gcp/discord_interactions/main.py#L332)
 - [`gcp/fetchers/backfill_daily_indicators.py`](gcp/fetchers/backfill_daily_indicators.py) — line [117](gcp/fetchers/backfill_daily_indicators.py#L117), [216](gcp/fetchers/backfill_daily_indicators.py#L216), [222](gcp/fetchers/backfill_daily_indicators.py#L222), [252](gcp/fetchers/backfill_daily_indicators.py#L252)
@@ -694,13 +694,13 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/dashboard.py`](platform/api/routers/dashboard.py) — line [88](platform/api/routers/dashboard.py#L88), [149](platform/api/routers/dashboard.py#L149), [278](platform/api/routers/dashboard.py#L278)
 - [`platform/api/routers/live.py`](platform/api/routers/live.py) — line [349](platform/api/routers/live.py#L349)
 - [`scripts/audit_data_freshness.py`](scripts/audit_data_freshness.py) — line [964](scripts/audit_data_freshness.py#L964), [971](scripts/audit_data_freshness.py#L971), [1095](scripts/audit_data_freshness.py#L1095), [1103](scripts/audit_data_freshness.py#L1103)
-- [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [191](scripts/backfill_and_replay.py#L191)
+- [`scripts/backfill_and_replay.py`](scripts/backfill_and_replay.py) — line [195](scripts/backfill_and_replay.py#L195)
 - [`scripts/backfill_watchlist_data.py`](scripts/backfill_watchlist_data.py) — line [109](scripts/backfill_watchlist_data.py#L109)
 - [`scripts/deep_backfill_ticker.py`](scripts/deep_backfill_ticker.py) — line [127](scripts/deep_backfill_ticker.py#L127)
 - [`scripts/strat_backtest.py`](scripts/strat_backtest.py) — line [37](scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [406](gcp/backfill_ticker.py#L406)
+- [`gcp/backfill_ticker.py`](gcp/backfill_ticker.py) — line [413](gcp/backfill_ticker.py#L413)
 - [`gcp/build_intraday_gex.py`](gcp/build_intraday_gex.py) — line [106](gcp/build_intraday_gex.py#L106)
 - [`gcp/build_realtime_gex.py`](gcp/build_realtime_gex.py) — line [22](gcp/build_realtime_gex.py#L22), [99](gcp/build_realtime_gex.py#L99)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](gcp/fetchers/fetch_alphavantage_intraday.py) — line [207](gcp/fetchers/fetch_alphavantage_intraday.py#L207)
@@ -848,7 +848,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/trade_logger.py`](gcp/trade_logger.py) — line [94](gcp/trade_logger.py#L94), [109](gcp/trade_logger.py#L109), [117](gcp/trade_logger.py#L117), [143](gcp/trade_logger.py#L143)
 - [`gcp/weekend_review.py`](gcp/weekend_review.py) — line [26](gcp/weekend_review.py#L26)
 - [`lib/backtest.py`](lib/backtest.py) — line [11](lib/backtest.py#L11), [326](lib/backtest.py#L326), [357](lib/backtest.py#L357), [358](lib/backtest.py#L358)
-- [`lib/data_loader.py`](lib/data_loader.py) — line [174](lib/data_loader.py#L174), [598](lib/data_loader.py#L598), [615](lib/data_loader.py#L615)
+- [`lib/data_loader.py`](lib/data_loader.py) — line [174](lib/data_loader.py#L174), [599](lib/data_loader.py#L599), [602](lib/data_loader.py#L602), [625](lib/data_loader.py#L625)
 - [`lib/insights.py`](lib/insights.py) — line [39](lib/insights.py#L39), [854](lib/insights.py#L854)
 - [`lib/movement_statement.py`](lib/movement_statement.py) — line [221](lib/movement_statement.py#L221)
 - [`lib/style_miner.py`](lib/style_miner.py) — line [80](lib/style_miner.py#L80)
@@ -1037,7 +1037,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `weekend-review` | `gcp/weekend_review.py` | `trades` | `gcp/db_query_job.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_walk_forward.py`, `gcp/signal_monitor.py`, `lib/backtest.py`, `lib/data_loader.py`, `lib/insights.py`, `lib/movement_statement.py`, `lib/style_miner.py`, `platform/api/routers/analytics.py`, `platform/api/routers/backtest.py`, `platform/api/routers/journal.py` (+4) |
 <!-- inventory:blast:end -->
 
-Hand-created live jobs (no `deploy_*` function, so not in the table above): `p2-build-gamma-levels` writes `gamma_levels_eod`; the `p7*`, `p45-deep-ds`, `strat-dir-features`, `exec-backtest`, `backtest-playability` and `compare-tier-fires` jobs write research tables or GCS reports only.
+Hand-created live jobs (no `deploy_*` function, so not in the table above; `p2-build-gamma-levels`, which writes `gamma_levels_eod`, left this list when `deploy_p2_build_gamma_levels` was added on 2026-09-07): the `p7*`, `p45-deep-ds`, `strat-dir-features`, `exec-backtest`, `backtest-playability` and `compare-tier-fires` jobs write research tables or GCS reports only.
 
 ---
 
