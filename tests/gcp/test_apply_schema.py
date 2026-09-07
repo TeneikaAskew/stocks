@@ -382,3 +382,91 @@ def test_run_unit_group_failure_propagates():
         with pytest.raises(RuntimeError, match="boom"):
             run_unit(["SELECT 1;", "SELECT 2;", "SELECT 3;"])
     assert conn.execute.call_count == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Revision guard + materialized-view refresh (Codex on #1022)
+# ──────────────────────────────────────────────────────────────────────
+
+from contextlib import contextmanager  # noqa: E402
+
+from gcp.apply_schema import (  # noqa: E402
+    guard_revision,
+    record_revision,
+    refresh_unpopulated_matviews,
+    revision_is_stale,
+)
+
+
+class _FakeEngine:
+    """Records every statement; answers SELECTs from a scripted queue."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.executed: list[str] = []
+
+    @contextmanager
+    def begin(self):
+        engine = self
+
+        class _Conn:
+            def execute(self, stmt, params=None):
+                text = str(stmt)
+                engine.executed.append(text if params is None else f"{text} {params}")
+                res = MagicMock()
+                queued = engine.results.pop(0) if engine.results and text.lstrip().upper().startswith("SELECT") else None
+                res.fetchone.return_value = queued[0] if queued else None
+                res.fetchall.return_value = queued or []
+                return res
+        yield _Conn()
+
+
+def test_revision_is_stale_only_when_strictly_older():
+    assert revision_is_stale(None, 100) is False
+    assert revision_is_stale(100, 100) is False
+    assert revision_is_stale(100, 101) is False
+    assert revision_is_stale(100, 99) is True
+
+
+def test_guard_allows_first_apply_and_newer_revisions():
+    eng = _FakeEngine([[]])                      # no history yet
+    assert guard_revision(eng, "aaa", 100) == (True, None)
+    assert any("CREATE TABLE IF NOT EXISTS schema_apply_history" in e for e in eng.executed)
+    eng = _FakeEngine([[("aaa", 100)]])
+    assert guard_revision(eng, "bbb", 200) == (True, "aaa")
+
+
+def test_guard_refuses_a_revision_older_than_the_newest_applied():
+    """Cloud Build can start a newer push's build before a delayed older one;
+    build start order is not commit order, so the applier itself refuses."""
+    eng = _FakeEngine([[("newer", 200)]])
+    assert guard_revision(eng, "older", 100) == (False, "newer")
+
+
+def test_guard_lets_the_same_revision_reapply():
+    """Both triggers apply the same push; the second is a no-op, not a refusal."""
+    eng = _FakeEngine([[("same", 200)]])
+    assert guard_revision(eng, "same", 200) == (True, "same")
+
+
+def test_record_revision_inserts_sha_and_time():
+    eng = _FakeEngine([])
+    record_revision(eng, "abc", 123)
+    assert any("INSERT INTO schema_apply_history" in e and "'abc'" in e and "123" in e
+               for e in eng.executed), eng.executed
+
+
+def test_unpopulated_matviews_are_refreshed_in_order():
+    eng = _FakeEngine([[("public", "earnings_event_outcomes"), ("public", "earnings_ticker_lean")]])
+    assert refresh_unpopulated_matviews(eng) == [
+        '"public"."earnings_event_outcomes"', '"public"."earnings_ticker_lean"']
+    refreshes = [e for e in eng.executed if e.startswith("REFRESH MATERIALIZED VIEW")]
+    assert refreshes == [
+        'REFRESH MATERIALIZED VIEW "public"."earnings_event_outcomes"',
+        'REFRESH MATERIALIZED VIEW "public"."earnings_ticker_lean"']
+
+
+def test_no_unpopulated_matviews_means_no_refresh():
+    eng = _FakeEngine([[]])
+    assert refresh_unpopulated_matviews(eng) == []
+    assert not any(e.startswith("REFRESH") for e in eng.executed)

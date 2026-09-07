@@ -151,13 +151,109 @@ def run_unit(unit: list[str]) -> None:
             conn.execute(sqlalchemy.text(stmt))
 
 
+# ── Revision guard ─────────────────────────────────────────────────────────
+# Cloud Build may start the build for a NEWER main push before a delayed
+# build for the preceding push, so ordering job mutations by build start
+# time (gcp/cloudbuild/wait_for_earlier_schema_builds.sh) is not enough on
+# its own: the older build could still apply last and roll every CREATE OR
+# REPLACE view/function back (Codex on #1022). The applier therefore records
+# the source revision it applied, and refuses a revision whose commit time is
+# older than the newest successfully applied one. Main is linear (squash
+# merges, committer time set by GitHub at merge), so commit time orders it.
+REVISION_TABLE = "schema_apply_history"
+_REVISION_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS {REVISION_TABLE} (
+    commit_sha   TEXT        NOT NULL,
+    commit_time  BIGINT      NOT NULL,
+    applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (commit_sha, applied_at)
+)"""
+
+
+def revision_is_stale(latest_applied_time: int | None, this_time: int) -> bool:
+    """True when ``this_time`` is older than the newest applied revision.
+    Equal times (same-second merges) are allowed."""
+    return latest_applied_time is not None and this_time < latest_applied_time
+
+
+def guard_revision(engine, commit_sha: str, commit_time: int) -> tuple[bool, str | None]:
+    """Return (ok, newest_applied_sha). ``ok`` is False when this revision is
+    older than the newest successfully applied one; the caller must then
+    refuse to apply."""
+    import sqlalchemy  # noqa: PLC0415
+
+    with engine.begin() as conn:
+        conn.execute(sqlalchemy.text(_REVISION_TABLE_SQL))
+        row = conn.execute(sqlalchemy.text(
+            f"SELECT commit_sha, commit_time FROM {REVISION_TABLE} "
+            "ORDER BY commit_time DESC, applied_at DESC LIMIT 1"
+        )).fetchone()
+    if row is None:
+        return True, None
+    newest_sha, newest_time = row[0], int(row[1])
+    if revision_is_stale(newest_time, commit_time) and newest_sha != commit_sha:
+        return False, newest_sha
+    return True, newest_sha
+
+
+def record_revision(engine, commit_sha: str, commit_time: int) -> None:
+    import sqlalchemy  # noqa: PLC0415
+
+    with engine.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time) "
+                "VALUES (:sha, :t)"
+            ),
+            {"sha": commit_sha, "t": int(commit_time)},
+        )
+
+
+# ── Materialized views ─────────────────────────────────────────────────────
+# schema.sql recreates earnings_event_outcomes and earnings_ticker_lean
+# WITH NO DATA on every apply (mat views cannot be CREATE OR REPLACE'd when
+# their column set changes), and refresh-earnings-views repopulates them
+# only weekly. Now that every staging deploy applies the schema, an
+# unpopulated view would break the earnings endpoints until Sunday (Codex on
+# #1022). So an apply is not complete until every unpopulated materialized
+# view has been refreshed.
+_UNPOPULATED_MATVIEWS_SQL = (
+    "SELECT schemaname, matviewname FROM pg_matviews "
+    "WHERE NOT ispopulated ORDER BY schemaname, matviewname"
+)
+
+
+def refresh_unpopulated_matviews(engine) -> list[str]:
+    """Refresh every materialized view Postgres reports as unpopulated.
+    Returns the qualified names refreshed. Raises on the first failure so
+    the apply fails loud rather than leaving an empty view behind."""
+    import sqlalchemy  # noqa: PLC0415
+
+    with engine.begin() as conn:
+        rows = conn.execute(sqlalchemy.text(_UNPOPULATED_MATVIEWS_SQL)).fetchall()
+    names = [f'"{r[0]}"."{r[1]}"' for r in rows]
+    for name in names:
+        log.info("Refreshing unpopulated materialized view %s", name)
+        with engine.begin() as conn:
+            conn.execute(sqlalchemy.text(f"REFRESH MATERIALIZED VIEW {name}"))
+    return names
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Apply schema.sql to Cloud SQL.")
     ap.add_argument("--file", default=str(DEFAULT_SCHEMA),
                     help="Path to schema SQL file (default: gcp/schema.sql)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Parse and print statements but do not execute.")
+    ap.add_argument("--revision", default=None,
+                    help="Source commit SHA being applied (Cloud Build passes it). "
+                         "With --revision-time, refuses a revision older than the "
+                         "newest successfully applied one and records this apply.")
+    ap.add_argument("--revision-time", type=int, default=None,
+                    help="Committer time (unix epoch) of --revision.")
     args = ap.parse_args()
+    if (args.revision is None) != (args.revision_time is None):
+        ap.error("--revision and --revision-time must be given together")
 
     if not is_cloud_sql_configured():
         log.error("Cloud SQL not configured")
@@ -184,6 +280,18 @@ def main() -> int:
                 log.info("  [%d] %s%s", i, prefix, head)
         return 0
 
+    from gcp.database import get_engine  # noqa: PLC0415
+    engine = get_engine()
+
+    if args.revision is not None:
+        ok, newest = guard_revision(engine, args.revision, args.revision_time)
+        if not ok:
+            log.error("Refusing to apply revision %s (commit time %d): a newer "
+                      "revision %s has already been applied. Out-of-order "
+                      "applies roll CREATE OR REPLACE objects back.",
+                      args.revision, args.revision_time, newest)
+            return 3
+
     failed = 0
     for i, unit in enumerate(units, 1):
         head = re.sub(r"\s+", " ", unit[0])[:80]
@@ -198,6 +306,16 @@ def main() -> int:
     if failed:
         log.error("Schema apply finished with %d failed units", failed)
         return 1
+
+    refreshed = refresh_unpopulated_matviews(engine)
+    if refreshed:
+        log.info("Refreshed %d materialized view(s) left unpopulated by the apply: %s",
+                 len(refreshed), ", ".join(refreshed))
+
+    if args.revision is not None:
+        record_revision(engine, args.revision, args.revision_time)
+        log.info("Recorded applied revision %s (commit time %d)", args.revision, args.revision_time)
+
     log.info("Schema apply complete (%d statements in %d units).", n_statements, len(units))
     return 0
 
