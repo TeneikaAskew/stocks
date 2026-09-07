@@ -201,6 +201,10 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The schema apply below hands the revision guard this commit's
+          # rev-list, which orders a same-second revision tie.
+          fetch-depth: 100
 
       - name: Authenticate to GCP (WIF)
         uses: google-github-actions/auth@v2
@@ -240,7 +244,19 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           pip install --quiet sqlalchemy pg8000 pandas cloud-sql-python-connector
-          python -m gcp.apply_schema
+          # Same ordering and record as the trigger builds: wait for any
+          # schema-mutating Cloud Build in flight (this runner is not a
+          # build, so it waits for all of them under its own budget), then
+          # apply through the revision guard so schema_apply_history
+          # records this apply. A bare `python -m gcp.apply_schema` here
+          # ran outside both, so the guard's "last row is the schema in
+          # force" contract was false right after it (internal review of
+          # #1022, schema-apply round).
+          WAIT_BUDGET_SECONDS=1200 bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh --external
+          python -m gcp.apply_schema \
+            --revision="$(git rev-parse HEAD)" \
+            --revision-time="$(git log -1 --format=%ct HEAD)" \
+            --revision-ancestors="$(git rev-list --max-count=100 HEAD | tr '\n' ' ')"
 
       # The apply above just recreated earnings_event_outcomes and
       # earnings_ticker_lean WITH NO DATA (deliberate in gcp/schema.sql so a

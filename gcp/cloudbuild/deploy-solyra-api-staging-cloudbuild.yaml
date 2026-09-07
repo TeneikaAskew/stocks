@@ -85,7 +85,17 @@ steps:
           echo "       use STAGING_SERVICE=1 ./platform/deploy.sh." >&2
           exit 1
         fi
-        bash gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh "$BUILD_ID"
+        # WAIT for every earlier build of any deploy path instead of
+        # refusing. The refusing interlock (assert_no_concurrent_staging_
+        # deploy.sh, still used by the operator path) composed badly with
+        # the migrate step's wait: build A held the staging lock while it
+        # waited for its schema build, build B for the next push refused
+        # at preflight, B's schema build applied its schema, and staging
+        # served push A's code against push B's schema (internal review of
+        # #1022, schema-apply round). Earlier builds only, so the order is
+        # total; bounded by this build's own timeout minus the reserve.
+        TAGS="apply-schema-on-change solyra-api-staging-deploy solyra-api-image-build" \
+          bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"
   - name: gcr.io/cloud-builders/docker
     id: build
     waitFor: [preflight]
@@ -106,14 +116,19 @@ steps:
   # schema build finished, or indefinitely if it failed. The job keeps its
   # own env and secrets; only its image moves. Job mutations are serialized
   # across both triggers by wait_for_earlier_schema_builds.sh (start order).
+  # allowFailure: pin-job below must run whatever this step's outcome, so
+  # the step records its exit code in /workspace/apply.rc and the deploy
+  # step refuses on a non-zero one.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: migrate
     waitFor: [push]
+    allowFailure: true
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
+        echo 1 > /workspace/apply.rc
         bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"
         DIGEST=$(gcloud container images describe "${_IMAGE}:${SHORT_SHA}" \
                    --format='value(image_summary.fully_qualified_digest)')
@@ -166,14 +181,28 @@ steps:
           --region=us-east1 \
           --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME},--revision-ancestors=$${ANCESTORS}" \
           --wait
+        echo 0 > /workspace/apply.rc
+  # Pin the digest apply-schema-migrations now runs, whatever the migrate
+  # step's outcome (the API image is pinned after the deploy, below).
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: pin-job
+    waitFor: [migrate]
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: deploy
-    waitFor: [migrate]
+    waitFor: [pin-job]
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
+        rc=$(cat /workspace/apply.rc)
+        if [ "$rc" != 0 ]; then
+          echo "ERROR: the migrate step failed (exit $rc); not deploying code over a schema" >&2
+          echo "       that was not applied. See the migrate log above." >&2
+          exit "$rc"
+        fi
         DIGEST=$(gcloud container images describe "${_IMAGE}:${SHORT_SHA}" \
                    --format='value(image_summary.fully_qualified_digest)')
         if [ -z "$${DIGEST}" ]; then
@@ -211,8 +240,9 @@ substitutions:
 tags: [solyra-api-staging-deploy]
 options:
   logging: CLOUD_LOGGING_ONLY
-# 5400 s: image build (4.5-6 min measured) + waiting out an earlier schema
-# build's apply + this build's apply (job timeout 1800 s) + deploy + pin.
-# The serializer reads this value and stops waiting once less than its
-# reserve is left.
-timeout: 5400s
+# 7200 s: waiting out earlier deploy builds at preflight + image build
+# (4.5-6 min measured) + waiting out an earlier schema build's apply + this
+# build's apply (job timeout 1800 s, plus ~90 s measured before the
+# execution starts) + deploy + pin. The serializer reads this value and
+# stops waiting once less than its 2400 s reserve is left.
+timeout: 7200s

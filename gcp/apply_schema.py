@@ -21,6 +21,7 @@ import argparse
 import logging
 import re
 import sys
+from typing import Optional
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -201,6 +202,8 @@ CREATE TABLE IF NOT EXISTS {REVISION_TABLE} (
     applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     ancestors    TEXT        NOT NULL DEFAULT '',
     schema_sha256 TEXT       NOT NULL DEFAULT '',
+    forced        BOOLEAN     NOT NULL DEFAULT FALSE,
+    status        TEXT        NOT NULL DEFAULT 'ok',
     PRIMARY KEY (commit_sha, applied_at)
 )"""
 # Space-separated `git rev-list` of the applied revision, and the SHA-256 of
@@ -211,6 +214,17 @@ _REVISION_ANCESTORS_SQL = (
 )
 _REVISION_DIGEST_SQL = (
     f"ALTER TABLE {REVISION_TABLE} ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT ''"
+)
+# forced: the operator bypassed the ordering check (--force-revision), so
+# the row is an operator's statement, not a build's. status: 'ok' when every
+# unit ran, 'partial' when some failed after others committed (units outside
+# ATOMIC groups commit on their own), so the row still orders later
+# revisions but its digest is never one an apply can skip on.
+_REVISION_FORCED_SQL = (
+    f"ALTER TABLE {REVISION_TABLE} ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE"
+)
+_REVISION_STATUS_SQL = (
+    f"ALTER TABLE {REVISION_TABLE} ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok'"
 )
 
 
@@ -264,28 +278,37 @@ _REFUSED = {"ancestor", "older", "tie"}
 
 
 def guard_revision(engine, commit_sha: str, commit_time: int,
-                   ancestors: frozenset[str] = frozenset(),
+                   ancestors: frozenset[str] = frozenset(), force: bool = False,
                    ) -> tuple[bool, str | None, str | None]:
-    """Return (ok, newest_applied_sha, newest_applied_schema_digest). ``ok``
-    is False when this revision is older than, or cannot be ordered against,
-    the newest successfully applied one; the caller must then refuse to
-    apply. The reason is logged here. The digest lets main() skip an apply
-    whose schema.sql text is identical to the one already in force."""
+    """Return (ok, newest_applied_sha, in_force_schema_digest). ``ok`` is
+    False when this revision is older than, or cannot be ordered against,
+    the newest applied one; the caller must then refuse to apply. The
+    reason is logged here. The digest is the newest row's when that row
+    applied fully (status 'ok'), else '' so nothing can skip on it; it lets
+    main() skip an apply whose schema.sql text is already in force.
+
+    ``force`` is the operator override (--force-revision): the verdict is
+    still computed and logged, at ERROR, but a refused verdict no longer
+    stops the apply. For a manual apply from a branch, whose HEAD the
+    ordering rule (written for concurrent builds of main) cannot place.
+    """
     import sqlalchemy  # noqa: PLC0415
 
     with engine.begin() as conn:
         conn.execute(sqlalchemy.text(_REVISION_TABLE_SQL))
         conn.execute(sqlalchemy.text(_REVISION_ANCESTORS_SQL))
         conn.execute(sqlalchemy.text(_REVISION_DIGEST_SQL))
+        conn.execute(sqlalchemy.text(_REVISION_FORCED_SQL))
+        conn.execute(sqlalchemy.text(_REVISION_STATUS_SQL))
         row = conn.execute(sqlalchemy.text(
-            f"SELECT commit_sha, commit_time, ancestors, schema_sha256 FROM {REVISION_TABLE} "
-            "ORDER BY applied_at DESC LIMIT 1"
+            f"SELECT commit_sha, commit_time, ancestors, schema_sha256, status, forced "
+            f"FROM {REVISION_TABLE} ORDER BY applied_at DESC LIMIT 1"
         )).fetchone()
     if row is None:
         return True, None, None
     newest_sha, newest_time = row[0], int(row[1])
     newest_ancestors = frozenset((row[2] or "").split())
-    newest_digest = row[3] or ""
+    newest_digest = (row[3] or "") if (row[4] or "ok") == "ok" else ""
     verdict = classify_revision(newest_sha, newest_time, newest_ancestors,
                                 commit_sha, commit_time, ancestors)
     log.info("Revision %s (commit time %d) vs newest applied %s (commit time %d): %s",
@@ -309,13 +332,18 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
                       "%s (commit time %d) has already been applied. Out-of-order "
                       "applies roll CREATE OR REPLACE objects back.",
                       commit_sha, commit_time, newest_sha, newest_time)
+        if force:
+            log.error("FORCED: applying revision %s over that refusal because --force-revision "
+                      "was passed; the row will be recorded as forced.", commit_sha)
+            return True, newest_sha, newest_digest
         return False, newest_sha, newest_digest
     return True, newest_sha, newest_digest
 
 
 def record_revision(engine, commit_sha: str, commit_time: int,
                     ancestors: frozenset[str] = frozenset(),
-                    schema_digest: str = "") -> None:
+                    schema_digest: str = "", forced: bool = False,
+                    status: str = "ok") -> None:
     """Record this apply. A re-apply of the SHA that is already the last
     applied row (both triggers apply the same push) merges its ancestry
     into that row instead of inserting a new one: the later build's
@@ -329,12 +357,12 @@ def record_revision(engine, commit_sha: str, commit_time: int,
             f"SELECT commit_sha, applied_at, ancestors FROM {REVISION_TABLE} "
             "ORDER BY applied_at DESC LIMIT 1"
         )).fetchone()
-        if last is not None and last[0] == commit_sha:
+        if last is not None and last[0] == commit_sha and status == "ok":
             merged = frozenset((last[2] or "").split()) | ancestors
             conn.execute(
                 sqlalchemy.text(
-                    f"UPDATE {REVISION_TABLE} SET ancestors = :anc, schema_sha256 = :dg "
-                    "WHERE commit_sha = :sha AND applied_at = :at"
+                    f"UPDATE {REVISION_TABLE} SET ancestors = :anc, schema_sha256 = :dg, "
+                    "status = 'ok' WHERE commit_sha = :sha AND applied_at = :at"
                 ),
                 {"anc": " ".join(sorted(merged)), "dg": schema_digest,
                  "sha": commit_sha, "at": last[1]},
@@ -344,11 +372,12 @@ def record_revision(engine, commit_sha: str, commit_time: int,
             return
         conn.execute(
             sqlalchemy.text(
-                f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time, ancestors, schema_sha256) "
-                "VALUES (:sha, :t, :anc, :dg)"
+                f"INSERT INTO {REVISION_TABLE} "
+                "(commit_sha, commit_time, ancestors, schema_sha256, forced, status) "
+                "VALUES (:sha, :t, :anc, :dg, :forced, :status)"
             ),
             {"sha": commit_sha, "t": int(commit_time), "anc": " ".join(sorted(ancestors)),
-             "dg": schema_digest},
+             "dg": schema_digest, "forced": bool(forced), "status": status},
         )
 
 
@@ -406,6 +435,11 @@ def main() -> int:
                     help="Whitespace-separated `git rev-list` of --revision, as far "
                          "as the build checkout can see. Orders a revision whose "
                          "committer time equals the newest applied one.")
+    ap.add_argument("--force-revision", action="store_true",
+                    help="Apply even when the revision guard would refuse this revision "
+                         "as older than, or unorderable against, the newest applied one. "
+                         "Logged at ERROR and recorded as forced. For an operator apply "
+                         "from a branch; never for a trigger build.")
     ap.add_argument("--reapply-unchanged", action="store_true",
                     help="Run every unit even when this schema.sql is byte-identical "
                          "to the newest applied revision's (by default such an apply "
@@ -447,7 +481,8 @@ def main() -> int:
     digest = schema_digest(sql_text)
     if args.revision is not None:
         ok, newest, newest_digest = guard_revision(engine, args.revision,
-                                                   args.revision_time, ancestors)
+                                                   args.revision_time, ancestors,
+                                                   force=args.force_revision)
         if not ok:
             return 3          # reason already logged by guard_revision
         if newest_digest == digest and not args.reapply_unchanged:
@@ -467,7 +502,8 @@ def main() -> int:
             if refreshed:
                 log.info("Refreshed %d materialized view(s) found unpopulated: %s",
                          len(refreshed), ", ".join(refreshed))
-            record_revision(engine, args.revision, args.revision_time, ancestors, digest)
+            record_revision(engine, args.revision, args.revision_time, ancestors, digest,
+                            forced=args.force_revision)
             log.info("Recorded revision %s (commit time %d) as in force",
                      args.revision, args.revision_time)
             return 0
@@ -497,10 +533,20 @@ def main() -> int:
 
     if failed:
         log.error("Schema apply finished with %d failed units", failed)
+        if args.revision is not None:
+            # The units that succeeded are committed, so the schema is
+            # partly this revision's. Record that so a delayed build for an
+            # OLDER revision is still refused; the 'partial' status keeps
+            # the digest from ever matching a later apply's.
+            record_revision(engine, args.revision, args.revision_time, ancestors, digest,
+                            forced=args.force_revision, status="partial")
+            log.error("Recorded revision %s as PARTIAL (%d failed units); the next apply "
+                      "runs every unit again", args.revision, failed)
         return 1
 
     if args.revision is not None:
-        record_revision(engine, args.revision, args.revision_time, ancestors, digest)
+        record_revision(engine, args.revision, args.revision_time, ancestors, digest,
+                        forced=args.force_revision)
         log.info("Recorded applied revision %s (commit time %d, schema sha256 %s)",
                  args.revision, args.revision_time, digest)
 

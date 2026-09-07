@@ -81,11 +81,20 @@ def test_both_paths_run_the_interlock_inside_their_build():
     first step of each config means the build is registered and tagged when
     the scan happens.
     """
-    for cfg in (TRIGGER, PLATFORM):
-        first = _steps(cfg)[0]
-        assert "assert_no_concurrent_staging_deploy.sh" in _all_args(first), (
-            f"{cfg.name}: the interlock must be the FIRST build step, got "
-            f"{first.get('id', '<unnamed>')!r}")
+    # The operator path refuses; the trigger WAITS for earlier builds of
+    # every deploy tag (internal review of #1022, schema-apply round: the
+    # refusing interlock nested inside the migrate step's wait made the
+    # second of two close pushes die at preflight while its schema build
+    # still applied). Both run inside their submitted build.
+    first = _steps(PLATFORM)[0]
+    assert "assert_no_concurrent_staging_deploy.sh" in _all_args(first), (
+        f"{PLATFORM.name}: the interlock must be the FIRST build step, got "
+        f"{first.get('id', '<unnamed>')!r}")
+    first = _steps(TRIGGER)[0]
+    assert "wait_for_earlier_schema_builds.sh" in _all_args(first), (
+        f"{TRIGGER.name}: the waiter must be the FIRST build step, got "
+        f"{first.get('id', '<unnamed>')!r}")
+    assert "solyra-api-image-build" in _all_args(first), "the trigger must wait for operator builds too"
 
 
 def test_the_pre_submit_check_is_not_presented_as_the_interlock():
@@ -360,7 +369,9 @@ def test_the_trigger_applies_this_revisions_schema_before_deploying():
     assert ids.index("migrate") < ids.index("deploy"), ids
     migrate = next(s for s in steps if s["id"] == "migrate")
     deploy = next(s for s in steps if s["id"] == "deploy")
-    assert deploy["waitFor"] == ["migrate"], "the deploy must wait for the schema apply"
+    pin_job = next(s for s in steps if s["id"] == "pin-job")
+    assert deploy["waitFor"] == ["pin-job"] and pin_job["waitFor"] == ["migrate"], \
+        "the deploy must wait for the schema apply (through the job pin)"
     args = _all_args(migrate)
     assert "wait_for_earlier_schema_builds.sh" in args, "job mutations are serialized across triggers"
     assert "fully_qualified_digest" in args

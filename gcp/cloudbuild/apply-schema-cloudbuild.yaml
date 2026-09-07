@@ -73,14 +73,20 @@ steps:
     waitFor: [push]
     entrypoint: bash
     args: ['-c', 'set -euo pipefail; bash gcp/cloudbuild/wait_for_earlier_schema_builds.sh "$BUILD_ID"']
+  # allowFailure: the pin step below must run whatever this step's outcome
+  # (a failed execute after a successful update leaves the job on a digest
+  # only the build tag keeps alive), so this step records its exit code in
+  # /workspace/apply.rc and the verify step fails the build with it.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: apply
     waitFor: [serialize]
+    allowFailure: true
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
+        echo 1 > /workspace/apply.rc
         DIGEST=$(gcloud artifacts docker images describe "${_IMAGE}:${SHORT_SHA}" \
                    --format='value(image_summary.fully_qualified_digest)')
         if [ -z "$${DIGEST}" ]; then
@@ -132,14 +138,21 @@ steps:
           --region=us-east1 \
           --args="--revision=$COMMIT_SHA,--revision-time=$${COMMIT_TIME},--revision-ancestors=$${ANCESTORS}" \
           --wait
+        echo 0 > /workspace/apply.rc
   # Pin the digest the job now runs so the registry cleanup policy cannot
   # delete it (same reasoning as the staging trigger; --no-sweep because
-  # trading-runner@ cannot delete tags).
+  # trading-runner@ cannot delete tags). Runs whatever the apply's outcome.
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     id: pin
     waitFor: [apply]
     entrypoint: bash
     args: ['-c', 'set -euo pipefail; ./gcp/deploy.sh pin-images --no-sweep']
+  # The build's verdict is the apply's.
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: verify
+    waitFor: [pin]
+    entrypoint: bash
+    args: ['-c', 'rc=$(cat /workspace/apply.rc); [ "$rc" = 0 ] || echo "ERROR: the apply step failed (exit $rc); see its log above." >&2; exit "$rc"']
 substitutions:
   _IMAGE: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system
 # Read by wait_for_earlier_schema_builds.sh: the tag is how one build of this
@@ -147,7 +160,8 @@ substitutions:
 tags: [apply-schema-on-change]
 options:
   logging: CLOUD_LOGGING_ONLY
-# 5400 s: image build (~5 min) + waiting out an earlier schema build's
-# apply + this build's apply (job timeout 1800 s) + pin. The serializer
-# reads this value and stops waiting once less than its reserve is left.
-timeout: 5400s
+# 7200 s: image build (~5 min) + waiting out an earlier schema build's
+# apply + this build's apply (job timeout 1800 s, plus ~90 s measured
+# before the execution starts) + pin. The serializer reads this value and
+# stops waiting once less than its 2400 s reserve is left.
+timeout: 7200s

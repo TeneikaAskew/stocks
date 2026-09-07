@@ -16,6 +16,7 @@ yaml = pytest.importorskip("yaml")
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 CFG = REPO / "gcp/cloudbuild/apply-schema-cloudbuild.yaml"
+WAIT = REPO / "gcp/cloudbuild/wait_for_earlier_schema_builds.sh"
 
 
 def _steps():
@@ -48,14 +49,47 @@ def test_the_job_is_moved_to_the_new_digest_before_it_runs():
     assert '--image="$${DIGEST}"' in apply, "the job must be pinned to the resolved digest"
 
 
-def test_the_pipeline_order_is_preflight_build_push_serialize_apply_pin():
-    ids = [s["id"] for s in _steps()]
-    assert ids == ["preflight", "build", "push", "serialize", "apply", "pin"], ids
-    assert "SHORT_SHA" in _all_args(_step("preflight")), "refuse a nameless tag"
-    assert _step("apply")["waitFor"] == ["serialize"], "the job mutation must wait for the serializer"
+def test_the_pipeline_order_is_preflight_build_push_serialize_apply_pin_verify():
+    ids = [st["id"] for st in _steps()]
+    assert ids == ["preflight", "build", "push", "serialize", "apply", "pin", "verify"], ids
+    by = {st["id"]: st for st in _steps()}
+    assert by["build"]["waitFor"] == ["preflight"] and by["push"]["waitFor"] == ["build"]
+    assert by["serialize"]["waitFor"] == ["push"] and by["apply"]["waitFor"] == ["serialize"]
+    assert by["pin"]["waitFor"] == ["apply"] and by["verify"]["waitFor"] == ["pin"]
 
 
-WAIT = REPO / "gcp/cloudbuild/wait_for_earlier_schema_builds.sh"
+def _pins_on_failure(path, mutate_step: str, pin_step: str, gate_step: str):
+    cfg = yaml.safe_load(path.read_text())
+    by = {st["id"]: st for st in cfg["steps"]}
+    assert by[mutate_step].get("allowFailure") is True, f"{path.name}: {mutate_step} must not stop the pin"
+    body = _all_args(by[mutate_step])
+    assert "/workspace/apply.rc" in body and "echo 0 > /workspace/apply.rc" in body, body
+    assert by[pin_step]["waitFor"] == [mutate_step] and "pin-images --no-sweep" in _all_args(by[pin_step])
+    gate = _all_args(by[gate_step])
+    assert "/workspace/apply.rc" in gate and "exit" in gate, gate
+
+
+def test_the_trigger_pins_the_job_digest_even_when_the_apply_fails():
+    """A failed `jobs execute` after a successful `jobs update` leaves the job
+    on a digest only :latest keeps alive. The manual path pins whatever the
+    build's outcome; the trigger's pin step was skipped by the failure
+    (internal review of #1022, schema-apply round). The apply step now
+    records its exit code, the pin runs regardless, and a final step fails
+    the build with that code."""
+    _pins_on_failure(CFG, "apply", "pin", "verify")
+
+
+def test_the_staging_trigger_pins_the_job_digest_even_when_migrate_fails():
+    staging = REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"
+    _pins_on_failure(staging, "migrate", "pin-job", "deploy")
+    cfg = yaml.safe_load(staging.read_text())
+    ids = [st["id"] for st in cfg["steps"]]
+    assert ids == ["preflight", "build", "push", "migrate", "pin-job", "deploy", "pin"], ids
+    by = {st["id"]: st for st in cfg["steps"]}
+    deploy = _all_args(by["deploy"])
+    assert deploy.index("/workspace/apply.rc") < deploy.index("gcloud run deploy"), \
+        "deploy must refuse before deploying when the migrate step failed"
+
 
 
 def test_overlapping_schema_builds_apply_in_start_order():
@@ -69,7 +103,7 @@ def test_overlapping_schema_builds_apply_in_start_order():
     assert "wait_for_earlier_schema_builds.sh" in _all_args(_step("serialize"))
     src = WAIT.read_text()
     # Both triggers mutate the job, so both tags are scanned.
-    assert 'TAGS="apply-schema-on-change solyra-api-staging-deploy"' in src
+    assert 'TAGS="${TAGS:-apply-schema-on-change solyra-api-staging-deploy}"' in src
     staging = yaml.safe_load((REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml").read_text())
     assert staging.get("tags") == ["solyra-api-staging-deploy"]
     assert "--ongoing" in src and "createTime<'${self_create}'" in src, \
@@ -106,8 +140,12 @@ def test_the_wait_reserves_the_build_time_the_apply_and_deploy_need():
     assert 'date -u -d "${self_start_time}"' in src, "the deadline is anchored to startTime"
     assert "createTime<'${self_create}'" in src, "peer ordering stays on createTime"
     reserve = int(src.split("RESERVE_SECONDS:-")[1].split("}")[0])
-    assert reserve >= _apply_job_task_timeout() + 240, \
-        "the reserve must cover the apply job's timeout plus the deploy/pin step"
+    # Measured 2026-09-07 (build e4be0456): ~90 s pass between the apply
+    # step starting and the Cloud Run execution starting (image pull,
+    # digest describe, git deepen, jobs update, provisioning), before the
+    # job's own 1800 s budget; then deploy and pin.
+    assert reserve >= _apply_job_task_timeout() + 90 + 300 + 200, \
+        "the reserve must cover the preamble, the apply job's timeout and the deploy/pin steps"
     for path in (CFG, REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"):
         timeout = int(str(yaml.safe_load(path.read_text())["timeout"]).rstrip("s"))
         # image build (staging builds measure 4.5-6 min) + a full earlier
@@ -215,7 +253,7 @@ def test_the_manual_apply_target_is_a_tagged_serialized_cloud_build():
     assert "gcloud run jobs execute apply-schema-migrations" in body and "--wait" in body
     for arg in ("--revision=", "--revision-time=", "--revision-ancestors="):
         assert arg in body, arg
-    assert "timeout: 5400s" in body
+    assert "timeout: 7200s" in body
     target = _target("apply-schema")
     assert "build_image" in target and "apply_schema_via_build" in target
     assert target.index("deploy_apply_schema_migrations") < target.index("apply_schema_via_build"), \
@@ -298,10 +336,20 @@ def test_bootstrap_distinguishes_not_found_from_a_describe_failure(tmp_path):
     503 / auth blip like NOT_FOUND, fell into `jobs create`, which then
     failed with ALREADY EXISTS and aborted `all)` at its first job."""
     env = _bash_env(tmp_path, _GCLOUD_OK)
-    env.update(DESCRIBE_RC="1", DESCRIBE_STDERR="ERROR: (gcloud.run.jobs.describe) Job [apply-schema-migrations] not found.")
-    r = _run_fn(tmp_path, env, "deploy_apply_schema_migrations")
-    calls = (tmp_path / "calls").read_text()
-    assert "run jobs create apply-schema-migrations" in calls and "rc=0" in r.stdout, r.stdout + r.stderr
+    # Captured from gcloud 583.0.0 on 2026-09-07 (internal review of #1022,
+    # schema-apply round): `jobs describe` says "Cannot find job [x].",
+    # `jobs update` says "Job [x] could not be found." Neither contains
+    # "not found", which is the only phrase the first version matched, so
+    # the bootstrap could never create the job and `all)` died at it.
+    for stderr in ("ERROR: (gcloud.run.jobs.describe) Cannot find job [apply-schema-migrations].",
+                   "ERROR: (gcloud.run.jobs.update) Job [apply-schema-migrations] could not be found.",
+                   "ERROR: (gcloud.run.jobs.describe) NOT_FOUND: Job [apply-schema-migrations] not found."):
+        (tmp_path / "calls").write_text("")
+        env.update(DESCRIBE_RC="1", DESCRIBE_STDERR=stderr)
+        r = _run_fn(tmp_path, env, "deploy_apply_schema_migrations")
+        calls = (tmp_path / "calls").read_text()
+        assert "run jobs create apply-schema-migrations" in calls and "rc=0" in r.stdout, \
+            (stderr, r.stdout + r.stderr)
     (tmp_path / "calls").write_text("")
     env.update(DESCRIBE_RC="1", DESCRIBE_STDERR="ERROR: (gcloud.run.jobs.describe) PERMISSION_DENIED: quota")
     r = _run_fn(tmp_path, env, "deploy_apply_schema_migrations")
@@ -324,7 +372,7 @@ def test_serialized_apply_renders_a_valid_config_that_converges_the_full_job_dec
     rendered = (tmp_path / "rendered.yaml").read_text()
     cfg = yaml.safe_load(rendered)
     assert [s["id"] for s in cfg["steps"]] == ["serialize", "apply"]
-    assert cfg["tags"] == ["apply-schema-on-change"] and cfg["timeout"] == "5400s"
+    assert cfg["tags"] == ["apply-schema-on-change"] and cfg["timeout"] == "7200s"
     assert cfg["serviceAccount"].endswith("/serviceAccounts/sa@proj.iam.gserviceaccount.com")
     assert re.findall(r"\$\{?[A-Za-z_]+\}?", rendered) == ["$BUILD_ID"], "only $BUILD_ID may be left for Cloud Build"
     apply = " ".join(cfg["steps"][1]["args"])
@@ -338,7 +386,7 @@ def test_serialized_apply_renders_a_valid_config_that_converges_the_full_job_dec
     assert "--revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,--revision-time=1700000000,--revision-ancestors=aaaaaaaa" in execute
     assert "--wait" in execute
     calls = (tmp_path / "calls").read_text()
-    assert "--timeout=5400s" in calls, "the submit must not depend on the operator's builds/timeout property"
+    assert "--timeout=7200s" in calls, "the submit must not depend on the operator's builds/timeout property"
     assert "PINNED" in calls, "the digest the job now runs must be pinned"
 
 
@@ -359,16 +407,177 @@ def test_serialized_apply_pins_even_when_the_build_fails(tmp_path):
     assert "PINNED" in (tmp_path / "calls").read_text()
 
 
-def test_manual_apply_records_the_main_base_when_head_is_off_main(tmp_path):
-    """Internal review of round 14: recording a feature-branch SHA lets a
-    later main apply be refused on committer time (the branch commit is
-    neither ancestor nor descendant of the squash commit). Off main, the
-    guard records the newest main commit the checkout contains."""
+def test_manual_apply_off_main_records_head_and_forces_the_guard(tmp_path):
+    """Seen in production (build e4be0456, 2026-09-07): off main the manual
+    apply recorded the merge-base, an OLD main commit, and once the newest
+    applied row was newer than that the guard refused it as an ancestor.
+    There was no override, so the documented break-glass path was unusable
+    from a branch (internal review of #1022, schema-apply round). Off main
+    the real HEAD is recorded, the guard's ordering check is bypassed with
+    --force-revision, and the row is marked forced."""
     env = _bash_env(tmp_path, _GCLOUD_OK, _GIT_ON_MAIN)
     env["OFF_MAIN"] = "1"
     r = _run_fn(tmp_path, env, "apply_schema_via_build")
     assert "rc=0" in r.stdout, r.stdout + r.stderr
     rendered = (tmp_path / "rendered.yaml").read_text()
-    assert "--revision=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb," in rendered
-    assert "--revision=aaaaaaaa" not in rendered
-    assert "not on origin/main" in r.stderr
+    assert "--revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa," in rendered
+    assert "--revision=bbbbbbbb" not in rendered
+    assert ",--force-revision" in rendered
+    assert "not on origin/main" in r.stderr and "forced" in r.stderr.lower()
+    env["OFF_MAIN"] = "0"
+    r = _run_fn(tmp_path, env, "apply_schema_via_build")
+    assert "--force-revision" not in (tmp_path / "rendered.yaml").read_text(), "on main the guard is not bypassed"
+
+
+def test_serialized_apply_reports_the_build_exit_code_when_the_pin_also_fails(tmp_path):
+    """`pin_image_tags || return 1` returned before the build's own exit code
+    could, so a failed apply plus a failed pin reported 1 and lost the
+    diagnostic (internal review of #1022, schema-apply round)."""
+    env = _bash_env(tmp_path, _GCLOUD_OK, _GIT_ON_MAIN)
+    env["SUBMIT_RC"] = "3"
+    r = _run_fn(tmp_path, env, 'pin_image_tags() { echo PINNED >> "$OUT/calls"; return 1; }; apply_schema_via_build')
+    assert "rc=3" in r.stdout, r.stdout + r.stderr
+    assert "PINNED" in (tmp_path / "calls").read_text()
+
+
+def test_serialized_apply_submits_in_the_global_region(tmp_path):
+    """The serializer inside the build describes and lists builds without
+    --region, i.e. global; a builds/region property on the operator's
+    machine would submit the build regionally, where its own describe cannot
+    find it and the wait fails closed. --timeout is already pinned for the
+    same reason."""
+    env = _bash_env(tmp_path, _GCLOUD_OK, _GIT_ON_MAIN)
+    r = _run_fn(tmp_path, env, "apply_schema_via_build")
+    assert "rc=0" in r.stdout, r.stdout + r.stderr
+    calls = (tmp_path / "calls").read_text()
+    submit = next(ln for ln in calls.splitlines() if ln.startswith("builds submit"))
+    assert "--region=global" in submit, submit
+
+
+def test_secret_helpers_fail_loud_instead_of_defaulting(tmp_path):
+    """apply_schema_via_build writes the job's ENTIRE env and secret set
+    through `_env_string` and `_build_secret_flag`, and both degraded
+    silently: `_secret` echoed '' on any read failure (an auth blip would
+    have set CLOUD_SQL_CONNECTION_NAME= on the live job and every later
+    apply exited 2), and `_build_secret_flag` dropped a secret on ANY
+    describe error, not only NOT_FOUND (internal review of #1022,
+    schema-apply round; CLAUDE.md 3.7)."""
+    # The probe is `versions access`, the one call roles/secretmanager.
+    # secretAccessor (trading-runner@) permits; `secrets describe` needs
+    # secrets.get, which it lacks. Captured 2026-09-07: a missing secret
+    # answers "NOT_FOUND: Secret [...] not found or has no versions."
+    gcloud = """
+    echo "$*" >> "$OUT/calls"
+    case "$1 $2 $3" in
+      "secrets versions access")
+        secret=""; for a in "$@"; do case "$a" in --secret=*) secret="${a#--secret=}" ;; esac; done
+        if [ "$secret" = "${PROBE_SECRET:-}" ]; then echo "${PROBE_STDERR:-}" >&2; exit "${PROBE_RC:-0}"; fi
+        if [ "${ACCESS_RC:-0}" = 0 ]; then echo "value-of-$secret"; fi; exit "${ACCESS_RC:-0}" ;;
+    esac
+    exit 0
+    """
+    env = _bash_env(tmp_path, gcloud)
+    defs = "\n".join(f"{n}() {{{_fn(n)}}}" for n in ("_secret", "_optional_secret_pair", "_build_secret_flag"))
+    def run(call):
+        script = f'set -uo pipefail\nPROJECT_ID=proj\n{defs}\n{call}\n'
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, cwd=str(REPO))
+    probe = 'if v=$(_secret db-trading-user); then echo "got=$v"; else echo "failed=$?"; fi'
+    r = run(probe)
+    assert "got=value-of-db-trading-user" in r.stdout, r.stdout + r.stderr
+    env["ACCESS_RC"] = "1"
+    r = run(probe)
+    assert "failed=1" in r.stdout and "got=" not in r.stdout, r.stdout + r.stderr
+    assert "cannot read secret" in r.stderr.lower()
+    env["ACCESS_RC"] = "0"
+    env.update(PROBE_SECRET="fred-api-key", PROBE_RC="1",
+               PROBE_STDERR="ERROR: (gcloud.secrets.versions.access) NOT_FOUND: Secret [projects/1/secrets/fred-api-key] not found or has no versions.")
+    r = run('_build_secret_flag; echo "rc=$?"')
+    assert "rc=0" in r.stdout and "FRED_API_KEY" not in r.stdout and "skipping FRED_API_KEY" in r.stderr, r.stdout + r.stderr
+    assert "BENZINGA_API_KEY=benzinga-api-key:latest" in r.stdout, "the other optional secrets are still added"
+    env.update(PROBE_STDERR="ERROR: (gcloud.secrets.versions.access) PERMISSION_DENIED: quota")
+    r = run('_build_secret_flag; echo "rc=$?"')
+    assert "rc=1" in r.stdout and "--set-secrets" not in r.stdout, r.stdout + r.stderr
+    assert "cannot tell" in r.stderr.lower()
+    assert "secrets describe" not in (tmp_path / "calls").read_text(), "the deploy SA cannot describe secrets"
+
+
+def test_pin_images_does_not_resolve_the_secret_set():
+    """pin-images runs inside the trigger builds as trading-runner@ and needs
+    no job declaration; every other subcommand resolves the secret set at
+    start-up so a read failure aborts before any mutation."""
+    src = (REPO / "gcp/deploy.sh").read_text()
+    top = src[:src.index("_env_string() {")]
+    assert 'pin-images) DB_SECRET_FLAG="" ;;' in top
+    assert '*) DB_SECRET_FLAG="$(_build_secret_flag)" ;;' in top
+
+
+def test_the_staging_trigger_waits_for_earlier_deploys_instead_of_refusing():
+    """Internal review of #1022 (schema-apply round): the staging preflight
+    REFUSED on any ongoing staging build while its migrate step WAITED on
+    earlier schema builds, so with two pushes minutes apart the second
+    staging build died at preflight, the second schema build applied its
+    schema, and staging served push 1's code against push 2's schema. The
+    trigger now waits (bounded by its own build budget) for every earlier
+    build of any of the three tags; the operator path keeps refusing."""
+    staging = yaml.safe_load((REPO / "gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml").read_text())
+    first = _all_args(staging["steps"][0])
+    assert "wait_for_earlier_schema_builds.sh" in first
+    assert 'TAGS="apply-schema-on-change solyra-api-staging-deploy solyra-api-image-build"' in first
+    assert "assert_no_concurrent_staging_deploy.sh" not in first
+    platform_cfg = yaml.safe_load((REPO / "platform/cloudbuild.yaml").read_text())
+    assert "assert_no_concurrent_staging_deploy.sh" in _all_args(platform_cfg["steps"][0])
+
+
+def _wait_script_env(tmp_path, ongoing_lists: list[str]) -> dict:
+    """Stub gcloud: each `builds list` call pops the next entry of ongoing_lists."""
+    (tmp_path / "n").write_text("0")
+    lists = tmp_path / "lists"
+    lists.write_text("\n".join(ongoing_lists) + "\n")
+    gcloud = f"""
+    echo "$*" >> "$OUT/calls"
+    if [ "$1 $2" = "builds list" ]; then
+      n=$(cat "$OUT/n"); echo $((n+1)) > "$OUT/n"
+      sed -n "$((n+1))p" "$OUT/lists" | tr ',' '\\n'
+      exit 0
+    fi
+    exit 0
+    """
+    return _bash_env(tmp_path, gcloud)
+
+
+def test_the_wait_script_has_an_external_mode_for_a_runner_that_is_not_a_build(tmp_path):
+    """.github/workflows/deploy-staging.yml applies the schema from a GitHub
+    runner, which is not a Cloud Build and so cannot be ordered by
+    createTime or budgeted by a build timeout. In external mode the script
+    waits for EVERY ongoing tagged build under a caller-supplied budget, and
+    refuses without one."""
+    env = _wait_script_env(tmp_path, ["b1", "", "", ""])
+    env["POLL_SECONDS"] = "0"
+    r = subprocess.run(["bash", str(WAIT), "--external"], capture_output=True, text=True, env=env)
+    assert r.returncode == 2 and "WAIT_BUDGET_SECONDS" in r.stderr, r.stdout + r.stderr
+    env["WAIT_BUDGET_SECONDS"] = "60"
+    r = subprocess.run(["bash", str(WAIT), "--external"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = (pathlib.Path(env["OUT"]) / "calls").read_text()
+    assert "builds describe" not in calls, "a runner has no build to describe"
+    assert "createTime<" not in calls, "external mode waits for every ongoing tagged build"
+    assert "waiting" in r.stdout and "proceeding" in r.stdout
+
+
+def test_the_workflow_apply_passes_the_guard_and_waits_for_builds():
+    """The GHA deploy-staging path ran `python -m gcp.apply_schema` bare:
+    outside the serializer and outside the revision guard, so it recorded
+    nothing in schema_apply_history and the guard's "last row is the schema
+    in force" contract was false right after it (internal review of #1022,
+    schema-apply round)."""
+    wf = yaml.safe_load((REPO / ".github/workflows/deploy-staging.yml").read_text())
+    steps = wf["jobs"]["deploy"]["steps"]
+    checkout = next(st for st in steps if str(st.get("uses", "")).startswith("actions/checkout"))
+    assert checkout.get("with", {}).get("fetch-depth") == 100, "the guard's ancestry needs history"
+    apply = next(st for st in steps if st.get("id") == "apply")
+    run = apply["run"]
+    assert "wait_for_earlier_schema_builds.sh --external" in run
+    assert "WAIT_BUDGET_SECONDS" in run
+    for flag in ("--revision=", "--revision-time=", "--revision-ancestors="):
+        assert flag in run, flag
+    assert "git rev-list --max-count=100" in run

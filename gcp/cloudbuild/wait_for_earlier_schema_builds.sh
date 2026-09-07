@@ -47,13 +47,60 @@
 set -euo pipefail
 
 SELF="${1:-}"
-TAGS="apply-schema-on-change solyra-api-staging-deploy"
+# The staging trigger's preflight overrides TAGS to add the operator
+# image-build tag, so a staging build waits for an earlier operator deploy
+# too instead of refusing (see deploy-solyra-api-staging-cloudbuild.yaml).
+TAGS="${TAGS:-apply-schema-on-change solyra-api-staging-deploy}"
 POLL_SECONDS="${POLL_SECONDS:-20}"
-RESERVE_SECONDS="${RESERVE_SECONDS:-2100}"   # apply job 1800 s + deploy/pin 300 s
+# apply job 1800 s + ~90 s between the apply step starting and the Cloud
+# Run execution starting (image pull, digest describe, git deepen, jobs
+# update, provisioning; measured on build e4be0456, 2026-09-07) + deploy
+# and pin 300 s + margin.
+RESERVE_SECONDS="${RESERVE_SECONDS:-2400}"
 
 if [ -z "${SELF}" ]; then
-  echo "usage: $0 <this build id>" >&2
+  echo "usage: $0 <this build id> | $0 --external (with WAIT_BUDGET_SECONDS set)" >&2
   exit 2
+fi
+
+# EXTERNAL MODE: the caller is not a Cloud Build (the deploy-staging GitHub
+# workflow's schema apply runs on a runner), so it has no createTime to
+# order by and no build timeout to budget from. It waits for EVERY ongoing
+# tagged build under a budget the caller supplies, then applies through
+# the same revision guard the builds use. A later-starting build cannot
+# see the runner, so the runner waits for all of them, not only earlier
+# ones; the budget bounds a pile-up.
+if [ "${SELF}" = "--external" ]; then
+  if [ -z "${WAIT_BUDGET_SECONDS:-}" ]; then
+    echo "ERROR: --external needs WAIT_BUDGET_SECONDS (how long this caller may wait)." >&2
+    exit 2
+  fi
+  deadline_epoch=$(( $(date -u +%s) + WAIT_BUDGET_SECONDS ))
+  echo "external caller: waiting at most ${WAIT_BUDGET_SECONDS}s for any ongoing schema-mutating build"
+  while :; do
+    ongoing_all=""
+    for tag in ${TAGS}; do
+      if ! ongoing=$(gcloud builds list --ongoing --filter="tags='${tag}'" --format='value(id)' 2>&1); then
+        echo "ERROR: cannot list builds tagged '${tag}', so a running schema build" >&2
+        echo "       cannot be ruled out. Refusing rather than assuming none." >&2
+        echo "       ${ongoing}" >&2
+        exit 1
+      fi
+      for id in ${ongoing}; do ongoing_all="${ongoing_all} ${id}"; done
+    done
+    if [ -z "${ongoing_all}" ]; then
+      echo "no schema-mutating build in flight — proceeding"
+      exit 0
+    fi
+    now=$(date -u +%s)
+    if [ "${now}" -ge "${deadline_epoch}" ]; then
+      echo "ERROR: schema build(s) still running after ${WAIT_BUDGET_SECONDS}s:${ongoing_all}" >&2
+      echo "       Not applying alongside them. Re-run once they finish (gcloud builds log <id>)." >&2
+      exit 1
+    fi
+    echo "waiting ${POLL_SECONDS}s for schema build(s):${ongoing_all} ($((deadline_epoch - now))s of budget left)"
+    sleep "${POLL_SECONDS}"
+  done
 fi
 
 if ! self_desc=$(gcloud builds describe "${SELF}" --format='value(createTime,startTime,timeout)' 2>&1); then

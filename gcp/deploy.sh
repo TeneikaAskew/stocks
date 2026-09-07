@@ -27,8 +27,21 @@ REGION="${REGION:-us-east1}"
 IMAGE="us-east1-docker.pkg.dev/${PROJECT_ID}/trading/trading-system"
 SA_EMAIL="trading-runner@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Read a value from Secret Manager
-_secret() { gcloud secrets versions access latest --secret="$1" --quiet 2>/dev/null || echo ''; }
+# Read a value from Secret Manager. FAILS LOUD: this used to `|| echo ''`,
+# and the value lands in --set-env-vars / --set-secrets, which REPLACE the
+# job's set, so a transient read failure would have written
+# CLOUD_SQL_CONNECTION_NAME= onto a live job and every later run of it
+# would have exited 2 as "not configured" (internal review of #1022,
+# schema-apply round; CLAUDE.md 3.7). Callers that can legitimately run
+# without a secret say so at the call site (`2>/dev/null || true`).
+_secret() {
+    local v
+    if ! v=$(gcloud secrets versions access latest --secret="$1" --quiet 2>&1); then
+        echo "ERROR: cannot read secret '$1': ${v%%$'\n'*}" >&2
+        return 1
+    fi
+    printf '%s' "${v}"
+}
 
 echo "Project: ${PROJECT_ID}"
 echo "Region:  ${REGION}"
@@ -852,42 +865,62 @@ setup_insight_tasks_queue() {
 #     pre-PR-318 behaviour from `_env_string`'s `[ -n "$key" ] && ...`
 #     conditional. Codex P1 review on PR #318 caught the regression
 #     where requiring all 5 broke fresh deploys missing the optionals.
+# Adds an optional secret to `pairs` when it exists. Only a NOT_FOUND
+# means "not provisioned, skip"; any other failure (auth, quota, API) is
+# unknown and stops the deploy, because the flag REPLACES the job's secret
+# set and a dropped pair would strip a live credential (internal review of
+# #1022, schema-apply round; CLAUDE.md 3.7). The probe is `versions
+# access` (discarded), not `secrets describe`: the deploy SA
+# (trading-runner@, which runs pin-images inside the trigger builds) holds
+# roles/secretmanager.secretAccessor, which grants versions.access but not
+# secrets.get, and a NOT_FOUND here also covers a secret with no versions,
+# which Cloud Run could not mount either.
+_optional_secret_pair() {
+    local var="$1" secret="$2" out
+    if out=$(gcloud secrets versions access latest --secret="${secret}" --project="${PROJECT_ID}" 2>&1 >/dev/null); then
+        printf ',%s=%s:latest' "${var}" "${secret}"
+        return 0
+    fi
+    if printf '%s' "${out}" | grep -qiE 'NOT_FOUND|not found|could not be found|cannot find'; then
+        echo "  (skipping ${var} — secret '${secret}' not in project)" >&2
+        return 0
+    fi
+    echo "ERROR: cannot tell whether secret '${secret}' exists (${out%%$'\n'*}); not building the secret flag." >&2
+    return 1
+}
+
 _build_secret_flag() {
-    local pairs="DB_PASS=db-trading-pass:latest"
+    local pairs="DB_PASS=db-trading-pass:latest" extra
     pairs="${pairs},AV_API_KEY=av-api-key:latest"
     pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
     pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
     # Earnings-specific channel — the Earnings embed routes here; analytics
     # + calendar stay on DISCORD_WEBHOOK_URL. premarket_brief.py falls back
     # to the main webhook when this is unset, so deploys without the secret
-    # remain functional. Gracefully skipped when not provisioned.
-    if gcloud secrets describe discord-webhook-earnings --project="${PROJECT_ID}" >/dev/null 2>&1; then
-        pairs="${pairs},DISCORD_WEBHOOK_EARNINGS_URL=discord-webhook-earnings:latest"
-    else
-        echo "  (skipping DISCORD_WEBHOOK_EARNINGS_URL — secret 'discord-webhook-earnings' not in project)" >&2
-    fi
+    # remain functional. Skipped only when not provisioned.
+    extra=$(_optional_secret_pair DISCORD_WEBHOOK_EARNINGS_URL discord-webhook-earnings) || return 1
+    pairs="${pairs}${extra}"
     # Signals-specific channel — signal_monitor (entries/exits/ORB), the EOD
     # resolver, signal_quality_alarm and signal_quality_report route here.
     # Each consumer falls back to DISCORD_WEBHOOK_URL when this is unset, so
-    # deploys without the secret remain functional. Skipped if not provisioned.
-    if gcloud secrets describe discord-webhook-signals --project="${PROJECT_ID}" >/dev/null 2>&1; then
-        pairs="${pairs},DISCORD_WEBHOOK_SIGNALS_URL=discord-webhook-signals:latest"
-    else
-        echo "  (skipping DISCORD_WEBHOOK_SIGNALS_URL — secret 'discord-webhook-signals' not in project)" >&2
-    fi
-    if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
-        pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
-    else
-        echo "  (skipping FRED_API_KEY — secret 'fred-api-key' not in project)" >&2
-    fi
-    if gcloud secrets describe benzinga-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
-        pairs="${pairs},BENZINGA_API_KEY=benzinga-api-key:latest"
-    else
-        echo "  (skipping BENZINGA_API_KEY — secret 'benzinga-api-key' not in project)" >&2
-    fi
+    # deploys without the secret remain functional. Skipped only when not
+    # provisioned.
+    extra=$(_optional_secret_pair DISCORD_WEBHOOK_SIGNALS_URL discord-webhook-signals) || return 1
+    pairs="${pairs}${extra}"
+    extra=$(_optional_secret_pair FRED_API_KEY fred-api-key) || return 1
+    pairs="${pairs}${extra}"
+    extra=$(_optional_secret_pair BENZINGA_API_KEY benzinga-api-key) || return 1
+    pairs="${pairs}${extra}"
     echo "--set-secrets=${pairs}"
 }
-DB_SECRET_FLAG="$(_build_secret_flag)"
+# pin-images needs no job declaration and is the one subcommand the Cloud
+# Build triggers run (as trading-runner@); every other subcommand deploys
+# something and resolves the secret set up front so a read failure aborts
+# before any mutation.
+case "${1:-}" in
+    pin-images) DB_SECRET_FLAG="" ;;
+    *) DB_SECRET_FLAG="$(_build_secret_flag)" ;;
+esac
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
 # Only non-secret values land here. The 4 API keys + DB_PASS go through
@@ -3153,7 +3186,11 @@ deploy_apply_schema_migrations() {
     # Only a real NOT_FOUND means "create". A 503, quota or auth failure must
     # not fall into `jobs create` (which then fails with ALREADY EXISTS and
     # aborts `all)` at its first job; internal review of #1022 round 14).
-    if ! printf '%s' "${desc}" | grep -qi "not found"; then
+    # gcloud 583.0.0 (captured 2026-09-07): `jobs describe` says "Cannot find
+    # job [x].", `jobs update` says "Job [x] could not be found."; neither
+    # contains "not found", which is all the first version matched, so the
+    # bootstrap could never create the job (internal review of #1022).
+    if ! printf '%s' "${desc}" | grep -qiE 'NOT_FOUND|not found|could not be found|cannot find'; then
         echo "ERROR: cannot tell whether apply-schema-migrations exists; not creating it." >&2
         echo "       ${desc}" >&2
         return 1
@@ -3174,27 +3211,33 @@ deploy_apply_schema_migrations() {
 # committer time and its rev-list, exactly what the trigger builds pass.
 # Only the serializer script and the generated config are uploaded.
 apply_schema_via_build() {
-    local digest revision revision_time ancestors tmpdir flags rc
+    local digest revision revision_time ancestors tmpdir flags rc pin_rc force_flag
     digest=$(gcloud artifacts docker images describe "${IMAGE}:latest" \
                --format='value(image_summary.fully_qualified_digest)') || return 1
     if [ -z "${digest}" ]; then
         echo "ERROR: cannot resolve ${IMAGE}:latest to a digest; run ./gcp/deploy.sh build first." >&2
         return 1
     fi
-    # The revision the guard records must be a MAIN commit: main is linear
-    # (squash merges), and a feature-branch SHA is neither ancestor nor
-    # descendant of the next squash commit, so a later main apply could be
-    # refused on committer time alone (internal review of #1022 round 14).
-    # On main, HEAD itself; off main, the newest main commit this checkout
-    # contains. The schema applied is still this checkout's.
+    # The guard records HEAD. On main that is a main commit the ordering
+    # rule was written for. Off main, HEAD is a branch commit the rule
+    # cannot place: an earlier version recorded the merge-base instead, an
+    # OLD main commit, and once anything newer had been applied the guard
+    # refused it as an ancestor with no way past (build e4be0456,
+    # 2026-09-07). So off main the real HEAD is recorded and the guard's
+    # ordering check is bypassed with --force-revision, logged at ERROR by
+    # the applier and stored as forced=true. The next main apply orders
+    # against it by committer time (a squash commit is later than the
+    # branch commits it squashes).
     git fetch -q origin main || { echo "ERROR: cannot fetch origin/main to place HEAD on main's history." >&2; return 1; }
+    revision=$(git rev-parse HEAD) || return 1
     if git merge-base --is-ancestor HEAD origin/main; then
-        revision=$(git rev-parse HEAD) || return 1
+        force_flag=""
     else
-        revision=$(git merge-base HEAD origin/main) || return 1
-        echo "WARNING: HEAD $(git rev-parse --short HEAD) is not on origin/main. The schema applied is" >&2
-        echo "         this checkout's, but the guard records main commit ${revision:0:12}, the" >&2
-        echo "         newest main commit it contains, so no later main apply is refused." >&2
+        force_flag=",--force-revision"
+        echo "WARNING: HEAD $(git rev-parse --short HEAD) is not on origin/main. The apply is FORCED:" >&2
+        echo "         the guard's ordering check is bypassed and schema_apply_history records" >&2
+        echo "         ${revision:0:12} as forced. Use this to validate a branch's schema; the" >&2
+        echo "         merge's own trigger build applies main's afterwards." >&2
     fi
     revision_time=$(git log -1 --format=%ct "${revision}") || return 1
     ancestors=$(git rev-list --max-count=100 "${revision}" | tr '\n' ' ') || return 1
@@ -3231,28 +3274,34 @@ steps:
           ${flags} \\
           --quiet
         gcloud run jobs execute apply-schema-migrations --region=${REGION} \\
-          --args="--revision=${revision},--revision-time=${revision_time},--revision-ancestors=${ancestors}" \\
+          --args="--revision=${revision},--revision-time=${revision_time},--revision-ancestors=${ancestors}${force_flag}" \\
           --wait
 serviceAccount: projects/${PROJECT_ID}/serviceAccounts/${SA_EMAIL}
 tags: [apply-schema-on-change]
 options:
   logging: CLOUD_LOGGING_ONLY
-timeout: 5400s
+timeout: 7200s
 EOF
     echo "Submitting the schema apply as a tagged, serialized Cloud Build (revision ${revision:0:12})..."
     rc=0
     # --timeout is passed explicitly so an operator's builds/timeout property
-    # cannot shrink the budget the serializer computes from.
-    gcloud builds submit --config "${tmpdir}/cloudbuild.yaml" --timeout=5400s "${tmpdir}" || rc=$?
+    # cannot shrink the budget the serializer computes from, and --region so
+    # a builds/region property cannot submit it where the serializer's own
+    # (global) describe and list cannot see it.
+    gcloud builds submit --config "${tmpdir}/cloudbuild.yaml" --timeout=7200s --region=global "${tmpdir}" || rc=$?
     rm -rf "${tmpdir}"
     # Pin whatever the job runs now, whatever the build's outcome: a failed
     # execute after a successful update leaves the job on a digest only
-    # :latest keeps alive, and the next build moves that tag.
-    pin_image_tags || return 1
+    # :latest keeps alive, and the next build moves that tag. The build's
+    # own exit code is what this function reports; a pin failure only
+    # replaces a success.
+    pin_rc=0
+    pin_image_tags || pin_rc=$?
     if [ "${rc}" -ne 0 ]; then
         echo "ERROR: the serialized schema apply failed (build exit ${rc}); see the build log above." >&2
         return "${rc}"
     fi
+    return "${pin_rc}"
 }
 
 # One-shot SPX Greeks backfill. Walks every historical SPX snapshot_date in

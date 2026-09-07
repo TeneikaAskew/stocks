@@ -460,27 +460,27 @@ def test_guard_allows_first_apply_and_newer_revisions():
     assert guard_revision(eng, "aaa", 100)[:2] == (True, None)
     assert any("CREATE TABLE IF NOT EXISTS schema_apply_history" in e for e in eng.executed)
     assert any("ADD COLUMN IF NOT EXISTS ancestors" in e for e in eng.executed)
-    eng = _FakeEngine([[("aaa", 100, "", "")]])
+    eng = _FakeEngine([[("aaa", 100, "", "", "ok", False)]])
     assert guard_revision(eng, "bbb", 200)[:2] == (True, "aaa")
 
 
 def test_guard_refuses_a_revision_older_than_the_newest_applied():
     """Cloud Build can start a newer push's build before a delayed older one;
     build start order is not commit order, so the applier itself refuses."""
-    eng = _FakeEngine([[("newer", 200, "", "")]])
+    eng = _FakeEngine([[("newer", 200, "", "", "ok", False)]])
     assert guard_revision(eng, "older", 100)[:2] == (False, "newer")
 
 
 def test_guard_lets_the_same_revision_reapply():
     """Both triggers apply the same push; the second is a no-op, not a refusal."""
-    eng = _FakeEngine([[("same", 200, "", "")]])
+    eng = _FakeEngine([[("same", 200, "", "", "ok", False)]])
     assert guard_revision(eng, "same", 200)[:2] == (True, "same")
 
 
 def test_guard_refuses_an_equal_time_tie_it_cannot_order():
-    eng = _FakeEngine([[("newer", 200, "", "")]])
+    eng = _FakeEngine([[("newer", 200, "", "", "ok", False)]])
     assert guard_revision(eng, "other", 200)[:2] == (False, "newer")
-    eng = _FakeEngine([[("newer", 200, "", "")]])
+    eng = _FakeEngine([[("newer", 200, "", "", "ok", False)]])
     assert guard_revision(eng, "other", 200, ancestors=frozenset({"other", "newer"}))[:2] == (True, "newer")
 
 
@@ -488,7 +488,7 @@ def test_guard_refuses_an_ancestor_of_the_applied_revision_with_a_higher_time():
     """Codex on #1022 (round 8): B applied with a skewed lower committer time
     than its ancestor A; A's delayed build cannot see B, so only B's recorded
     ancestry can refuse A."""
-    eng = _FakeEngine([[("b", 90, "b a z", "")]])
+    eng = _FakeEngine([[("b", 90, "b a z", "", "ok", False)]])
     assert guard_revision(eng, "a", 100, ancestors=frozenset({"a", "z"}))[:2] == (False, "b")
 
 
@@ -496,7 +496,7 @@ def test_guard_reads_the_last_applied_revision_not_the_highest_commit_time():
     """Under clock skew the highest committer time is not the last applied
     revision: after A(100) then its descendant B(90), ordering by time would
     call A "newest" and let a re-run of A pass as "same"."""
-    eng = _FakeEngine([[("b", 90, "b a", "")]])
+    eng = _FakeEngine([[("b", 90, "b a", "", "ok", False)]])
     guard_revision(eng, "a", 100)
     select = next(e for e in eng.executed if e.lstrip().upper().startswith("SELECT"))
     assert "ORDER BY applied_at DESC" in select and "commit_time DESC" not in select
@@ -596,12 +596,12 @@ def test_ancestor_refusal_message_claims_skew_only_when_the_times_are_reversed(c
     committer time was refused with a message claiming its time was higher."""
     import logging
     with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
-        eng = _FakeEngine([[("b", 200, "b a", "")]])
+        eng = _FakeEngine([[("b", 200, "b a", "", "ok", False)]])
         assert guard_revision(eng, "a", 100)[:2] == (False, "b")
     assert "skewed" not in caplog.text and "recorded it as an ancestor" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
-        eng = _FakeEngine([[("b", 90, "b a", "")]])
+        eng = _FakeEngine([[("b", 90, "b a", "", "ok", False)]])
         assert guard_revision(eng, "a", 100)[:2] == (False, "b")
     assert "skewed" in caplog.text
 
@@ -624,7 +624,7 @@ def test_schema_digest_is_the_sha256_of_the_file_text():
 
 
 def test_guard_reports_the_newest_applied_schema_digest():
-    eng = _FakeEngine([[("aaa", 100, "", "deadbeef")]])
+    eng = _FakeEngine([[("aaa", 100, "", "deadbeef", "ok", False)]])
     assert guard_revision(eng, "bbb", 200) == (True, "aaa", "deadbeef")
     eng = _FakeEngine([[]])
     assert guard_revision(eng, "aaa", 100) == (True, None, None)
@@ -660,9 +660,10 @@ def _drive_main(tmp_path, monkeypatch, *, newest_digest, extra_args=()):
     monkeypatch.setattr(mod, "run_unit", lambda unit: calls.append("unit"))
     monkeypatch.setattr(mod, "refresh_unpopulated_matviews", lambda engine: calls.append("sweep") or [])
     monkeypatch.setattr(mod, "guard_revision",
-                        lambda engine, sha, t, anc: (True, "prev", newest_digest))
+                        lambda engine, sha, t, anc, force=False: (True, "prev", newest_digest))
     monkeypatch.setattr(mod, "record_revision",
-                        lambda engine, sha, t, anc, schema_digest: calls.append(("record", sha, schema_digest)))
+                        lambda engine, sha, t, anc, schema_digest, forced=False, status="ok":
+                        calls.append(("record", sha, schema_digest)))
     monkeypatch.setattr("gcp.database.get_engine", lambda: object())
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
                                      "--revision", "abc", "--revision-time", "5", *extra_args])
@@ -710,10 +711,79 @@ def test_skipped_apply_still_fails_loud_when_the_sweep_fails(tmp_path, monkeypat
     monkeypatch.setattr(mod, "run_unit", lambda unit: pytest.fail("must not apply"))
     monkeypatch.setattr(mod, "refresh_unpopulated_matviews",
                         lambda engine: (_ for _ in ()).throw(RuntimeError("boom")))
-    monkeypatch.setattr(mod, "guard_revision", lambda engine, sha, t, anc: (True, "prev", digest))
+    monkeypatch.setattr(mod, "guard_revision", lambda engine, sha, t, anc, force=False: (True, "prev", digest))
     monkeypatch.setattr(mod, "record_revision",
                         lambda *a, **k: pytest.fail("must not record a revision whose sweep failed"))
     monkeypatch.setattr("gcp.database.get_engine", lambda: object())
     monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
                                      "--revision", "abc", "--revision-time", "5"])
     assert mod.main() == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Forced applies and partial applies (internal review of #1022, schema-apply)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_force_revision_overrides_the_refusal_and_is_logged(caplog):
+    """Build e4be0456 (2026-09-07): the manual apply from a branch recorded
+    an old main commit and was refused as an ancestor with no way past the
+    guard. --force-revision is the explicit, logged override for an
+    operator apply; it never applies silently."""
+    import logging
+    with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
+        eng = _FakeEngine([[("b", 200, "b a", "d", "ok", False)]])
+        assert guard_revision(eng, "a", 100, force=True) == (True, "b", "d")
+    assert "FORCED" in caplog.text and "a" in caplog.text
+    eng = _FakeEngine([[("b", 200, "b a", "d", "ok", False)]])
+    assert guard_revision(eng, "a", 100) == (False, "b", "d"), "without the flag the refusal stands"
+
+
+def test_record_revision_marks_forced_and_partial_rows():
+    eng = _FakeEngine([[]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}), schema_digest="d1", forced=True, status="partial")
+    ins = next(e for e in eng.executed if e.startswith("INSERT INTO schema_apply_history"))
+    assert "forced" in ins and "status" in ins and "True" in ins and "'partial'" in ins, ins
+    eng = _FakeEngine([[]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}), schema_digest="d1")
+    ins = next(e for e in eng.executed if e.startswith("INSERT INTO schema_apply_history"))
+    assert "False" in ins and "'ok'" in ins, ins
+
+
+def test_partial_apply_is_recorded_as_partial_and_never_matches_the_digest(tmp_path, monkeypatch):
+    """Outside ATOMIC groups every unit commits on its own, so 250 of 251
+    units leave the schema mutated. Not recording the revision then let a
+    delayed build for an OLDER revision be classified "newer" than the
+    stale last row and roll the CREATE OR REPLACE objects back. A partial
+    apply is recorded with status='partial': it still orders later
+    revisions, but its digest is never one the skip can match."""
+    import gcp.apply_schema as mod
+    schema = tmp_path / "s.sql"
+    schema.write_text("CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n")
+    calls: list = []
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(mod, "run_unit",
+                        lambda unit: (_ for _ in ()).throw(RuntimeError("boom")) if "b" in unit[0] else None)
+    monkeypatch.setattr(mod, "refresh_unpopulated_matviews", lambda engine: [])
+    monkeypatch.setattr(mod, "guard_revision", lambda engine, sha, t, anc, force=False: (True, "prev", ""))
+    monkeypatch.setattr(mod, "record_revision",
+                        lambda engine, sha, t, anc, schema_digest, forced=False, status="ok":
+                        calls.append((sha, schema_digest, forced, status)))
+    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
+                                     "--revision", "abc", "--revision-time", "5"])
+    assert mod.main() == 1
+    assert calls == [("abc", mod.schema_digest(schema.read_text()), False, "partial")]
+    # The guard reports no in-force digest for a partial row.
+    eng = _FakeEngine([[("abc", 5, "abc", "d-partial", "partial", False)]])
+    assert guard_revision(eng, "def", 6) == (True, "abc", "")
+
+
+def test_schema_declares_forced_and_status_columns():
+    from pathlib import Path
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    block = schema[schema.index("CREATE TABLE IF NOT EXISTS schema_apply_history"):]
+    block = block[:block.index(");")]
+    assert "forced" in block and "status" in block
+    assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS forced" in schema
+    assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS status" in schema

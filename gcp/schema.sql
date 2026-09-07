@@ -4128,7 +4128,15 @@ CREATE TABLE IF NOT EXISTS schema_apply_history (
     -- deploy applies the schema, and each run holds the earnings mat
     -- views' lock for the refresh)
     schema_sha256 TEXT       NOT NULL DEFAULT '',
+    -- forced: an operator bypassed the ordering check (--force-revision).
+    -- status: 'ok' when every unit ran, 'partial' when some failed after
+    -- others committed; a partial row still orders later revisions but
+    -- its digest is never one an apply can skip on
+    forced        BOOLEAN     NOT NULL DEFAULT FALSE,
+    status        TEXT        NOT NULL DEFAULT 'ok',
     PRIMARY KEY (commit_sha, applied_at)
 );
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NULL DEFAULT '';
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
