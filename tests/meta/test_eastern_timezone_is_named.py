@@ -1506,12 +1506,22 @@ def _collect_bindings(nodes, out: dict[str, ast.AST]):
     return out
 
 
-def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
-    """(legacy-name hits, fixed-offset hits) for one Python file."""
+def _python_hits(path: pathlib.Path, text: str):
+    """(legacy-name hits, fixed-offset hits) for one Python file.
+
+    Returns None when the text does not parse. It used to return two empty
+    lists, which read as "scanned, clean" -- so a tracked `.py` that did not
+    parse passed both guards BY not parsing. That is a silent fallback in this
+    file's own terms: the notebook path has always handed an unparseable cell
+    to the regex pass rather than dropping it, and the `.py` path was the one
+    that did not. `_scan` now routes an unparseable file the same way, so a
+    fixed offset in it is caught by the only means left. Nothing is
+    fabricated: the text IS read, by the weaker reader.
+    """
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return [], []
+        return None
 
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
@@ -2155,18 +2165,22 @@ def _reads_as_shell(p: pathlib.Path) -> bool:
             or p.name.startswith(("Dockerfile", "Makefile")))
 
 
-def _notebook_cells(text: str) -> list:
-    """The source of each CODE cell, separately.
+def _notebook_cells(text: str):
+    """The source of each CODE cell, separately -- or None if not a notebook.
 
     Separately, because parsing them joined meant one unparseable cell lost
     the AST path for all the rest (Codex, PR #993).
+
+    None, not [], for text that is not a notebook document. An empty list
+    says "a notebook with no code cells", which is a real verdict; None says
+    "I could not read this", which the caller must not confuse with it.
     """
     try:
         nb = json.loads(text)
     except (ValueError, TypeError):
-        return []
+        return None                 # not JSON: the caller decides, loudly
     if not isinstance(nb, dict):
-        return []
+        return None                 # JSON, but not a notebook document
     out = []
     for cell in nb.get("cells", []):
         if not isinstance(cell, dict) or cell.get("cell_type") != "code":
@@ -2180,12 +2194,10 @@ def _notebook_code(text: str) -> str:
     """The source of a notebook's CODE cells, joined.
 
     Markdown cells are prose -- this file's own explanations mention
-    `US/Eastern` constantly -- so only `cell_type == "code"` is returned. An
-    unparseable or unexpected notebook yields nothing rather than raising: a
-    guard that crashes on a malformed file reports no violations either way,
-    and a crash is the worse way to say so.
+    `US/Eastern` constantly -- so only `cell_type == "code"` is returned.
     """
-    return "\n".join(_notebook_cells(text))
+    cells = _notebook_cells(text)
+    return "\n".join(cells) if cells else ""
 
 
 # `%name payload` / `%%name payload` / `!shell`, split so the payload can be
@@ -2327,7 +2339,20 @@ def _notebook_hits(path, text: str):
     If the result still does not parse, the regex path runs instead: partial
     coverage beats a guard that reports nothing on a file it could not read.
     """
+    if not text.strip():
+        # Zero bytes: there is nothing in the file to scan, so "no cells" is
+        # an accurate verdict rather than a fabricated one. (One tracked
+        # notebook is empty today; that is a repository defect recorded
+        # separately, not a reason for this guard to guess.)
+        return [], [], ""
     cells = _notebook_cells(text)
+    if cells is None:
+        # Not a notebook. `_notebook_cells` used to return [] here, which read
+        # as "scanned, clean" for a file whose contents the guard could not
+        # read at all -- the same silent fallback as an unparseable `.py`,
+        # and worse, because malformed JSON has no regex pass to fall back
+        # to. Fail loudly instead.
+        raise ValueError(f"{path}: not a readable notebook (invalid JSON)")
     if not cells:
         return [], [], ""
     # Shell escapes are EXECUTED, so their payload goes to the caller's regex
@@ -2376,7 +2401,11 @@ def _notebook_hits(path, text: str):
     # properties hold at once this way.
     legacy, offsets = ([], [])
     if parseable:
-        legacy, offsets = _python_hits(path, "\n".join(parseable))
+        parsed = _python_hits(path, "\n".join(parseable))
+        # Every cell here parsed on its own, so the join parses too; a None
+        # would mean that invariant broke, and that is worth failing on.
+        assert parsed is not None, f"{path}: joined cells did not parse"
+        legacy, offsets = parsed
     # Always the same shape: findings from the cells that parsed, plus the
     # text of the ones that did not AND every shell escape, for the caller's
     # regex pass. Empty when every cell parsed and none shelled out. A
@@ -2441,18 +2470,24 @@ def _scan() -> tuple[list[str], list[str]]:
     """
     legacy, offsets = [], []
     for p in _source_files():
-        try:
-            text = p.read_text(errors="replace")
-        except OSError:
-            continue
+        # No `except OSError: continue`. A tracked source this guard cannot
+        # read is a checkout or permissions failure, and skipping it reported
+        # a clean tree the guard never looked at -- the silent-fallback shape
+        # this file forbids in the code it scans. `read_text` raising is the
+        # honest answer: the test errors, naming the path.
+        text = p.read_text(errors="replace")
         rel = str(p.relative_to(REPO)).replace("\\", "/")
         if rel == SELF:
             continue
         if p.suffix == ".py":
-            l, o = _python_hits(p, text)
-            legacy += l
-            offsets += o
-            continue
+            parsed = _python_hits(p, text)
+            if parsed is not None:
+                l, o = parsed
+                legacy += l
+                offsets += o
+                continue
+            # Does not parse: fall through to the regex pass below rather
+            # than reporting it clean. See `_python_hits`.
         if p.suffix == ".ipynb":
             # Code cells only, read by the Python analyzer when they parse and
             # by the regex path when they do not. The line number is a line
@@ -3188,17 +3223,19 @@ def _declares_zone_flag(cmd: str) -> bool:
     still the flag it is, which a blank-the-quotes approach would have missed
     and reported as an offender.
 
-    On unbalanced quoting `shlex` raises and there is nothing to tokenise. It
-    falls back to the substring test rather than reporting the command,
-    because a parse failure is this guard's shortcoming and answering it with
-    red CI on somebody's shell is the failure direction this file has spent
-    six rounds removing. `gcp/deploy.sh` parses today, and
+    On unbalanced quoting `shlex` raises and there is nothing to tokenise.
+    The command is then NOT vouched for: it is reported as an offender, with
+    the reason, rather than falling back to the substring test this replaced.
+    A value this guard cannot read is a value it cannot vouch for -- the same
+    rule `test_every_scheduler_declaration_uses_the_named_zone` already
+    applies to a zone it cannot read -- and a permissive fallback here was a
+    silent one. `gcp/deploy.sh` parses today, and
     `test_the_real_deploy_script_tokenises` fails if it stops.
     """
     try:
         tokens = shlex.split(cmd)
     except ValueError:
-        return "--time-zone" in cmd
+        return False
     return any(t == "--time-zone" or t.startswith("--time-zone=")
                for t in tokens)
 
@@ -7065,3 +7102,73 @@ def test_pine_sources_are_read_without_their_comments():
 # falls outside it while an ordinary function local correctly does too.
 # Separating those two is a change to the scope model rather than another
 # matcher, which is why it belongs in the follow-up.
+# -- Audit: the guard's own silent fallbacks -------------------------------
+#
+# Found by reading this file the way it reads the repository, not by review.
+# Four places answered "clean" for input they had not read. Each is the shape
+# the guarded code is forbidden from having, and each is exactly what the next
+# review round would have named.
+
+
+def test_a_python_file_that_does_not_parse_is_still_scanned_as_text():
+    """`ZoneInfo('US/Eastern')` in a file with a syntax error is a finding.
+
+    `_python_hits` returned two empty lists on SyntaxError, which `_scan` read
+    as "scanned, clean" -- so a tracked `.py` passed both guards BY failing to
+    parse. The notebook path already hands an unparseable cell to the regex
+    pass; the `.py` path now does the same. Nothing is fabricated: the text is
+    read, by the weaker reader.
+    """
+    src = "def broken(:\n    pass\nZoneInfo('US/Eastern')\n"
+    assert _python_hits(REPO / "_probe.py", src) is None, (
+        "an unparseable file must say so, not report clean")
+    # ...and the regex pass, which `_scan` now falls through to, sees it.
+    assert NONPY_UNAMBIGUOUS.search(src)
+    # A file that parses still takes the AST path and returns the pair.
+    parsed = _python_hits(REPO / "_probe.py", "x = 1\n")
+    assert parsed == ([], [])
+
+
+def test_a_notebook_that_is_not_json_fails_loudly():
+    """Malformed notebook JSON is an error, not an empty scan.
+
+    `_notebook_cells` returned [] for text that was not a notebook, which
+    read as "no code cells" -- a verdict about a file the guard could not
+    read. Unlike an unparseable `.py`, malformed JSON has no regex pass to
+    fall back to, so the honest answer is to raise and name the file.
+    """
+    nb_path = REPO / "notebooks" / "_probe.ipynb"
+    with pytest.raises(ValueError, match="not a readable notebook"):
+        _notebook_hits(nb_path, "{not json")
+    with pytest.raises(ValueError, match="not a readable notebook"):
+        _notebook_hits(nb_path, "[1, 2, 3]")          # JSON, not a notebook
+
+    # An EMPTY file has nothing in it, so "no cells" is accurate, not
+    # guessed. (One tracked notebook is zero bytes today -- a repository
+    # defect filed separately, not a reason for the guard to invent a
+    # verdict either way.)
+    assert _notebook_hits(nb_path, "") == ([], [], "")
+    assert _notebook_hits(nb_path, "   \n") == ([], [], "")
+
+    # A notebook with no code cells is a real, distinct verdict.
+    assert _notebook_cells(json.dumps({"cells": []})) == []
+    assert _notebook_cells("{not json") is None
+
+
+def test_an_unparseable_scheduler_command_is_not_vouched_for():
+    """A command `shlex` cannot read is an offender, not a substring match.
+
+    `_declares_zone_flag` fell back to `"--time-zone" in cmd` on a
+    `ValueError`, which is the permissive direction: a command with an
+    unbalanced quote and the text `--time-zone` somewhere in it was accepted.
+    This file already holds that a value the guard cannot read is a value it
+    cannot vouch for, and the fallback contradicted it.
+    """
+    unbalanced = "gcloud scheduler jobs create http j --time-zone 'America/New_York\n"
+    assert not _declares_zone_flag(unbalanced)
+    assert _scheduler_offenders("<top level>", unbalanced), (
+        "an unparseable declaration must be reported, with its text")
+
+    # A parseable command with the real flag is still clean, quoted or not.
+    assert _declares_zone_flag("gcloud x --time-zone America/New_York")
+    assert _declares_zone_flag('gcloud x "--time-zone" "America/New_York"')
