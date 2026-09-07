@@ -260,10 +260,23 @@ _service_live_images() {
     done
 }
 
+# pin_image_tags [--no-sweep]
+# Pins every in-use digest; then, unless --no-sweep, releases inuse-* tags
+# that no job or revision needs any more. The sweep needs
+# artifactregistry.tags.delete, which roles/artifactregistry.writer (the
+# Cloud Build trigger identity, trading-runner@) does NOT include, while
+# pinning itself only needs tags.create/update. platform/deploy.sh, which
+# runs under that identity, therefore calls this with --no-sweep: pinning
+# is the safety step and must succeed there; releasing stale pins is
+# hygiene the interactive deploy path does (Codex, PR #1004).
 pin_image_tags() {
+    local sweep=1
+    [ "${1:-}" = "--no-sweep" ] && sweep=0
     echo "Pinning in-use image digests as inuse-* tags..."
     local jobs services failures=0
-    local -a wanted=()
+    local -a wanted=()   # "<repo_image>:<tag>" pairs, keyed by package so a
+                         # job that moved packages releases its old pin
+                         # (Codex, PR #1004)
     local job svc lines rev img tag repo_image tags
 
     # Inventory first; refuse to proceed on any read failure (an unreadable
@@ -280,10 +293,10 @@ pin_image_tags() {
     for job in ${jobs}; do
         if img=$(_job_pinned_image "${job}"); then
             _pin_tag "${img}" "inuse-job-${job}" || failures=$((failures + 1))
+            wanted+=("$(_pkgdev_path "${img%%@*}"):inuse-job-${job}")
         else
             failures=$((failures + 1))
         fi
-        wanted+=("inuse-job-${job}")
     done
 
     for svc in ${services}; do
@@ -291,7 +304,7 @@ pin_image_tags() {
             while IFS=$'\t' read -r rev img; do
                 [ -n "${rev}" ] || continue
                 _pin_tag "${img}" "inuse-svc-${rev}" || failures=$((failures + 1))
-                wanted+=("inuse-svc-${rev}")
+                wanted+=("$(_pkgdev_path "${img%%@*}"):inuse-svc-${rev}")
             done <<<"${lines}"
         else
             failures=$((failures + 1))
@@ -301,6 +314,10 @@ pin_image_tags() {
     if [ "${failures}" -ne 0 ]; then
         echo "ERROR: ${failures} pin(s) failed; stale-tag sweep skipped, no tag released." >&2
         return 1
+    fi
+    if [ "${sweep}" -eq 0 ]; then
+        echo "Pinned ${#wanted[@]} in-use tags (stale-tag sweep skipped: --no-sweep)."
+        return 0
     fi
 
     # Release inuse-* tags whose job/revision no longer exists so their
@@ -318,7 +335,11 @@ pin_image_tags() {
         while IFS=$'\t' read -r tag _; do
             tag=${tag##*/}
             [[ "${tag}" == inuse-* ]] || continue
-            if ! printf '%s\n' "${wanted[@]}" | grep -qx "${tag}"; then
+            if ! printf '%s\n' "${wanted[@]}" | grep -qxF "${repo_image}:${tag}"; then
+                # Drop the cached listing either way: a later pass in the
+                # same process (build_image pins, then the post-deploy pin)
+                # must re-read rather than try to delete this tag again.
+                unset "_TAG_CACHE[${repo_image}]"
                 if gcloud artifacts docker tags delete "${repo_image}:${tag}" --quiet >/dev/null 2>&1; then
                     echo "  released stale ${tag}"
                 else
@@ -4448,7 +4469,7 @@ case "${1:-help}" in
     setup)       _PIN_AFTER=0; setup ;;
     migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
     build)       _PIN_AFTER=0; build_image ;;
-    pin-images)  _PIN_AFTER=0; pin_image_tags ;;
+    pin-images)  _PIN_AFTER=0; pin_image_tags "${2:-}" ;;
     registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
     retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
     build-research) _PIN_AFTER=0; build_research_image ;;
@@ -4585,9 +4606,13 @@ case "${1:-help}" in
         echo "             Deploy earnings-sweep job — calibration of the"
         echo "             playability lookback knobs, auto-applied to"
         echo "             earnings_calibration. On-demand."
-        echo "  pin-images Tag every image digest a Cloud Run job/service is pinned"
-        echo "             to as inuse-job-<name> / inuse-svc-<name> (runs before"
-        echo "             every build; keeps in-use digests out of cleanup)."
+        echo "  pin-images [--no-sweep]"
+        echo "             Tag every image digest a Cloud Run job/service is pinned"
+        echo "             to as inuse-job-<job> / inuse-svc-<revision> (runs before"
+        echo "             every build and after every deploy; keeps in-use digests"
+        echo "             out of cleanup). --no-sweep skips releasing stale pins"
+        echo "             (needs artifactregistry.tags.delete; used by the Cloud"
+        echo "             Build trigger identity, which lacks it)."
         echo "  registry-cleanup"
         echo "             pin-images, then apply the Artifact Registry cleanup"
         echo "             policy (keep tagged + 10 newest, delete untagged >14d)"

@@ -180,7 +180,11 @@ gcloud config set project "${PROJECT_ID}" >/dev/null
 #    (gcp/deploy.sh setup_registry_cleanup) deletes untagged versions older
 #    than 14 days, so the digest the current revisions run must carry its
 #    inuse-* tag before the tag moves. Fails closed: no pin, no build.
-./gcp/deploy.sh pin-images
+#    --no-sweep: the deploy-solyra-api-staging Cloud Build trigger runs this
+#    as trading-runner@, whose roles/artifactregistry.writer can create and
+#    move tags but not delete them; releasing stale pins is done by the
+#    interactive gcp/deploy.sh path instead (see gcp/cloudbuild/README.md).
+./gcp/deploy.sh pin-images --no-sweep
 
 # 1. Build image (uses repo-root .dockerignore, build context is repo root)
 echo ">> building ${IMAGE}"
