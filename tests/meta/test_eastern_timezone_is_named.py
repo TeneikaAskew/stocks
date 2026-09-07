@@ -121,8 +121,16 @@ def _source_files() -> list[pathlib.Path]:
 # `gcp/fetchers/fetch_rss_news.py` lists `EST` as a headline stop-word -- so
 # they are only flagged in a timezone context. A guard that flags a stop-word
 # is one people learn to ignore.
+# Every backward link into an Eastern-observing zone, not just the four that
+# happened to be in use here. `US/East-Indiana` and `US/Michigan` are valid
+# IANA links (to America/Indiana/Indianapolis and America/Detroit), follow the
+# same -05:00/-04:00 pattern, and carry the same slim-tzdata portability
+# problem as the rest -- so allowing them let an alternate legacy spelling
+# through a guard whose whole purpose is to forbid legacy spellings
+# (Codex, PR #993).
 UNAMBIGUOUS_LEGACY = ("US/Eastern", "EST5EDT", "America/Montreal",
-                      "Canada/Eastern")
+                      "Canada/Eastern", "US/East-Indiana", "US/Michigan",
+                      "America/Fort_Wayne", "America/Indianapolis")
 AMBIGUOUS_LEGACY = ("EST", "EDT")
 ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 
@@ -135,7 +143,7 @@ ALL_LEGACY = UNAMBIGUOUS_LEGACY + AMBIGUOUS_LEGACY
 _TZ_CONTEXT = (
     r"tz\s*[:=]|tzinfo\s*[:=]|time_?zone\s*[:=]|time-zone[:= ]|ZoneInfo\s*\(|"
     r"pytz\.timezone\s*\(|tz_convert\s*\(|tz_localize\s*\(|"
-    r"AT TIME ZONE\s*|Timestamp\.now\s*\(|astimezone\s*\("
+    r"AT TIME ZONE\s*|Timestamp\.now\s*\(|astimezone\s*\(|timezone\s*\("
 )
 
 # Non-Python source (.sh, .sql, Pine). Regex is the only option here, so the
@@ -181,7 +189,16 @@ NONPY_FIXED_OFFSET = re.compile(
 # A whitelist of constructors is a list of the ones someone thought of, which
 # is why the unambiguous names are ALSO matched independently of it below.
 _TZ_CALLS = {"ZoneInfo", "timezone", "localize", "tz_localize", "tz_convert",
-             "astimezone", "now", "Timestamp", "gettz"}
+             "astimezone", "now", "Timestamp", "gettz", "FixedOffset"}
+
+# Constructors whose numeric argument IS the offset, in MINUTES.
+# `pytz.FixedOffset(-300)` is a fixed UTC-5 zone -- right for Eastern in
+# winter, wrong all summer -- and it produced no hit at all: the value is a
+# plain integer, so none of the string or `timedelta` checks could see it, and
+# the call name was not even in the whitelist (Codex, PR #993). pytz is a
+# declared dependency of this repository, so this is a live spelling.
+_FIXED_OFFSET_CALLS = {"FixedOffset"}
+_EASTERN_OFFSET_MINUTES = (-240, -300)
 # `key` is NOT here. It is the ZoneInfo constructor's parameter name and
 # nothing else's, so as a GLOBAL keyword it flags `cache.get(key="EST")` and
 # any other ordinary lookup -- a false CI failure on code that has no timezone
@@ -281,6 +298,27 @@ def _scope_nodes(scope: ast.AST):
         yield node
         if not isinstance(node, _SCOPES):
             stack.extend(ast.iter_child_nodes(node))
+
+
+def _class_attribute_bindings(tree: ast.AST) -> dict[tuple[str, str], tuple[str, ast.AST]]:
+    """`(ClassName, attr) -> (value, node)` for `class C: attr = "..."`.
+
+    `class Settings: tz = "EST"` then `ZoneInfo(Settings.tz)` produced nothing:
+    the literal is ambiguous so it is not reported on its own, and `follow`
+    resolved only `ast.Name`, never the `ast.Attribute` the call actually
+    receives (Codex, PR #993).
+
+    Keyed on the PAIR, not on the attribute name. A bare `tz` key would join
+    `Settings.tz` to an unrelated `Other.tz`, which is the cross-scope join
+    this file already fixed once one level up.
+    """
+    out: dict[tuple[str, str], tuple[str, ast.AST]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for name, binding in _collect_bindings(_scope_nodes(node), {}).items():
+            out[(node.name, name)] = binding
+    return out
 
 
 def _parameter_bindings(scope: ast.AST) -> tuple[set[str], dict]:
@@ -411,6 +449,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     legacy, offsets = [], []
     rel = path.relative_to(REPO)
     scoped = _scoped_bindings(tree)
+    attrs = _class_attribute_bindings(tree)
 
     def note(bucket, node, what):
         bucket.append(f"{rel}:{getattr(node, 'lineno', 0)}: {what}")
@@ -430,6 +469,18 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         if _is_eastern_fixed_timedelta(arg):
             note(bucket_offsets, arg, where("timedelta(hours=-4|-5, ...)"))
             return True
+        # `Settings.tz`, resolved through the class body that defines it.
+        if (isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name)
+                and (arg.value.id, arg.attr) in attrs):
+            value, _src = attrs[(arg.value.id, arg.attr)]
+            shown = f"{arg.value.id}.{arg.attr} (= {value!r})"
+            if value in ALL_LEGACY:
+                note(bucket_legacy, arg, where(shown))
+                return True
+            if _FIXED_OFFSET_STRINGS.match(value):
+                note(bucket_offsets, arg, where(shown))
+                return True
+
         if isinstance(arg, ast.Name) and arg.id in bindings:
             value, _src = bindings[arg.id]
             shown = f"{arg.id} (= {value!r})"
@@ -501,6 +552,19 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         name = _call_name(node)
         if name not in _TZ_CALLS:
             continue
+
+        # `pytz.FixedOffset(-300)` -- the offset is a plain integer count of
+        # MINUTES, so no string or `timedelta` check could ever see it.
+        if name in _FIXED_OFFSET_CALLS:
+            minutes = next(
+                (a for a in list(node.args)
+                 + [k.value for k in node.keywords if k.arg in (None, "offset")]),
+                None)
+            value = _const_number(minutes) if minutes is not None else None
+            if value is not None and int(value) in _EASTERN_OFFSET_MINUTES:
+                reported.add(id(minutes))
+                note(offsets, node, f"{name}({value:g}) minutes")
+                continue
         # Positional and keyword arguments alike.
         for arg in list(node.args) + [k.value for k in node.keywords]:
             follow(legacy, offsets, node, arg, bindings,
@@ -952,3 +1016,85 @@ def test_only_a_whole_array_expansion_carries_the_later_flags():
     assert "$flags" not in zoned, (
         "a scalar expansion passes only the first element, so it does not "
         "carry the --time-zone that follows")
+
+
+def test_a_pytz_fixed_offset_constructor_is_an_offset():
+    """`pytz.FixedOffset(-300)` is UTC-5 with no DST — right for half the year.
+
+    The offset is a plain integer count of minutes, so no string check and no
+    `timedelta` check could see it, and `FixedOffset` was not even in the call
+    whitelist. pytz is a declared dependency here, so this is a live spelling
+    (Codex, PR #993).
+    """
+    _, offsets = _hits("import pytz\ntz = pytz.FixedOffset(-300)\n")
+    assert any("FixedOffset" in h for h in offsets), offsets
+
+    _, offsets = _hits("tz = pytz.FixedOffset(-240)\n")   # EDT half of the year
+    assert any("FixedOffset" in h for h in offsets), offsets
+
+    # Not Eastern in any season, so not this guard's business.
+    assert _hits("tz = pytz.FixedOffset(0)\n") == ([], [])
+    assert _hits("tz = pytz.FixedOffset(330)\n") == ([], [])
+
+
+def test_a_class_attribute_resolves_at_the_call_site():
+    """`class Settings: tz = "EST"` then `ZoneInfo(Settings.tz)`.
+
+    The literal is ambiguous, so it is deliberately not reported on its own,
+    and `follow` resolved only `ast.Name` — never the `ast.Attribute` the call
+    actually receives. A routine configuration shape installed fixed UTC-5
+    with the guard green (Codex, PR #993).
+    """
+    legacy, _ = _hits(
+        'class Settings:\n'
+        '    tz = "EST"\n'
+        '\n'
+        'def load():\n'
+        '    return ZoneInfo(Settings.tz)\n'
+    )
+    assert any("Settings.tz" in h and "EST" in h for h in legacy), legacy
+
+    # Keyed on the PAIR: an unrelated class with the same attribute name must
+    # not inherit the finding.
+    assert _hits(
+        'class Settings:\n'
+        '    tz = "America/New_York"\n'
+        '\n'
+        'class Other:\n'
+        '    tz = "UTC"\n'
+        '\n'
+        'def load():\n'
+        '    return ZoneInfo(Other.tz)\n'
+    ) == ([], [])
+
+
+def test_a_postgres_timezone_call_is_a_timezone_context():
+    """`timezone('EST', ts)` is the function form of `AT TIME ZONE`.
+
+    The context knew `AT TIME ZONE` and assignment syntax but not the call, so
+    Postgres applied the fixed UTC-5 abbreviation with both repository-wide
+    guards green (Codex, PR #993).
+    """
+    assert NONPY_AMBIGUOUS.search("SELECT timezone('EST', ts) FROM bars")
+    assert NONPY_AMBIGUOUS.search("select TIMEZONE( 'EDT' , ts)")
+    assert NONPY_FIXED_OFFSET.search("SELECT timezone('-05:00', ts)")
+    # The canonical name is not a finding.
+    assert not NONPY_AMBIGUOUS.search("SELECT timezone('America/New_York', ts)")
+
+
+def test_the_remaining_eastern_backward_links_are_rejected():
+    """`US/East-Indiana` and `US/Michigan` are Eastern backward links too.
+
+    Both resolve to Eastern-observing zones, follow the same -05:00/-04:00
+    pattern, and break identically on a slim tzdata — so allowing them let an
+    alternate legacy spelling through a guard that exists to forbid legacy
+    spellings (Codex, PR #993).
+    """
+    for name in ("US/East-Indiana", "US/Michigan", "America/Fort_Wayne",
+                 "America/Indianapolis"):
+        legacy, _ = _hits(f'tz = ZoneInfo("{name}")\n')
+        assert any(name in h for h in legacy), f"{name} not reported: {legacy}"
+        assert NONPY_UNAMBIGUOUS.search(f'tz = "{name}"'), name
+
+    # A Central backward link is a different zone, not this guard's business.
+    assert _hits('tz = ZoneInfo("US/Central")\n') == ([], [])
