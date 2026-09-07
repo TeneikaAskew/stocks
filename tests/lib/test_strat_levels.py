@@ -933,6 +933,18 @@ class TestSelectNearestLevels:
         assert out['puts'][0]['price'] == 248.00
         assert out['puts'][1]['price'] == 245.00
 
+    def test_emitted_price_uses_the_shared_cents_rule(self):
+        """292.705 renders as 292.71 (half-up, matching Postgres numeric), not
+        the 292.70 Python's round() gives; and two lines on the same cent
+        collapse to one rung."""
+        levels = {
+            'PWH': StratLevel('PWH', 292.705, timeframe='week', level_type='high'),
+            'PDH': StratLevel('PDH', 292.714, timeframe='day', level_type='high'),  # same cent
+            'PMH': StratLevel('PMH', 294.0, timeframe='month', level_type='high'),
+        }
+        out = select_nearest_levels(290.0, levels, atr=5.0, n=2)
+        assert [lv['price'] for lv in out['calls']] == [292.71, 294.0]
+
     def test_direction_is_positional_not_by_high_low(self):
         # a prior-month HIGH below price is a PUT (bearish) level
         out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)

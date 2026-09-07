@@ -231,15 +231,17 @@ def _build_continuation(engine, ticker: str, tf: str, as_of) -> dict:
 # Slot order in the playbook: the trigger is the nearest fresh structural
 # line, t1..t3 the next three beyond it (lib.strat_levels.identify_triggers).
 _REACH_SLOTS = ("trigger", "t1", "t2", "t3")
-# Two lines are "the same price" when they round to the same cent — the rule
-# select_nearest_levels / identify_triggers express as `< 0.01`. Compared in
-# integer cents here because 240.01 - 240.00 is 0.00999… in binary floating
-# point, which a float threshold reads as the same line (Codex P2 on #1030).
+# Two lines are "the same price" when they land on the same cent under the ONE
+# rule lib.strat_levels.price_cents defines for the ladder, target de-dupe and
+# this match alike (Codex P2 on #1030, twice: a float threshold misreads
+# 240.01 - 240.00, and a second rounding rule misreads 292.705).
 _LEVEL_PRICE_TOL = 0.01
 
 
 def _cents(x) -> int:
-    return int(round(float(x) * 100))
+    from lib.strat_levels import price_cents  # noqa: PLC0415 — keeps import light
+
+    return price_cents(x)
 
 
 def market_today():
@@ -416,9 +418,9 @@ def _match_slot(price, tracked_side: list) -> Optional[dict]:
         return None
     c = _cents(price)
     for t in tracked_side:
-        # Same cent = same line; a full cent apart is distinct (the rule
-        # select_nearest_levels / _distinct_targets use). Integer cents, not a
-        # float threshold: 240.01 - 240.00 < 0.01 in binary.
+        # Same cent = same line under the shared rule; a full cent apart is
+        # distinct. The ladder emitted `price` through the same rule and the
+        # slot price is the raw persisted float, so 292.705 and 292.71 meet.
         if _cents(t["price"]) == c:
             return t
     return None

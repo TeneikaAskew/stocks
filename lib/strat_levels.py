@@ -941,6 +941,26 @@ def _within_staleness_window(
     return pct_ok and atr_ok
 
 
+def price_cents(x) -> int:
+    """A price as integer cents, under ONE rounding rule shared by everything
+    that decides whether two lines are "the same price": the ladder's emitted
+    prices (select_nearest_levels), target de-duplication (_distinct_targets),
+    the movement-statement slot match, and the reach-rate SQL's
+    `round(price::numeric, 2)`.
+
+    Decimal on the float's shortest repr, half-up, because three other rules
+    disagree on real data (Codex P2 on #1030): for 292.705, Python
+    `round(x, 2)` gives 292.70 (binary 292.705 is a hair below), 
+    `int(round(x * 100))` gives 29270, and Postgres `round(::numeric, 2)`
+    gives 292.71. This helper gives 29271, matching Postgres, so a level
+    persisted raw in `premarket_analysis` and the same level rendered on the
+    ladder land on the same cent.
+    """
+    from decimal import Decimal, ROUND_HALF_UP  # noqa: PLC0415
+
+    return int(Decimal(str(float(x))).quantize(Decimal("0.01"), ROUND_HALF_UP) * 100)
+
+
 def _distinct_targets(candidates, trigger_price: float, n: int = 3) -> list:
     """The next ``n`` fresh levels beyond ``trigger_price`` at DISTINCT prices.
 
@@ -953,11 +973,12 @@ def _distinct_targets(candidates, trigger_price: float, n: int = 3) -> list:
     anything within a cent of the trigger or of a target already taken, the
     same tolerance ``select_nearest_levels`` uses.
     """
-    # Integer cents, not a float threshold: 240.01 - 240.00 is 0.00999… in
-    # binary and a `< 0.01` test would call them the same line.
-    out, taken = [], {int(round(trigger_price * 100))}
+    # Integer cents under the shared rule (price_cents), not a float
+    # threshold: 240.01 - 240.00 is 0.00999… in binary and a `< 0.01` test
+    # would call them the same line.
+    out, taken = [], {price_cents(trigger_price)}
     for lv in candidates:
-        c = int(round(lv.price * 100))
+        c = price_cents(lv.price)
         if c in taken:
             continue
         taken.add(c)
@@ -1145,13 +1166,16 @@ def select_nearest_levels(
              if _within_staleness_window(lv.price, current_price, atr)]
 
     def _take(seq):
-        out, seen = [], []
+        # De-duplicate and emit on the shared cents rule (price_cents), so the
+        # price a consumer sees is the same cent every other comparison uses.
+        out, seen = [], set()
         for lv in seq:
-            if any(abs(lv.price - p) < 0.01 for p in seen):
+            c = price_cents(lv.price)
+            if c in seen:
                 continue
-            seen.append(lv.price)
+            seen.add(c)
             out.append({
-                'price': round(float(lv.price), 2),
+                'price': c / 100.0,
                 'name': lv.name,
                 'period': lv.timeframe,
                 'level_type': lv.level_type,

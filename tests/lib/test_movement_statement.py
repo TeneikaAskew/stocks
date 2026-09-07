@@ -823,6 +823,27 @@ def test_session_date_defaults_to_the_as_of_market_date_then_today(monkeypatch):
     assert [p["d"] for p in seen] == [date_type(2026, 6, 22), date_type(2026, 9, 7), date_type(2026, 1, 2)]
 
 
+def test_ladder_price_and_raw_slot_price_meet_on_the_same_cent(monkeypatch):
+    """The ladder emits a level through select_nearest_levels' cents rule; the
+    playbook persisted the SAME level raw. 292.705 raw is 292.71 on the ladder
+    (half-up, as Postgres rounds it) while Python's round() would say 292.70
+    and int(round(x*100)) would say 29270 — one rule must serve both sides
+    (Codex P2 on #1030, round 3)."""
+    from lib.strat_levels import price_cents
+    assert round(292.705, 2) == 292.7 and price_cents(292.705) == 29271
+    lm = _FakeLevelMap(
+        call_levels=[_level("PDH", 292.71, "day", 1.0), _level("PWH", 293.02, "week", 1.1)],
+        put_levels=[], current_price=290.0,
+    )
+    qf = _make_query_fn(
+        _reach_df(50, 40, 25, 17, 9), _reach_df(40, 28, 19, 14, 8), _mag_df(),
+        tracked_df=_tracked_df(calls=(292.705, 293.015, 294.0, 295.0)),
+    )
+    out = _assemble(monkeypatch, query_fn=qf, level_map=lm)
+    calls = out["levels"]["calls"]
+    assert [c["reach_rate"]["slot"] for c in calls] == ["trigger", "t1"]
+
+
 def test_match_compares_integer_cents_not_a_float_threshold(monkeypatch):
     """240.01 - 240.00 is 0.00999… in binary, so a `< 0.01` test called them
     the same line and pinned the trigger's rate on the t1 rung (Codex P2 on
