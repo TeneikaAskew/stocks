@@ -1,0 +1,37 @@
+# Blank issues stay enabled deliberately. The forms encode the standard; they
+# are not a gate. A finding that does not fit one of them is better filed
+# freehand than squeezed into the wrong shape.
+#
+# These forms apply to the GitHub web UI only. Issues created through the API
+# bypass them entirely, which covers every automated filer in this repo:
+# .github/workflows/handle-workflow-failure.yml (workflow-failure) and
+# gcp/failure_notifier.py (gcp-job-failure), plus anything an agent opens.
+# Those carry their own body format and their own dedupe-by-label behaviour.
+#
+# contact_links: `name` is kept to 30 characters or fewer and `about` under
+# 200. Codex cited a 30-char name limit; the page it cited states no limit at
+# all, and neither does the JSON schema. Applied anyway: if the cap is real an
+# over-length name makes the file invalid and every link silently vanishes.
+blank_issues_enabled: true
+
+contact_links:
+  - name: Workflow or job failure
+    url: https://github.com/TeneikaAskew/stocks/issues?q=is%3Aissue+is%3Aopen+label%3Aautomated
+    about: >-
+      Do not file these by hand. They are opened automatically and repeat
+      failures append to the existing issue. Check the automated label and add
+      your findings there.
+
+  - name: The rules these forms enforce
+    url: https://github.com/TeneikaAskew/stocks/blob/main/CLAUDE.md
+    about: >-
+      Rule 3.11 (a claim without evidence is a guess), Rule 0 (capacity math),
+      Rule 3.5 (replay now), Rule 3.6 (production replay paths), Rule 3.7 (no
+      silent fallbacks), Rule 2.5 (reviews before merge).
+
+  - name: Getting live evidence
+    url: https://github.com/TeneikaAskew/stocks/blob/main/docs/CLAUDE_CODE_ON_WEB.md
+    about: >-
+      Egress is port 443 only, so psql and the Cloud SQL proxy time out. Use
+      ./scripts/db_query_cr.sh for SQL and gcloud for GCP state. An unreachable
+      database is no reason to guess.
