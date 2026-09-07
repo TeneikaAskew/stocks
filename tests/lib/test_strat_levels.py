@@ -647,6 +647,26 @@ class TestIdentifyTriggers:
         triggers = identify_triggers(263.00, self._levels())
         assert triggers['calls']['reasoning'] == ''
 
+    def test_targets_are_distinct_prices_beyond_the_trigger(self):
+        """Two lines on one number consume one slot, and a line at the
+        trigger's own price is never a target (it was T1 == trigger on
+        13-17% of persisted IWM/SPY/QQQ rows, and the outcome resolver then
+        marked T1 hit on the trigger bar itself)."""
+        levels = {
+            'PDH': StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
+            'PWH': StratLevel('PWH', 265.00, 'week', 'high', '2U', False, ''),   # == trigger
+            'PDO': StratLevel('PDO', 266.50, 'day', 'open', '', False, ''),
+            'PWC': StratLevel('PWC', 266.504, 'week', 'close', '', False, ''),  # == PDO
+            'PMH': StratLevel('PMH', 268.00, 'month', 'high', '2U', False, ''),
+            'PQH': StratLevel('PQH', 270.00, 'quarter', 'high', '2U', False, ''),
+            'PDL': StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
+        }
+        triggers = identify_triggers(263.00, levels)
+        calls = triggers['calls']
+        assert calls['trigger_level'] == 265.00
+        assert [t['price'] for t in calls['targets']] == [266.50, 268.00, 270.00]
+        assert all(t['price'] > calls['trigger_level'] for t in calls['targets'])
+
 
 # ─── build_level_map ──────────────────────────────────────────────────────
 

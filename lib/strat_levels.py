@@ -941,6 +941,29 @@ def _within_staleness_window(
     return pct_ok and atr_ok
 
 
+def _distinct_targets(candidates, trigger_price: float, n: int = 3) -> list:
+    """The next ``n`` fresh levels beyond ``trigger_price`` at DISTINCT prices.
+
+    Two structural lines routinely sit on the same number (PDH == PWH on a
+    week whose high printed yesterday; PDO == PWC after a flat open). Before
+    this filter ``targets`` was a plain positional slice, so a coincident line
+    became a target at the trigger's own price: T1 == trigger on 13-17% of
+    IWM/SPY/QQQ premarket rows, and the outcome resolver then marked T1 hit on
+    the trigger bar itself. A target at zero distance is not a target; skip
+    anything within a cent of the trigger or of a target already taken, the
+    same tolerance ``select_nearest_levels`` uses.
+    """
+    out, taken = [], [trigger_price]
+    for lv in candidates:
+        if any(abs(lv.price - p) < 0.01 for p in taken):
+            continue
+        taken.append(lv.price)
+        out.append(lv)
+        if len(out) >= n:
+            break
+    return out
+
+
 def identify_triggers(
     current_price: float,
     levels: Dict[str, StratLevel],
@@ -988,7 +1011,7 @@ def identify_triggers(
 
     if above_fresh:
         trigger = above_fresh[0]
-        targets_above = above_fresh[1:4]
+        targets_above = _distinct_targets(above_fresh[1:], trigger.price)
         room = compute_room_to_run(trigger.price, all_levels, 'CALL')
 
         # Stop on the OPPOSITE side must also be fresh — using a stale
@@ -1013,7 +1036,7 @@ def identify_triggers(
 
     if below_fresh:
         trigger = below_fresh[0]
-        targets_below = below_fresh[1:4]
+        targets_below = _distinct_targets(below_fresh[1:], trigger.price)
         room = compute_room_to_run(trigger.price, all_levels, 'PUT')
         stop_lv = above_fresh[0] if above_fresh else None
 

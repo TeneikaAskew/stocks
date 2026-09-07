@@ -130,20 +130,24 @@ if [[ "${STAGING:-0}" == "1" ]]; then
 fi
 
 # ── Env vars + secrets (composed so staging can append its own) ────────────
-# MOVEMENT_STATEMENT_ENABLED=false since 2026-08-28. The card was enabled
-# 2026-07-12 on a validated model, but every magnitude cell currently serving
-# it is argmax-collapsed: `magnitude-engine-c49qf` (promoted 2026-08-27 from a
-# calibration=isotonic run) predicted TIGHT on 588/588 live bars with fold
-# accuracy equal to the base rate, and audit-magnitude-drift flags every other
-# live cell HIGH or MEDIUM on modal dominance too. Rendering a constant bucket
-# to users is worse than rendering nothing.
+# MOVEMENT_STATEMENT_ENABLED=true again as of #1024 (2026-09-07). It was
+# switched off 2026-08-28 because the magnitude cell serving the card,
+# `magnitude-engine-c49qf` (promoted 2026-08-27 from a calibration=isotonic
+# run), predicted TIGHT on 100% of live bars, and a constant bucket is worse
+# than nothing. But the flag is card-level and the card is four independent
+# pieces: the headline continuation probability, the levels ladder, the gamma
+# regime, and the magnitude-driven expected move. Only the last one is
+# affected, and lib/movement_statement._model_degeneracy already withholds it
+# per request: every c49qf row is source='inference' with modal share 1.00
+# against the 0.70 ceiling (measured 2026-09-07), so expected_move renders as
+# an explicit UNAVAILABLE envelope naming the collapse while the other three
+# pieces render. Keeping the whole card dark for one bad piece hid the levels
+# the card exists to show.
 #
-# Re-enable (set back to true) once a retrain PASSES the promotion gate added
-# in gcp/research/magnitude_engine/mag_walk_forward.promotion_verdict and
-# audit-magnitude-drift reports no HIGH modal-dominance finding for the served
-# cells. The render-layer backstop in lib/movement_statement._model_degeneracy
-# will withhold a collapsed bucket even if the flag is on, but the flag is the
-# instant lever and stays off until there is something worth showing.
+# The retrain that makes expected_move a real reading again is #1025; it
+# lands through the promotion gate in
+# gcp/research/magnitude_engine/mag_walk_forward.promotion_verdict and needs
+# no flag change here.
 # --set-env-vars replaces the whole set on each deploy, so the flag must live
 # here to persist across deploys.
 # GCP_REGION rides along with GCP_PROJECT_ID so the admin refresh dispatch
@@ -157,7 +161,7 @@ fi
 # and under the default comma delimiter gcloud parses its second email as a
 # malformed extra pair, failing the deploy AFTER the build (Codex, PR #983).
 # No key or value may contain "|".
-ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE}|DB_USER=${DB_USER}|DB_NAME=${DB_NAME}|GCS_BUCKET=${PROJECT_ID}-trading-data|GCP_PROJECT_ID=${PROJECT_ID}|GCP_REGION=${REGION}|PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com|IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com|AUTH_MODE=${AUTH_MODE_VAL}|MOVEMENT_STATEMENT_ENABLED=false"
+ENV_VARS="CLOUD_SQL_CONNECTION_NAME=${INSTANCE}|DB_USER=${DB_USER}|DB_NAME=${DB_NAME}|GCS_BUCKET=${PROJECT_ID}-trading-data|GCP_PROJECT_ID=${PROJECT_ID}|GCP_REGION=${REGION}|PLAYWRIGHT_TESTER_SA=playwright-tester@${PROJECT_ID}.iam.gserviceaccount.com|IAP_OAUTH_CLIENT_ID=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com|AUTH_MODE=${AUTH_MODE_VAL}|MOVEMENT_STATEMENT_ENABLED=true"
 
 # Who gets /api/admin/* and the is_admin flag on /api/me. Must be deployed
 # here rather than patched on afterwards: this script uses --set-env-vars,

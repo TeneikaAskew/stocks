@@ -448,6 +448,11 @@ class ReachRate(ApiModel):
     hits: Optional[int] = None
     sample_n: Optional[int] = None
     low_sample: Optional[bool] = None
+    # Which premarket-playbook slot (trigger / t1 / t2 / t3) this rung's price
+    # matched, and the analysis_date of the row it was matched against. Set on
+    # every matched rung; an unmatched rung carries only the reason.
+    slot: Optional[str] = None
+    analysis_date: Optional[str] = None
     reason: Optional[str] = None
 
 
