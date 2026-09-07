@@ -222,10 +222,16 @@ def test_split_patch_separates_sender_fields_from_locked_content():
 def test_split_patch_writes_sender_local_part_only_when_it_changes():
     body, _ = aet.build_patch(aet.Branding(sender_local_part="hello", year=2026))
     phases = aet.split_patch(body, existing={"notification": {"sendEmail": {
+        **{k: {"senderLocalPart": "hello"} for k in aet.TEMPLATES},
         "verifyEmailTemplate": {"senderLocalPart": "noreply"}}}})
+    assert [p[0] for p in phases] == ["sender", "sender-local-part", "content"]
     _, sender_body, sender_mask = phases[0]
-    assert sender_body["notification"]["sendEmail"]["verifyEmailTemplate"]["senderLocalPart"] == "hello"
-    assert "notification.sendEmail.verifyEmailTemplate.senderLocalPart" in sender_mask
+    _, local_body, local_mask = phases[1]
+    # Kept OUT of the accepted-fields request so a rejection of the local
+    # part cannot take senderDisplayName / replyTo down with it.
+    assert "senderLocalPart" not in sender_mask
+    assert local_body == {"notification": {"sendEmail": {"verifyEmailTemplate": {"senderLocalPart": "hello"}}}}
+    assert local_mask == "notification.sendEmail.verifyEmailTemplate.senderLocalPart"
 
 
 def test_apply_reports_locked_content_phase_and_exits_2(capsys):

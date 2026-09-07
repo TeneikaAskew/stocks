@@ -338,7 +338,7 @@ Three long-lived HTTP services, all with `min-instances=0` so they cost nothing 
 | Auth | **IAP (Identity-Aware Proxy) auto-managed** scoped to `bictech.org` Google identities. Admin email (`teneika@bictech.org`) bypasses the optional in-app token gate |
 | Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic), and the SPA at `/` |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
-| URL | Custom domain `api.stocks.insightscollective.org` → `solyra-api-staging` (Cloud Run domain mapping, Google-managed TLS) since 2026-09-06. `stocks.insightscollective.org` is no longer mapped to Cloud Run: it is the Firebase auth-email sending domain and reserved for the SPA. The generated `…run.app` URLs remain as fallbacks |
+| URL | The generated `trading-platform-…run.app` URL only. This service no longer has a custom domain: `stocks.insightscollective.org` was remapped away from it to `solyra-api-staging` on 2026-09-05, and on 2026-09-06 that mapping moved to `api.stocks.insightscollective.org` (see the `solyra-api-*` entry below) so `stocks.insightscollective.org` could become the Firebase auth-email sending domain (reserved for the SPA) |
 | Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/trading-platform`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
 
 This is the only thing a human directly hits in a browser.
@@ -349,6 +349,15 @@ This is the only thing a human directly hits in a browser.
 - [`promote-platform-prod.yml`](../.github/workflows/promote-platform-prod.yml) — manual `workflow_dispatch` that routes 100% of production traffic to the current `staging`-tagged revision (`gcloud run services update-traffic --to-tags=staging=100`). Shares the staging workflow's concurrency group so a deploy and a promote cannot interleave.
 
 In `STAGING=1` mode `platform/deploy.sh` omits the `--no-allow-unauthenticated` flag: re-asserting the service IAM policy needs `run.services.setIamPolicy`, which the CI deploy service account does not hold, and a staging revision inherits the service's existing IAP-gated auth posture anyway.
+
+### 7.1.1 `solyra-api-staging` / `solyra-api-prod` — the Solyra API
+
+| Aspect | Value |
+|---|---|
+| Role | FastAPI backend for the Solyra SPA (github.com/TeneikaAskew/solyra), which is hosted outside Cloud Run |
+| URL | `solyra-api-staging`: custom domain `api.stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, since 2026-09-06; previously `stocks.insightscollective.org` from 2026-09-05) plus the generated `solyra-api-staging-…run.app` URL, which is what the SPA calls. `solyra-api-prod`: generated `solyra-api-prod-…run.app` URL, behind IAP; no custom domain |
+| Auth | staging `AUTH_MODE=firebase` (per-request Firebase ID token), prod `AUTH_MODE=iap` |
+| Deploy path | Not deployed by this repo's `gcp/deploy.sh` or `platform/deploy.sh`; merging to `main` auto-deploys staging and the manual `deploy-solyra-api-prod` Cloud Build trigger moves prod (see FRONTEND.md in the solyra repo) |
 
 ### 7.2 `discord-interactions` — the slash command service
 

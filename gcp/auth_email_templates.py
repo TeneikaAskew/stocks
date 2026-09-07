@@ -31,9 +31,9 @@ What Google currently allows on this project (probed 2026-09-06, see
 docs/AUTH_EMAILS.md "What Google blocks"): the sender display name and
 reply-to are accepted; subject and the action URL are refused with
 EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED; an HTML body PATCH returns 200 but is not
-persisted. So --apply runs in two phases — sender fields first (always
-applied), then subject/body/action URL — and reports exactly which phase
-landed. Phase two is expected to start passing once the project is allowed
+persisted. So --apply runs in phases — sender fields first (always applied), a
+changed sender local part on its own, then subject/body/action URL — and
+reports exactly which phase landed. Phase two is expected to start passing once the project is allowed
 to customize templates (custom SMTP, or a console-side unlock); nothing in
 this script needs to change for that.
 
@@ -255,9 +255,11 @@ CONTENT_FIELDS = ("subject", "body", "bodyFormat")
 def split_patch(body: dict, existing: dict | None = None) -> list[tuple[str, dict, str]]:
     """Split the full desired state into (label, body, updateMask) phases.
 
-    Phase "sender": display name + reply-to per template, plus the sender
-    local part when it differs from the live value (it is left out of the
-    mask otherwise so an unneeded write cannot trip the lock).
+    Phase "sender": display name + reply-to per template — the fields Google
+    accepts on a locked project.
+    Phase "sender-local-part" (only when it differs from the live value):
+    the sender local part, alone, so a rejection of that one field cannot
+    take the accepted sender fields down with it in the same atomic PATCH.
     Phase "content": subject, body, bodyFormat per template + callbackUri —
     everything Google refuses while the project's templates are locked.
     """
@@ -267,6 +269,8 @@ def split_patch(body: dict, existing: dict | None = None) -> list[tuple[str, dic
 
     sender_body: dict = {}
     sender_mask: list[str] = []
+    local_body: dict = {}
+    local_mask: list[str] = []
     content_body: dict = {}
     content_mask: list[str] = []
     for key in TEMPLATES:
@@ -274,14 +278,16 @@ def split_patch(body: dict, existing: dict | None = None) -> list[tuple[str, dic
         sender_body[key] = {f: tpl[f] for f in SENDER_FIELDS if f in tpl}
         sender_mask += [f"notification.sendEmail.{key}.{f}" for f in SENDER_FIELDS if f in tpl]
         if tpl.get("senderLocalPart") != (live.get(key) or {}).get("senderLocalPart"):
-            sender_body[key]["senderLocalPart"] = tpl["senderLocalPart"]
-            sender_mask.append(f"notification.sendEmail.{key}.senderLocalPart")
+            local_body[key] = {"senderLocalPart": tpl["senderLocalPart"]}
+            local_mask.append(f"notification.sendEmail.{key}.senderLocalPart")
         content_body[key] = {f: tpl[f] for f in CONTENT_FIELDS}
         content_mask += [f"notification.sendEmail.{key}.{f}" for f in CONTENT_FIELDS]
     content_body["callbackUri"] = send["callbackUri"]
     content_mask.append("notification.sendEmail.callbackUri")
 
     phases.append(("sender", {"notification": {"sendEmail": sender_body}}, ",".join(sender_mask)))
+    if local_mask:
+        phases.append(("sender-local-part", {"notification": {"sendEmail": local_body}}, ",".join(local_mask)))
     phases.append(("content", {"notification": {"sendEmail": content_body}}, ",".join(content_mask)))
     return phases
 

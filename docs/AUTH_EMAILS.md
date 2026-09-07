@@ -179,11 +179,23 @@ Order of operations:
    usually minutes, can be longer).
 2. Delete the `stocks` CNAME. The old hostname stops answering at that
    point; nothing in the repos calls it (Solyra calls the `run.app` URL).
-3. Firebase console → Templates → Customize domain → Verify. Propagation
+3. Add the four Firebase records from the table above in Squarespace (the
+   two `stocks` TXT rows and the two `firebase*._domainkey.stocks` CNAME
+   rows), plus the optional `_dmarc.stocks` TXT. Enter the **short** host
+   names exactly as in the table: Squarespace appends
+   `.insightscollective.org` itself, and a full hostname in the Name column
+   silently lands the record at `stocks.insightscollective.org.insightscollective.org`
+   (seen on 2026-09-06). Confirm with
+   `curl -s 'https://dns.google/resolve?name=stocks.insightscollective.org&type=TXT'`
+   (both values) and the same query for each `_domainkey` name (type=CNAME).
+   Public resolvers can hold the deleted CNAME for its TTL (4 h) first.
+4. Firebase console → Templates → Customize domain → Verify. Propagation
    can take up to 48 hours; until `python -m gcp.auth_email_templates --show`
    reports `customDomainState: SUCCEEDED`, Firebase keeps sending from the
-   `firebaseapp.com` address, so nothing breaks in the meantime.
-4. Delete the old Cloud Run mapping so it does not linger:
+   `firebaseapp.com` address, so nothing breaks in the meantime. Once it
+   passes, click **Apply custom domain** in the green banner; `--show` then
+   reports `customDomain` set and `useCustomDomain: true`.
+5. Delete the old Cloud Run mapping so it does not linger:
    `gcloud beta run domain-mappings delete --domain=stocks.insightscollective.org --region=us-east1`.
 
 This is deliberately not scripted: the admin/v2 REST API marks every
