@@ -457,46 +457,46 @@ def test_ancestry_beats_commit_time_in_both_directions():
 
 def test_guard_allows_first_apply_and_newer_revisions():
     eng = _FakeEngine([[]])                      # no history yet
-    assert guard_revision(eng, "aaa", 100) == (True, None)
+    assert guard_revision(eng, "aaa", 100)[:2] == (True, None)
     assert any("CREATE TABLE IF NOT EXISTS schema_apply_history" in e for e in eng.executed)
     assert any("ADD COLUMN IF NOT EXISTS ancestors" in e for e in eng.executed)
-    eng = _FakeEngine([[("aaa", 100, "")]])
-    assert guard_revision(eng, "bbb", 200) == (True, "aaa")
+    eng = _FakeEngine([[("aaa", 100, "", "")]])
+    assert guard_revision(eng, "bbb", 200)[:2] == (True, "aaa")
 
 
 def test_guard_refuses_a_revision_older_than_the_newest_applied():
     """Cloud Build can start a newer push's build before a delayed older one;
     build start order is not commit order, so the applier itself refuses."""
-    eng = _FakeEngine([[("newer", 200, "")]])
-    assert guard_revision(eng, "older", 100) == (False, "newer")
+    eng = _FakeEngine([[("newer", 200, "", "")]])
+    assert guard_revision(eng, "older", 100)[:2] == (False, "newer")
 
 
 def test_guard_lets_the_same_revision_reapply():
     """Both triggers apply the same push; the second is a no-op, not a refusal."""
-    eng = _FakeEngine([[("same", 200, "")]])
-    assert guard_revision(eng, "same", 200) == (True, "same")
+    eng = _FakeEngine([[("same", 200, "", "")]])
+    assert guard_revision(eng, "same", 200)[:2] == (True, "same")
 
 
 def test_guard_refuses_an_equal_time_tie_it_cannot_order():
-    eng = _FakeEngine([[("newer", 200, "")]])
-    assert guard_revision(eng, "other", 200) == (False, "newer")
-    eng = _FakeEngine([[("newer", 200, "")]])
-    assert guard_revision(eng, "other", 200, ancestors=frozenset({"other", "newer"})) == (True, "newer")
+    eng = _FakeEngine([[("newer", 200, "", "")]])
+    assert guard_revision(eng, "other", 200)[:2] == (False, "newer")
+    eng = _FakeEngine([[("newer", 200, "", "")]])
+    assert guard_revision(eng, "other", 200, ancestors=frozenset({"other", "newer"}))[:2] == (True, "newer")
 
 
 def test_guard_refuses_an_ancestor_of_the_applied_revision_with_a_higher_time():
     """Codex on #1022 (round 8): B applied with a skewed lower committer time
     than its ancestor A; A's delayed build cannot see B, so only B's recorded
     ancestry can refuse A."""
-    eng = _FakeEngine([[("b", 90, "b a z")]])
-    assert guard_revision(eng, "a", 100, ancestors=frozenset({"a", "z"})) == (False, "b")
+    eng = _FakeEngine([[("b", 90, "b a z", "")]])
+    assert guard_revision(eng, "a", 100, ancestors=frozenset({"a", "z"}))[:2] == (False, "b")
 
 
 def test_guard_reads_the_last_applied_revision_not_the_highest_commit_time():
     """Under clock skew the highest committer time is not the last applied
     revision: after A(100) then its descendant B(90), ordering by time would
     call A "newest" and let a re-run of A pass as "same"."""
-    eng = _FakeEngine([[("b", 90, "b a")]])
+    eng = _FakeEngine([[("b", 90, "b a", "")]])
     guard_revision(eng, "a", 100)
     select = next(e for e in eng.executed if e.lstrip().upper().startswith("SELECT"))
     assert "ORDER BY applied_at DESC" in select and "commit_time DESC" not in select
@@ -596,11 +596,124 @@ def test_ancestor_refusal_message_claims_skew_only_when_the_times_are_reversed(c
     committer time was refused with a message claiming its time was higher."""
     import logging
     with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
-        eng = _FakeEngine([[("b", 200, "b a")]])
-        assert guard_revision(eng, "a", 100) == (False, "b")
+        eng = _FakeEngine([[("b", 200, "b a", "")]])
+        assert guard_revision(eng, "a", 100)[:2] == (False, "b")
     assert "skewed" not in caplog.text and "recorded it as an ancestor" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="gcp.apply_schema"):
-        eng = _FakeEngine([[("b", 90, "b a")]])
-        assert guard_revision(eng, "a", 100) == (False, "b")
+        eng = _FakeEngine([[("b", 90, "b a", "")]])
+        assert guard_revision(eng, "a", 100)[:2] == (False, "b")
     assert "skewed" in caplog.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Unchanged schema content is not re-applied (internal review of #1022,
+# capacity: every staging deploy now runs the apply, and 15 of the 19
+# schema pushes in 30 days also fired the staging trigger, so the same
+# content was applied twice back to back, each time holding the earnings
+# mat views' ACCESS EXCLUSIVE lock for the 22-46 s refresh)
+# ──────────────────────────────────────────────────────────────────────
+
+from gcp.apply_schema import schema_digest  # noqa: E402
+
+
+def test_schema_digest_is_the_sha256_of_the_file_text():
+    import hashlib
+    assert schema_digest("CREATE TABLE a (id INT);\n") == hashlib.sha256(
+        b"CREATE TABLE a (id INT);\n").hexdigest()
+
+
+def test_guard_reports_the_newest_applied_schema_digest():
+    eng = _FakeEngine([[("aaa", 100, "", "deadbeef")]])
+    assert guard_revision(eng, "bbb", 200) == (True, "aaa", "deadbeef")
+    eng = _FakeEngine([[]])
+    assert guard_revision(eng, "aaa", 100) == (True, None, None)
+    assert any("ADD COLUMN IF NOT EXISTS schema_sha256" in e for e in eng.executed)
+
+
+def test_record_revision_stores_the_schema_digest():
+    eng = _FakeEngine([[]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}), schema_digest="d1")
+    assert any(e.startswith("INSERT INTO schema_apply_history") and "schema_sha256" in e
+               and "'d1'" in e for e in eng.executed), eng.executed
+    eng = _FakeEngine([[("abc", "2026-09-07T10:00:00+00:00", "abc a")]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}), schema_digest="d1")
+    update = next(e for e in eng.executed if e.startswith("UPDATE schema_apply_history"))
+    assert "schema_sha256 = :dg" in update and "'d1'" in update, update
+
+
+def test_schema_declares_the_schema_sha256_column():
+    from pathlib import Path
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    block = schema[schema.index("CREATE TABLE IF NOT EXISTS schema_apply_history"):]
+    block = block[:block.index(");")]
+    assert "schema_sha256" in block
+    assert "ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256" in schema
+
+
+def _drive_main(tmp_path, monkeypatch, *, newest_digest, extra_args=()):
+    import gcp.apply_schema as mod
+    schema = tmp_path / "s.sql"
+    schema.write_text("CREATE TABLE a (id INT);\n")
+    calls: list = []
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(mod, "run_unit", lambda unit: calls.append("unit"))
+    monkeypatch.setattr(mod, "refresh_unpopulated_matviews", lambda engine: calls.append("sweep") or [])
+    monkeypatch.setattr(mod, "guard_revision",
+                        lambda engine, sha, t, anc: (True, "prev", newest_digest))
+    monkeypatch.setattr(mod, "record_revision",
+                        lambda engine, sha, t, anc, schema_digest: calls.append(("record", sha, schema_digest)))
+    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
+                                     "--revision", "abc", "--revision-time", "5", *extra_args])
+    return mod.main(), calls, mod.schema_digest(schema.read_text())
+
+
+def test_main_skips_the_apply_when_the_schema_content_is_unchanged(tmp_path, monkeypatch, caplog):
+    import logging
+    digest = __import__("hashlib").sha256(b"CREATE TABLE a (id INT);\n").hexdigest()
+    with caplog.at_level(logging.INFO, logger="gcp.apply_schema"):
+        rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest=digest)
+    assert rc == 0 and d == digest
+    # No unit ran; the mat-view sweep still did; the revision is recorded
+    # as in force with the same digest so the guard's ancestry advances.
+    assert calls == ["sweep", ("record", "abc", digest)]
+    assert "unchanged" in caplog.text and "prev" in caplog.text
+
+
+def test_main_applies_when_the_schema_content_differs_and_records_the_digest(tmp_path, monkeypatch):
+    rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest="something-else")
+    assert rc == 0
+    assert calls == ["unit", "sweep", ("record", "abc", d)]
+
+
+def test_main_applies_when_no_digest_was_recorded_yet(tmp_path, monkeypatch):
+    """Rows written before the column existed carry '' (the column default);
+    an empty digest never matches, so the first apply after this change runs."""
+    rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest="")
+    assert rc == 0 and calls[0] == "unit"
+
+
+def test_reapply_unchanged_flag_forces_the_apply(tmp_path, monkeypatch):
+    digest = __import__("hashlib").sha256(b"CREATE TABLE a (id INT);\n").hexdigest()
+    rc, calls, d = _drive_main(tmp_path, monkeypatch, newest_digest=digest,
+                               extra_args=("--reapply-unchanged",))
+    assert rc == 0 and calls == ["unit", "sweep", ("record", "abc", digest)]
+
+
+def test_skipped_apply_still_fails_loud_when_the_sweep_fails(tmp_path, monkeypatch):
+    import gcp.apply_schema as mod
+    digest = __import__("hashlib").sha256(b"CREATE TABLE a (id INT);\n").hexdigest()
+    schema = tmp_path / "s.sql"
+    schema.write_text("CREATE TABLE a (id INT);\n")
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(mod, "run_unit", lambda unit: pytest.fail("must not apply"))
+    monkeypatch.setattr(mod, "refresh_unpopulated_matviews",
+                        lambda engine: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(mod, "guard_revision", lambda engine, sha, t, anc: (True, "prev", digest))
+    monkeypatch.setattr(mod, "record_revision",
+                        lambda *a, **k: pytest.fail("must not record a revision whose sweep failed"))
+    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr("sys.argv", ["apply_schema", "--file", str(schema),
+                                     "--revision", "abc", "--revision-time", "5"])
+    assert mod.main() == 1

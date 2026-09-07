@@ -153,6 +153,10 @@ steps:
           echo "       (or ./gcp/deploy.sh all), then re-run this build." >&2
           exit 1
         fi
+        # Only the image moves here. Memory, CPU, timeout, env and secrets
+        # are declared once in gcp/deploy.sh (_apply_schema_job_flags) and
+        # reach the live job through ./gcp/deploy.sh apply-schema, so a
+        # sizing change there is not picked up by this build.
         echo ">> apply-schema-migrations -> $${DIGEST} (this revision's schema.sql)"
         gcloud run jobs update apply-schema-migrations \
           --image="$${DIGEST}" \

@@ -214,3 +214,17 @@ def test_research_jobs_newly_in_all_declare_their_live_sizing(fn, flag):
     live value so a redeploy converges rather than halves the budget."""
     body = FNS[fn]
     assert len(re.findall(flag, body)) == 2, f"{fn}: {flag} must be on the create and update branches"
+
+
+def test_backfill_ticker_declares_max_retries_zero_on_both_branches():
+    """Internal review of #1022 (capacity): backfill-ticker carried
+    `--max-retries 1` with no justification at the flag (Rule 0.5), and
+    the update branch omitted it, so a live job kept whatever it had. A
+    retry on a permanent failure (bad ticker, AV outage) only doubles the
+    AV calls and the /replay caller's wait; the job is dispatched
+    per calendar month with --wait, so the caller re-runs on failure."""
+    body = _functions()["deploy_backfill_ticker"]
+    create, update = body.split("gcloud run jobs update", 1)
+    assert "--max-retries 0" in create, create
+    assert "--max-retries 1" not in body
+    assert "--max-retries 0" in update, "the update branch must converge max-retries too"

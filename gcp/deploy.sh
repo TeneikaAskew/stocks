@@ -1052,11 +1052,17 @@ deploy_discord_interactions() {
 # indicators + pre-market context + watchlist insert. Triggered by the
 # Discord /replay command when the user requests a ticker that isn't yet
 # in market_data_daily. Idempotent (ON CONFLICT) so re-runs are cheap.
+# max-retries 0 (Rule 0.5): a retry cannot tell a bad ticker or an AV
+# outage from a blip, so it only doubled the AV calls and the caller's
+# wait (scripts/backfill_and_replay.py dispatches one execution per
+# calendar month with --wait and stops at the first failure; /replay
+# reports the failure to the user). Declared on both branches so a live
+# job converges (internal review of #1022, capacity round).
 deploy_backfill_ticker() {
     echo "Deploying backfill-ticker job..."
     gcloud run jobs create backfill-ticker \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
+        --memory 1Gi --cpu 1 --max-retries 0 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.backfill_ticker" \
@@ -1065,6 +1071,7 @@ deploy_backfill_ticker() {
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-ticker \
         --image "${IMAGE}" --region "${REGION}" \
+        --max-retries 0 \
         --task-timeout 600 \
         --command "python,-m,gcp.backfill_ticker" \
         ${DB_SECRET_FLAG} \
@@ -1551,7 +1558,12 @@ deploy_direction_probe() {
 #       --args="-m,gcp.build_options_daily_greeks,--backfill,--ticker,IWM"
 #   Incremental (scheduled): default --args runs --incremental --days 7.
 # 4Gi/2CPU: the per-ticker daily frame is tiny; headroom is for the SPY
-# near-term contract pull. max-retries 0 (fail loud). 3600s task-timeout.
+# near-term contract pull. max-retries 0 (fail loud). 7200s task-timeout:
+# the value the live job carried when 0d942f0 declared the research jobs'
+# live sizing on 2026-09-07 (this file said 3600 while production ran
+# 7200). The scheduled incremental run measures 33-51 s (executions
+# 2026-08-29 .. 2026-09-05); the budget is for the sequential per-ticker
+# --backfill path above, which scans every stored session.
 deploy_build_options_greeks() {
     echo "Deploying build-options-greeks job (materialized daily greeks)..."
     local research_image="${IMAGE}:research"
@@ -3118,10 +3130,13 @@ EOF
 # two converge on the same flags. Without this, once the bootstrap stopped
 # updating an existing job, nothing could change the live job's timeout,
 # env or secrets again (the trigger configs pass --image only; internal
-# review of #1022 round 14). 1800 s: the apply itself is seconds, but
-# gcp/apply_schema.py refreshes any materialized view the apply left
-# unpopulated (the two earnings views, weekly refresh job sized at 1200 s),
-# so the budget covers apply + refresh with Rule 0 headroom.
+# review of #1022 round 14). 1800 s: a full apply measured 75 s
+# (execution apply-schema-migrations-8q6d5, 2026-09-07: 251 units
+# including the 22-46 s earnings mat-view refresh), so the budget is 24x
+# the measured wall-clock (Rule 0.5 asks for 4x). The two Cloud Build
+# trigger configs pass --image only, so a sizing change made here reaches
+# the live job through ./gcp/deploy.sh apply-schema (or all) before the
+# job exists), never through a trigger run.
 _apply_schema_job_flags() {
     printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars $(_env_string)"
 }

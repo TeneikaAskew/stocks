@@ -200,13 +200,35 @@ CREATE TABLE IF NOT EXISTS {REVISION_TABLE} (
     commit_time  BIGINT      NOT NULL,
     applied_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     ancestors    TEXT        NOT NULL DEFAULT '',
+    schema_sha256 TEXT       NOT NULL DEFAULT '',
     PRIMARY KEY (commit_sha, applied_at)
 )"""
-# Space-separated `git rev-list` of the applied revision (also declared in
-# schema.sql; the guard runs before the apply, so it creates both itself).
+# Space-separated `git rev-list` of the applied revision, and the SHA-256 of
+# the schema.sql text that was applied (also declared in schema.sql; the
+# guard runs before the apply, so it creates all of them itself).
 _REVISION_ANCESTORS_SQL = (
     f"ALTER TABLE {REVISION_TABLE} ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NULL DEFAULT ''"
 )
+_REVISION_DIGEST_SQL = (
+    f"ALTER TABLE {REVISION_TABLE} ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT ''"
+)
+
+
+def schema_digest(sql_text: str) -> str:
+    """SHA-256 of the schema.sql text, recorded with each applied revision.
+
+    Every staging deploy applies the schema (SCHEMA BEFORE CODE), and 15 of
+    the 19 schema pushes in the 30 days to 2026-09-07 also fired the staging
+    trigger, so the same content was applied twice back to back; 48 code-only
+    pushes in the same window applied an unchanged schema.sql. Each apply
+    recreates the two earnings materialized views and holds their ACCESS
+    EXCLUSIVE lock for the 22-46 s refresh. When the digest of this file
+    equals the newest applied revision's, there is nothing to apply and
+    main() records the revision without running a unit (internal review of
+    #1022, capacity round).
+    """
+    import hashlib  # noqa: PLC0415
+    return hashlib.sha256(sql_text.encode("utf-8")).hexdigest()
 
 
 def classify_revision(newest_sha: str | None, newest_time: int | None,
@@ -242,23 +264,28 @@ _REFUSED = {"ancestor", "older", "tie"}
 
 
 def guard_revision(engine, commit_sha: str, commit_time: int,
-                   ancestors: frozenset[str] = frozenset()) -> tuple[bool, str | None]:
-    """Return (ok, newest_applied_sha). ``ok`` is False when this revision is
-    older than, or cannot be ordered against, the newest successfully applied
-    one; the caller must then refuse to apply. The reason is logged here."""
+                   ancestors: frozenset[str] = frozenset(),
+                   ) -> tuple[bool, str | None, str | None]:
+    """Return (ok, newest_applied_sha, newest_applied_schema_digest). ``ok``
+    is False when this revision is older than, or cannot be ordered against,
+    the newest successfully applied one; the caller must then refuse to
+    apply. The reason is logged here. The digest lets main() skip an apply
+    whose schema.sql text is identical to the one already in force."""
     import sqlalchemy  # noqa: PLC0415
 
     with engine.begin() as conn:
         conn.execute(sqlalchemy.text(_REVISION_TABLE_SQL))
         conn.execute(sqlalchemy.text(_REVISION_ANCESTORS_SQL))
+        conn.execute(sqlalchemy.text(_REVISION_DIGEST_SQL))
         row = conn.execute(sqlalchemy.text(
-            f"SELECT commit_sha, commit_time, ancestors FROM {REVISION_TABLE} "
+            f"SELECT commit_sha, commit_time, ancestors, schema_sha256 FROM {REVISION_TABLE} "
             "ORDER BY applied_at DESC LIMIT 1"
         )).fetchone()
     if row is None:
-        return True, None
+        return True, None, None
     newest_sha, newest_time = row[0], int(row[1])
     newest_ancestors = frozenset((row[2] or "").split())
+    newest_digest = row[3] or ""
     verdict = classify_revision(newest_sha, newest_time, newest_ancestors,
                                 commit_sha, commit_time, ancestors)
     log.info("Revision %s (commit time %d) vs newest applied %s (commit time %d): %s",
@@ -282,12 +309,13 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
                       "%s (commit time %d) has already been applied. Out-of-order "
                       "applies roll CREATE OR REPLACE objects back.",
                       commit_sha, commit_time, newest_sha, newest_time)
-        return False, newest_sha
-    return True, newest_sha
+        return False, newest_sha, newest_digest
+    return True, newest_sha, newest_digest
 
 
 def record_revision(engine, commit_sha: str, commit_time: int,
-                    ancestors: frozenset[str] = frozenset()) -> None:
+                    ancestors: frozenset[str] = frozenset(),
+                    schema_digest: str = "") -> None:
     """Record this apply. A re-apply of the SHA that is already the last
     applied row (both triggers apply the same push) merges its ancestry
     into that row instead of inserting a new one: the later build's
@@ -305,20 +333,22 @@ def record_revision(engine, commit_sha: str, commit_time: int,
             merged = frozenset((last[2] or "").split()) | ancestors
             conn.execute(
                 sqlalchemy.text(
-                    f"UPDATE {REVISION_TABLE} SET ancestors = :anc "
+                    f"UPDATE {REVISION_TABLE} SET ancestors = :anc, schema_sha256 = :dg "
                     "WHERE commit_sha = :sha AND applied_at = :at"
                 ),
-                {"anc": " ".join(sorted(merged)), "sha": commit_sha, "at": last[1]},
+                {"anc": " ".join(sorted(merged)), "dg": schema_digest,
+                 "sha": commit_sha, "at": last[1]},
             )
             log.info("Revision %s was already the last applied row; merged its ancestry "
                      "(%d SHAs)", commit_sha, len(merged))
             return
         conn.execute(
             sqlalchemy.text(
-                f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time, ancestors) "
-                "VALUES (:sha, :t, :anc)"
+                f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time, ancestors, schema_sha256) "
+                "VALUES (:sha, :t, :anc, :dg)"
             ),
-            {"sha": commit_sha, "t": int(commit_time), "anc": " ".join(sorted(ancestors))},
+            {"sha": commit_sha, "t": int(commit_time), "anc": " ".join(sorted(ancestors)),
+             "dg": schema_digest},
         )
 
 
@@ -376,6 +406,11 @@ def main() -> int:
                     help="Whitespace-separated `git rev-list` of --revision, as far "
                          "as the build checkout can see. Orders a revision whose "
                          "committer time equals the newest applied one.")
+    ap.add_argument("--reapply-unchanged", action="store_true",
+                    help="Run every unit even when this schema.sql is byte-identical "
+                         "to the newest applied revision's (by default such an apply "
+                         "is skipped and only recorded). For recreating an object "
+                         "that was dropped by hand.")
     args = ap.parse_args()
     if (args.revision is None) != (args.revision_time is None):
         ap.error("--revision and --revision-time must be given together")
@@ -409,10 +444,33 @@ def main() -> int:
     from gcp.database import get_engine  # noqa: PLC0415
     engine = get_engine()
 
+    digest = schema_digest(sql_text)
     if args.revision is not None:
-        ok, _newest = guard_revision(engine, args.revision, args.revision_time, ancestors)
+        ok, newest, newest_digest = guard_revision(engine, args.revision,
+                                                   args.revision_time, ancestors)
         if not ok:
             return 3          # reason already logged by guard_revision
+        if newest_digest == digest and not args.reapply_unchanged:
+            # Nothing to apply: the text in force is this text. Still sweep
+            # the materialized views (one probe) so a view left unpopulated
+            # by anything else is repopulated, then record the revision so
+            # the guard's ancestry advances with main.
+            log.info("schema.sql at revision %s is unchanged from the newest applied "
+                     "revision %s (sha256 %s); skipping the %d units. Pass "
+                     "--reapply-unchanged to run them anyway.",
+                     args.revision, newest, digest, len(units))
+            try:
+                refreshed = refresh_unpopulated_matviews(engine)
+            except Exception as exc:
+                log.error("  materialized-view sweep FAILED — %s", exc)
+                return 1
+            if refreshed:
+                log.info("Refreshed %d materialized view(s) found unpopulated: %s",
+                         len(refreshed), ", ".join(refreshed))
+            record_revision(engine, args.revision, args.revision_time, ancestors, digest)
+            log.info("Recorded revision %s (commit time %d) as in force",
+                     args.revision, args.revision_time)
+            return 0
 
     failed = 0
     for i, unit in enumerate(units, 1):
@@ -442,8 +500,9 @@ def main() -> int:
         return 1
 
     if args.revision is not None:
-        record_revision(engine, args.revision, args.revision_time, ancestors)
-        log.info("Recorded applied revision %s (commit time %d)", args.revision, args.revision_time)
+        record_revision(engine, args.revision, args.revision_time, ancestors, digest)
+        log.info("Recorded applied revision %s (commit time %d, schema sha256 %s)",
+                 args.revision, args.revision_time, digest)
 
     log.info("Schema apply complete (%d statements in %d units).", n_statements, len(units))
     return 0

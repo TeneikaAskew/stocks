@@ -4123,6 +4123,12 @@ CREATE TABLE IF NOT EXISTS schema_apply_history (
     -- could see. It lets the guard refuse an ancestor of the last applied
     -- revision whatever the committer clocks say (Codex on #1022)
     ancestors    TEXT        NOT NULL DEFAULT '',
+    -- SHA-256 of the schema.sql text applied. An apply whose text equals
+    -- the newest applied row's is recorded but not run (every staging
+    -- deploy applies the schema, and each run holds the earnings mat
+    -- views' lock for the refresh)
+    schema_sha256 TEXT       NOT NULL DEFAULT '',
     PRIMARY KEY (commit_sha, applied_at)
 );
 ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS ancestors TEXT NOT NULL DEFAULT '';
+ALTER TABLE schema_apply_history ADD COLUMN IF NOT EXISTS schema_sha256 TEXT NOT NULL DEFAULT '';

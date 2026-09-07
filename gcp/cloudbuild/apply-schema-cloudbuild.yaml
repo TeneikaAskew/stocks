@@ -9,8 +9,11 @@
 # (gcp/apply_schema.py DEFAULT_SCHEMA), and the trading-system image is only
 # built by a manual `./gcp/deploy.sh build`, so the trigger applied a stale
 # schema while the deploy-solyra-api-staging trigger shipped code that read
-# the new columns (Codex on #1022: trades.run_kind filters would have 500'd
-# every /api/analytics/summary request until someone ran the manual step).
+# the new columns (Codex on #1022: the trades.run_kind filter would have
+# failed on every /api/analytics/summary request until someone ran the
+# manual step; and because that endpoint read through the swallowing
+# query_to_dataframe, the failure rendered as a flat all-zero summary, not
+# a 500, which is why nobody would have noticed).
 #
 # Same shape as deploy-solyra-api-staging-cloudbuild.yaml: build the image
 # from the triggering source, push an immutable ${SHORT_SHA} tag, resolve it
@@ -116,6 +119,10 @@ steps:
           echo "       (or ./gcp/deploy.sh all), then re-run this build." >&2
           exit 1
         fi
+        # Only the image moves here. Memory, CPU, timeout, env and secrets
+        # are declared once in gcp/deploy.sh (_apply_schema_job_flags) and
+        # reach the live job through ./gcp/deploy.sh apply-schema, so a
+        # sizing change there is not picked up by this build.
         echo ">> apply-schema-migrations -> $${DIGEST}"
         gcloud run jobs update apply-schema-migrations \
           --image="$${DIGEST}" \
