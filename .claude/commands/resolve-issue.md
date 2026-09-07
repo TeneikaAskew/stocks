@@ -88,9 +88,27 @@ Then check whether work already exists, because the failure handlers open one
 automatically and a stale draft PR is the usual reason two branches diverge:
 
 ```bash
-git fetch origin \
-  || { echo "FETCH FAILED — refs are stale, so branch selection and the baseline would both run against yesterday's main"; false; }
-git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
+# `return`, not a bare `false`. Measured: `git fetch` against an unreachable
+# remote, then `git branch -r` — the fetch prints its message and sets $?, and
+# the listing then runs anyway, prints the CACHED `origin/main`, and exits 0.
+# The survey looks normal while describing yesterday's refs, and the block as a
+# whole reports success. A `false` guard reads like a stop and is not one; only
+# leaving the function stops anything. So every stop in this phase is a
+# `return` inside a function, and every function is called BARE — `|| echo`
+# would exit 0 and swallow the very stop it is reporting.
+sync_refs() {
+  git fetch origin \
+    || { echo "FETCH FAILED — refs are stale, so branch selection and the baseline would both run against yesterday's main"; return 1; }
+}
+
+survey_existing_work() {
+  sync_refs || return 1
+  # `grep` exits 1 when nothing matches, and "no existing branch" is the
+  # NORMAL outcome here — it must not become this function's status.
+  git branch -r | grep -iE "fix/workflow-|<issue-keyword>"
+  return 0
+}
+survey_existing_work        # BARE
 # and: mcp__github__search_pull_requests
 #        q="repo:TeneikaAskew/stocks is:open <issue-number>"
 # This is a KEYWORD search, not a link lookup: a bare number matches any
@@ -140,8 +158,10 @@ commit it. Never `checkout -f`, which discards it.
 ```bash
 git status --porcelain           # must be empty before going further
 git rev-parse --abbrev-ref HEAD
-git fetch origin \
-  || { echo "FETCH FAILED — refs are stale, so branch selection and the baseline would both run against yesterday's main"; false; }
+
+# Same shape as the survey above: one function per case, `return` for every
+# stop, `sync_refs` reused rather than a second unguarded fetch. Run ONE of
+# them, BARE.
 
 # CASE A — a PR already exists for this issue (including an auto-created
 # fix/workflow-* draft). Work on ITS head. Do not open a second PR.
@@ -153,30 +173,39 @@ git fetch origin \
 # this is a guard, not a gap — building fork push-back would be speculative.
 # Never `checkout -B` here: -B RESETS an existing local branch to the start
 # point, silently discarding unpushed commits from an earlier run.
-if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
-  # CHAINED, not two statements. An unchecked `checkout` that fails leaves you
-  # on the previous branch, and the merge then runs there — succeeding silently
-  # whenever that branch is an ancestor of the PR head. You would commit and
-  # `git push -u origin HEAD` somewhere else entirely. The likeliest cause is
-  # this command's own base worktree still holding the ref, so it is a real
-  # path, not a hypothetical.
-  git checkout "<headRefName>" \
-    && git merge --ff-only "origin/<headRefName>" \
-    || { echo "CHECKOUT OR MERGE FAILED for <headRefName> — stop, do not edit"; false; }
-  # A non-fast-forward is a STOP: a diverged branch would be implemented and
-  # tested against a head missing remote commits, and only fail at push.
-else
-  git checkout -b "<headRefName>" --track "origin/<headRefName>" \
-    || { echo "CANNOT CREATE <headRefName> — stop, do not edit"; false; }
-fi
+use_existing_pr_head() {
+  sync_refs || return 1
+  if git show-ref --verify --quiet "refs/heads/<headRefName>"; then
+    # CHAINED, not two statements. An unchecked `checkout` that fails leaves
+    # you on the previous branch, and the merge then runs there — succeeding
+    # silently whenever that branch is an ancestor of the PR head. You would
+    # commit and `git push -u origin HEAD` somewhere else entirely. The
+    # likeliest cause is this command's own base worktree still holding the
+    # ref, so it is a real path, not a hypothetical.
+    git checkout "<headRefName>" \
+      && git merge --ff-only "origin/<headRefName>" \
+      || { echo "CHECKOUT OR MERGE FAILED for <headRefName> — stop, do not edit"; return 1; }
+    # A non-fast-forward is a STOP: a diverged branch would be implemented and
+    # tested against a head missing remote commits, and only fail at push.
+  else
+    git checkout -b "<headRefName>" --track "origin/<headRefName>" \
+      || { echo "CANNOT CREATE <headRefName> — stop, do not edit"; return 1; }
+  fi
+}
 
 # CASE B — no existing PR. Create one branch, and remember its name; every
 # later phase refers back to it rather than reconstructing a prefix.
 # Name the base explicitly: without it the branch forks from whatever is
 # checked out, so an unrelated feature branch's commits ride into the PR, or
 # the branch starts behind main. `git fetch` above does not move HEAD.
-git checkout -b fix/<short-description> origin/main \
-  || { echo "CANNOT CREATE the branch — stop, do not edit"; false; }
+start_new_branch() {
+  sync_refs || return 1
+  git checkout -b fix/<short-description> origin/main \
+    || { echo "CANNOT CREATE the branch — stop, do not edit"; return 1; }
+}
+
+use_existing_pr_head        # CASE A — run exactly one of these, BARE
+# start_new_branch          # CASE B
 ```
 
 **Every one of those checkouts is guarded, not just the first.** `checkout -b`
@@ -549,7 +578,7 @@ changed:
 
 | What changed | How to exercise the candidate |
 |---|---|
-| Signal, indicator, strategy or fire-path code | `env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. In-process and the production path per Rule 3.6, so it runs YOUR tree — but read the two notes below before believing its output. |
+| Signal, indicator, strategy or fire-path code | `env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor --date <D> --tickers SPY,IWM,QQQ`. In-process and the production path per Rule 3.6, so it runs YOUR tree — but read every note below before believing its output. |
 | Brief or insight code | The as-of entrypoints in-process (`BRIEF_AS_OF`, `INSIGHT_AS_OF`) against the local tree — but they are NOT hermetic; see below before running one. |
 | A Cloud Run Job's own behaviour, sizing or schedule | Build the candidate and run it **somewhere that is not the live job** — but read the isolation note below first: a renamed job is not an isolated one. |
 | API handler code | The hermetic suite plus a local `uvicorn`; the deployed service is not carrying your change yet. **For a MUTATING route, local is not isolated** — see below. |
@@ -703,6 +732,42 @@ Three separate things have to hold, and each covers a hole the others do not:
 
 Paste all three alongside the fire counts.
 
+**The replay carries no open positions, so it cannot verify a control that
+reads them.** `make_capturing_fire_alert` replaces `fire_alert` wholesale
+(`scripts/replay_signal_monitor.py:324-403`). It mirrors five production
+behaviours — brief alignment, level state, corrected RVOL, the RVOL gate, and
+the `daily_trades` increment #818 restored after the same kind of omission —
+and it never appends to `self.active_positions`. Production reaches that append
+one call deeper than the name suggests: `fire_alert`
+(`gcp/signal_monitor.py:1241`) calls `_persist_signal_alert` at `:1466`, and
+the append is at `:1625` inside it — so replacing `fire_alert` removes the
+whole subtree, not just its body. That dict is initialised to
+`{t: [] for t in self.tickers}` (`:186`) and nothing else writes it, so it
+stays **empty for the whole replay no matter how many fires are captured**.
+
+Everything reading it therefore sees a constant zero:
+
+- `_emergency_ceiling_block` (`:2020`) tests `st['count'] + 1`,
+  `st['gross'] + pending` and `st['portfolio_gross'] + pending`, all three from
+  `_exposure_state`, which walks `active_positions` (`:1937-1940`). Against an
+  empty dict the ceiling can only block if the CONFIG alone sits below a single
+  position — it degenerates from a behavioural bound into a static config
+  check, and a candidate that breaks its accumulation passes.
+- `_check_exits` (`:1862`) walks the same dict, so no exit ever runs and the
+  exit watcher contributes nothing to the replay.
+- `_risk_control_shadow` (`:2089`) reports `concurrent_positions: 0`.
+
+So for an active-position-dependent change this row is the wrong instrument,
+and a green replay is not evidence. Use the hermetic suite, which constructs
+`active_positions` directly — `tests/gcp/test_emergency_exposure_ceiling.py`,
+`tests/gcp/test_signal_monitor_caps.py`,
+`tests/gcp/test_signal_monitor_level_state.py`.
+
+Mirroring the production mutation in the capture would be the better fix. It
+is a change to the replay script, so per Rule 3.6's coverage-gap clause it goes
+in its own small PR **before** an audit leans on it, rather than being bolted
+onto the resolution that happened to notice it.
+
 **`BRIEF_AS_OF` and `INSIGHT_AS_OF` are not sandbox flags.** Setting either
 resolves to `allow_update=True`:
 
@@ -813,8 +878,16 @@ git status --short               # confirm the candidate is actually here
 git add <the files this issue's fix touches>   # never `git add -A` blindly
 git commit -F <message file>     # the body described above
 git log --oneline -1             # confirm the commit exists before pushing
-test -z "$(git status --porcelain)" \
-  || { git status --porcelain; echo "^ NOT in the commit — see below"; false; }
+
+# A function, like every other stop in this file. `false` works here only
+# because nothing follows it; add one line below and it silently stops
+# stopping. Not hypothetical — round 22 of this PR put a command into exactly
+# such a gap, and a failed job deploy started reporting success.
+nothing_left_behind() {
+  test -z "$(git status --porcelain)" \
+    || { git status --porcelain; echo "^ NOT in the commit — see below"; return 1; }
+}
+nothing_left_behind              # BARE
 ```
 
 That last check is the price of the file-scoped `git add`. Naming files is

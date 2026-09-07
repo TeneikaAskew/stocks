@@ -75,9 +75,9 @@ body:
     attributes:
       label: Re-verified against the live system
       description: >-
-        Start with today's date on its own line, then run the report's own
-        measurement again now and paste the command with its output. If the numbers moved, say by how much. If it no longer
-        reproduces, say so here and close the issue on this evidence.
+        Today's date on its own line, then re-run the report's own measurement
+        and paste the command with its output. Say how much the numbers moved.
+        If it no longer reproduces, close on that.
       render: shell
       placeholder: |
         $ ./scripts/db_query_cr.sh -q "SELECT count(*) FROM gamma_levels_eod WHERE abs(gamma_flip - spot)/spot > 0.20"
