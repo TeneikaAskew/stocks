@@ -1316,7 +1316,10 @@ echo -n 'YOUR_AV_KEY' | \
 **Step 6 — Create Cloud Scheduler triggers**
 
 ```bash
-./gcp/deploy.sh schedulers  # creates all 65 cron triggers
+<!-- verify-docs-ok: 64 is what THIS subcommand creates, not the live fleet of 65; the difference is the point of the comment -->
+./gcp/deploy.sh schedulers  # creates 64 cron triggers (the 65th live one,
+                            # reconcile-failure-notifier-hourly, comes from
+                            # `deploy.sh notifier`)
 ```
 
 **Step 7 — Full deploy (steps 4-6)**
@@ -1349,7 +1352,8 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/raw/
 ./gcp/deploy.sh monitor     # Deploy signal-monitor service
 ./gcp/deploy.sh weekend     # Deploy weekend-review job
 ./gcp/deploy.sh fetchers    # Deploy all 4 fetch jobs
-./gcp/deploy.sh schedulers  # Create the Cloud Scheduler triggers (65 live)
+./gcp/deploy.sh schedulers  # Create 64 of the 65 live Cloud Scheduler
+                            # triggers; `notifier` creates the last one
 ./gcp/deploy.sh all         # build + fetchers + premarket + monitor + weekend + schedulers
 ```
 

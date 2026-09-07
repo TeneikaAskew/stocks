@@ -874,6 +874,16 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
      "run_jobs", "Cloud Run Jobs"),
     (re.compile(rf"Cloud\s+Run\s+Services{_FMT}\(\s*{_NUM}\s*[),:]", re.I),
      "services", "Cloud Run services"),
+    # Schedulers had the noun-first form for Jobs and Services but not for
+    # itself, so `| **Cloud Run Jobs (76 jobs) + Schedulers (66)** |` in
+    # RUNBOOK.md's recovery table reported the jobs half and walked past the
+    # schedulers half on the same line (Codex, PR #1014).
+    # `jobs` is deliberately absent from the suffix: `Cloud Scheduler (N jobs)`
+    # is already matched by the pattern above, and allowing it here reported
+    # one claim twice -- the same duplication this file records two patterns
+    # up for the `live` spelling.
+    (re.compile(rf"(?:Cloud\s+)?Schedulers?{_FMT}\(\s*{_NUM}(?:\s+(?:entries|triggers))?\s*[),/]", re.I),
+     "schedulers", "Cloud Scheduler jobs"),
     # Secret Manager had NO entry at all: `read_live` collects the secrets and
     # the run summary prints their count, so the number was measured, carried
     # and never compared to anything (Codex, PR #990).
@@ -909,7 +919,16 @@ def check_counts(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -
         n_live = len(live[key])
         for m in pattern.finditer(text):
             i = text.count("\n", 0, m.start()) + 1
-            if i in skip or RETIRED_OK.search(raw[i - 1]):
+            # RETIRED_OK is deliberately NOT consulted here. It exempts a
+            # line for naming a retired SERVICE, and its vocabulary is
+            # ordinary past tense -- `was`, `were`, `deleted`, `old`. A count
+            # claim on such a line is still a claim about the fleet today:
+            # `RUNBOOK.md:371` says "Cloud Scheduler (66 jobs)" and then
+            # "premarket-brief schedulers were recreated", and the `were`
+            # suppressed the 66 (Codex, PR #1014). A genuinely historical
+            # count takes a `verify-docs-ok` marker, which says so where a
+            # reader can see it.
+            if i in skip:
                 continue
             claimed = m.group(1)
             n = WORD_NUMBERS.get(claimed.lower())

@@ -13,7 +13,7 @@ These are derived from the actual backup config — `gcloud sql instances descri
 |---|---|---|---|
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
-| **Cloud Run Jobs (76 jobs) + Schedulers (66)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
+| **Cloud Run Jobs (76 jobs) + Schedulers (65)** | 60-90 min | n/a (stateless) | All recreatable from `gcp/deploy.sh all`. Schedulers from `deploy.sh schedulers`. |
 | **Cloud Run Services (4: solyra-api-prod, solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the two API services (step 10 below). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
 | **Secret Manager (22 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
@@ -368,7 +368,7 @@ gcloud builds cancel <BUILD_ID>
 | **Secret Manager (22 secrets)** | None at the Secret Manager level | n/a | ⚠️ **No automated backup.** Internal secrets (DB pass, admin token) can be re-generated. External secrets (AV, FRED, Anthropic, Discord webhook, GitHub PAT, EW user/pass, Benzinga, sec-user-agent) **must be re-issued from each provider** — this is the long pole on whole-project rebuild. **Recommend: print or 1Password-archive the values you can't easily re-issue.** |
 | **Container images (Artifact Registry)** | None — no retention policy on `trading/trading-system` | n/a | 🟢 OK — `./gcp/deploy.sh build` rebuilds from current source in ~3 min. Old images aren't load-bearing for DR. |
 | **Cloud Run Jobs (76) / Services (4)** | Config in `gcp/deploy.sh` (git) | ✅ Implicitly tested every time we deploy | 🟢 OK — `deploy.sh all` recreates everything from scratch. |
-| **Cloud Scheduler (66 jobs)** | Config in `gcp/deploy.sh::deploy_schedulers` (git) | ✅ Implicitly tested | 🟢 OK — `deploy.sh schedulers` recreates from scratch. Last-tested 2026-05-01 when premarket-brief schedulers were recreated. |
+| **Cloud Scheduler (65 jobs)** | Config in `gcp/deploy.sh::deploy_schedulers` (git) | ✅ Implicitly tested | 🟢 OK — `deploy.sh schedulers` recreates from scratch. Last-tested 2026-05-01 when premarket-brief schedulers were recreated. |
 | **Pub/Sub (`gcp-job-failures` + DLQ)** | Topics auto-recreated by `deploy.sh` (no message retention beyond default 7d) | n/a | 🟢 OK — topics are config; messages are ephemeral. |
 | **Log sink (`gcp-job-failures-sink`)** | Created by `setup_notifier_secrets` in deploy.sh | ✅ | 🟢 OK |
 | **Code (this repo)** | GitHub | ✅ Tested with every clone | 🟢 OK |
@@ -517,6 +517,7 @@ Things that could fail silently today because nothing watches them. Ranked by si
 8. **⚠️ Nothing watched whether this runbook was still true.** `docs/PIPELINE.md`
    documented the market-data ingest as "23:00 UTC" while the scheduler has run
    `0 23 * * 1-5` in `America/New_York` for months, and a timezone fix designed
+   <!-- verify-docs-ok: quotes the WRONG historical claim; it is the example of the drift this section exists to describe -->
    off that sentence was wrong end-to-end. `docs/GCP_ARCHITECTURE.md` claimed 34
    Cloud Run Jobs against 76 live. Doc rot is a silent failure like any other.
    - **Fix (done 2026-09-06):** `scripts/verify_docs_against_live.py` compares

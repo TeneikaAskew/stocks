@@ -319,7 +319,7 @@ unless noted.
 | `signal-monitor` | 2 GiB / 8 hr | weekdays 09:25 (runs until close) | Polls AV every 60 sec → maintains rolling indicator window → fires `signal_alerts` + writes `trades` on close |
 | `signal-monitor` (ORB modes) | 2 GiB / – | weekdays 09:45 (15-min ORB), 10:00 (30-min ORB) | Same image, different `--args`: `--mode=orb-snapshot --window=15m / 30m` |
 | `signal-monitor-eod-resolver` | 1 GiB / 1 hr / `--max-retries 0` | weekdays 16:30 | Post-close reconciliation of the day's `signal_alerts` — resolves each fire's outcome (target hit / stopped / time-expiry) |
-| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | nightly Tue–Sat 01:00; the weekdays-hourly 10:00–16:00 entry (`signal-quality-report-hourly`) is **paused** and does not fire | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
+| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | nightly Tue–Sat 01:00. The weekdays-hourly 10:00–16:00 entry (`signal-quality-report-hourly`) was **retired and deleted** on 2026-09-07 (#833): it had been paused since 2026-05-05 writing `status='pending'` rows nothing reads, and the nightly run writes the same rows as `'final'` | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
 | `signal-quality-alarm` | 512 MiB / 2 min / `--max-retries 0` ([`gcp/deploy.sh:225`](../gcp/deploy.sh#L225)) | weekdays Tue–Sat 02:00 | Reads `signal_metrics`; deliberately exits non-zero when trailing-7d clean-rate drops > 3 pp vs prior 7d, which the failure-notifier converts into a labeled GitHub issue. |
 | `weekend-review` | 1 GiB / – | Sat 09:00 | Aggregates the week's trades, compares actual vs backtest, posts Discord summary |
 | `evaluate-ew-strikes` | 512 MiB / 10 min | weekdays 23:00 | Scores how each EW strike pick played out: HIT / MISS / KEPT / ASSIGNED + minutes-to-hit + minutes-in-zone |
@@ -441,7 +441,6 @@ gantt
     orb-15m-alert                 :b3, 09:45, 5m
     orb-30m-alert                 :b4, 10:00, 5m
     fetch-sec-filings (slot 2/4)  :b5, 10:00, 5m
-    signal-quality-report-hourly (paused) :b6, 10:00, 60m
     fetch-sec-filings (slot 3/4)  :b7, 13:00, 5m
     fetch-news-sentiment*         :b8, 14:00, 10m
 
