@@ -213,20 +213,36 @@ def get_catalyst_events(
     benzinga_pending = False
     if refresh or not CATALYSTS_FILE.exists():
         flight_key = f"{d_from}:{d_to}:{','.join(ticker_list or [])}"
+        # The generation this request walked in with. `save_catalysts` stamps
+        # `last_updated` on every write and publishes with `os.replace`, so
+        # comparing it after the claim answers the only question that matters:
+        # did somebody else refresh while we were getting here?
+        seen = _load_cached_events()
+        seen_generation = seen.get("last_updated") if seen else None
         with _CATALYST_FLIGHT.claim(flight_key) as mine:
             if mine:
                 # Re-read under the claim before spending a vendor batch.
                 # Winning the claim does not mean being first: a request
-                # descheduled between the cache check above and `claim()` can
-                # take the claim moments after a previous claimant fetched,
-                # saved and released -- and would then repeat the entire
-                # 11-endpoint Benzinga batch inside one cache lifetime, which
-                # is the bound this flight exists to hold (Codex, PR #991).
-                # The other three cold paths already do this; catalysts was
-                # the one I did not carry it to.
+                # descheduled between the read above and `claim()` can take
+                # the claim moments after a previous claimant fetched, saved
+                # and released -- and would then repeat the entire 11-endpoint
+                # Benzinga batch inside one cache lifetime, which is the bound
+                # this flight exists to hold (Codex, PR #991).
+                #
+                # But "the file has events" is NOT that condition. On the
+                # `refresh=true` path a non-empty file is the ordinary case
+                # and is exactly what the caller asked to replace, so testing
+                # it turned every forced refresh into a no-op that returned
+                # the old data and reported it as a refresh (Codex, PR #991 --
+                # after the merge). A CHANGED generation is the condition: it
+                # means a peer published a new batch, and only then is
+                # skipping ours honest.
                 cached = _load_cached_events()
                 events = cached.get("events") if cached else None
-                if events is None:
+                generation = cached.get("last_updated") if cached else None
+                peer_refreshed = (generation is not None
+                                  and generation != seen_generation)
+                if events is None or not peer_refreshed:
                     events = _fetch_live_events(d_from, d_to, ticker_list)
             else:
                 finished = _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)

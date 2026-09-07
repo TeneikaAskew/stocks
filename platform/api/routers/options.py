@@ -479,20 +479,25 @@ def get_options(ticker: str, date_str: str):
 
     cache_key = (ticker_upper, date_str)
     cached = _CHAIN_CACHE.get(cache_key)
+    # A hit needs no claim: the flight coalesces FILLS, and entering it
+    # for a key that needs no work makes an uncontended read wait behind
+    # a peer's fill (Codex, PR #991 -- after the merge).
+    if cached is not None:
+        return {**cached, "cached": True}
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
     with _CHAIN_FLIGHT.claim(cache_key) as mine:
         # Re-read inside the claim: winning it is not being first.
         cached = _CHAIN_CACHE.get(cache_key)
+        if cached is not None:
+            return {**cached, "cached": True}
         if not mine:
             raise HTTPException(
                 status_code=503,
                 detail=("The options chain is being computed now; retry shortly."),
                 headers={"Retry-After": "5"},
             )
-        if cached is not None:
-            return {**cached, "cached": True}
 
         # etf_options_snapshots stores multiple intraday snapshots per day (one row
         # per contract per snapshot_ts — ~80 for an active day). Restrict to the

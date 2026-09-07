@@ -581,6 +581,17 @@ _MARKET_DATES_CACHE_MAX = 64
 _MARKET_DATES_TTL = timedelta(hours=1)
 
 
+def _market_dates_are_fresh(cached_ts, cached_at, latest_ts) -> bool:
+    """One definition of fresh, read both before and inside the claim.
+
+    Two copies of this expression is how the pre-claim shortcut and the
+    in-claim check drift into disagreeing about the same entry.
+    """
+    return (latest_ts is not None
+            and cached_ts == latest_ts
+            and datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL)
+
+
 def _dates_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
     """Run the trading-dates query, RAISING on failure.
 
@@ -634,6 +645,18 @@ def get_available_dates(ticker: str):
         if not probe.empty:
             latest_ts = probe["max_ts"].iloc[0]
 
+    # A FRESH entry needs no claim. Without this the hot path entered the
+    # flight, and a request whose cached answer was already current would
+    # `wait` for a peer's refresh before returning the answer it walked in
+    # with -- a held worker bought nothing (Codex, PR #991 -- after the
+    # merge). Only the fresh case shortcuts: a stale entry still needs the
+    # claim, because whether it is served or refreshed depends on who wins.
+    entry = _MARKET_DATES_CACHE.get_and_touch(ticker_upper)
+    if entry is not None:
+        cached_ts, cached_at, payload = entry
+        if _market_dates_are_fresh(cached_ts, cached_at, latest_ts):
+            return payload
+
     # Coalesce cold misses. The scan below is a Parallel Seq Scan of the whole
     # per-ticker partition — 2,003,580 rows in 1,716 ms, measured — and this
     # branch is what moves the handler onto the threadpool, so a burst of
@@ -681,9 +704,7 @@ def get_available_dates(ticker: str):
         entry = _MARKET_DATES_CACHE.get_and_touch(ticker_upper)
         if entry is not None:
             cached_ts, cached_at, payload = entry
-            fresh = latest_ts is not None and cached_ts == latest_ts
-            within_ttl = datetime.now(timezone.utc) - cached_at < _MARKET_DATES_TTL
-            if fresh and within_ttl:
+            if _market_dates_are_fresh(cached_ts, cached_at, latest_ts):
                 return payload
             if not mine:
                 # Stale, and someone else is already refreshing it. The date
