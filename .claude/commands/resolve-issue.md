@@ -368,7 +368,7 @@ ways and pasted; it does not have to be a pytest case:
 |---|---|
 | A behaviour changes | a test, as below |
 | A module or job is deleted | `git grep -q "<symbol>" -- . ':!docs/'; rc=$?` then `test $rc -eq 1 \|\| { echo "rc=$rc"; false; }`, and the same in a solyra checkout. **Repo-wide, not the five source directories** — measured, `.github/workflows/deploy-staging.yml:299` runs `gcloud run jobs execute refresh-earnings-views`, so deleting that job's implementation leaves the five-dir grep at rc=1 ("gone") and `make test` green while staging still dispatches it. **Exactly 1**, not merely non-zero: `grep` exits 0 on a hit, 1 on no match and **2 on an error**, so a bare `! grep` reports success for a typo'd path — measured, `! grep -rq x /nonexistent-dir` exits 0. Plus `make test` clean |
-| A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name)') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
+| A scheduler or job is retired | assert on the namespace you actually retired, and on **both** when both go: `LIST=$(gcloud scheduler jobs list --location=us-east1 --format='value(name.basename())') && ! grep -qx "<job>" <<<"$LIST"` for the trigger, and the same with `gcloud run jobs list --region=us-east1` for the job itself. **`basename()` is not optional**: `name` is a fully qualified resource name (`projects/…/locations/…/jobs/<job>`), so `grep -qx "<job>"` against the raw value never matches and the check reports "retired" while both resources are live. It is a no-op on an already-bare value, so it is right without resolving which shape this gcloud prints — which I cannot check here, the session's gcloud being unauthenticated (`CLAUDE.md:948-950` keeps them apart). Asserting only the scheduler passes while the Cloud Run Job still exists and is still manually executable. The listing must SUCCEED before its output is asserted on. Piping straight into `! grep` passes when `gcloud` itself fails, because the failed command sends no output and `grep` finds nothing: measured, `! false \| grep -qx job` exits 0, so the check reports "retired" having inspected nothing |
 | A SELECT's query plan changes | `EXPLAIN (ANALYZE, BUFFERS)` rows-read before and after |
 | A MUTATION's query plan changes | the same, but **never on a raw connection**: `ANALYZE` executes an INSERT/UPDATE/DELETE. `./scripts/db_query_cr.sh` without `--commit`, whose transaction rolls back, or plain `EXPLAIN` without `ANALYZE`. Phase 6 has the detail; the hazard starts here, in the phase that runs first |
 
@@ -612,20 +612,24 @@ evaluations:
 
 ```bash
 replay_check() {
-  local rc n
+  local rc n log
+  # mktemp, not a fixed /tmp path: two sessions running this concurrently
+  # share that path, and one can read the other's summary — a replay that
+  # raised on every bar consuming a clean positive-bar count.
+  log=$(mktemp -t replay-XXXXXX); trap 'rm -f "$log"' RETURN
   # No pipe: redirect instead of `| tee`, so there is no pipeline status to
   # get wrong and no `pipefail` to remember. Read it after with `tail`.
   env -u REPLAY_PERSIST python -m scripts.replay_signal_monitor \
-      --date <D> --tickers SPY,IWM,QQQ > /tmp/replay.log 2>&1; rc=$?
-  test $rc -eq 0 || { tail -20 /tmp/replay.log; echo "replay exited $rc"; return 1; }
-  n=$(grep -c "evaluate_ticker raised" /tmp/replay.log)
+      --date <D> --tickers SPY,IWM,QQQ > "$log" 2>&1; rc=$?
+  test $rc -eq 0 || { tail -20 "$log"; echo "replay exited $rc"; return 1; }
+  n=$(grep -c "evaluate_ticker raised" "$log")
   test "$n" -eq 0 || { echo "$n tickers raised"; return 1; }
   # and the positive check, PER TICKER. `grep -q "Bars"` matches the summary
   # COLUMN HEADER, printed unconditionally at
   # scripts/replay_signal_monitor.py:544, so it passes on an all-empty replay —
   # which is the exact case this section exists to reject.
   for tk in SPY IWM QQQ; do
-    b=$(awk -v t="$tk" '$1==t {print $2}' /tmp/replay.log); : "${b:=0}"
+    b=$(awk -v t="$tk" '$1==t {print $2}' "$log"); : "${b:=0}"
     test "$b" -gt 0 || { echo "$tk evaluated $b bars"; return 1; }
   done
 }
@@ -1102,7 +1106,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
      ```bash
      BUILD_ID=$(gcloud builds triggers run deploy-solyra-api-staging \
-                  --branch=main --format='value(metadata.build.id)') \
+                  --branch=main --format=json \
+                | python3 -c "import sys,json; d=json.load(sys.stdin); \
+                    print(d.get('id') or d.get('metadata',{}).get('build',{}).get('id') or '')") \
        || { echo "trigger did not run"; false; }
      test -n "$BUILD_ID" || { echo "no build id — do not proceed"; false; }
      gcloud builds log --stream "$BUILD_ID"          # blocks until it finishes
@@ -1117,11 +1123,19 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      which you then watch go green and promote, shipping the revision staging
      was already serving.
 
-     I have not verified the `metadata.build.id` field path in this session:
-     checking it means firing a real staging build. It is the documented shape
-     of the operation the trigger returns, and the `test -n` is there because
-     an empty capture is what a wrong format string produces — so a wrong
-     guess stops the run rather than falling through to the unbound `list`.
+     **Reads whichever shape the CLI returns**, rather than betting on one.
+     Without `--async`, `gcloud builds triggers run` waits and returns a
+     **Build**, whose identifier is the top-level `id`; `metadata.build.id` is
+     the path on the **Operation** returned with `--async`. Taking the first
+     non-empty of the two is correct either way, so the ambiguity no longer has
+     to be resolved to make the step work.
+
+     I still cannot check it against the live CLI — this session's gcloud is
+     unauthenticated (`CLOUDSDK_AUTH_ACCESS_TOKEN` is a placeholder, the same
+     pattern CLAUDE.md records for `GH_TOKEN`), and confirming it for real
+     means firing a staging build. What I did verify is the extractor, against
+     both documented shapes and against a response carrying neither, where it
+     yields empty and the `test -n` stops the run.
 
      Then validate against staging and read its serving revision, as below.
      Promoting without this promotes whatever staging was already serving,
