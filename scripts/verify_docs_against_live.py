@@ -34,6 +34,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+PROJECT = "adept-mountain-474619-d4"
 REGION = "us-east1"
 
 # Docs that describe the CURRENT system. Everything else under docs/ is a
@@ -63,6 +64,7 @@ LIVE_STATE_DOCS = [
     "docs/storage_overview.md",
     "docs/FAILURE_NOTIFIER_DEPLOYMENT.md",
     "platform/GCP_DATA_DICTIONARY.md",
+    ".github/workflows/README.md",
 ]
 LIVE_STATE_GLOBS = ["docs/product/*.md", "gcp/cloudbuild/*.md"]
 
@@ -346,8 +348,11 @@ def _gcloud(*args: str) -> str:
     No fallback to a cached snapshot: reading a stale cache and calling it
     "live" is the exact failure this script exists to prevent.
     """
+    # Always name the project: an operator whose active gcloud project is
+    # something else would otherwise "verify" the docs against the wrong
+    # fleet and get a convincing answer (Codex, #1009).
     proc = subprocess.run(
-        ("gcloud",) + args, capture_output=True, text=True, timeout=180
+        ("gcloud",) + args + (f"--project={PROJECT}",), capture_output=True, text=True, timeout=180
     )
     if proc.returncode != 0:
         raise RuntimeError(f"gcloud {' '.join(args)} failed: {proc.stderr.strip()[:400]}")

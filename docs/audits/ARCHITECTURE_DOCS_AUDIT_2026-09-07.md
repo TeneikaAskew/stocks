@@ -193,3 +193,16 @@ Codex reviewed head `ff1956a` and filed nine P2 findings; each was verified agai
 IAM changes made the same day, all read back live and recorded in `ARCHITECTURE.md` §1, `SETUP.md` §3 and `docs/product/09-SECURITY-AUTH.md`: six viewer roles plus bucket `objectViewer` for `arch-refresh-bot@` (04:28Z, operator), `artifactregistry.writer` on both image repos (#1007), the legacy image packages retired, and the paused scheduler deleted.
 
 The first dispatch of the rebuilt workflow (`dry_run=true`, run 34083279855, from the PR branch) failed at the WIF step: the provider's attribute condition admits `refs/heads/main` only, which is the intended boundary, so the dry run is a post-merge step. Issue #1011 and draft PR #1012 that `handle-failure` opened for it were closed as not planned.
+
+Codex's second pass (head `f57dd11`) filed eight more, again all real:
+
+| Finding | Fix |
+|---|---|
+| Gemini has `write_file`/`replace` on the whole checkout, so a bad regeneration could edit the gate scripts, the live snapshot or the saved previous versions before they judge it | the refresh-inputs are frozen to `$RUNNER_TEMP` before the first Gemini step and copied back before verification; any tracked file the model touched outside the generated docs fails the run before the gates |
+| `refresh_architecture_drawio.py` was never invoked by the workflow and the drawio files were not detected or staged | the render step regenerates both drawio files from the snapshot; both are in the detection loop (read-date-only changes are not "meaningful") and the staged set |
+| the three scheduler timeline labels were hard-coded | `sched_labels()` builds them from `live["schedulers"]`; `check()` fails when a cell differs from the generated text |
+| `\|\| true` on the verifier hid a crash as "no findings" | exit status captured; anything but 0/1, or no `checked N operational docs` summary, fails the run |
+| `.github/workflows/README.md` states a live count but was outside the verifier's scope | added to `LIVE_STATE_DOCS`; the sentence uses a phrase the count check parses (a mangled value is flagged, verified) |
+| `gemini … \| tee` without `pipefail` returned tee's exit status | `set -o pipefail` in all four regeneration steps |
+| the verifier's gcloud reads had no `--project`, so an operator with another active project would verify the wrong fleet | `--project=adept-mountain-474619-d4` on every read |
+| the icon page kept 42 jobs / ~50 crons / 19 secrets / 44 tables and was never checked | `refresh_icons()` rewrites the count labels and the seven per-page reconciliation notes from the snapshot; `check_icons()` fails on any stale label or missing live count and runs under `--check` |

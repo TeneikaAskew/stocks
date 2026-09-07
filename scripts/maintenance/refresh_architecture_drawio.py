@@ -99,11 +99,53 @@ NEW_CELLS = [
 SUBTITLE_ID = "subtitle"
 SCHED_GROUP_ID = "sched_group"
 GHA_GROUP_ID = "gha_group"
-SCHED_LABELS = {
-    "sched_label1": "Post-close: 21:00 av-options-daily / av-intraday-nightly • 21:15 playbook-resolver • 22:00 options-daily-features • 22:30 gamma-levels • 23:00 fetch-market-data + evaluate-ew-strikes • 23:15 options-daily-greeks • 23:35 strat-engine",
-    "sched_label2": "Pre-market: 06:30 fred-rates • 07:00 economic-events, insider-transactions, sec-filings-intraday • 07:30 refresh-earnings-views • 08:10 auto-refresh-top-n • 08:20 premarket-refresh • 08:30 premarket-brief • 08:35 earnings-reactions-brief • 08:45 insight-pipeline",
-    "sched_label3": "Intraday: 09:15 insight-discord-push • 09:25 signal-monitor + magnitude-inference • 09:45/10:00 ORB • every 5 min av-options-realtime • hourly news-sentiment/-topics, top-movers-intraday, freshness-watchdog • 16:30 eod-resolver • 17:00 realtime-gex • 19:00–19:30 earnings trio",
-}
+SCHED_LABEL_IDS = ("sched_label1", "sched_label2", "sched_label3")
+
+
+def _cron_display(cron: str) -> tuple[int, str]:
+    """(sort minute-of-day, text) for the crons deploy.sh uses; unknown shapes
+    come back verbatim so they are visible rather than dropped."""
+    f = cron.split()
+    if len(f) != 5:
+        return (10**6, cron)
+    minute, hour, dom, _mon, dow = f
+    day = {"1-5": "", "*": " daily", "1-6": " Mon–Sat", "2-6": " Tue–Sat", "0": " Sun", "6": " Sat", "1": " Mon",
+           "2": " Tue", "3": " Wed", "4": " Thu", "5": " Fri"}.get(dow, f" dow {dow}")
+    if dom != "*":
+        day = f" day {dom}"
+    if minute.startswith("*/") and "-" in hour:
+        h0 = int(hour.split("-")[0])
+        return (h0 * 60, f"every {minute[2:]} min {hour}h{day}")
+    if minute.isdigit() and hour.isdigit():
+        return (int(hour) * 60 + int(minute), f"{int(hour):02d}:{int(minute):02d}{day}")
+    if minute.isdigit() and hour == "*":
+        return (0, f"hourly :{int(minute):02d}" + ("" if dow == "*" else day))
+    if minute.isdigit():
+        h0 = int(hour.replace(",", "-").split("-")[0])
+        return (h0 * 60 + int(minute), f"{hour}h :{int(minute):02d}{day}")
+    return (10**6, cron)
+
+
+def sched_labels(live: dict) -> dict[str, str]:
+    """The three timeline labels, generated from live['schedulers'] so a
+    cadence change can never leave a stale time on the page (Codex, #1009)."""
+    pre, intra, post = [], [], []
+    for name, sc in sorted(live["schedulers"].items()):
+        key, text = _cron_display(sc["cron"])
+        entry = f"{text} {name}"
+        if key < 9 * 60 + 30:
+            pre.append((key, entry))
+        elif key < 16 * 60:
+            intra.append((key, entry))
+        else:
+            post.append((key, entry))
+    def join(items):
+        return " • ".join(e for _, e in sorted(items))
+    return {
+        "sched_label1": "Post-close (16:00 ET onward): " + join(post),
+        "sched_label2": "Pre-market (before 09:30 ET): " + join(pre),
+        "sched_label3": "Intraday (09:30–16:00 ET): " + join(intra),
+    }
 ADDON_GROUP_ID = "addon_group"
 ADDON_PREFIX = "addon_"
 GRID_COLS, GRID_W, GRID_H, GRID_GAP = 9, 240, 62, 12
@@ -163,7 +205,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     if GHA_GROUP_ID in by_id:
         by_id[GHA_GROUP_ID].set("value", gha_label)
     by_id[SCHED_GROUP_ID].set("value", f"② Cloud Scheduler — {counts['schedulers']} live entries, all America/New_York (read {read}{paused_note})")
-    for cid, text in SCHED_LABELS.items():
+    for cid, text in sched_labels(live).items():
         by_id[cid].set("value", text)
 
     # delete retired cells and any edge touching them
@@ -235,6 +277,73 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     model.set("pageHeight", str(max(int(model.get("pageHeight", "1900")), y_after + 200)))
 
 
+ICON_COUNT_TEMPLATES = [
+    # (stale text on the 2026-06-23 icon rebuild, template)
+    ("42 Cloud Run Jobs · 3 Services · ~50 Scheduler crons · 44-table Cloud SQL (~33 user-facing)",
+     "{jobs} Cloud Run Jobs · {services} Services · {schedulers} Scheduler entries · {relations}-relation Cloud SQL"),
+    ("~50 cron entries", "{schedulers} cron entries"),
+    ("~50 crons", "{schedulers} crons"),
+    ("44 tables · ~33 user-facing", "{relations} relations"),
+    ("44 tables", "{relations} relations"),
+    ("19 secrets", "{secrets} secrets"),
+    ("19 workflows: backups · audits · deploy", "6 workflows: CI · deploys · bridges · docs check · doc refresh"),
+]
+ICON_STALE = ("42 Cloud Run Jobs", "~50 cron", "~50 Scheduler", "44 tables", "44-table", "19 secrets", "19 workflows",
+              "trading-platform-staging", "React dashboard")
+
+
+def _icon_values(live: dict) -> dict[str, str]:
+    return {
+        "jobs": str(live["counts"]["jobs"]), "services": str(live["counts"]["services"]),
+        "schedulers": str(live["counts"]["schedulers"]), "secrets": str(live["counts"]["secrets"]),
+        "relations": str(len(live.get("db_tables") or {})),
+    }
+
+
+def refresh_icons(root: ET.Element, live: dict) -> int:
+    """Rewrite the count labels on the icon page from the snapshot. Returns
+    the number of cells changed. Idempotent: the templates are expanded with
+    the current counts, so a second pass over the result finds nothing to
+    replace only if the counts match; check_icons() enforces the match."""
+    vals = _icon_values(live)
+    read = live["read_at"][:10]
+    note = (f"Reconciliation note (regenerated {read} from the live snapshot by "
+            f"scripts/maintenance/refresh_architecture_drawio.py)\n"
+            f"──────────────────────────────\n"
+            f"• {vals['jobs']} Cloud Run Jobs live · {vals['services']} services · {vals['schedulers']} Cloud Scheduler entries · "
+            f"{vals['secrets']} secrets · {vals['relations']} Cloud SQL relations\n"
+            f"• Repo-vs-live deltas: ARCHITECTURE.md §15. Job sizing and last executions: ARCHITECTURE.md §6.")
+    n = 0
+    for c in root.iter("mxCell"):
+        v = c.get("value")
+        if not v:
+            continue
+        new = v
+        # the per-page "Rebuild reconciliation note" cells of the 2026-06-23
+        # icon rebuild carried that day's numbers; they are regenerated whole
+        if "reconciliation note" in v.lower():
+            new = note
+        for stale, tmpl in ICON_COUNT_TEMPLATES:
+            new = new.replace(stale, tmpl.format(**vals))
+        if new != v:
+            c.set("value", new)
+            n += 1
+    return n
+
+
+def check_icons(root: ET.Element, live: dict) -> list[str]:
+    problems = []
+    text = ET.tostring(root, encoding="unicode")
+    for stale in ICON_STALE:
+        if stale in text:
+            problems.append(f"icons: stale label {stale!r}")
+    vals = _icon_values(live)
+    for needle in (f"{vals['jobs']} Cloud Run Jobs", f"{vals['schedulers']} cron entries", f"{vals['secrets']} secrets"):
+        if needle not in text:
+            problems.append(f"icons: expected live count {needle!r} not found")
+    return problems
+
+
 def check(root: ET.Element, live: dict) -> list[str]:
     page = root.findall("diagram")[0]
     labels = _job_labels(page)
@@ -242,6 +351,10 @@ def check(root: ET.Element, live: dict) -> list[str]:
     for c in root.iter("mxCell"):
         if c.get("id") == GHA_GROUP_ID and "14 active workflows" in (c.get("value") or ""):
             problems.append("gha_group still carries the 2026-05 '14 active workflows' label")
+    want = sched_labels(live)
+    for c in root.iter("mxCell"):
+        if c.get("id") in want and (c.get("value") or "") != want[c.get("id")]:
+            problems.append(f"{c.get('id')} does not match the schedulers in the snapshot")
     # the hand-authored detail cards must survive regeneration (Codex, PR #1009)
     ids = {c.get("id") for c in root.iter("mxCell")}
     for hand in ("flow_a", "job_smer_a", "job_ppr_a", "job_erb_a", "job_bdi_a"):
@@ -278,13 +391,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{MAIN.name}: {n} labels replaced, main page regenerated")
         if ICONS.exists():
             itree = ET.parse(ICONS)
-            m = apply_replacements(itree.getroot())
+            m = apply_replacements(itree.getroot()) + refresh_icons(itree.getroot(), live)
             if m:
                 _write(itree, ICONS)
             print(f"{ICONS.name}: {m} labels replaced")
         tree = ET.parse(MAIN)
         root = tree.getroot()
     problems = check(root, live)
+    if ICONS.exists():
+        problems += check_icons(ET.parse(ICONS).getroot(), live)
     for p in problems:
         print(f"::error::{p}")
     print(f"drawio check: {len(problems)} problem(s)")

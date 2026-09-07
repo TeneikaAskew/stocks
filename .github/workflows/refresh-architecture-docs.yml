@@ -355,7 +355,22 @@ jobs:
       - name: Render inventory blocks
         run: |
           python -m scripts.maintenance.doc_inventory --snapshot refresh-inputs/live.json --insert ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md
-          git --no-pager diff --stat -- ARCHITECTURE.md DATA_DEPENDENCIES.md
+          # The drawio companions are regenerated from the same snapshot:
+          # counts, scheduler labels, the add-on job grid and the icon page.
+          jq '[.jobs[].name]' refresh-inputs/repo_inventory.json > refresh-inputs/repo_jobs.json
+          python scripts/maintenance/refresh_architecture_drawio.py --snapshot refresh-inputs/live.json --repo-jobs refresh-inputs/repo_jobs.json
+          git --no-pager diff --stat -- ARCHITECTURE.md DATA_DEPENDENCIES.md docs/API.md Architecture.drawio Architecture-icons.drawio
+
+      # A. Gemini gets write_file/replace on the whole checkout. Everything
+      # the gates run on is copied aside here and put back, unchanged, right
+      # before verification, so a malformed or prompt-injected regeneration
+      # cannot edit the gate scripts, the live snapshot or the saved
+      # previous versions it is about to be judged against (Codex, #1009).
+      - name: Freeze gate inputs
+        run: |
+          mkdir -p "$RUNNER_TEMP/frozen"
+          cp -r refresh-inputs "$RUNNER_TEMP/frozen/refresh-inputs"
+          git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
       # Tool restriction is enforced by the policy file written above
@@ -372,6 +387,7 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
             --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "refresh-inputs/transcripts/architecture.log"
@@ -382,6 +398,7 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
             --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "refresh-inputs/transcripts/data-dependencies.log"
@@ -392,6 +409,7 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
             --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "refresh-inputs/transcripts/cost-analysis.log"
@@ -404,6 +422,7 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
           mkdir -p refresh-inputs/transcripts
           gemini --model "${GEMINI_MODEL}" \
             --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "refresh-inputs/transcripts/readme.log"
@@ -413,6 +432,23 @@ jobs:
       # 35-of-62-table DATA_DEPENDENCIES.md, and silently reverted an
       # ARCHITECTURE.md the model had refused to write — all with a green
       # run. These deterministic gates make each of those a red run instead.
+      - name: Restore gate inputs and refuse model edits outside the docs
+        run: |
+          set -e
+          ALLOWED="ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio"
+          # tracked files the model touched that are not generated docs
+          STRAY=""
+          for F in $(git diff --name-only; git ls-files --others --exclude-standard | grep -v '^refresh-inputs/' || true); do
+            case " $ALLOWED " in *" $F "*) ;; *) STRAY="$STRAY $F";; esac
+          done
+          if [ -n "$STRAY" ]; then
+            echo "::error::the model wrote outside the generated docs:$STRAY — refusing to verify or publish"
+            exit 1
+          fi
+          # the gates read only the frozen copies of the snapshot, digests and previous versions
+          cp -r "$RUNNER_TEMP/frozen/refresh-inputs/." refresh-inputs/
+          test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/frozen/head.sha")"
+
       - name: Verify regenerated docs
         run: |
           set -e
@@ -463,9 +499,18 @@ jobs:
           #     there is a failure and drift anywhere else is a warning the
           #     PR body carries (a stale count in docs/product/ must not block
           #     the monthly refresh forever).
+          set +e
           python scripts/verify_docs_against_live.py --snapshot refresh-inputs/verify_live.json \
-            > refresh-inputs/verify_findings.txt 2>&1 || true
+            > refresh-inputs/verify_findings.txt 2>&1
+          VRC=$?
+          set -e
           cat refresh-inputs/verify_findings.txt
+          # exit 0 = clean, 1 = findings; anything else, or no completion
+          # summary, means the verifier crashed and the gate never ran.
+          if ! grep -qE '^checked [0-9]+ operational docs' refresh-inputs/verify_findings.txt || { [ "$VRC" -ne 0 ] && [ "$VRC" -ne 1 ]; }; then
+            echo "::error::verify_docs_against_live.py did not complete (exit $VRC); the docs-vs-live gate did not run"
+            FAIL=1
+          fi
           if grep -qE '^\[[a-z-]+\] (README|ARCHITECTURE|DATA_DEPENDENCIES|COST_ANALYSIS)\.md:' refresh-inputs/verify_findings.txt; then
             echo "::error::verify_docs_against_live.py found drift in a regenerated doc (see above)"
             FAIL=1
@@ -504,7 +549,7 @@ jobs:
         run: |
           set +e
           MEANINGFUL=0
-          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md; do
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio; do
             if [ ! -f "$FILE" ]; then continue; fi
             # Mangle slashes so files in subdirs (e.g. docs/X.md) don't
             # try to redirect into /tmp/docs/ which doesn't exist. Without
@@ -515,6 +560,7 @@ jobs:
             git diff --no-color "$FILE" \
               | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
               | grep -vE '^[-+]\*\*Generated\*\* 20[0-9]{2}' \
+              | grep -vE '(read live|Live|read) 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
               | grep -E '^[-+][^-+]' \
               > "/tmp/${DIFF_NAME}.diff"
             if [ -s "/tmp/${DIFF_NAME}.diff" ]; then
@@ -553,7 +599,7 @@ jobs:
 
           # Stage only the regenerated docs. refresh-inputs/ is untracked and
           # never staged.
-          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md
+          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio
 
           if git diff --cached --quiet; then
             echo "nothing staged — exit clean"
@@ -572,7 +618,7 @@ jobs:
           # force-push ban is scoped to main).
           git push --force -u origin "$BRANCH"
 
-          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md)
+          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/API.md docs/INVESTMENT_MODELS_SUMMARY.md Architecture.drawio Architecture-icons.drawio)
 
           # A PR may already be open for this branch from an earlier run this
           # month. `gh pr create` errors loudly in that case even though the
