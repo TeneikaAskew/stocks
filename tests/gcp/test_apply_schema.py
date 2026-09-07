@@ -321,8 +321,20 @@ def test_real_schema_groups_the_earnings_mat_view_section():
     schema = (Path(__file__).resolve().parent.parent.parent / "gcp" / "schema.sql").read_text()
     groups = split_statement_groups(schema)
     atomic = [g for g in groups if len(g) > 1]
-    assert len(atomic) == 1, "exactly one ATOMIC group expected"
-    joined = "\n".join(atomic[0])
+    assert atomic, "no ATOMIC group parsed from the real schema"
+
+    # Selected by CONTENT, not by being the only group. This asserted
+    # `len(atomic) == 1` and broke the moment a second, unrelated group was
+    # added legitimately (the journal import dedupe index) -- a global count
+    # standing in for the property actually under test, which is that THIS
+    # section is one group. The count told us nothing about that and failed
+    # for something else.
+    earnings = [g for g in atomic
+                if any("earnings_event_outcomes" in stmt for stmt in g)]
+    assert len(earnings) == 1, (
+        "the earnings mat-view drop/recreate must be exactly one ATOMIC "
+        f"group; found {len(earnings)}")
+    joined = "\n".join(earnings[0])
     for needle in (
         "DROP MATERIALIZED VIEW IF EXISTS earnings_event_outcomes",
         "CREATE MATERIALIZED VIEW earnings_event_outcomes",

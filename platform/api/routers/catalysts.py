@@ -26,10 +26,22 @@ from api.schemas import (
     CatalystsResponse,
 )
 
+from lib.single_flight import SingleFlight
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 router = APIRouter()
+
+# Coalesces cold catalyst fetches per (window, tickers).
+#
+# SHORT, because a decliner never fetches: the wait only buys the case where
+# the claimant is nearly done, and every second of it is an AnyIO worker held.
+# `fetch_all_catalysts` makes 11 serial requests each allowing 30 s, so a
+# claimant that has not finished in a second or two will not finish in eight
+# either -- waiting longer would cost workers for an outcome it cannot reach.
+_CATALYST_FLIGHT = SingleFlight()
+_CATALYST_WAIT_S = 1.5
 logger = logging.getLogger(__name__)
 
 CATALYSTS_FILE = PROJECT_ROOT / "data" / "catalysts" / "catalyst_calendar.json"
@@ -144,7 +156,7 @@ def _fetch_live_events(date_from, date_to, tickers=None, calendar_types=None):
 
 
 @router.get("/api/catalysts/events", response_model=CatalystsResponse, response_model_exclude_unset=True)
-async def get_catalyst_events(
+def get_catalyst_events(
     date_from: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="End date YYYY-MM-DD"),
     tickers: Optional[str] = Query(None, description="Comma-separated tickers"),
@@ -164,9 +176,78 @@ async def get_catalyst_events(
 
     events = None
 
-    # Try live fetch if refresh requested or no cache
+    # Try live fetch if refresh requested or no cache.
+    #
+    # COALESCED. This handler is a plain `def` now, so concurrent requests run
+    # it in separate worker threads: on a cold cache both pass the existence
+    # check and both call `_fetch_live_events`, which walks every configured
+    # Benzinga calendar endpoint serially. `_SAVE_LOCK` is taken only after
+    # that network batch, inside `save_catalysts`, so it protects the file and
+    # not the vendor quota — while the previous no-await `async def` handler
+    # serialised the calls for free and the second request found the file
+    # already written (Codex, PR #991).
+    #
+    # A decliner WAITS and then re-reads the cache, rather than declining with
+    # an answer of its own: the claimant is about to produce the only answer
+    # there is. The wait is bounded so a slow vendor cannot hold a worker
+    # indefinitely; on timeout the decliner does the fetch itself, which is
+    # the pre-existing behaviour rather than a new failure.
+    #
+    # `refresh=true` is deliberately NOT coalesced away for the claimant: an
+    # operator asking for a refresh gets one. A concurrent refresh for the
+    # same window still declines rather than duplicating the batch.
+    #
+    # A DECLINER NEVER FETCHES, even after its wait expires. Waiting and then
+    # fetching anyway is the worst of both: `fetch_all_catalysts` makes 11
+    # serial requests each allowing a 30-second timeout, so a slow claimant
+    # runs for minutes, every overlapping request holds an AnyIO worker for
+    # the full wait AND then launches its own complete batch -- multiplying
+    # vendor calls at exactly the moment Benzinga is slow (Codex, PR #991).
+    # That is the same error I made once already on this PR and had
+    # overturned: counting what the waiter gains and not what it costs.
+    #
+    # So the wait is short and speculative -- it only buys the case where the
+    # claimant is nearly done -- and a decliner that comes back empty says so
+    # instead of paying again. The page is not blank either way: the DB
+    # sources below are merged in regardless.
+    benzinga_pending = False
     if refresh or not CATALYSTS_FILE.exists():
-        events = _fetch_live_events(d_from, d_to, ticker_list)
+        flight_key = f"{d_from}:{d_to}:{','.join(ticker_list or [])}"
+        with _CATALYST_FLIGHT.claim(flight_key) as mine:
+            if mine:
+                # Re-read under the claim before spending a vendor batch.
+                # Winning the claim does not mean being first: a request
+                # descheduled between the cache check above and `claim()` can
+                # take the claim moments after a previous claimant fetched,
+                # saved and released -- and would then repeat the entire
+                # 11-endpoint Benzinga batch inside one cache lifetime, which
+                # is the bound this flight exists to hold (Codex, PR #991).
+                # The other three cold paths already do this; catalysts was
+                # the one I did not carry it to.
+                cached = _load_cached_events()
+                events = cached.get("events") if cached else None
+                if events is None:
+                    events = _fetch_live_events(d_from, d_to, ticker_list)
+            else:
+                finished = _CATALYST_FLIGHT.wait(flight_key, _CATALYST_WAIT_S)
+                # Re-read: a claimant that finished inside the wait has just
+                # written the file, in which case this request pays nothing.
+                cached = _load_cached_events()
+                events = cached.get("events") if cached else None
+                # `finished` decides the provenance, not `events is not None`.
+                # A decliner whose wait TIMED OUT reads the pre-refresh file,
+                # so `events` is non-null and the response used to name
+                # Benzinga unconditionally -- meaning a caller that explicitly
+                # asked for `refresh=true` could not tell a completed refresh
+                # from the data it already had (Codex, PR #991). That is the
+                # same fabricated provenance the in-flight label was added to
+                # remove, one branch along.
+                if events is None or not finished:
+                    benzinga_pending = True
+                    logger.info(
+                        "catalysts: a fetch for %s..%s is still in flight; "
+                        "serving DB sources only rather than starting a "
+                        "second Benzinga batch", d_from, d_to)
 
     # Fall back to cache. If no Benzinga data is available, fall through
     # with an empty list — our own DB sources (news / SEC) below still
@@ -205,7 +286,20 @@ async def get_catalyst_events(
     # Sort dates
     sorted_dates = dict(sorted(by_date.items()))
 
-    sources = ["Benzinga"]
+    # Name what actually contributed. Listing "Benzinga" while its fetch is
+    # still in flight reports a source this response does not carry, which is
+    # the fabricated-provenance shape Rule 3.7 forbids -- and the operator
+    # reading it would have no way to tell a quiet day from a slow vendor.
+    # AUDIT-2026-09-07: silent fallback — reachable when BENZINGA_API_KEY is
+    # unset or the vendor returns nothing: `_fetch_live_events` returns None,
+    # the response still names Benzinga as a source, and an operator cannot
+    # tell "no catalysts today" from "not configured". Pre-existing and NOT
+    # fixed here: naming a source honestly in that case means counting what
+    # each source contributed, which changes the `source` string for every
+    # response and belongs in its own change (CLAUDE.md Rule 3.7, "when you
+    # find an existing fallback"). The in-flight case below is this PR's own
+    # and is fixed.
+    sources = ["Benzinga (fetch in flight)"] if benzinga_pending else ["Benzinga"]
     if db_events:
         sources.append(f"DB (news + sec, {len(db_events)})")
 
@@ -463,7 +557,7 @@ def _db_catalyst_events(
 
 
 @router.get("/api/catalysts/ticker/{ticker}")
-async def get_catalysts_for_ticker(
+def get_catalysts_for_ticker(
     ticker: str,
     days_back: int = Query(7, description="Days back from today"),
     days_ahead: int = Query(30, description="Days ahead from today"),
@@ -501,7 +595,7 @@ async def get_catalysts_for_ticker(
 
 @router.get("/api/catalysts/asof/{ticker}")
 @router.get("/api/catalysts/snapshot/{ticker}", include_in_schema=False)
-async def get_catalyst_snapshot(
+def get_catalyst_snapshot(
     ticker: str,
     as_of: Optional[str] = Query(
         None, description="Point-in-time view date YYYY-MM-DD (default: today)"
@@ -661,7 +755,7 @@ async def get_catalyst_snapshot(
 
 
 @router.get("/api/catalysts/types", response_model=CatalystTypesResponse, response_model_exclude_unset=True)
-async def get_catalyst_types():
+def get_catalyst_types():
     """Return available catalyst types and WSH upgrade info."""
     return {
         "benzinga_types": BENZINGA_TYPES,

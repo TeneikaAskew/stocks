@@ -106,7 +106,7 @@ def _df_to_records(df) -> list[dict]:
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/upcoming')
-async def upcoming(
+def upcoming(
     response: Response,
     days: int = Query(14, ge=1, le=60),
 ):
@@ -136,7 +136,7 @@ async def upcoming(
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/history/{ticker}')
-async def history(
+def history(
     ticker: str,
     response: Response,
     limit: int = Query(20, ge=1, le=100),
@@ -170,7 +170,7 @@ async def history(
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/event/{ticker}/{event_date}')
-async def event(ticker: str, event_date: str, response: Response):
+def event(ticker: str, event_date: str, response: Response):
     """Single-event drill-down."""
     _set_cache(response, 86400)  # 1 day — historical events don't change
     df = _query_or_503(
@@ -195,7 +195,7 @@ async def event(ticker: str, event_date: str, response: Response):
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/lean')
-async def lean(
+def lean(
     response: Response,
     direction: Literal['long', 'short', 'all'] = 'all',
     min_quarters: int = Query(4, ge=1, le=40),
@@ -231,7 +231,7 @@ async def lean(
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/ticker/{ticker}/lean')
-async def ticker_lean(ticker: str, response: Response):
+def ticker_lean(ticker: str, response: Response):
     """Lean stats for one ticker."""
     _set_cache(response, 3600)
     df = _query_or_503(
@@ -253,7 +253,7 @@ async def ticker_lean(ticker: str, response: Response):
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/insights/grid')
-async def insights_grid(
+def insights_grid(
     response: Response,
     quintile: Optional[str] = None,
     ratio_bucket: Optional[str] = None,
@@ -276,7 +276,7 @@ async def insights_grid(
 
 
 @router.get('/api/earnings/insights/winners')
-async def insights_winners(
+def insights_winners(
     response: Response,
     structure: Optional[str] = None,
     quintile: str = 'Q5',
@@ -302,7 +302,7 @@ async def insights_winners(
 
 
 @router.get('/api/earnings/calibration')
-async def calibration(response: Response):
+def calibration(response: Response):
     """The live calibration row (PR-A + PR-B headline finding)."""
     _set_cache(response, 3600)
     df = _query_or_503(
@@ -322,7 +322,7 @@ async def calibration(response: Response):
 # ╰─────────────────────────────────────────────────────────────────────╯
 
 @router.get('/api/earnings/health/ping')
-async def health_ping(response: Response):
+def health_ping(response: Response):
     """Lightweight warm-up endpoint hit by the keep-warm Cloud Scheduler.
 
     Returns 200 + a 1-statement Cloud SQL query so the Cloud SQL
