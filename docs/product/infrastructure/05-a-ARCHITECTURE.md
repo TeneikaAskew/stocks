@@ -462,18 +462,18 @@ Staging is therefore the service users actually hit, with open self-signup over 
 <!-- inventory:routes:start -->
 | Method | Path | Defined | Purpose |
 |---|---|---|---|
-| `GET` | `/api/admin/data-sources` | [`platform/api/routers/admin.py:1212`](../../../platform/api/routers/admin.py#L1212) | Per-dataset freshness/coverage, aggregated from the shared audit. |
-| `POST` | `/api/admin/data-sources/{source_id}/refresh` | [`platform/api/routers/admin.py:1345`](../../../platform/api/routers/admin.py#L1345) | Queue the dataset's Cloud Run fetcher job. |
-| `GET` | `/api/admin/models` | [`platform/api/routers/admin.py:155`](../../../platform/api/routers/admin.py#L155) |  |
+| `GET` | `/api/admin/data-sources` | [`platform/api/routers/admin.py:1328`](../../../platform/api/routers/admin.py#L1328) | Per-dataset freshness/coverage, aggregated from the shared audit. |
+| `POST` | `/api/admin/data-sources/{source_id}/refresh` | [`platform/api/routers/admin.py:1461`](../../../platform/api/routers/admin.py#L1461) | Queue the dataset's Cloud Run fetcher job. |
+| `GET` | `/api/admin/models` | [`platform/api/routers/admin.py:189`](../../../platform/api/routers/admin.py#L189) |  |
 | `GET` | `/api/admin/routes` | [`platform/api/routers/admin.py:128`](../../../platform/api/routers/admin.py#L128) |  |
-| `PUT` | `/api/admin/routes/{role}` | [`platform/api/routers/admin.py:135`](../../../platform/api/routers/admin.py#L135) |  |
-| `POST` | `/api/admin/strat-engine/predict` | [`platform/api/routers/admin.py:498`](../../../platform/api/routers/admin.py#L498) | Run the frozen strat-engine type model for ONE bar. |
-| `GET` | `/api/admin/strat-engine/state` | [`platform/api/routers/admin.py:481`](../../../platform/api/routers/admin.py#L481) | Operator snapshot of the on-shelf strat-engine model state. |
-| `POST` | `/api/admin/strat-engine/structure-continuation` | [`platform/api/routers/admin.py:606`](../../../platform/api/routers/admin.py#L606) | Read-only, feature-flagged calibrated structure-continuation probability. |
-| `GET` | `/api/admin/structure-brief` | [`platform/api/routers/admin.py:289`](../../../platform/api/routers/admin.py#L289) | Dev-only readout of the strat-engine type model's structure predictions. |
-| `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:842`](../../../platform/api/routers/admin.py#L842) | Every Firebase account + its stored role(s). |
-| `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:886`](../../../platform/api/routers/admin.py#L886) | Replace an account's stored role. |
-| `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:958`](../../../platform/api/routers/admin.py#L958) | Enable or disable a Firebase account. |
+| `PUT` | `/api/admin/routes/{role}` | [`platform/api/routers/admin.py:147`](../../../platform/api/routers/admin.py#L147) |  |
+| `POST` | `/api/admin/strat-engine/predict` | [`platform/api/routers/admin.py:566`](../../../platform/api/routers/admin.py#L566) | Run the frozen strat-engine type model for ONE bar. |
+| `GET` | `/api/admin/strat-engine/state` | [`platform/api/routers/admin.py:549`](../../../platform/api/routers/admin.py#L549) | Operator snapshot of the on-shelf strat-engine model state. |
+| `POST` | `/api/admin/strat-engine/structure-continuation` | [`platform/api/routers/admin.py:689`](../../../platform/api/routers/admin.py#L689) | Read-only, feature-flagged calibrated structure-continuation probability. |
+| `GET` | `/api/admin/structure-brief` | [`platform/api/routers/admin.py:323`](../../../platform/api/routers/admin.py#L323) | Dev-only readout of the strat-engine type model's structure predictions. |
+| `GET` | `/api/admin/users` | [`platform/api/routers/admin.py:958`](../../../platform/api/routers/admin.py#L958) | Every Firebase account + its stored role(s). |
+| `PUT` | `/api/admin/users/{uid}/roles` | [`platform/api/routers/admin.py:1002`](../../../platform/api/routers/admin.py#L1002) | Replace an account's stored role. |
+| `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:1074`](../../../platform/api/routers/admin.py#L1074) | Enable or disable a Firebase account. |
 | `GET` | `/api/analytics/summary/{ticker}` | [`platform/api/routers/analytics.py:126`](../../../platform/api/routers/analytics.py#L126) | Summarize rows from the ``trades`` table for a ticker. |
 | `POST` | `/api/analytics/trade-stats` | [`platform/api/routers/analytics.py:118`](../../../platform/api/routers/analytics.py#L118) |  |
 | `GET` | `/api/backtest/all/{ticker}` | [`platform/api/routers/backtest.py:355`](../../../platform/api/routers/backtest.py#L355) | List all backtest runs for a ticker, sorted by timestamp descending. |
@@ -501,19 +501,19 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
 | `GET` | `/api/health` | [`platform/api/main.py:270`](../../../platform/api/main.py#L270) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:146`](../../../platform/api/routers/health.py#L146) | Return the cached freshness report (see freshness_report_dict). |
-| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1027`](../../../platform/api/routers/insights.py#L1027) | Stream a Gemini response for the given mode and message. |
-| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:678`](../../../platform/api/routers/insights.py#L678) | Return the most recent InsightReport for the ticker. |
-| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:707`](../../../platform/api/routers/insights.py#L707) | Return a scannable list of recent reports for the ticker. |
-| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:754`](../../../platform/api/routers/insights.py#L754) | Enqueue a fresh pipeline run for the ticker. |
-| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:716`](../../../platform/api/routers/insights.py#L716) | Return a single insight report by row id. |
-| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:878`](../../../platform/api/routers/insights.py#L878) | Poll the status of a refresh run. |
-| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:458`](../../../platform/api/routers/insights.py#L458) | Search for tickers by keyword (company name, symbol, etc). |
-| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:473`](../../../platform/api/routers/insights.py#L473) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
-| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:504`](../../../platform/api/routers/insights.py#L504) | Return peer tickers from FinViz (cached). |
-| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:493`](../../../platform/api/routers/insights.py#L493) | Return latest price/volume from AV GLOBAL_QUOTE. |
-| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:623`](../../../platform/api/routers/insights.py#L623) | Return today's ranked candidate tickers with score breakdowns. |
-| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:513`](../../../platform/api/routers/insights.py#L513) | Add a ticker to the watchlist and return its info + quote. |
-| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:590`](../../../platform/api/routers/insights.py#L590) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
+| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1061`](../../../platform/api/routers/insights.py#L1061) | Stream a Gemini response for the given mode and message. |
+| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:711`](../../../platform/api/routers/insights.py#L711) | Return the most recent InsightReport for the ticker. |
+| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:740`](../../../platform/api/routers/insights.py#L740) | Return a scannable list of recent reports for the ticker. |
+| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:788`](../../../platform/api/routers/insights.py#L788) | Enqueue a fresh pipeline run for the ticker. |
+| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:750`](../../../platform/api/routers/insights.py#L750) | Return a single insight report by row id. |
+| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:912`](../../../platform/api/routers/insights.py#L912) | Poll the status of a refresh run. |
+| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:491`](../../../platform/api/routers/insights.py#L491) | Search for tickers by keyword (company name, symbol, etc). |
+| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:506`](../../../platform/api/routers/insights.py#L506) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
+| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:537`](../../../platform/api/routers/insights.py#L537) | Return peer tickers from FinViz (cached). |
+| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:526`](../../../platform/api/routers/insights.py#L526) | Return latest price/volume from AV GLOBAL_QUOTE. |
+| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:656`](../../../platform/api/routers/insights.py#L656) | Return today's ranked candidate tickers with score breakdowns. |
+| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:546`](../../../platform/api/routers/insights.py#L546) | Add a ticker to the watchlist and return its info + quote. |
+| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:623`](../../../platform/api/routers/insights.py#L623) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:905`](../../../platform/api/routers/journal.py#L905) | Read-only teaching "Examples" — the UNION of the admin's own journal |
 | `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1348`](../../../platform/api/routers/journal.py#L1348) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
 | `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1492`](../../../platform/api/routers/journal.py#L1492) | Insert the caller-selected `PairedTrade`s from a preview. |
@@ -543,15 +543,15 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../../../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:519`](../../../platform/api/routers/dashboard.py#L519) | PHASE 3 — read-only, feature-flagged movement statement. |
-| `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:305`](../../../platform/api/routers/options.py#L305) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
-| `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:700`](../../../platform/api/routers/options.py#L700) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
-| `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:580`](../../../platform/api/routers/options.py#L580) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
+| `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:317`](../../../platform/api/routers/options.py#L317) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
+| `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:739`](../../../platform/api/routers/options.py#L739) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
+| `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:619`](../../../platform/api/routers/options.py#L619) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
 | `GET` | `/api/options/{ticker}/grid` | [`platform/api/routers/grid.py:618`](../../../platform/api/routers/grid.py#L618) | Live 2-D strike × expiration grid. |
 | `GET` | `/api/options/{ticker}/grid/timeseries` | [`platform/api/routers/grid.py:1076`](../../../platform/api/routers/grid.py#L1076) | Per-strike GEX time-series for a single expiration over the last |
 | `GET` | `/api/options/{ticker}/nodes` | [`platform/api/routers/grid.py:932`](../../../platform/api/routers/grid.py#L932) | Live semantic taxonomy — King / Gates / Midpoints / Hedge Nodes / |
-| `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:471`](../../../platform/api/routers/options.py#L471) | Return the AlphaVantage option chain for `ticker` on `date_str` |
+| `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:510`](../../../platform/api/routers/options.py#L510) | Return the AlphaVantage option chain for `ticker` on `date_str` |
 | `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:738`](../../../platform/api/routers/grid.py#L738) | Historical 2-D grid for a past date — EOD only. |
-| `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:756`](../../../platform/api/routers/options.py#L756) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
+| `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:795`](../../../platform/api/routers/options.py#L795) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
 | `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1000`](../../../platform/api/routers/grid.py#L1000) | Historical semantic taxonomy — EOD only. |
 | `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:747`](../../../platform/api/routers/playbook.py#L747) | Evaluate playbook condition strings against a live snapshot. |
 | `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
