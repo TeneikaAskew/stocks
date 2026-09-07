@@ -740,6 +740,31 @@ def _const_string(node: ast.AST, env=None, seen=None):
         if left is None or right is None:
             return None
         return left + right
+    # `f"{'EST'}"` and `f"US/{'Eastern'}"` are `ast.JoinedStr`, so the fold
+    # above saw no `Constant` and no `BinOp` and gave up, while the inner
+    # fragment is ignored outside its call context (Codex, PR #993). Every
+    # part has to be statically known -- a `FormattedValue` wrapping anything
+    # but a constant expression makes the whole thing undecidable, which is
+    # the same contract the numeric fold keeps.
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue):
+                if value.format_spec is not None or value.conversion not in (-1, 115):
+                    return None
+                inner = _const_string(value.value, env, seen)
+                if inner is None:
+                    number = _const_number(value.value, env)
+                    if number is None:
+                        return None
+                    inner = f"{number:g}"
+                parts.append(inner)
+                continue
+            piece = _const_string(value, env, seen)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return "".join(parts)
     if env is not None and isinstance(node, ast.Name):
         seen = seen or set()
         if node.id in seen:
@@ -1736,11 +1761,20 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
         # spelling is not permitted in one place and banned in the other.
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)
                 and id(node) not in reported):
+            # Comment-stripped first. This branch exists because Python
+            # source carries SQL, and SQL carried in a string carries its
+            # comments with it: a migration written as
+            # `"-- Old: SET TIME ZONE 'EST'\nSET TIME ZONE 'America/New_York'"`
+            # documents the change it makes, and reporting the commented half
+            # is a false CI failure on a string whose executed half is
+            # correct. The `.sql` files got this a round earlier; the embedded
+            # copies did not (Codex, PR #993).
+            text = _strip_sql_comments(node.value)
             for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
                                     (NONPY_AMBIGUOUS, legacy),
                                     (NONPY_FIXED_ZONE, offsets),
                                     (NONPY_FIXED_OFFSET, offsets)):
-                m = pattern.search(node.value)
+                m = pattern.search(text)
                 if m:
                     reported.add(id(node))
                     note(bucket, node,
@@ -2135,6 +2169,32 @@ def _salvage(text: str):
     return None, text
 
 
+# `%%bash`, `%%sh`, `%%script bash` -- the cell magics whose BODY is shell
+# rather than Python. `%%time` and `%%capture` are not here: their body is
+# ordinary Python and the parser should keep reading it.
+_SHELL_CELL_MAGIC = re.compile(r"^[ \t]*%%(?:bash|sh|script\b.*)")
+
+
+def _notebook_shell(cells) -> str:
+    """Every line a notebook hands to a SHELL, for the regex pass.
+
+    Two forms: a `!` escape on any line, and the whole body of a shell cell
+    magic. Both execute, and both were blanked by the magic pass with nothing
+    left for any scanner to read (Codex, PR #993).
+    """
+    out = []
+    for cell in cells:
+        lines = cell.splitlines()
+        if lines and _SHELL_CELL_MAGIC.match(lines[0]):
+            out.extend(lines[1:])
+            continue
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("!"):
+                out.append(stripped[1:])
+    return "\n".join(out)
+
+
 def _notebook_hits(path, text: str):
     """Scan a notebook's code cells with the PYTHON analyzer where possible.
 
@@ -2151,9 +2211,23 @@ def _notebook_hits(path, text: str):
     cells = _notebook_cells(text)
     if not cells:
         return [], [], ""
+    # Shell escapes are EXECUTED, so their payload goes to the caller's regex
+    # pass rather than being thrown away. `!TZ=EST date` and a `%%bash` cell
+    # body run the command with a fixed zone, and blanking the line left the
+    # cell parsing as empty Python with no text reaching any scanner
+    # (Codex, PR #993). Collected before the Python pass, because those lines
+    # are removed from what the parser sees.
+    shell = _notebook_shell(cells)
     parseable, unparsed = [], []
     for cell in cells:
-        stripped = "\n".join(_strip_magic(l) for l in cell.splitlines())
+        # A shell cell's body is already in `shell`; sending it down the
+        # parse path as well put every line in the caller's regex input
+        # twice, which is a duplicate finding rather than a wrong one but
+        # still a wrong count.
+        lines = cell.splitlines()
+        if lines and _SHELL_CELL_MAGIC.match(lines[0]):
+            continue
+        stripped = "\n".join(_strip_magic(l) for l in lines)
         if _parses(stripped):
             parseable.append(stripped)
             continue
@@ -2185,10 +2259,11 @@ def _notebook_hits(path, text: str):
     if parseable:
         legacy, offsets = _python_hits(path, "\n".join(parseable))
     # Always the same shape: findings from the cells that parsed, plus the
-    # text of the ones that did not, for the caller's regex pass. Empty when
-    # every cell parsed. A variable-arity return would put the caller's
-    # correctness at the mercy of the notebook's contents.
-    return legacy, offsets, "\n".join(unparsed)
+    # text of the ones that did not AND every shell escape, for the caller's
+    # regex pass. Empty when every cell parsed and none shelled out. A
+    # variable-arity return would put the caller's correctness at the mercy
+    # of the notebook's contents.
+    return legacy, offsets, "\n".join([t for t in unparsed + [shell] if t])
 
 
 # `- name: TZ` on one line and `value: EST` on the next. Every Cloud Run and
@@ -2201,6 +2276,14 @@ _YAML_ENV_PAIR = re.compile(
 )[ 	-]*name:[ 	]*["']?(TZ|PGTZ|TIMEZONE|TIME_ZONE)["']?[ 	]*(?:\#[^
 ]*)?
 """
+    # Comment-only and blank lines between the two halves of ONE entry. A
+    # manifest routinely explains a variable between its name and its
+    # value, and requiring `value:` on the immediately following line
+    # meant the DOCUMENTED entry was the one that got through (Codex,
+    # PR #993). Only comments and blank lines are skipped, so a line
+    # opening the next list item or naming another key still ends the
+    # entry and this cannot reach across into a sibling.
+    r"(?:[ \t]*(?:\#[^\n]*)?\n)*"
     r"""[ 	]*value:[ 	]*["']?([^"'
 \#]+?)["']?[ 	]*(?:\#[^
 ]*)?(?=
@@ -2442,14 +2525,39 @@ _SHELL_TZ_VAR = re.compile(
 
 
 def _expand_shell_vars(text: str) -> str:
-    """Substitute a statically known scalar into a timezone assignment."""
+    """Substitute the scalar IN FORCE at each reference, if it is known."""
     scalars = _shell_scalars(text)
 
     def one(m):
-        value = scalars.get(m.group(2))
+        value = _scalar_in_force(scalars, m.group(2), m.start())
         return m.group(1) + value if value is not None else m.group(0)
 
     return _SHELL_TZ_VAR.sub(one, text)
+
+
+# Commands whose arguments are OUTPUT rather than configuration. A usage
+# message or a reproduction hint routinely quotes the very setting this guard
+# forbids -- `echo 'set TZ=EST to reproduce'`, `printf -- "--time-zone EST\n"`
+# -- and the context patterns read the quoted text as an assignment or a flag,
+# so a diagnostic became a false CI failure (Codex, PR #993).
+#
+# Narrow on purpose: only a QUOTED argument, and only to one of these names.
+# An unquoted `echo $TZ` is untouched, and a real assignment is never inside
+# quotes on the same line as one of these commands.
+_SHELL_OUTPUT_ARG = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?:echo|printf|print|log|logger|warn|error|die|usage"
+    r"|say|notice|info|debug)(?:\s+-[A-Za-z-]+)*\s+"
+    r"(\"[^\"\n]*\"|'[^'\n]*')")
+
+
+def _blank_shell_output(text: str) -> str:
+    """Empty the quoted arguments of the commands that only print them."""
+    def one(m):
+        quoted = m.group(1)
+        keep = m.group(0)[:m.start(1) - m.start(0)]
+        return keep + quoted[0] + " " * (len(quoted) - 2) + quoted[-1]
+
+    return _SHELL_OUTPUT_ARG.sub(one, text)
 
 
 def _expand_shell_defaults(text: str) -> str:
@@ -2462,6 +2570,9 @@ def _expand_shell_defaults(text: str) -> str:
     variable and reading it as shell is how `echo ${MESSAGE:-TZ=EST}` came to
     be reported as a process-timezone assignment.
     """
+    # Output arguments go first, so a usage message quoting `${TZ:-EST}` is
+    # emptied before the expansion pass can promote its default.
+    text = _blank_shell_output(text)
     text = _SHELL_DEFAULT.sub(lambda m: m.group(1) + m.group(2), text)
     text = _SHELL_OTHER_DEFAULT.sub(lambda m: " " * len(m.group(0)), text)
     # Plain `$VAR` last, so a `${VAR:-default}` is read as its default rather
@@ -2530,12 +2641,38 @@ _SHELL_SCALAR = re.compile(
 
 
 def _shell_scalars(text: str) -> dict:
-    """`{NAME: value}` for every statically known scalar assignment."""
-    out = {}
+    """`{NAME: [(offset, value), ...]}`, in source order.
+
+    By POSITION, not a single final value, because a shell script runs in
+    order. The first version of this kept only the last assignment and both
+    halves of that were wrong: with
+
+        LEGACY=EST
+        export TZ="$LEGACY"
+        LEGACY=America/New_York
+
+    the export really does install the frozen zone and the guard read the
+    canonical one, and reversing the two values INVENTED a finding on a script
+    that exports the canonical zone (Codex, PR #993). A regression I added one
+    round earlier, and the same ordering mistake `_arrays_carrying_timezone`
+    already records for scheduler flag arrays.
+    """
+    out: dict[str, list] = {}
     for m in _SHELL_SCALAR.finditer(text):
         value = next(g for g in m.groups()[1:] if g is not None)
-        out[m.group(1)] = value
+        out.setdefault(m.group(1), []).append((m.start(), value))
     return out
+
+
+def _scalar_in_force(scalars: dict, name: str, at: int):
+    """The value bound to `name` at offset `at`, or None if it is unbound."""
+    latest = None
+    for offset, value in scalars.get(name, ()):
+        if offset < at:
+            latest = value
+        else:
+            break
+    return latest
 
 
 def _shell_functions(body: str) -> list[tuple[str, str]]:
@@ -2603,8 +2740,17 @@ def _arrays_carrying_timezone(func: str) -> dict[str, list]:
     command reading as covered (Codex, PR #993).
     """
     names: dict[str, list] = {}
-    for m in re.finditer(r"^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=\(", func,
-                         re.MULTILINE):
+    # `local -a flags=(...)`, `declare -a`, `readonly`, `export`. Accepting
+    # only a bare optional `local` meant a helper that TYPES its array -- the
+    # more careful spelling, not the sloppier one -- recorded no array at all,
+    # so `_scheduler_offenders` reported every command expanding it as
+    # zoneless even though the canonical flag is passed at runtime. A false CI
+    # failure on `gcp/deploy.sh`, aimed at the compliant form
+    # (Codex, PR #993).
+    for m in re.finditer(
+            r"^\s*(?:(?:local|declare|typeset|readonly|export)\s+"
+            r"(?:-[A-Za-z]+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)=\(",
+            func, re.MULTILINE):
         start = m.end()
         depth = 1
         i = start
@@ -5209,3 +5355,208 @@ def test_a_loop_target_takes_the_values_it_iterates():
                       'for zone in load_zones():\n'
                       '    ET = ZoneInfo(zone)\n')
     assert not legacy, legacy
+
+
+# ── Round 19 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# FOUR of the seven are FALSE findings -- the guard failing on correct code --
+# and one of those is a regression I introduced in round 18. That ratio is the
+# round's real result: the checks are now producing wrong answers faster than
+# they are closing real gaps, which is the argument issue #1019 makes for
+# replacing enumeration with a runtime assertion.
+
+
+def test_a_shell_scalar_resolves_to_the_value_in_force():
+    """A shell script runs in order, so a rebinding after an export is later.
+
+    `_shell_scalars` kept only the LAST value of a name, and both halves of
+    that were wrong (Codex, PR #993). A regression from round 16's own fix,
+    and the same ordering mistake `_arrays_carrying_timezone` already records.
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out))
+
+    # The export really does install the frozen zone; a later rebinding does
+    # not reach back in time to fix it.
+    assert scanned('LEGACY=EST\nexport TZ="$LEGACY"\nLEGACY=America/New_York\n')
+
+    # And the reverse must not INVENT a finding on a script that exports the
+    # canonical zone and only later reuses the name for something else.
+    assert not scanned(
+        'LEGACY=America/New_York\nexport TZ="$LEGACY"\nLEGACY=EST\n')
+
+    # A name still unbound where it is referenced resolves to nothing.
+    assert not scanned('export TZ="$LEGACY"\nLEGACY=EST\n')
+
+    scalars = _shell_scalars('A=one\nA=two\n')
+    assert [v for _, v in scalars["A"]] == ["one", "two"], scalars
+    assert _scalar_in_force(scalars, "A", 0) is None
+    assert _scalar_in_force(scalars, "A", 6) == "one"
+    assert _scalar_in_force(scalars, "A", 99) == "two"
+
+
+def test_embedded_sql_comments_are_stripped_too():
+    """Python source carries SQL, and SQL carries its comments with it.
+
+    A migration written as a string that documents the change it makes --
+    the old spelling commented above the new one -- had its commented half
+    reported. The `.sql` files got comment stripping a round earlier and the
+    embedded copies did not (Codex, PR #993).
+    """
+    legacy, _ = _hits(
+        'QUERY = "-- Old: SET TIME ZONE \'EST\'\\n'
+        'SET TIME ZONE \'America/New_York\'"\n')
+    assert not legacy, legacy
+
+    _legacy, offsets = _hits(
+        'Q = "/* was AT TIME ZONE \'-05:00\' */ '
+        'SELECT ts AT TIME ZONE \'America/New_York\'"\n')
+    assert not offsets, offsets
+
+    # An UNCOMMENTED embedded violation is still a finding -- this branch
+    # exists for exactly that, and stripping must not disarm it.
+    legacy, _ = _hits('Q = "SELECT ts AT TIME ZONE \'US/Eastern\'"\n')
+    assert legacy, legacy
+
+
+def test_a_shell_diagnostic_is_not_a_setting():
+    """`echo 'set TZ=EST to reproduce'` prints text; it sets nothing.
+
+    A usage message or a reproduction hint routinely quotes the very setting
+    this guard forbids, and the context patterns read the quoted text as an
+    assignment or a flag (Codex, PR #993).
+    """
+    def scanned(text: str) -> bool:
+        out = _expand_shell_defaults(_strip_shell_comments(text))
+        return bool(NONPY_AMBIGUOUS.search(out)
+                    or NONPY_UNAMBIGUOUS.search(out)
+                    or NONPY_FIXED_OFFSET.search(out))
+
+    assert not scanned("echo 'set TZ=EST to reproduce'")
+    assert not scanned('printf "--time-zone EST\\n"')
+    assert not scanned('die "TZ=US/Eastern is not supported"')
+    assert not scanned("echo 'usage: --time-zone ${TZ:-EST}'")
+
+    # Everything that really does set or pass a zone still reports.
+    assert scanned("export TZ=EST")
+    assert scanned("TZ=EST date")
+    assert scanned("--time-zone EST")
+    assert scanned("gcloud scheduler jobs create http j --time-zone EST")
+    # An UNQUOTED argument is not blanked: the narrowing is to quoted text
+    # after an output command, not to the command itself.
+    assert not scanned("echo $TZ")
+
+
+def test_a_typed_scheduler_flag_array_is_recognised():
+    """`local -a flags=(--time-zone America/New_York)` is the careful spelling.
+
+    The array pattern permitted only an optional bare `local`, so a helper
+    that TYPES its array recorded no array at all and every command expanding
+    it was reported as zoneless -- a false CI failure aimed at the compliant
+    form (Codex, PR #993).
+    """
+    call = 'gcloud scheduler jobs create http j "${flags[@]}"\n'
+    for decl in ('flags=(--time-zone America/New_York)',
+                 'local flags=(--time-zone America/New_York)',
+                 'local -a flags=(--time-zone America/New_York)',
+                 'declare -a flags=(--time-zone America/New_York)',
+                 'readonly flags=(--time-zone America/New_York)',
+                 'export -a flags=(--time-zone America/New_York)'):
+        assert not _scheduler_offenders("f", decl + "\n" + call), decl
+
+    # A zoneless array is still an offender, whichever way it is declared, so
+    # widening the pattern did not turn the check off.
+    assert _scheduler_offenders(
+        "f", 'local -a flags=(--uri https://x)\n' + call)
+
+
+def test_a_constant_f_string_is_folded():
+    """`ZoneInfo(f"{'EST'}")` builds the forbidden zone.
+
+    An f-string is an `ast.JoinedStr`, which the concatenation fold added a
+    round earlier did not recognise, and the inner fragment is ignored outside
+    its call context (Codex, PR #993).
+    """
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'ET = ZoneInfo(f"{\'EST\'}")\n')
+    assert legacy, legacy
+
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'ET = ZoneInfo(f"US/{\'Eastern\'}")\n')
+    assert legacy, legacy
+
+    # A runtime value makes the whole thing undecidable, which is the same
+    # contract the numeric fold keeps.
+    legacy, _ = _hits('from zoneinfo import ZoneInfo\n'
+                      'ET = ZoneInfo(f"{name}")\n')
+    assert not legacy, legacy
+
+    # And a constant f-string that spells something else is not a zone.
+    legacy, _ = _hits('msg = f"{\'E\'}STIMATE"\n')
+    assert not legacy, legacy
+
+
+def test_a_notebook_shell_escape_is_scanned():
+    """`!TZ=EST date` and a `%%bash` body execute; blanking them hid both.
+
+    Round 16 taught the magic pass to keep the Python a line magic runs. The
+    SHELL escapes were still discarded, so the cell parsed as empty Python and
+    no text reached the regex fallback either (Codex, PR #993).
+    """
+    def probe(cells):
+        nb = json.dumps({"cells": [{"cell_type": "code", "source": c}
+                                   for c in cells]})
+        _legacy, _offsets, rest = _notebook_hits(
+            REPO / "notebooks" / "_probe.ipynb", nb)
+        return rest
+
+    assert NONPY_AMBIGUOUS.search(probe([["!TZ=EST date\n"]]))
+    assert NONPY_AMBIGUOUS.search(
+        probe([["%%bash\n", "export TZ=EST\n", "date\n"]]))
+
+    # A clean shell cell reports nothing, and an ordinary `!pip install` is
+    # not a timezone.
+    rest = probe([["%%bash\n", "export TZ=America/New_York\n"]])
+    assert not NONPY_AMBIGUOUS.search(rest)
+    assert not NONPY_AMBIGUOUS.search(probe([["!pip install pandas\n"]]))
+
+    # The body is handed over ONCE. It used to arrive twice -- collected as
+    # shell and again as an unparseable cell -- which is a duplicate finding
+    # rather than a wrong one, but still a wrong count.
+    rest = probe([["%%bash\n", "export TZ=EST\n"]])
+    assert rest.count("export TZ=EST") == 1, rest
+
+    # And a `%%time` cell is Python, so its body stays on the parse path.
+    nb = json.dumps({"cells": [{"cell_type": "code", "source": [
+        "%%time\n", "from datetime import timezone, timedelta\n",
+        "ET = timezone(timedelta(hours=-5))\n"]}]})
+    _legacy, offsets, _rest = _notebook_hits(
+        REPO / "notebooks" / "_probe.ipynb", nb)
+    assert offsets, offsets
+
+
+def test_a_yaml_env_entry_survives_an_intervening_comment():
+    """`- name: TZ` / `# explanation` / `value: EST` is one entry.
+
+    The cross-line matcher required `value:` on the immediately following
+    line, so the DOCUMENTED entry was the one that got through
+    (Codex, PR #993).
+    """
+    assert _yaml_env_pair_hits(
+        "        - name: TZ\n"
+        "          # the app expects Eastern\n"
+        "          value: EST\n")
+    assert _yaml_env_pair_hits(
+        "        - name: TZ\n          # why\n\n          value: EST\n")
+
+    # It must not reach across into a sibling entry: a canonical TZ followed
+    # by an unrelated key holding `EST` is not a finding.
+    assert not _yaml_env_pair_hits(
+        "        - name: TZ\n          value: America/New_York\n"
+        "        - name: OTHER\n          value: EST\n")
+    # But a later entry that IS bad is still found.
+    assert _yaml_env_pair_hits(
+        "        - name: OK\n          value: America/New_York\n"
+        "        - name: TZ\n          value: EST\n")
