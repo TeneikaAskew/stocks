@@ -902,3 +902,82 @@ def test_the_import_index_enforces_the_endpoints_own_dedupe_key():
         "IMMUTABLE on timestamp, so Postgres refuses to index the former.")
     assert "round(entry_price::numeric, 4)" in idx, (
         "the index must round entry_price to 4dp, as _dedupe_key does")
+
+
+def test_a_non_finite_import_price_is_rejected_not_a_500():
+    """`Decimal(repr(inf)).quantize()` raises `decimal.InvalidOperation`.
+
+    That derives from ArithmeticError, so it slipped past `_dedupe_key`'s
+    `except (TypeError, ValueError)` and became an unhandled 500 — a
+    REGRESSION from the previous `round(float(x), 4)`, which returned `inf`
+    without raising (Codex, PR #991). JSON `1e309` is `inf` to Pydantic, so a
+    malformed import body was enough to trigger it.
+    """
+    import math
+    import api.routers.journal as journal
+
+    # The helper is total: a non-finite price raises ValueError, which
+    # `_dedupe_key` already catches.
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite"):
+            journal._round_half_up_4dp(bad)
+
+    key = journal._dedupe_key("IWM", "CALL", "2026-09-04 10:30", float("inf"))
+    assert key[3] is None, (
+        f"a price the key cannot normalise must become None, not crash: {key}")
+
+    # And the boundary refuses it outright, so the client is told which field
+    # is wrong instead of getting a row that can never match a duplicate.
+    with pytest.raises(Exception) as exc:
+        journal.ImportCommitTrade(ticker="IWM", direction="CALL",
+                                 entry_ts="2026-09-04 10:30", entry_price=math.inf)
+    assert "entry_price" in str(exc.value)
+
+
+def test_a_finite_price_still_rounds_the_way_postgres_does():
+    """The guard must not disturb the tie behaviour it was added beside."""
+    import api.routers.journal as journal
+    assert journal._round_half_up_4dp(1.03125) == 1.0313
+    assert journal._round_half_up_4dp(1.03124) == 1.0312
+
+
+def test_a_cold_instance_serves_decliners_from_a_stale_cloud_sql_row():
+    """The flight's whole purpose, on the instance where it matters most.
+
+    A freshly started instance has no local JSON. The Cloud SQL row was read
+    at step 1 and then thrown away by `entry = local_cache.get(ticker)`, and
+    the post-claim re-check looked only at the local file — so every decliner
+    saw `None` and called AlphaVantage, spending one vendor call per
+    concurrent request on exactly the burst being coalesced (Codex, PR #991).
+    """
+    import lib.ticker_info as ti
+
+    fetches: list[str] = []
+    stale = {"Symbol": "IWM", "Name": "From Cloud SQL",
+             "_fetched_utc": "2020-01-01T00:00:00+00:00"}
+
+    def slow_fetch(ticker: str):
+        fetches.append(ticker)
+        time.sleep(0.05)
+        return {"Symbol": ticker, "Name": "Fresh"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        store: dict = {}                      # no local entry: cold instance
+        mp.setattr(ti, "_cloud_sql_available", lambda: True)
+        mp.setattr(ti, "_read_from_cloud_sql", lambda t: dict(stale))
+        mp.setattr(ti, "_upsert_to_cloud_sql", lambda t, i: None)
+        mp.setattr(ti, "fetch_ticker_overview", slow_fetch)
+        mp.setattr(ti, "_load_local_cache",
+                   lambda: {k: dict(v) for k, v in store.items()})
+        mp.setattr(ti, "_save_local_cache",
+                   lambda c: (store.clear(), store.update(c)))
+
+        results = _concurrently(lambda: ti.get_ticker_info("IWM"), n=6)
+
+    assert len(results) == 6 and all(r for r in results), results
+    assert len(fetches) == 1, (
+        f"{len(fetches)} vendor calls for one cold ticker with a serveable "
+        f"stale Cloud SQL row; the flight coalesces to 1 and the decliners "
+        f"take the stale row")
+    assert any(r["Name"] == "From Cloud SQL" for r in results), (
+        "no decliner was served the stale Cloud SQL row")

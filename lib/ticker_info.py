@@ -313,14 +313,23 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
     use_cloud = _cloud_sql_available()
 
     # 1. Try Cloud SQL
+    #
+    # Kept in its OWN name. It used to be assigned to `entry` and then
+    # overwritten by the local lookup below, so a STALE Cloud SQL row was
+    # discarded -- and on a freshly started instance, which has no local JSON
+    # yet, that is the only copy there is. Every decliner then found nothing
+    # to serve and called AlphaVantage, spending one vendor call per
+    # concurrent request on exactly the burst the flight exists to coalesce
+    # (Codex, PR #991).
+    cloud_entry = None
     if use_cloud:
-        entry = _read_from_cloud_sql(ticker)
-        if entry and _is_fresh(entry, max_age_days):
-            return entry
+        cloud_entry = _read_from_cloud_sql(ticker)
+        if cloud_entry and _is_fresh(cloud_entry, max_age_days):
+            return cloud_entry
 
     # 2. Try local cache
     local_cache = _load_local_cache()
-    entry = local_cache.get(ticker)
+    entry = local_cache.get(ticker) or cloud_entry
     if entry and _is_fresh(entry, max_age_days):
         return entry
 
@@ -330,7 +339,11 @@ def get_ticker_info(ticker: str, max_age_days: int = 30) -> Optional[dict]:
         # already have stored the answer; a CLAIMANT re-reads because the cache
         # checks above happened before the claim, so it may have taken the
         # claim moments after a previous claimant finished.
-        cached = _load_local_cache().get(ticker)
+        # Local first (a claimant may have just written it), then the Cloud
+        # SQL row read before the claim. Local-only here was the gap: a cold
+        # instance has no local entry, so the check answered None for every
+        # decliner even with a perfectly serveable stale row in the database.
+        cached = _load_local_cache().get(ticker) or cloud_entry
         if cached and _is_fresh(cached, max_age_days):
             return cached
         if not mine and cached:

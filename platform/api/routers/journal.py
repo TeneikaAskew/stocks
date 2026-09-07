@@ -30,7 +30,7 @@ from typing import Literal, Optional
 
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -147,6 +147,13 @@ def _journal_owner(request: Request) -> str:
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class JournalTradeCreate(BaseModel):
+    # A price of inf/-inf/NaN is not a trade. Pydantic accepts JSON `1e309`
+    # as `inf` by default, which then reached `_dedupe_key` and crashed the
+    # Decimal quantization (Codex, PR #991). Rejecting at the boundary gives
+    # the client a 422 naming the field, rather than a 500 or a row whose
+    # dedupe key can never match anything.
+    model_config = ConfigDict(allow_inf_nan=False)
+
     ticker: str
     direction: str          # CALL | PUT
     entry_date: str         # YYYY-MM-DD
@@ -220,6 +227,8 @@ class ImportCommitTrade(BaseModel):
     `_derive_status` — never trusted verbatim — so a client can't fabricate
     "win"/"loss" independent of the numbers.
     """
+    model_config = ConfigDict(allow_inf_nan=False)
+
     ticker: str
     direction: str                       # CALL | PUT
     entry_ts: str                        # "YYYY-MM-DD HH:MM"
@@ -665,7 +674,18 @@ def _round_half_up_4dp(value: float) -> float:
     `double precision -> numeric` cast does (both take the shortest
     representation that round-trips), so the two sides quantize the same
     input. The result returns to `float` so the key's type is unchanged.
+
+    Raises ValueError for a non-finite input. `Decimal(repr(inf)).quantize()`
+    raises `decimal.InvalidOperation`, which derives from ArithmeticError and
+    so slipped past `_dedupe_key`'s `except (TypeError, ValueError)` --
+    turning a malformed import row into an unhandled 500, where the previous
+    `round(float(x), 4)` had simply returned `inf` (Codex, PR #991). The
+    request boundary now rejects such a price with a 422
+    (`allow_inf_nan=False` on the models); raising here keeps the helper total
+    so no other caller can be crashed by one either.
     """
+    if not math.isfinite(value):
+        raise ValueError(f"price must be finite, got {value!r}")
     return float(Decimal(repr(value)).quantize(Decimal("0.0001"),
                                                rounding=ROUND_HALF_UP))
 
