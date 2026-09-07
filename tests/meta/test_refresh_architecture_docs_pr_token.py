@@ -475,3 +475,141 @@ def test_untracked_files_present_before_the_model_are_not_blamed_on_it():
     assert "refusing to attribute untracked files to the model" in restore
     # the freeze must record it AFTER refresh-inputs exists, or the list is empty
     assert freeze.index("cp -r refresh-inputs") < freeze.index("untracked.before")
+
+
+def _required_gcloud_components() -> set[str]:
+    """Every non-GA gcloud release track doc_inventory actually invokes."""
+    import ast
+    src = (REPO / "scripts/maintenance/doc_inventory.py").read_text()
+    tracks = set()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+        if name not in ("_gcloud", "_gjson"):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and first.value in ("alpha", "beta"):
+            tracks.add(first.value)
+    return tracks
+
+
+def test_every_gcloud_track_the_inventory_uses_is_installed_on_the_runner():
+    """Run 14 died at the live snapshot with "You do not currently have this
+    command group installed: [beta]" — after WIF auth, the asset dump, IAM and
+    the billing rollup had all passed. `gcloud run domain-mappings list` does
+    not accept --region on GA, so beta is required rather than convenient, and
+    a sandbox has it installed so nothing local could reveal this.
+    Derived from the module, so a new alpha/beta call fails here first."""
+    required = _required_gcloud_components()
+    assert required, "the AST scan found no alpha/beta calls; the scan is broken, not the module"
+    setup = [s for s in _steps() if str(s.get("uses", "")).startswith("google-github-actions/setup-gcloud")]
+    assert len(setup) == 1, setup
+    installed = {c.strip() for c in (setup[0].get("with") or {}).get("install_components", "").split(",") if c.strip()}
+    assert required <= installed, (
+        f"doc_inventory calls gcloud {sorted(required)} but the workflow installs "
+        f"{sorted(installed) or 'nothing'}; the live snapshot will die on the runner")
+
+
+def _prompt_targets() -> dict[str, str]:
+    """The repo-root path each prompt tells the model to write."""
+    out = {}
+    for f in sorted((REPO / ".github/prompts").glob("*.md")):
+        m = re.search(r'`file_path: "([^"]+)"`', f.read_text())
+        if m:
+            out[f.name] = m.group(1)
+    return out
+
+
+def test_every_prompt_pins_its_output_to_the_repository_root():
+    """Run 15 reached all four Gemini steps and then died at the stray-write
+    scan because the model had written `docs/DATA_DEPENDENCIES.md`. Its prompt
+    was the only one that never stated a path — cost-analysis.md gave an
+    explicit file_path and landed correctly. Every prompt states one now.
+    (Run 15, 2026-09-07.)"""
+    prompts = sorted((REPO / ".github/prompts").glob("*.md"))
+    assert len(prompts) == 4, [p.name for p in prompts]
+    targets = _prompt_targets()
+    assert set(targets) == {p.name for p in prompts}, \
+        f"prompt without an explicit file_path: {sorted({p.name for p in prompts} - set(targets))}"
+    for name, target in targets.items():
+        assert "/" not in target, f"{name} points at {target}, which is not the repository root"
+        assert "repository root" in (REPO / ".github/prompts" / name).read_text(), \
+            f"{name} does not say its path is repo-root-relative"
+
+
+def test_the_prompt_targets_are_exactly_the_documents_the_workflow_stages():
+    """A prompt writing a document the stray-write scan does not allow fails
+    the run; a document the scan allows that no prompt writes is dead config.
+    Deriving both sides from their sources keeps them from drifting apart."""
+    restore = {s.get("name"): s.get("run") or "" for s in _steps()}[
+        "Restore gate inputs and refuse model edits outside the docs"]
+    allowed = set(re.search(r'ALLOWED="([^"]+)"', restore).group(1).split())
+    assert set(_prompt_targets().values()) == allowed, (
+        f"prompts write {sorted(set(_prompt_targets().values()))} but the scan allows "
+        f"{sorted(allowed)}")
+
+
+def test_a_generated_doc_in_the_wrong_directory_says_so():
+    """`docs/DATA_DEPENDENCIES.md` as a bare name does not tell a reader whether
+    the model invented a file or misplaced a real one. (Run 15, 2026-09-07.)"""
+    restore = {s.get("name"): s.get("run") or "" for s in _steps()}[
+        "Restore gate inputs and refuse model edits outside the docs"]
+    # Assert the EMITTED string, not the word anywhere in the step: the
+    # explanatory comment above the code also contains "wrong directory", so a
+    # bare substring check passed with the behaviour removed.
+    assert 'STRAY="$STRAY $F(wrong directory:' in restore, \
+        "the scan does not label a generated doc written to the wrong directory"
+    assert 'basename "$F"' in restore, "the scan does not compare basenames"
+
+
+def test_every_refresh_input_is_readable_by_the_model():
+    """Gemini's file tools respect .gitignore. The repo-wide `*.csv` rule hid
+    refresh-inputs/billing_by_sku.csv and billing_by_month.csv, the ONLY inputs
+    the cost prompt has, so run 16 produced no COST_ANALYSIS.md and its
+    transcript said "ignored by configured ignore patterns". (Run 16.)"""
+    import subprocess
+    gitignore = (REPO / ".gitignore").read_text()
+    assert "!refresh-inputs/**" in gitignore, "refresh-inputs is not re-included"
+    # prove it for the shapes the workflow actually writes, not just the rule
+    for name in ("billing_by_sku.csv", "billing_by_month.csv", "inventory.json",
+                 "jobs.txt", "live_vs_repo.md", "previous/README.md"):
+        rc = subprocess.run(["git", "check-ignore", "-q", f"refresh-inputs/{name}"],
+                            cwd=REPO).returncode
+        assert rc != 0, f"refresh-inputs/{name} is gitignored; the model would read it blind"
+    # and the broad rule still applies outside that directory
+    rc = subprocess.run(["git", "check-ignore", "-q", "some/other/data.csv"], cwd=REPO).returncode
+    assert rc == 0, "the repo-wide *.csv rule was weakened outside refresh-inputs/"
+
+
+def test_the_ignore_guards_use_the_exit_code_that_means_ignored():
+    """`git check-ignore -q` exits 0 only when the path IS ignored; the -v form
+    exits 0 on a NEGATION match too. Using -v as the condition reports "is
+    gitignored" for a path .gitignore explicitly re-includes, which is every
+    file under refresh-inputs/ after the fix above."""
+    dump = {s.get("name"): s.get("run") or "" for s in _steps()}["Dump asset inventory"]
+    assert 'if git check-ignore -q "$F"; then' in dump, \
+        "the guard still branches on `git check-ignore -v`, which is true for a negation"
+    digest = {s.get("name"): s.get("run") or "" for s in _steps()}["Digest inputs"]
+    assert "git ls-files --others --ignored --exclude-standard -- refresh-inputs/" in digest, \
+        "nothing checks the whole input tree after the digests are written"
+
+
+def test_a_failed_gate_uploads_the_documents_it_judged():
+    """A churn failure reports a percentage; the document that caused it dies
+    with the runner. Run 16 failed README.md at 66% and left no way to read
+    what changed."""
+    steps = _steps()
+    up = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert len(up) == 1, up
+    assert up[0].get("if") == "failure()", "the upload must run only on failure"
+    path = (up[0].get("with") or {}).get("path", "")
+    for doc in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "COST_ANALYSIS.md", "README.md"):
+        assert doc in path, f"{doc} is not uploaded"
+    # never the snapshots: this repository is public and iam.json is in there
+    assert "refresh-inputs/iam.json" not in path and "refresh-inputs/inventory.json" not in path
+    assert "refresh-inputs/live.json" not in path
+    names = [s.get("name") for s in steps]
+    assert names.index("Upload the regenerated documents when a gate fails") > \
+        names.index("Verify regenerated docs"), "the upload must come after the gates"

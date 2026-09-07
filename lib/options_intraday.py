@@ -298,15 +298,6 @@ def reprice_intraday_option(
     if iv_t_minus_1 <= 0 or not np.isfinite(iv_t_minus_1):
         raise ValueError(f"iv_t_minus_1 must be > 0, got {iv_t_minus_1}")
 
-    # Resolve rate/yield once — these are constant across the day.
-    if risk_free is None or dividend_yield is None:
-        from lib.options_greeks import get_rate_and_yield
-        r_lookup, q_lookup = get_rate_and_yield(intraday_date)
-        if risk_free is None:
-            risk_free = r_lookup
-        if dividend_yield is None:
-            dividend_yield = q_lookup
-
     bars = intraday_bars
     if bars is None:
         bars = _load_intraday_bars(ticker, intraday_date)
@@ -316,6 +307,21 @@ def reprice_intraday_option(
         return pd.DataFrame(columns=[
             'Time', 'Spot', 'IV_used', 'Theo_value',
             'Pnl_per_share', 'Pnl_per_contract', 'Pnl_pct', 'data_source'])
+
+    # Resolve rate/yield once — these are constant across the day.
+    #
+    # AFTER the empty-bars check, deliberately. Resolving first made a
+    # RateLookupError the outcome for a ticker with no intraday bars at all,
+    # replacing the empty timeline this function documents and its callers
+    # handle — the failure then reads as a broken rate curve when the actual
+    # state is "there is nothing to price" (Codex, PR #994).
+    if risk_free is None or dividend_yield is None:
+        from lib.options_greeks import get_rate_and_yield
+        r_lookup, q_lookup = get_rate_and_yield(intraday_date)
+        if risk_free is None:
+            risk_free = r_lookup
+        if dividend_yield is None:
+            dividend_yield = q_lookup
 
     bars = bars.copy()
     bars['Time'] = pd.to_datetime(bars['Time'])

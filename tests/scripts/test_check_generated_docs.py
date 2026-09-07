@@ -358,3 +358,86 @@ def test_the_windowed_set_is_derived_not_hardcoded(tmp_path):
     assert any("solyra-api-prod" in f for f in gate.gate_scheduled_scaling(root, plain))
     none = {"schedulers": [{"name": "x", "helper": "_schedule_job", "target_service": ""}]}
     assert gate.gate_scheduled_scaling(root, none) == []
+
+
+def _cost_pair(tmp_path):
+    """The previous COST_ANALYSIS.md and a regeneration of it, in run 17's
+    shape: the five promised sections kept, every data-bearing subheading
+    changed, fewer lines but more bytes."""
+    root, prev = tmp_path / "r", tmp_path / "p"
+    (root / ".github/prompts").mkdir(parents=True); prev.mkdir()
+    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
+    for d in ("ARCHITECTURE.md", "DATA_DEPENDENCIES.md", "README.md"):
+        _copy(REPO / d, root / d); _copy(REPO / d, prev / d)
+    _copy(REPO / "COST_ANALYSIS.md", prev / "COST_ANALYSIS.md")
+    body = [
+        "# Cost Analysis", "", "Total 90-day spend is $222.71.", "",
+        "## 1. Total spend by month", "", "| Month | Spend | Notes |", "|---|---|---|", "",
+        "## 2. Top 10 cost line items by SKU", "", "| Rank | Service | SKU |", "|---|---|---|", "",
+        "## 3. Per-component cost estimate", "",
+        "### Cloud Run (Jobs & Services) — $101.44", "", "Allocation by runs-per-month.", "",
+        "### Cloud SQL (`trading-db`) — $68.10", "", "Tier db-g1-small.", "",
+        "## 4. Anomalies", "", "### A. Artifact Registry down 59% month over month", "", "Cause.", "",
+        "## 5. Cost-reduction recommendations", "",
+        "### #1 — Optimize expensive Cloud Run jobs (estimated saving: $5-10/mo)", "", "Change.", "",
+        "Generated 2026-09-07 by .github/workflows/refresh-architecture-docs.yml",
+    ]
+    while len(body) < 81:
+        body.append("A detail line carrying real content from the billing export.")
+    text = "\n".join(body) + "\n"
+    text += "x" * max(0, 8027 - len(text.encode()))
+    (root / "COST_ANALYSIS.md").write_text(text)
+    return root, prev
+
+
+def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path):
+    """Run 17 failed COST_ANALYSIS.md on twelve "lost" headings, every one of
+    which embeds that month's data — `Cloud Run (Jobs & Services) — $94.26`,
+    `2. Top 10 cost line items by SKU (Partial August data)`. Its prompt says
+    "Regenerate", not "update in place". Demanding those persist demands this
+    month's report keep last month's numbers."""
+    root, prev = _cost_pair(tmp_path)
+    findings = gate.gate_headings_and_size(root, prev)
+    assert [f for f in findings if "COST_ANALYSIS" in f] == [], findings
+    # and the previous behaviour is what run 17 saw
+    saved = gate.REGENERATED
+    try:
+        gate.REGENERATED = ()
+        assert len([f for f in gate.gate_headings_and_size(root, prev)
+                    if "COST_ANALYSIS" in f]) >= 12
+    finally:
+        gate.REGENERATED = saved
+
+
+def test_a_regenerated_doc_is_measured_in_bytes_not_lines(tmp_path):
+    """Run 17's regeneration lost 21 lines while gaining 1,884 bytes. Lines are
+    the wrong unit for a document rebuilt from data; mass is the measure."""
+    root, prev = _cost_pair(tmp_path)
+    assert gate.gate_headings_and_size(root, prev) == []
+    (root / "COST_ANALYSIS.md").write_text((root / "COST_ANALYSIS.md").read_text()[:3000])
+    findings = gate.gate_headings_and_size(root, prev)
+    assert any("bytes (< 80%)" in f and "not regenerated" in f for f in findings), findings
+
+
+def test_a_regenerated_doc_must_carry_every_section_its_prompt_promises(tmp_path):
+    """Dropping heading-persistence would leave the cost report unguarded, so
+    the sections are checked against the prompt instead — derived from it, so a
+    section added to the prompt moves the gate with it."""
+    root, prev = _cost_pair(tmp_path)
+    assert gate.gate_regenerated_structure(root) == []
+    assert [n for n, _ in gate._promised_sections(root, "cost-analysis.md")] == list("12345")
+    c = root / "COST_ANALYSIS.md"
+    c.write_text(c.read_text().replace("## 4. Anomalies", "## Anomalies of note"))
+    findings = gate.gate_regenerated_structure(root)
+    assert any("missing the section its prompt promises: 4. 'Anomalies'" in f for f in findings), findings
+
+
+def test_the_other_documents_keep_heading_persistence(tmp_path):
+    """The exemption is for the one regenerated document, not a general
+    loosening: an in-place-updated doc that loses a heading still fails."""
+    root, prev = _cost_pair(tmp_path)
+    a = root / "ARCHITECTURE.md"
+    heads = [h for h in gate._headings(a.read_text())]
+    a.write_text(a.read_text().replace(f"## {heads[3]}", "## Something Else Entirely", 1))
+    findings = gate.gate_headings_and_size(root, prev)
+    assert any(f.startswith("ARCHITECTURE.md: heading lost") for f in findings), findings

@@ -6,10 +6,12 @@ GET /api/live/avg-volume/{ticker} - 20-day average daily volume (for RVOL denomi
 GET /api/live/status - market open/closed status based on Eastern Time
 """
 import logging
+import math
 import os
 import sys
 from datetime import datetime, time, date
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import pandas as pd
@@ -223,30 +225,86 @@ async def get_live_quote(ticker: str):
         status_code = 503 if not is_open else 404
         raise HTTPException(status_code=status_code, detail=f"No quote data returned for {ticker_upper}")
 
-    def _float(val: str) -> float:
-        # AUDIT-2026-05-13: silent fallback — pre-existing 0.0-on-parse-failure.
-        # See docs/audits/FALLBACK_AUDIT_2026-05-13.md
+    # Rule 3.7. This block used to be `except (TypeError, ValueError):
+    # return 0.0` over every field, with `.get(key, "0")` defaults behind it,
+    # so a malformed or truncated AlphaVantage payload produced a quote
+    # reading `price: 0.0` — a number the client cannot tell from a real
+    # measurement, on the endpoint the dashboard polls every 15 seconds.
+    #
+    # The fields split into two groups, and the split is what lets this be
+    # fixed without a cross-repo contract change (Rule 6):
+    #
+    #   required — price/OHLC/volume. AlphaVantage always returns all of
+    #     them in a GLOBAL_QUOTE. One missing or unparseable means the
+    #     payload is malformed, which this handler already answers with a
+    #     502 two branches up ("Global Quote" empty). Same judgement, same
+    #     answer, so the response type is unchanged.
+    #
+    #   nullable — change/change_pct/prev_close. Already `number | null` in
+    #     solyra's `LiveQuote` (review mode returns null when the prior close
+    #     cannot be resolved), so `None` is in-contract and renders as an
+    #     em-dash rather than a fabricated 0.00.
+    def _required_float(key: str, label: str) -> float:
+        raw = quote.get(key)
+        if raw is None:
+            raise HTTPException(
+                status_code=502,
+                detail=(f"Alpha Vantage returned no {label} for {ticker_upper}; "
+                        f"refusing to report it as 0."))
         try:
-            return float(val)
+            value = float(raw)
         except (TypeError, ValueError):
-            return 0.0
+            raise HTTPException(
+                status_code=502,
+                detail=(f"Alpha Vantage returned an unparseable {label} for "
+                        f"{ticker_upper}; refusing to report it as 0."))
+        # `float("NaN")` and `float("Infinity")` PARSE. They are not prices,
+        # and Starlette serialises with `allow_nan=False`, so one reaching the
+        # response turns this handler's honest 502 into an opaque 500 raised
+        # from inside the encoder (Codex, PR #994). Unparseable and
+        # non-finite are the same answer: the vendor did not send a number.
+        if not math.isfinite(value):
+            raise HTTPException(
+                status_code=502,
+                detail=(f"Alpha Vantage returned a non-finite {label} "
+                        f"({raw!r}) for {ticker_upper}; refusing to report it "
+                        f"as 0."))
+        return value
 
-    price = _float(quote.get("05. price", "0"))
-    prev_close = _float(quote.get("08. previous close", "0"))
-    change = _float(quote.get("09. change", "0"))
-    change_raw = quote.get("10. change percent", "0%").rstrip("%")
-    change_pct = _float(change_raw)
+    def _optional_float(raw) -> Optional[float]:
+        """None, not 0.0 — the field is nullable in the response contract."""
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            log.warning("live quote %s: unparseable optional field %r",
+                        ticker_upper, raw)
+            return None
+        if not math.isfinite(value):
+            # Same reasoning as _required_float, different answer: the field is
+            # nullable, so a non-finite value renders as an em-dash rather than
+            # 500ing the whole quote out of the JSON encoder.
+            log.warning("live quote %s: non-finite optional field %r",
+                        ticker_upper, raw)
+            return None
+        return value
+
+    price = _required_float("05. price", "price")
+    change_raw = quote.get("10. change percent")
+    if isinstance(change_raw, str):
+        change_raw = change_raw.rstrip("%")
 
     return {
         "ticker": ticker_upper,
         "price": price,
-        "open": _float(quote.get("02. open", "0")),
-        "high": _float(quote.get("03. high", "0")),
-        "low": _float(quote.get("04. low", "0")),
-        "volume": int(_float(quote.get("06. volume", "0"))),
-        "change": change,
-        "change_pct": change_pct,
-        "prev_close": prev_close,
+        "open": _required_float("02. open", "open"),
+        "high": _required_float("03. high", "high"),
+        "low": _required_float("04. low", "low"),
+        "volume": int(_required_float("06. volume", "volume")),
+        "change": _optional_float(quote.get("09. change")),
+        "change_pct": _optional_float(change_raw),
+        "prev_close": _optional_float(quote.get("08. previous close")),
         "last_updated": quote.get("07. latest trading day", ""),
         "market_session": session,
         "market_open": is_open,
