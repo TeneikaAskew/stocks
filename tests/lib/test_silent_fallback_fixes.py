@@ -868,3 +868,75 @@ def test_no_intraday_bars_returns_the_empty_timeline_not_a_rate_error():
     assert out.empty, "no bars must still return the empty timeline"
     assert list(out.columns)[:3] == ["Time", "Spot", "IV_used"]
     assert called == [], "the rate curve must not be consulted with nothing to price"
+
+
+def test_a_forced_partial_date_reports_the_rows_it_failed_to_recompute(caplog):
+    """`--force` on a PARTIALLY populated date must count every row as work.
+
+    Deriving the selected set from an empty pending set covered only the fully
+    populated date. Here rows are still pending, so one of them solving makes
+    `filled` non-empty either way — but with `--force` the two already-populated
+    rows were also promised a recompute, they failed, and `_keep_solved`
+    restored their old values. Without the flag threaded through, the run
+    reported nothing at all about them (Codex, PR #994).
+
+    Deliberately NOT fatal. A partially solved chain is real progress and the
+    rows that solved are worth writing, which is this job's rule everywhere
+    else; making a forced partial raise would fail a month-long backfill for
+    one contract that cannot solve. The requirement is that it stops being
+    invisible.
+    """
+    import logging
+
+    import numpy as np
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = pd.DataFrame({
+        "id": [1, 2, 3],
+        "strike": [100.0, 105.0, 110.0],
+        "option_type": ["calls", "puts", "calls"],
+        "open_interest": [10, 20, 30],
+        "expiration": ["2026-09-18"] * 3,
+        # id=1 and id=2 already solved; id=3 is why the date would be selected.
+        "gamma_computed": [0.05, 0.07, None],
+    })
+
+    def _enrich_only_the_pending_one(df, ticker, snap):
+        out = df.copy()
+        # The pending row solves; both forced recomputes fail.
+        out["gamma_computed"] = [np.nan, np.nan, 0.02]
+        return out
+
+    def _run(force):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING), pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "load_chain", lambda t, s: chain)
+            mp.setattr(mod, "enrich_av_chain_with_greeks",
+                       _enrich_only_the_pending_one)
+            mp.setattr(mod, "update_computed_columns", lambda df: len(df))
+            result = mod.process_one_date("SPX", date(2026, 9, 4), force=force)
+        return result, "\n".join(r.getMessage() for r in caplog.records)
+
+    # Without --force, the one row the date was selected for got filled and
+    # nothing promised to redo the others: silence is correct.
+    result, warnings = _run(force=False)
+    assert result == (3, 3)
+    assert "still have no computed gamma" not in warnings, warnings
+
+    # With --force, every row is the work and two of three did not recompute.
+    result, warnings = _run(force=True)
+    assert result == (3, 3), "a partial forced solve still writes what solved"
+    assert "2 rows still have no computed gamma" in warnings, (
+        "a forced recompute that silently kept the old values for two of "
+        "three rows reported nothing at all:\n" + warnings)
+
+
+def test_the_force_flag_reaches_the_gate_from_the_command_line():
+    """A flag that never arrives is the defect, not the gate's logic."""
+    import inspect
+    mod = _greeks_backfill_module()
+    assert "force" in inspect.signature(mod.process_one_date).parameters
+    src = inspect.getsource(mod)
+    assert "process_one_date(ticker, snap, force=args.force)" in src, (
+        "main() must pass the parsed --force through; deriving it from the "
+        "chain covered only the fully populated date")

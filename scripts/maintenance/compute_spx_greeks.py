@@ -240,7 +240,7 @@ def _finite_gamma_ids(df: pd.DataFrame) -> set:
     return set(df.loc[np.isfinite(g), "id"])
 
 
-def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
+def process_one_date(ticker: str, snap: date, force: bool = False) -> tuple[int, int]:
     """Load → enrich → UPDATE for one snapshot date.
 
     Returns (loaded_rows, updated_rows). updated_rows can be < loaded_rows
@@ -326,16 +326,23 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
                 f"this date is a failure rather than a no-op")
         still_missing = len(enriched) - finite
     else:
-        # The rows this date was SELECTED for. Without `--force` that is the
-        # pending set, by construction: `list_dates_to_process` picks a date
-        # because some row has no gamma. `--force` picks every date regardless,
-        # so on a fully populated date the pending set is EMPTY -- and
-        # `if pending_ids and not filled` was then vacuously false, so a total
-        # solver failure under `--force` exited 0 while `_keep_solved` quietly
-        # restored last week's values as though this run had produced them
-        # (Codex, PR #994). An empty pending set on a date we were told to
-        # recompute means every row is the work, not that there is none.
-        selected = pending_ids if pending_ids else set(chain["id"])
+        # The rows this date was SELECTED for.
+        #
+        # Under `--force` that is EVERY row, and the flag has to be passed in
+        # to know it. Inferring it from an empty pending set covered only the
+        # fully populated date; a PARTIALLY populated one under `--force` still
+        # has pending rows, so one of them solving made `filled` non-empty and
+        # the gate passed while every row `--force` was asked to recompute
+        # failed and `_keep_solved` restored its old value (Codex, PR #994).
+        # Two rounds on this gate now have come from deriving the selected set
+        # instead of being told it.
+        #
+        # Without `--force` the pending set IS the selection, by construction:
+        # `list_dates_to_process` picks a date because some row has no gamma.
+        # The `or` covers a date reached with nothing pending by another route
+        # -- a concurrent run filling it in between, a manual invocation --
+        # which is work too, not an empty selection.
+        selected = set(chain["id"]) if force else (pending_ids or set(chain["id"]))
         filled = selected & solved_now
         if selected and not filled:
             raise GreeksUnavailable(
@@ -406,7 +413,7 @@ def main() -> int:
     failures = 0
     for i, snap in enumerate(dates, 1):
         try:
-            loaded, updated = process_one_date(ticker, snap)
+            loaded, updated = process_one_date(ticker, snap, force=args.force)
             total_rows += loaded
             total_updated += updated
         except Exception as exc:
