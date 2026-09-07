@@ -112,3 +112,61 @@ def test_backfill_stops_at_the_first_failed_month(monkeypatch):
     ok = mod.trigger_backfill_ticker("AMD", [_d(2026, 1, 5), _d(2026, 2, 5), _d(2026, 3, 5)],
                                      include_news=False, history_days=800, news_window_days=7)
     assert ok is False and calls == ["2026-01-05", "2026-02-05"]
+
+
+def test_replay_and_push_steps_report_the_job_result(monkeypatch):
+    """Internal review of #1022 (fallback guard): _execute_job returns
+    True/False so the caller can decide whether the next step still makes
+    sense, but the insight and Discord wrappers discarded it, so a failed
+    execution logged an ERROR and the run continued as if it had worked."""
+    import importlib
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    monkeypatch.setattr(mod, "_execute_job", lambda job, env, wait=True: False)
+    assert mod.trigger_insight_pipeline("AMD", "2026-04-24T13:15:00Z") is False
+    assert mod.trigger_discord_push("AMD", "2026-04-24") is False
+    monkeypatch.setattr(mod, "_execute_job", lambda job, env, wait=True: True)
+    assert mod.trigger_insight_pipeline("AMD", "2026-04-24T13:15:00Z") is True
+    assert mod.trigger_discord_push("AMD", "2026-04-24") is True
+
+
+def _run_main(monkeypatch, mod, fake_execute, argv):
+    import sys
+
+    import pytest
+    monkeypatch.setattr(mod, "_execute_job", fake_execute)
+    monkeypatch.setattr(mod, "db_connect",
+                        lambda: pytest.fail("the comparison report must not run on a failed replay"))
+    monkeypatch.setattr(sys, "argv", ["backfill_and_replay.py", *argv])
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    return exc.value.code
+
+
+def test_main_stops_at_the_first_failed_insight_replay(monkeypatch):
+    import importlib
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    calls: list = []
+
+    def _fake(job, env, wait=True):
+        calls.append((job, env))
+        return job != "insight-pipeline"
+
+    code = _run_main(monkeypatch, mod, _fake,
+                     ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27", "--skip-backfill"])
+    assert "insight-pipeline" in str(code) and "AMD" in str(code)
+    assert [j for j, _ in calls] == ["insight-pipeline"]
+
+
+def test_main_stops_at_a_failed_discord_push(monkeypatch):
+    import importlib
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    calls: list = []
+
+    def _fake(job, env, wait=True):
+        calls.append(job)
+        return job != "insight-discord-push"
+
+    code = _run_main(monkeypatch, mod, _fake,
+                     ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27", "--skip-backfill"])
+    assert "insight-discord-push" in str(code)
+    assert calls == ["insight-pipeline", "insight-discord-push"]

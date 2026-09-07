@@ -184,19 +184,23 @@ def trigger_backfill_ticker(ticker: str, dates: list[date], *,
     return True
 
 
-def trigger_insight_pipeline(ticker: str, as_of_iso_utc: str, wait: bool = True):
-    """Execute the insight-pipeline Cloud Run Job for one (ticker, as_of) pair."""
+def trigger_insight_pipeline(ticker: str, as_of_iso_utc: str, wait: bool = True) -> bool:
+    """Execute the insight-pipeline Cloud Run Job for one (ticker, as_of) pair.
+
+    Returns _execute_job's verdict; main() stops on False so the comparison
+    report never runs against a replay that did not happen.
+    """
     log.info("Cloud Run insight-pipeline → %s as_of=%s", ticker, as_of_iso_utc)
-    _execute_job('insight-pipeline',
-                 {'INSIGHT_TICKERS': ticker, 'INSIGHT_AS_OF': as_of_iso_utc},
-                 wait=wait)
+    return _execute_job('insight-pipeline',
+                        {'INSIGHT_TICKERS': ticker, 'INSIGHT_AS_OF': as_of_iso_utc},
+                        wait=wait)
 
 
-def trigger_discord_push(ticker: str, push_date: str, wait: bool = True):
+def trigger_discord_push(ticker: str, push_date: str, wait: bool = True) -> bool:
     log.info("Cloud Run insight-discord-push → %s date=%s", ticker, push_date)
-    _execute_job('insight-discord-push',
-                 {'INSIGHT_PUSH_TICKER': ticker, 'INSIGHT_PUSH_DATE': push_date},
-                 wait=wait)
+    return _execute_job('insight-discord-push',
+                        {'INSIGHT_PUSH_TICKER': ticker, 'INSIGHT_PUSH_DATE': push_date},
+                        wait=wait)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -313,9 +317,14 @@ def main():
             # Approximation: 09:15 ET = 13:15 UTC during DST.
             as_of = datetime(d.year, d.month, d.day, int(hh) + 4, int(mm),
                              tzinfo=timezone.utc)
-            trigger_insight_pipeline(ticker, as_of.strftime('%Y-%m-%dT%H:%M:%SZ'))
+            as_of_iso = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+            if not trigger_insight_pipeline(ticker, as_of_iso):
+                sys.exit(f'insight-pipeline failed for {ticker} as_of={as_of_iso}; '
+                         'not continuing to the next date or the comparison report')
             if not args.skip_discord:
-                trigger_discord_push(ticker, d.strftime('%Y-%m-%d'))
+                if not trigger_discord_push(ticker, d.strftime('%Y-%m-%d')):
+                    sys.exit(f'insight-discord-push failed for {ticker} date={d}; '
+                             'the insight exists in insight_reports but was not pushed')
 
     # 3. Side-by-side report
     conn = db_connect()

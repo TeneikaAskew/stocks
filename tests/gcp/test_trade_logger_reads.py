@@ -153,3 +153,37 @@ def test_the_monitor_stamps_run_kind_on_every_logged_trade():
     src = inspect.getsource(signal_monitor.SignalMonitor._persist_signal_alert)
     block = src[src.index("trade_data = {"):src.index("TradeLogger().log_trade(trade_data)")]
     assert "'run_kind': 'live'" in block
+
+
+def test_the_trade_parquet_files_have_exactly_one_writer():
+    """Tripwire for _filter_run_kind's null-as-live rule (internal review of
+    #1022, fallback guard). A null run_kind in a Parquet row reads as 'live'
+    ONLY because every row in data/trades/*.parquet was written by
+    TradeLogger.log_trade from the monitor's _persist_signal_alert, which now
+    stamps run_kind. A second writer of those files, or a second caller of
+    log_trade, invalidates that reading, so this test fails the moment one
+    appears and the rule has to become explicit provenance instead."""
+    import ast
+    import re
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    tree = ast.parse((repo / "gcp/trade_logger.py").read_text())
+    writers = sorted(
+        f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+        and any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "to_parquet" for n in ast.walk(f)))
+    assert writers == ["log_trade"], writers
+
+    other_writers, callers = [], []
+    for area in ("lib", "gcp", "scripts", "platform/api"):
+        for path in sorted((repo / area).rglob("*.py")):
+            rel = path.relative_to(repo).as_posix()
+            text = path.read_text()
+            if rel != "gcp/trade_logger.py" and "to_parquet(" in text \
+                    and re.search(r"\btrades_dir\b|\b_daily_file\b|data/trades|TradeLogger", text):
+                other_writers.append(rel)
+            if re.search(r"\.log_trade\(", text):
+                callers.append(rel)
+    assert other_writers == [], other_writers
+    assert callers == ["gcp/signal_monitor.py"], callers

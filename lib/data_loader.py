@@ -603,6 +603,10 @@ class DataLoader:
         simulated rows from a deleted backfill script sat unmarked in the
         table). Pass ``None`` to read every kind.
         """
+        # AUDIT-2026-05-13: silent fallback — with no Cloud SQL configured
+        # (local dev) this returns an empty frame the caller cannot tell from
+        # "no trades"; the trades table has no other source, so there is no
+        # cross-source fallback here (§3.7.1), only the unconfigured case.
         if not _cloud_sql_active():
             return pd.DataFrame()
 

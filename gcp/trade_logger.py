@@ -70,6 +70,10 @@ class TradeLogger:
                     from gcp.database import bulk_insert_dataframe
                     bulk_insert_dataframe(row_df, 'trades')
             except Exception as e:
+                # AUDIT-2026-05-13: silent fallback — a failed Cloud SQL write
+                # is only a warning and the row survives in Parquet alone,
+                # where the readers' Parquet fallback below finds it only
+                # when the Cloud SQL query itself fails or returns nothing.
                 log.warning("Cloud SQL trade write failed: %s", e)
 
         # ── Local Parquet write (always, as redundant backup) ────────────────
@@ -108,6 +112,13 @@ class TradeLogger:
         writer (internal review of #1022 round 14: a column-presence test
         dropped the pre-stamp rows of a mixed file). An empty result keeps
         the frame's columns.
+
+        This is a closed-world assumption: it holds only while log_trade is
+        the sole writer of these files and _persist_signal_alert its sole
+        caller. tests/gcp/test_trade_logger_reads.py
+        (test_the_trade_parquet_files_have_exactly_one_writer) fails the
+        moment either gains a second, at which point a null must be read as
+        unknown provenance, not as live.
         """
         if run_kind is None or df.empty:
             return df
