@@ -328,7 +328,14 @@ _SQL_STATEMENT = re.compile(
 # path -- `/api/status/eastern` contains `us/eastern` -- and `BUS/Eastern`
 # matched for the same reason. A URL or an identifier is not a timezone, and
 # a guard that fails on one is a false CI failure (Codex, PR #993).
-_LB = r"(?<![A-Za-z0-9_/-])"
+# No `/` in this class, deliberately. The boundary exists to stop a match
+# starting inside a WORD -- `status/eastern` and `BUS/Eastern` are rejected
+# because the character before the match is alphanumeric -- and adding `/`
+# to it also rejected `TZ=:/usr/share/zoneinfo/US/Eastern`, which is the
+# Linux zone-file spelling and a real way to install the legacy zone. The
+# first version of this boundary broke that (Codex, PR #993); a separator
+# immediately before a COMPLETE zone name is exactly where one belongs.
+_LB = r"(?<![A-Za-z0-9_-])"
 NONPY_UNAMBIGUOUS = re.compile(
     _LB + r"""['"]?""" + _LB
     + r"""(?:""" + "|".join(re.escape(z) for z in UNAMBIGUOUS_LEGACY)
@@ -1831,10 +1838,18 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             # zone name inside prose is prose.
             if not _SQL_STATEMENT.search(text):
                 continue
+            # `NONPY_SQL_NUMERIC_OFFSET` belongs here too. It was applied to
+            # standalone `.sql` files and not to the same statement carried in
+            # a Python string, so moving `cur.execute("SET TIME ZONE -5")`
+            # into the code that runs it walked past the guard (Codex,
+            # PR #993). It is safe in this loop for the same reason it is safe
+            # in the file scan: it is confined to the SQL statement forms,
+            # which is what reaching this branch has just established.
             for pattern, bucket in ((NONPY_UNAMBIGUOUS, legacy),
                                     (NONPY_AMBIGUOUS, legacy),
                                     (NONPY_FIXED_ZONE, offsets),
-                                    (NONPY_FIXED_OFFSET, offsets)):
+                                    (NONPY_FIXED_OFFSET, offsets),
+                                    (NONPY_SQL_NUMERIC_OFFSET, offsets)):
                 m = pattern.search(text)
                 if m:
                     reported.add(id(node))
@@ -5957,3 +5972,72 @@ def test_the_tracked_files_probe_cannot_clobber_local_work():
     assert "_source_files()" in body, body
     # ...nor fail in the source-export environment the collector documents.
     assert "pytest.skip" in body and "_tracked_files()" in body, body
+
+
+# ── Round 22 (Codex, PR #993) ───────────────────────────────────────────────
+#
+# Two fixed here: a regression the round-20 left boundary introduced, and an
+# asymmetry in a loop that round rewrote. The other four findings are new
+# spellings in new contexts and are recorded on issue #1019 -- see the note at
+# the end of this section.
+
+
+def test_a_zone_name_after_a_path_separator_still_matches():
+    """`TZ=:/usr/share/zoneinfo/US/Eastern` installs the legacy zone.
+
+    The left boundary added in round 20 excluded `/` along with the
+    alphanumerics, which rejected the Linux zone-FILE spelling -- a real way
+    to set the variable -- while the cases it exists for do not need it: the
+    character before `us/eastern` in `status/eastern` is `t`, and in
+    `BUS/Eastern` it is `B` (Codex, PR #993).
+    """
+    assert NONPY_UNAMBIGUOUS.search("TZ=:/usr/share/zoneinfo/US/Eastern")
+    assert NONPY_FIXED_ZONE.search("TZ=/usr/share/zoneinfo/Etc/GMT+5")
+
+    # The round-20 cases still hold, which is what makes dropping `/` safe.
+    assert not NONPY_UNAMBIGUOUS.search("/api/status/eastern")
+    assert not NONPY_UNAMBIGUOUS.search("BUS/Eastern")
+    assert not NONPY_UNAMBIGUOUS.search("https://x/plus/eastern")
+    assert not NONPY_FIXED_ZONE.search("IMAGE_TAG=latest5")
+
+
+def test_embedded_sql_is_scanned_for_a_numeric_offset():
+    """`cur.execute("SET TIME ZONE -5")` is the same statement as in a file.
+
+    `NONPY_SQL_NUMERIC_OFFSET` was applied to standalone `.sql` files and not
+    to the same statement carried in the Python that runs it, so moving the
+    query inline walked past the guard (Codex, PR #993).
+    """
+    _legacy, offsets = _hits('cur.execute("SET TIME ZONE -5")\n')
+    assert offsets, offsets
+
+    _legacy, offsets = _hits('Q = "SET LOCAL TIME ZONE -4;"\ncur.execute(Q)\n')
+    assert offsets, offsets
+
+    # Confined to the SQL statement forms, exactly as in the file scan: a bare
+    # negative number in a query is not a timezone.
+    _legacy, offsets = _hits('cur.execute("SELECT -5")\n')
+    assert not offsets, offsets
+    # And POSIX inverts the sign in a TZ value, so that spelling stays out.
+    assert not NONPY_SQL_NUMERIC_OFFSET.search("export TZ=-5")
+
+
+# Four findings from this round are NOT fixed here, for the reason recorded on
+# issue #1019 and in the round-20 note above. All four are new spellings in
+# contexts the analyzer does not model, and each needs its own matcher:
+#
+#   * YAML argv arrays -- `args: ["--time-zone", "EST"]`, where the flag and
+#     its value are separate list elements
+#   * PostgreSQL's GUC assignment spelling -- `SET LOCAL timezone TO '-5'`,
+#     `SET TIMEZONE = -4`
+#   * libpq connection options -- `connect(options="-c timezone=EST")`, and
+#     the same string through SQLAlchemy's `connect_args`
+#   * Pine's POSITIONAL timezone argument -- `time(timeframe.period, session,
+#     "EST")`
+#
+# The libpq one is the most defensible of the four, since it is a live
+# alternative to `PGTZ` in a repository that uses psycopg2. It is on #1019
+# with the others rather than fixed here, because the runtime assertion
+# proposed there covers the whole class -- every one of these ends in a real
+# zone object being constructed or a real session being configured -- and
+# rounds 18-21 measured what each additional matcher costs.
