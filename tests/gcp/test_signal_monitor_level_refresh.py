@@ -318,3 +318,62 @@ def test_frame_empty_after_the_bound_is_the_empty_df_path():
     assert monitor.level_maps[ticker] is None
     assert monitor.level_refresh_empty_df_count[ticker] == 1
     assert monitor.level_refresh_exception_count[ticker] == 0
+
+
+def test_analysis_date_is_the_et_session_date_for_a_tz_aware_replay_stamp():
+    """A tz-aware UTC stamp at 00:05 UTC on D is 20:05 ET on D-1. The bound
+    must use the ET date (D-1), like every other 'today' in the monitor,
+    so the map cannot admit D-1's bar while the leg trackers exclude it."""
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.replay_clock_ts = pd.Timestamp("2026-09-03 00:05:00", tz="UTC")
+    seen = _capture_build_inputs(monitor, ticker, _daily_frame_through("2026-09-05"))
+    assert seen["analysis_date"] == pd.Timestamp("2026-09-02").date()
+    assert seen["daily_df"].index.max() == pd.Timestamp("2026-09-01")
+
+
+def test_prior_day_null_close_placeholder_is_dropped_before_current_price():
+    """The brief drops null-close rows after its cutoff (2026-04-30 NULL-OHLCV
+    placeholder incident); a placeholder dated before analysis_date must not
+    become iloc[-1] and feed NaN into current_price."""
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.replay_clock_ts = pd.Timestamp("2026-09-03 09:31:00")
+    df = _daily_frame_through("2026-09-02")
+    df.loc[pd.Timestamp("2026-09-02"), ["Open", "High", "Low", "Close"]] = float("nan")
+    seen = _capture_build_inputs(monitor, ticker, df)
+    assert seen["current_price"] == float(df.loc[pd.Timestamp("2026-09-01"), "Close"])
+    assert seen["daily_df"].index.max() == pd.Timestamp("2026-09-01")
+
+
+def test_single_row_after_the_bound_is_not_a_successful_map():
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.replay_clock_ts = pd.Timestamp("2026-08-04 09:31:00")
+    df = _daily_frame_through("2026-08-05")   # exactly one row (08-03) before the bound
+    with patch("lib.data_loader.DataLoader") as mock_dl_class, \
+         patch("gcp.signal_monitor.build_level_map") as build:
+        mock_dl_class.return_value.load_daily.return_value = df
+        monitor.refresh_level_map(ticker)
+    build.assert_not_called()
+    assert monitor.level_maps[ticker] is None
+    assert monitor.level_refresh_empty_df_count[ticker] == 1
+    assert monitor.level_refresh_success_count[ticker] == 0
+
+
+def test_frame_without_a_date_axis_fails_loud_not_unbounded():
+    """An as-of filter that silently does not filter is the Rule 3.7 shape."""
+    from gcp.signal_monitor import SignalMonitor
+    with pytest.raises(ValueError):
+        SignalMonitor._bound_daily_frame(pd.DataFrame({"Close": [1.0, 2.0]}),
+                                         pd.Timestamp("2026-09-03").date())
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    with patch("lib.data_loader.DataLoader") as mock_dl_class, \
+         patch("gcp.signal_monitor.build_level_map") as build:
+        mock_dl_class.return_value.load_daily.return_value = pd.DataFrame(
+            {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0], "Close": [1.0, 2.0]})
+        monitor.refresh_level_map(ticker)
+    build.assert_not_called()
+    assert monitor.level_maps[ticker] is None
+    assert monitor.level_refresh_exception_count[ticker] == 1

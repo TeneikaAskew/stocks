@@ -537,9 +537,9 @@ class SignalMonitor:
         """
         try:
             from gcp.database import execute_sql
-            today = (pd.Timestamp(self.replay_clock_ts).date()
-                     if self.replay_clock_ts is not None
-                     else self._now(_ET).date())
+            # ET session date via the one clock choke point (a raw replay
+            # stamp's .date() is the UTC date for tz-aware stamps; #823).
+            today = self._now(_ET).date()
             rows = execute_sql(
                 "UPDATE premarket_analysis SET "
                 "  puts_reanchor_open = :o, puts_reanchor_trigger = :t, "
@@ -721,6 +721,33 @@ class SignalMonitor:
         )
         return add_signal_indicators(df, close_col='Close', indicator_config=cfg)
 
+    @staticmethod
+    def _bound_daily_frame(df: pd.DataFrame, analysis_date) -> pd.DataFrame:
+        """Rows dated strictly before ``analysis_date`` (#823).
+
+        Mirrors the premarket brief's cutoff (gcp/premarket_brief.py,
+        `df.loc[idx < cutoff]`). The date axis is the DatetimeIndex
+        DataLoader.load_daily returns (named 'Time'), or a 'Time' column
+        for callers that pass a RangeIndex frame; tz-aware axes compare
+        on the naive wall date. A frame with no recognisable date axis
+        raises: an as-of filter that silently does not filter is the
+        §3.7 shape, and the caller's except path already counts and
+        logs it.
+        """
+        cutoff = pd.Timestamp(analysis_date)
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        elif 'Time' in df.columns:
+            idx = pd.to_datetime(df['Time'])
+            if getattr(idx.dt, 'tz', None) is not None:
+                idx = idx.dt.tz_localize(None)
+            idx = pd.DatetimeIndex(idx)
+        else:
+            raise ValueError(
+                "daily frame has neither a DatetimeIndex nor a 'Time' column; "
+                "cannot apply the as-of bound (#823)")
+        return df.loc[np.asarray(idx < cutoff)]
+
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
         the LevelMap for this ticker. Called at startup and periodically
@@ -753,7 +780,47 @@ class SignalMonitor:
                 )
                 self.level_maps[ticker] = None
                 return
+            # As-of bound (#823 / audit R6). load_daily has no upper date
+            # bound, so the frame ends at whatever market_data_daily holds:
+            # live, fetch-premarket-refresh has INSERTed today's row at
+            # 08:20 ET with pre_* fields only (OHLC NULL until the 23:00 ET
+            # fill), so the last row is today's unfilled bar and iloc[-1]
+            # is NaN; on replay it is D's COMPLETED bar plus every bar
+            # after it. Structural levels derive from completed prior
+            # periods only, and the premarket brief already applies
+            # `idx < analysis_date` before it builds — apply the same
+            # cutoff here so a D-replay and the D-live session build the
+            # map from identical rows. analysis_date is the session's ET
+            # date via _now(_ET) — the same clock every other "today" in
+            # this class uses (session extremes, leg trackers, brief
+            # bias). The raw replay stamp's .date() is NOT that: a
+            # tz-aware UTC stamp in the 00:00-03:59 UTC block of D is
+            # ET evening of D-1, and a map anchored on D there would
+            # admit a daily bar the rest of the bar's state excludes.
+            _analysis_date = self._now(_ET).date()
+            df = self._bound_daily_frame(df, _analysis_date)
+            # Same defensive drop as the brief (premarket_brief.py, the
+            # 2026-04-30 NULL-OHLCV placeholder incident): a prior-day
+            # placeholder row survives the bound and would become
+            # iloc[-1] -> current_price NaN. Fewer than 2 rows cannot
+            # produce previous-period levels (compute_current_levels
+            # returns {} for a 1-row frame), so treat it as no data
+            # rather than a successful, empty map.
             close_col = 'Close' if 'Close' in df.columns else 'Last'
+            if not df.empty:
+                df = df[df[close_col].notna()]
+            if df.empty or len(df) < 2:
+                self.level_refresh_empty_df_count[ticker] = (
+                    self.level_refresh_empty_df_count.get(ticker, 0) + 1
+                )
+                logger.warning(
+                    "refresh_level_map(%s): %d usable daily rows dated before "
+                    "analysis_date=%s (need >= 2); level_map will be None "
+                    "for this cycle",
+                    ticker, len(df), _analysis_date,
+                )
+                self.level_maps[ticker] = None
+                return
             ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
             levels_df = calculate_historical_levels(
                 ts, df['High'], df['Low'], df['Open'], df[close_col],
@@ -784,13 +851,9 @@ class SignalMonitor:
             self.level_map_atr[ticker] = _atr
             # PR #400 fix applied to this code path: pass analysis_date
             # so build_level_map → compute_previous_levels uses period-
-            # filter semantics. Replay-aware: use the replay clock when
-            # set, fall back to today's ET date in live mode. Without
-            # this, replay runs picked day-before-yesterday's PDH/PDL.
-            if self.replay_clock_ts is not None:
-                _analysis_date = pd.Timestamp(self.replay_clock_ts).date()
-            else:
-                _analysis_date = datetime.now(_ET).date()
+            # filter semantics. Without this, replay runs picked
+            # day-before-yesterday's PDH/PDL. Same date the frame was
+            # bounded with above.
             self.level_maps[ticker] = build_level_map(
                 ticker=ticker, daily_df=df, current_price=current_price,
                 analysis_date=_analysis_date,
