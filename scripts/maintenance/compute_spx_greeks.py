@@ -216,6 +216,30 @@ def _keep_solved(enriched: pd.DataFrame, prior: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index()
 
 
+def _pending_gamma_ids(chain: pd.DataFrame) -> set | None:
+    """The row ids this run was selected to fill, or None when rows have no id.
+
+    `list_dates_to_process` selects a date when ANY row has a NULL gamma, so
+    the work is those rows and not the whole chain. Without an `id` column the
+    rows cannot be followed through enrichment (which may drop some), and the
+    caller falls back to a whole-chain count.
+    """
+    if "id" not in chain.columns:
+        return None
+    if "gamma_computed" not in chain.columns:
+        return set(chain["id"])
+    g = pd.to_numeric(chain["gamma_computed"], errors="coerce")
+    return set(chain.loc[~np.isfinite(g), "id"])
+
+
+def _finite_gamma_ids(df: pd.DataFrame) -> set:
+    """Row ids carrying a finite gamma in this frame."""
+    if "id" not in df.columns or "gamma_computed" not in df.columns:
+        return set()
+    g = pd.to_numeric(df["gamma_computed"], errors="coerce")
+    return set(df.loc[np.isfinite(g), "id"])
+
+
 def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
     """Load → enrich → UPDATE for one snapshot date.
 
@@ -252,13 +276,27 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
     prior = (chain[["id", *have]].copy()
              if "id" in chain.columns and have else pd.DataFrame())
 
-    pending_before = int(
-        pd.to_numeric(chain.get("gamma_computed"), errors="coerce").isna().sum()
-    ) if "gamma_computed" in chain.columns else len(chain)
+    pending_ids = _pending_gamma_ids(chain)
+    pending_before = len(pending_ids) if pending_ids is not None else len(chain)
     chain = chain.drop(
         columns=[c for c in COMPUTED_COLS if c in chain.columns], errors="ignore")
 
     enriched = enrich_av_chain_with_greeks(chain, ticker, snap)
+
+    # What THIS RUN solved. The gate below intersects it with the PENDING
+    # rows, and that intersection is what makes the gate sound: a total finite
+    # count over the frame counts rows earlier runs filled, so one
+    # already-solved row on a date whose entire pending set failed cleared the
+    # gate, rewrote the same values and exited 0 with the gaps intact -- the
+    # no-op-reported-as-success this job was fixed for, reintroduced by the
+    # fix for the round before it (Codex, PR #994).
+    #
+    # Read before the carry-forward rather than after. Today the two are
+    # equivalent, because a pending row is one whose prior value was NaN and
+    # the merge cannot restore it to finite. That equivalence is a property of
+    # `_pending_gamma_ids`, not of this line, so this does not depend on it.
+    solved_now = _finite_gamma_ids(enriched)
+
     enriched = _keep_solved(enriched, prior)
 
     # How many rows carry a finite gamma_computed after enrichment. This was
@@ -276,18 +314,28 @@ def process_one_date(ticker: str, snap: date) -> tuple[int, int]:
     # perform. `n_updated` counts rows touched, not Greeks computed.
     g = pd.to_numeric(enriched.get("gamma_computed"), errors="coerce")
     finite = int(np.isfinite(g).sum()) if g is not None else 0
-    if finite == 0:
-        raise GreeksUnavailable(
-            f"{ticker} {snap}: {len(chain)} rows loaded and 0 finite "
-            f"gamma_computed after enrichment — nothing was computed, so this "
-            f"date is a failure rather than a no-op")
+
+    if pending_ids is None:
+        # No `id` column, so the pending rows cannot be followed through
+        # enrichment. Whole-chain gate, which is what this was before ids
+        # were available to it.
+        if finite == 0:
+            raise GreeksUnavailable(
+                f"{ticker} {snap}: {len(chain)} rows loaded and 0 finite "
+                f"gamma_computed after enrichment — nothing was computed, so "
+                f"this date is a failure rather than a no-op")
+        still_missing = len(enriched) - finite
+    else:
+        filled = pending_ids & solved_now
+        if pending_ids and not filled:
+            raise GreeksUnavailable(
+                f"{ticker} {snap}: {len(pending_ids)} rows were pending and 0 "
+                f"of them were solved — nothing was computed for the rows this "
+                f"date was selected for, so it is a failure rather than a "
+                f"no-op, however many rows earlier runs already filled")
+        still_missing = len(pending_ids - solved_now)
 
     n_updated = update_computed_columns(enriched)
-    # Counted on the MERGED frame, so a row carried over from a previous run
-    # is not reported as missing. `finite` is the same count for the same
-    # reason -- it is what the table will hold after this write, which is the
-    # only number an operator can act on.
-    still_missing = len(enriched) - finite
     log.info(
         "  %s %s: loaded=%d pending=%d enriched_finite=%d still_missing=%d updated=%d",
         ticker, snap, len(chain), pending_before, finite, still_missing, n_updated,

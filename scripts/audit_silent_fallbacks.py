@@ -65,6 +65,18 @@ FORBIDDEN_SHAPES = {"[]", "{}", "0", "0.0", "''", "False", "list()", "dict()",
                     # A dropped item is a neutral substitution: the
                     # collection comes back short and no caller can tell.
                     "continue",
+                    # And so is an abandoned loop. This was left out on the
+                    # argument that `break` after an error is often deliberate
+                    # flow control; the two live sites say otherwise, and both
+                    # are pagination loops:
+                    #   gcp/fetchers/fetch_economic_events.py:315 returns the
+                    #     pages it already has when a FRED request fails
+                    #   scripts/fetch_catalyst_calendar.py:169 does the same
+                    #     for Benzinga
+                    # Each returns a partial collection as a complete one,
+                    # which is the same lie `continue` tells one item at a
+                    # time (Codex, PR #994).
+                    "break",
                     "set()", "tuple()", "empty DataFrame", "tuple of neutrals"}
 
 

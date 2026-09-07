@@ -703,7 +703,7 @@ Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`):
 
 ```
 $ python scripts/audit_silent_fallbacks.py
-423 swallowing handlers in 122 files; 243 return a container or a zero rather than None
+423 swallowing handlers in 122 files; 245 return a container or a zero rather than None
 
 $ python scripts/audit_silent_fallbacks.py --worst
 54 swallowing handlers in 35 files (broad, unlogged, container-or-zero); 54 return a container or a zero rather than None
@@ -719,6 +719,12 @@ right. Two scanner defects, both found in review (Codex, PR #994):
 * `forbidden_shape` intersected the DISPLAY strings (`dc = []`) with the
   shape set (`[]`), so no assignment ever counted as a forbidden shape and
   `--worst` omitted them all;
+* `break` was recorded as a shape but left out of `FORBIDDEN_SHAPES`, on the
+  argument that abandoning a loop after an error is often deliberate flow
+  control. Both live sites are pagination loops that return the pages already
+  fetched as a complete result (`gcp/fetchers/fetch_economic_events.py:315`,
+  `scripts/fetch_catalyst_calendar.py:169`), which is the same lie `continue`
+  tells one item at a time. Now forbidden, and `--worst` ranks it;
 * a `Raise` ANYWHERE in a handler short-circuited the whole scan, so a
   handler that raises on one branch and substitutes on another reported
   nothing. Only an UNCONDITIONAL raise -- one at the handler's top level, where

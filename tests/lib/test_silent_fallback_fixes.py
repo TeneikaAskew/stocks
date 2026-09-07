@@ -678,3 +678,97 @@ def test_a_conditional_re_raise_does_not_hide_the_other_branch():
     assert all_raise == [], (
         "a handler with no neutral value has nothing to report, conditional "
         "raises or not")
+
+
+def test_a_date_whose_pending_rows_all_fail_is_still_a_failure():
+    """The carry-forward must not clear the gate for work it did not do.
+
+    `_keep_solved` restores what earlier runs computed, so a total finite
+    count taken after it counts rows this run never touched. One already-solved
+    row on a date whose entire pending set failed was enough to pass, rewrite
+    the same values and exit 0, leaving the gaps to recur forever -- the
+    no-op-reported-as-success this job was fixed for, reintroduced by the fix
+    for the round before it (Codex, PR #994).
+    """
+    import numpy as np
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = pd.DataFrame({
+        "id": [1, 2],
+        "strike": [100.0, 105.0],
+        "option_type": ["calls", "puts"],
+        "open_interest": [10, 20],
+        "expiration": ["2026-09-18", "2026-09-18"],
+        # id=1 solved earlier; id=2 is the reason this date was selected.
+        "gamma_computed": [0.05, None],
+    })
+
+    def _enrich_nothing(df, ticker, snap):
+        # The rate lookup failed: no row solves, including the pending one.
+        out = df.copy()
+        out["gamma_computed"] = [np.nan, np.nan]
+        return out
+
+    updated: list = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", _enrich_nothing)
+        mp.setattr(mod, "update_computed_columns",
+                   lambda df: (updated.append(len(df)), len(df))[1])
+        with pytest.raises(mod.GreeksUnavailable, match="pending"):
+            mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert updated == [], (
+        "a run that solved none of its pending rows should not write at all")
+
+
+def test_solving_one_pending_row_is_progress_not_a_failure():
+    """A partial fill still writes: the rows that solved are worth having."""
+    import numpy as np
+    import pandas as pd
+    mod = _greeks_backfill_module()
+    chain = pd.DataFrame({
+        "id": [1, 2, 3],
+        "strike": [100.0, 105.0, 110.0],
+        "option_type": ["calls", "puts", "calls"],
+        "open_interest": [10, 20, 30],
+        "expiration": ["2026-09-18"] * 3,
+        "gamma_computed": [0.05, None, None],
+    })
+
+    def _enrich_one(df, ticker, snap):
+        out = df.copy()
+        out["gamma_computed"] = [np.nan, 0.03, np.nan]
+        return out
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "load_chain", lambda t, s: chain)
+        mp.setattr(mod, "enrich_av_chain_with_greeks", _enrich_one)
+        mp.setattr(mod, "update_computed_columns", lambda df: len(df))
+        loaded, n_updated = mod.process_one_date("SPX", date(2026, 9, 4))
+
+    assert (loaded, n_updated) == (3, 3)
+
+
+def test_an_abandoned_loop_is_a_forbidden_shape():
+    """`break` truncates a collection the same way `continue` shortens one.
+
+    Left out at first on the argument that `break` after an error is often
+    deliberate flow control. Both live sites say otherwise -- they are
+    pagination loops that return the pages already fetched as a complete
+    result (Codex, PR #994).
+    """
+    import ast
+    mod = _scanner()
+    src = (
+        "def f():\n"
+        "    for page in pages:\n"
+        "        try:\n            g()\n        except Exception:\n"
+        "            break\n"
+    )
+    handler = next(n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.ExceptHandler))
+    display, shapes = mod._handler_returns(handler)
+    assert display == ["break (loop abandoned)"], display
+    assert set(shapes) & mod.FORBIDDEN_SHAPES, (
+        "an abandoned loop returns a short collection; --worst must rank it")
