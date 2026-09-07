@@ -287,9 +287,31 @@ def guard_revision(engine, commit_sha: str, commit_time: int,
 
 def record_revision(engine, commit_sha: str, commit_time: int,
                     ancestors: frozenset[str] = frozenset()) -> None:
+    """Record this apply. A re-apply of the SHA that is already the last
+    applied row (both triggers apply the same push) merges its ancestry
+    into that row instead of inserting a new one: the later build's
+    rev-list may be shallow if its deepen failed, and a shallow last row
+    would hide the ancestry the first build recorded from the guard
+    (Codex on #1022)."""
     import sqlalchemy  # noqa: PLC0415
 
     with engine.begin() as conn:
+        last = conn.execute(sqlalchemy.text(
+            f"SELECT commit_sha, applied_at, ancestors FROM {REVISION_TABLE} "
+            "ORDER BY applied_at DESC LIMIT 1"
+        )).fetchone()
+        if last is not None and last[0] == commit_sha:
+            merged = frozenset((last[2] or "").split()) | ancestors
+            conn.execute(
+                sqlalchemy.text(
+                    f"UPDATE {REVISION_TABLE} SET ancestors = :anc "
+                    "WHERE commit_sha = :sha AND applied_at = :at"
+                ),
+                {"anc": " ".join(sorted(merged)), "sha": commit_sha, "at": last[1]},
+            )
+            log.info("Revision %s was already the last applied row; merged its ancestry "
+                     "(%d SHAs)", commit_sha, len(merged))
+            return
         conn.execute(
             sqlalchemy.text(
                 f"INSERT INTO {REVISION_TABLE} (commit_sha, commit_time, ancestors) "

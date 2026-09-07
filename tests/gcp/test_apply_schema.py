@@ -503,10 +503,24 @@ def test_guard_reads_the_last_applied_revision_not_the_highest_commit_time():
 
 
 def test_record_revision_inserts_sha_time_and_ancestors():
-    eng = _FakeEngine([])
+    eng = _FakeEngine([[]])                      # last applied: none
     record_revision(eng, "abc", 123, frozenset({"abc", "aaa"}))
     assert any("INSERT INTO schema_apply_history" in e and "'abc'" in e and "123" in e
                and "'aaa abc'" in e for e in eng.executed), eng.executed
+    eng = _FakeEngine([[("other", "2026-09-07T10:00:00+00:00", "other x")]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}))
+    assert any(e.startswith("INSERT INTO schema_apply_history") for e in eng.executed)
+
+
+def test_same_revision_reapply_merges_ancestry_instead_of_replacing_the_row():
+    """Codex on #1022 (round 9): both triggers apply the same SHA; if the
+    later build's deepen failed, its shallow rev-list must not become the
+    last applied row and hide the ancestry the first build recorded."""
+    eng = _FakeEngine([[("abc", "2026-09-07T10:00:00+00:00", "abc a b")]])
+    record_revision(eng, "abc", 123, frozenset({"abc"}))
+    assert not any(e.startswith("INSERT") for e in eng.executed), eng.executed
+    update = next(e for e in eng.executed if e.startswith("UPDATE schema_apply_history"))
+    assert "'a abc b'" in update and "'2026-09-07T10:00:00+00:00'" in update, update
 
 
 def test_schema_declares_the_ancestors_column():
