@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import subprocess
 import json
 import pathlib
 import re
@@ -90,9 +91,32 @@ _TZ_CONTEXT = (
 # guard that claims to be repository-wide.
 EXTENSIONLESS_SOURCE_DIRS = ("tradingview-pine-scripts",)
 _NON_SOURCE_SUFFIXES = {".md", ".txt", ".json", ".png", ".jpg", ".svg"}
+# JSON the APPLICATION reads at runtime, as opposed to fixtures and captures.
+RUNTIME_JSON_CONFIG = ("alert_config.json",)
+
+
+@functools.lru_cache(maxsize=1)
+def _tracked_files() -> frozenset:
+    """Every path `git ls-files` reports, as absolute paths.
+
+    The collector used `REPO.rglob`, which walks whatever happens to be in the
+    working tree: a local `scratch.py` or copied build output containing
+    `ZoneInfo("US/Eastern")` failed a guard that is supposed to be about
+    repository sources, so the verdict depended on the machine (Codex,
+    PR #993). Falling back to "everything" when git is unavailable keeps the
+    guard working in a source export rather than silently scanning nothing --
+    the failure direction that matters here is a MISSED violation.
+    """
+    try:
+        out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"],
+                             capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return frozenset()
+    return frozenset(REPO / n for n in out.stdout.decode().split("\0") if n)
 
 
 def _source_files() -> list[pathlib.Path]:
+    tracked = _tracked_files()
     out = []
     # YAML and Dockerfiles are where a `TZ: US/Eastern` or `ENV TZ=EST` would
     # live, and neither was scanned -- the guard's docstring says
@@ -116,6 +140,8 @@ def _source_files() -> list[pathlib.Path]:
         for p in REPO.rglob(pattern):
             if SKIP_DIRS & set(p.relative_to(REPO).parts):
                 continue
+            if tracked and p not in tracked:
+                continue
             out.append(p)
     for d in EXTENSIONLESS_SOURCE_DIRS:
         root = REPO / d
@@ -126,7 +152,20 @@ def _source_files() -> list[pathlib.Path]:
                 continue
             if SKIP_DIRS & set(p.relative_to(REPO).parts):
                 continue
+            if tracked and p not in tracked:
+                continue
             out.append(p)
+    # The runtime JSON configuration, by name rather than by extension.
+    # `lib.config.load_config` reads `alert_config.json` in production, so a
+    # `"timezone": "EST"` added there is consumed by the application while
+    # every JSON file sat outside the scan as "not source" (Codex, PR #993).
+    # Named individually because the blanket rule is still right: test
+    # fixtures and captured payloads legitimately carry canned values, and
+    # scanning them would make this guard cry wolf.
+    for name in RUNTIME_JSON_CONFIG:
+        cfg = REPO / name
+        if cfg.is_file() and (not tracked or cfg in tracked):
+            out.append(cfg)
     return sorted(set(out))
 
 
@@ -297,8 +336,11 @@ _TZ_CALLS_SPECIFIC = {"ZoneInfo", "tz_localize", "tz_convert", "astimezone",
 # by receiver, `from pandas import Timestamp` by import provenance, and an
 # UNAMBIGUOUS zone name is reported through any call whatsoever -- it is only
 # the bare `EST`/`EDT` tokens that need the stronger context.
+# `tzstr` is dateutil's POSIX-string constructor: `tzstr("EST5")` is a frozen
+# UTC-5 zone, and python-dateutil is a declared dependency here. Generic, so an
+# unrelated `parser.tzstr(...)` cannot fail CI (Codex, PR #993).
 _TZ_CALLS_GENERIC = {"timezone", "localize", "now", "no_cache",
-                     "Timestamp", "gettz"}
+                     "Timestamp", "gettz", "tzstr"}
 _TZ_CALLS = _TZ_CALLS_SPECIFIC | _TZ_CALLS_GENERIC
 # Receivers that make a generic name specific. Alias-resolved, so
 # `import pytz as p` still reaches `pytz` -- and read as the LAST attribute of
@@ -340,7 +382,13 @@ _ENV_GETTER_CALLS = {"getenv", "get"}
 # Eastern through the winter and is wrong all summer -- exactly what this
 # guard rejects, in a spelling that looked like a named zone and so passed
 # (Codex, PR #993). Only +4 and +5: the others are not Eastern in any season.
-_FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05")
+# `EST5`/`EDT4` join the named fixed-offset zones: POSIX reads them as an
+# abbreviation plus an offset and NO DST rule, so they are frozen all year.
+# The non-Python scan already matched them textually; the Python path only
+# knew the `Etc/GMT` spellings, so `tzstr("EST5")` had nothing to compare
+# against (Codex, PR #993).
+_FIXED_OFFSET_ZONES = ("Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+04", "Etc/GMT+05",
+                       "EST5", "EDT4")
 _FIXED_OFFSET_STRINGS = re.compile(
     r"^(?:" + _FIXED_OFFSET_TEXT + r"|Etc/GMT\+0?[45])$")
 
@@ -421,7 +469,7 @@ def _const_number(node: ast.AST):
     return None
 
 
-def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
+def _is_eastern_fixed_timedelta(node: ast.AST, env=None) -> bool:
     """A constant `timedelta(...)` totalling -4h or -5h, however it is spelled.
 
     Checking only `hours=` missed `timedelta(seconds=-18000)` and the
@@ -435,12 +483,21 @@ def _is_eastern_fixed_timedelta(node: ast.AST) -> bool:
     # `timezone(-timedelta(hours=5))` is the same frozen zone written with the
     # sign outside the call, and it read as a non-constant argument and was
     # left alone (Codex, PR #993). The negation is part of the constant.
+    env = env if env is not None else _EMPTY_ENV
     sign = 1
     while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         if isinstance(node.op, ast.USub):
             sign = -sign
         node = node.operand
-    if not isinstance(node, ast.Call) or _call_name(node) != "timedelta":
+    if not isinstance(node, ast.Call):
+        return False
+    # Resolved through the alias map, not by literal name. `from datetime
+    # import timedelta as TD` made `timezone(TD(hours=-5))` walk past the
+    # offset check while the environment already recorded the alias -- the
+    # same provenance gap already closed for ZoneInfo and timezone
+    # (Codex, PR #993).
+    called = _call_name(node)
+    if called != "timedelta" and env.aliases.get(called) != "timedelta":
         return False
     total = 0.0
     for arg, (_, scale) in zip(node.args, _TIMEDELTA_UNITS):
@@ -566,21 +623,24 @@ def _bound_names(scope: ast.AST) -> set[str]:
     return out
 
 
-def _rebound_in_an_inner_scope(tree: ast.AST, name: str) -> bool:
-    """True when any scope below the module binds `name`.
+def _replaces_the_module_binding(tree: ast.AST, name: str) -> bool:
+    """True when an inner scope can REPLACE the module's own value for `name`.
 
-    A module-level `tz = "EST"` that a function, comprehension or parameter
-    rebinds is not a setting this module exports -- the inner binding is what
-    that code uses, and the outer one is a decoy. Parameters are included
-    because binding by parameter is still binding.
+    Only `global NAME` plus an assignment does that. An ordinary local, a
+    parameter or a comprehension target of the same name shadows it inside one
+    scope and leaves what an importer reads off the module exactly as written.
+
+    The first version of this asked whether any inner scope bound the name at
+    all, which suppressed a real exported setting behind an unrelated helper
+    that happened to use the same variable name (Codex, PR #993). That was too
+    broad in the direction that hides findings, which is the worse direction.
     """
     for node in ast.walk(tree):
         if node is tree or not isinstance(node, _SCOPES):
             continue
-        if name in _bound_names(node):
-            return True
-        params, _ = _parameter_bindings(node)
-        if name in params:
+        declared = {n for st in _scope_nodes(node)
+                    if isinstance(st, ast.Global) for n in st.names}
+        if name in declared and name in _bound_names(node):
             return True
     return False
 
@@ -1106,7 +1166,7 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
             reported_values.add(id(arg))
             note(bucket_offsets, arg, where(repr(arg.value)))
             return True
-        if _is_eastern_fixed_timedelta(arg):
+        if _is_eastern_fixed_timedelta(arg, env):
             reported_values.add(id(arg))
             note(bucket_offsets, arg, where("timedelta(hours=-4|-5, ...)"))
             return True
@@ -1368,10 +1428,10 @@ def _python_hits(path: pathlib.Path, text: str) -> tuple[list[str], list[str]]:
     # all defeated -- so `TIME_ZONE = "EST"; assert TIME_ZONE` exported a
     # frozen zone with both guards green (Codex, PR #993).
     for node, tgt, env in settings_exports:
-        if _rebound_in_an_inner_scope(tree, tgt.id):
+        if _replaces_the_module_binding(tree, tgt.id):
             continue
         follow(legacy, offsets, node, node.value, env,
-               lambda shown, n=tgt.id: f"{n} = {shown}")
+               lambda shown, n=tgt.id: f"module setting {n} = {shown}")
 
     # `ast.walk` is breadth-first, so a call is visited before its own
     # arguments: a constant already reported with the call that gives it
@@ -1401,6 +1461,34 @@ def _notebook_code(text: str) -> str:
         src = cell.get("source", "")
         out.append("".join(src) if isinstance(src, list) else str(src))
     return "\n".join(out)
+
+
+_MAGIC_LINE = re.compile(r"^\s*[%!]")
+
+
+def _notebook_hits(path, text: str):
+    """Scan a notebook's code cells with the PYTHON analyzer where possible.
+
+    Round 12 routed cells to the regex path and recorded the limit rather than
+    closing it, which left `timezone(timedelta(hours=-5))` invisible: it is a
+    fixed Eastern zone with no textual `-05:00` for any pattern to match
+    (Codex, PR #993).
+
+    Cell magics (`%matplotlib`, `!pip`) are not Python, so they are dropped --
+    blanked rather than deleted, to keep line numbers meaning what they say.
+    If the result still does not parse, the regex path runs instead: partial
+    coverage beats a guard that reports nothing on a file it could not read.
+    """
+    code = _notebook_code(text)
+    if not code:
+        return [], []
+    stripped = "\n".join("" if _MAGIC_LINE.match(l) else l
+                          for l in code.splitlines())
+    try:
+        ast.parse(stripped)
+    except SyntaxError:
+        return None, stripped          # caller falls back to the regex path
+    return _python_hits(path, stripped)
 
 
 # `- name: TZ` on one line and `value: EST` on the next. Every Cloud Run and
@@ -1464,11 +1552,17 @@ def _scan() -> tuple[list[str], list[str]]:
             offsets += o
             continue
         if p.suffix == ".ipynb":
-            # Code cells only, joined. The line number below is then a line
-            # within that joined code, not a line of the JSON file -- which
-            # is the useful one: a `.ipynb` line number points at an escaped
-            # string in a JSON array and locates nothing.
-            text = _notebook_code(text)
+            # Code cells only, read by the Python analyzer when they parse and
+            # by the regex path when they do not. The line number is a line
+            # within the joined code, not a line of the JSON file -- which is
+            # the useful one: a `.ipynb` file line points at an escaped string
+            # inside a JSON array and locates nothing.
+            nb_legacy, nb_rest = _notebook_hits(p, text)
+            if nb_legacy is not None:
+                legacy += nb_legacy
+                offsets += nb_rest
+                continue
+            text = nb_rest
         lines = text.splitlines()
 
         def report(bucket, m):
@@ -1694,14 +1788,21 @@ def _scheduler_commands(func: str) -> list[tuple[int, str]]:
     out = []
     i = 0
     while i < len(lines):
-        if re.search(r"gcloud\s+scheduler\s+jobs\s+(?:create|update)\s+http",
-                     lines[i]):
-            at = starts[i]
-            cmd = [lines[i]]
-            while cmd[-1].rstrip().endswith("\\") and i + 1 < len(lines):
-                i += 1
-                cmd.append(lines[i])
-            out.extend((at, c) for c in _split_invocations("\n".join(cmd)))
+        at = starts[i]
+        stmt = [lines[i]]
+        while stmt[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+            i += 1
+            stmt.append(lines[i])
+        # Join the continuations BEFORE looking for the verb. Matching each
+        # physical line first meant a declaration that wrapped inside the verb
+        # itself -- `gcloud scheduler jobs \` then `create http ...` -- had no
+        # single line carrying the whole invocation, so it was not a
+        # declaration at all and its missing `--time-zone` went unreported
+        # (Codex, PR #993). The joined form is what the shell runs, so it is
+        # what this should read.
+        joined = re.sub(r"\\\n\s*", " ", "\n".join(stmt))
+        if _INVOCATION.search(joined):
+            out.extend((at, c) for c in _split_invocations(joined))
         i += 1
     return out
 
@@ -1782,9 +1883,25 @@ def test_market_open_is_the_same_wall_clock_on_both_sides_of_dst():
     assert winter.astimezone(ZoneInfo("UTC")).hour == 14
 
 
-def _hits(source: str) -> tuple[list[str], list[str]]:
+def _hits_all(source: str) -> tuple[list[str], list[str]]:
     """Run the Python scan over `source` as if it were a file in the repo."""
     return _python_hits(REPO / "gcp" / "_scratch_for_this_test.py", source)
+
+
+def _hits(source: str) -> tuple[list[str], list[str]]:
+    """`_hits_all` without the module-setting exports.
+
+    A module-level `TZ = "EST"` is a claim about what this module hands to an
+    importer; every case below that plants one is using it as a DECOY for a
+    shadowing question about some expression further down. Reporting both from
+    one helper made those two claims indistinguishable, so narrowing the export
+    rule (correctly) broke sixteen tests that were never about it.
+
+    Tests that assert the export itself use `_hits_all`.
+    """
+    legacy, offsets = _hits_all(source)
+    return ([h for h in legacy if "module setting " not in h],
+            [h for h in offsets if "module setting " not in h])
 
 
 def test_a_local_in_one_function_does_not_taint_another():
@@ -2796,16 +2913,16 @@ def test_a_timezone_named_module_constant_is_a_write():
     """
     for src in ('TIME_ZONE = "EST"\n', 'TZ: str = "EST"\n',
                 'timezone = "-05:00"\n'):
-        assert _hits(src)[0] or _hits(src)[1], src
+        assert _hits_all(src)[0] or _hits_all(src)[1], src
 
     # Read locally: reported at the read, with the constructor that gives it
     # meaning, rather than twice.
-    once = _hits('TZ = "EST"\nZoneInfo(TZ)\n')[0]
+    once = _hits_all('TZ = "EST"\nZoneInfo(TZ)\n')[0]
     assert len(once) == 1, once
     # A local is not a setting another module can read.
-    assert _hits('def f():\n    tz = "EST"\n    return tz\n') == ([], [])
+    assert _hits_all('def f():\n    tz = "EST"\n    return tz\n') == ([], [])
     # And the name still has to mean a timezone.
-    assert _hits('LABEL = "EST"\n') == ([], [])
+    assert _hits_all('LABEL = "EST"\n') == ([], [])
 
 
 def test_a_timezone_array_must_be_defined_before_it_is_expanded():
@@ -2948,13 +3065,13 @@ def test_a_read_does_not_suppress_a_fixed_zone_setting():
     The precise condition is the one the comment always claimed: suppress the
     assignment only when a timezone-context use ALREADY reported that value.
     """
-    legacy, _ = _hits('TIME_ZONE = "EST"\nassert TIME_ZONE\n')
+    legacy, _ = _hits_all('TIME_ZONE = "EST"\nassert TIME_ZONE\n')
     assert any("EST" in h for h in legacy), (
         f"a read suppressed the export check: {legacy}")
 
     # And the reason the bound existed still holds: one finding, not two,
     # when a real timezone use reports the same value.
-    legacy, _ = _hits('TIME_ZONE = "EST"\nZoneInfo(TIME_ZONE)\n')
+    legacy, _ = _hits_all('TIME_ZONE = "EST"\nZoneInfo(TIME_ZONE)\n')
     assert len(legacy) == 1, f"double-reported the same setting: {legacy}"
 
 
@@ -3091,3 +3208,143 @@ def test_notebook_code_cells_are_scanned():
                if p.suffix == ".ipynb"}
     assert any(t.startswith("notebooks/") for t in tracked), tracked
     assert not any(t.startswith("archive/") for t in tracked), tracked
+
+
+# ── Round 13 (Codex, PR #993) ───────────────────────────────────────────────
+
+
+def test_an_unrelated_inner_binding_does_not_hide_a_module_setting():
+    """`_rebound_in_an_inner_scope` was too broad, and it was mine.
+
+    Round 12 suppressed a module-level setting whenever ANY inner scope bound
+    the same name. But a local, a parameter or a comprehension target does not
+    change what importers read off the module -- it shadows the name inside
+    one scope and leaves the exported value exactly as written. So an
+    unrelated helper with its own `TIME_ZONE` variable hid a real exported
+    fixed zone.
+
+    Only a binding that can actually REPLACE the module value suppresses now,
+    which is `global NAME` plus an assignment.
+    """
+    legacy, _ = _hits_all('TIME_ZONE = "EST"\n\n'
+                      'def fmt(value):\n'
+                      '    TIME_ZONE = value\n'
+                      '    return TIME_ZONE\n')
+    assert any("EST" in h for h in legacy), (
+        f"an unrelated local named TIME_ZONE hid the exported setting: {legacy}")
+
+    legacy, _ = _hits_all('TIME_ZONE = "EST"\n\n'
+                      'def setup():\n'
+                      '    global TIME_ZONE\n'
+                      '    TIME_ZONE = "America/New_York"\n')
+    assert not legacy, (
+        f"a global rebinding really can replace the module value: {legacy}")
+
+
+def test_a_notebook_cell_is_read_by_the_python_analyzer():
+    """Text matching cannot see `timezone(timedelta(hours=-5))`.
+
+    Round 12 routed notebook code cells to the regex path and I recorded that
+    limit rather than closing it. It is reachable: that call has no textual
+    `-05:00` for any pattern to match, so a cell could build a frozen Eastern
+    zone with both guards green (Codex, PR #993).
+    """
+    nb = json.dumps({"cells": [
+        {"cell_type": "code", "source": [
+            "from datetime import timezone, timedelta\n",
+            "ET = timezone(timedelta(hours=-5))\n"]},
+    ]})
+    _legacy, offsets = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    assert offsets, "a constant timedelta offset in a cell must be a finding"
+
+    # A cell carrying a magic is not valid Python; the scan must still read
+    # what it can rather than silently analysing nothing.
+    nb = json.dumps({"cells": [
+        {"cell_type": "code", "source": [
+            "%matplotlib inline\n", "tz = 'US/Eastern'\n"]},
+    ]})
+    legacy, _offsets = _notebook_hits(REPO / "notebooks" / "_probe.ipynb", nb)
+    assert legacy, "a cell with a magic still has to be scanned"
+
+
+def test_an_aliased_timedelta_is_resolved():
+    """`from datetime import timedelta as TD; timezone(TD(hours=-5))`.
+
+    The constructor was matched by literal name while the environment already
+    recorded the alias, so renaming the import walked past the offset check --
+    the same provenance gap already closed for `ZoneInfo` and `timezone`.
+    """
+    _legacy, offsets = _hits('from datetime import timezone, timedelta as TD\n'
+                             'ET = timezone(TD(hours=-5))\n')
+    assert offsets, "an aliased timedelta is still a timedelta"
+
+
+def test_dateutils_posix_string_constructor_is_recognized():
+    """`tzstr("EST5")` builds a frozen UTC-5 zone, and python-dateutil is a
+    declared dependency here."""
+    _legacy, offsets = _hits('from dateutil.tz import tzstr\n'
+                             'ET = tzstr("EST5")\n')
+    assert offsets, "tzstr is a fixed-offset constructor"
+
+    # Provenance gates the AMBIGUOUS token, as for every other generic name.
+    # `EST5` itself is not gated and must not be: like `Etc/GMT+5` it means a
+    # frozen offset and nothing else, so it is reported through any call --
+    # the same rule the unambiguous zone names already follow.
+    legacy, _offsets = _hits('parser.tzstr("EST")\n')
+    assert not legacy, "an unrelated receiver must not fail CI on a stop-word"
+    _legacy, offsets = _hits('parser.tzstr("EST5")\n')
+    assert offsets, "EST5 is unambiguous, so no receiver excuses it"
+
+
+def test_the_scan_reads_only_tracked_files():
+    """A guard whose result depends on the working tree is not hermetic.
+
+    `REPO.rglob` walked untracked files, so a local scratch file or copied
+    build output containing `ZoneInfo("US/Eastern")` failed a guard about
+    repository sources (Codex, PR #993).
+    """
+    scratch = REPO / "_scratch_untracked_tz_probe.py"
+    scratch.write_text('from zoneinfo import ZoneInfo\n'
+                       'ET = ZoneInfo("US/Eastern")\n')
+    try:
+        _scan.cache_clear()
+        legacy, _offsets = _scan()
+        assert not any("_scratch_untracked_tz_probe" in h for h in legacy), (
+            "an untracked file decided the result of a hermetic guard")
+    finally:
+        scratch.unlink()
+        _scan.cache_clear()
+
+
+def test_the_runtime_json_configuration_is_scanned():
+    """`alert_config.json` is loaded by `lib.config.load_config` in production.
+
+    Every JSON file was excluded as non-source, which is right for fixtures
+    and wrong for the one file the application actually reads its settings
+    from (Codex, PR #993).
+    """
+    tracked = {str(p.relative_to(REPO)) for p in _source_files()}
+    assert "alert_config.json" in tracked, sorted(
+        t for t in tracked if t.endswith(".json"))
+    # Fixtures stay out: they legitimately carry canned values.
+    assert not any(t.startswith("tests/") and t.endswith(".json")
+                   for t in tracked), sorted(
+        t for t in tracked if t.endswith(".json"))
+
+
+def test_a_scheduler_verb_split_across_lines_is_still_a_declaration():
+    """`gcloud scheduler jobs \\` then `create http ...`.
+
+    The verb was matched per physical line before continuations were joined,
+    so a wrapped declaration was invisible -- and an invisible declaration
+    with no `--time-zone` is a UTC scheduler the guard reports as fine.
+    """
+    func = (
+        'deploy() {\n'
+        '  gcloud scheduler jobs \\\n'
+        '    create http j1 --schedule "0 2 * * *" --uri https://x\n'
+        '}\n'
+    )
+    assert _scheduler_commands(func), "a wrapped invocation is an invocation"
+    assert _scheduler_offenders("deploy", func), (
+        "it carries no --time-zone, so it creates a UTC scheduler")
