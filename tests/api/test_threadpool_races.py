@@ -1056,3 +1056,93 @@ def test_peers_age_on_their_own_timestamp():
     assert ticker_info._is_fresh(entry, 30), "the overview really is fresh"
     assert not ticker_info._is_fresh(entry, 30, "_peers_fetched_utc"), (
         "60-day-old peers were reported fresh because the overview was")
+
+
+def test_nothing_calls_move_to_end_outside_the_wrapper():
+    """`get_and_touch` exists so no caller has to get the sequence right.
+
+    `move_to_end` stays on the wrapper because an `OrderedDict` cache needs
+    it, but every use of it from a call site is the two-step form that raised
+    `KeyError` on a valid hit. Forbidding it in `platform/api/` keeps the one
+    correct sequence the only reachable one; a caller that genuinely needs a
+    bare touch under its own `lock` can add itself here deliberately.
+    """
+    import re
+    from pathlib import Path
+
+    api = Path(__file__).resolve().parent.parent.parent / "platform" / "api"
+    offenders = []
+    for path in sorted(api.rglob("*.py")):
+        if path.name == "threadsafe_cache.py":
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if re.search(r"\.move_to_end\s*\(", line):
+                offenders.append(f"{path.relative_to(api)}:{i}: {line.strip()}")
+    assert not offenders, (
+        "use ThreadSafeCache.get_and_touch — a separate touch reopens the "
+        "window a concurrent eviction fits into:\n  " + "\n  ".join(offenders))
+
+
+def test_a_cold_catalyst_fetch_is_coalesced(tmp_path, monkeypatch):
+    """Two concurrent cold requests must hit Benzinga once, not twice.
+
+    This handler is a plain `def` now, so both requests run in separate worker
+    threads, both pass the cache-existence check, and each walks every
+    configured Benzinga calendar endpoint. `_SAVE_LOCK` is taken after that
+    batch and protects the file, not the vendor quota (Codex, PR #991).
+    """
+    import threading
+
+    from api.routers import catalysts as mod
+
+    calls = []
+    in_fetch = threading.Event()
+    release = threading.Event()
+
+    def _slow_fetch(d_from, d_to, tickers=None, calendar_types=None):
+        calls.append((d_from, d_to))
+        in_fetch.set()
+        release.wait(2.0)          # hold the claim while the peer arrives
+        return [{"date": d_from, "ticker": "IWM"}]
+
+    monkeypatch.setattr(mod, "_fetch_live_events", _slow_fetch)
+    monkeypatch.setattr(mod, "_load_cached_events",
+                        lambda: {"events": [{"date": "x", "ticker": "IWM"}]})
+
+    key = "2026-09-01:2026-09-10:"
+    results = []
+
+    def claimant():
+        with mod._CATALYST_FLIGHT.claim(key) as mine:
+            assert mine, "the first caller must own the work"
+            results.append(mod._fetch_live_events("2026-09-01", "2026-09-10"))
+
+    def decliner():
+        in_fetch.wait(2.0)
+        with mod._CATALYST_FLIGHT.claim(key) as mine:
+            assert not mine, "the second caller must decline while one is in flight"
+            mod._CATALYST_FLIGHT.wait(key, 0.2)   # bounded; claimant still busy
+            results.append(mod._load_cached_events()["events"])
+
+    a = threading.Thread(target=claimant)
+    b = threading.Thread(target=decliner)
+    a.start(); b.start()
+    in_fetch.wait(2.0)
+    b.join(3.0)
+    release.set()
+    a.join(3.0)
+
+    assert len(calls) == 1, f"the vendor batch ran {len(calls)} times: {calls}"
+    assert len(results) == 2, "both callers must return an answer"
+    assert all(r for r in results), "neither caller may return nothing"
+
+
+def test_the_catalyst_wait_is_bounded():
+    """A decliner must not hold a worker on a slow vendor indefinitely."""
+    from api.routers import catalysts as mod
+    assert isinstance(mod._CATALYST_WAIT_S, (int, float))
+    assert 0 < mod._CATALYST_WAIT_S <= 30, (
+        f"_CATALYST_WAIT_S={mod._CATALYST_WAIT_S} either does not bound the "
+        f"wait or holds a FastAPI worker far longer than a Benzinga round trip")
