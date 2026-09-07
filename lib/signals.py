@@ -6,11 +6,15 @@ Extracted from analyze_market_data_enhanced.py and unified with the
 alert parameters from alert_config.json.
 """
 
+import logging
+
 import pandas as pd
 import numpy as np
 from typing import List, Tuple, Optional
 
 from lib.config import IndicatorConfig, SignalConfig
+
+log = logging.getLogger(__name__)
 
 
 def _factor_allowed(name: str, enabled_conditions: Optional[List[str]]) -> bool:
@@ -252,6 +256,20 @@ def evaluate_signal(
                     try:
                         dc = _json.loads(dc)
                     except Exception:
+                        # AUDIT-2026-09-07: silent fallback (audit C-04) --
+                        # malformed disabled_conditions JSON becomes "nothing
+                        # is disabled", so a condition an operator switched
+                        # OFF for risk reasons is silently switched back on.
+                        # Now logged, so the failure is visible; still
+                        # degrades, because what a resolver failure should do
+                        # to a live signal is a product decision, not a
+                        # refactor. Tracked as OPEN in
+                        # docs/audits/FALLBACK_AUDIT_2026-05-13.md §12.1.
+                        log.warning(
+                            "%s: disabled_conditions is not valid JSON (%r) — "
+                            "treating as EMPTY, so any condition disabled for "
+                            "this ticker is re-enabled for this evaluation",
+                            ticker, dc)
                         dc = []
                 if dc:
                     disabled_set = set(dc)
@@ -262,10 +280,19 @@ def evaluate_signal(
                     call_score -= (pre_call - len(call_conds))
                     put_score -= (pre_put - len(put_conds))
             disabled_directions = get_disabled_directions(ticker.upper())
-        except Exception:
-            # Resolver failure → degrade silently to Tier-B (legacy
-            # behaviour); the resolver itself logs the cause.
-            pass
+        except Exception as exc:
+            # AUDIT-2026-09-07: silent fallback (audit C-04) -- degrades to
+            # Tier-B (legacy behaviour) on any resolver failure.
+            #
+            # The old comment said "the resolver itself logs the cause". That
+            # is only true when the resolver ran: a failure in the import, in
+            # `_json.loads`, or in the list comprehensions above never reaches
+            # it, so those degraded in total silence. Logged here instead of
+            # relying on a layer that may not have been entered.
+            log.warning(
+                "%s: exit-override resolver failed (%s: %s) — evaluating "
+                "with NO disabled conditions or directions applied",
+                ticker, type(exc).__name__, exc)
 
     signal = None
 

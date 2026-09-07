@@ -1079,15 +1079,20 @@ def build_summary(
     total = total_gex_from_strikes(gex_strikes)
     gamma_balance = compute_gamma_balance(strikes, spot.price) if strikes else None
     # True BS-recurved zero-gamma level (the real regime divider). Uses the RAW
-    # chain (per-contract K/T/σ). r/q via the same-day daily_rates lookup (its own
-    # fallback keeps this from raising when the table is absent). None on a thin /
-    # no-crossing chain (§3.7 — never a fabricated 0).
-    from lib.options_greeks import get_rate_and_yield
-    _r, _q = get_rate_and_yield(snapshot_date)
+    # chain (per-contract K/T/σ). r/q from the same-day daily_rates lookup,
+    # which RAISES rather than substituting a stale constant (fallback-audit
+    # C-03) — so an unavailable rate joins the thin-chain case and yields
+    # None, never a flip level computed from a rate nobody measured.
+    from lib.options_greeks import get_rate_and_yield, RateLookupError
+    try:
+        _r, _q = get_rate_and_yield(snapshot_date)
+    except RateLookupError as exc:
+        log.error("gamma_flip unavailable for %s: %s", snapshot_date, exc)
+        _r = _q = None
     gamma_flip = compute_gamma_flip_bs(
         chain, spot.price, risk_free=_r, dividend_yield=_q,
         snapshot_date=snapshot_date,
-    ) if chain else None
+    ) if chain and _r is not None else None
     # Regime from the SIGN of net dealer gamma (total GEX) — the vol-defining
     # convention: total_gex < 0 ⇒ dealers short gamma ⇒ amplified realized vol
     # (negative-gamma regime). This REPLACES the prior `spot > gamma_balance`
@@ -1289,12 +1294,17 @@ def build_grid_summary(
     # two views can never disagree.
     strikes_1d = aggregate_by_strike(chain)
     gamma_balance = compute_gamma_balance(strikes_1d, spot.price) if strikes_1d else None
-    from lib.options_greeks import get_rate_and_yield
-    _r, _q = get_rate_and_yield(snapshot_date)
+    # Same contract as build_summary above: no measured rate -> no flip level.
+    from lib.options_greeks import get_rate_and_yield, RateLookupError
+    try:
+        _r, _q = get_rate_and_yield(snapshot_date)
+    except RateLookupError as exc:
+        log.error("gamma_flip unavailable for %s: %s", snapshot_date, exc)
+        _r = _q = None
     gamma_flip = compute_gamma_flip_bs(
         chain, spot.price, risk_free=_r, dividend_yield=_q,
         snapshot_date=snapshot_date,
-    ) if chain else None
+    ) if chain and _r is not None else None
 
     # ── Totals (consistent with 1-D summary by construction) ───────────────
     total_gex = sum(c.gex for c in cells)

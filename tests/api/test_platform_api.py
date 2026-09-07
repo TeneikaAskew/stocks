@@ -1537,6 +1537,102 @@ class TestLiveMarketAPI:
         assert data["change_pct"] == pytest.approx(0.7835)
         assert data["volume"] == 31000000
 
+    def _quote_payload(self, **overrides):
+        """A well-formed GLOBAL_QUOTE, with fields removable per test.
+
+        Pass `key=None` to delete a field, mirroring a truncated payload.
+        """
+        q = {
+            "01. symbol": "IWM",
+            "02. open": "204.00",
+            "03. high": "206.50",
+            "04. low": "203.10",
+            "05. price": "205.80",
+            "06. volume": "31000000",
+            "07. latest trading day": "2026-05-15",
+            "08. previous close": "204.20",
+            "09. change": "1.60",
+            "10. change percent": "0.7835%",
+        }
+        for key, value in overrides.items():
+            if value is None:
+                q.pop(key, None)
+            else:
+                q[key] = value
+        return {"Global Quote": q}
+
+    # ── Rule 3.7: a malformed vendor payload must not become a $0.00 quote ──
+    #
+    # These four could not be written before: `_float` returned 0.0 on any
+    # parse failure and every `.get()` carried a "0" default, so all of them
+    # returned HTTP 200 with a quote reading `price: 0.0` — indistinguishable
+    # from a real measurement on the endpoint the dashboard polls every 15s.
+
+    @pytest.mark.parametrize("field,label", [
+        ("05. price", "price"),
+        ("02. open", "open"),
+        ("03. high", "high"),
+        ("04. low", "low"),
+        ("06. volume", "volume"),
+    ])
+    def test_live_quote_missing_required_field_is_502_not_zero(
+            self, client, monkeypatch, field, label):
+        from api.routers import live as live_module
+        monkeypatch.setattr(live_module, "AV_API_KEY", "TESTKEY")
+        payload = self._quote_payload(**{field: None})
+        monkeypatch.setattr(live_module.httpx, "AsyncClient",
+                            self._fake_async_client(payload))
+
+        r = client.get("/api/live/quote/IWM")
+        assert r.status_code == 502, (
+            f"a payload with no {label} was served as a 200; "
+            f"body={r.json()!r}")
+        assert label in r.json()["detail"]
+
+    def test_live_quote_unparseable_price_is_502_not_zero(self, client, monkeypatch):
+        from api.routers import live as live_module
+        monkeypatch.setattr(live_module, "AV_API_KEY", "TESTKEY")
+        payload = self._quote_payload(**{"05. price": "N/A"})
+        monkeypatch.setattr(live_module.httpx, "AsyncClient",
+                            self._fake_async_client(payload))
+
+        r = client.get("/api/live/quote/IWM")
+        assert r.status_code == 502
+        assert "price" in r.json()["detail"]
+
+    def test_live_quote_missing_optional_fields_are_null_not_zero(
+            self, client, monkeypatch):
+        """change / change_pct / prev_close are `number | null` in solyra's
+        LiveQuote, so absence is in-contract and renders as an em-dash.
+        A 0.00 change would read as "flat", which is a different claim."""
+        from api.routers import live as live_module
+        monkeypatch.setattr(live_module, "AV_API_KEY", "TESTKEY")
+        payload = self._quote_payload(**{
+            "09. change": None, "10. change percent": None,
+            "08. previous close": None,
+        })
+        monkeypatch.setattr(live_module.httpx, "AsyncClient",
+                            self._fake_async_client(payload))
+
+        r = client.get("/api/live/quote/IWM")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["price"] == pytest.approx(205.80)
+        for k in ("change", "change_pct", "prev_close"):
+            assert data[k] is None, f"{k} was {data[k]!r}, expected null not 0"
+
+    def test_live_quote_unparseable_optional_field_is_null_not_zero(
+            self, client, monkeypatch):
+        from api.routers import live as live_module
+        monkeypatch.setattr(live_module, "AV_API_KEY", "TESTKEY")
+        payload = self._quote_payload(**{"09. change": "--"})
+        monkeypatch.setattr(live_module.httpx, "AsyncClient",
+                            self._fake_async_client(payload))
+
+        r = client.get("/api/live/quote/IWM")
+        assert r.status_code == 200
+        assert r.json()["change"] is None
+
     def test_live_quote_503_without_api_key(self, client, monkeypatch):
         """No AV key configured → 503 (never fakes a quote)."""
         from api.routers import live as live_module

@@ -456,12 +456,16 @@ def _fetch_on_demand(
     # Inline BSM Greeks solver for SPX/NDX/RUT/XSP — AV returns "-" for
     # index-option Greeks; without this enrichment the gamma math returns
     # zero across the chain (visible as a flat heatmap).
+    from lib.options_greeks import (
+        COMPUTE_GREEKS_TICKERS,
+        enrich_av_chain_with_greeks,
+    )
+    # Imported OUTSIDE the try: the handler below decides what to do based on
+    # whether this ticker needs computed Greeks, so the name has to be bound
+    # even when the body raises.
+    needs_computed = ticker.upper() in COMPUTE_GREEKS_TICKERS
     try:
-        from lib.options_greeks import (
-            COMPUTE_GREEKS_TICKERS,
-            enrich_av_chain_with_greeks,
-        )
-        if ticker.upper() in COMPUTE_GREEKS_TICKERS:
+        if needs_computed:
             snap_date = snapshot_ts.date()
             df = enrich_av_chain_with_greeks(df, ticker, snap_date)
             # Coalesce sidecar *_computed columns into the primary Greek
@@ -476,6 +480,46 @@ def _fetch_on_demand(
                 "rho":   "rho_computed",
                 "implied_volatility": "implied_volatility_computed",
             }
+            # No sidecars means the rate lookup failed and
+            # `enrich_av_chain_with_greeks` returned the chain untouched.
+            # For these tickers that is NOT a degraded-but-usable result: AV
+            # supplies `-`/NaN Greeks for SPX/NDX/RUT/XSP -- which is the
+            # whole reason they are in COMPUTE_GREEKS_TICKERS -- so gamma and
+            # vega stay NaN, `build_grid_summary`'s aggregators sum them to
+            # ZERO, and the response goes out labelled `realtime` with
+            # zero-valued cells. A fabricated flat reading presented as a live
+            # measurement (Rule 3.7), and indistinguishable from a genuinely
+            # flat market.
+            #
+            # Raise so the caller's `unavailable` envelope answers instead.
+            #
+            # FINITE COVERAGE, not column presence. Column presence was the
+            # first version of this check and it does not hold: when no spot
+            # is derivable `enrich_av_chain_with_greeks` explicitly ADDS the
+            # sidecars filled entirely with NaN and returns
+            # (lib/options_greeks.py, the `No spot derivable` branch), and an
+            # all-failed IV solve produces the same shape. The columns exist,
+            # the check passed, the coalesce filled NaN over NaN, and the grid
+            # published zeros labelled `realtime` anyway (Codex, PR #994).
+            #
+            # Zero finite values means no measurement was made at all, which
+            # is the case this refuses. PARTIAL coverage still passes here and
+            # is a real, narrower version of the same problem: `build_summary`
+            # gates on `lib.gamma.greeks_coverage`, `build_grid_summary` has no
+            # such gate, so a chain where most solves failed still aggregates
+            # the misses to zero per cell.
+            # AUDIT-2026-09-07: silent fallback -- partial computed-Greek
+            # coverage reaches build_grid_summary ungated; needs the
+            # greeks_coverage treatment build_summary already has, which
+            # changes the grid response shape and belongs in its own PR.
+            computed_gamma = df["gamma_computed"] if "gamma_computed" in df.columns else None
+            n_finite = 0 if computed_gamma is None else int(
+                pd.to_numeric(computed_gamma, errors="coerce").notna().sum())
+            if n_finite == 0:
+                raise RuntimeError(
+                    f"computed Greeks unavailable for {ticker}: "
+                    f"{'no gamma_computed column' if computed_gamma is None else 'all values NaN'}"
+                    "; refusing to publish a zero-exposure grid as realtime")
             for primary, sidecar in sidecar_map.items():
                 if sidecar in df.columns:
                     # Prefer the existing primary value when present;
@@ -484,14 +528,20 @@ def _fetch_on_demand(
                     # AV-supplied Greek with a less-accurate BSM one.
                     df[primary] = df[primary].where(df[primary].notna(), df[sidecar])
     except Exception as exc:
-        # BSM enrichment failure is non-fatal — return the AV chain
-        # with NaN Greeks. The heatmap will be flat for SPX but other
-        # tickers (NVDA, TSLA) won't reach this branch at all (they're
-        # not in COMPUTE_GREEKS_TICKERS).
-        logger.warning(
+        # For a COMPUTE_GREEKS ticker this is fatal to the request, not
+        # cosmetic: "the heatmap will be flat for SPX" was the old comment,
+        # and a flat heatmap IS the wrong answer -- it reads as a measured
+        # zero rather than a missing one. Surface the typed `unavailable`
+        # envelope the UI already renders and re-polls.
+        logger.error(
             "BSM enrichment failed for %s: %s: %s",
             ticker, type(exc).__name__, exc,
         )
+        if needs_computed:
+            # Empty contracts IS the unavailable signal: the caller reads
+            # `data_source = "realtime" if contracts else "unavailable"` and
+            # builds the typed envelope from there.
+            return ([], None, None)
 
     # Persist so subsequent requests are cache hits, not new AV calls.
     if is_cloud_sql_configured():

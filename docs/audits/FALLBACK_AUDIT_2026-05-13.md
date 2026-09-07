@@ -641,4 +641,182 @@ Re-run quarterly. The fact that the C-01 swallow survived its own remediation PR
 
 ---
 
+## §12 Status re-verification — 2026-09-06
+
+This audit was written as an inventory and never re-read against the tree it
+describes. Four months on, nobody could say which of its ~121 findings were
+fixed without re-reading every file, and the doc's own closing line predicted
+exactly that: *"the fact that the C-01 swallow survived its own remediation PR
+is the load-bearing evidence that periodic re-audit beats trusting 'we already
+fixed that.'"*
+
+Every claim below was re-read from the current tree on 2026-09-06. Where the
+finding is fixed, it says how; where it is not, it says what still stands.
+
+### 12.1 The six CRITICAL findings
+
+| # | 2026-05-13 | 2026-09-06 status |
+|---|---|---|
+| C-01 | `gcp/database.py` `query_to_dataframe()` swallows every exception | **PARTIAL.** `query_to_dataframe_strict()` now exists as the raising sibling and the swallowing one carries a docstring warning naming Rule 3.7. But it still swallows, and the callers did not move: **119 call sites use the swallowing helper, 14 use strict.** The trap is documented, not removed. |
+| C-02 | `lib/data_loader.py` same swallow one layer up | **PARTIAL.** Now `log.exception` with a message telling callers that empty means "errored, not zero rows". Still returns an empty DataFrame that no caller checks. |
+| C-03 | `lib/options_greeks.py` hardcoded risk-free rate on FRED failure | **FIXED on this branch.** See §12.2. |
+| C-04 | `lib/signals.py` disabled-conditions resolver swallows | **OPEN.** Marked FIXED here on the strength of PRs #358, #372, #329, and re-checked 2026-09-07 (Codex, PR #994): **both handlers the finding describes are still in the code.** `lib/signals.py:254` turns malformed `disabled_conditions` JSON into `dc = []`, which re-enables a condition an operator disabled for risk; `lib/signals.py:265` swallows any resolver failure with `pass`. Both now LOG rather than degrading in total silence (the old comment claimed "the resolver itself logs the cause", which only holds when the resolver was actually reached). They still degrade: what a resolver failure should do to a live trading signal is a product decision, not a refactor, so it is not being made inside a docs-accuracy fix. Reproduce with `python scripts/audit_silent_fallbacks.py --json`. |
+| C-05 | six `continue-on-error: true` in fetcher workflows | **FIXED.** `grep -rn "continue-on-error" .github/workflows/` returns nothing. |
+| C-06 | `gcp/signal_monitor.py` `refresh_level_map` swallow | **FIXED** — PR #339. |
+
+So **three** of six are closed and three remain: two as a documented trap
+rather than a fix, and C-04 as a status that was simply wrong — it was
+recorded closed while its handlers ran in production, which is worse than
+either, because a finding marked FIXED leaves the prioritised backlog. That is worth stating plainly: adding `query_to_dataframe_strict` beside
+`query_to_dataframe` made the right thing *possible* without making the wrong
+thing *stop*, and 119 callers still take the wrong one by default.
+
+### 12.2 What this branch fixes
+
+| Site | Was | Now | Test |
+|---|---|---|---|
+| `lib/options_greeks.py` `get_rate_and_yield` (C-03) | returned `_DEFAULT_RISK_FREE = 0.045` (a late-2024 rate) on any failure, at `log.debug` | raises `RateLookupError`, with a 7-day bound on the backstop row so a stopped `fred-rates-daily` cannot serve a 2016 rate. `allow_defaults=True` is the opt-in escape hatch and logs at WARNING | `tests/test_options_greeks.py` (8 cases) |
+| `lib/gamma.py` ×2 | `gamma_flip` computed from that constant | `gamma_flip = None` when the rate is unavailable, joining the thin-chain case the field already models | `tests/test_gamma.py` |
+| `lib/options_greeks.py` `enrich_av_chain_with_greeks` | Greeks computed from the constant | returns the chain **without** the `*_computed` columns, at ERROR | `tests/test_silent_fallback_fixes.py` |
+| `platform/api/routers/live.py` `_float` | `0.0` for any unparseable field, over `.get(key, "0")` defaults, so a malformed AlphaVantage payload produced `price: 0.0` on the endpoint the dashboard polls every 15 s | required fields (price/OHLC/volume) raise 502, matching what the handler already does for an empty `Global Quote`; nullable fields (change/change_pct/prev_close) return `None`, which is already `number \| null` in solyra's `LiveQuote` | `tests/test_platform_api.py` (8 cases) |
+| `lib/strat_levels.py` `_trading_days_between` | `return 0` when the NYSE calendar failed | raises. **This one switched a guard off:** the only caller is `if biz_days > max_age_business_days: raise StaleSourceDataError`, and 0 is never greater than the threshold, so a calendar failure silently permitted writing a level map built off stale `market_data_daily` — the incident that guard exists to prevent | `tests/test_silent_fallback_fixes.py` |
+| `platform/api/routers/journal.py` `_load_local` | `[]` for a corrupt file | raises 500. `_save_local` writes the returned list straight back, so the next logged trade replaced a recoverable file with a one-entry list. A missing file still returns `[]` — that is the legitimate empty | `tests/test_silent_fallback_fixes.py` |
+
+Every one of these shares a shape worth naming: **no test could tell the two
+worlds apart.** The endpoint returned 200 either way, the Greeks were populated
+either way, the journal looked empty either way. That is why they survived an
+audit that named them.
+
+### 12.3 The inventory is now a script
+
+`scripts/audit_silent_fallbacks.py` replaces the hand-maintained list. It walks
+the AST for exception handlers that return a neutral value without re-raising,
+and reports two signals that predict severity:
+
+```bash
+python scripts/audit_silent_fallbacks.py           # full inventory
+python scripts/audit_silent_fallbacks.py --worst   # broad, unlogged, container-or-zero
+python scripts/audit_silent_fallbacks.py --json    # diff against the last run
+```
+
+Current reading (2026-09-07, excluding `tests/`, `docs/`, `archive/`):
+
+```
+$ python scripts/audit_silent_fallbacks.py
+423 swallowing handlers in 122 files; 245 return a container or a zero rather than None
+
+$ python scripts/audit_silent_fallbacks.py --worst
+54 swallowing handlers in 35 files (broad, unlogged, container-or-zero); 54 return a container or a zero rather than None
+```
+
+The 2026-09-06 reading recorded here was `255 swallowing handlers in 88 files;
+146 return a container or a zero rather than None`, and neither number was
+right. Two scanner defects, both found in review (Codex, PR #994):
+
+* it walked `Return` nodes only, so a handler that swallows by ASSIGNMENT
+  (`dc = []`) or by `pass` was invisible -- about a third of the inventory,
+  including the C-04 handlers the script was written to keep visible;
+* `forbidden_shape` intersected the DISPLAY strings (`dc = []`) with the
+  shape set (`[]`), so no assignment ever counted as a forbidden shape and
+  `--worst` omitted them all;
+* `break` was recorded as a shape but left out of `FORBIDDEN_SHAPES`, on the
+  argument that abandoning a loop after an error is often deliberate flow
+  control. Both live sites are pagination loops that return the pages already
+  fetched as a complete result (`gcp/fetchers/fetch_economic_events.py:315`,
+  `scripts/fetch_catalyst_calendar.py:169`), which is the same lie `continue`
+  tells one item at a time. Now forbidden, and `--worst` ranks it;
+* a `Raise` ANYWHERE in a handler short-circuited the whole scan, so a
+  handler that raises on one branch and substitutes on another reported
+  nothing. Only an UNCONDITIONAL raise -- one at the handler's top level, where
+  everything after it is dead -- suppresses a finding now. That is what made
+  `platform/api/routers/journal.py:1211` and `:1277` visible: for a signed-out
+  owner a failed dedupe lookup becomes `existing_keys = set()`, so an import
+  re-adds trades the journal already holds;
+* it did not record LOOP-CONTROL swallows at all. `except Exception: continue`
+  drops the current item and the collection comes back short with no caller
+  able to tell -- `lib/data_loader.py:513` omits a timeframe that was asked
+  for, and `scripts/fetch_earnings_calendar.py` drops earnings rows in three
+  places. There is no value to name in a `continue`, which is exactly why a
+  scanner built on returns could not see it.
+
+A third defect moved the count the other way: `ast.walk` descended into nested
+`except` blocks, so an inner handler's fallback was attributed to every
+enclosing handler too. Fixing that removed four double-counted rows.
+
+Two deliberate distinctions the script encodes, because both were wrong in my
+first pass at it:
+
+* **`None` is usually right.** It is what Rule 3.7 asks for in place of a
+  coerced `0`, and a nullable contract renders it as an em-dash. A neutral
+  **container or number** is the shape the rule is about. 146 of the 255 are
+  the latter.
+* **"Surfaced" is broader than "logged".** `gcp/audit_infra_drift.py` appends
+  to a report object that is posted to Discord — louder than a log line. An
+  earlier version flagged it as silent, which was wrong.
+
+The script exits 0 always. Failing CI on 255 known sites would teach people to
+skip it; the value is the diff between runs.
+
+### 12.4 Prioritised backlog — what is left, in order
+
+**P1 — a fabricated value reaches a user or a decision**
+
+1. `platform/api/routers/journal.py` `_insert_cloud_sql_trade` returns
+   `str(uuid.uuid4())` when the post-insert ID lookup misses: a plausible ID
+   matching no row, so a later close or delete silently no-ops. Fix is
+   `INSERT ... RETURNING id`, which needs a commit-and-return helper
+   `gcp/database.py` does not have yet. Tracked on **#991**.
+2. `platform/api/routers/signals.py:187` serves the legacy GCS parquet path
+   when the Cloud SQL query raises, at `log.warning`, and the response's
+   `source` field is the only thing that distinguishes it — a field no
+   consumer checks. Verified on `main` at 2026-09-06.
+
+   `platform/api/main.py:503` (`get_available_dates`) is the same shape and is
+   **fixed on #992**, which turns it into a 503 rather than a silent downgrade.
+   Two earlier line references I carried from a #991 investigation
+   (`main.py:892`, `main.py:1430`) do not exist: `main.py` is 1,321 lines on
+   `main` today. Correcting rather than repeating them, since re-citing a stale
+   line number is the habit this whole section is about. The AV→Cloud SQL step
+   at `main.py:736` is **not** a failure fallback — it is a tiered source by
+   design (AlphaVantage for the current week, Cloud SQL for history) and the
+   response labels which one answered.
+3. `lib/strategies/exit_config_overrides.py` `get_disabled_directions()`
+   returns `set()` on failure — an empty disable-list reads as "nothing is
+   disabled", which is how C-04's incident happened in `lib/signals.py`.
+
+**P2 — a swallowing helper defeats a strict caller**
+
+4. The 119 `query_to_dataframe` call sites (C-01). Not a single edit: each
+   needs a judgement about whether its caller can tell empty from failed.
+   Highest-value subset first: anything under `platform/api/`.
+5. `platform/api/gcs_reader.py` `list_matching_blobs` returns `[]` on any
+   storage error, which is what made a 503 one level up unreachable on #992.
+6. `gcp/database.py` `table_exists()` returns `False` on any error, so a
+   connection failure reads as "the table is absent" and callers create or
+   skip on that basis.
+
+**P3 — ingestion swallows; failure surfaces later as missing data**
+
+7. `scripts/fetch_earnings_calendar.py` (18 handlers), `lib/ticker_info.py`
+   (14), `gcp/fetchers/fetch_earnings_history.py` (11). These do not fabricate
+   a number; they lose rows quietly. The fix is per-fetcher and belongs with
+   the freshness-watchdog work rather than here.
+
+**Not a fallback, listed so it is not re-found**
+
+* `scripts/backfill_watchlist_data.py` `_scalar() -> 0` and
+  `gcp/backfill_ticker.py` `_safe_float() -> None`: the second is already
+  correct (None, not 0); the first is a genuine `-> 0` coercion but runs only
+  in a manual backfill whose output is inspected, so it is P3, not P1.
+
+### 12.5 What did not change, and why
+
+`query_to_dataframe` still swallows. Making it raise would change behaviour at
+119 call sites at once, which is the blast radius that forced #991 to be split.
+The right sequence is caller-by-caller, and each move needs its own answer to
+"can this caller tell empty from failed?" — a question this document can ask
+but not answer in bulk.
+
+---
+
 *End of audit.*
