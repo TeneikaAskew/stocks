@@ -62,24 +62,31 @@ def test_a_stale_secret_count_in_any_cell_is_caught(main_root, live):
 
 
 def test_a_stale_workflow_count_is_caught(main_root, live):
+    # Derived from the fixture, not written as a literal: adding a workflow to
+    # the repo used to break this test rather than exercise it, which is the
+    # failure the test below is specifically about.
+    n = len(live["_workflows"])
     c = _cell(main_root, "ext_gh")
-    c.set("value", c.get("value").replace("(6 workflows)", "(5 workflows)", 1))
+    c.set("value", c.get("value").replace(f"({n} workflows)", f"({n - 1} workflows)", 1))
     problems = dw.check(main_root, live)
-    assert any("ext_gh says 5 workflows" in p for p in problems), problems
+    assert any(f"ext_gh says {n - 1} workflows" in p for p in problems), problems
 
 
 def test_the_workflow_count_tracks_the_repo_not_a_literal(main_root, live):
-    """A seventh workflow must move the cell, not just the assertion.
+    """One more workflow must move the cell, not just the assertion.
 
     The earlier fix wrote the count once from REPLACEMENTS; this asserts the
     value is derived, by moving the input and requiring the output to follow.
+    Both counts here come from the fixture for the same reason -- pinning them
+    made the test itself the literal it was written to forbid.
     """
-    live7 = dict(live, _workflows=live["_workflows"] + ["a-new-one.yml"])
-    assert any("ext_gh says 6 workflows, live is 7" in p
-               for p in dw.check(main_root, live7))
-    dw._rewrite_main_counts(main_root, live7)
-    assert "(7 workflows)" in _cell(main_root, "ext_gh").get("value")
-    assert dw._check_main_counts(main_root, live7) == []
+    n = len(live["_workflows"])
+    live_plus = dict(live, _workflows=live["_workflows"] + ["a-new-one.yml"])
+    assert any(f"ext_gh says {n} workflows, live is {n + 1}" in p
+               for p in dw.check(main_root, live_plus))
+    dw._rewrite_main_counts(main_root, live_plus)
+    assert f"({n + 1} workflows)" in _cell(main_root, "ext_gh").get("value")
+    assert dw._check_main_counts(main_root, live_plus) == []
 
 
 def test_active_workflows_excludes_retired_files(tmp_path):

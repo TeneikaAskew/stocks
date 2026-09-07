@@ -159,15 +159,9 @@ def test_digest_step_writes_the_small_files_the_prompts_read():
 
 
 def test_gemini_transcripts_are_captured_for_the_truncation_gate():
-    """The transcript is written by the shared step script now, so follow the
-    invocation there rather than asserting on the workflow text -- a check
-    that stopped looking where the behaviour lives passes vacuously."""
-    step = (REPO / ".github/scripts/gemini_doc_step.sh").read_text()
-    assert '"${RUNNER_TEMP:?RUNNER_TEMP required}/transcripts/${PROMPT}.log"' in step
-    assert 'tee "$LOG"' in step
     for s in _steps():
         if "Regenerate" in (s.get("name") or ""):
-            assert "gemini_doc_step.sh" in s["run"], s["name"]
+            assert "$RUNNER_TEMP/transcripts/" in s["run"], s["name"]
 
 
 def test_verify_step_runs_the_structural_gates_and_the_live_verifier():
@@ -275,12 +269,10 @@ def test_transcripts_are_written_where_the_model_cannot_reach_them():
     four runs, so a transcript under refresh-inputs/ could be erased by a
     later invocation before the truncation gate reads it -- and the stray-write
     check excludes refresh-inputs/ (Codex, #1009)."""
-    step = (REPO / ".github/scripts/gemini_doc_step.sh").read_text()
-    assert "refresh-inputs/transcripts" not in step
-    assert "RUNNER_TEMP" in step and "/transcripts/" in step
     for s in _steps():
         if "Regenerate" in (s.get("name") or ""):
             assert "refresh-inputs/transcripts" not in s["run"], s["name"]
+            assert "$RUNNER_TEMP/transcripts" in s["run"], s["name"]
 
 
 def test_previous_tree_carries_every_doc_the_churn_gate_scores():

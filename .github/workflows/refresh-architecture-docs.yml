@@ -441,24 +441,6 @@ jobs:
           # the restore. Allowlisting them meant a model edit to their prose
           # was staged as legitimate. (Codex, PR #1009.)
           cp --parents docs/product/infrastructure/05-e-API.md docs/INVESTMENT_MODELS_SUMMARY.md "$RUNNER_TEMP/frozen/"
-          # The step script itself, and the list of documents a prompt may
-          # write. Both are read from the checkout HERE, before the model runs,
-          # and are executed/consumed from $RUNNER_TEMP afterwards.
-          #
-          # Gemini holds write_file/replace over the whole checkout for all
-          # four runs, and the stray-write scan only runs after the last one.
-          # A script invoked from the checkout between runs would therefore let
-          # a prompt-injected tool call rewrite it and have the NEXT step
-          # execute that as bash, with the WIF credentials and this job's
-          # contents:write already in hand. Running it from outside the
-          # workspace closes that. (Codex, PR #1032.)
-          cp .github/scripts/gemini_doc_step.sh "$RUNNER_TEMP/frozen/gemini_doc_step.sh"
-          chmod +x "$RUNNER_TEMP/frozen/gemini_doc_step.sh"
-          # Derived, not retyped: the same set the gates score and the
-          # stray-write scan allowlists. Captured pre-model for the same reason.
-          python -c 'import sys; sys.path.insert(0, "scripts/maintenance"); import check_generated_docs as g; print("\n".join(g.DOCS))' \
-            > "$RUNNER_TEMP/frozen/writable_docs.txt"
-          echo "documents a prompt may write:"; cat "$RUNNER_TEMP/frozen/writable_docs.txt"
           git rev-parse HEAD > "$RUNNER_TEMP/frozen/head.sha"
           # Everything already sitting untracked in the workspace BEFORE the
           # model ran. The stray-write scan below attributes an untracked file
@@ -476,8 +458,6 @@ jobs:
           test -f "$RUNNER_TEMP/frozen/docs/product/infrastructure/05-e-API.md"
           test -f "$RUNNER_TEMP/frozen/docs/INVESTMENT_MODELS_SUMMARY.md"
           test -f "$RUNNER_TEMP/frozen/untracked.before"
-          test -x "$RUNNER_TEMP/frozen/gemini_doc_step.sh"
-          test -s "$RUNNER_TEMP/frozen/writable_docs.txt"
           for F in live.json verify_live.json previous; do
             test -e "$RUNNER_TEMP/frozen/refresh-inputs/$F" || {
               echo "::error::freeze did not capture refresh-inputs/$F"; exit 1; }
@@ -501,11 +481,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          # One bounded retry, for a vendor transport failure only; anything
-          # else still fails on the first attempt. See the script's header for
-          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
-          # 13-minute run). It writes the transcript the truncation gate reads.
-          "$RUNNER_TEMP/frozen/gemini_doc_step.sh" architecture docs/product/infrastructure/05-a-ARCHITECTURE.md
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
+          gemini --model "${GEMINI_MODEL}" \
+            --prompt "$(cat .github/prompts/architecture.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/architecture.log"
 
       - name: Regenerate 05-c-DATA_DEPENDENCIES.md
         env:
@@ -513,11 +492,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          # One bounded retry, for a vendor transport failure only; anything
-          # else still fails on the first attempt. See the script's header for
-          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
-          # 13-minute run). It writes the transcript the truncation gate reads.
-          "$RUNNER_TEMP/frozen/gemini_doc_step.sh" data-dependencies docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
+          gemini --model "${GEMINI_MODEL}" \
+            --prompt "$(cat .github/prompts/data-dependencies.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/data-dependencies.log"
 
       - name: Regenerate 05-d-COST_ANALYSIS.md
         env:
@@ -525,11 +503,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          # One bounded retry, for a vendor transport failure only; anything
-          # else still fails on the first attempt. See the script's header for
-          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
-          # 13-minute run). It writes the transcript the truncation gate reads.
-          "$RUNNER_TEMP/frozen/gemini_doc_step.sh" cost-analysis docs/product/infrastructure/05-d-COST_ANALYSIS.md
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
+          gemini --model "${GEMINI_MODEL}" \
+            --prompt "$(cat .github/prompts/cost-analysis.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/cost-analysis.log"
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
@@ -539,11 +516,10 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          # One bounded retry, for a vendor transport failure only; anything
-          # else still fails on the first attempt. See the script's header for
-          # why (run 20, 2026-09-07: UND_ERR_BODY_TIMEOUT threw away a
-          # 13-minute run). It writes the transcript the truncation gate reads.
-          "$RUNNER_TEMP/frozen/gemini_doc_step.sh" readme README.md
+          set -o pipefail   # tee must not mask a nonzero gemini exit (Codex, #1009)
+          mkdir -p "$RUNNER_TEMP/transcripts"
+          gemini --model "${GEMINI_MODEL}" \
+            --prompt "$(cat .github/prompts/readme.md)" 2>&1 | tee "$RUNNER_TEMP/transcripts/readme.log"
 
       # ── Verify the regenerations actually happened and are complete ──────
       # The 2026-09-01 run shipped a placeholder COST_ANALYSIS.md, a
