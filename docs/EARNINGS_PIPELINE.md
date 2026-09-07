@@ -144,7 +144,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
   ┌───────────────────┐  ┌─────────────────┐  ┌───────────────────────┐
   │ fetch-earnings-   │  │ fetch-market-   │  │ premarket-refresh     │
   │ history (weekly)  │  │ data (daily)    │  │ (daily 08:20 ET)      │
-  │ Sun 06:00 ET      │  │ Mon–Fri 23:00   │  │                       │
+  │ Sun 19:15 ET      │  │ Mon–Fri 23:00   │  │                       │
   │ filter: 14d +     │  │ filter: 7d +    │  │ pulls intraday for    │
   │ has_options       │  │ has_options     │  │ earnings + watchlist  │
   └─────────┬─────────┘  └────────┬────────┘  └───────────┬───────────┘
@@ -156,7 +156,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
                  ▼                               ▼
    ┌──────────────────────────────┐   ┌────────────────────────┐
    │ compute-earnings-reactions   │   │ analyze-market-data    │
-   │ daily Mon–Fri 23:00 ET       │   │ daily (strat / FTFC)   │
+   │ daily Mon–Fri 19:30 ET       │   │ daily (strat / FTFC)   │
    │ joins eh × market_data_daily │   │                        │
    │ writes ATR around earnings   │   └────────────────────────┘
    └──────────────┬───────────────┘
@@ -167,7 +167,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
    ┌──────────────────────────────┐
    │ premarket-brief              │
    │ daily Mon–Fri 08:30 ET       │  ← THE REPORT TRADERS SEE
-   │ (Sunday 09:00 for week-ahead)│
+   │ (Sunday 21:00 for week-ahead)│
    └──────────────────────────────┘
 ```
 

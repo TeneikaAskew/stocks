@@ -33,7 +33,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 0 | — |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | Incomplete | P3 | 5 | 0 | — |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 12 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
-| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 64 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) [#831](https://github.com/TeneikaAskew/stocks/issues/831) |
+| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 66 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#833](https://github.com/TeneikaAskew/stocks/issues/833) [#831](https://github.com/TeneikaAskew/stocks/issues/831) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 4 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#920](https://github.com/TeneikaAskew/stocks/issues/920) [#930](https://github.com/TeneikaAskew/stocks/issues/930) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 9 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) |
@@ -526,7 +526,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 
 ### FEAT-DEPLOY-001
 
-**76 jobs, 64 schedulers, Cloud Run** — Infrastructure / deploy
+**76 jobs, 66 schedulers, Cloud Run** — Infrastructure / deploy
 
 | Field | Value |
 |---|---|

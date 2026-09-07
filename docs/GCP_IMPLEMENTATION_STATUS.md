@@ -158,7 +158,7 @@
   - [x] `migrate` command
   - [x] `build` command
   - [x] `fetchers` command
-  - [x] `schedulers` command (64 cron triggers)
+  - [x] `schedulers` command (66 cron triggers)
 
 ### Container
 - [x] `gcp/Dockerfile` — Updated with psycopg2 deps + scripts/
@@ -240,7 +240,7 @@
 ### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
 
 > **Historical record — superseded.** This is what was provisioned in Feb–Apr
-> 2026. Read live 2026-09-07 there are **64** scheduler entries. Three of the
+> 2026. Read live 2026-09-07 there are **66** scheduler entries. Three of the
 > lines below are no longer true of the live system: `fetch-market-data-daily`
 > now runs `0 23 * * 1-5` (not `0 17`), the 9 `etf-options-*` triggers were
 > removed with their job on 2026-04-26, and the 6 `earnings-opts-*` triggers
@@ -382,7 +382,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 > Based on data as of 2026-02: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler
 > triggers, and 7 jobs. **The fleet has grown well past this basis** — read live
-> 2026-09-07 there are 64 scheduler entries and 76 Cloud Run Jobs, so treat the figures
+> 2026-09-07 there are 66 scheduler entries and 76 Cloud Run Jobs, so treat the figures
 > below as a floor, not an estimate. `COST_ANALYSIS.md` carries the current view.
 
 | Service | Resource | Est. Cost/mo |

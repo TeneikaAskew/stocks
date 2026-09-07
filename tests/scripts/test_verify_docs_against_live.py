@@ -153,6 +153,61 @@ def test_count_claim_is_compared(tmp_path):
     assert "live count is 3" in out[0].detail
 
 
+def test_markdown_wrapped_live_count_is_read(tmp_path):
+    """`**...jobs** (~50 live)` is a count claim; the emphasis is not a boundary.
+
+    GCP_DATA_DICTIONARY.md writes the noun in bold, so `\\s*\\(` never reached
+    the parenthesis and the file could contradict its own live snapshot under
+    a clean run (Codex, PR #990).
+    """
+    out = _check(tmp_path, "| **Cloud Run — jobs** (~50 live) | ingestion |")
+    assert [f.check for f in out] == ["count-drift"]
+    assert "50" in out[0].detail and "3" in out[0].detail
+
+
+def test_diagram_cell_joins_a_split_name_with_its_clock(tmp_path):
+    """A box wraps its own contents; neither line alone carries the claim."""
+    out = _check(tmp_path, "\n".join([
+        "  ┌───────────────────┐",
+        "  │ premarket-        │",
+        "  │ brief (weekly)    │",
+        "  │ Sun 06:00 ET      │",
+        "  └───────────────────┘",
+    ]))
+    assert [f.check for f in out] == ["clock-drift"]
+    assert "premarket-brief" in out[0].detail and "06:00" in out[0].detail
+
+
+def test_diagram_cells_are_not_spliced_across_boxes(tmp_path):
+    """Side-by-side boxes must not lend each other names and times.
+
+    Joining whole lines would read `fetch-market-data` against the RIGHT box's
+    07:15 and report a drift that is not there, which is worse than the miss
+    this scan fixes.
+    """
+    out = _check(tmp_path, "\n".join([
+        "  ┌───────────────────┐  ┌───────────────────┐",
+        "  │ fetch-market-     │  │ fetch-top-        │",
+        "  │ data (daily)      │  │ movers (daily)    │",
+        "  │ Mon–Fri 23:00 ET  │  │ Mon–Fri 07:15 ET  │",
+        "  └───────────────────┘  └───────────────────┘",
+    ]))
+    assert [f.check for f in out] == ["clock-drift"]
+    assert "fetch-top-movers" in out[0].detail
+    assert "fetch-market-data" not in out[0].detail
+
+
+def test_a_one_line_cell_is_not_reported_twice(tmp_path):
+    """Both passes see it; the reader should not read it twice."""
+    out = _check(tmp_path, "\n".join([
+        "  ┌────────────────────────────────────┐",
+        "  │ `fetch-top-movers` weekdays 07:15  │",
+        "  │ writes top_movers_daily            │",
+        "  └────────────────────────────────────┘",
+    ]))
+    assert [f.check for f in out] == ["clock-drift"]
+
+
 def test_secret_named_as_infrastructure_is_known(tmp_path):
     out = _check(tmp_path, "The Cloud Run Job reads `av-api-key` from Secret Manager.")
     assert out == []

@@ -109,7 +109,7 @@ An event-driven options trading intelligence system that:
 | Backup Storage | Google Cloud Storage | Raw Parquet archives |
 | Scheduled Jobs | Cloud Run Jobs | All data fetching + analysis |
 | Real-time Monitor | Cloud Run Job | Intraday signal polling (scheduled 9:25 AM ET) |
-| Scheduling | Cloud Scheduler | 64 cron triggers |
+| Scheduling | Cloud Scheduler | 66 cron triggers |
 | Alerts | Discord Webhooks | Real-time trade alerts |
 | Secrets | Secret Manager | API keys, DB credentials, webhook URLs |
 | Container Build | Cloud Build | Docker image CI |
@@ -1316,7 +1316,7 @@ echo -n 'YOUR_AV_KEY' | \
 **Step 6 — Create Cloud Scheduler triggers**
 
 ```bash
-./gcp/deploy.sh schedulers  # creates all 64 cron triggers
+./gcp/deploy.sh schedulers  # creates all 66 cron triggers
 ```
 
 **Step 7 — Full deploy (steps 4-6)**
@@ -1349,7 +1349,7 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/raw/
 ./gcp/deploy.sh monitor     # Deploy signal-monitor service
 ./gcp/deploy.sh weekend     # Deploy weekend-review job
 ./gcp/deploy.sh fetchers    # Deploy all 4 fetch jobs
-./gcp/deploy.sh schedulers  # Create the Cloud Scheduler triggers (64 live)
+./gcp/deploy.sh schedulers  # Create the Cloud Scheduler triggers (66 live)
 ./gcp/deploy.sh all         # build + fetchers + premarket + monitor + weekend + schedulers
 ```
 

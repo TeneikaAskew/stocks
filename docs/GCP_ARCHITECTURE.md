@@ -65,7 +65,7 @@ flowchart LR
     EW[Earnings Whispers]:::ext
     UW[Unusual Whales]:::ext
 
-    SCH[Cloud Scheduler<br/>64 cron triggers]:::gcp
+    SCH[Cloud Scheduler<br/>66 cron triggers]:::gcp
     JOBS[Cloud Run Jobs<br/>34 fetchers + analyzers]:::gcp
     SVC1[Cloud Run Service:<br/>solyra-api-prod<br/>FastAPI API + IAP]:::gcp
     SVC1S[Cloud Run Service:<br/>solyra-api-staging<br/>FastAPI API + Firebase]:::gcp
@@ -124,8 +124,8 @@ Every GCP service the system actually uses, with the role it plays.
 | **Cloud SQL (Postgres 15)** | Single source of truth for all structured data. **39 tables (34 logical + 5 partition children of `market_data_intraday`)**. Always-on. | ❌ No free tier — $35–50/mo |
 | **Cloud Run Jobs** | All scheduled batch work. Every fetcher, every analyzer, every backfill is a Cloud Run Job. | ✅ Mostly within free tier (180k vCPU-sec, 360k GB-sec/mo) |
 | **Cloud Run Services** | 4 long-lived HTTP services, all `min-instances=0`. | ✅ Free at idle |
-| **Cloud Scheduler** | **64 cron triggers** (verified 2026-09-07 against live `gcloud scheduler jobs list`; includes the hourly news-sentiment + news-topics loops, and one PAUSED entry, `signal-quality-report-hourly`). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; 61 paid jobs ≈ $6.10/mo |
-| **Artifact Registry** | Single Docker repo `trading` holds the `trading-system` image. | ⚠️ 0.5 GB free; one image stays under |
+| **Cloud Scheduler** | **66 cron triggers** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`: 65 ENABLED and one PAUSED, `signal-quality-report-hourly`). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; 63 paid jobs ≈ $6.30/mo |
+| **Artifact Registry** | Two Docker repos (read live 2026-09-07): `trading` holds the `trading-system` Jobs image, `gcr.io` holds the `solyra-api` API image both API services run. | ⚠️ 0.5 GB free; cleanup policy keeps it near |
 | **Cloud Build** | Builds the Docker image when `gcp/deploy.sh build` runs. | ✅ 120 min/day free, plenty |
 | **Cloud Storage (GCS)** | Raw parquet archives, daily snapshots, archived Yahoo data. Bucket lifecycle rule moves old objects to nearline. | ✅ 5 GB-month free |
 | **Pub/Sub** | Single topic `gcp-job-failures` + DLQ for the failure pipeline. | ✅ 10 GB/mo free, low traffic |
@@ -414,7 +414,7 @@ operator use; it is marked legacy in the script and is not what CI runs.
 
 ## 8. Cloud Scheduler — the daily timeline
 
-**64 scheduler jobs** (verified 2026-09-07 against live `gcloud scheduler jobs list`; the count includes the hourly `news-sentiment-{0800..1700}` and `news-topics-{0805..1705}` loops at 10 entries each). All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
+**66 scheduler jobs** (read live 2026-09-07 from `gcloud scheduler jobs list --location=us-east1`). The per-hour `news-sentiment-{0800..1700}` / `news-topics-{0805..1705}` loops an earlier revision of this line described are gone: #1004 consolidated them into single `news-sentiment-hourly` and `news-topics-hourly` entries, and the four `sec-filings-{0700,1000,1300,1700}` triggers into one `sec-filings-intraday`. All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
 
 ```mermaid
 gantt
@@ -692,7 +692,7 @@ Estimated monthly run-rate at current usage. **Cloud SQL is ~70% of the bill.**
 | Service | Estimate | Notes |
 |---|---|---|
 | Cloud SQL `db-g1-small` + 55 GB SSD + backups + PITR | **$35–50** | Always-on, never-free. Biggest lever: stop instance during quiet windows or downsize to `db-f1-micro` |
-| Cloud Scheduler (64 jobs, 3 free) | **$6.10** | Each paid job is $0.10/mo |
+| Cloud Scheduler (66 jobs, 3 free) | **$6.30** | Each paid job is $0.10/mo |
 | Cloud Run Jobs vCPU + memory | **$1–5** | Slight overage on the 180k vCPU-sec free tier; biggest consumers are signal-monitor (8 hr/day) and historical-signals-watchlist |
 | Cloud Run Services | **$0–1** | All min-instances=0, near-zero idle cost |
 | Vertex AI Gemini Flash | **$3–5** | Per-brief ~$0.005, per-insight ~$0.10. Can be killed via `BRIEF_LLM_DISABLE=1` |

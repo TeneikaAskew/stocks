@@ -419,19 +419,91 @@ def _schedule_owners(live: dict) -> dict[str, list[tuple[str, dict]]]:
     return owners
 
 
+RULE = "\u2502"  # the box-drawing vertical these diagrams are built from
+
+
+def _diagram_cells(path: pathlib.Path) -> list[tuple[int, str]]:
+    """(first line number, joined text) for every cell of an ASCII box diagram.
+
+    `check_schedules` reads a line at a time, which is the wrong unit for the
+    box diagrams these docs draw: a cell wraps its own contents, so
+    `docs/EARNINGS_PIPELINE.md` splits one box across `fetch-earnings-`,
+    `history (weekly)` and `Sun 06:00 ET`. The job name is on no single line
+    and the time is beside it on none, so two stale schedules survived a run
+    that reported clean (Codex, PR #990).
+
+    Joining whole lines is not the fix -- boxes sit side by side, so that
+    splices three unrelated cells into one string and can pair one box's name
+    with another box's clock. Columns are joined instead, and only at rule
+    positions shared by EVERY line of the block, so a cell is never assembled
+    across a boundary that is not actually there. Two pieces are run together
+    when the first ends in a hyphen, which is how a name breaks across lines.
+    """
+    raw = path.read_text(errors="replace").splitlines()
+    marked = set()
+    for i, line in enumerate(raw, 1):
+        if SUPPRESS.search(line):
+            marked.update({i, i + 1})
+
+    out: list[tuple[int, str]] = []
+    block: list[tuple[int, str]] = []
+
+    def flush() -> None:
+        if len(block) < 2:
+            block.clear()
+            return
+        shared = set.intersection(*({c for c, ch in enumerate(t) if ch == RULE}
+                                    for _, t in block))
+        if not shared:
+            block.clear()
+            return
+        bounds = sorted(shared)
+        for a, b in zip(bounds, bounds[1:]):
+            pieces = [t[a + 1:b].strip() for _, t in block]
+            text = ""
+            for piece in pieces:
+                if not piece:
+                    continue
+                if not text:
+                    text = piece
+                elif text.endswith("-"):
+                    text += piece
+                else:
+                    text += " " + piece
+            if text and block[0][0] not in marked:
+                out.append((block[0][0], text))
+        block.clear()
+
+    for i, line in enumerate(raw, 1):
+        if RULE in line:
+            block.append((i, line))
+        else:
+            flush()
+    flush()
+    return out
+
+
 def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
-    """Compare every schedule claim sitting next to a scheduled-job name."""
+    """Compare every schedule claim sitting next to a scheduled-job name.
+
+    Runs twice over the same file: once per line, which is the right unit for
+    prose and table rows, and once per ASCII-diagram cell, which is the right
+    unit for the box diagrams these docs draw. See `_diagram_cells`.
+    """
     owners = _schedule_owners(live)
     if not owners:
         return
     names = sorted(owners, key=len, reverse=True)
     name_re = re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b")
-    for i, line in _lines(path):
+    seen: set[tuple[str, int, str]] = set()
+    units = list(_lines(path)) + _diagram_cells(path)
+    for i, line in units:
         found = name_re.findall(line)
         if not found or RETIRED_OK.search(line):
             continue
         # One table row can name several jobs with their own times, so the
         # owning scheduler entries of every name on the row are collected.
+        fresh = len(out)
         job = "`, `".join(dict.fromkeys(found))
         entries = list({n: (n, m)
                         for name in dict.fromkeys(found)
@@ -508,6 +580,17 @@ def check_schedules(path: pathlib.Path, rel: str, live: dict, out: list[Finding]
                                f"({shown}) but the line states a UTC clock time: "
                                f"{line.strip()[:120]}"))
 
+        # A one-line cell is scanned by both passes, so the same drift can be
+        # appended twice. Deduped here rather than by skipping the second pass:
+        # a multi-line cell legitimately reports at its first line, which the
+        # per-line pass may also have reached for a different reason.
+        for f in out[fresh:]:
+            key = (f.check, f.line, f.detail)
+            if key in seen:
+                out.remove(f)
+            else:
+                seen.add(key)
+
 
 def check_known_names(path: pathlib.Path, rel: str, live: dict, out: list[Finding]) -> None:
     """Backticked names introduced as a Cloud Run Job / scheduler must exist."""
@@ -545,6 +628,15 @@ WORD_NUMBERS = {
 }
 _NUM = r"(\d{1,3}|" + "|".join(WORD_NUMBERS) + r")"
 
+# What may sit between the resource noun and its parenthesised live count.
+# `\s*` was not enough: `platform/GCP_DATA_DICTIONARY.md` writes the noun in
+# bold, so the text is `**Cloud Run — jobs** (~50 live)` and the closing `**`
+# stopped the match dead. The verifier then reported clean on a file that
+# contradicted its own live snapshot 26 lines further down (Codex, PR #990).
+# Emphasis markers, backticks and a stray closing bracket are formatting, not
+# content, so they are stepped over rather than treated as a word boundary.
+_FMT = r"[\s*_`\]]*"
+
 COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     (re.compile(rf"\b{_NUM}\s+Cloud\s+Run\s+Jobs\b", re.I), "run_jobs", "Cloud Run Jobs"),
     # Qualified deliberately: a bare "N services" in operational prose is as
@@ -565,7 +657,7 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     # quota, not a fleet count, so only the leading number is read.
     # `jobs` only -- the `live` spelling is handled by the declared/live
     # pattern below, and matching it here too reported one claim twice.
-    (re.compile(rf"Cloud\s+Scheduler\s*\(\s*{_NUM}\s+jobs\b", re.I),
+    (re.compile(rf"Cloud\s+Scheduler{_FMT}\(\s*{_NUM}\s+jobs\b", re.I),
      "schedulers", "Cloud Scheduler jobs"),
     # The declared/live pair, in either order:
     #   "Scheduler (58 declared / 84 live)"
@@ -575,9 +667,9 @@ COUNT_CLAIMS: tuple[tuple[re.Pattern, str, str], ...] = (
     # the first number after "(" to be the live one, so it stopped at
     # "58 declared" and never looked at "84 live", leaving the contradiction
     # in place under an advertised clean run (Codex, PR #990).
-    (re.compile(rf"[Ss]cheduler\s*\([^)]*?\b{_NUM}\s+live\b", re.I),
+    (re.compile(rf"[Ss]cheduler{_FMT}\([^)]*?\b{_NUM}\s+live\b", re.I),
      "schedulers", "live Cloud Scheduler jobs"),
-    (re.compile(rf"(?:Cloud\s+Run\s+)?jobs\s*\([^)]*?\b{_NUM}\s+live\b", re.I),
+    (re.compile(rf"(?:Cloud\s+Run\s+)?jobs{_FMT}\([^)]*?\b{_NUM}\s+live\b", re.I),
      "run_jobs", "live Cloud Run Jobs"),
 )
 
