@@ -580,6 +580,14 @@ Before executing any candidate, isolate what it can touch, in this order:
    `gcp/auth_email_templates.py` and `gcp/auto_refresh_top_n.py` all take
    `--dry-run`). Name the flag in the evidence, so the reader can tell a
    no-write run from a real one.
+
+   **Then check the flag actually reaches your change.** A dry-run is usually
+   an early return, so the code it skips is the code you changed:
+   `gcp/auto_refresh_top_n.py:242-244` does `if args.dry_run: log; continue`
+   *before* `_insert_queued_run` and `_enqueue_cloud_task`, so a fix to either
+   passes the dry-run without ever executing. Read the branch and say which
+   side of it your change is on. If the change is on the skipped side, the
+   dry-run proves nothing and option 2 is the one you need.
 2. **Otherwise run the entrypoint in-process**, the way
    `scripts/replay_signal_monitor.py` does: production code path, DB upsert and
    webhook mocked at the boundary. That is the Rule 3.6 path and it is
@@ -835,22 +843,26 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      cd /tmp/deploy-src
      git rev-parse HEAD                    # must equal $MERGE_SHA
      test -z "$(git status --porcelain)"   # must be silent
-     # A research-image job needs its image built FIRST — the dispatcher runs
-     # only the deploy function, and each points at the existing :research tag.
-     # deploy.sh annotates them "research image; build separately
-     # (build-research)": strat-engine, direction-probe, magnitude-engine,
-     # direction-baseline/-importance/-phase2, magnitude-recal,
-     # build-options-greeks, build-realtime-gex, build-options-daily-features.
-     # Skip it and you deploy, run and "verify" the OLD image.
+     # Does this target run on the RESEARCH image? Derive it, do not trust a
+     # list — 14 deploy functions select ${IMAGE}:research and only 4
+     # dispatcher entries build it, and the inline annotations are incomplete
+     # (indicator-correlation selects :research while its entry builds the MAIN
+     # image). Check the function your target dispatches to:
+     #   grep -n 'research_image="${IMAGE}:research"' gcp/deploy.sh
+     #   grep -n '^    <target>)' gcp/deploy.sh      # does the entry build it?
+     # If it selects :research and the entry does not run build_research_image,
+     # build first — otherwise you deploy, run and "verify" the OLD image:
      #   ./gcp/deploy.sh build-research
      ./gcp/deploy.sh <target>; rc=$?       # capture BEFORE cleanup
      cd - && git worktree remove /tmp/deploy-src
-     test $rc -eq 0 || echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"
+     test $rc -eq 0 || { echo "DEPLOY FAILED rc=$rc — prod is still on the old revision"; false; }
      ```
 
      `rc` is captured rather than trusting the block's exit status, because
      `git worktree remove` succeeds whether or not the deploy did, and it runs
-     last. Without it a failed deploy ends on a zero and the run proceeds to
+     last. And the check ends in `false`, not a bare `echo` — `|| echo` is
+     itself a success, so a version without it prints the failure and still
+     exits 0, which is the same defect one layer out. Without it a failed deploy ends on a zero and the run proceeds to
      Phase 9 to report a fix that is not serving.
 
    - **For an API change, confirm the staging build actually fired** rather
