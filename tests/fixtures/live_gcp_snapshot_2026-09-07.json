@@ -1,0 +1,2504 @@
+{
+ "cloudbuild_triggers": [
+  {
+   "branch": "^main$",
+   "disabled": false,
+   "name": "deploy-solyra-api-staging"
+  },
+  {
+   "branch": "",
+   "disabled": false,
+   "name": "deploy-solyra-api-prod"
+  },
+  {
+   "branch": "^main$",
+   "disabled": false,
+   "name": "apply-schema-on-change"
+  }
+ ],
+ "counts": {
+  "jobs": 76,
+  "paused_schedulers": 1,
+  "schedulers": 66,
+  "secrets": 22,
+  "services": 4
+ },
+ "db_tables": {
+  "admin_refresh_leases": {
+   "rows": 0,
+   "size": "16 kB"
+  },
+  "archive_yahoo_earnings_options_snapshots": {
+   "rows": 0,
+   "size": "24 kB"
+  },
+  "archive_yahoo_etf_options_snapshots": {
+   "rows": 0,
+   "size": "40 kB"
+  },
+  "archive_yahoo_market_data_daily": {
+   "rows": 0,
+   "size": "24 kB"
+  },
+  "archive_yahoo_market_data_intraday": {
+   "rows": 0,
+   "size": "5920 kB"
+  },
+  "backtest_reports": {
+   "rows": 1,
+   "size": "144 kB"
+  },
+  "backtest_sweeps": {
+   "rows": 45,
+   "size": "96 kB"
+  },
+  "backtest_trades": {
+   "rows": 149898,
+   "size": "48 MB"
+  },
+  "backtest_walk_forward_folds": {
+   "rows": 0,
+   "size": "496 kB"
+  },
+  "daily_rates": {
+   "rows": 2916,
+   "size": "424 kB"
+  },
+  "daily_vex": {
+   "rows": 218,
+   "size": "936 kB"
+  },
+  "earnings_calendar": {
+   "rows": 60076,
+   "size": "24 MB"
+  },
+  "earnings_calibration": {
+   "rows": 0,
+   "size": "48 kB"
+  },
+  "earnings_event_outcomes": {
+   "rows": 0,
+   "size": "24 kB"
+  },
+  "earnings_history": {
+   "rows": 132353,
+   "size": "41 MB"
+  },
+  "earnings_options_snapshots": {
+   "rows": 0,
+   "size": "588 MB"
+  },
+  "earnings_options_strategy_insights": {
+   "rows": 0,
+   "size": "104 kB"
+  },
+  "earnings_options_strategy_winners": {
+   "rows": 0,
+   "size": "160 kB"
+  },
+  "earnings_reactions": {
+   "rows": 62783,
+   "size": "50 MB"
+  },
+  "earnings_ticker_lean": {
+   "rows": 0,
+   "size": "32 kB"
+  },
+  "earnings_upcoming_with_history": {
+   "rows": 46320,
+   "size": "15 MB"
+  },
+  "economic_events": {
+   "rows": 2981,
+   "size": "648 kB"
+  },
+  "etf_options_daily_greeks": {
+   "rows": 8042,
+   "size": "976 kB"
+  },
+  "etf_options_snapshots": {
+   "rows": 141113379,
+   "size": "74 GB"
+  },
+  "exit_config_overrides": {
+   "rows": 0,
+   "size": "48 kB"
+  },
+  "gamma_events": {
+   "rows": 0,
+   "size": "3456 kB"
+  },
+  "gamma_levels_eod": {
+   "rows": 102442,
+   "size": "31 MB"
+  },
+  "historical_signals": {
+   "rows": 96376,
+   "size": "3376 MB"
+  },
+  "indicator_correlation": {
+   "rows": 3016,
+   "size": "1512 kB"
+  },
+  "insider_transactions": {
+   "rows": 1708432,
+   "size": "594 MB"
+  },
+  "insight_reports": {
+   "rows": 790,
+   "size": "4384 kB"
+  },
+  "insight_reports_history": {
+   "rows": 846,
+   "size": "3200 kB"
+  },
+  "insight_runs": {
+   "rows": 948,
+   "size": "360 kB"
+  },
+  "intraday_flow_15m": {
+   "rows": 529920,
+   "size": "63 MB"
+  },
+  "intraday_gex_15m": {
+   "rows": 487540,
+   "size": "87 MB"
+  },
+  "iwm_30m_predictions": {
+   "rows": 0,
+   "size": "352 kB"
+  },
+  "job_runs": {
+   "rows": 14,
+   "size": "48 kB"
+  },
+  "journal_entries": {
+   "rows": 2,
+   "size": "1288 kB"
+  },
+  "magnitude_per_bar_predictions": {
+   "rows": 15380,
+   "size": "4584 kB"
+  },
+  "magnitude_walk_forward_results": {
+   "rows": 1695,
+   "size": "1184 kB"
+  },
+  "market_data_cross_asset": {
+   "rows": 0,
+   "size": "16 kB"
+  },
+  "market_data_daily": {
+   "rows": 5553479,
+   "size": "3895 MB"
+  },
+  "market_data_indicators": {
+   "rows": 0,
+   "size": "0 bytes"
+  },
+  "market_data_indicators_iwm": {
+   "rows": 0,
+   "size": "2200 kB"
+  },
+  "market_data_indicators_other": {
+   "rows": 0,
+   "size": "16 kB"
+  },
+  "market_data_indicators_qqq": {
+   "rows": 0,
+   "size": "2224 kB"
+  },
+  "market_data_indicators_spy": {
+   "rows": 0,
+   "size": "2232 kB"
+  },
+  "market_data_intraday": {
+   "rows": 0,
+   "size": "0 bytes"
+  },
+  "market_data_intraday_iwm": {
+   "rows": 2006813,
+   "size": "512 MB"
+  },
+  "market_data_intraday_other": {
+   "rows": 5653650,
+   "size": "67 GB"
+  },
+  "market_data_intraday_qqq": {
+   "rows": 2281849,
+   "size": "585 MB"
+  },
+  "market_data_intraday_spx": {
+   "rows": 0,
+   "size": "2144 kB"
+  },
+  "market_data_intraday_spy": {
+   "rows": 2432886,
+   "size": "664 MB"
+  },
+  "model_routing": {
+   "rows": 0,
+   "size": "24 kB"
+  },
+  "news_sentiment": {
+   "rows": 212368,
+   "size": "298 MB"
+  },
+  "options_daily_features": {
+   "rows": 8042,
+   "size": "1112 kB"
+  },
+  "playbook_cards": {
+   "rows": 72,
+   "size": "144 kB"
+  },
+  "playbook_cards_staging": {
+   "rows": 0,
+   "size": "16 kB"
+  },
+  "premarket_analysis": {
+   "rows": 383,
+   "size": "1208 kB"
+  },
+  "premarket_analysis_history": {
+   "rows": 702,
+   "size": "1664 kB"
+  },
+  "qqq_30m_predictions": {
+   "rows": 0,
+   "size": "352 kB"
+  },
+  "ranker_runs": {
+   "rows": 93,
+   "size": "840 kB"
+  },
+  "realtime_gex_15m": {
+   "rows": 6321,
+   "size": "904 kB"
+  },
+  "regime_combo_results": {
+   "rows": 8640,
+   "size": "3872 kB"
+  },
+  "sec_filings": {
+   "rows": 4274,
+   "size": "1560 kB"
+  },
+  "signal_alerts": {
+   "rows": 3011,
+   "size": "2648 kB"
+  },
+  "signal_metrics": {
+   "rows": 179485,
+   "size": "58 MB"
+  },
+  "spy_30m_predictions": {
+   "rows": 0,
+   "size": "352 kB"
+  },
+  "strat_combo_results": {
+   "rows": 0,
+   "size": "32 kB"
+  },
+  "strat_features_15m": {
+   "rows": 206458,
+   "size": "303 MB"
+  },
+  "strat_features_1m": {
+   "rows": 3105422,
+   "size": "4080 MB"
+  },
+  "strat_features_30m": {
+   "rows": 103261,
+   "size": "152 MB"
+  },
+  "strat_features_4h": {
+   "rows": 18542,
+   "size": "26 MB"
+  },
+  "strat_features_5m": {
+   "rows": 587853,
+   "size": "811 MB"
+  },
+  "strat_features_60m": {
+   "rows": 55619,
+   "size": "81 MB"
+  },
+  "strat_features_levels_15m": {
+   "rows": 206661,
+   "size": "368 MB"
+  },
+  "strat_features_levels_1m": {
+   "rows": 3087834,
+   "size": "8155 MB"
+  },
+  "strat_features_levels_30m": {
+   "rows": 103261,
+   "size": "184 MB"
+  },
+  "strat_features_levels_4h": {
+   "rows": 18542,
+   "size": "28 MB"
+  },
+  "strat_features_levels_5m": {
+   "rows": 617241,
+   "size": "1134 MB"
+  },
+  "strat_features_levels_60m": {
+   "rows": 55619,
+   "size": "86 MB"
+  },
+  "strat_levels": {
+   "rows": 13889,
+   "size": "3184 kB"
+  },
+  "ticker_calibration": {
+   "rows": 1,
+   "size": "48 kB"
+  },
+  "ticker_info": {
+   "rows": 0,
+   "size": "24 kB"
+  },
+  "top_movers_daily": {
+   "rows": 5760,
+   "size": "1128 kB"
+  },
+  "top_movers_intraday": {
+   "rows": 6380,
+   "size": "1152 kB"
+  },
+  "trades": {
+   "rows": 2968,
+   "size": "1360 kB"
+  },
+  "user_preferences": {
+   "rows": 1,
+   "size": "32 kB"
+  },
+  "user_profile": {
+   "rows": 0,
+   "size": "16 kB"
+  },
+  "user_roles": {
+   "rows": 2,
+   "size": "48 kB"
+  },
+  "user_style_results": {
+   "rows": 0,
+   "size": "24 kB"
+  },
+  "waitlist_signups": {
+   "rows": 1,
+   "size": "48 kB"
+  },
+  "walk_forward_results": {
+   "rows": 0,
+   "size": "264 kB"
+  },
+  "watchlists": {
+   "rows": 0,
+   "size": "64 kB"
+  }
+ },
+ "domain_mappings": [
+  {
+   "domain": "api.stocks.insightscollective.org",
+   "service": "solyra-api-staging"
+  }
+ ],
+ "gcr_images": [
+  "gcr.io/adept-mountain-474619-d4/solyra-api",
+  "gcr.io/adept-mountain-474619-d4/trading-platform",
+  "gcr.io/adept-mountain-474619-d4/trading-platform-staging"
+ ],
+ "image_tags": [
+  "inuse-job-apply-schema-migrations",
+  "inuse-job-audit-brief-bias",
+  "inuse-job-audit-infra-drift",
+  "inuse-job-audit-magnitude-drift",
+  "inuse-job-audit-walkforward",
+  "inuse-job-auto-refresh-top-n",
+  "inuse-job-backfill-daily-indicators",
+  "inuse-job-backfill-ticker",
+  "inuse-job-backtest",
+  "inuse-job-backtest-pipeline",
+  "inuse-job-backtest-playability",
+  "inuse-job-build-options-daily-features",
+  "inuse-job-build-options-greeks",
+  "inuse-job-build-realtime-gex",
+  "inuse-job-calibrate-thresholds",
+  "inuse-job-cloud-sql-weekly-export",
+  "inuse-job-compare-tier-fires",
+  "inuse-job-compute-earnings-reactions",
+  "inuse-job-db-query",
+  "inuse-job-direction-baseline",
+  "inuse-job-direction-importance",
+  "inuse-job-direction-phase2",
+  "inuse-job-direction-probe",
+  "inuse-job-earnings-long-watchlist",
+  "inuse-job-earnings-options-backfill",
+  "inuse-job-earnings-reactions-brief",
+  "inuse-job-earnings-sweep",
+  "inuse-job-etf-options-retention",
+  "inuse-job-evaluate-ew-strikes",
+  "inuse-job-exec-backtest",
+  "inuse-job-fetch-alphavantage-intraday",
+  "inuse-job-fetch-av-options-backfill",
+  "inuse-job-fetch-av-options-realtime",
+  "inuse-job-fetch-earnings-calendar",
+  "inuse-job-fetch-earnings-history",
+  "inuse-job-fetch-economic-events",
+  "inuse-job-fetch-fred-rates",
+  "inuse-job-fetch-insider-transactions",
+  "inuse-job-fetch-market-data",
+  "inuse-job-fetch-news-sentiment",
+  "inuse-job-fetch-news-sentiment-earnings",
+  "inuse-job-fetch-news-sentiment-topics",
+  "inuse-job-fetch-premarket-refresh",
+  "inuse-job-fetch-sec-filings",
+  "inuse-job-fetch-top-movers",
+  "inuse-job-freshness-watchdog",
+  "inuse-job-historical-signals-watchlist",
+  "inuse-job-indicator-correlation",
+  "inuse-job-insight-discord-push",
+  "inuse-job-insight-pipeline",
+  "inuse-job-intraday-bulk-backfill",
+  "inuse-job-magnitude-engine",
+  "inuse-job-magnitude-inference",
+  "inuse-job-magnitude-recal",
+  "inuse-job-p2-build-gamma-levels",
+  "inuse-job-p2-outcomes-grid",
+  "inuse-job-p45-deep-ds",
+  "inuse-job-p7-analyze-tf",
+  "inuse-job-p7-build-multi-tf-features",
+  "inuse-job-p7a-iwm-30m-pipeline",
+  "inuse-job-p7b-next-candle-classifier",
+  "inuse-job-param-sweep",
+  "inuse-job-phase6-playbook",
+  "inuse-job-premarket-brief",
+  "inuse-job-premarket-playbook-resolver",
+  "inuse-job-refresh-earnings-views",
+  "inuse-job-regime-combo",
+  "inuse-job-signal-monitor",
+  "inuse-job-signal-monitor-eod-resolver",
+  "inuse-job-signal-quality-alarm",
+  "inuse-job-signal-quality-report",
+  "inuse-job-signal-replay",
+  "inuse-job-strat-dir-features",
+  "inuse-job-strat-engine",
+  "inuse-job-validate-brief",
+  "inuse-job-weekend-review",
+  "inuse-svc-discord-interactions-00035-r6k",
+  "inuse-svc-failure-notifier-00003-jsx",
+  "latest",
+  "research",
+  "research-dir-features",
+  "research-exec-backtest",
+  "research-p2",
+  "spx-removal-fred-20260516",
+  "track2-validation"
+ ],
+ "jobs": {
+  "apply-schema-migrations": {
+   "args": "",
+   "command": "python -m gcp.apply_schema",
+   "cpu": "1",
+   "created": "2026-05-01T22:26:01.159561Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-07T01:05:04.192516Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "audit-brief-bias": {
+   "args": "",
+   "command": "python -m gcp.audit_job_runner",
+   "cpu": "1",
+   "created": "2026-05-31T02:31:29.922335Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T14:01:12.106854Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "audit-infra-drift": {
+   "args": "",
+   "command": "python -m gcp.audit_infra_drift",
+   "cpu": "1",
+   "created": "2026-06-10T01:50:07.652015Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T16:30:37.950003Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "300",
+   "tasks": 1
+  },
+  "audit-magnitude-drift": {
+   "args": "",
+   "command": "python -m gcp.audit_magnitude_drift",
+   "cpu": "1",
+   "created": "2026-07-05T22:13:19.208278Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T13:55:30.438860Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "180",
+   "tasks": 1
+  },
+  "audit-walkforward": {
+   "args": "",
+   "command": "python -m gcp.audit_job_runner",
+   "cpu": "1",
+   "created": "2026-05-31T02:31:53.282173Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T13:00:44.191099Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "auto-refresh-top-n": {
+   "args": "",
+   "command": "python -m gcp.auto_refresh_top_n",
+   "cpu": "1",
+   "created": "2026-04-26T04:38:21.936745Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T12:11:16.457064Z"
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "backfill-daily-indicators": {
+   "args": "",
+   "command": "python -m gcp.fetchers.backfill_daily_indicators",
+   "cpu": "2",
+   "created": "2026-05-13T10:01:41.229821Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T09:28:21.229912Z"
+   },
+   "max_retries": 0,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "36000",
+   "tasks": 1
+  },
+  "backfill-ticker": {
+   "args": "-m gcp.backfill_ticker",
+   "command": "python",
+   "cpu": "1",
+   "created": "2026-04-29T13:30:38.619750Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "backtest": {
+   "args": "-m gcp.backtest_job",
+   "command": "python",
+   "cpu": "1",
+   "created": "2026-04-29T17:11:56.710351Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 1,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "900",
+   "tasks": 1
+  },
+  "backtest-pipeline": {
+   "args": "",
+   "command": "python -m scripts.run_pipeline",
+   "cpu": "2",
+   "created": "2026-05-17T13:19:37.467614Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "28800",
+   "tasks": 1
+  },
+  "backtest-playability": {
+   "args": "",
+   "command": "python -m scripts.backtest_playability",
+   "cpu": "1",
+   "created": "2026-05-14T11:16:45.727882Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:51f7b8b2b5bee7d24d38939321cc79e472a9c969dcb83d26b840791dd14924ea",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "build-options-daily-features": {
+   "args": "-m gcp.fetchers.build_options_daily_features --incremental --days=7",
+   "command": "python",
+   "cpu": "2",
+   "created": "2026-06-12T11:10:06.500084Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T02:00:45.339724Z"
+   },
+   "max_retries": 0,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "build-options-greeks": {
+   "args": "-m gcp.build_options_daily_greeks --incremental --days=7",
+   "command": "python",
+   "cpu": "2",
+   "created": "2026-06-05T02:18:05.400922Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T03:15:47.508617Z"
+   },
+   "max_retries": 0,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "7200",
+   "tasks": 1
+  },
+  "build-realtime-gex": {
+   "args": "-m gcp.build_realtime_gex --incremental --days=3",
+   "command": "python",
+   "cpu": "2",
+   "created": "2026-06-07T13:34:13.325079Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T21:02:17.024892Z"
+   },
+   "max_retries": 1,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "calibrate-thresholds": {
+   "args": "",
+   "command": "python -m scripts.calibrate_thresholds",
+   "cpu": "1",
+   "created": "2026-05-04T22:32:40.304606Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "cloud-sql-weekly-export": {
+   "args": "",
+   "command": "python -m gcp.sql_export_to_gcs",
+   "cpu": "1",
+   "created": "2026-06-19T19:18:11.090652Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T08:23:12.857886Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "21600",
+   "tasks": 1
+  },
+  "compare-tier-fires": {
+   "args": "",
+   "command": "python -m scripts.compare_tier_fires",
+   "cpu": "2",
+   "created": "2026-05-04T23:30:27.862901Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "compute-earnings-reactions": {
+   "args": "",
+   "command": "python -m gcp.fetchers.compute_earnings_reactions",
+   "cpu": "1",
+   "created": "2026-05-01T20:34:44.211597Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T23:36:27.388782Z"
+   },
+   "max_retries": 0,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "db-query": {
+   "args": "",
+   "command": "python -m gcp.db_query_job",
+   "cpu": "2",
+   "created": "2026-05-29T14:28:40.899671Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-07T01:10:32.189445Z"
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "direction-baseline": {
+   "args": "-m gcp.research.direction_program.baseline_runner --tf=5m",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-07-08T02:42:51.204080Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "10800",
+   "tasks": 1
+  },
+  "direction-importance": {
+   "args": "-m gcp.research.direction_program.feature_importance --tf=5m",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-07-08T14:01:29.072941Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "10800",
+   "tasks": 1
+  },
+  "direction-phase2": {
+   "args": "-m gcp.research.direction_program.phase2_ablation",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-07-10T01:04:26.628598Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "10800",
+   "tasks": 14
+  },
+  "direction-probe": {
+   "args": "-m gcp.research.strat_engine.strat_dir_probes --experiment=e1_horizon --ticker=IWM --tf=15m --horizon=15",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-06-04T15:39:22.280700Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "earnings-long-watchlist": {
+   "args": "",
+   "command": "python -m gcp.earnings_long_watchlist",
+   "cpu": "1",
+   "created": "2026-05-24T19:53:12.342462Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T23:45:33.352926Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "earnings-options-backfill": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_av_earnings_options_backfill",
+   "cpu": "1",
+   "created": "2026-05-21T23:26:07.853744Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "32400",
+   "tasks": 1
+  },
+  "earnings-reactions-brief": {
+   "args": "",
+   "command": "python -m gcp.earnings_reactions_brief",
+   "cpu": "1",
+   "created": "2026-05-17T13:19:41.773722Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T12:35:40.368977Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "earnings-sweep": {
+   "args": "",
+   "command": "python -m scripts.calibrate_earnings",
+   "cpu": "2",
+   "created": "2026-05-19T13:40:54.776693Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "etf-options-retention": {
+   "args": "",
+   "command": "python -m gcp.options_retention_job",
+   "cpu": "1",
+   "created": "2026-06-11T22:10:54.205279Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T06:01:55.568822Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "evaluate-ew-strikes": {
+   "args": "",
+   "command": "python -m gcp.fetchers.evaluate_ew_strikes",
+   "cpu": "1",
+   "created": "2026-04-30T18:01:05.839112Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T03:00:51.519310Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "exec-backtest": {
+   "args": "-m lib.exec_backtest.cli --mode=base",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-27T18:08:53.181384Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research-exec-backtest",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "fetch-alphavantage-intraday": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_alphavantage_intraday",
+   "cpu": "1",
+   "created": "2026-02-23T00:26:31.776714Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T01:01:08.683120Z"
+   },
+   "max_retries": 1,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "fetch-av-options-backfill": {
+   "args": "--tickers SPY IWM QQQ SPX --from-latest",
+   "command": "python -m gcp.fetchers.fetch_av_historical_options",
+   "cpu": "1",
+   "created": "2026-04-12T16:56:30.948083Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T01:07:01.222725Z"
+   },
+   "max_retries": 0,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "43200",
+   "tasks": 1
+  },
+  "fetch-av-options-realtime": {
+   "args": "--tickers SPY IWM QQQ",
+   "command": "python -m gcp.fetchers.fetch_av_realtime_options",
+   "cpu": "1",
+   "created": "2026-05-23T01:43:27.424578Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T19:55:56.815420Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "fetch-earnings-calendar": {
+   "args": "",
+   "command": "python scripts/fetch_earnings_calendar.py --source all --days 30",
+   "cpu": "1",
+   "created": "2026-04-25T14:17:33.383237Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T23:01:57.279956Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "fetch-earnings-history": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_earnings_history",
+   "cpu": "1",
+   "created": "2026-04-25T14:17:41.472179Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-07T00:26:43.363867Z"
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "28800",
+   "tasks": 1
+  },
+  "fetch-economic-events": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_economic_events --source all",
+   "cpu": "1",
+   "created": "2026-04-25T14:17:23.427225Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T11:00:58.375646Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "fetch-fred-rates": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_fred_rates",
+   "cpu": "1",
+   "created": "2026-04-30T17:56:29.870627Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:spx-removal-fred-20260516",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T10:30:39.363566Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "fetch-insider-transactions": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_insider_transactions",
+   "cpu": "1",
+   "created": "2026-04-25T14:17:57.973075Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T11:04:30.385961Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "fetch-market-data": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_market_data",
+   "cpu": "1",
+   "created": "2026-02-23T00:26:13.228997Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T03:02:35.432577Z"
+   },
+   "max_retries": 2,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "fetch-news-sentiment": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_news_sentiment",
+   "cpu": "1",
+   "created": "2026-04-25T14:18:13.805685Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T21:02:26.951173Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "fetch-news-sentiment-earnings": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_news_sentiment",
+   "cpu": "1",
+   "created": "2026-05-13T09:28:10.178443Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T10:01:52.228601Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "fetch-news-sentiment-topics": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_news_sentiment",
+   "cpu": "1",
+   "created": "2026-04-25T14:18:24.974126Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T21:05:38.974303Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  },
+  "fetch-premarket-refresh": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_premarket_refresh",
+   "cpu": "1",
+   "created": "2026-04-30T18:00:16.946059Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T12:21:08.361362Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "300",
+   "tasks": 1
+  },
+  "fetch-sec-filings": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_sec_filings",
+   "cpu": "1",
+   "created": "2026-04-25T14:17:49.341318Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T21:01:50.927136Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "fetch-top-movers": {
+   "args": "",
+   "command": "python -m gcp.fetchers.fetch_top_movers",
+   "cpu": "1",
+   "created": "2026-04-25T14:18:05.843118Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T20:15:35.026556Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "300",
+   "tasks": 1
+  },
+  "freshness-watchdog": {
+   "args": "--strict",
+   "command": "python scripts/audit_data_freshness.py",
+   "cpu": "1",
+   "created": "2026-05-30T15:50:40.345608Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T23:45:25.446366Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "historical-signals-watchlist": {
+   "args": "--from-watchlist",
+   "command": "python -m scripts.run_historical_signals",
+   "cpu": "1",
+   "created": "2026-04-27T21:00:47.624445Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T05:01:49.644860Z"
+   },
+   "max_retries": 1,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "indicator-correlation": {
+   "args": "",
+   "command": "python -m gcp.indicator_correlation_job",
+   "cpu": "1",
+   "created": "2026-05-31T22:44:52.453274Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "insight-discord-push": {
+   "args": "",
+   "command": "python -m gcp.insight_discord_push",
+   "cpu": "1",
+   "created": "2026-04-27T21:00:34.404153Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T13:15:22.503032Z"
+   },
+   "max_retries": 1,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "120",
+   "tasks": 1
+  },
+  "insight-pipeline": {
+   "args": "",
+   "command": "python -m gcp.insight_pipeline_job",
+   "cpu": "1",
+   "created": "2026-04-15T14:28:48.962196Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T12:47:16.457496Z"
+   },
+   "max_retries": 1,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "intraday-bulk-backfill": {
+   "args": "--symbols-file /app/gcp/fetchers/symbol_lists/earnings_universe.txt --start-date 2024-01-01",
+   "command": "python -m gcp.fetchers.fetch_alphavantage_intraday",
+   "cpu": "1",
+   "created": "2026-05-22T03:19:15.768593Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "86400",
+   "tasks": 4
+  },
+  "magnitude-engine": {
+   "args": "-m gcp.research.magnitude_engine.mag_walk_forward",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-27T21:18:33.521510Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 27
+  },
+  "magnitude-inference": {
+   "args": "",
+   "command": "python -m gcp.research.magnitude_engine.mag_inference",
+   "cpu": "1",
+   "created": "2026-06-10T01:50:12.651849Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T13:26:02.492837Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "300",
+   "tasks": 1
+  },
+  "magnitude-recal": {
+   "args": "-c import os,json;os.environ['MOVEMENT_STATEMENT_ENABLED']='true';from gcp.database import get_engine;from lib.movement_statement import assemble_movement_statement;e=get_engine();r={tk:assemble_movement_statement(tk,'15m',engine=e) for tk in ('IWM','SPY','QQQ')};print('MSVERIFY '+json.dumps(r,default=str))",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-07-10T10:26:17.928409Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "10800",
+   "tasks": 1
+  },
+  "p2-build-gamma-levels": {
+   "args": "-m gcp.research.p2_build_gamma_levels",
+   "command": "python",
+   "cpu": "2",
+   "created": "2026-05-23T15:30:36.899266Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T02:44:24.006265Z"
+   },
+   "max_retries": 0,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "p2-outcomes-grid": {
+   "args": "-m gcp.research.p2_outcomes_grid",
+   "command": "python",
+   "cpu": "2",
+   "created": "2026-05-23T17:06:55.588108Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research-p2",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "7200",
+   "tasks": 1
+  },
+  "p45-deep-ds": {
+   "args": "-m gcp.research.p45_deep_ds_job",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-24T11:02:38.813041Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "16Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "p7-analyze-tf": {
+   "args": "-m gcp.research.p7_analyze_tf --tf=5m",
+   "command": "python",
+   "cpu": "8",
+   "created": "2026-05-24T18:11:10.600725Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "32Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "p7-build-multi-tf-features": {
+   "args": "-m gcp.research.p7_build_multi_tf_features",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-24T17:19:12.935512Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "16Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "p7a-iwm-30m-pipeline": {
+   "args": "-m gcp.research.p7a_iwm_30m_pipeline --mode=all",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-25T01:32:20.103337Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1200",
+   "tasks": 1
+  },
+  "p7b-next-candle-classifier": {
+   "args": "-m gcp.research.p7b_next_candle_classifier --mode=evaluate",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-25T12:40:42.141257Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "8Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "param-sweep": {
+   "args": "",
+   "command": "python -m scripts.run_param_sweep",
+   "cpu": "1",
+   "created": "2026-05-19T13:40:50.827286Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "4Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "21600",
+   "tasks": 3
+  },
+  "phase6-playbook": {
+   "args": "--write-db",
+   "command": "python -m scripts.analysis.phase6_playbook",
+   "cpu": "4",
+   "created": "2026-06-14T20:05:55.522805Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T20:37:18.986318Z"
+   },
+   "max_retries": 0,
+   "memory": "16Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "premarket-brief": {
+   "args": "",
+   "command": "python -m gcp.premarket_brief",
+   "cpu": "1",
+   "created": "2026-02-23T00:31:49.982049Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-07T01:01:50.182015Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1800",
+   "tasks": 1
+  },
+  "premarket-playbook-resolver": {
+   "args": "",
+   "command": "python -m gcp.premarket_playbook_resolver",
+   "cpu": "1",
+   "created": "2026-06-19T19:17:59.782795Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T01:15:45.420543Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "refresh-earnings-views": {
+   "args": "--mode=weekly",
+   "command": "python -m gcp.refresh_earnings_views",
+   "cpu": "1",
+   "created": "2026-06-19T17:26:57.437765Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-07T00:01:03.439777Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "1200",
+   "tasks": 1
+  },
+  "regime-combo": {
+   "args": "",
+   "command": "python -m gcp.regime_combo_job",
+   "cpu": "2",
+   "created": "2026-05-31T16:38:46.928178Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-06T09:02:17.033928Z"
+   },
+   "max_retries": 1,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "signal-monitor": {
+   "args": "",
+   "command": "python -m gcp.signal_monitor",
+   "cpu": "1",
+   "created": "2026-02-23T00:47:01.862581Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T20:00:08.881605Z"
+   },
+   "max_retries": 0,
+   "memory": "2Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "28800",
+   "tasks": 1
+  },
+  "signal-monitor-eod-resolver": {
+   "args": "",
+   "command": "python -m gcp.signal_monitor_eod_resolver",
+   "cpu": "1",
+   "created": "2026-05-09T18:51:57.382369Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-04T20:30:45.228450Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "signal-quality-alarm": {
+   "args": "",
+   "command": "python -m gcp.signal_quality_alarm",
+   "cpu": "1",
+   "created": "2026-05-01T22:19:43.657589Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T06:00:45.726530Z"
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "120",
+   "tasks": 1
+  },
+  "signal-quality-report": {
+   "args": "--mode=rolling",
+   "command": "python -m scripts.signal_quality_report",
+   "cpu": "1",
+   "created": "2026-05-01T22:14:43.573659Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T05:01:07.550252Z"
+   },
+   "max_retries": 0,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "signal-replay": {
+   "args": "",
+   "command": "python -m gcp.signal_replay",
+   "cpu": "1",
+   "created": "2026-05-17T12:42:48.492507Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "512Mi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "900",
+   "tasks": 1
+  },
+  "strat-dir-features": {
+   "args": "-m gcp.research.strat_engine.strat_dir_walk_forward_extended --ticker=IWM --tf=15m --family=baseline",
+   "command": "python",
+   "cpu": "8",
+   "created": "2026-05-27T18:16:36.153425Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research-dir-features",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 0,
+   "memory": "32Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "3600",
+   "tasks": 1
+  },
+  "strat-engine": {
+   "args": "-m gcp.research.strat_engine.strat_data_builder",
+   "command": "python",
+   "cpu": "4",
+   "created": "2026-05-26T00:06:09.951112Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:research",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T06:55:01.625430Z"
+   },
+   "max_retries": 0,
+   "memory": "16Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "5400",
+   "tasks": 1
+  },
+  "validate-brief": {
+   "args": "-m gcp.validate_brief_job",
+   "command": "python",
+   "cpu": "1",
+   "created": "2026-04-29T17:11:52.805986Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "never in window",
+    "time": ""
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "300",
+   "tasks": 1
+  },
+  "weekend-review": {
+   "args": "",
+   "command": "python -m gcp.weekend_review",
+   "cpu": "1",
+   "created": "2026-02-23T00:34:16.642685Z",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "last_execution": {
+    "result": "ok",
+    "time": "2026-09-05T13:00:48.159825Z"
+   },
+   "max_retries": 1,
+   "memory": "1Gi",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "task_timeout": "600",
+   "tasks": 1
+  }
+ },
+ "log_sinks": [
+  {
+   "destination": "pubsub.googleapis.com/projects/adept-mountain-474619-d4/topics/gcp-job-failures",
+   "filter": "resource.type=\"cloud_run_job\"\nAND severity>=ERROR\nAND resource.labels.job_name!=\"failure-notifier\"\nAND NOT (protoPayload.methodName:\"CreateJob\" OR protoPayload.methodName:\"UpdateJob\")",
+   "name": "gcp-job-failures-sink"
+  }
+ ],
+ "project": "adept-mountain-474619-d4",
+ "pubsub": {
+  "subscriptions": [
+   {
+    "name": "gcp-job-failures-push",
+    "push_endpoint": "https://failure-notifier-5sjtb3yl7a-ue.a.run.app"
+   }
+  ],
+  "topics": [
+   "gcp-job-failures",
+   "gcp-job-failures-dlq"
+  ]
+ },
+ "read_at": "2026-09-07T01:11:54Z",
+ "region": "us-east1",
+ "schedulers": {
+  "audit-brief-bias-weekly": {
+   "cron": "0 10 * * 0",
+   "last_attempt": "2026-09-06T14:00:27.507031Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "audit-brief-bias",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "audit-infra-drift-daily": {
+   "cron": "30 12 * * *",
+   "last_attempt": "2026-09-06T16:30:02.172874Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "audit-infra-drift",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "audit-magnitude-drift-daily": {
+   "cron": "55 9 * * 1-5",
+   "last_attempt": "2026-09-04T13:55:02.840422Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "audit-magnitude-drift",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "audit-walkforward-weekly": {
+   "cron": "0 9 * * 6",
+   "last_attempt": "2026-09-05T13:00:08.747367Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "audit-walkforward",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "auto-refresh-top-n": {
+   "cron": "10 8 * * 1-5",
+   "last_attempt": "2026-09-04T12:10:02.949876Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "auto-refresh-top-n",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "av-intraday-monthly": {
+   "cron": "0 21 1 * *",
+   "last_attempt": "2026-09-02T01:00:02.845814Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-alphavantage-intraday",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "av-intraday-nightly": {
+   "cron": "0 21 * * 1-6",
+   "last_attempt": "2026-09-06T01:00:09.573583Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-alphavantage-intraday",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "av-options-daily": {
+   "cron": "0 21 * * 1-5",
+   "last_attempt": "2026-09-05T01:00:03.901426Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-av-options-backfill",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "av-options-monthly": {
+   "cron": "0 5 1 * *",
+   "last_attempt": "2026-09-01T09:00:03.572603Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-av-options-backfill",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "av-options-realtime": {
+   "cron": "*/5 9-15 * * 1-5",
+   "last_attempt": "2026-09-04T19:55:04.424929Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-av-options-realtime",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "backfill-indicators-daily": {
+   "cron": "30 2 * * 1-6",
+   "last_attempt": "2026-09-05T06:30:05.204059Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "backfill-daily-indicators",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "backfill-indicators-weekly": {
+   "cron": "0 3 * * 0",
+   "last_attempt": "2026-09-06T07:00:02.812742Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "backfill-daily-indicators",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "calibrate-thresholds-quarterly": {
+   "cron": "0 2 1 1,4,7,10 *",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "ENABLED",
+   "target_job": "calibrate-thresholds",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "cloud-sql-weekly-export-sunday": {
+   "cron": "0 4 * * 0",
+   "last_attempt": "2026-09-06T08:00:04.224708Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "cloud-sql-weekly-export",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "daily-earnings-refresh-calendar": {
+   "cron": "0 19 * * 1-5",
+   "last_attempt": "2026-09-04T23:00:03.906062Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-earnings-calendar",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "daily-earnings-refresh-history": {
+   "cron": "15 19 * * 1-5",
+   "last_attempt": "2026-09-04T23:15:06.258764Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-earnings-history",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "daily-earnings-refresh-reactions": {
+   "cron": "30 19 * * 1-5",
+   "last_attempt": "2026-09-04T23:30:03.826985Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "compute-earnings-reactions",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "discord-warm-close": {
+   "cron": "30 16 * * 1-5",
+   "last_attempt": "2026-09-07T00:41:50.505146Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "",
+   "target_uri": "https://run.googleapis.com/v2/projects/adept-mountain-474619-d4/locations/us-east1/services/discord-interactions?updateMask=template.scaling.minInstanceCount",
+   "time_zone": "America/New_York"
+  },
+  "discord-warm-open": {
+   "cron": "0 9 * * 1-5",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "ENABLED",
+   "target_job": "",
+   "target_uri": "https://run.googleapis.com/v2/projects/adept-mountain-474619-d4/locations/us-east1/services/discord-interactions?updateMask=template.scaling.minInstanceCount",
+   "time_zone": "America/New_York"
+  },
+  "earnings-long-watchlist-sunday": {
+   "cron": "45 19 * * 0",
+   "last_attempt": "2026-09-06T23:45:03.110071Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "earnings-long-watchlist",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "earnings-reactions-brief-daily": {
+   "cron": "35 8 * * 1-5",
+   "last_attempt": "2026-09-04T12:35:05.453948Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "earnings-reactions-brief",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "economic-events-daily": {
+   "cron": "0 7 * * 1-5",
+   "last_attempt": "2026-09-04T11:00:01.047664Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-economic-events",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "evaluate-ew-strikes-daily": {
+   "cron": "0 23 * * 1-5",
+   "last_attempt": "2026-09-05T03:00:01.766063Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "evaluate-ew-strikes",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "fetch-market-data-daily": {
+   "cron": "0 23 * * 1-5",
+   "last_attempt": "2026-09-05T03:00:05.339490Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-market-data",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "fred-rates-daily": {
+   "cron": "30 6 * * *",
+   "last_attempt": "2026-09-06T10:30:04.880820Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-fred-rates",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "freshness-watchdog-hourly": {
+   "cron": "0 9-19 * * 1-5",
+   "last_attempt": "2026-09-04T23:00:18.831035Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "freshness-watchdog",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "freshness-watchdog-nightly": {
+   "cron": "30 19 * * *",
+   "last_attempt": "2026-09-06T23:30:02.701523Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "freshness-watchdog",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "gamma-levels-daily": {
+   "cron": "30 22 * * 1-5",
+   "last_attempt": "2026-09-05T02:30:03.051979Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "p2-build-gamma-levels",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "historical-signals-watchlist-daily": {
+   "cron": "0 1 * * 2-6",
+   "last_attempt": "2026-09-05T05:00:04.761865Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "historical-signals-watchlist",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "insider-transactions-daily": {
+   "cron": "0 7 * * 1-5",
+   "last_attempt": "2026-09-04T11:00:01.553938Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-insider-transactions",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "insight-discord-push-daily": {
+   "cron": "15 9 * * 1-5",
+   "last_attempt": "2026-09-04T13:15:00.542481Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "insight-discord-push",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "insight-pipeline-daily": {
+   "cron": "45 8 * * 1-5",
+   "last_attempt": "2026-09-04T12:45:03.721144Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "insight-pipeline",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "magnitude-inference-daily": {
+   "cron": "25 9 * * 1-5",
+   "last_attempt": "2026-09-04T13:25:05.307353Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "magnitude-inference",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "news-sentiment-earnings-0600": {
+   "cron": "0 6 * * 1-5",
+   "last_attempt": "2026-09-04T10:00:05.477070Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-news-sentiment-earnings",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "news-sentiment-hourly": {
+   "cron": "0 8-17 * * 1-5",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "ENABLED",
+   "target_job": "fetch-news-sentiment",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "news-topics-hourly": {
+   "cron": "5 8-17 * * 1-5",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "ENABLED",
+   "target_job": "fetch-news-sentiment-topics",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "options-daily-features": {
+   "cron": "0 22 * * 1-5",
+   "last_attempt": "2026-09-05T02:00:08.484155Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "build-options-daily-features",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "options-daily-greeks": {
+   "cron": "15 23 * * 1-5",
+   "last_attempt": "2026-09-05T03:15:01.306608Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "build-options-greeks",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "options-retention-daily": {
+   "cron": "0 2 * * *",
+   "last_attempt": "2026-09-06T06:00:02.067525Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "etf-options-retention",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "orb-15m-alert": {
+   "cron": "45 9 * * 1-5",
+   "last_attempt": "2026-09-04T13:45:03.868561Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "signal-monitor",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "orb-30m-alert": {
+   "cron": "0 10 * * 1-5",
+   "last_attempt": "2026-09-04T14:00:30.819732Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "signal-monitor",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "phase6-playbook-daily": {
+   "cron": "30 4 * * 1-5",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "ENABLED",
+   "target_job": "phase6-playbook",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "premarket-brief-daily": {
+   "cron": "30 8 * * 1-5",
+   "last_attempt": "2026-09-04T12:30:03.334851Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "premarket-brief",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "premarket-brief-sunday": {
+   "cron": "0 21 * * 0",
+   "last_attempt": "2026-09-07T01:00:54.396112Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "premarket-brief",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "premarket-playbook-resolver-daily": {
+   "cron": "15 21 * * 1-5",
+   "last_attempt": "2026-09-05T01:15:02.924493Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "premarket-playbook-resolver",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "premarket-refresh-daily": {
+   "cron": "20 8 * * 1-5",
+   "last_attempt": "2026-09-04T12:20:03.859878Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-premarket-refresh",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "realtime-gex-daily": {
+   "cron": "0 17 * * 1-5",
+   "last_attempt": "2026-09-04T21:00:24.260922Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "build-realtime-gex",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "reconcile-failure-notifier-hourly": {
+   "cron": "0 * * * *",
+   "last_attempt": "2026-09-07T01:00:57.094399Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "",
+   "target_uri": "https://failure-notifier-5sjtb3yl7a-ue.a.run.app/reconcile",
+   "time_zone": "America/New_York"
+  },
+  "refresh-earnings-views-daily": {
+   "cron": "30 7 * * 1-5",
+   "last_attempt": "2026-09-04T11:30:02.902432Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "refresh-earnings-views",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "refresh-earnings-views-weekly": {
+   "cron": "0 20 * * 0",
+   "last_attempt": "2026-09-07T00:00:17.780759Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "refresh-earnings-views",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "regime-combo-weekly": {
+   "cron": "0 5 * * 0",
+   "last_attempt": "2026-09-06T09:00:01.433726Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "regime-combo",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "sec-filings-intraday": {
+   "cron": "0 7,10,13,17 * * 1-5",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "ENABLED",
+   "target_job": "fetch-sec-filings",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "signal-monitor-daily": {
+   "cron": "25 9 * * 1-5",
+   "last_attempt": "2026-09-04T13:25:03.254108Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "signal-monitor",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "signal-monitor-eod-resolver-daily": {
+   "cron": "30 16 * * 1-5",
+   "last_attempt": "2026-09-04T20:30:03.403905Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "signal-monitor-eod-resolver",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "signal-quality-alarm-daily": {
+   "cron": "0 2 * * 2-6",
+   "last_attempt": "2026-09-05T06:00:03.322451Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "signal-quality-alarm",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "signal-quality-report-hourly": {
+   "cron": "0 10-16 * * 1-5",
+   "last_attempt": "",
+   "last_status": -1,
+   "state": "PAUSED",
+   "target_job": "signal-quality-report",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "signal-quality-report-nightly": {
+   "cron": "0 1 * * 2-6",
+   "last_attempt": "2026-09-05T05:00:02.461884Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "signal-quality-report",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "strat-engine-daily": {
+   "cron": "35 23 * * 1-5",
+   "last_attempt": "2026-09-05T03:35:00.894594Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "strat-engine",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "strat-enrich-daily": {
+   "cron": "0 2 * * 2-6",
+   "last_attempt": "2026-09-05T06:00:24.861088Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "strat-engine",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "top-movers-daily": {
+   "cron": "15 16 * * 1-5",
+   "last_attempt": "2026-09-04T20:15:03.177112Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-top-movers",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "top-movers-intraday-close": {
+   "cron": "5 16 * * 1-5",
+   "last_attempt": "2026-09-04T20:05:01.081235Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-top-movers",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "top-movers-intraday-hourly": {
+   "cron": "30 9-15 * * 1-5",
+   "last_attempt": "2026-09-04T19:30:01.421074Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-top-movers",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "weekend-review-weekly": {
+   "cron": "0 9 * * 6",
+   "last_attempt": "2026-09-05T13:00:02.802192Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "weekend-review",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "weekly-earnings-refresh-calendar": {
+   "cron": "0 19 * * 0",
+   "last_attempt": "2026-09-06T23:00:04.383506Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-earnings-calendar",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "weekly-earnings-refresh-history": {
+   "cron": "15 19 * * 0",
+   "last_attempt": "2026-09-06T23:15:05.564986Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "fetch-earnings-history",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  },
+  "weekly-earnings-refresh-reactions": {
+   "cron": "30 19 * * 0",
+   "last_attempt": "2026-09-06T23:30:02.700880Z",
+   "last_status": 0,
+   "state": "ENABLED",
+   "target_job": "compute-earnings-reactions",
+   "target_uri": "",
+   "time_zone": "America/New_York"
+  }
+ },
+ "secrets": [
+  "admin-token",
+  "av-api-key",
+  "benzinga-api-key",
+  "cloud-sql-connection-name",
+  "db-trading-pass",
+  "db-trading-user",
+  "discord-app-id",
+  "discord-bot-token",
+  "discord-public-key",
+  "discord-webhook-earnings",
+  "discord-webhook-gcp",
+  "discord-webhook-insights",
+  "discord-webhook-signals",
+  "ew-pass",
+  "ew-user",
+  "fred-api-key",
+  "gh-stocks-repo-pat",
+  "github-pat",
+  "github-repo",
+  "sec-user-agent",
+  "staging-e2e-login",
+  "trading-db-pass"
+ ],
+ "service_accounts": [
+  "28960574877-compute@developer.gserviceaccount.com",
+  "arch-refresh-bot@adept-mountain-474619-d4.iam.gserviceaccount.com",
+  "claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com",
+  "firebase-adminsdk-fbsvc@adept-mountain-474619-d4.iam.gserviceaccount.com",
+  "github-actions-sheets@adept-mountain-474619-d4.iam.gserviceaccount.com",
+  "playwright-tester@adept-mountain-474619-d4.iam.gserviceaccount.com",
+  "trading-platform-svc@adept-mountain-474619-d4.iam.gserviceaccount.com",
+  "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com"
+ ],
+ "services": {
+  "discord-interactions": {
+   "auth_mode": "",
+   "cpu_throttling": "false",
+   "created": "2026-04-29T02:16:22.185541Z",
+   "iap": "false",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "ingress": "all",
+   "invokers": [
+    "allUsers"
+   ],
+   "latest_revision": "discord-interactions-00035-r6k",
+   "max_instances": "5",
+   "min_instances": "0",
+   "open_signup": "",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "url": "https://discord-interactions-5sjtb3yl7a-ue.a.run.app"
+  },
+  "failure-notifier": {
+   "auth_mode": "",
+   "cpu_throttling": "true",
+   "created": "2026-04-16T13:13:30.953401Z",
+   "iap": "false",
+   "image": "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system",
+   "ingress": "all",
+   "invokers": [
+    "serviceAccount:service-28960574877@gcp-sa-pubsub.iam.gserviceaccount.com"
+   ],
+   "latest_revision": "failure-notifier-00003-jsx",
+   "max_instances": "3",
+   "min_instances": "0",
+   "open_signup": "",
+   "service_account": "trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "url": "https://failure-notifier-5sjtb3yl7a-ue.a.run.app"
+  },
+  "solyra-api-prod": {
+   "auth_mode": "iap",
+   "cpu_throttling": "true",
+   "created": "2026-09-05T13:46:26.486963Z",
+   "iap": "true",
+   "image": "gcr.io/adept-mountain-474619-d4/trading-platform",
+   "ingress": "all",
+   "invokers": [],
+   "latest_revision": "solyra-api-prod-00001-7lc",
+   "max_instances": "5",
+   "min_instances": "0",
+   "open_signup": "",
+   "service_account": "trading-platform-svc@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "url": "https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app"
+  },
+  "solyra-api-staging": {
+   "auth_mode": "firebase",
+   "cpu_throttling": "true",
+   "created": "2026-09-05T13:43:44.165308Z",
+   "iap": "false",
+   "image": "gcr.io/adept-mountain-474619-d4/solyra-api",
+   "ingress": "all",
+   "invokers": [
+    "allUsers"
+   ],
+   "latest_revision": "solyra-api-staging-00003-g6x",
+   "max_instances": "5",
+   "min_instances": "0",
+   "open_signup": "1",
+   "service_account": "trading-platform-svc@adept-mountain-474619-d4.iam.gserviceaccount.com",
+   "url": "https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app"
+  }
+ },
+ "sql": {
+  "authorized_networks": 1,
+  "backup_start": "03:00",
+  "deletion_protection": true,
+  "disk_gb": "191",
+  "ipv4_enabled": true,
+  "latest_backups": [
+   {
+    "start": "2026-09-06T05:32:32.931Z",
+    "status": "SUCCESSFUL"
+   },
+   {
+    "start": "2026-09-05T05:45:07.622Z",
+    "status": "SUCCESSFUL"
+   },
+   {
+    "start": "2026-09-04T03:28:47.851Z",
+    "status": "SUCCESSFUL"
+   }
+  ],
+  "maintenance": {
+   "day": 7,
+   "hour": 4,
+   "kind": "sql#maintenanceWindow"
+  },
+  "pitr": true,
+  "retained_backups": 7,
+  "ssl_mode": "ALLOW_UNENCRYPTED_AND_ENCRYPTED",
+  "tier": "db-g1-small",
+  "version": "POSTGRES_15"
+ },
+ "sql_dumps": [
+  {
+   "bytes": "15736149382",
+   "path": "gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-20260809-080036.sql.gz",
+   "time": "2026-08-09T08:23:41Z"
+  },
+  {
+   "bytes": "15837647569",
+   "path": "gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-20260816-080027.sql.gz",
+   "time": "2026-08-16T08:23:41Z"
+  },
+  {
+   "bytes": "15904314039",
+   "path": "gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-20260823-080027.sql.gz",
+   "time": "2026-08-23T08:24:39Z"
+  },
+  {
+   "bytes": "15903661192",
+   "path": "gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-20260830-080124.sql.gz",
+   "time": "2026-08-30T08:35:19Z"
+  },
+  {
+   "bytes": "15879567492",
+   "path": "gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-20260906-080030.sql.gz",
+   "time": "2026-09-06T08:22:56Z"
+  }
+ ],
+ "tasks_queue": {
+  "max_attempts": 2,
+  "max_concurrent": 5,
+  "name": "insight-pipeline-queue",
+  "state": "RUNNING"
+ }
+}
